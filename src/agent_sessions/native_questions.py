@@ -78,9 +78,8 @@ def validate_async(value: Any) -> list[dict]:
 ASK_TOOL = "AskUserQuestion"
 CLAUDE_MAX_QUESTIONS = 4
 OTHER_MAX = 2000
-#: What the question card shows of a header and of an option's description (structuredView's
-#: `display` caps). Longer text could hide a condition past the cut while the option stays
-#: answerable, so such a question is not offered as choices at all (Hermes #6477).
+#: Bounds on a header and an option's description for an EXACT answer (Hermes #6477). The card
+#: shows text whole; a longer question is still answerable, as a message (#1463 follow-up).
 HEADER_MAX = 64
 DESCRIPTION_MAX = 500
 

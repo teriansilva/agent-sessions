@@ -20,6 +20,10 @@ import {
   ownTurnInterruptible,
   queuePositions,
   requestIds,
+  questionAnswerId,
+  questionAnswerIds,
+  questionAnswerMessage,
+  questionAnswerMode,
   questionPreview,
   requestQuestions,
   requestRows,
@@ -287,15 +291,47 @@ describe("Claude's AskUserQuestion (#1463)", () => {
     payload: { input: { questions } },
   }) as StructuredRequest;
 
-  test("offers its questions only when the server offers an answer", () => {
+  test("a readable question is always answerable: exactly, or as a message", () => {
     const qs = requestQuestions(ask(["answer", "reject", "cancel"]))!;
     expect(qs).toHaveLength(1);
     expect(qs[0]).toMatchObject({ title: "Pick?", header: "Hdr", multi: true });
-    // Labels are sent back verbatim; descriptions are display text, capped.
+    // Labels are sent back verbatim; descriptions are display text, shown WHOLE (Hermes #6477).
     expect(qs[0].options.map((o) => o.label)).toEqual(["A, b", "C"]);
-    expect(qs[0].options[0].description).toHaveLength(500);
-    expect(requestQuestions(ask(["reject", "cancel"]))).toBeNull();
+    expect(qs[0].options[0].description).toHaveLength(600);
+    expect(questionAnswerMode(ask(["answer", "reject", "cancel"]))).toBe("exact");
+    // A worker from before exact answers, or a set Claude can't take back exactly: still
+    // answerable, as the operator's next message after stopping the question.
+    expect(questionAnswerMode(ask(["reject", "cancel"]))).toBe("message");
+    expect(requestQuestions(ask(["reject", "cancel"]))).toHaveLength(1);
+    // Nothing to stop the question with, or not a question at all: no picker.
+    expect(questionAnswerMode(ask(["reject"]))).toBeNull();
     expect(requestQuestions({ ...ask(["answer"]), kind: "Bash" })).toBeNull();
+  });
+
+  test("a message-mode answer has ONE operation id per question (Hermes #6495)", () => {
+    const req = { ...ask(["reject", "cancel"]), payload_digest: "a".repeat(64) } as StructuredRequest;
+    const id = questionAnswerId(req);
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(questionAnswerId({ ...req })).toBe(id); // a reload or another tab: the same id
+    expect(questionAnswerId({ ...req, request_id: "s:2" })).not.toBe(id);
+    expect(questionAnswerId({ ...req, turn_id: "t2" })).not.toBe(id);
+    expect(questionAnswerId({ ...req, payload_digest: "b".repeat(64) })).not.toBe(id);
+    // Deterministic fallbacks for a dead id: distinct, canonical, and the first is the plain id.
+    const all = questionAnswerIds(req);
+    expect(all[0]).toBe(id);
+    expect(new Set(all).size).toBe(all.length);
+    for (const candidate of all) expect(candidate).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(questionAnswerIds({ ...req })).toEqual(all);
+  });
+
+  test("message-mode answers name each question and the pick or own words", () => {
+    const qs = [{ title: "When should A2 run?" }, { title: "Fallback?" }];
+    expect(questionAnswerMessage(qs, [{ selected: ["Tonight ~22:00"] }, { selected: [], other: " none " }])).toBe(
+      "My answers to your questions:\n- When should A2 run?\n  → Tonight ~22:00\n- Fallback?\n  → none",
+    );
+    expect(questionAnswerMessage([{ title: "Which?" }], [{ selected: ["A", "B"] }])).toBe(
+      "My answers to your questions:\n- Which?\n  → A, B",
+    );
   });
 
   test("a question with no rows to show is still read as a question, never raw JSON (Hermes #6473)", () => {
@@ -314,7 +350,8 @@ describe("Claude's AskUserQuestion (#1463)", () => {
     expect(choiceLabel("reject", req)).toBe("Skip question");
     expect(choiceLabel("cancel", req)).toBe("Stop the turn");
     expect(requestTitle(req, "Claude")).toBe("Claude is waiting for your answer");
-    expect(requestTitle(ask(["reject", "cancel"]), "Claude")).toMatch(/can’t show as choices/);
+    expect(requestTitle(ask(["reject", "cancel"]), "Claude")).toBe("Claude is waiting for your answer");
+    expect(requestTitle(ask(["reject", "cancel"], []), "Claude")).toMatch(/can’t show as choices/);
   });
 
   test("own words win over picked options on the wire", () => {

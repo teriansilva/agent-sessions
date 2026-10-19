@@ -240,15 +240,66 @@ export function isQuestion(req: StructuredRequest): boolean {
 
 // eslint-disable-next-line no-control-regex -- stripping control bytes is the point
 const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f]/g;
-const display = (value: unknown, cap: number) =>
-  typeof value === "string" ? value.replace(CONTROL, "").trim().slice(0, cap) : "";
+/** Display text, whole: what the operator answers on is never cut (Hermes #6477). */
+const display = (value: unknown) =>
+  typeof value === "string" ? value.replace(CONTROL, "").trim() : "";
 
-/** The questions a request offers as choices, as display text — only when the server offers
- *  `answer`, i.e. they can be answered exactly. Labels stay verbatim: they are what is sent. */
+/** How an agent question is answered from its card (#1463): `exact` sends the answers in the
+ *  shape Claude asked for; `message` stops the pending question and sends the picks as the
+ *  operator's next message — for a session whose worker predates exact answers, or a question
+ *  set Claude couldn't take back exactly (repeated questions, text over the caps). Either way a
+ *  readable question is always answerable; `null` only when there is nothing to pick from. */
+export function questionAnswerMode(req: StructuredRequest): "exact" | "message" | null {
+  if (!questionPreview(req)?.some((q) => q.options.length)) return null;
+  if (req.choices.includes("answer")) return "exact";
+  return req.choices.includes("cancel") ? "message" : null;
+}
+
+/** The questions a request offers as choices, as display text. Labels stay verbatim. */
 export function requestQuestions(req: StructuredRequest) {
-  if (!req.choices.includes("answer")) return null;
+  if (!questionAnswerMode(req)) return null;
   const questions = questionPreview(req);
   return questions?.length ? questions : null;
+}
+
+/** The operation id of a question's `message`-mode answer: derived from the request itself, so
+ *  every send for this question — a retry, after a reload, from another tab — is the SAME
+ *  operation and the server keeps one (Hermes #6495). An idempotency key, not a secret. */
+export function questionAnswerId(req: StructuredRequest, attempt = 0): string {
+  const key = `answer\u0000${req.turn_id}\u0000${req.request_id}\u0000${req.payload_digest ?? ""}\u0000${attempt}`;
+  const words = [0x811c9dc5, 0x01000193, 0x9e3779b9, 0x85ebca6b].map((seed) => {
+    let h = seed >>> 0;
+    for (let i = 0; i < key.length; i++) {
+      h ^= key.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(16).padStart(8, "0");
+  });
+  const hex = words.join("");
+  // A canonical v8 (custom) UUID: version nibble 8, RFC 4122 variant.
+  const variant = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** Every id a question's message answer may go under: the derived one, then deterministic
+ *  fallbacks for an id the server proved dead. Deterministic, so a reload or another tab still
+ *  recognises an answer sent under any of them (independent review of #1490). */
+export const ANSWER_ATTEMPTS = 4;
+export function questionAnswerIds(req: StructuredRequest): string[] {
+  return Array.from({ length: ANSWER_ATTEMPTS }, (_, n) => questionAnswerId(req, n));
+}
+
+/** The operator's answers as the message the agent reads next (`message` mode). */
+export function questionAnswerMessage(
+  questions: readonly { title: string }[],
+  answers: readonly { selected: string[]; other?: string }[],
+): string {
+  const lines = questions.map((q, i) => {
+    const a = answers[i];
+    const text = a?.other?.trim() ? a.other.trim() : (a?.selected ?? []).join(", ");
+    return `- ${q.title}\n  → ${text}`;
+  });
+  return `My answers to your questions:\n${lines.join("\n")}`;
 }
 
 /** A question request read as text, answerable or not (#1463): what the card shows instead of
@@ -262,11 +313,11 @@ export function questionPreview(req: StructuredRequest) {
     const q = object(raw);
     return {
       title: String(q.question ?? ""),
-      header: display(q.header, 64) || undefined,
+      header: display(q.header) || undefined,
       multi: q.multiSelect === true,
       options: (Array.isArray(q.options) ? q.options : []).map((o) => ({
         label: String(object(o).label ?? ""),
-        description: display(object(o).description, 500) || undefined,
+        description: display(object(o).description) || undefined,
       })),
     };
   });
@@ -279,7 +330,7 @@ export function answerWire(a: { selected: string[]; other?: string }) {
 
 export function requestTitle(req: StructuredRequest, agent: string): string {
   if (isQuestion(req)) {
-    return req.choices.includes("answer")
+    return questionAnswerMode(req)
       ? `${agent} is waiting for your answer`
       : `${agent} asks a question BattleLab can’t show as choices`;
   }

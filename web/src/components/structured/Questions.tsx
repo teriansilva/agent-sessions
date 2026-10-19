@@ -84,11 +84,11 @@ export function ChoiceQuestions({
             </legend>
             {q.multi && <p className={styles.note}>Choose any number</p>}
             <div className={styles.options}>
-              {q.options.map((o) => {
+              {q.options.map((o, j) => {
                 const on = a.selected.includes(o.label) && !a.other;
                 return (
                   <label
-                    key={o.label}
+                    key={j}
                     className={`${styles.option} ${on ? styles.on : ""}`}
                     data-testid={`${testId}-option`}
                   >

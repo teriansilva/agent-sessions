@@ -87,6 +87,9 @@ import {
   ownTurnInterruptible,
   operationFor,
   requestIds,
+  questionAnswerIds,
+  questionAnswerMessage,
+  questionAnswerMode,
   questionPreview,
   requestQuestions,
   sendIdentity,
@@ -149,6 +152,10 @@ interface Deciding {
 
 type Answers = ({ selected: string[] } | { other: string })[];
 type OnDecide = (req: StructuredRequest, choice: string, grant?: string, answers?: Answers) => void;
+/** A question answered as the operator's next message (#1463 `message` mode), while it is on its
+ *  way: its own operation id, so a retry resends the identical message and never duplicates it. */
+type MessageAnswer = { id: string; text: string; phase: "sending" | "unknown" | "refused"; message?: string };
+type OnAnswerAsMessage = (req: StructuredRequest, text: string, retry?: MessageAnswer) => void;
 
 function requestKey(req: StructuredRequest): string {
   return `${req.turn_id}\u0000${req.request_id}\u0000${req.payload_digest ?? ""}`;
@@ -221,6 +228,9 @@ function QuestionRequest({
   readOnly,
   interrupting,
   onDecide,
+  sent,
+  answered,
+  onAnswerAsMessage,
 }: {
   req: StructuredRequest;
   questions: NonNullable<ReturnType<typeof requestQuestions>>;
@@ -229,8 +239,16 @@ function QuestionRequest({
   readOnly: boolean;
   interrupting: boolean;
   onDecide: OnDecide;
+  /** This question's answer on its way as a message (`message` mode). */
+  sent: MessageAnswer | null;
+  /** The answer already in the conversation (survives a reload; may come from another tab):
+   *  its text, so the card says WHAT was sent. Only the stop is left. */
+  answered: string | null;
+  onAnswerAsMessage: OnAnswerAsMessage;
 }) {
   const mine = deciding?.key === requestKey(req) ? deciding : null;
+  const asMessage = questionAnswerMode(req) === "message";
+  const sending = sent?.phase === "sending" || sent?.phase === "unknown" || answered !== null;
   const answerLabel = (a: Answers | undefined) =>
     (a ?? []).map((x) => ("other" in x ? x.other : x.selected.join(", "))).join(" · ");
   const mineText = mine?.decision === "answer" ? `“${answerLabel(mine.answers)}”` : `“${choiceLabel(mine?.decision ?? "", req)}”`;
@@ -242,11 +260,29 @@ function QuestionRequest({
         heading={requestTitle(req, agent)}
         questions={questions}
         allowOther
-        disabled={readOnly || !!mine}
+        disabled={readOnly || !!mine || sending || (asMessage && interrupting)}
         submitLabel={questions.length > 1 ? "Send answers" : "Send answer"}
-        onSubmit={(answers) => onDecide(req, "answer", undefined, answers.map(answerWire))}
+        onSubmit={(answers) =>
+          asMessage
+            ? onAnswerAsMessage(req, questionAnswerMessage(questions, answers))
+            : onDecide(req, "answer", undefined, answers.map(answerWire))
+        }
         status={
-          mine && (
+          answered !== null && !mine ? (
+            <p className={styles.pendingDecision} role="status" data-testid="structured-ask-message-status">
+              {sent?.text && sent.text !== answered
+                ? `Another answer was already sent, not yours: “${answered}”. Stop the question so ${agent} reads it, or answer again afterwards.`
+                : `Your answers are sent — stopping the question so ${agent} reads them.`}
+            </p>
+          ) : sent && !mine ? (
+            <p className={styles.pendingDecision} role="status" data-testid="structured-ask-message-status">
+              {sent.phase === "sending"
+                ? "Sending your answers…"
+                : sent.phase === "unknown"
+                  ? "Your answers may not have reached BattleLab. Retrying sends the same message."
+                  : `Not sent: ${sent.message}`}
+            </p>
+          ) : mine && (
             <p className={styles.pendingDecision} role="status" data-testid="structured-deciding">
               {mine.phase === "sending"
                 ? `Sending ${mineText}…`
@@ -257,7 +293,27 @@ function QuestionRequest({
           )
         }
         actions={
-          mine?.phase === "unknown" ? (
+          answered !== null && (!mine || mine.phase === "unknown") ? (
+            <button
+              type="button"
+              className={chat.send}
+              disabled={readOnly || interrupting || mine?.phase === "sending"}
+              data-testid="structured-ask-stop"
+              onClick={() => onDecide(req, "cancel")}
+            >
+              Stop the question
+            </button>
+          ) : sent?.phase === "unknown" && !mine ? (
+            <button
+              type="button"
+              className={chat.send}
+              disabled={readOnly}
+              data-testid="structured-ask-retry"
+              onClick={() => onAnswerAsMessage(req, sent.text, sent)}
+            >
+              Retry answers
+            </button>
+          ) : mine?.phase === "unknown" ? (
             <button
               type="button"
               className={chat.send}
@@ -275,7 +331,7 @@ function QuestionRequest({
                   key={c}
                   type="button"
                   className={chat.ghost}
-                  disabled={readOnly || !!mine || (c === "cancel" && interrupting)}
+                  disabled={readOnly || !!mine || sending || (c === "cancel" && interrupting)}
                   onClick={() => onDecide(req, c)}
                 >
                   {choiceLabel(c, req)}
@@ -284,9 +340,11 @@ function QuestionRequest({
           )
         }
         hint={() =>
-          req.choices.includes("reject")
-            ? `Skip question tells ${agent} you didn’t answer; it carries on with its own judgement.`
-            : null
+          asMessage
+            ? `This session can’t take answers directly, so ${agent}’s question is stopped and your answers arrive as your next message.`
+            : req.choices.includes("reject")
+              ? `Skip question tells ${agent} you didn’t answer; it carries on with its own judgement.`
+              : null
         }
       />
       {/* The complete request the answer goes back with (Hermes #6477): an answer returns the
@@ -364,9 +422,9 @@ function RequestCard({
       {preview ? (
         <div className={styles.actionSummary} data-testid="structured-question-preview">
           <p className={styles.why}>
-            {agent} asked this, but BattleLab can’t offer it as choices (its questions or options
-            repeat, or aren’t in a shape it can answer exactly). Skip it and {agent} carries on with
-            its own judgement, or stop the turn and answer in a message.
+            {agent} asked this, but BattleLab can’t offer it as choices: it carries no options it
+            can read. Stop the turn and answer in a message, or skip it and {agent} carries on with
+            its own judgement.
           </p>
           {preview.map((q, i) => (
             <div key={i} className={styles.previewQuestion}>
@@ -805,6 +863,9 @@ function TurnView({
   readOnly,
   approvalsDisabled,
   onDecide,
+  answerMessages,
+  answeredQuestions,
+  onAnswerAsMessage,
   onInterrupt,
   interrupting,
   onSendNow,
@@ -831,6 +892,10 @@ function TurnView({
   readOnly: boolean;
   approvalsDisabled: boolean;
   onDecide: OnDecide;
+  answerMessages: Record<string, MessageAnswer>;
+  /** Operator turns in the conversation by operation id (their text), to recognise a sent answer. */
+  answeredQuestions: ReadonlyMap<string, string>;
+  onAnswerAsMessage: OnAnswerAsMessage;
   onInterrupt: (turnId: string) => void;
   interrupting: boolean;
   onSendNow: (turnId: string) => void;
@@ -930,6 +995,9 @@ function TurnView({
           readOnly={readOnly || approvalsDisabled}
           interrupting={interrupting}
           onDecide={onDecide}
+          sent={answerMessages[requestKey(r)] ?? null}
+          answered={questionAnswerIds(r).map((id) => answeredQuestions.get(id)).find((t) => t !== undefined) ?? null}
+          onAnswerAsMessage={onAnswerAsMessage}
         />
       ) : (
         <RequestCard
@@ -1135,6 +1203,14 @@ export function StructuredPane({
   const [sendError, setSendError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [deciding, setDeciding] = useState<Record<string, Deciding>>({});
+  const [answerMessages, setAnswerMessages] = useState<Record<string, MessageAnswer>>({});
+  // A question's message answer is ONE operation, under the first of its deterministic ids the
+  // server hasn't proven dead (refused and never in the conversation, e.g. the queued answer was
+  // removed). Every check (answered, Remove, sending) knows all of them, so a reload or another
+  // tab still recognises an answer sent under a fallback id (independent review of #1490).
+  const [answerAttempts, setAnswerAttempts] = useState<Record<string, number>>({});
+  const answerIdFor = (req: StructuredRequest) =>
+    questionAnswerIds(req)[Math.min(answerAttempts[requestKey(req)] ?? 0, questionAnswerIds(req).length - 1)];
   const [actionError, setActionError] = useState<string | null>(null);
   const [interrupting, setInterrupting] = useState(false);
   // The turn an acknowledged Interrupt is waiting on (#1438): "Interrupting…" until it ends, with
@@ -1508,6 +1584,55 @@ export function StructuredPane({
         setDeciding((all) => ({ ...all, [reqKey]: { ...next, phase: "unknown" } }));
       }
     }
+  };
+
+  /** `message` mode (#1463): the answers go as the operator's next message, then the pending
+   *  question is stopped so the agent reads them. Message FIRST: while the question holds the
+   *  turn it waits in the queue, so a failed send leaves the question pending and answerable; a
+   *  failed stop leaves the message visibly queued and Stop the turn on the card. */
+  const answerAsMessage = async (req: StructuredRequest, text: string, retry?: MessageAnswer) => {
+    if (readOnly || permissionPending || !text.trim()) return;
+    const reqKey = requestKey(req);
+    const current = answerMessages[reqKey];
+    if (current && current.phase === "sending") return;
+    // ONE operation per question, whatever this tab remembers (Hermes #6495): a retry, a resend
+    // after a reload or from another tab is the same id, so the server keeps a single message.
+    const id = answerIdFor(req);
+    const attempt = { id, text: retry?.id === id ? retry.text : text };
+    const set = (next: MessageAnswer | null) =>
+      setAnswerMessages((all) => {
+        const rest = Object.fromEntries(Object.entries(all).filter(([k]) => k !== reqKey));
+        return next ? { ...rest, [reqKey]: next } : rest;
+      });
+    set({ ...attempt, phase: "sending" });
+    try {
+      await api.structuredSubmit(key, attempt.id, attempt.text, undefined);
+    } catch (e) {
+      const s = await load();
+      // Already in the conversation — this send, or an earlier one with other picks (the server
+      // refuses a changed text under the same id): either way the answer is sent; stop the question.
+      const recorded = new Map(operatorTurns(s ?? null).map((t) => [t.turn_id, t.text ?? ""] as const));
+      const sentText = questionAnswerIds(req).map((c) => recorded.get(c)).find((t) => t !== undefined);
+      if (sentText !== undefined && sentText !== attempt.text) {
+        // Another tab answered first, with other picks: the server refused ours. Say so, and leave
+        // the stop to the operator — never claim this selection was sent (Hermes #6498).
+        set({ ...attempt, phase: "refused", message: "another answer was already sent" });
+        return;
+      }
+      if (sentText === undefined) {
+        if (definite(e)) {
+          // Refused, and the conversation (read successfully) holds none of its ids: this one never
+          // reached the agent and may be dead, so the next Send moves to the next derived id.
+          if (s) setAnswerAttempts((all) => ({ ...all, [reqKey]: (all[reqKey] ?? 0) + 1 }));
+          set({ ...attempt, phase: "refused", message: detail(e, "refused") });
+        } else {
+          set({ ...attempt, phase: "unknown" });
+        }
+        return;
+      }
+    }
+    set(null);
+    await decide(req, "cancel");
   };
 
   const interrupt = async (turnId: string) => {
@@ -2290,6 +2415,10 @@ export function StructuredPane({
   const conversation: (ConversationGroup | null)[] = [...groups];
   if (backgroundAt >= 0) conversation.splice(backgroundAt, 0, null);
   const pending = snap?.pending_requests ?? [];
+  const operatorIds = new Map(operatorTurns(snap).map((t) => [t.turn_id, t.text ?? ""] as const));
+  const pendingAnswerIds = new Set(
+    pending.filter((r) => questionAnswerMode(r) === "message").flatMap((r) => questionAnswerIds(r)),
+  );
   const renderTurn = (t: StructuredTurn, beforeReply?: ReactNode) => (
     <TurnView
       key={t.turn_id}
@@ -2302,6 +2431,9 @@ export function StructuredPane({
       readOnly={readOnly}
       approvalsDisabled={permissionPending}
       onDecide={(r, c, g, a) => void decide(r, c, g, a)}
+      answerMessages={answerMessages}
+      answeredQuestions={operatorIds}
+      onAnswerAsMessage={(r, text, retry) => void answerAsMessage(r, text, retry)}
       onInterrupt={(tid) => void interrupt(tid)}
       interrupting={interrupting || stoppingNow === t.turn_id}
       onSendNow={(tid) => void sendNow(tid)}
@@ -2315,7 +2447,9 @@ export function StructuredPane({
       onAlwaysSendNow={turnOnAlwaysSendNow}
       onRemove={(tid) => void removeQueued(tid)}
       removing={removing === t.turn_id}
-      canRemove={!!snap?.native?.withdraw}
+      // A question's queued answer is settled by Stop the question, not removed: removing it
+      // would leave the question pending with its answer gone.
+      canRemove={!!snap?.native?.withdraw && !pendingAnswerIds.has(t.turn_id)}
       question={questionFor(t)}
     />
   );

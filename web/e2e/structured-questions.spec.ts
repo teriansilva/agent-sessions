@@ -488,22 +488,253 @@ test("#1463: a question with no readable questions still gets the explanation, n
   await expect(card.getByRole("button", { name: /allow|approve/i })).toHaveCount(0);
 });
 
-test("#1463: a question BattleLab can't show as choices can be skipped, never approved", async ({ page }) => {
-  const { decisions } = await claudeAsks(page, {
-    request: askRequest([ASK, ASK], ["reject", "cancel"]),
+const FALLBACK = {
+  question: "During the A2 downtime, should the gateway fall back to another model?",
+  header: "Fallback",
+  options: [
+    { label: "No fallback (Recommended)", description: `${"Callers get errors for ~60 min. ".repeat(18)}Nothing to revert.` },
+    { label: "Fallback to the row deployment", description: "Puts extra load on production." },
+  ],
+  multiSelect: false,
+};
+
+/** The /turns route for a Claude session: records each message once per operation id. */
+async function claudeTurns(page: Page, state: { turns: Json[]; revision: number }, lose = { first: false }) {
+  const posts: Json[] = [];
+  await page.route(new RegExp(`/api/structured/sessions/claude-api(?::|%3A)${ID}/turns$`), (r) => {
+    const body = r.request().postDataJSON() as Json;
+    posts.push(body);
+    if (lose.first) {
+      lose.first = false;
+      return r.abort("failed"); // never reached the server
+    }
+    const existing = state.turns.find((t) => t.turn_id === body.operation_id);
+    // As the server does: an exact replay is observed; another text under the same id conflicts.
+    if (existing && existing.text !== body.text) {
+      return r.fulfill({ status: 409, json: { detail: "operation id already used for a different request" } });
+    }
+    if (!existing) {
+      state.turns.push({ ...state.turns[0], turn_id: body.operation_id, operation_id: body.operation_id,
+        state: "queued", text: body.text, reply: "", tools: [] });
+      state.revision++;
+    }
+    return r.fulfill({ status: 202, json: { state: "queued" } });
   });
-  const card = page.getByTestId("structured-request");
-  await expect(card).toContainText("can’t show as choices");
-  await expect(askOptions(page)).toHaveCount(0);
-  // Read as a question, not as raw JSON (operator, 2026-10-15: "hard to read").
-  const preview = page.getByTestId("structured-question-preview");
-  await expect(preview).toContainText(ASK.question);
-  await expect(preview).toContainText("Always dark");
-  await expect(preview).toContainText("Matches the operator's app");
-  await expect(preview).not.toContainText('"label"');
-  await page.screenshot({ path: test.info().outputPath("ask-fallback.png"), fullPage: true });
-  await expect(card.getByRole("button", { name: /allow|approve/i })).toHaveCount(0);
-  await card.getByRole("button", { name: "Skip question" }).click();
+  return posts;
+}
+
+test("#1463: a question from a session that can't take exact answers is still answered — as a message, then the question stops", async ({ page }) => {
+  // A worker from before exact answers (or a set Claude can't take back exactly) offers only
+  // skip/stop. The card still offers the options; the picks go as the next message.
+  const { decisions, state } = await claudeAsks(page, { request: askRequest([ASK, FALLBACK], ["reject", "cancel"]) });
+  const posts = await claudeTurns(page, state);
+  await expect(ask(page)).toContainText("waiting for your answer");
+  await expect(askOptions(page)).toHaveCount(5);
+  // Long text is shown whole: nothing answered on is cut.
+  await expect(ask(page)).toContainText("Nothing to revert.");
+  const composer = page.getByRole("textbox").last();
+  await composer.fill("Half-written thought");
+  await askOptions(page).nth(1).click();
+  await askOptions(page).nth(3).click();
+  await expect(page.getByRole("button", { name: /allow|approve/i })).toHaveCount(0);
+  await askSend(page).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(posts).toHaveLength(1);
+  expect(posts[0].text).toBe(
+    `My answers to your questions:\n- ${ASK.question}\n  → Always dark\n- ${FALLBACK.question}\n  → No fallback (Recommended)`,
+  );
+  expect(posts[0].reply_to).toBeUndefined();
+  // Then the pending question is stopped, so Claude reads the message next.
+  expect(decisions[0]).toMatchObject({ request_id: "s:perm-7", decision: "cancel" });
+  expect(decisions[0].answers).toBeUndefined();
+  await expect(ask(page)).toHaveCount(0);
+  await expect(composer).toHaveValue("Half-written thought");
+});
+
+test("#1463: an answer already sent is never sent twice — a lost stop, a reload, then only the stop is left (Hermes #6495)", async ({ page }) => {
+  const { decisions, state, reply } = await claudeAsks(page, { request: askRequest([ASK], ["reject", "cancel"]) });
+  const posts = await claudeTurns(page, state);
+  await askOptions(page).nth(1).click();
+  reply("lost"); // the message lands; the stop's response is lost
+  await askSend(page).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(posts).toHaveLength(1);
+  reply("ok");
+  await page.reload();
+  // The question is still pending, but its answer is in the conversation: no new send.
+  await expect(page.getByTestId("structured-ask-message-status")).toContainText("Your answers are sent");
+  await expect(askSend(page)).toBeDisabled();
+  await page.getByTestId("structured-ask-stop").click();
+  await expect.poll(() => decisions.length).toBe(2);
+  expect(decisions[1].decision).toBe("cancel");
+  await expect(ask(page)).toHaveCount(0);
+  expect(posts).toHaveLength(1);
+  expect(state.turns.filter((t) => t.text === posts[0].text)).toHaveLength(1);
+});
+
+test("#1463: a queued answer can't be removed out from under its question; Stop the question settles it", async ({ page }) => {
+  const { decisions, state, reply } = await claudeAsks(page, { request: askRequest([ASK], ["reject", "cancel"]) });
+  const posts = await claudeTurns(page, state);
+  await askOptions(page).nth(1).click();
+  reply("lost");
+  await askSend(page).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  reply("ok");
+  await page.reload();
+  await expect(page.getByTestId("structured-ask-message-status")).toContainText("Your answers are sent");
+  // The answer is visibly queued, without Remove: removing it would strand the question.
+  const answer = page.getByTestId("structured-turn").filter({ hasText: "My answers to your questions" });
+  await expect(answer).toBeVisible();
+  await expect(answer.getByRole("button", { name: "Remove this queued message" })).toHaveCount(0);
+  expect(posts).toHaveLength(1);
+});
+
+test("#1463: an answer the server refused and never recorded is sent again under a fresh id", async ({ page }) => {
+  const { decisions, state } = await claudeAsks(page, { request: askRequest([ASK], ["reject", "cancel"]) });
+  const posts: Json[] = [];
+  let refuseFirst = true;
+  await page.route(new RegExp(`/api/structured/sessions/claude-api(?::|%3A)${ID}/turns$`), (r) => {
+    const body = r.request().postDataJSON() as Json;
+    posts.push(body);
+    if (refuseFirst) {
+      // e.g. the id was burned by an earlier, removed answer: refused, never in the conversation.
+      refuseFirst = false;
+      return r.fulfill({ status: 409, json: { detail: "this turn was not sent: the agent is busy with another turn" } });
+    }
+    state.turns.push({ ...state.turns[0], turn_id: body.operation_id, operation_id: body.operation_id,
+      state: "queued", text: body.text, reply: "", tools: [] });
+    state.revision++;
+    return r.fulfill({ status: 202, json: { state: "queued" } });
+  });
+  await askOptions(page).nth(1).click();
+  await askSend(page).click();
+  await expect(page.getByTestId("structured-ask-message-status")).toContainText("Not sent");
+  expect(decisions).toHaveLength(0);
+  await askSend(page).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(posts).toHaveLength(2);
+  expect(posts[1].operation_id).not.toBe(posts[0].operation_id);
+  expect(posts[1].text).toBe(posts[0].text);
+  expect(decisions[0].decision).toBe("cancel");
+});
+
+test("#1463: an answer sent under a fallback id is still recognised after a reload — never sent twice", async ({ page }) => {
+  const { decisions, state, reply } = await claudeAsks(page, { request: askRequest([ASK], ["reject", "cancel"]) });
+  const posts: Json[] = [];
+  let refuseFirst = true;
+  await page.route(new RegExp(`/api/structured/sessions/claude-api(?::|%3A)${ID}/turns$`), (r) => {
+    const body = r.request().postDataJSON() as Json;
+    posts.push(body);
+    if (refuseFirst) {
+      refuseFirst = false;
+      return r.fulfill({ status: 409, json: { detail: "this turn was not sent: the agent is busy with another turn" } });
+    }
+    if (!state.turns.some((t) => t.turn_id === body.operation_id)) {
+      state.turns.push({ ...state.turns[0], turn_id: body.operation_id, operation_id: body.operation_id,
+        state: "queued", text: body.text, reply: "", tools: [] });
+      state.revision++;
+    }
+    return r.fulfill({ status: 202, json: { state: "queued" } });
+  });
+  await askOptions(page).nth(1).click();
+  await askSend(page).click();
+  await expect(page.getByTestId("structured-ask-message-status")).toContainText("Not sent");
+  reply("lost"); // the fallback-id answer lands; the stop's response is lost
+  await askSend(page).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  reply("ok");
+  await page.reload();
+  await expect(page.getByTestId("structured-ask-message-status")).toContainText("Your answers are sent");
+  await expect(askSend(page)).toBeDisabled();
+  await page.getByTestId("structured-ask-stop").click();
+  await expect.poll(() => decisions.length).toBe(2);
+  expect(posts).toHaveLength(2);
+  expect(state.turns.filter((t) => t.text === posts[1].text)).toHaveLength(1);
+});
+
+test("#1463: a refusal whose read-back fails keeps the same id — no fresh id without proof (Hermes #6498)", async ({ page }) => {
+  const { decisions } = await claudeAsks(page, { request: askRequest([ASK], ["reject", "cancel"]) });
+  const posts: Json[] = [];
+  let readsDown = false;
+  await page.route(new RegExp(`/api/structured/sessions/claude-api(?::|%3A)${ID}/turns$`), (r) => {
+    posts.push(r.request().postDataJSON() as Json);
+    // The read-back after this refusal fails — and only from here on, so no earlier poll does.
+    readsDown = true;
+    // Recorded elsewhere under this id (another tab, other picks): the server refuses ours.
+    return r.fulfill({ status: 409, json: { detail: "operation id already used for a different request" } });
+  });
+  await page.route(new RegExp(`/api/structured/sessions/claude-api(?::|%3A)${ID}$`),
+    (r) => (readsDown ? r.abort("failed") : r.fallback()));
+  await askOptions(page).nth(1).click();
+  await askSend(page).click();
+  await expect(page.getByTestId("structured-ask-message-status")).toContainText("Not sent");
+  await askSend(page).click();
+  await expect.poll(() => posts.length).toBe(2);
+  // The read never proved the id unused, so it is NOT replaced: the server still dedupes.
+  expect(posts[1].operation_id).toBe(posts[0].operation_id);
+  expect(decisions).toHaveLength(0);
+});
+
+test("#1463: a second tab with OTHER picks is told another answer was sent — never that its own was (Hermes #6498)", async ({ page }) => {
+  const first = await claudeAsks(page, { request: askRequest([ASK], ["reject", "cancel"]) });
+  const posts = await claudeTurns(page, first.state);
+  first.reply("lost"); // tab A's stop doesn't land, so the question is still pending
+  await askOptions(page).nth(1).click();
+  await askSend(page).click();
+  await expect.poll(() => first.decisions.length).toBe(1);
+  const other = await page.context().newPage();
+  // The other tab's read predates A's answer; its next read (after the 409) sees it.
+  const second = await claudeAsks(other, { request: askRequest([ASK], ["reject", "cancel"]) });
+  const otherPosts: Json[] = [];
+  await other.route(new RegExp(`/api/structured/sessions/claude-api(?::|%3A)${ID}/turns$`), (r) => {
+    const body = r.request().postDataJSON() as Json;
+    otherPosts.push(body);
+    const a = first.state.turns.find((t) => t.turn_id === body.operation_id);
+    if (a && !second.state.turns.some((t) => t.turn_id === a.turn_id)) {
+      second.state.turns.push(a);
+      second.state.revision++;
+    }
+    return a && a.text !== body.text
+      ? r.fulfill({ status: 409, json: { detail: "operation id already used for a different request" } })
+      : r.fulfill({ status: 202, json: { state: "queued" } });
+  });
+  await other.getByRole("button", { name: "Open here instead" }).click();
+  await askOptions(other).nth(2).click();
+  await askSend(other).click();
+  await expect.poll(() => otherPosts.length).toBe(1);
+  expect(otherPosts[0].operation_id).toBe(posts[0].operation_id); // the same operation
+  await expect(other.getByTestId("structured-ask-message-status")).toContainText("Another answer was already sent, not yours");
+  await expect(other.getByTestId("structured-ask-message-status")).toContainText("Always dark");
+  // The other tab never stopped the question on the strength of someone else's answer.
+  expect(second.decisions).toHaveLength(0);
+  await expect(other.getByTestId("structured-ask-stop")).toBeVisible();
+  expect(first.state.turns.filter((t) => String(t.text ?? "").startsWith("My answers"))).toHaveLength(1);
+});
+
+test("#1463: Skip question still skips a message-mode question — nothing is sent as a message", async ({ page }) => {
+  const { decisions, state } = await claudeAsks(page, { request: askRequest([ASK, ASK], ["reject", "cancel"]) });
+  const posts = await claudeTurns(page, state);
+  await ask(page).getByRole("button", { name: "Skip question" }).click();
   await expect.poll(() => decisions.length).toBe(1);
   expect(decisions[0].decision).toBe("reject");
+  expect(posts).toHaveLength(0);
+});
+
+test("#1463: a lost message-mode answer is retried as the identical message, and the question stops only after it lands", async ({ page }) => {
+  const { decisions, state } = await claudeAsks(page, { request: askRequest([ASK, ASK], ["reject", "cancel"]) });
+  const posts = await claudeTurns(page, state, { first: true });
+  // Repeated questions can't be keyed for Claude, but they can be answered as a message.
+  await expect(askOptions(page)).toHaveCount(6);
+  await askOptions(page).nth(0).click();
+  await askOptions(page).nth(4).click();
+  await askSend(page).click();
+  await expect(page.getByTestId("structured-ask-message-status")).toContainText("may not have reached BattleLab");
+  expect(decisions).toHaveLength(0); // the question is NOT stopped while its answer is unsent
+  await expect(askOptions(page).first().locator("input")).toBeDisabled();
+  await page.getByTestId("structured-ask-retry").click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(posts).toHaveLength(2);
+  expect(posts[1]).toEqual(posts[0]);
+  expect(decisions[0].decision).toBe("cancel");
+  expect(state.turns.filter((t) => typeof t.text === "string" && (t.text as string).startsWith("My answers"))).toHaveLength(1);
 });
