@@ -73,23 +73,27 @@ The moment the screen changes, it can need you again. A dismissal is kept for **
 
 ## The sidebar
 
-Its only controls are **New conversation** and **✕** (close). On a wide screen it sits beside the
+Its controls are the **conversation switcher**, **New conversation** and **✕** (close). On a wide screen it sits beside the
 page, so you can keep working while it answers. **Escape** closes it, and so does the icon that
 opened it. On a phone or a window 800px wide or less it covers the page; tap outside it or ✕ to
 close it. Opening a session or a mission from an answer closes it there and leaves it open on a
 wide screen. An old `/ask` link
 opens the Dashboard with the sidebar open.
 
-- While it works, the answer shows what it is doing: *Searching 140 sessions…*, then *Checking
-  against 3 transcripts…*, with the seconds so far.
-- The first answer appears as soon as the session catalog has been searched. It is then checked
-  against the transcripts of the sessions it names, and replaced by the confirmed answer.
+- While it works, the answer shows what it is doing: *Searching your sessions and missions…*,
+  *Searching 140 sessions…*, *Checking against 3 transcripts…*, *Reading a session's status…*,
+  with the seconds so far.
+- Ask can look up a session's live state and screen, your missions and their objectives, your
+  projects and your agents to answer. It only reads: it cannot start, stop or message anything.
 - An answer that names a session needing you carries the same *Needs you* marker and ⓘ as the
   list, whatever the list's filter.
 
-Answers are **transient** and stay in memory only. Closing the sidebar or moving to another page
-keeps the conversation. **Reloading** the app or **New conversation** discards it and stops a
-question that is still running.
+Conversations are **kept** on your BattleLab server. Closing the sidebar, moving to another page,
+reloading the app or losing the connection never stops a question: its answer lands in the
+conversation, and opening Ask shows the latest one. **New conversation** starts an empty one; the
+switcher opens an earlier one. Ask keeps the last **50** conversations for **30 days**. What it
+stores is your questions and its answers — never the screens or transcripts it read to answer —
+and any text that looks like a password or a token is stored as *withheld*.
 
 ## Notifications
 

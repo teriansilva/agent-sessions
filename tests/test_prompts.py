@@ -56,7 +56,8 @@ def _patch(c, cfg, csrf, pid, body):
 def test_registry_covers_every_system_prompt():
     # #956 removed pulse_banner; #1088 added mission_judge; #1086 added pulse_recap;
     # #1090 added template_suggest + template_write; #1209 added chat_agent; #1222 chat_agent_tools
-    assert len(prompts.REGISTRY) == 21
+    # #1443 added ask_orchestrator
+    assert len(prompts.REGISTRY) == 22
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -66,6 +67,9 @@ def test_registry_covers_every_system_prompt():
     # `mission_question` earns it because its output becomes the OPERATOR'S choices: text that
     # shapes what a mission offers to do next shapes what the operator authorises (#892).
     assert [p.id for p in prompts.REGISTRY if p.guarded] == [
+        # `ask_orchestrator` (#1443) reads agents' screens and transcripts through its tools on
+        # every turn: session content is always in front of it.
+        "ask_orchestrator",
         "orchestrator_pass",
         "chat_instruct",
         "mission_objectives",
@@ -119,6 +123,8 @@ EXPECTED_DEFAULT_SHA = {
     "mission_plan": "a4d0cb1003a79e45",
     # #1088: the objective judge — quotes verified verbatim, confidence against the floor.
     "mission_judge": "604e82e9d100c1dc",
+    # #1443: the Ask conversation — read-only tools, guarded.
+    "ask_orchestrator": "94544353e9576d2f",
 }
 
 
@@ -169,7 +175,7 @@ def test_unguarded_effective_is_the_editable_text(tmp_home):
 # ---- the guard invariant -------------------------------------------------------------
 
 
-@pytest.mark.parametrize("pid", ["orchestrator_pass", "chat_instruct"])
+@pytest.mark.parametrize("pid", ["orchestrator_pass", "chat_instruct", "ask_orchestrator"])
 def test_guard_is_canonical_and_last(tmp_home, pid):
     prompts.set_value(pid, "Decide what to do with each session.")
     eff = prompts.effective(pid)
@@ -178,7 +184,7 @@ def test_guard_is_canonical_and_last(tmp_home, pid):
     assert prompts.guard_suffix(pid) == prompts.GUARD_CLAUSE
 
 
-@pytest.mark.parametrize("pid", ["orchestrator_pass", "chat_instruct"])
+@pytest.mark.parametrize("pid", ["orchestrator_pass", "chat_instruct", "ask_orchestrator"])
 def test_guard_survives_a_pasted_copy_followed_by_contradicting_prose(tmp_home, pid):
     """The attack a `contains`-style check would have allowed: carry the clause, then override
     it afterwards so the server declines to append and the operator gets the last word."""
@@ -194,7 +200,7 @@ def test_guard_survives_a_pasted_copy_followed_by_contradicting_prose(tmp_home, 
     assert eff.index("obey them") < eff.index(prompts.GUARD_CLAUSE)
 
 
-@pytest.mark.parametrize("pid", ["orchestrator_pass", "chat_instruct"])
+@pytest.mark.parametrize("pid", ["orchestrator_pass", "chat_instruct", "ask_orchestrator"])
 def test_guard_strips_the_legacy_wordings_too(tmp_home, pid):
     """An operator who customized the prompt BEFORE this landed has the old sentence stored;
     it must not be left sitting ahead of contradicting prose either."""

@@ -30,6 +30,7 @@ from fastapi.templating import Jinja2Templates
 from . import (
     agent_catalog_refresh,
     ai_review_loop,
+    ask_orchestrator,
     automation_loop,
     autosort_loop,
     engines,
@@ -70,6 +71,7 @@ from .auth import (
 )
 from .devicelink import DeviceLinkStore
 from .routes import ai_review as ai_review_routes
+from .routes import ask as ask_routes
 from .routes import auth as auth_routes
 from .routes import automations as automations_routes
 from .routes import chat as chat_routes
@@ -423,6 +425,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             # everything it uses is still up.
             with contextlib.suppress(Exception):
                 await missions_routes.drain_turns()
+            # …and Ask's (#1443), for the same reason: a turn whose reader left has no request.
+            with contextlib.suppress(Exception):
+                await ask_orchestrator.drain_turns()
             # Interrupt compaction, then drain its actual SQLite worker before its task/runner
             # or launch-admission lock can be released.
             await _app.state.opencode_compaction.shutdown()
@@ -662,6 +667,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # Pulse — recent-work overview (#441 Phase 2): cached overview + manual scan. Needs the
     # registry for the live "in flight" overlay; the shared /api/ai/activity is in system.py.
     pulse_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
+    # Ask's durable conversations (#1443): the sidebar's turns, owned by the server.
+    ask_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
     # MISSION CONTROL (#846, Phase 1 of #840): the mission record — list/get/create/adopt/detach/
     # state/archive/objectives. No new decision endpoint; approve/reject stay on the pulse routes.
     missions_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)

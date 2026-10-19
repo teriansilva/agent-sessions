@@ -82,6 +82,10 @@ import type {
   ProjectEntity,
   PromptEntry,
   PulseAskEvent,
+  AskConversation,
+  AskConversationSummary,
+  AskConversationTurn,
+  AskTurnEvent,
   PulseAskResult,
   PulseDepth,
   PulseOverview,
@@ -464,6 +468,58 @@ async function streamMissionMessage(
     let ev: MissionTurnEvent;
     try {
       ev = JSON.parse(line) as MissionTurnEvent;
+    } catch {
+      throw cut();
+    }
+    if (ev.type === "error") throw new ApiError(ev.status, ev.detail);
+    if (ev.type === "turn") {
+      turn = ev.turn;
+      return;
+    }
+    onEvent(ev);
+  });
+  if (!turn) throw cut();
+  return turn;
+}
+
+/** `POST /api/ask/conversations/{id}/message/stream`, read line by line (#1443). Resolves with the
+ *  settled turn and hands every progress line to `onEvent`. A refusal before the stream (404 / 409 /
+ *  422 / 503) is an `ApiError` with its status; an `error` line is one too. A stream that ends
+ *  without its `turn` line is a failure of the CONNECTION, not of the turn: the turn is the
+ *  server's and settles anyway, and reading the conversation again finds it. Aborting `signal`
+ *  stops watching; it never cancels the turn. */
+async function streamAskTurn(
+  id: string,
+  body: { turnId: string; text: string },
+  onEvent: (ev: AskTurnEvent) => void,
+  signal?: AbortSignal,
+): Promise<AskConversationTurn> {
+  const path = `/api/ask/conversations/${encodeURIComponent(id)}/message/stream`;
+  const r = await apiFetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify({ turn_id: body.turnId, text: body.text }),
+    ...(signal ? { signal } : {}),
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) {
+    let parsed: unknown;
+    try {
+      parsed = await r.json();
+    } catch {
+      /* non-JSON body */
+    }
+    const detail = (parsed as { detail?: string } | undefined)?.detail ?? "";
+    throw new ApiError(r.status, detail || `POST ${path} → ${r.status}`, parsed);
+  }
+  let turn: AskConversationTurn | null = null;
+  const cut = () => new ApiError(502, "The connection dropped before the answer finished.");
+  await readLines(r, (line) => {
+    if (!line.trim()) return;
+    let ev: AskTurnEvent;
+    try {
+      ev = JSON.parse(line) as AskTurnEvent;
     } catch {
       throw cut();
     }
@@ -1454,6 +1510,17 @@ export const api = {
     onEvent: (ev: PulseAskEvent) => void,
     signal?: AbortSignal,
   ) => streamAsk(query, history, onEvent, signal),
+  /** Ask's durable conversations (#1443): the switcher's list, latest first. */
+  askConversations: () =>
+    getJson<{ conversations: AskConversationSummary[]; configured: boolean }>(
+      "/api/ask/conversations",
+    ),
+  askConversation: (id: string) =>
+    getJson<AskConversation>(`/api/ask/conversations/${enc(id)}`),
+  /** A new, empty conversation. Never deletes anything. */
+  askNewConversation: () =>
+    mutateJson<AskConversation>("POST", "/api/ask/conversations", {}),
+  askMessageStream: streamAskTurn,
   /** Pulse orchestrator state (#726): config + pending actions + the activity feed. Like
    *  `pulse()` this is CACHE-ONLY — it never runs a pass. */
   orchestrator: () => getJson<OrchestratorState_>("/api/pulse/orchestrator"),

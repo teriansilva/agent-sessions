@@ -10,7 +10,7 @@
  */
 import { expect, test, type Page, type Request } from "@playwright/test";
 
-import { ASK_STREAM, fulfillAsk } from "./askStream";
+import { ASK_STREAM, fulfillAsk, mockAskConversations } from "./askStream";
 import { openAsk } from "./askSidebar";
 
 const A = "claude:aaaaaaaa-0000-4000-8000-00000000000a";
@@ -115,6 +115,7 @@ async function mockShell(page: Page) {
     r.fulfill({ json: { missions: [], total: 0, next_offset: null, facets: { projects: [], states: [] } } }),
   );
   await page.route(/\/api\/pulse\/recap(\?.*)?$/, (r) => r.fulfill({ json: RECAP }));
+  await mockAskConversations(page);
 }
 
 /** NEEDS YOU + its details/actions. Returns the requests the page made, for assertions. */

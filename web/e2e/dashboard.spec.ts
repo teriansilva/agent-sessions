@@ -7,7 +7,7 @@
  *  agent · project metadata on a phone. Ask opens the shared sidebar (#1294). */
 import { expect, test, type Page } from "@playwright/test";
 
-import { ASK_STREAM, fulfillAsk } from "./askStream";
+import { ASK_STREAM, fulfillAsk, mockAskConversations } from "./askStream";
 
 const NOW = Math.floor(Date.now() / 1000);
 const A = "claude:aaaaaaaa-0000-4000-8000-00000000000a";
@@ -267,6 +267,7 @@ async function mockAll(
     const h = over.usage ?? { json: USAGE };
     return r.fulfill({ status: h.status ?? 200, json: h.json });
   });
+  await mockAskConversations(page);
 }
 
 test("focused dashboard shows decisions and running sessions before optional details", async ({

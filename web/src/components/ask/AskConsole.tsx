@@ -7,29 +7,21 @@
  * *missions*, and made it unlinkable: there was no URL that opened it. The transport, the payload,
  * the answer shape and the match rows are unchanged by that move — only where it lives.
  *
- * **The turns are still transient, and that is a statement about the surface rather than unfinished
- * work.** A mission's turns ARE durable: they go to `POST /api/missions/{id}/message` and live in
- * that mission's timeline (`MissionComposer`, #890). This page has no mission to keep a turn in.
- * Creating a mission is how an operator makes a conversation durable. The on-screen notice that
- * said so under every thread was removed at the operator's request: it was read once and then
- * cost a line of every conversation.
+ * **The conversation is durable (#1443).** Each one is kept on the server (`/api/ask/*`), and a
+ * turn is the SERVER's: it runs as a task there, so closing the panel, navigating, reloading or a
+ * dropped connection never cancels it. A stream that ends early is a statement about the
+ * connection, so the console reads the conversation again and, while that turn is still
+ * `pending`, polls until it settles. On open the panel reopens the latest conversation; the head's
+ * switcher (`AskSwitcher`) opens an older one, and New conversation starts an empty thread whose
+ * conversation is created on its first question. Nothing is ever deleted from here — retention
+ * (30 days, 50 conversations) is the server's. `/api/pulse/ask[/stream]` stays the transient,
+ * read-only seam for its other callers (#1397).
  *
- * **The turns are this component's own state, and the sidebar keeps the component mounted** (#1294):
- * a conversation outlives closing the panel and navigating, because the operator asked for Ask to
- * sit beside the work. It is still memory only — a reload or New conversation ends it. It is
- * never written anywhere, so it is not durable, which is a
- * promise the server does not keep.
- *
- * `live` is therefore HYGIENE, not the fence: it keeps a late callback from setting state on a
- * dead component. Since #1171 the request is also ABORTED on unmount and on New conversation —
- * the stream takes a signal, and closing it ends the server's run and frees its one-question gate,
- * so the next question is not refused with "a question is already running".
- *
- * **It must be set on the EFFECT RUN, not only cleared on cleanup.** React StrictMode runs an
- * effect, cleans it up and runs it again on the SAME fiber, and `useRef(true)` initialises exactly
- * once — so a cleanup-only version leaves `live.current` false for the rest of the component's life
- * and silently drops every answer in development. `AskConsole.test.tsx` covers that case
- * explicitly; it is red without the assignment below.
+ * Every late result is checked against the conversation it belongs to (`cidRef`), so an answer
+ * for a conversation the operator has switched away from never lands in the one on screen. `live`
+ * is hygiene — it keeps a late callback from setting state on a dead component — and it must be
+ * set on the EFFECT RUN, not only cleared on cleanup: StrictMode runs an effect, cleans it up and
+ * runs it again on the SAME fiber, and `useRef(true)` initialises once.
  *
  * **Missions are answers too (#1069).** The server may name missions beside sessions; they arrive as
  * `mission_matches` and render as their own group above the sessions, each opening the mission
@@ -53,15 +45,14 @@
  * words). Before the first question the thread is empty, so a short greeting sits centred in it;
  * it gives way to the conversation, the way a chat does.
  *
- * **Its only chrome is a way to start over and a way to close (#1171, #1294).** The head carries
- * New conversation and the sidebar's ✕ — nothing else. NEEDS YOU still reaches the thread: an answer row for a session on that list
+ * **Its chrome is the switcher, a way to start over and a way to close (#1171, #1294, #1443).** The
+ * head carries the conversation switcher, New conversation and the sidebar's ✕ — nothing else. NEEDS YOU still reaches the thread: an answer row for a session on that list
  * carries the marker and ⓘ.
  *
- * **The wait is shown, and the answer arrives as it forms (#1171).** The server streams the ask's
- * steps: which catalog it is searching, the Stage-1 answer the moment it exists, then the answer
- * Stage 2 confirmed against the transcripts. The pending turn names the step it is on under a
- * moving scan bar, shows the Stage-1 answer while the transcripts are read, and swaps in the
- * confirmed one. Text is revealed progressively — instantly under `prefers-reduced-motion`.
+ * **The wait is shown (#1171).** The server streams the turn's steps — the model reading, the read
+ * tool it is calling, which catalog a search covers and how many transcripts it checks — and the
+ * pending turn names the step it is on under a moving scan bar. Text is revealed progressively —
+ * instantly under `prefers-reduced-motion`.
  *
  * The composer box, the turn rows and the match rows are the console's own primitives
  * (`mission.module.css`) rather than a second copy of them — the same cross-directory import the
@@ -86,9 +77,11 @@ import { useIsMobile } from "../../lib/useIsMobile";
 import { missionLink } from "../../lib/missionLink";
 import { settingsPath } from "../../routes/settingsTabs";
 import type {
-  PulseAskEvent,
-  PulseAskMatch,
-  PulseAskMissionMatch,
+  AskConversationSummary,
+  AskConversationTurn,
+  AskStoredMatch,
+  AskStoredMissionMatch,
+  AskTurnEvent,
 } from "../../types/api";
 
 import styles from "../pulse/mission.module.css";
@@ -96,50 +89,88 @@ import { AskComposer } from "./AskComposer";
 import { mapBatch, matchRoute, matchSeed } from "./askMatches";
 import a from "./AskConsole.module.css";
 import type { AskStep } from "./askStep";
+import { AskSwitcher } from "./AskSwitcher";
 import { AskWorking } from "./AskWorking";
 import { RevealText } from "./RevealText";
 
 export interface AskTurn {
-  id: number;
+  /** The server's `turn_id`. */
+  id: string;
   question: string;
   answer: string | null;
   error: string | null;
   /** The sessions the answer is ABOUT, each with the reason it matched. Without these an answer
-   *  naming a session gives the operator no way to reach it — the Ask box rendered them and this
-   *  page must too. */
-  matches: PulseAskMatch[];
+   *  naming a session gives the operator no way to reach it. */
+  matches: AskStoredMatch[];
   /** The missions the answer is about (#1069), each with why it matched. */
-  missions: PulseAskMissionMatch[];
-  /** The step the ask is on while it runs (#1171); `null` once it has settled. */
+  missions: AskStoredMissionMatch[];
+  /** The step the turn is on while it runs (#1171); `null` once it has settled. */
   step: AskStep | null;
-  /** The answer shown is Stage 1's, still being confirmed against the transcripts (#1171). */
-  provisional: boolean;
+  /** Still running on the server. */
+  pending: boolean;
+  /** Its answer arrived while this page watched — the only answer that writes itself out. One read
+   *  back from the server is history and shows at once. */
+  live?: boolean;
 }
 
-let nextTurnId = 1;
+/** How often a turn this page is not streaming is read again until it settles. */
+const POLL_MS = 2000;
 
-/** Fold one streamed event into its turn. */
-function applyEvent(t: AskTurn, ev: PulseAskEvent): AskTurn {
-  if (ev.type === "progress") {
-    return {
-      ...t,
-      step:
-        ev.step === "catalog"
-          ? { step: "catalog", sessions: ev.sessions, missions: ev.missions }
-          : { step: "content", candidates: ev.candidates },
-    };
-  }
-  if (ev.type === "answer") {
-    return {
-      ...t,
-      answer: ev.answer ?? "",
-      matches: ev.matches ?? [],
-      missions: ev.mission_matches ?? [],
-      provisional: !ev.final,
-      step: ev.final ? null : t.step,
-    };
-  }
-  return t;
+function fromServer(t: AskConversationTurn): AskTurn {
+  return {
+    id: t.turn_id,
+    question: t.question,
+    answer: t.answer,
+    error:
+      t.status === "failed"
+        ? t.detail || "That didn't work."
+        : null,
+    matches: t.matches ?? [],
+    missions: t.mission_matches ?? [],
+    step: null,
+    pending: t.status === "pending",
+  };
+}
+
+/** Fold one streamed progress line into its turn. */
+function applyEvent(t: AskTurn, ev: AskTurnEvent): AskTurn {
+  if (ev.type !== "progress") return t;
+  if (ev.step === "catalog")
+    return { ...t, step: { step: "catalog", sessions: ev.sessions, missions: ev.missions } };
+  if (ev.step === "content") return { ...t, step: { step: "content", candidates: ev.candidates } };
+  if (ev.step === "tool") return { ...t, step: { step: "tool", tool: ev.tool } };
+  return { ...t, step: { step: "thinking", round: ev.round } };
+}
+
+/** The server's turns, plus any turn this page submitted that the server does not have yet (its
+ *  conversation is still being created, or the read was taken before it was stored). */
+function merge(server: AskTurn[], local: AskTurn[]): AskTurn[] {
+  const known = new Set(server.map((t) => t.id));
+  return [...server, ...local.filter((t) => !known.has(t.id) && t.pending && !t.error)];
+}
+
+interface Gate {
+  promise: Promise<void>;
+  settled: boolean;
+  open: () => void;
+}
+
+/** A one-shot gate: `promise` resolves, and `settled` turns true, on the first `open()`. */
+function gate(): Gate {
+  let resolve!: () => void;
+  const g: Gate = {
+    promise: new Promise<void>((r) => (resolve = r)),
+    settled: false,
+    open: () => {
+      g.settled = true;
+      resolve();
+    },
+  };
+  return g;
+}
+
+function newTurnId(): string {
+  return crypto.randomUUID();
 }
 
 export function AskConsole({
@@ -149,9 +180,8 @@ export function AskConsole({
   onClose,
   closeRef,
 }: {
-  /** False when no AI endpoint is configured. `/api/pulse/ask` answers 409 in that case and has
-   *  no local fallback, so the control is disabled and says why — `find` / `history` genuinely
-   *  do not work without a model. */
+  /** False when no AI endpoint is configured. Ask has no local fallback, so the control is
+   *  disabled and says why. */
   configured: boolean;
   /** Sessions currently on the NEEDS YOU list: an answer row for one of them carries the marker
    *  and ⓘ, which opens the same details the list does (#1086). */
@@ -163,6 +193,9 @@ export function AskConsole({
   closeRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const [turns, setTurns] = useState<AskTurn[]>([]);
+  const [cid, setCid] = useState<string | null>(null);
+  const [title, setTitle] = useState("");
+  const [conversations, setConversations] = useState<AskConversationSummary[] | null>(null);
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const map = useMapWindows();
@@ -171,18 +204,16 @@ export function AskConsole({
   // drain's hand-back covers a wrong guess, as for the pane's "To map").
   const canMap = Boolean(map) && !isMobile && map?.hostable !== false;
   const openInMap = useCallback(
-    (list: PulseAskMatch[]) => {
+    (list: AskStoredMatch[]) => {
       if (!map || !list.length) return;
       for (const m of list) map.requestOpen(matchSeed(m));
       navigate(MAP_PATH);
     },
     [map, navigate],
   );
-  const [busy, setBusy] = useState(false);
+  const [streaming, setStreaming] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
-  /** False once this page has unmounted. Read at RESOLUTION time, never captured as a value —
-   *  a captured boolean answers the question as it was when the request started, which is
-   *  exactly the moment that does not matter. See the module note on the StrictMode re-run. */
+  /** False once this console has unmounted (module note). */
   const live = useRef(true);
   useEffect(() => {
     live.current = true;
@@ -190,10 +221,23 @@ export function AskConsole({
       live.current = false;
     };
   }, []);
+  /** Every read of a conversation, and every send, takes a new generation; a read applies only if
+   *  no newer one started since. So a slow read never overwrites a turn submitted after it was
+   *  sent, and A→B→A never lets the first A read land over the second. */
+  const gen = useRef(0);
+  /** The first selection (reopen the latest conversation, or none). A question asked before it
+   *  settles is shown at once and WAITS for it, then goes to the conversation it opened (or a new
+   *  one) — the latest conversation opening is never allowed to sweep the question away. */
+  const selectedRef = useRef<Gate | null>(null);
+  if (selectedRef.current === null) selectedRef.current = gate();
+  /** The conversation whose read last landed. A send into one whose read was fenced off re-reads
+   *  it after settling, so its earlier turns are shown. */
+  const loadedFor = useRef<string | null>(null);
+  /** The conversation on screen — read at RESOLUTION time, never captured. */
+  const cidRef = useRef<string | null>(null);
+  const current = (id: string | null) => live.current && cidRef.current === id;
 
-  /** The ask in flight, so New conversation and unmounting can end it. The abort on unmount waits
-   *  a microtask and re-checks `live`: StrictMode's cleanup-and-rerun sets `live` back to true
-   *  before then, so its fake unmount does not kill a question already asked. */
+  /** The stream being watched. Aborting it stops WATCHING; the server's turn goes on. */
   const inflight = useRef<AbortController | null>(null);
   useEffect(
     () => () =>
@@ -202,69 +246,172 @@ export function AskConsole({
       }),
     [],
   );
+  const stopWatching = () => {
+    inflight.current?.abort();
+    inflight.current = null;
+    setStreaming(false);
+  };
+
+  const refreshList = useCallback(async () => {
+    try {
+      const r = await api.askConversations();
+      if (live.current) setConversations(r.conversations ?? []);
+    } catch {
+      /* the switcher keeps what it had */
+    }
+  }, []);
+
+  /** Show conversation `id` as the server has it. */
+  const load = useCallback(async (id: string) => {
+    const g = ++gen.current;
+    const fresh = () => current(id) && g === gen.current;
+    try {
+      const c = await api.askConversation(id);
+      if (!fresh()) return;
+      loadedFor.current = id;
+      setTitle(c.title ?? "");
+      setTurns((prev) => merge((c.turns ?? []).map(fromServer), prev));
+    } catch {
+      // Keep what is shown; a fresh array re-arms the poll of a still-pending turn.
+      if (fresh()) setTurns((prev) => [...prev]);
+    }
+    // `current` reads refs only.
+  }, []);
+
+  /** `initial`: the first selection, which may land under a question already asked — so it
+   *  neither stops that question's watch nor clears it from the thread. */
+  const openConversation = useCallback(
+    (id: string, initial = false) => {
+      if (!initial) stopWatching();
+      cidRef.current = id;
+      setCid(id);
+      setTitle("");
+      setTurns((prev) => (initial ? prev.filter((t) => t.pending && !t.error) : []));
+      void load(id);
+    },
+    [load],
+  );
+
+  // On first mount: the latest conversation, if there is one.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const r = await api.askConversations();
+        if (cancelled || !live.current) return;
+        const rows = r.conversations ?? [];
+        setConversations(rows);
+        if (rows.length && cidRef.current === null) openConversation(rows[0].id, true);
+      } catch {
+        if (!cancelled && live.current) setConversations([]);
+      } finally {
+        if (!cancelled) selectedRef.current?.open();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [openConversation]);
+
+  // A turn still running on the server that this page is not streaming (a reload, a dropped
+  // connection, another tab) is read again until it settles.
+  const waiting = !streaming && turns.some((t) => t.pending);
+  useEffect(() => {
+    if (!waiting || !cid) return;
+    const timer = window.setTimeout(() => void load(cid), POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [waiting, cid, turns, load]);
+
+  const busy = streaming || turns.some((t) => t.pending);
 
   const ask = useCallback(
     async (q: string) => {
       if (!q || busy || !configured) return;
-      const id = nextTurnId++;
+      const turnId = newTurnId();
+      gen.current++; // a read already in flight must not land over this turn
       const ctl = new AbortController();
       inflight.current = ctl;
-      setTurns((prev) => [
-        ...prev,
-        {
-          id,
-          question: q,
-          answer: null,
-          error: null,
-          matches: [],
-          missions: [],
-          step: null,
-          provisional: false,
-        },
-      ]);
-      setBusy(true);
+      setStreaming(true);
+      const optimistic: AskTurn = {
+        id: turnId,
+        question: q,
+        answer: null,
+        error: null,
+        matches: [],
+        missions: [],
+        step: null,
+        pending: true,
+      };
+      setTurns((prev) => [...prev, optimistic]);
       const update = (fn: (t: AskTurn) => AskTurn) =>
-        setTurns((prev) => prev.map((t) => (t.id === id ? fn(t) : t)));
+        setTurns((prev) => prev.map((t) => (t.id === turnId ? fn(t) : t)));
+      let id: string | null = null;
       try {
-        // Prior turns of THIS page only, and only the ones that actually answered.
-        const history = turns.flatMap((t) =>
-          t.answer !== null && !t.provisional
-            ? [
-                { role: "user" as const, content: t.question },
-                { role: "assistant" as const, content: t.answer },
-              ]
-            : [],
-        );
-        await api.pulseAskStream(
-          q,
-          history,
+        const sel = selectedRef.current;
+        if (sel && !sel.settled) {
+          await sel.promise;
+          if (!live.current || ctl.signal.aborted) return;
+        }
+        id = cidRef.current;
+        if (id === null) {
+          // A new conversation is created by its first question, never by New conversation.
+          const c = await api.askNewConversation();
+          if (!live.current || ctl.signal.aborted) return;
+          if (!c?.id) throw new Error("Could not start a conversation — ask again.");
+          id = c.id;
+          cidRef.current = id;
+          loadedFor.current = id; // created empty: nothing earlier to read
+          setCid(id);
+        }
+        const settled = await api.askMessageStream(
+          id,
+          { turnId, text: q },
           (ev) => {
-            // The operator left: discard, and take the pending turn with it.
-            if (live.current) update((t) => applyEvent(t, ev));
+            if (current(id)) update((t) => applyEvent(t, ev));
           },
           ctl.signal,
         );
-        // A stream that ended without its final answer must not leave a turn spinning, or
-        // keep a Stage-1 answer labelled as still being checked.
-        if (live.current)
-          update((t) => ({ ...t, step: null, provisional: false }));
+        // A watch this page stopped (New conversation, a switch) applies nothing, however late.
+        if (ctl.signal.aborted) return;
+        if (current(id)) {
+          const done: AskTurn = { ...fromServer(settled), live: true };
+          // Upsert: whatever a read did meanwhile, the settled turn is shown.
+          setTurns((prev) =>
+            prev.some((t) => t.id === turnId)
+              ? prev.map((t) => (t.id === turnId ? done : t))
+              : [...prev, done],
+          );
+          if (!title) setTitle(settled.question);
+          if (loadedFor.current !== id) void load(id);
+        }
+        void refreshList();
       } catch (err) {
-        // Ended on purpose (New conversation / leaving): its turn is already gone.
         if (!live.current || ctl.signal.aborted) return;
         const msg = err instanceof Error ? err.message : "That didn't work.";
-        // An answer Stage 1 already gave stays; the failure is said beside it.
-        update((t) => ({ ...t, error: msg, step: null, provisional: false }));
+        if (id !== null && current(id)) {
+          // The turn may be stored and still running — ask the server what became of it.
+          const g = ++gen.current;
+          try {
+            const c = await api.askConversation(id);
+            if (!current(id) || g !== gen.current) return;
+            if ((c.turns ?? []).some((t) => t.turn_id === turnId)) {
+              setTurns((prev) => merge(c.turns.map(fromServer), prev));
+              return;
+            }
+          } catch {
+            /* fall through: say what failed */
+          }
+        }
+        if (current(id)) update((t) => ({ ...t, error: msg, step: null, pending: false }));
       } finally {
-        // Only the ask that is still current may clear `busy`: one ended by New conversation
-        // finishes AFTER the next question may have started, and must not unlock the box
-        // under it.
         if (inflight.current === ctl) {
           inflight.current = null;
-          setBusy(false);
+          setStreaming(false);
         }
       }
     },
-    [busy, configured, turns],
+    // `current` reads refs only.
+    [busy, configured, load, refreshList, title],
   );
 
   /** The newest turn is where the operator is looking: keep the thread scrolled to it, as a chat
@@ -279,16 +426,25 @@ export function AskConsole({
     <div className={`${styles.threadCol} ${a.col}`} data-testid="ask-col">
       <header className={`${a.measure} ${a.head}`} data-testid="ask-head">
         <h2 className={a.title}>Ask</h2>
-        <span className={a.sp} />
+        <AskSwitcher
+          conversations={conversations}
+          currentId={cid}
+          currentTitle={title || (turns[0]?.question ?? "")}
+          onOpen={() => void refreshList()}
+          onPick={(id) => {
+            if (id !== cidRef.current) openConversation(id);
+          }}
+        />
         <button
           type="button"
           className={a.newBtn}
           aria-label="New conversation"
           disabled={turns.length === 0}
           onClick={() => {
-            inflight.current?.abort();
-            inflight.current = null;
-            setBusy(false);
+            stopWatching();
+            cidRef.current = null;
+            setCid(null);
+            setTitle("");
             setTurns([]);
             inputRef.current?.focus();
           }}
@@ -345,7 +501,7 @@ export function AskConsole({
                 <article
                   className={styles.event}
                   aria-label="Answer"
-                  aria-busy={t.answer === null && !t.error}
+                  aria-busy={t.pending}
                 >
                   <div className={`${styles.eventHead} ${a.label}`}>Answer</div>
                   {t.answer !== null ? (
@@ -354,6 +510,7 @@ export function AskConsole({
                         className={`${styles.eventText} ${a.text}`}
                         text={t.answer}
                         testId="ask-answer"
+                        instant={!t.live}
                       />
                       {/* Missions first, then sessions — each group labelled only when there
                           are missions, so a sessions-only answer reads as it did before #1069. */}
@@ -486,11 +643,10 @@ export function AskConsole({
                             );
                           })()
                         : null}
-                      {t.provisional ? <AskWorking step={t.step} /> : null}
                     </>
-                  ) : t.error ? null : (
+                  ) : t.pending ? (
                     <AskWorking step={t.step} />
-                  )}
+                  ) : null}
                   {t.error ? (
                     <div className={styles.objStale} data-testid="ask-error">
                       {t.error}

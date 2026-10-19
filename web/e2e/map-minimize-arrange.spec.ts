@@ -1,5 +1,5 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
-import { ASK_STREAM, fulfillAsk } from "./askStream";
+import { ASK_STREAM, fulfillAsk, mockAskConversations } from "./askStream";
 import { openAsk } from "./askSidebar";
 import { mockRoster } from "./roster";
 
@@ -92,6 +92,7 @@ async function mockApp(page: Page): Promise<Log> {
     ws.send(Buffer.from(`\x1b[2J\x1b[Hhello from ${key}\r\n${"Ready terminal content\r\n".repeat(30)}`));
   });
   await mockRoster(page);
+  await mockAskConversations(page);
   return log;
 }
 

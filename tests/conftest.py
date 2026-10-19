@@ -68,6 +68,7 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_PLAYBOOKS_DIR": ".config/agent-sessions/playbooks",  # #1191 local playbooks
     "AGENT_SESSIONS_PLAYBOOK_SECRETS": ".config/agent-sessions/playbook-secrets",  # #1191
     "AGENT_SESSIONS_MEMORY_DIR": ".config/agent-sessions/memory",  # #1441
+    "AGENT_SESSIONS_ASK_DIR": ".config/agent-sessions/ask",  # #1443 Ask conversations
     "AGENT_SESSIONS_PULSE_CACHE": ".config/agent-sessions/pulse-cache.json",
     "AGENT_SESSIONS_WORK_RECAP": ".config/agent-sessions/work-recap.json",  # #1086
     "AGENT_SESSIONS_NEEDS_YOU_DISMISSED": ".config/agent-sessions/needs-you-dismissed.json",
@@ -363,6 +364,10 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
     # …and the shared project memory store (#1441), which agents' inbox files are ingested into.
     monkeypatch.setenv(
         "AGENT_SESSIONS_MEMORY_DIR", str(tmp_path / ".config" / "agent-sessions" / "memory")
+    )
+    # …and Ask's durable conversations (#1443).
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_ASK_DIR", str(tmp_path / ".config" / "agent-sessions" / "ask")
     )
     monkeypatch.setenv(
         "AGENT_SESSIONS_TEMPLATE_SUGGESTIONS",

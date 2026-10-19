@@ -875,6 +875,60 @@ export type PulseAskEvent =
   | ({ type: "answer"; final: boolean } & PulseAskResult)
   | { type: "error"; status: number; detail: string };
 
+/** Ask's durable conversations (#1443). The switcher's row: the first question is the title. */
+export interface AskConversationSummary {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+}
+
+/** A session an answer named, AS STORED: its key, title and why — never the card's content. */
+export interface AskStoredMatch {
+  id: string;
+  title: string;
+  why: string;
+}
+
+export interface AskStoredMissionMatch {
+  id: string;
+  title: string;
+  state: string;
+  why: string;
+}
+
+/** One question and what became of it. `status` is the server's: a `pending` turn is still
+ *  running there (or in another tab), whatever this page is doing. */
+export interface AskConversationTurn {
+  turn_id: string;
+  question: string;
+  asked_at: number;
+  status: "pending" | "done" | "failed";
+  answer: string | null;
+  detail: string | null;
+  code: string | null;
+  matches: AskStoredMatch[];
+  mission_matches: AskStoredMissionMatch[];
+  tools: { name: string; outcome: "ok" | "refused" }[];
+}
+
+export interface AskConversation {
+  id: string;
+  title: string;
+  turns: AskConversationTurn[];
+  running: boolean;
+}
+
+/** One line of `POST /api/ask/conversations/{id}/message/stream` (#1443): `progress` while the
+ *  turn runs, then exactly one `turn` (the settled turn) or one `error`. */
+export type AskTurnEvent =
+  | { type: "progress"; step: "catalog"; sessions: number; missions: number }
+  | { type: "progress"; step: "content"; candidates: number }
+  | { type: "progress"; step: "thinking"; round: number }
+  | { type: "progress"; step: "tool"; tool: string }
+  | { type: "turn"; status: number; turn: AskConversationTurn }
+  | { type: "error"; status: number; detail: string };
+
 /** One running AI task in the shared activity surface (#441 Phase 1). */
 export interface AiActivityTask {
   kind: string;

@@ -50,3 +50,11 @@ test("a replacement continues from where the two texts agree", async () => {
     timeout: 3000,
   });
 });
+
+test("an instant text — an answer read back from a kept conversation (#1443) — shows whole at once", () => {
+  motion(false);
+  render(<RevealText text={TEXT} testId="t" instant />);
+  const el = screen.getByTestId("t");
+  expect(el).not.toHaveAttribute("data-revealing");
+  expect(el).toHaveTextContent(TEXT);
+});

@@ -6,7 +6,7 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 
-import { ASK_STREAM, fulfillAsk } from "./askStream";
+import { ASK_STREAM, fulfillAsk, mockAskConversations } from "./askStream";
 import { MISSION_STREAM, fulfillTurn, holdTurnStream } from "./missionStream";
 
 import {
@@ -367,7 +367,7 @@ test("the ANSWER's matched sessions are reachable from the timeline", async ({
   expect(Math.abs(jb.y + jb.height / 2 - (bb.y + bb.height / 2))).toBeLessThan(2);
 });
 
-test("ASK stays transient and says why (#948: was the UNTRACKED view's; #1058: now /ask)", async ({
+test("ASK's turns are not a mission's (#948: was the UNTRACKED view's; #1058: now /ask)", async ({
   page,
 }) => {
   // The console has exactly one composer whose turns are NOT durable: the one on the new-mission
@@ -375,6 +375,8 @@ test("ASK stays transient and says why (#948: was the UNTRACKED view's; #1058: n
   // the "Sessions without a mission" view's; that view is gone (#948 P3), and the landing is now
   // where this Ask lives — so the operator still has to be TOLD its answers are not kept.
   await stub(page, []);
+  // Ask keeps its OWN durable conversation since #1443 (`/api/ask/*`) — still never a mission's.
+  await mockAskConversations(page);
   await page.route(ASK_STREAM, (r) =>
     fulfillAsk(r, { answer: "nothing tracked", matches: [] }),
   );
@@ -387,8 +389,7 @@ test("ASK stays transient and says why (#948: was the UNTRACKED view's; #1058: n
   await page.getByTestId("composer-input").fill("anything?");
   await page.getByTestId("composer-send").click();
   await expect(page.getByTestId("ask-turns")).toContainText("nothing tracked");
-  // The on-screen "not kept" notice was removed at the operator's request; the turns are still
-  // transient (nothing is posted to a mission), which the empty mission-message route proves.
+  // Nothing is posted to a mission: Ask's turns live in Ask's own conversation (#1443).
   await expect(page.getByTestId("ask-transient")).toHaveCount(0);
 });
 

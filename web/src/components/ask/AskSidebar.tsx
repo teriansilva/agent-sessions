@@ -6,8 +6,8 @@
  *
  *  **Mounted on first open, then kept.** The console stays mounted while the panel is closed
  *  (hidden and `inert`), so a conversation outlives closing the panel and navigating — ask, open a
- *  match, come back to the thread. It is still memory only: a reload or New conversation ends it,
- *  and nothing is written anywhere. NEEDS YOU membership (the answer rows' marker and ⓘ) is read
+ *  match, come back to the thread. Since #1443 the conversation is also kept on the server, so a
+ *  reload reopens the latest one (`AskConsole`'s note). NEEDS YOU membership (the answer rows' marker and ⓘ) is read
  *  only while the panel is OPEN, so a closed panel does not poll.
  *
  *  **Two forms, one panel.** Above 800px it is NON-modal: the operator works beside it, and it

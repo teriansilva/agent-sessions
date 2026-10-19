@@ -2,7 +2,7 @@
  *  `AskConsole.test.tsx`'s.
  *
  *  - It is not mounted until first opened, then KEPT: a conversation outlives closing the panel and
- *    navigating, and is ended only by New conversation (or a reload).
+ *    navigating; New conversation starts an empty thread (the old one stays on the server, #1443).
  *  - NEEDS YOU is read only while the panel is open.
  *  - ≤800px it is a modal drawer (`role="dialog"`, `aria-modal`, a scrim); above that it is a
  *    non-modal complementary panel that Escape closes, handing focus back to the icon.
@@ -26,7 +26,13 @@ vi.mock("../../lib/api", async () => {
     await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
   return {
     ...actual,
-    api: { pulseAskStream: vi.fn(), needsYou: vi.fn() },
+    api: {
+      askConversations: vi.fn(),
+      askConversation: vi.fn(),
+      askNewConversation: vi.fn(),
+      askMessageStream: vi.fn(),
+      needsYou: vi.fn(),
+    },
   };
 });
 
@@ -76,16 +82,23 @@ beforeEach(() => {
     total_unfiltered: 0,
     needs_you_ids: [],
   } as never);
-  vi.mocked(api.pulseAskStream).mockImplementation(async (q, _h, onEvent) => {
-    onEvent({
-      type: "answer",
-      final: true,
-      answer: `answer to ${q}`,
-      matches: [],
-      stage: "catalog",
-      configured: true,
-    });
-  });
+  const CID = "ask_" + "1".repeat(32);
+  const empty = { id: CID, title: "", turns: [], running: false };
+  vi.mocked(api.askConversations).mockResolvedValue({ conversations: [], configured: true });
+  vi.mocked(api.askNewConversation).mockResolvedValue(empty);
+  vi.mocked(api.askConversation).mockResolvedValue(empty);
+  vi.mocked(api.askMessageStream).mockImplementation(async (_id, body) => ({
+    turn_id: body.turnId,
+    question: body.text,
+    asked_at: 1,
+    status: "done",
+    answer: `answer to ${body.text}`,
+    detail: null,
+    code: null,
+    matches: [],
+    mission_matches: [],
+    tools: [],
+  }));
   setDrawer(false);
 });
 afterEach(() => {
@@ -118,7 +131,7 @@ test("not mounted until first opened; NEEDS YOU is read only while open", async 
   expect(vi.mocked(api.needsYou).mock.calls.length).toBe(n);
 });
 
-test("a conversation survives closing the panel AND navigating; New conversation ends it", async () => {
+test("a conversation survives closing the panel AND navigating; New conversation starts an empty one", async () => {
   render(<Shell />);
   await userEvent.click(screen.getByTestId("ask-toggle"));
   await userEvent.type(screen.getByTestId("composer-input"), "where?{Enter}");

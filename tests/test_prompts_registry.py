@@ -40,6 +40,7 @@ EXPECTED_SITES = {
     ("work_recap.py", "pulse_recap"),  # #1086: RECENT WORK above Ask
     ("pulse_chat.py", "ask_catalog"),
     ("pulse_chat.py", "ask_verify"),
+    ("ask_orchestrator.py", "ask_orchestrator"),  # #1443: the durable Ask conversation
     ("review.py", "tail_review"),
     ("review.py", "session_recap"),
     ("mission_objectives.py", "mission_objectives"),

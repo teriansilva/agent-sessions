@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { ASK_STREAM, fulfillAsk } from "./askStream";
+import { ASK_STREAM, fulfillAsk, mockAskConversations } from "./askStream";
 
 import { mockMissions } from "./mission-console";
 
@@ -79,6 +79,7 @@ async function stubApp(page: import("@playwright/test").Page) {
   );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
   await page.route("**/api/pulse", (r) => r.fulfill({ json: EMPTY_OVERVIEW }));
+  await mockAskConversations(page);
 }
 
 test("Ask answers with a matched card and Open routes to the session (#522)", async ({
@@ -86,11 +87,8 @@ test("Ask answers with a matched card and Open routes to the session (#522)", as
 }) => {
   await stubApp(page);
   await page.route(ASK_STREAM, async (r) => {
-    const body = r.request().postDataJSON() as {
-      query: string;
-      history: unknown[];
-    };
-    expect(body.query).toContain("websocket reconnect");
+    const body = r.request().postDataJSON() as { text: string; turn_id: string };
+    expect(body.text).toContain("websocket reconnect");
     await fulfillAsk(r, {
       answer:
         "That was your ws delta-resume session in agent-sessions, 2 hours ago.",

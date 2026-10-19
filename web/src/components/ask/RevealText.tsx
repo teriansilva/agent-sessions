@@ -3,7 +3,10 @@
  *  The server sends each answer whole (the model calls are JSON-mode, not token streams), so this
  *  is presentation: the text is revealed over `REVEAL_MS` of wall-clock time, and a new text — Stage 2's
  *  confirmed answer replacing Stage 1's — is revealed again from where the two stop agreeing.
- *  Under `prefers-reduced-motion`, or where `matchMedia` is missing, the whole text shows at once.
+ *  Under `prefers-reduced-motion`, or where `matchMedia` is missing, the whole text shows at once —
+ *  and so does an `instant` one: an answer read back from a kept conversation (#1443) is history,
+ *  and twelve of them writing themselves out at once would grow the thread under a scroll that had
+ *  already landed on its newest entry.
  *
  *  The full text is always in the accessible tree: the partial copy is painted for the eye and
  *  hidden from assistive tech, so a screen reader never reads half a sentence.
@@ -29,12 +32,14 @@ export function RevealText({
   text,
   className,
   testId,
+  instant = false,
 }: {
   text: string;
   className?: string;
   testId?: string;
+  instant?: boolean;
 }) {
-  const reduce = reducedMotion();
+  const reduce = instant || reducedMotion();
   const [rev, setRev] = useState(() => ({
     text,
     n: reduce ? text.length : 0,

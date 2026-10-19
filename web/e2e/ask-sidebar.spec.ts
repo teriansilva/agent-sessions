@@ -8,7 +8,7 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 
-import { ASK_STREAM, fulfillAsk } from "./askStream";
+import { ASK_STREAM, fulfillAsk, mockAskConversations } from "./askStream";
 import { openAsk } from "./askSidebar";
 import { openMapFromNav } from "./mapNav";
 
@@ -65,6 +65,7 @@ async function mockShell(page: Page, { configured = true } = {}) {
   await page.route("**/api/missions**", (r) =>
     r.fulfill({ json: { missions: [], total: 0, next_offset: null, facets: { projects: [], states: [] } } }),
   );
+  await mockAskConversations(page);
 }
 
 test("Ask is the icon beside the bell on every route; it slides in from the right edge (#1294)", async ({
@@ -151,9 +152,10 @@ test("a question answers, names the sessions it matched, and jumps into one", as
   await expect(panel.getByTestId("ask-turns")).toContainText(
     "Two sessions touched the upload retry.",
   );
+  // A durable turn (#1443): the question and its own turn id, to the conversation it created.
   expect(asked).toMatchObject({
-    query: "where did I fix the upload retry?",
-    history: [],
+    text: "where did I fix the upload retry?",
+    turn_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
   });
 
   const match = panel.getByTestId("ask-match");
@@ -227,7 +229,7 @@ test("a match is ONE row: the session and its reason left, the way in right", as
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
 });
 
-test("the conversation outlives closing the panel and navigating; a reload ends it (#1294)", async ({
+test("the conversation outlives closing the panel, navigating AND a reload (#1294, #1443)", async ({
   page,
 }) => {
   await mockShell(page);
@@ -246,11 +248,13 @@ test("the conversation outlives closing the panel and navigating; a reload ends 
   panel = await openAsk(page);
   await expect(panel.getByTestId("ask-turn")).toHaveCount(1);
 
-  // …and nothing was persisted: a reload starts clean.
+  // …and it is the server's now: a reload reopens the latest conversation, answer and all. (Before
+  // #1443 a reload started clean; that transient behaviour is retired with the durable thread.)
   await page.reload();
   panel = await openAsk(page);
-  await expect(panel.getByTestId("ask-turn")).toHaveCount(0);
-  await expect(panel.getByTestId("ask-empty")).toBeVisible();
+  await expect(panel.getByTestId("ask-turn")).toHaveCount(1);
+  await expect(panel.getByTestId("ask-turns")).toContainText("Two sessions touched the upload retry.");
+  await expect(panel.getByTestId("ask-switcher")).toContainText("anything");
 });
 
 test("an answer still running survives closing the panel, navigating, and reopening (#1294)", async ({
