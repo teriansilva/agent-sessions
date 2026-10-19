@@ -1,3 +1,4 @@
+import type { ApiLook } from "../theme/apiLook";
 import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, GalleryComparison, GalleryFiles, LocalSkill } from "../types/gallery";
 import type { CollectionInput, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
 import type { Resources, ResourceSettings, ResourceValues } from "../types/resources";
@@ -946,6 +947,10 @@ export const api = {
    *  so callers send a value from `coerceTermScheme`. */
   setTermScheme: (scheme: string) =>
     postJson<{ term_scheme: string }>("/api/prefs", { term_scheme: scheme }),
+  /** Persist the API-session look (#1494 P3). CSRF-guarded; the server validates every field
+   *  strictly (422), so callers send a value from `coerceApiLook`. */
+  setApiLook: (look: ApiLook) =>
+    postJson<{ api_look: ApiLook }>("/api/prefs", { api_look: look }),
   /** Persist a partial set of UI preferences (e.g. overview lists, #144). CSRF-guarded. */
   /** `mutateJson`, not `postJson`, so a rejection carries the server's `detail` (#834):
    *  /api/prefs is the one mutation whose 422 text is a real answer — "ai_review.base_url

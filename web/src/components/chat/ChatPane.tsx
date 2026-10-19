@@ -1,3 +1,4 @@
+import { useApiLogProps } from "../../theme/apiLookStore";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
@@ -111,6 +112,8 @@ function tokens(n: number): string {
  *  conversation. No terminal; tools require opt-in. Proposed file edits (#1230) each require a separate decision. */
 export function ChatPane({ engine, id }: { engine: string; id: string }) {
   useEngineRoster();
+  // The API-session look (#1494 P3), on the conversation log only: `{}` for the default look.
+  const logLook = useApiLogProps();
   const sid = `${engine}:${id}`;
   const [session, setSession] = useState<ChatSession | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -321,7 +324,7 @@ export function ChatPane({ engine, id }: { engine: string; id: string }) {
   return (
     <div className={styles.pane} data-testid="chat-pane">
       {header}
-      <div className={styles.log} ref={logRef} aria-live="polite">
+      <div className={styles.log} ref={logRef} aria-live="polite" data-testid="api-log" {...logLook}>
         {session && turns.length === 0 && (
           <div className={styles.center} data-testid="chat-empty">
             <p className={styles.note}>

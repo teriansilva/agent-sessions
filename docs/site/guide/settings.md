@@ -67,6 +67,23 @@ is one choice.
 - **Terminal text size**: decides how many columns the agent lays out against. Smaller text means
   a wider terminal, which is what a column-laid-out interface like opencode needs on a phone.
 
+### API sessions · `api-appearance`
+
+How the conversation in an API session reads: codex-api, claude-api, opencode-api and chat agents.
+Only the conversation changes. Terminal sessions and the pane's own controls (header, composer)
+keep the app's look. A live preview at the top shows every change before you leave the page.
+
+- **Palette**: **BattleLab** (the app's own colours, your accent on your messages), Graphite,
+  Solarized, Nord, Sepia or High contrast. Each has a dark and a light variant and follows
+  Interface → Mode. Every text colour in every palette meets WCAG AA.
+- **Background**: None, Grid, Dots, Ruled or Scanlines, a faint static pattern behind the
+  messages that scrolls with them.
+- **Text font**: System sans, Serif, Mono, or a custom font stack.
+- **Code font**: the app's mono face, the terminal's font, or a custom font stack. A custom stack
+  follows the same rules as the terminal font, and an unusable one is refused with the reason.
+- **Text size**: 12–18 px, 14 by default. Buttons keep their full size.
+- **Reset API sessions** returns everything to the default, which is exactly today's look.
+
 ## AI
 
 ### Endpoint & model · `ai-endpoint`

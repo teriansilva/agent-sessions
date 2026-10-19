@@ -6,7 +6,7 @@
   border: 1px solid var(--line-strong);
   background: var(--bg-1);
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--api-scale, 1));
   min-width: 0;
 }
 .activity > summary {
@@ -23,7 +23,7 @@
 .activityRisk { color: var(--warn-text); }
 .reply {
   border: 1px solid var(--line-strong);
-  border-left: 3px solid var(--text-muted);
+  border-left: 3px solid var(--api-rule, var(--text-muted));
   background: var(--bg-1);
   padding: 14px;
 }
@@ -50,7 +50,7 @@
   text-transform: none;
   font-variant-numeric: tabular-nums;
 }
-.queued { font-size: 12px; color: var(--text-muted); }
+.queued { font-size: calc(12px * var(--api-scale, 1)); color: var(--text-muted); }
 .queueRow { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: space-between; }
 .queueHint { margin: 4px 0 0; line-height: 1.5; }
 .sendNow {
@@ -59,7 +59,7 @@
   background: var(--bg-2);
   border: 1px solid var(--accent);
   color: var(--brand); /* the darker amber on light: readable as text (#1447) */
-  font: 600 12px var(--font-mono);
+  font: 600 calc(12px * var(--api-scale, 1)) var(--font-mono);
   cursor: pointer;
 }
 .sendNow:disabled { opacity: 0.5; cursor: default; }
@@ -71,7 +71,7 @@
   background: var(--bg-2);
   border: 1px dashed var(--accent);
   color: var(--brand);
-  font: 600 12px var(--font-mono);
+  font: 600 calc(12px * var(--api-scale, 1)) var(--font-mono);
   cursor: pointer;
 }
 .remove {
@@ -83,7 +83,7 @@
   background: transparent;
   border: 1px solid var(--line-strong);
   color: var(--text-muted);
-  font: 600 12px var(--font-mono);
+  font: 600 calc(12px * var(--api-scale, 1)) var(--font-mono);
   cursor: pointer;
 }
 .remove:hover:not(:disabled) { color: var(--text); border-color: var(--text-muted); }
@@ -109,7 +109,7 @@
   background: color-mix(in srgb, var(--bg-2) 55%, transparent);
   border: 1px solid var(--line);
   color: var(--text-2);
-  font: 11px var(--font-mono);
+  font: calc(11px * var(--api-scale, 1)) var(--font-mono);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -172,10 +172,10 @@
   border-left: 2px solid var(--status-degraded);
   padding-left: 8px;
   color: var(--warn-text);
-  font-size: 12px;
+  font-size: calc(12px * var(--api-scale, 1));
 }
 .risky b {
-  font: 700 11px var(--font-mono);
+  font: 700 calc(11px * var(--api-scale, 1)) var(--font-mono);
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
@@ -183,7 +183,7 @@
   border: 1px dashed var(--line-strong);
   padding: 1px 6px;
   color: var(--text-muted);
-  font: 11px var(--font-mono);
+  font: calc(11px * var(--api-scale, 1)) var(--font-mono);
 }
 .alwaysList {
   list-style: none;
@@ -198,7 +198,7 @@
   border-left: 3px solid var(--status-degraded);
   color: var(--text-1);
   background: var(--bg-2);
-  font-size: 13px;
+  font-size: calc(13px * var(--api-scale, 1));
   line-height: 1.6;
 }
 .alwaysOption {
@@ -231,7 +231,7 @@
   border-bottom: 1px solid var(--line);
   border-left: 3px solid var(--status-unknown);
   background: var(--panel);
-  font-size: 13px;
+  font-size: calc(13px * var(--api-scale, 1));
   color: var(--text-muted);
 }
 /* The same state in a map window, where the pane's head is hidden (#1339). */
@@ -240,7 +240,7 @@
   color: var(--warn-text);
 }
 .skipBanner b {
-  font: 700 11px var(--font-mono);
+  font: 700 calc(11px * var(--api-scale, 1)) var(--font-mono);
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
@@ -256,7 +256,7 @@
   gap: 8px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--line);
-  font: 700 11px var(--font-mono);
+  font: 700 calc(11px * var(--api-scale, 1)) var(--font-mono);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   overflow-wrap: anywhere;
@@ -267,7 +267,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  font-size: 13px;
+  font-size: calc(13px * var(--api-scale, 1));
   min-width: 0;
 }
 .kvRow {
@@ -277,7 +277,7 @@
   min-width: 0;
 }
 .kv dt {
-  font: 11px var(--font-mono);
+  font: calc(11px * var(--api-scale, 1)) var(--font-mono);
   color: var(--text-3);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -293,7 +293,7 @@
   padding: 8px 10px;
   background: var(--surface-3);
   border: 1px solid var(--line);
-  font: 12.5px/1.5 var(--font-mono);
+  font: calc(12.5px * var(--api-scale, 1))/1.5 var(--font-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -302,7 +302,7 @@
   padding: 8px 10px;
   background: var(--surface-3);
   border: 1px solid var(--line);
-  font: 12px/1.5 var(--font-mono);
+  font: calc(12px * var(--api-scale, 1))/1.5 var(--font-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: 320px;
@@ -311,7 +311,7 @@
 .aside {
   display: block;
   margin-top: 4px;
-  font-size: 12px;
+  font-size: calc(12px * var(--api-scale, 1));
   font-style: italic;
   color: var(--text-muted);
 }
@@ -319,7 +319,7 @@
 .patch {
   background: var(--surface-3);
   border: 1px solid var(--line);
-  font: 12px/1.55 var(--font-mono);
+  font: calc(12px * var(--api-scale, 1))/1.55 var(--font-mono);
   overflow-x: auto;
   max-height: 420px;
   overflow-y: auto;
@@ -344,13 +344,13 @@
 }
 .ids {
   margin: 0 12px 10px;
-  font: 11px var(--font-mono);
+  font: calc(11px * var(--api-scale, 1)) var(--font-mono);
   color: var(--text-3);
   overflow-wrap: anywhere;
 }
 .why {
   margin: 0 12px 10px;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--api-scale, 1));
   line-height: 1.5;
   color: var(--text-muted);
 }
@@ -359,7 +359,7 @@
 }
 .pendingDecision {
   margin: 0 12px 10px;
-  font: 12px var(--font-mono);
+  font: calc(12px * var(--api-scale, 1)) var(--font-mono);
   color: var(--text-muted);
   border-left: 2px solid var(--status-unknown);
   padding-left: 8px;
@@ -415,7 +415,7 @@
   border: 1px solid var(--line);
 }
 .turnImageGone {
-  font: 12px var(--font-mono);
+  font: calc(12px * var(--api-scale, 1)) var(--font-mono);
   color: var(--text-muted);
 }
 
@@ -431,7 +431,7 @@
   margin: 0;
   padding: 8px 12px;
   border-bottom: 1px solid var(--line);
-  font: 700 11px var(--font-mono);
+  font: 700 calc(11px * var(--api-scale, 1)) var(--font-mono);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-muted);
@@ -442,7 +442,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  font-size: 13px;
+  font-size: calc(13px * var(--api-scale, 1));
 }
 .infoFacts div {
   display: grid;
@@ -451,7 +451,7 @@
   align-items: baseline;
 }
 .infoFacts dt {
-  font: 11px var(--font-mono);
+  font: calc(11px * var(--api-scale, 1)) var(--font-mono);
   color: var(--text-3);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -465,7 +465,7 @@
   overflow-wrap: anywhere;
 }
 .infoFacts code {
-  font: 12px var(--font-mono);
+  font: calc(12px * var(--api-scale, 1)) var(--font-mono);
   overflow-wrap: anywhere;
 }
 
@@ -476,7 +476,7 @@
 }
 .actionText {
   display: block;
-  font: 13px/1.6 var(--font-mono);
+  font: calc(13px * var(--api-scale, 1))/1.6 var(--font-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: 200px;
@@ -485,20 +485,20 @@
 .requestFolder, .requestReason {
   margin: 6px 0 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--api-scale, 1));
   overflow-wrap: anywhere;
 }
 .queueHead {
   margin: 0;
   color: var(--text-muted);
-  font: 700 12px var(--font-mono);
+  font: 700 calc(12px * var(--api-scale, 1)) var(--font-mono);
 }
 .requestDetails > summary {
   min-height: 44px;
   padding: 12px;
   color: var(--text-muted);
   cursor: pointer;
-  font: 12px var(--font-mono);
+  font: calc(12px * var(--api-scale, 1)) var(--font-mono);
 }
 .requestDetails > summary:focus-visible {
   outline: 2px solid var(--accent);
@@ -537,7 +537,7 @@
   margin: 0;
   padding: 12px;
   color: var(--text-muted);
-  font: 12px var(--font-mono);
+  font: calc(12px * var(--api-scale, 1)) var(--font-mono);
   border-left: 3px solid var(--line-strong);
 }
 /* A turn the agent ran for itself (#1438): its own block, a neutral rule (not amber — nobody sent
@@ -557,7 +557,7 @@
 .latest {
   display: block;
   margin-top: 4px;
-  font: 12px var(--font-mono);
+  font: calc(12px * var(--api-scale, 1)) var(--font-mono);
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -567,7 +567,7 @@
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  font-size: 11px;
+  font-size: calc(11px * var(--api-scale, 1));
   margin-right: 4px;
 }
 /* No rule of its own: the block's left rule already marks the turn, and a second one beside it
@@ -579,7 +579,7 @@
 .ownControls { display: flex; flex-wrap: wrap; gap: 8px; }
 .ownNote {
   margin: 0;
-  font: 12px var(--font-mono);
+  font: calc(12px * var(--api-scale, 1)) var(--font-mono);
   color: var(--text-muted);
 }
 .taskRow { flex-wrap: wrap; }
@@ -587,7 +587,7 @@
 /* Interrupt: the chat ghost (44px), with room for its key hint. */
 .interrupt { gap: 10px; }
 .kbd {
-  font: 600 10px var(--font-mono);
+  font: 600 calc(10px * var(--api-scale, 1)) var(--font-mono);
   letter-spacing: 0.04em;
   text-transform: none;
   padding: 2px 5px;
@@ -606,7 +606,7 @@
 /* #1442: a reply Send now cut off says so — a fact about delivery, not a failure (warn, not danger). */
 .cutNote {
   margin: 0;
-  font: 12px var(--font-mono);
+  font: calc(12px * var(--api-scale, 1)) var(--font-mono);
   color: var(--warn-text);
 }
 /* A question BattleLab can't offer as choices, read as text (#1463). */
@@ -629,5 +629,5 @@
   margin-right: 8px;
   padding: 1px 6px;
   border: 1px solid var(--line-strong);
-  font: 400 11px var(--font-mono);
+  font: 400 calc(11px * var(--api-scale, 1)) var(--font-mono);
 }

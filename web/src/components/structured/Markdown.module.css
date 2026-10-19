@@ -19,13 +19,13 @@
 .md h5,
 .md h6 {
   margin: 14px 0 6px;
-  font: 600 12px/1.4 var(--font-mono);
+  font: 600 calc(12px * var(--api-scale, 1))/1.4 var(--font-mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text);
 }
 .md h1 {
-  font-size: 13px;
+  font-size: calc(13px * var(--api-scale, 1));
 }
 .md ul,
 .md ol {
@@ -41,8 +41,10 @@
 .md li::marker {
   color: var(--text-muted);
 }
+/* --api-link is set only by a non-default API-session palette (#1494), derived from the live accent
+   for that palette's grounds; unset, links are the app's accent text. */
 .md a {
-  color: var(--accent-text);
+  color: var(--api-link, var(--accent-text));
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -61,7 +63,7 @@
   padding: 1px 4px;
   background: var(--surface-3);
   border: 1px solid var(--line);
-  font: 12.5px/1.4 var(--font-mono);
+  font: calc(12.5px * var(--api-scale, 1))/1.4 var(--font-mono);
 }
 .deadLink,
 .image {
@@ -78,7 +80,7 @@
   justify-content: space-between;
   padding: 2px 4px 2px 10px;
   border-bottom: 1px solid var(--line);
-  font: 11px var(--font-mono);
+  font: calc(11px * var(--api-scale, 1)) var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-muted);
@@ -101,7 +103,7 @@
   margin: 0;
   padding: 10px 12px;
   overflow-x: auto;
-  font: 12.5px/1.5 var(--font-mono);
+  font: calc(12.5px * var(--api-scale, 1))/1.5 var(--font-mono);
   white-space: pre;
 }
 .tableWrap {
@@ -110,7 +112,7 @@
 }
 .tableWrap table {
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: calc(13px * var(--api-scale, 1));
 }
 .tableWrap th,
 .tableWrap td {
@@ -120,7 +122,7 @@
   vertical-align: top;
 }
 .tableWrap th {
-  font: 600 11px var(--font-mono);
+  font: 600 calc(11px * var(--api-scale, 1)) var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }

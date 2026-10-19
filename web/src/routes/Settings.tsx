@@ -44,6 +44,7 @@ import {
 } from "../lib/projectTree";
 import { FolderPickerModal } from "../components/FolderPickerModal";
 import { AiActivityPanel } from "./AiActivityPanel";
+import { AppearanceApi } from "./AppearanceApi";
 import { AppearanceInterface } from "./AppearanceInterface";
 import { AppearanceTerminal } from "./AppearanceTerminal";
 import { AgentDefaultsPage, AgentDetail, AgentsRoster } from "./AgentsSettings";
@@ -1987,6 +1988,8 @@ export function Settings() {
         {section === "appearance" && <AppearanceInterface />}
 
         {section === "terminal-appearance" && <AppearanceTerminal />}
+
+        {section === "api-appearance" && <AppearanceApi />}
 
         {section === "session-defaults" && (
           <>

@@ -151,8 +151,17 @@ function mixHex(a: string, b: string, share: number): string {
  *  accent mixed toward the mode's ink by the LARGEST share that does, keeping as much hue as AA
  *  allows. Share 0 is the ink itself, which always passes, so this always returns a colour. */
 export function accentTextFor(accentHex: string, mode: "dark" | "light"): string {
-  const accent = coerceAccent(accentHex);
   const { text, grounds } = ACCENT_TEXT_GROUNDS[mode];
+  return readableAccent(accentHex, text, grounds);
+}
+
+/** The accent, or the accent mixed toward `ink` by the largest share (1% steps) that holds AA on
+ *  EVERY one of `grounds` — for any valid accent, custom ones included. `ink` must itself hold AA
+ *  on the grounds (share 0 is the ink), which is what makes this total. Used for the app's
+ *  accent text and for an API-session palette's links (#1494). */
+export function readableAccent(accentHex: string, ink: string, grounds: readonly string[]): string {
+  const accent = coerceAccent(accentHex);
+  const text = ink;
   const lumOf = (h: string) => relativeLuminance(h);
   const passes = (h: string) => grounds.every((g) => contrastRatio(lumOf(h), lumOf(g)) >= 4.5);
   for (let pct = 100; pct > 0; pct -= 1) {

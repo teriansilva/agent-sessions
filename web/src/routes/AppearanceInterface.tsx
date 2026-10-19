@@ -203,6 +203,10 @@ export function AppearanceInterface() {
         <Link to={settingsPath("terminal-appearance")} state={location.state}>
           Terminal sessions
         </Link>
+        ; how API-session conversations read is under{" "}
+        <Link to={settingsPath("api-appearance")} state={location.state}>
+          API sessions
+        </Link>
         .
       </p>
     </section>

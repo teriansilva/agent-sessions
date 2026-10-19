@@ -433,6 +433,7 @@ test("the page names its group and section in a crumb, not a second heading", as
 test.each([
   ["appearance", ["Interface", "Mode", "Accent"]],
   ["terminal-appearance", ["Terminal sessions", "Colour scheme", "Terminal font", "Terminal text size"]],
+  ["api-appearance", ["API sessions", "Palette", "Background", "Text font", "Code font", "Text size"]],
   ["session-defaults", ["Session defaults"]],
   ["projects", ["Projects", "Session overview"]],
   ["ai-endpoint", ["Connection", "Model"]],
@@ -463,7 +464,7 @@ test.each([
 test("the registry and the pages agree: every section id renders something", () => {
   // A registry entry with no body in Settings.tsx would be a nav link to a blank page.
   // Resources has its own submenu, separate from Host (#1386).
-  expect(SETTINGS_SECTIONS).toHaveLength(20);
+  expect(SETTINGS_SECTIONS).toHaveLength(21);
 });
 
 // ---- Usage analytics (#1009) ----------------------------------------------------------------

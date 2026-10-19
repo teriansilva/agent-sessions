@@ -19,7 +19,7 @@
   min-width: 0;
 }
 .badge {
-  font: 700 11px var(--font-mono);
+  font: 700 calc(11px * var(--api-scale, 1)) var(--font-mono);
   letter-spacing: 0.06em;
   padding: 3px 6px;
   border: 1px solid var(--engine-blue);
@@ -28,7 +28,7 @@
 }
 .title {
   font-weight: 600;
-  font-size: 14px;
+  font-size: calc(14px * var(--api-scale, 1));
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -48,7 +48,7 @@
   border: 1px solid var(--line-strong);
   padding: 3px 8px;
   min-height: 24px;
-  font: 11px var(--font-mono);
+  font: calc(11px * var(--api-scale, 1)) var(--font-mono);
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -76,7 +76,7 @@
   gap: 12px;
 }
 .who {
-  font: 600 11px var(--font-mono);
+  font: 600 calc(11px * var(--api-scale, 1)) var(--font-mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-muted);
@@ -88,16 +88,18 @@
   color: var(--text-3);
   font-weight: 400;
 }
+/* --api-you / --api-rule / --api-scale (#1494 P3) are set only by a NON-default API-session look,
+   on the log; unset, every rule below computes exactly what it did before the look existed. */
 .user .who {
-  color: var(--accent-text);
+  color: var(--api-you, var(--accent-text));
 }
 .txt {
-  font-size: 14px;
+  font-size: calc(14px * var(--api-scale, 1));
   line-height: 1.55;
   overflow-wrap: anywhere;
 }
 .user .txt {
-  border-left: 2px solid var(--accent);
+  border-left: 2px solid var(--api-you, var(--accent));
   padding: 2px 0 2px 12px;
   white-space: pre-wrap;
 }
@@ -113,13 +115,13 @@
   padding: 10px 12px;
   background: var(--surface-3);
   border: 1px solid var(--line);
-  font: 12.5px/1.5 var(--font-mono);
+  font: calc(12.5px * var(--api-scale, 1))/1.5 var(--font-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .notice {
   margin: 0;
-  font: 12px var(--font-mono);
+  font: calc(12px * var(--api-scale, 1)) var(--font-mono);
   color: var(--text-muted);
   border-left: 2px solid var(--line-strong);
   padding-left: 10px;
@@ -128,7 +130,7 @@
   display: flex;
   gap: 10px;
   align-items: center;
-  font: 12px var(--font-mono);
+  font: calc(12px * var(--api-scale, 1)) var(--font-mono);
   color: var(--text-muted);
 }
 .bars span {
@@ -168,14 +170,14 @@
   background: color-mix(in srgb, var(--status-down) 10%, transparent);
   color: var(--danger-text);
   padding: 10px 12px;
-  font-size: 13px;
+  font-size: calc(13px * var(--api-scale, 1));
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
 .sendError {
   margin: 0;
   padding: 8px 14px;
-  font-size: 13px;
+  font-size: calc(13px * var(--api-scale, 1));
   color: var(--danger-text);
   border-top: 1px solid var(--line);
 }
@@ -192,7 +194,7 @@
 .note {
   margin: 0;
   max-width: 460px;
-  font-size: 13px;
+  font-size: calc(13px * var(--api-scale, 1));
   line-height: 1.5;
   color: var(--text-muted);
 }
@@ -227,7 +229,7 @@
   min-width: 88px;
   padding: 0 14px;
   border-radius: 0;
-  font: 700 12px var(--font-mono);
+  font: 700 calc(12px * var(--api-scale, 1)) var(--font-mono);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   display: inline-flex;
@@ -285,14 +287,14 @@
   align-items: baseline;
   gap: 4px 8px;
   min-width: 0;
-  font: 12px var(--font-mono);
+  font: calc(12px * var(--api-scale, 1)) var(--font-mono);
   color: var(--text-muted);
 }
 .toolVerb {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  font-size: 11px;
+  font-size: calc(11px * var(--api-scale, 1));
   color: var(--text);
 }
 .toolPath {
@@ -306,4 +308,35 @@
 }
 .toolRefused .toolVerb {
   color: var(--danger-text);
+}
+
+/* API-session backgrounds (#1494 P3). Static 1px patterns on the conversation log only: content,
+   not chrome, so the "no gradients in chrome" rule (design.md) is not in play, and nothing moves,
+   so there is nothing for prefers-reduced-motion to switch off. The ink is the log's own text at
+   low strength, so a pattern follows the palette and the mode. `local` scrolls it with the
+   messages instead of leaving it pinned behind them. */
+.log[data-api-bg] {
+  --api-pattern: color-mix(in srgb, var(--text) 8%, transparent);
+  background-attachment: local;
+}
+.log[data-api-bg="grid"] {
+  background-image:
+    linear-gradient(var(--api-pattern) 1px, transparent 1px),
+    linear-gradient(90deg, var(--api-pattern) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+.log[data-api-bg="dots"] {
+  background-image: radial-gradient(var(--api-pattern) 1.2px, transparent 1.4px);
+  background-size: 16px 16px;
+}
+.log[data-api-bg="ruled"] {
+  background-image: linear-gradient(var(--api-pattern) 1px, transparent 1px);
+  background-size: 100% 26px;
+}
+.log[data-api-bg="scanlines"] {
+  background-image: repeating-linear-gradient(
+    0deg,
+    var(--api-pattern) 0 1px,
+    transparent 1px 3px
+  );
 }

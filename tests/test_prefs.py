@@ -1185,3 +1185,68 @@ def test_term_scheme_endpoint_rejects_unknown_without_half_writing(auth_cfg, tmp
     assert r.status_code == 422
     # Preflight: the valid key in the same payload was not written either.
     assert c.get("/api/config").json()["theme"] == "dark"
+
+
+# ---- API-session look (#1494 P3) -------------------------------------------------------------
+
+_API = _APPEARANCE_IDS["api_look"]
+
+
+def test_api_look_ids_match_the_shared_fixture():
+    assert list(prefs.API_PALETTES) == _API["palettes"]
+    assert list(prefs.API_BACKGROUNDS) == _API["backgrounds"]
+    assert list(prefs.API_BODY_FONTS) == _API["body_fonts"]
+    assert list(prefs.API_CODE_FONTS) == _API["code_fonts"]
+    assert (prefs.API_TEXT_SIZE_MIN, prefs.API_TEXT_SIZE_MAX) == (
+        _API["text_size"]["min"],
+        _API["text_size"]["max"],
+    )
+    assert prefs.DEFAULT_API_LOOK == _API["default"]
+
+
+@pytest.mark.parametrize("case", _API["read"], ids=lambda c: c["why"])
+def test_api_look_read_coerces_per_field(tmp_path, case):
+    p = tmp_path / "prefs.json"
+    p.write_text(json.dumps({} if case["in"] is None else {"api_look": case["in"]}))
+    assert prefs.get_api_look(p) == case["out"]
+
+
+@pytest.mark.parametrize("bad", _API["write_rejected"])
+def test_api_look_write_gate_rejects(bad):
+    assert prefs.is_valid_api_look(bad) is False
+
+
+@pytest.mark.parametrize("good", _API["write_accepted"])
+def test_api_look_write_gate_accepts_and_round_trips(tmp_path, good):
+    assert prefs.is_valid_api_look(good) is True
+    p = tmp_path / "prefs.json"
+    assert prefs.set_api_look(good, p) == good
+    assert prefs.get_api_look(p) == good
+
+
+def test_api_look_endpoint_persists_and_seeds_config(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    look = _API["write_accepted"][1]
+    r = c.post(
+        "/api/prefs",
+        json={"api_look": look},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"api_look": look}
+    assert c.get("/api/config").json()["api_look"] == look
+
+
+def test_api_look_endpoint_rejects_without_half_writing(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/prefs",
+        json={"theme": "light", "api_look": _API["write_rejected"][10]},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 422
+    cfg = c.get("/api/config").json()
+    assert cfg["theme"] == "dark"
+    assert cfg["api_look"] == _API["default"]

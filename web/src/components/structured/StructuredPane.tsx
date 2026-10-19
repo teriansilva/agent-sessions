@@ -1,3 +1,4 @@
+import { useApiLogProps } from "../../theme/apiLookStore";
 import {
   ArrowLeftRight,
   BookMarked,
@@ -1170,6 +1171,8 @@ export function StructuredPane({
   /** What the session's host hands a pane: Files, To map, a window's chrome slot (#1332). */
   host?: PaneHost;
 }) {
+  // The API-session look (#1494 P3), on the conversation log only: `{}` for the default look.
+  const logLook = useApiLogProps();
   useEngineRoster();
   const key = `${engine}:${id}`;
   // Actions act on the id the URL settled on (#867), the same split the terminal keeps.
@@ -2557,7 +2560,7 @@ export function StructuredPane({
           the client is available again.
         </p>
       )}
-      <div className={chat.log} ref={logRef} aria-live="polite">
+      <div className={chat.log} ref={logRef} aria-live="polite" data-testid="api-log" {...logLook}>
         {snap && turns.length === 0 && (
           <div className={chat.center} data-testid="structured-empty">
             <section className={styles.info} aria-label="Session info">

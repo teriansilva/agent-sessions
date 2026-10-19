@@ -1,7 +1,269 @@
 {
-  "_comment": "Appearance ids the client and server must agree on (#1494). Read by tests/test_prefs.py and web/src/theme/*.test.ts.",
-  "term_schemes": {
-    "default": "battlelab",
-    "ids": ["battlelab", "solarized", "gruvbox", "catppuccin", "one", "github", "dracula", "nord", "tokyonight"]
-  }
+ "_comment": "Appearance ids the client and server must agree on (#1494). Read by tests/test_prefs.py and web/src/theme/*.test.ts.",
+ "term_schemes": {
+  "default": "battlelab",
+  "ids": [
+   "battlelab",
+   "solarized",
+   "gruvbox",
+   "catppuccin",
+   "one",
+   "github",
+   "dracula",
+   "nord",
+   "tokyonight"
+  ]
+ },
+ "api_look": {
+  "default": {
+   "palette": "battlelab",
+   "background": "none",
+   "body_font": "sans",
+   "code_font": "app",
+   "text_size": 14
+  },
+  "palettes": [
+   "battlelab",
+   "graphite",
+   "solarized",
+   "nord",
+   "sepia",
+   "contrast"
+  ],
+  "backgrounds": [
+   "none",
+   "grid",
+   "dots",
+   "ruled",
+   "scanlines"
+  ],
+  "body_fonts": [
+   "sans",
+   "serif",
+   "mono",
+   "custom"
+  ],
+  "code_fonts": [
+   "app",
+   "terminal",
+   "custom"
+  ],
+  "text_size": {
+   "min": 12,
+   "max": 18
+  },
+  "read": [
+   {
+    "in": null,
+    "out": {
+     "palette": "battlelab",
+     "background": "none",
+     "body_font": "sans",
+     "code_font": "app",
+     "text_size": 14
+    },
+    "why": "absent"
+   },
+   {
+    "in": [
+     "nord"
+    ],
+    "out": {
+     "palette": "battlelab",
+     "background": "none",
+     "body_font": "sans",
+     "code_font": "app",
+     "text_size": 14
+    },
+    "why": "not an object"
+   },
+   {
+    "in": {
+     "palette": "nord",
+     "background": "plaid",
+     "body_font": "serif",
+     "code_font": "app",
+     "text_size": 16
+    },
+    "out": {
+     "palette": "nord",
+     "background": "none",
+     "body_font": "serif",
+     "code_font": "app",
+     "text_size": 16
+    },
+    "why": "one bad field defaults alone"
+   },
+   {
+    "in": {
+     "palette": "sepia",
+     "text_size": 99,
+     "extra": 1
+    },
+    "out": {
+     "palette": "sepia",
+     "background": "none",
+     "body_font": "sans",
+     "code_font": "app",
+     "text_size": 14
+    },
+    "why": "out-of-range size, unknown key, missing fields"
+   },
+   {
+    "in": {
+     "palette": "nord",
+     "background": "grid",
+     "body_font": "custom",
+     "code_font": "custom",
+     "text_size": 13,
+     "body_font_custom": "Georgia, serif",
+     "code_font_custom": "bad;stack"
+    },
+    "out": {
+     "palette": "nord",
+     "background": "grid",
+     "body_font": "custom",
+     "code_font": "app",
+     "text_size": 13,
+     "body_font_custom": "Georgia, serif"
+    },
+    "why": "a custom font keeps a usable stack; an unusable one falls back"
+   },
+   {
+    "in": {
+     "palette": "nord",
+     "background": "none",
+     "body_font": "serif",
+     "code_font": "app",
+     "text_size": 14,
+     "body_font_custom": "Georgia, serif"
+    },
+    "out": {
+     "palette": "nord",
+     "background": "none",
+     "body_font": "serif",
+     "code_font": "app",
+     "text_size": 14
+    },
+    "why": "a stack without custom is dropped"
+   },
+   {
+    "in": {
+     "palette": "nord",
+     "background": "none",
+     "body_font": "sans",
+     "code_font": "app",
+     "text_size": true
+    },
+    "out": {
+     "palette": "nord",
+     "background": "none",
+     "body_font": "sans",
+     "code_font": "app",
+     "text_size": 14
+    },
+    "why": "a bool is not a size"
+   }
+  ],
+  "write_rejected": [
+   null,
+   [],
+   "nord",
+   {
+    "palette": "nord"
+   },
+   {
+    "palette": "nord",
+    "background": "none",
+    "body_font": "sans",
+    "code_font": "app",
+    "text_size": 14,
+    "extra": 1
+   },
+   {
+    "palette": "neon",
+    "background": "none",
+    "body_font": "sans",
+    "code_font": "app",
+    "text_size": 14
+   },
+   {
+    "palette": "nord",
+    "background": "none",
+    "body_font": "sans",
+    "code_font": "app",
+    "text_size": 11
+   },
+   {
+    "palette": "nord",
+    "background": "none",
+    "body_font": "sans",
+    "code_font": "app",
+    "text_size": 14.5
+   },
+   {
+    "palette": "nord",
+    "background": "none",
+    "body_font": "sans",
+    "code_font": "app",
+    "text_size": true
+   },
+   {
+    "palette": "nord",
+    "background": "none",
+    "body_font": "custom",
+    "code_font": "app",
+    "text_size": 14
+   },
+   {
+    "palette": "nord",
+    "background": "none",
+    "body_font": "custom",
+    "code_font": "app",
+    "text_size": 14,
+    "body_font_custom": "x;}body{color:red"
+   },
+   {
+    "palette": "nord",
+    "background": "none",
+    "body_font": "sans",
+    "code_font": "app",
+    "text_size": 14,
+    "body_font_custom": "Georgia"
+   },
+   {
+    "palette": "nord",
+    "background": "none",
+    "body_font": "custom",
+    "code_font": "app",
+    "text_size": 14,
+    "body_font_custom": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   }
+  ],
+  "write_accepted": [
+   {
+    "palette": "battlelab",
+    "background": "none",
+    "body_font": "sans",
+    "code_font": "app",
+    "text_size": 14
+   },
+   {
+    "palette": "contrast",
+    "background": "scanlines",
+    "body_font": "mono",
+    "code_font": "terminal",
+    "text_size": 18
+   },
+   {
+    "palette": "sepia",
+    "background": "ruled",
+    "body_font": "custom",
+    "code_font": "custom",
+    "text_size": 12,
+    "body_font_custom": "\"Iowan Old Style\", Georgia, serif",
+    "code_font_custom": "\"Fira Code\", monospace"
+   }
+  ]
+ }
 }

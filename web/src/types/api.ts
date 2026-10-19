@@ -1235,6 +1235,9 @@ export interface AppConfig {
   /** Terminal colour scheme id (#1494 P2). Seeds a device with no local choice; the localStorage
    *  cache wins over it. Absent on older servers (→ client default "battlelab"). */
   term_scheme?: string;
+  /** The API-session look (#1494 P3). Seeds a device with no local choice; the localStorage
+   *  cache wins. Absent on older servers (→ the default look, which sets nothing). */
+  api_look?: unknown;
   /** Compose box default on load: "auto" (device heuristic) | "open" | "collapsed". */
   compose_default?: "auto" | "open" | "collapsed" | string;
   /** Session-list sort order (#506): "recent_activity" (newest update first, default) or

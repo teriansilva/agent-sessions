@@ -27,6 +27,7 @@ export const SETTINGS_SECTIONS = [
   // every existing `/settings/appearance` link (Opening links, bookmarks) still lands on it.
   { id: "appearance", label: "Interface", group: "appearance" },
   { id: "terminal-appearance", label: "Terminal sessions", group: "appearance" },
+  { id: "api-appearance", label: "API sessions", group: "appearance" },
   { id: "ai-endpoint", label: "Endpoint & model", group: "ai" },
   { id: "ai-session-review", label: "Session review", group: "ai" },
   { id: "ai-auto-sort", label: "Auto-sort", group: "ai" },

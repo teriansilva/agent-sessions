@@ -39,6 +39,7 @@ import { DataFlowCanvas } from "../components/hud/DataFlowCanvas";
 import { AccentProvider } from "../theme/AccentProvider";
 import { TermFontProvider } from "../theme/TermFontProvider";
 import { TermSchemeProvider } from "../theme/TermSchemeProvider";
+import { ApiLookProvider } from "../theme/ApiLookProvider";
 import { TermSizeProvider } from "../theme/TermSizeProvider";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { useIsMobile } from "../lib/useIsMobile";
@@ -920,6 +921,7 @@ export default function App() {
           <TermSizeProvider>
             <TermFontProvider>
               <TermSchemeProvider>
+              <ApiLookProvider>
               <OverviewPrefsProvider>
                 {/* ABOVE the router for the same reason (#1007), and with the same split: the
                   map's last SUCCESSFUL COMPLETE result is retained here, so re-entering
@@ -941,6 +943,7 @@ export default function App() {
                   </DashboardRetentionProvider>
                 </OverviewSessionsProvider>
               </OverviewPrefsProvider>
+              </ApiLookProvider>
               </TermSchemeProvider>
             </TermFontProvider>
           </TermSizeProvider>

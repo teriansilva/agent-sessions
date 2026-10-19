@@ -57,6 +57,34 @@ TERM_SCHEMES: tuple[str, ...] = (
 )
 DEFAULT_TERM_SCHEME = "battlelab"
 
+# The API-session look (#1494 P3): one object, validated strictly on write and per field on read.
+# Mirror of web/src/theme/apiLook.ts; the id lists are pinned to tests/fixtures/appearance_ids.json.
+API_PALETTES: tuple[str, ...] = ("battlelab", "graphite", "solarized", "nord", "sepia", "contrast")
+API_BACKGROUNDS: tuple[str, ...] = ("none", "grid", "dots", "ruled", "scanlines")
+API_BODY_FONTS: tuple[str, ...] = ("sans", "serif", "mono", "custom")
+API_CODE_FONTS: tuple[str, ...] = ("app", "terminal", "custom")
+API_TEXT_SIZE_MIN = 12
+API_TEXT_SIZE_MAX = 18
+DEFAULT_API_LOOK: dict[str, object] = {
+    "palette": "battlelab",
+    "background": "none",
+    "body_font": "sans",
+    "code_font": "app",
+    "text_size": 14,
+}
+_API_LOOK_ENUMS: dict[str, tuple[str, ...]] = {
+    "palette": API_PALETTES,
+    "background": API_BACKGROUNDS,
+    "body_font": API_BODY_FONTS,
+    "code_font": API_CODE_FONTS,
+}
+# Which custom stack belongs to which font field. A stack is only meaningful (and only accepted)
+# while its font is `custom`.
+_API_LOOK_CUSTOM: dict[str, str] = {
+    "body_font_custom": "body_font",
+    "code_font_custom": "code_font",
+}
+
 # Compose box default state on load. "auto" keeps the device heuristic (expanded on touch,
 # collapsed to the bar on desktop); "open"/"collapsed" force it the same on every device.
 COMPOSE_DEFAULTS: tuple[str, ...] = ("auto", "open", "collapsed")
@@ -539,6 +567,79 @@ def set_term_scheme(scheme: object, path: Path | None = None) -> str:
     """Persist the terminal colour scheme (unknown → default). The route 422s an unknown id
     first, so a bad value never reaches here over HTTP. Preserves other keys."""
     return _set("term_scheme", coerce_term_scheme(scheme), path)
+
+
+def _api_text_size_ok(value: object) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and API_TEXT_SIZE_MIN <= value <= API_TEXT_SIZE_MAX
+    )
+
+
+def _api_font_stack_ok(value: object) -> bool:
+    # The SAME sanitizer and cap as the terminal font: the value lands in a CSS declaration.
+    return (
+        isinstance(value, str)
+        and value == value.strip()
+        and len(value) <= TERM_FONT_FAMILY_MAX_LEN
+        and _font_stack_is_sane(value)
+    )
+
+
+def is_valid_api_look(value: object) -> bool:
+    """Strict write gate for ``api_look`` (#1494 P3): an object with exactly the five fields (plus a
+    custom stack only for a font that is ``custom``), every enum known, the size an int in range."""
+    if not isinstance(value, dict):
+        return False
+    allowed = set(DEFAULT_API_LOOK) | set(_API_LOOK_CUSTOM)
+    if not set(DEFAULT_API_LOOK) <= set(value) <= allowed:
+        return False
+    for key, ids in _API_LOOK_ENUMS.items():
+        if value[key] not in ids:
+            return False
+    if not _api_text_size_ok(value["text_size"]):
+        return False
+    for custom_key, font_key in _API_LOOK_CUSTOM.items():
+        is_custom = value[font_key] == "custom"
+        if is_custom != (custom_key in value):
+            return False
+        if is_custom and not _api_font_stack_ok(value[custom_key]):
+            return False
+    return True
+
+
+def coerce_api_look(value: object) -> dict[str, object]:
+    """Lenient read of ``api_look``: each field on its own, so one bad field falls back to its
+    default while the others keep their saved values. A ``custom`` font without a usable stack
+    falls back to that font's default. Never raises. Mirrors ``coerceApiLook`` in apiLook.ts."""
+    src = value if isinstance(value, dict) else {}
+    out: dict[str, object] = {}
+    for key, ids in _API_LOOK_ENUMS.items():
+        v = src.get(key)
+        out[key] = v if isinstance(v, str) and v in ids else DEFAULT_API_LOOK[key]
+    size = src.get("text_size")
+    out["text_size"] = size if _api_text_size_ok(size) else DEFAULT_API_LOOK["text_size"]
+    for custom_key, font_key in _API_LOOK_CUSTOM.items():
+        if out[font_key] != "custom":
+            continue
+        stack = src.get(custom_key)
+        if _api_font_stack_ok(stack):
+            out[custom_key] = stack
+        else:
+            out[font_key] = DEFAULT_API_LOOK[font_key]
+    return out
+
+
+def get_api_look(path: Path | None = None) -> dict[str, object]:
+    """The persisted API-session look, coerced per field."""
+    return coerce_api_look(_load(path or _default_path()).get("api_look"))
+
+
+def set_api_look(look: object, path: Path | None = None) -> dict[str, object]:
+    """Persist the API-session look. The route 422s anything ``is_valid_api_look`` refuses first;
+    coercing here keeps a direct caller from writing a malformed object. Preserves other keys."""
+    return _set("api_look", coerce_api_look(look), path)  # type: ignore[return-value]
 
 
 def get_term_font_size(path: Path | None = None) -> int:

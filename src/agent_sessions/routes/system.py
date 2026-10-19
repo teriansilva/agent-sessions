@@ -116,6 +116,8 @@ def _preflight_prefs(payload: dict) -> None:
         raise bad("invalid term_font_family")
     if "term_scheme" in payload and payload["term_scheme"] not in prefs.TERM_SCHEMES:
         raise bad("unknown term_scheme")
+    if "api_look" in payload and not prefs.is_valid_api_look(payload["api_look"]):
+        raise bad("invalid api_look")
     if "compose_default" in payload and payload["compose_default"] not in prefs.COMPOSE_DEFAULTS:
         raise bad("unknown compose_default")
     if (
@@ -691,6 +693,8 @@ def register(
                 # Terminal colour scheme (#1494 P2). Same seeding contract as the font: the device
                 # cache wins, this only seeds a device that has never chosen.
                 "term_scheme": prefs.get_term_scheme(),
+                # The API-session look (#1494 P3), coerced per field. Same seeding contract.
+                "api_look": prefs.get_api_look(),
                 # Compose box default state on load: auto (device heuristic) | open | collapsed.
                 # Per-user; the terminal applies it when mounting Compose.
                 "compose_default": prefs.get_compose_default(),
@@ -918,6 +922,11 @@ def register(
             if payload["term_scheme"] not in prefs.TERM_SCHEMES:
                 raise HTTPException(status_code=422, detail="unknown term_scheme")
             out["term_scheme"] = prefs.set_term_scheme(payload["term_scheme"])
+        if "api_look" in payload:
+            # Strict on write (the custom stacks land in CSS), lenient per field on read.
+            if not prefs.is_valid_api_look(payload["api_look"]):
+                raise HTTPException(status_code=422, detail="invalid api_look")
+            out["api_look"] = prefs.set_api_look(payload["api_look"])
         if "compose_default" in payload:
             if payload["compose_default"] not in prefs.COMPOSE_DEFAULTS:
                 raise HTTPException(status_code=422, detail="unknown compose_default")
