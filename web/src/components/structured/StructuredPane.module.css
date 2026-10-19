@@ -27,10 +27,16 @@
   background: var(--bg-1);
   padding: 14px;
 }
-.reply > div:last-child {
+.reply > div.replyText {
   border-left: 0;
   padding-left: 0;
 }
+/* Calls the agent made after it wrote, in the order they ran. */
+.reply > .activity {
+  margin: 12px 0;
+  background: var(--bg-0);
+}
+.reply > .activity:last-child { margin-bottom: 0; }
 .messageHeader {
   flex-wrap: wrap;
   align-items: baseline;

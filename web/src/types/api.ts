@@ -1430,6 +1430,9 @@ export interface StructuredTool {
   outcome: string;
   summary: string;
   risk?: StructuredRisk;
+  /** How many characters of the turn's `reply` came before this call; absent from older servers
+   *  and public links. */
+  at?: number;
 }
 
 /** A question the agent asked with fixed options (#1463): its own words, display text only.

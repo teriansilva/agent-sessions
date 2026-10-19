@@ -379,7 +379,7 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
         **({"delivery_reason": turn["delivery_reason"]} if turn.get("delivery_reason") else {}),
         "context": dict(turn.get("context") or {}),
         "requires_authority": bool(turn.get("execution_binding")),
-        "tools": list(turn.get("tools") or [])[-64:],
+        "tools": _tools(turn, reply),
         "tools_truncated": len(turn.get("tools") or []) > 64,
         "usage": turn.get("usage"),
         **(
@@ -388,6 +388,14 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
             else {}
         ),
     }
+
+
+def _tools(turn: dict, reply: str | None) -> list[dict]:
+    """The newest 64 calls. A call placed past the part of the reply shown sits at its end."""
+    return [
+        {**t, "at": min(t["at"], len(reply or ""))} if isinstance(t.get("at"), int) else t
+        for t in list(turn.get("tools") or [])[-64:]
+    ]
 
 
 def _agent_turn(turn: dict, bounded) -> dict:
@@ -404,7 +412,7 @@ def _agent_turn(turn: dict, bounded) -> dict:
         "reply_ts": turn.get("reply_ts"),
         "reply_truncated": reply_cut,
         **({"reason": turn["reason"]} if turn.get("reason") else {}),
-        "tools": list(turn.get("tools") or [])[-64:],
+        "tools": _tools(turn, reply),
         "tools_truncated": len(turn.get("tools") or []) > 64,
         **(
             {"questions": turn["questions"], "question_id": turn["question_id"]}

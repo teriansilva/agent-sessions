@@ -66,6 +66,7 @@ import type {
 import chat from "../chat/ChatPane.module.css";
 import { Markdown } from "./Markdown";
 import { BackgroundWork } from "./BackgroundWork";
+import { interleave } from "./activityOrder";
 import { autoSendNowHead, useAlwaysSendNow } from "./alwaysSendNow";
 import { conversationGroups, type ConversationGroup } from "./conversationOrder";
 import { PermissionsDialog } from "./PermissionsDialog";
@@ -724,6 +725,15 @@ function ToolList({ tools, label }: { tools: StructuredTool[]; label: string }) 
   );
 }
 
+/** The tool rows grouped in the order they ran: one block before any text, or none. */
+function activityGroups(reply: string | null, tools: StructuredTool[]) {
+  const order = interleave(reply, tools);
+  const groups = order
+    ? [order.lead, ...order.parts.map((p) => p.tools)].filter((g) => g.length)
+    : tools.length ? [tools] : [];
+  return { order, first: groups[0], last: groups[groups.length - 1] };
+}
+
 /** A turn the agent ran for itself (#1438): a scheduled wake-up, a task notification. Its activity
  *  is collapsed with the latest call live in the summary; Interrupt (and Esc) stop it — the turn,
  *  never the worker. */
@@ -763,6 +773,30 @@ function AgentTurnView({
       <span />
     </span>
   );
+  const { order, first, last } = activityGroups(turn.reply, turn.tools);
+  // The turn's state rides on its newest block; only the oldest can be missing earlier calls.
+  const activity = (tools: StructuredTool[]) => (
+    <details className={styles.activity} data-testid="structured-agent-activity">
+      <summary>
+        {running && tools === last && bars}
+        {running && tools === last && "Working on its own · "}
+        {toolCount(tools, turn.tools_truncated && tools === first)}
+        {ended && tools === last && <span className={styles.activityFailed}> · {ended}</span>}
+        {tools.some((t) => t.risk?.level === "risky") && <span className={styles.activityRisk}> · Risky activity</span>}
+        {running && tools === last && latest && (
+          <span className={styles.latest} data-testid="structured-agent-latest">
+            <b>{latest.name}</b> {latest.summary}
+          </span>
+        )}
+      </summary>
+      <ToolList tools={tools} label="What the agent is doing on its own" />
+    </details>
+  );
+  const reply = (text: string, end: boolean) => (
+    <div className={`${chat.txt} ${styles.ownReply}`} data-testid="structured-agent-reply">
+      <Markdown text={end && turn.reply_truncated ? `${text}…` : text} />
+    </div>
+  );
   return (
     <section
       className={styles.ownTurn}
@@ -772,21 +806,7 @@ function AgentTurnView({
     >
       <MessageHeader speaker={`${agent} · on its own`} kind="assistant" ts={turn.ts} />
       {turn.tools.length > 0 ? (
-        <details className={styles.activity} data-testid="structured-agent-activity">
-          <summary>
-            {running && bars}
-            {running && "Working on its own · "}
-            {toolCount(turn.tools, turn.tools_truncated)}
-            {ended && <span className={styles.activityFailed}> · {ended}</span>}
-            {turn.tools.some((t) => t.risk?.level === "risky") && <span className={styles.activityRisk}> · Risky activity</span>}
-            {running && latest && (
-              <span className={styles.latest} data-testid="structured-agent-latest">
-                <b>{latest.name}</b> {latest.summary}
-              </span>
-            )}
-          </summary>
-          <ToolList tools={turn.tools} label="What the agent is doing on its own" />
-        </details>
+        (order ? order.lead.length > 0 : true) && activity(order ? order.lead : turn.tools)
       ) : running ? (
         <div className={chat.wait}>
           {bars}
@@ -796,11 +816,14 @@ function AgentTurnView({
         ended && <p className={`${styles.ownNote} ${styles.activityFailed}`}>{ended}</p>
       )}
       {beforeReply}
-      {turn.reply && (
-        <div className={`${chat.txt} ${styles.ownReply}`} data-testid="structured-agent-reply">
-          <Markdown text={turn.reply_truncated ? `${turn.reply}…` : turn.reply} />
-        </div>
-      )}
+      {order
+        ? order.parts.map((part, i) => (
+            <Fragment key={i}>
+              {reply(part.text, i === order.parts.length - 1)}
+              {part.tools.length > 0 && activity(part.tools)}
+            </Fragment>
+          ))
+        : turn.reply && reply(turn.reply, true)}
       {question}
       {turn.state === "failed" && turn.reason && (
         <p className={`${styles.ownNote} ${styles.activityFailed}`} role="alert">{turn.reason}</p>
@@ -920,6 +943,23 @@ function TurnView({
   const failed = ["failed", "interrupted", "uncertain", "unavailable"].includes(turn.state);
   const canSendNow =
     queuePosition === 1 && (!turn.delivery || turn.delivery === "interrupt_failed");
+  const { order, first, last } = activityGroups(turn.reply, turn.tools);
+  const activity = (tools: StructuredTool[]) => tools.length > 0 && (
+    <details className={styles.activity} data-testid="structured-activity">
+      <summary>
+        {toolCount(tools, turn.tools_truncated && tools === first)}
+        {active && tools === last && " · Working"}
+        {tools.some((t) => /failed|error/i.test(t.outcome)) && <span className={styles.activityFailed}> · Failed activity</span>}
+        {tools.some((t) => t.risk?.level === "risky") && <span className={styles.activityRisk}> · Risky activity</span>}
+      </summary>
+      <ToolList tools={tools} label="What the agent did" />
+    </details>
+  );
+  const replyText = (text: string, end: boolean) => (
+    <div className={`${chat.txt} ${styles.replyText}`}>
+      <Markdown text={end && turn.reply_truncated ? `${text}…` : text} />
+    </div>
+  );
   return (
     <div className={chat.exchange} data-testid="structured-turn" data-state={turn.state}>
       <div className={`${chat.turn} ${chat.user}`}>
@@ -974,17 +1014,7 @@ function TurnView({
           </div>
         )}
       </div>
-      {turn.tools.length > 0 && (
-        <details className={styles.activity} data-testid="structured-activity">
-          <summary>
-            {toolCount(turn.tools, turn.tools_truncated)}
-            {active && " · Working"}
-            {turn.tools.some((t) => /failed|error/i.test(t.outcome)) && <span className={styles.activityFailed}> · Failed activity</span>}
-            {turn.tools.some((t) => t.risk?.level === "risky") && <span className={styles.activityRisk}> · Risky activity</span>}
-          </summary>
-          <ToolList tools={turn.tools} label="What the agent did" />
-        </details>
-      )}
+      {activity(order ? order.lead : turn.tools)}
       <RequestQueue requests={requests} render={(r) => requestQuestions(r) ? (
         <QuestionRequest
           key={requestKey(r)}
@@ -1016,9 +1046,14 @@ function TurnView({
       {turn.reply && (
         <div className={`${chat.turn} ${chat.asst} ${styles.reply}`} data-testid="structured-reply">
           <MessageHeader speaker={agent} kind="assistant" ts={turn.reply_ts} />
-          <div className={chat.txt}>
-            <Markdown text={turn.reply_truncated ? `${turn.reply}…` : turn.reply} />
-          </div>
+          {order
+            ? order.parts.map((part, i) => (
+                <Fragment key={i}>
+                  {replyText(part.text, i === order.parts.length - 1)}
+                  {activity(part.tools)}
+                </Fragment>
+              ))
+            : replyText(turn.reply, true)}
         </div>
       )}
       {question}

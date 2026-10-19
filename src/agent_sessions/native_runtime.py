@@ -1238,7 +1238,23 @@ def _paragraph(text: str, block: str) -> str:
         return text
     if text and not text.endswith("\n\n"):
         text += "\n\n"
-    return (text + block)[-SNAPSHOT_TEXT:]
+    return text + block
+
+
+def _keep(turn: dict, key: str, text: str) -> None:
+    """Store a reply's last SNAPSHOT_TEXT characters, counting what the cut dropped so a tool
+    call's place in the text (`_at`) still lines up after it."""
+    cut = max(0, len(text) - SNAPSHOT_TEXT)
+    turn[f"{key}_cut"] = turn.get(f"{key}_cut", 0) + cut
+    turn[key] = text[cut:]
+
+
+def _place_tools(turn: dict, source: str) -> None:
+    """Each tool call's `at`: how many characters of the shown reply (kept from `source`) came
+    before it, so the activity reads in order between the agent's messages."""
+    for tool in turn["tools"]:
+        start = tool.pop("_at", {}).get(source, 0) - turn.get(f"{source}_cut", 0)
+        tool["at"] = min(max(start, 0), len(turn["reply"]))
 
 
 def _journal(prov, session_id: str) -> native_journal.Journal:
@@ -1455,13 +1471,13 @@ def project(
                 # Streamed pieces of ONE message concatenate; a new message id starts a paragraph.
                 item = data.get("item_id")
                 if item and turn["partial_item"] and item != turn["partial_item"]:
-                    turn["partial"] = _paragraph(turn["partial"], data["text"])
+                    _keep(turn, "partial", _paragraph(turn["partial"], data["text"]))
                 else:
-                    turn["partial"] = (turn["partial"] + data["text"])[-SNAPSHOT_TEXT:]
+                    _keep(turn, "partial", turn["partial"] + data["text"])
                 turn["partial_item"] = item or turn["partial_item"]
             else:
                 # Each settled text block is its own message: without a break, "…done.Next…".
-                turn["reply"] = _paragraph(turn["reply"], data["text"])
+                _keep(turn, "reply", _paragraph(turn["reply"], data["text"]))
             if data.get("questions") and data.get("item_id"):
                 # The newest question the agent asked in this turn (#1463), and the id an
                 # answer names as its `reply_to`.
@@ -1482,6 +1498,11 @@ def project(
                 if isinstance(raw, dict):
                     entry["summary"] = str(raw.get("command") or "Command unavailable")[:500]
             if existing is None:
+                # Where the call came in the text so far — settled or still streaming, whichever
+                # the reply turns out to be shown from.
+                entry["_at"] = {
+                    key: turn.get(f"{key}_cut", 0) + len(turn[key]) for key in ("reply", "partial")
+                }
                 turn["tools"].append(entry)
             else:
                 # A result names only the call it answers (Claude's carry no tool): it keeps the
@@ -1531,9 +1552,14 @@ def project(
                 turn["reason"] = data.get("message") or "the native connection closed"
     in_flight = None
     requests = []
-    for turn in turns.values():
-        if not turn["reply"]:
+    for turn in [*turns.values(), *agents.values()]:
+        # A reply that came whole at the end has no settled text before any call: all sit at 0.
+        if turn["reply"] or turn.get("kind") == "agent":
+            _place_tools(turn, "reply")
+        else:
             turn["reply"] = turn["partial"]
+            _place_tools(turn, "partial")
+    for turn in turns.values():
         if turn["handoff"] == "not_sent":
             turn["status"], turn["reason"] = (
                 "failed",
@@ -1632,6 +1658,8 @@ def project(
             "delivery_operation_id",
             "delivery_handoff",
             "position",
+            "reply_cut",
+            "partial_cut",
         ):
             turn.pop(key, None)
     return {
