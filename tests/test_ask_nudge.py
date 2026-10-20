@@ -103,10 +103,12 @@ def _result(script, n=2) -> dict:
 
 def test_a_nudge_is_a_proposed_ledger_action_and_a_card(app, ai, found, target):
     script = _nudge_turn(ai)
-    turn = app.ask(app.new(), "tell the rebase session to rebase onto main").json()["turn"]
+    cid = app.new()
+    turn = app.ask(cid, "tell the rebase session to rebase onto main").json()["turn"]
     assert _result(script)["proposed"] is True
     (rec,) = _ledger_for()
     assert rec["state"] == "proposed" and rec["source"] == "ask"
+    assert rec["ask_conversation"] == cid  # #1517: the conversation that follows it once delivered
     assert rec["verb"] == "answer" and rec["answer"] == "Rebase onto main, then run the tests."
     assert rec["authority"]["scope"] == "session" and rec["authority"].get("mission_id") is None
     assert rec["precondition"]["screen_fingerprint"]

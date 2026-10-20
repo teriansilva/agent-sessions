@@ -111,7 +111,10 @@ _ACTION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 PROPOSAL_KINDS = frozenset({"nudge", "session"})
 # Follows (#1443 Phase 4): what a followed session's update says, as a kind — the words are the
 # client's, authored, so no model text is ever shown as an update.
-UPDATE_KINDS = frozenset({"finished", "needs_you", "ended"})
+UPDATE_KINDS = frozenset({"finished", "needs_you", "ended", "not_followed"})
+#: Why a conversation follows a session: Ask STARTED it, or a nudge Ask proposed was DELIVERED to it
+#: (#1517).
+FOLLOW_VIAS = frozenset({"start", "nudge"})
 #: Sessions one conversation follows at once, and entries kept (an unfollowed one is remembered so
 #: the same delivered nudge never re-follows it).
 MAX_FOLLOWS = 10
@@ -892,7 +895,7 @@ def _admit_follow(f: dict, secrets: list[str]) -> dict:
     key = f.get("key")
     if not (isinstance(key, str) and _KEY_RE.match(key)):
         raise ValueError("malformed followed session key")
-    if f.get("via") != "start":
+    if f.get("via") not in FOLLOW_VIAS:
         raise ValueError("unknown follow origin")
     out: dict = {
         "key": key,

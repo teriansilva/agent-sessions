@@ -43,6 +43,8 @@ export interface FakeConversation {
   following?: string[];
   /** Titles for followed sessions; defaults to the title of their newest update. */
   followTitles?: Record<string, string>;
+  /** The update budget is spent (#1517). */
+  followsExhausted?: boolean;
   unread?: boolean;
 }
 
@@ -79,6 +81,7 @@ function body(c: FakeConversation) {
     running: false,
     updates: c.updates ?? [],
     following: c.following ?? [],
+    follows_exhausted: Boolean(c.followsExhausted),
     follows: (c.following ?? []).map((key) => ({
       key,
       title:

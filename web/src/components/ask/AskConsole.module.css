@@ -447,3 +447,11 @@
 .following {
   margin-top: 6px;
 }
+/* The update budget is spent (#1517): a notice in the notice voice, never a status colour. */
+.followNotice {
+  margin: 12px 0;
+  padding: 6px 10px;
+  border-left: 2px solid var(--line-strong);
+  font: 12px/1.5 var(--font-mono);
+  color: var(--text-muted);
+}

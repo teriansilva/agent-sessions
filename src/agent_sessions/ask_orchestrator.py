@@ -589,6 +589,9 @@ async def _propose_nudge(turn: _Turn, args: dict) -> tuple[dict, dict]:
         "expires_at": now + int(facts["cfg"]["proposal_ttl_minutes"]) * 60,
         "tier": facts["cfg"]["autonomy"],
         "source": "ask",
+        # Which conversation proposed it (#1517): once DELIVERED, that conversation follows the
+        # session. Set here, server-side, from the turn; never from a browser.
+        "ask_conversation": turn.cid,
         "session_id": key,
         "engine": card.get("engine", ""),
         "title": str(card.get("title") or "")[: pulse_chat.TITLE_MAX],

@@ -1,19 +1,25 @@
-"""Ask follows the sessions it started (#1443 Phase 4).
+"""Ask follows the sessions it started, and the sessions its delivered nudges reached (#1443
+Phase 4, #1517).
 
 A conversation FOLLOWS a session when:
 
 * its session card reached *Started* (``ask_proposals`` records it, with the bound key), or
-Only a session Ask STARTED, which lives wholly in Ask's own stores. Following a session a delivered
-nudge reached is NOT in this phase: the ledger compacts terminal actions of every outcome, so
-"delivered" cannot be told from "dismissed" once the row is gone without a ledger-side record
-(#1443, a recorded follow-up).
+* a nudge it proposed was ``delivered`` or ``indeterminate`` (:data:`NUDGE_FOLLOWS`). The ledger
+  row is that outcome's only record, stamped server-side with the proposing conversation
+  (``ask_conversation``). Each pass admits the settled Ask rows still in the ledger, and ledger
+  compaction admits every eligible row BEFORE it deletes it, declining when an admission cannot be
+  made durable (:func:`project_for_compaction`). Dismissed, expired, refused and failed nudges
+  never follow.
 
 Each pass RECONCILES started sessions from the proposal sidecars, so a follow the launch could not
-record is taken later. What a conversation followed for (the proposal id) is CONSUMED and never
-forgotten, so replaying it never follows again: Unfollow sticks.
+record is taken later. What a conversation followed for (the proposal or action id) is CONSUMED
+and never forgotten, in the same sidecar write that follows, so replaying it never follows again:
+Unfollow sticks.
 
-At most :data:`ask_store.MAX_FOLLOWS` at once; a follow past that is not taken (said nowhere it
-could be mistaken for a promise — the card itself reads *Started*/*Delivered* either way).
+At most :data:`ask_store.MAX_FOLLOWS` at once. A started session past that is not followed (its
+card reads *Started* either way). A delivered nudge past it is said in the conversation as a
+``not_followed`` update, counted against the same :data:`ask_store.MAX_UPDATES` budget; once that
+budget is spent nothing more is queued and the conversation body says ``follows_exhausted``.
 
 **The follower is deterministic** — no model call, no notification. Every pass (``run``, about every
 :data:`INTERVAL_S`) it reads, once, each streamed session's last visible-output time
@@ -87,36 +93,148 @@ def follow(
         if len(doc["consumed"]) >= ask_store.MAX_CONSUMED:
             return bool(row and row.get("active"))
         doc["consumed"].append(reason)
-        taken = bool(row and row.get("active"))
-        room = sum(1 for f in rows if f.get("active")) < ask_store.MAX_FOLLOWS
-        if not taken and room and doc["updates"] < ask_store.MAX_UPDATES:
-            if row is None:
-                if len(rows) >= ask_store.MAX_FOLLOW_ROWS:
-                    # Forget the oldest ENDED row; what it was followed for stays consumed.
-                    ended = [f for f in rows if not f.get("active")]
-                    if ended:
-                        rows.remove(ended[0])
-                if len(rows) < ask_store.MAX_FOLLOW_ROWS:
-                    row = {"key": key}
-                    rows.append(row)
-            if row is not None:
-                row.update(
-                    title=title,
-                    via=via,
-                    active=True,
-                    out_through=None,
-                    # A session Ask STARTED began at the start decision, so it needed no one before
-                    # the follow did. Starting from False reports an intervention that arrives
-                    # before the first pass (Hermes on #1500). None stays "unknown, baseline only".
-                    needs_you=False if via == "start" else None,
-                    misses=0,
-                    # From when its output counts: the start decision for a session Ask started,
-                    # so a turn that ran before the first pass is still reported.
-                    since=time.time() if since is None else float(since),
-                )
-                taken = True
+        taken = _take(doc, key, title=title, via=via, since=since)
         ask_store.write_follows(cid, doc)
     return taken
+
+
+def _take(doc: dict, key: str, *, title: str, via: str, since: float | None) -> bool:
+    """Follow ``key`` in ``doc`` if there is room (``MAX_FOLLOWS``) and update budget. The CALLER
+    holds the follows lock and writes ``doc``. Returns whether ``key`` is followed now."""
+    rows = doc["follows"]
+    row = next((f for f in rows if f.get("key") == key), None)
+    if row and row.get("active"):
+        return True
+    room = sum(1 for f in rows if f.get("active")) < ask_store.MAX_FOLLOWS
+    if not room or doc["updates"] >= ask_store.MAX_UPDATES:
+        return False
+    if row is None:
+        if len(rows) >= ask_store.MAX_FOLLOW_ROWS:
+            # Forget the oldest ENDED row; what it was followed for stays consumed.
+            ended = [f for f in rows if not f.get("active")]
+            if ended:
+                rows.remove(ended[0])
+        if len(rows) >= ask_store.MAX_FOLLOW_ROWS:
+            return False
+        row = {"key": key}
+        rows.append(row)
+    row.update(
+        title=title,
+        via=via,
+        active=True,
+        out_through=None,
+        # A session Ask STARTED began at the start decision, so it needed no one before the follow
+        # did. Starting from False reports an intervention that arrives before the first pass
+        # (Hermes on #1500). A NUDGED session may already have needed someone: None, baseline only.
+        needs_you=False if via == "start" else None,
+        misses=0,
+        # From when its output counts: the start decision, or the nudge's delivery.
+        since=time.time() if since is None else float(since),
+    )
+    return True
+
+
+#: Ledger outcomes after which a nudge's session is followed (#1517): the PTY accepted the bytes,
+#: or it may have. Dismissed, expired, refused or failed-before-the-first-byte never follow.
+NUDGE_FOLLOWS = frozenset({"delivered", "indeterminate"})
+
+
+def admit_nudge(cid: str, key: str, *, title: str, action_id: str, since: float) -> str:
+    """Admit one delivered Ask nudge (#1517): consume its action id and, in the SAME sidecar write,
+    follow ``key`` or record why not. Never appends to the conversation itself: a queued update is
+    flushed by the next follower pass (this also runs inside the ledger's compaction lock).
+    Returns ``"followed"``, ``"not_followed"`` (the follow cap: an update row is queued),
+    ``"exhausted"`` (the update budget is spent: no row, the conversation says so), ``"consumed"``
+    (already admitted) or ``"gone"`` (no such conversation). Blocking; raises when the sidecar
+    cannot be read or written, so compaction declines."""
+    if not ask_store.exists(cid):
+        return "gone"
+    with ask_store.follows_lock(cid):
+        if not ask_store.exists(cid):
+            return "gone"
+        doc = ask_store.read_follows(cid)
+        if action_id in doc["consumed"] or len(doc["consumed"]) >= ask_store.MAX_CONSUMED:
+            return "consumed"
+        doc["consumed"].append(action_id)
+        if _take(doc, key, title=title, via="nudge", since=since):
+            outcome = "followed"
+        elif doc["updates"] < ask_store.MAX_UPDATES:
+            now = time.time()
+            # Appended, never replacing what is pending: one counter, bumped at QUEUE time.
+            doc["outbox"] = [
+                *doc["outbox"],
+                {
+                    "key": key,
+                    "kind": "not_followed",
+                    "title": title,
+                    "ts": now,
+                    "event_id": uuid.uuid4().hex,
+                },
+            ]
+            doc["updates"] += 1
+            doc["last_update_at"] = now
+            outcome = "not_followed"
+        else:
+            outcome = "exhausted"
+        ask_store.write_follows(cid, doc)
+    return outcome
+
+
+def _nudge_rows(rows) -> list[tuple[str, dict]]:
+    """``(conversation, row)`` for every Ask nudge whose outcome earns a follow."""
+    out = []
+    for r in rows:
+        cid = r.get("ask_conversation")
+        if (
+            r.get("source") == "ask"
+            and r.get("state") in NUDGE_FOLLOWS
+            and isinstance(cid, str)
+            and ask_store.valid_cid(cid)
+            and isinstance(r.get("id"), str)
+            and isinstance(r.get("session_id"), str)
+        ):
+            out.append((cid, r))
+    return out
+
+
+def _admit_row(cid: str, r: dict) -> str:
+    # `ts` of a settled row is its settling record's: the delivery, the follow's `since`.
+    return admit_nudge(
+        cid,
+        r["session_id"],
+        title=str(r.get("title") or ""),
+        action_id=r["id"],
+        since=float(r.get("ts") or time.time()),
+    )
+
+
+def _follow_delivered_nudges() -> None:
+    """The live path: settled Ask nudges still in the ledger. Reads the ledger WITHOUT its lock and
+    then takes follows locks, so the lock order stays ledger → follows (compaction's) and never
+    the reverse. An unreadable ledger is skipped for this pass."""
+    from . import orchestrator_ledger
+
+    status, rows = orchestrator_ledger.latest_by_id_checked()
+    if status != "ok":
+        return
+    for cid, r in _nudge_rows(rows.values()):
+        with contextlib.suppress(Exception):
+            _admit_row(cid, r)
+
+
+def project_for_compaction(doomed: list[dict]) -> bool:
+    """Ledger compaction's Ask projection (#1517), called INSIDE the ledger lock over the rows it is
+    about to delete. Admits every eligible Ask nudge first; False (compaction declines and the
+    rows stay) if any admission could not be made durable."""
+    for cid, r in _nudge_rows(doomed):
+        try:
+            _admit_row(cid, r)
+        except Exception as e:  # noqa: BLE001 — a decline, not a crash
+            log.warning(
+                "ask follow: could not admit nudge before compaction (%s)", type(e).__name__
+            )
+            return False
+    return True
 
 
 def unfollow(cid: str, key: str) -> bool:
@@ -154,14 +272,16 @@ def state(cid: str) -> dict:
     try:
         doc = ask_store.read_follows(cid)
     except ask_store.ConversationNotFound:
-        return {**empty, "incomplete": False, "pending": False}
+        return {**empty, "incomplete": False, "pending": False, "exhausted": False}
     except ask_store.SidecarUnreadable:
         # Unknown is not "following nothing" (Hermes on #1500): the client keeps what it last
         # verified and keeps reading until a read succeeds.
-        return {**empty, "incomplete": True, "pending": False}
+        return {**empty, "incomplete": True, "pending": False, "exhausted": False}
     active = [f for f in doc["follows"] if f.get("active") and f.get("key")]
     return {
         "incomplete": False,
+        # The update budget is spent: follows have ended and no new row will appear (#1517).
+        "exhausted": doc["updates"] >= ask_store.MAX_UPDATES,
         # An update stored but not yet appended to the conversation (an interrupted or racing
         # flush): the open screen keeps reading until it lands (Hermes on #1500).
         "pending": bool(doc.get("outbox")),
@@ -272,6 +392,7 @@ def pass_once(
 
     now = time.time() if now is None else now
     _follow_started_sessions()
+    _follow_delivered_nudges()
     followed = _followed()
     if not followed:
         return 0

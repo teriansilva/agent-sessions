@@ -1053,16 +1053,30 @@ test("an open card is re-read on a timer, so an expiry reaches it", async () => 
   ).toHaveTextContent("Expired");
 });
 
-test("a decided card stops re-reading", async () => {
+test.each(["dismissed", "expired"])("a decided card that earns no follow (%s) stops re-reading", async (state) => {
   const turn = {
     ...turnOf("tell it", "t-n", { answer: "Proposed." }),
-    proposals: [nudge({ state: "delivered", projection: "settled", can_approve: false, can_reject: false })],
+    proposals: [nudge({ state, projection: "settled", can_approve: false, can_reject: false })],
   };
   withConversation([turn]);
   mount(<AskConsole configured cardPollMs={20} />);
   await screen.findByTestId("ask-nudge-outcome");
   const reads = vi.mocked(api.askConversation).mock.calls.length;
   await new Promise((r) => setTimeout(r, 200)); // ten intervals' worth
+  expect(vi.mocked(api.askConversation).mock.calls.length).toBe(reads);
+});
+
+test("a delivered card reads only for the bounded window its follow may take (#1517)", async () => {
+  const turn = {
+    ...turnOf("tell it", "t-n", { answer: "Proposed." }),
+    proposals: [nudge({ state: "delivered", projection: "settled", can_approve: false, can_reject: false })],
+  };
+  withConversation([turn]);
+  mount(<AskConsole configured cardPollMs={20} reconcileMs={120} />);
+  await screen.findByTestId("ask-nudge-outcome");
+  await new Promise((r) => setTimeout(r, 300)); // past the window
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  await new Promise((r) => setTimeout(r, 200));
   expect(vi.mocked(api.askConversation).mock.calls.length).toBe(reads);
 });
 
@@ -1567,6 +1581,28 @@ test("an update still being delivered keeps the open screen reading until it lan
   );
 });
 
+test("a nudge Ask could not follow reads as Not following, with Open and no Unfollow (#1517)", async () => {
+  withUpdates({
+    updates: [update({ ts: 15, kind: "not_followed", title: "docs pass", following: true })],
+  });
+  mount(<AskConsole configured />);
+  const row = await screen.findByTestId("ask-update");
+  expect(row).toHaveAttribute("data-kind", "not_followed");
+  expect(row).toHaveTextContent("Not following");
+  expect(row).toHaveTextContent("docs pass");
+  expect(row).toHaveTextContent("already following 10 sessions");
+  expect(within(row).queryByRole("button", { name: /Unfollow/ })).toBeNull();
+  expect(within(row).getByTestId("ask-update-open")).toBeInTheDocument();
+});
+
+test("a conversation whose update budget is spent says it no longer follows sessions (#1517)", async () => {
+  withUpdates({ updates: [update({ ts: 15 })], follows_exhausted: true });
+  mount(<AskConsole configured />);
+  expect(await screen.findByTestId("ask-follow-exhausted")).toHaveTextContent(
+    "This conversation no longer follows sessions. Start a new conversation to follow more.",
+  );
+});
+
 test("a followed session with no update yet can be unfollowed (Hermes on #1500)", async () => {
   withUpdates({ updates: [], follows: [{ key: FOLLOWED, title: "api rebase" }] });
   mount(<AskConsole configured />);
@@ -1695,6 +1731,51 @@ test("a session started elsewhere is read until the follow it earns arrives", as
     "Finished its turn",
   );
 });
+
+test.each(["delivered", "indeterminate"])(
+  "a nudge %s elsewhere is read until the follow it earns arrives (Hermes on #1517)",
+  async (outcome) => {
+    // The nudge was approved on another surface (Needs you, the bell): this console's read shows
+    // it settled, not followed YET — the follower admits it at its next pass, up to a minute away —
+    // and nothing else is live. It keeps reading, so the follow and its update reach this screen.
+    const nudgeTurn = (card: AskNudgeCard) => ({
+      ...turnOf("tell it to rebase", "t-n", { answer: "Proposed." }),
+      proposals: [card],
+    });
+    withConversation([nudgeTurn(nudge())]);
+    mount(<AskConsole configured cardPollMs={40} />);
+    await screen.findByTestId("ask-nudge-send");
+    const settledRead = {
+      ...conversation(CID, [
+        nudgeTurn(
+          nudge({
+            state: outcome,
+            projection: "settled",
+            can_approve: false,
+            can_reject: false,
+            key: FOLLOWED,
+          }),
+        ),
+      ]),
+      updates: [],
+      following: [],
+      unread: false,
+    };
+    vi.mocked(api.askConversation).mockResolvedValue(settledRead);
+    await waitFor(() => expect(screen.queryByTestId("ask-nudge-send")).toBeNull(), {
+      timeout: 5000,
+    });
+    await new Promise((r) => setTimeout(r, 150)); // several reads before the follower's pass
+    vi.mocked(api.askConversation).mockResolvedValue({
+      ...settledRead,
+      updates: [update({ ts: 50, kind: "finished" })],
+      following: [FOLLOWED],
+    });
+    expect(await screen.findByTestId("ask-update", {}, { timeout: 5000 })).toHaveTextContent(
+      "Finished its turn",
+    );
+  },
+);
 
 test("the read after a start is bounded: it stops once the window ends", async () => {
   withConversation([sessionTurn(settled({ state: "started", session_key: FOLLOWED }))]);

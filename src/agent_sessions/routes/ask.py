@@ -78,6 +78,8 @@ def _conversation_body(cid: str, records: list[dict]) -> dict:
         "follows_incomplete": follows["incomplete"],
         # An update is stored but not appended yet: it will land; keep reading.
         "updates_pending": follows["pending"],
+        # The update budget is spent: this conversation no longer follows sessions (#1517).
+        "follows_exhausted": follows["exhausted"],
     }
 
 

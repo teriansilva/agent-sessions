@@ -147,6 +147,8 @@ const LIVE_PROJECTIONS = new Set([
   "in_flight_locked",
   "unknown",
 ]);
+/** A nudge's ledger outcomes that earn its conversation a follow (`ask_follow.NUDGE_FOLLOWS`). */
+const NUDGE_FOLLOWS = new Set(["delivered", "indeterminate"]);
 /** A session card's states that can still change: undecided, launching, or unreadable. */
 const LIVE_SESSION_STATES = new Set(["pending", "deciding", "unknown"]);
 
@@ -250,8 +252,10 @@ export function AskConsole({
   const [follows, setFollows] = useState<AskFollow[]>([]);
   const [followsUnknown, setFollowsUnknown] = useState(false);
   const [updatesPending, setUpdatesPending] = useState(false);
+  const [followsExhausted, setFollowsExhausted] = useState(false);
   const [unread, setUnread] = useState(false);
-  // A session just started: keep reading for a while, so the follow it earns arrives.
+  // A session just started or a nudge just delivered: keep reading for a while, so the follow it
+  // earns arrives.
   const startedSeen = useRef(new Map<string, string>());
   const [reconciling, setReconciling] = useState(false);
   const reconcileTimer = useRef<number | null>(null);
@@ -355,27 +359,26 @@ export function AskConsole({
       // last verified, and keep reading (below) until a read succeeds.
       setFollowsUnknown(Boolean(c.follows_incomplete));
       setUpdatesPending(Boolean(c.updates_pending));
+      setFollowsExhausted(Boolean(c.follows_exhausted));
       if (!c.follows_incomplete) {
         setFollowing(c.following ?? []);
         setFollows(c.follows ?? (c.following ?? []).map((key) => ({ key, title: "" })));
         setUnread(Boolean(c.unread));
       }
-      // A session STARTED — from this card or another tab's — earns a follow at the server's
-      // next follower pass, up to a minute later. Seen as started and not followed yet, the
-      // conversation keeps reading for a while (once per card's move into `started`).
+      // A session STARTED, or a nudge DELIVERED (#1517) — from this card or another surface's —
+      // earns a follow at the server's next follower pass, up to a minute later. Seen in that
+      // state and not followed yet, the conversation keeps reading for a while (once per card's
+      // move into it), so the follow, or the refusal row, reaches the open screen.
       const was = startedSeen.current;
       let earned = false;
       for (const t of c.turns ?? [])
         for (const p of t.proposals ?? []) {
-          if (p.kind !== "session") continue;
+          const state = p.state ?? "";
           const before = was.get(p.action_id);
-          was.set(p.action_id, p.state);
-          if (
-            p.state === "started" &&
-            before !== "started" &&
-            p.session_key &&
-            !(c.following ?? []).includes(p.session_key)
-          )
+          was.set(p.action_id, state);
+          const key = p.kind === "session" ? p.session_key : p.key;
+          const earns = p.kind === "session" ? state === "started" : NUDGE_FOLLOWS.has(state);
+          if (earns && before !== state && key && !(c.following ?? []).includes(key))
             earned = true;
         }
       if (earned) reconcile();
@@ -400,6 +403,7 @@ export function AskConsole({
       setFollows([]);
       setFollowsUnknown(false);
       setUpdatesPending(false);
+      setFollowsExhausted(false);
       setUnread(false);
       startedSeen.current = new Map();
       void load(id);
@@ -776,6 +780,7 @@ export function AskConsole({
             setFollows([]);
             setFollowsUnknown(false);
             setUpdatesPending(false);
+            setFollowsExhausted(false);
             setUnread(false);
             startedSeen.current = new Map();
             inputRef.current?.focus();
@@ -1090,6 +1095,12 @@ export function AskConsole({
                   />
                 ))}
               </section>
+            ) : null}
+            {followsExhausted ? (
+              <p className={a.followNotice} role="note" data-testid="ask-follow-exhausted">
+                This conversation no longer follows sessions. Start a new conversation to follow
+                more.
+              </p>
             ) : null}
           </div>
         )}

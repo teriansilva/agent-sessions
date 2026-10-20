@@ -420,6 +420,12 @@ const UPDATE_WORDS: Record<AskUpdate["kind"], { word: string; tone: Tone; detail
     tone: "neutral",
     detail: "It was archived or is gone.",
   },
+  // #1517: a nudge reached it, but this conversation already follows its limit.
+  not_followed: {
+    word: "Not following",
+    tone: "neutral",
+    detail: "already following 10 sessions",
+  },
 };
 
 /** One session the conversation follows (#1443 Phase 4). Listed whether or not it has an update
@@ -483,7 +489,7 @@ export function UpdateRow({
       </span>
       <span className={c.ways}>
         {u.kind !== "ended" ? open : null}
-        {u.following ? (
+        {u.following && u.kind !== "not_followed" ? (
           <button
             type="button"
             className={c.ghost}

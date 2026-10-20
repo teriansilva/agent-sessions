@@ -894,7 +894,8 @@ export interface AskConversationSummary {
  *  authored here, never model text. */
 export interface AskUpdate {
   key: string;
-  kind: "finished" | "needs_you" | "ended";
+  /** `not_followed` (#1517): a delivered nudge that could not be followed (the cap was full). */
+  kind: "finished" | "needs_you" | "ended" | "not_followed";
   title: string;
   ts: number;
   /** Still followed — Unfollow is offered. */
@@ -1033,6 +1034,8 @@ export interface AskConversation {
   follows_incomplete?: boolean;
   /** An update is stored but not appended to the conversation yet: it will land, keep reading. */
   updates_pending?: boolean;
+  /** The update budget is spent: this conversation no longer follows sessions (#1517). */
+  follows_exhausted?: boolean;
 }
 
 /** A session the conversation follows (#1443 Phase 4). */

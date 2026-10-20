@@ -612,25 +612,199 @@ def test_a_short_turn_before_the_first_pass_is_still_finished(quiet):
     assert [u["kind"] for u in _updates(cid)] == ["finished"]
 
 
-def test_a_delivered_nudge_does_not_follow_in_this_phase(quiet):
-    """Recorded scope cut (#1443): the ledger compacts terminal actions of every outcome, so a
-    delivered nudge cannot be told from a dismissed one once its row is gone; following a nudged
-    session waits for a ledger-side record."""
-    cid = ask_store.create()
+# ---- #1517: sessions a delivered Ask nudge reached -----------------------------------------
+
+
+def _key(i: int) -> str:
+    return f"claude:00000000-0000-4000-8000-{i:012d}"
+
+
+def _nudge(cid: str, key: str = S1, state: str = "delivered", ts: float | None = None) -> str:
+    aid = uuid.uuid4().hex
     orchestrator_ledger.append_batch_for_free_sessions(
         [
             {
-                "id": uuid.uuid4().hex,
-                "state": "delivered",
-                "ts": time.time(),
+                "id": aid,
+                "state": state,
+                "ts": _CLOCK["now"] if ts is None else ts,
                 "source": "ask",
-                "session_id": S1,
+                "session_id": key,
+                "title": "docs pass",
                 "ask_conversation": cid,
             }
         ]
     )
+    return aid
+
+
+@pytest.mark.parametrize(
+    ("state", "follows"),
+    [
+        ("delivered", True),
+        ("indeterminate", True),
+        ("rejected", False),
+        ("expired", False),
+        ("stale", False),
+        ("failed", False),
+        ("proposed", False),
+    ],
+)
+def test_only_a_nudge_that_reached_the_session_follows_it(quiet, state, follows):
+    cid = ask_store.create()
+    _nudge(cid, state=state)
     _run([_card()])
+    assert ask_follow.state(cid)["following"] == ([S1] if follows else [])
+    if follows:
+        (f,) = ask_store.read_follows(cid)["follows"]
+        assert f["via"] == "nudge"
+
+
+def test_a_nudged_session_already_needing_you_is_a_baseline_not_an_update(quiet):
+    """Unlike a started one, a nudged session may have needed someone before the nudge: the
+    first look only sets the baseline; a NEW intervention after it is reported."""
+    cid = ask_store.create()
+    _nudge(cid)
+    assert _run([_card(needs=True)]) == 0
+    assert _run([_card(needs=False)]) == 0
+    assert _run([_card(needs=True)]) == 1
+    assert [u["kind"] for u in _updates(cid)] == ["needs_you"]
+
+
+def test_a_nudge_follows_from_its_settlement_time(quiet):
+    cid = ask_store.create()
+    _nudge(cid, ts=_CLOCK["now"] - 30)
+    _run([_card()])
+    (f,) = ask_store.read_follows(cid)["follows"]
+    assert f["since"] == pytest.approx(_CLOCK["now"] - 60 - 30, abs=1e-3)  # epoch: rel is ±30 min
+
+
+def test_a_replayed_nudge_never_follows_twice_and_unfollow_sticks(quiet):
+    cid = ask_store.create()
+    _nudge(cid)
+    _run([_card()])
+    assert ask_follow.unfollow(cid, S1) is True
+    for _ in range(3):  # the row is still in the ledger; every pass sees it again
+        _run([_card()])
     assert ask_follow.state(cid)["following"] == []
+
+
+def test_compaction_admits_a_nudge_before_deleting_its_row(quiet):
+    cid = ask_store.create()
+    aid = _nudge(cid)
+    orchestrator_ledger.compact(history_max=0)  # before any follower pass
+    assert aid not in orchestrator_ledger.latest_by_id()
+    assert ask_follow.state(cid)["following"] == [S1]
+
+
+def test_a_failed_admission_declines_compaction_and_the_next_pass_follows(quiet, monkeypatch):
+    cid = ask_store.create()
+    aid = _nudge(cid)
+    real = ask_store.write_follows
+
+    def fails(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ask_store, "write_follows", fails)
+    assert orchestrator_ledger.compact(history_max=0) == 0  # declined
+    assert aid in orchestrator_ledger.latest_by_id()  # the row survives
+    monkeypatch.setattr(ask_store, "write_follows", real)
+    _run([_card()])
+    assert ask_follow.state(cid)["following"] == [S1]
+
+
+def test_a_deleted_conversation_makes_its_nudge_inert(quiet):
+    cid = ask_store.create()
+    aid = _nudge(cid)
+    ask_store.delete(cid)
+    assert orchestrator_ledger.compact(history_max=0) > 0 or aid not in (
+        orchestrator_ledger.latest_by_id()
+    )
+    assert aid not in orchestrator_ledger.latest_by_id()  # compacted, not declined
+
+
+def test_a_conversation_deleted_while_admission_waits_gets_no_sidecar_back(quiet, monkeypatch):
+    """Retention deletes the conversation between admission's first look and its lock: the look
+    UNDER the lock says gone, so no orphan follows sidecar is written back."""
+    cid = ask_store.create()
+    aid = _nudge(cid)
+    ask_store.delete(cid)
+    real, looks = ask_store.exists, []
+
+    def stale_first_look(c: str) -> bool:
+        looks.append(c)
+        return len(looks) == 1 or real(c)  # the first look predates the delete
+
+    monkeypatch.setattr(ask_store, "exists", stale_first_look)
+    assert ask_follow.admit_nudge(cid, S1, title="t", action_id=aid, since=1.0) == "gone"
+    assert not ask_store._follows_path(cid).exists()
+
+
+def test_at_the_follow_cap_a_nudge_is_a_visible_non_follow_once(quiet):
+    cid = ask_store.create()
+    for i in range(ask_store.MAX_FOLLOWS):
+        ask_follow.follow(cid, _key(100 + i), title=f"s{i}", via="start", reason=uuid.uuid4().hex)
+    aid = _nudge(cid, key=S1)
+    assert ask_follow.admit_nudge(cid, S1, title="docs pass", action_id=aid, since=1.0) == (
+        "not_followed"
+    )
+    assert ask_follow.state(cid)["pending"] is True  # queued, not appended inside the admission
+    _run([_card()] + [_card(_key(100 + i)) for i in range(ask_store.MAX_FOLLOWS)])
+    rows = [u for u in _updates(cid) if u["kind"] == "not_followed"]
+    assert len(rows) == 1 and rows[0]["key"] == S1 and rows[0]["title"] == "docs pass"
+    _run([_card()] + [_card(_key(100 + i)) for i in range(ask_store.MAX_FOLLOWS)])
+    assert len([u for u in _updates(cid) if u["kind"] == "not_followed"]) == 1  # never again
+
+
+def test_the_update_budget_is_one_counter_bumped_at_queue_time(quiet):
+    """Hermes on #1517: a queued entry uses ONE slot, not two."""
+    cid = ask_store.create()
+    for i in range(ask_store.MAX_FOLLOWS):
+        ask_follow.follow(cid, _key(100 + i), title=f"s{i}", via="start", reason=uuid.uuid4().hex)
+    with ask_store.follows_lock(cid):
+        doc = ask_store.read_follows(cid)
+        doc["updates"] = ask_store.MAX_UPDATES - 2
+        ask_store.write_follows(cid, doc)
+    one, two, three = (_nudge(cid, key=_key(i)) for i in (201, 202, 203))
+    assert ask_follow.admit_nudge(cid, _key(201), title="a", action_id=one, since=1.0) == (
+        "not_followed"
+    )
+    assert ask_store.read_follows(cid)["updates"] == ask_store.MAX_UPDATES - 1  # one slot
+    assert ask_follow.admit_nudge(cid, _key(202), title="b", action_id=two, since=1.0) == (
+        "not_followed"
+    )
+    assert ask_follow.admit_nudge(cid, _key(203), title="c", action_id=three, since=1.0) == (
+        "exhausted"
+    )
+    assert ask_follow.state(cid)["exhausted"] is True
+    assert three in ask_store.read_follows(cid)["consumed"]  # consumed, with no row
+
+
+def test_queued_refusals_and_an_update_survive_an_interrupted_flush_once_each(quiet, monkeypatch):
+    """Hermes on #1517: an ordinary update minted by a pass whose flush crashes, then two refused
+    nudges admitted on top of it before any replay. Nothing is overwritten (writers append to the
+    outbox), and the replay delivers each exactly once, in order."""
+    cid = ask_store.create()
+    ask_follow.follow(cid, S1, title="api", via="start", reason=uuid.uuid4().hex)
+    for i in range(ask_store.MAX_FOLLOWS - 1):
+        ask_follow.follow(cid, _key(100 + i), title=f"s{i}", via="start", reason=uuid.uuid4().hex)
+    cards = [_card()] + [_card(_key(100 + i)) for i in range(ask_store.MAX_FOLLOWS - 1)]
+    _run(cards, working=(S1,))
+    # `context()`, never `undo()`: undo would also revert the fixtures' store and clock pins.
+    with monkeypatch.context() as m:
+        m.setattr(ask_store, "append", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
+        _run(cards)  # mints `finished` for S1; its flush crashes
+    a1, a2 = _nudge(cid, key=_key(201)), _nudge(cid, key=_key(202))
+    ask_follow.admit_nudge(cid, _key(201), title="one", action_id=a1, since=1.0)
+    ask_follow.admit_nudge(cid, _key(202), title="two", action_id=a2, since=1.0)
+    assert [o["kind"] for o in ask_store.read_follows(cid)["outbox"]] == [
+        "finished",
+        "not_followed",
+        "not_followed",
+    ]
+    _run(cards)  # the replay flushes all three
+    _run(cards)
+    kinds = [(u["kind"], u.get("title")) for u in _updates(cid)]
+    assert kinds == [("finished", "api rebase"), ("not_followed", "one"), ("not_followed", "two")]
 
 
 def test_retention_waits_for_a_follower_write_that_already_passed_its_check():
@@ -708,3 +882,50 @@ def test_a_reconciled_start_counts_output_from_the_start_decision(quiet):
     _CLOCK["out"][S1] = decided + 5  # its first turn, before any pass
     assert _run([_card()]) == 1
     assert [u["kind"] for u in _updates(cid)] == ["finished"]
+
+
+def test_a_not_followed_row_is_unread_until_seen(quiet):
+    """A refused follow is an update like any other: it marks the conversation unread, and a seen
+    mark through it clears that."""
+    cid = ask_store.create()
+    for i in range(ask_store.MAX_FOLLOWS):
+        ask_follow.follow(cid, _key(100 + i), title=f"s{i}", via="start", reason=uuid.uuid4().hex)
+    cards = [_card(_key(100 + i)) for i in range(ask_store.MAX_FOLLOWS)]
+    _run(cards)
+    assert ask_follow.state(cid)["unread"] is False
+    one = _nudge(cid, key=_key(201))
+    assert ask_follow.admit_nudge(cid, _key(201), title="a", action_id=one, since=1.0) == (
+        "not_followed"
+    )
+    assert ask_follow.state(cid)["unread"] is True
+    _run(cards)
+    shown = _updates(cid)[-1]
+    assert shown["kind"] == "not_followed"
+    ask_follow.mark_seen(cid, shown["ts"])
+    assert ask_follow.state(cid)["unread"] is False
+
+
+def test_a_crashed_flush_of_a_queued_refusal_never_counts_it_again(quiet, monkeypatch):
+    """The budget boundary across a crash: the refusal queued at ``MAX_UPDATES - 2`` uses one slot,
+    and a flush that crashes, then its replay, leave the counter where the queueing put it."""
+    cid = ask_store.create()
+    for i in range(ask_store.MAX_FOLLOWS):
+        ask_follow.follow(cid, _key(100 + i), title=f"s{i}", via="start", reason=uuid.uuid4().hex)
+    cards = [_card(_key(100 + i)) for i in range(ask_store.MAX_FOLLOWS)]
+    with ask_store.follows_lock(cid):
+        doc = ask_store.read_follows(cid)
+        doc["updates"] = ask_store.MAX_UPDATES - 2
+        ask_store.write_follows(cid, doc)
+    one = _nudge(cid, key=_key(201))
+    assert ask_follow.admit_nudge(cid, _key(201), title="a", action_id=one, since=1.0) == (
+        "not_followed"
+    )
+    with monkeypatch.context() as m:
+        m.setattr(ask_store, "append", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
+        _run(cards)  # the flush crashes
+    assert ask_store.read_follows(cid)["updates"] == ask_store.MAX_UPDATES - 1
+    _run(cards)  # the replay delivers it
+    _run(cards)
+    doc = ask_store.read_follows(cid)
+    assert doc["updates"] == ask_store.MAX_UPDATES - 1 and doc["outbox"] == []
+    assert [u["kind"] for u in _updates(cid)] == ["not_followed"]

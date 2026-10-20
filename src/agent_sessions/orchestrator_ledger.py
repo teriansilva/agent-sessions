@@ -1048,6 +1048,16 @@ def compact(path: Path | None = None, history_max: int = HISTORY_MAX) -> int:
                 len(doomed),
             )
             return 0
+        # Ask's follows (#1517): a delivered Ask nudge earns its conversation a follow. The row is
+        # its only record, so it is ADMITTED (follow or a visible non-follow, one durable write)
+        # before it can go; a failure declines, exactly like the mission projection. Lock order:
+        # this ledger lock, then the conversation's follows lock — the follower never takes them
+        # the other way round.
+        from . import ask_follow
+
+        if not ask_follow.project_for_compaction(doomed):
+            log.warning("ledger: compaction declined — an Ask nudge could not be admitted yet")
+            return 0
         return _compact_locked(p, history_max, rows=rows, doomed=doomed)
 
 

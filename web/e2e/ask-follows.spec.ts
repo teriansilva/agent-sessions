@@ -158,3 +158,121 @@ test("a session followed before its first update is listed with Unfollow, by key
   expect(decodeURIComponent(unfollowed[0])).toContain(`/follow/${KEY}`);
   await noSidewaysScroll(page);
 });
+
+test("a nudge that could not be followed, and a spent budget, read as words (#1517)", async ({
+  page,
+}) => {
+  const conv = followed(false);
+  conv.updates = [
+    { key: KEY, kind: "finished", title: "api rebase", ts: conv.turns[0].asked_at + 0.5, following: true },
+    {
+      key: "claude:00000000-0000-4000-8000-0000000000dd",
+      kind: "not_followed",
+      title: "docs pass",
+      ts: conv.turns[1].asked_at + 0.5,
+      following: false,
+    },
+  ];
+  conv.followsExhausted = true;
+  await mockShell(page, [conv]);
+  await page.goto("/dashboard");
+  const panel = await openAsk(page);
+  const row = panel.locator('[data-testid="ask-update"][data-kind="not_followed"]');
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText("Not following");
+  await expect(row).toContainText("docs pass");
+  await expect(row).toContainText("already following 10 sessions");
+  await expect(row.getByRole("button", { name: /Unfollow/ })).toHaveCount(0);
+  const open = row.getByTestId("ask-update-open");
+  expect((await open.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  // Its LED is the unknown status beside the word, never colour alone.
+  const led = row.locator('[aria-hidden="true"]').first();
+  const unknown = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue("--status-unknown").trim(),
+  );
+  const bg = await led.evaluate((el) => getComputedStyle(el).backgroundColor);
+  const hex = (c: string) =>
+    "#" + c.match(/\d+/g)!.slice(0, 3).map((n) => Number(n).toString(16).padStart(2, "0")).join("");
+  expect(hex(bg)).toBe(unknown.toLowerCase());
+  const notice = panel.getByTestId("ask-follow-exhausted");
+  await expect(notice).toHaveText(
+    "This conversation no longer follows sessions. Start a new conversation to follow more.",
+  );
+  await noSidewaysScroll(page);
+});
+
+test("a nudge sent from the card is followed by THAT conversation once the follower admits it, and its update is seen (#1517)", async ({
+  page,
+}) => {
+  // The real interleaving (Hermes on #1534): the card settles `delivered` BEFORE the follower's
+  // next pass admits it. The open conversation must keep reading until the follow and its update
+  // land; nothing but that window is live by then.
+  // Three fake-clock phases (reads before admission, the poll that lands it, the unread poll), each
+  // fetching for real: past the default 30 s on a loaded runner, so this test has its own budget.
+  test.setTimeout(90_000);
+  const NUDGED = "claude:00000000-0000-4000-8000-0000000000ee";
+  const ask = turnOf("tell the docs session to rebase", { answer: "Proposed a nudge." });
+  const card = {
+    action_id: "a".repeat(32),
+    kind: "nudge",
+    key: NUDGED,
+    title: "docs pass",
+    text: "Rebase onto main.",
+    state: "proposed",
+    projection: "actionable",
+    can_approve: true,
+    can_reject: true,
+    detail: "",
+  };
+  const conv: FakeConversation = {
+    id: "ask_" + "e".repeat(32),
+    created_at: 1,
+    updated_at: 2,
+    turns: [{ ...ask, proposals: [card] }],
+  };
+  await page.clock.install();
+  await mockShell(page, [conv]);
+  const seen: string[] = [];
+  page.on("request", (req) => {
+    if (req.method() === "POST" && req.url().endsWith("/seen")) seen.push(req.url());
+  });
+  await page.route("**/api/pulse/actions/*/approve", (r) => {
+    Object.assign(card, { state: "delivered", projection: "settled", can_approve: false, can_reject: false });
+    return r.fulfill({ json: { id: card.action_id, state: "delivered" } });
+  });
+  await page.goto("/dashboard");
+  const panel = await openAsk(page);
+  await panel.getByTestId("ask-nudge-send").click();
+  await expect(panel.getByTestId("ask-nudge")).toHaveAttribute("data-state", "delivered");
+  await page.clock.runFor(20_000); // reads before the follower's pass find nothing followed yet
+  await expect(panel.getByTestId("ask-update")).toHaveCount(0);
+
+  // The follower's pass admits it: the conversation follows the session, which then finishes.
+  conv.following = [NUDGED];
+  conv.unread = true;
+  conv.updates = [{ key: NUDGED, kind: "finished", title: "docs pass", ts: ask.asked_at + 5, following: true }];
+  await page.clock.runFor(16_000);
+  const row = panel.getByTestId("ask-update");
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText("Finished its turn");
+  await expect(row).toContainText("docs pass");
+  await expect(row.getByRole("button", { name: "Unfollow docs pass" })).toBeVisible();
+  // On screen, so it is marked seen: no dot, the conversation is read.
+  await expect.poll(() => seen.length).toBeGreaterThan(0);
+  expect(conv.unread).toBe(false);
+  await expect(page.getByTestId("ask-unread-dot")).toHaveCount(0);
+
+  // Panel closed: a later refusal (the follow cap) is unread until the conversation is on screen.
+  await panel.getByRole("button", { name: "Close Ask" }).click();
+  conv.unread = true;
+  conv.updates = [
+    ...conv.updates,
+    { key: "claude:00000000-0000-4000-8000-0000000000ef", kind: "not_followed", title: "lint pass", ts: ask.asked_at + 9, following: false },
+  ];
+  await page.clock.runFor(61_000);
+  await expect(page.getByTestId("ask-unread-dot")).toBeVisible();
+  await openAsk(page);
+  await expect(panel.locator('[data-testid="ask-update"][data-kind="not_followed"]')).toContainText("lint pass");
+  await expect(page.getByTestId("ask-unread-dot")).toHaveCount(0);
+  await noSidewaysScroll(page);
+});
