@@ -636,3 +636,65 @@
   border: 1px solid var(--line-strong);
   font: 400 calc(11px * var(--api-scale, 1)) var(--font-mono);
 }
+/* Scrolling up past the snapshot window (#1504): rows in the notice's voice (mono 12px, muted,
+   a 2px left rule) whose rule and LED carry the state beside its words. `flex: none` — the log is
+   a column flex scroller, and a row would otherwise squash once it overflows. */
+.historyRow {
+  margin: 0;
+  flex: none;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px 10px;
+  font: calc(12px * var(--api-scale, 1)) var(--font-mono);
+  color: var(--text-muted);
+  border-left: 2px solid var(--line-strong);
+  padding-left: 10px;
+}
+.historyRow[data-state="loading"] { border-left-color: var(--status-degraded); }
+.historyRow[data-state="error"] { border-left-color: var(--status-down); flex-wrap: wrap; }
+.historyRow[data-state="capped"] { border-left-color: var(--status-unknown); }
+.historyFailed { color: var(--danger-text); }
+.ledDown { background: var(--status-down); }
+.historyLoadingLed {
+  background: var(--status-degraded);
+  animation: historyLoadingLed 1.2s ease-in-out infinite;
+}
+@keyframes historyLoadingLed { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .historyLoadingLed { animation: none; } }
+.historyRetry {
+  min-height: 44px;
+  padding: 0 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--accent);
+  color: var(--accent-text); /* text never reads the raw accent (design.md) */
+  font: 600 calc(12px * var(--api-scale, 1)) var(--font-mono);
+  cursor: pointer;
+}
+.historyRetry:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.historyBegin {
+  margin: 0;
+  flex: none;
+  font: calc(12px * var(--api-scale, 1)) var(--font-mono);
+  color: var(--text-muted);
+  border-left: 2px solid var(--line-strong);
+  padding-left: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.historySeam {
+  margin: 0;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font: calc(11px * var(--api-scale, 1)) var(--font-mono);
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+.historySeam::before,
+.historySeam::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--line-strong);
+}

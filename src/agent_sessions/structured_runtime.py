@@ -107,6 +107,7 @@ class _NativeAdapter:
             "submit",
             "decide",
             "events",
+            "history",
             "interrupt",
             "send_now",
             "withdraw",
@@ -156,6 +157,9 @@ class _NativeAdapter:
 
     async def events(self, engine, native, after, limit):
         return await _native(native_runtime.events, engine, native, after, limit)
+
+    async def history(self, engine, native, before, limit):
+        return await _native(native_runtime.history, engine, native, before, limit)
 
     async def start(self, engine, native):
         return await _native(native_runtime.start, engine, native)
@@ -501,6 +505,8 @@ def _snapshot(session_key: str, raw: dict) -> dict:
         "effort_configured": raw.get("effort_configured"),
         "turns": turns,
         "omitted_turns": max(0, raw.get("omitted_turns", 0)) + max(0, len(all_turns) - len(turns)),
+        # Where scrolling up continues (#1504): the oldest turn of the window, None at the first.
+        "history_before": raw.get("history_before"),
         "pending_requests": requests,
         **({"native": dict(raw["native"])} if "native" in raw else {}),
     }
@@ -641,6 +647,37 @@ async def events(session_key: str, *, after: int, limit: int = 100) -> dict:
     engine, native, adapter, _ = _observation_target(session_key, "events")
     page = await adapter.events(engine, native, after, limit)
     return {"session_key": f"{engine}:{native}", **page}
+
+
+# One history page render per session at a time (#1504): a page projects the whole journal.
+_HISTORY_IN_FLIGHT: set[str] = set()
+
+
+async def history(session_key: str, *, before: object, limit: object = SNAPSHOT_TURNS) -> dict:
+    """The turns just older than ``before`` (#1504), chronological and shaped as the snapshot's
+    turns are, under one text budget spent newest first. ``before`` is where the next older page
+    starts, None at the conversation's first turn."""
+    if not chat_store.valid_turn_id(before):
+        raise StructuredError(422, "before must be a turn id")
+    if type(limit) is not int or not 1 <= limit <= SNAPSHOT_TURNS:
+        raise StructuredError(422, f"limit must be 1-{SNAPSHOT_TURNS}")
+    engine, native, adapter, _ = _observation_target(session_key, "history")
+    key = f"{engine}:{native}"
+    if key in _HISTORY_IN_FLIGHT:
+        raise StructuredError(429, "a history page for this session is already being read")
+    _HISTORY_IN_FLIGHT.add(key)
+    try:
+        raw = await adapter.history(engine, native, before, limit)
+    finally:
+        _HISTORY_IN_FLIGHT.discard(key)
+    budget = [SNAPSHOT_TEXT_BUDGET]
+    turns = [_turn(t, budget) for t in reversed(raw["turns"])][::-1]
+    return {
+        "session_key": key,
+        "turns": turns,
+        "before": raw["history_before"],
+        "has_more": raw["history_before"] is not None,
+    }
 
 
 async def start_session(session_key: str) -> dict:

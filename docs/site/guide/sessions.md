@@ -39,6 +39,11 @@ Commands and tools start collapsed under an activity summary; expand it to inspe
 Agent replies have their own panel, and permission requests stay visible. The view follows new
 content while you are at the bottom; scrolling up keeps your reading position.
 
+The view opens on the newest 50 turns. Scroll up past the top and the turns before them load
+there, 50 at a time, while the turn you are reading stays put. Keep going and you reach
+**Beginning of conversation**. If a page can't load, **Retry** loads it again. One open view keeps
+up to 1,000 turns; past that it tells you older turns are not shown.
+
 Sometimes the agent works without a message from you — a scheduled wake-up, or a background
 task reporting back. That turn appears as **‹agent› · on its own**: its activity is collapsed,
 with the latest command in the summary, and what it says is kept as its reply. While it runs,

@@ -1302,8 +1302,13 @@ def project(
     live_worker: str | None,
     *,
     max_turns: int | None = None,
+    before: str | None = None,
 ) -> dict:
-    """Project only displayed turn payloads; transcript consumers may request every turn."""
+    """Project only displayed turn payloads; transcript consumers may request every turn.
+
+    ``before`` (#1504) projects the ``max_turns`` turns just older than that turn instead of the
+    newest window: a page of history, keyed by turn id so turns appended meanwhile never shift
+    it. ``history_before`` is where the next older page starts, or None at the first turn."""
     turns: dict[str, dict] = {}
     pending: dict[str, dict] = {}
     decided: set[str] = set()
@@ -1357,7 +1362,16 @@ def project(
         [(journal.operations[op].claimed_revision, 0, op) for op in submits]
         + [(cursor, 1, agent) for cursor, agent in starts],
     )
-    shown = timeline if max_turns is None else timeline[-max_turns:] if max_turns else []
+    if before is None:
+        shown = timeline if max_turns is None else timeline[-max_turns:] if max_turns else []
+    else:
+        at = next((i for i, entry in enumerate(timeline) if entry[2] == before), None)
+        if at is None:
+            raise NativeError(409, "history cursor not found")
+        shown = timeline[max(0, at - (max_turns or 0)) : at]
+    # The oldest turn of the window, when anything older exists. Only the window counts: a live
+    # turn pulled forward below is shown, but it is not where history continues.
+    history_before = shown[0][2] if shown and shown[0] != timeline[0] else None
     # Live work is never cut (Hermes on #1439), however many turns the agent ran for itself since:
     # every message the live worker still holds queued, and the newest one it dispatched if it has
     # not completed (it may have waited behind those turns). Nothing else: an input that settles
@@ -1370,7 +1384,8 @@ def project(
     if dispatched and dispatched[-1] not in settled:
         keep.add(dispatched[-1])
     waiting = [entry for entry in timeline if entry[1] == 0 and entry[2] in keep]
-    shown = sorted({*shown, *waiting})
+    if before is None:
+        shown = sorted({*shown, *waiting})
     selected = {entry[2] for entry in shown if entry[1] == 0}
     selected_agents = {entry[2] for entry in shown if entry[1] == 1}
     agents: dict[str, dict] = {}
@@ -1676,6 +1691,7 @@ def project(
     return {
         "turns": shown_turns,
         "omitted_turns": len(timeline) - len(shown_turns),
+        "history_before": history_before,
         "revision": journal.revision,
         "cwd": journal.header["cwd"],
         "in_flight": in_flight,
@@ -1847,6 +1863,19 @@ def model_facts(engine_id: str, session_id: str) -> dict:
 
 async def snapshot(engine_id: str, session_id: str) -> dict:
     return await asyncio.to_thread(_snapshot_sync, engine_id, session_id)
+
+
+def _history_sync(engine_id: str, session_id: str, before: str, limit: int) -> dict:
+    # The snapshot's read (#1311): a retiring client's history is still readable.
+    prov, record = _session(engine_id, session_id, retiring_ok=True)
+    view = project(
+        _journal(prov, session_id), record, _live_worker(session_id), max_turns=limit, before=before
+    )
+    return {"turns": view["turns"], "history_before": view["history_before"]}
+
+
+async def history(engine_id: str, session_id: str, before: str, limit: int) -> dict:
+    return await asyncio.to_thread(_history_sync, engine_id, session_id, before, limit)
 
 
 async def events(engine_id: str, session_id: str, after: int, limit: int) -> dict:

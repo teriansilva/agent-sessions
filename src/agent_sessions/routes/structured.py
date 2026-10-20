@@ -13,6 +13,8 @@ mission correlation is ever read from a browser (mission callers use the facade 
   its create reserved and launched nothing. Idempotent.
 * ``GET  /api/structured/sessions/{key}`` — bounded snapshot (turns, exact pending requests).
 * ``GET  /api/structured/sessions/{key}/events?after=&limit=`` — durable journal cursor page.
+* ``GET  /api/structured/sessions/{key}/history?before=&limit=`` — the turns just older than one
+  turn, for scrolling up past the snapshot's window (#1504); native clients only.
 * ``POST /api/structured/sessions/{key}/turns {operation_id, text, expected_revision?,
   reply_to?}`` — ``reply_to``: the async question this message answers (#1463), admitted only
   while that question is still open.
@@ -128,18 +130,29 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         # has received the create response, so a lost response can never launch unobserved.
         return JSONResponse(await _run(structured_runtime.start_session(key)))
 
-    @app.get("/api/structured/sessions/{key}")
-    async def structured_snapshot(key: str, _user: str = Depends(logged_in)) -> JSONResponse:
-        snap = await _run(structured_runtime.snapshot(key))
+    async def _attributed(view: dict, key: str) -> dict:
         # A visitor's turns (#1404 P2) carry their self-chosen name in the operator's view too.
         try:
             authors = await asyncio.to_thread(
-                shares.store().authors, snap.get("session_key") or key
+                shares.store().authors, view.get("session_key") or key
             )
         except Exception:  # the share store must never take the operator's own view down…
-            log.warning("structured snapshot: visitor attribution unavailable", exc_info=True)
+            log.warning("structured view: visitor attribution unavailable", exc_info=True)
             authors = None  # …but then every turn is UNKNOWN, never labelled the operator's
-        return JSONResponse(share_api.overlay_authors(snap, authors))
+        return share_api.overlay_authors(view, authors)
+
+    @app.get("/api/structured/sessions/{key}")
+    async def structured_snapshot(key: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        snap = await _run(structured_runtime.snapshot(key))
+        return JSONResponse(await _attributed(snap, key))
+
+    @app.get("/api/structured/sessions/{key}/history")
+    async def structured_history(
+        key: str, before: str, limit: int = 50, _user: str = Depends(logged_in)
+    ) -> JSONResponse:
+        # Older turns get the snapshot's attribution, failing closed the same way (#1504).
+        page = await _run(structured_runtime.history(key, before=before, limit=limit))
+        return JSONResponse(await _attributed(page, key))
 
     @app.post("/api/structured/sessions/{key}/skip-permissions")
     async def structured_enable_bypass(

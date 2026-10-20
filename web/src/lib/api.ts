@@ -31,6 +31,7 @@ import type {
   ChatSession,
   Containment,
   StructuredEventPage,
+  StructuredHistoryPage,
   StructuredModelList,
   StructuredSnapshot,
   ChatTurn,
@@ -835,6 +836,11 @@ export const api = {
     }),
   structuredSnapshot: (key: string) =>
     getJsonWithDetail<StructuredSnapshot>(structuredPath(key)),
+  /** Older turns for scrolling up (#1504): the page just before `before`, a turn id. */
+  structuredHistory: (key: string, before: string, limit = 50) =>
+    getJsonWithDetail<StructuredHistoryPage>(
+      `${structuredPath(key)}/history?before=${encodeURIComponent(before)}&limit=${limit}`,
+    ),
   structuredEvents: (key: string, after: number, limit = 100) =>
     getJsonWithDetail<StructuredEventPage>(
       `${structuredPath(key)}/events?after=${after}&limit=${limit}`,

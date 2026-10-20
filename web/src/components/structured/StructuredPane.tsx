@@ -72,6 +72,8 @@ import { interleave } from "./activityOrder";
 import { autoSendNowHead, useAlwaysSendNow } from "./alwaysSendNow";
 import { conversationGroups, type ConversationGroup } from "./conversationOrder";
 import { PermissionsDialog } from "./PermissionsDialog";
+import { HistoryTop } from "./HistoryTop";
+import { useApiHistory } from "./useApiHistory";
 import styles from "./StructuredPane.module.css";
 import {
   answerText,
@@ -1367,6 +1369,8 @@ export function StructuredPane({
       return null;
     }
   }, [key, apply, failed]);
+  // Older turns, loaded as the operator scrolls up past the snapshot's window (#1504).
+  const earlier = useApiHistory(key, snap, logRef, load);
 
   useEffect(() => {
     let alive = true;
@@ -2459,7 +2463,7 @@ export function StructuredPane({
     );
   }
 
-  const turns = snap?.turns ?? [];
+  const turns = earlier.turns;
   const groups = conversationGroups(turns);
   const positions = queuePositions(snap);
   const questionTurn = openQuestionTurn(snap);
@@ -2528,6 +2532,9 @@ export function StructuredPane({
   // One keyed list keeps the task panel's DOM (including focus and open Details) when a
   // queued message moves it from the transcript tail to before the queue (#1461).
   const conversation: (ConversationGroup | null)[] = [...groups];
+  // Where loaded history meets the window (a steering addition grouped under an older turn
+  // carries no seam of its own).
+  const seam = earlier.seam;
   if (backgroundAt >= 0) conversation.splice(backgroundAt, 0, null);
   const pending = snap?.pending_requests ?? [];
   const operatorIds = new Map(operatorTurns(snap).map((t) => [t.turn_id, t.text ?? ""] as const));
@@ -2637,7 +2644,14 @@ export function StructuredPane({
           the client is available again.
         </p>
       )}
-      <div className={chat.log} ref={logRef} aria-live="polite" data-testid="api-log" {...logLook}>
+      <div
+        className={chat.log}
+        ref={logRef}
+        aria-live="polite"
+        data-testid="api-log"
+        {...logLook}
+        {...earlier.handlers}
+      >
         {snap && turns.length === 0 && (
           <div className={chat.center} data-testid="structured-empty">
             <section className={styles.info} aria-label="Session info">
@@ -2686,9 +2700,7 @@ export function StructuredPane({
             </section>
           </div>
         )}
-        {snap && snap.omitted_turns > 0 && (
-          <p className={chat.notice}>{snap.omitted_turns} earlier turns are not shown.</p>
-        )}
+        <HistoryTop status={earlier.status} onRetry={earlier.retry} />
         {conversation.map((group) => {
           if (group === null) return (
             <BackgroundWork key="background" native={snap?.native} />
@@ -2696,6 +2708,11 @@ export function StructuredPane({
           const { turn: t, additions } = group;
           return (
             <Fragment key={t.turn_id}>
+              {t.turn_id === seam && (
+                <p className={styles.historySeam} data-history-row="" data-testid="api-history-seam">
+                  {earlier.catchingUp ? "catching up on newer turns…" : "earlier turns ↑"}
+                </p>
+              )}
               {isAgentTurn(t) ? (
                 <AgentTurnView
                   beforeReply={additions.map((added) => renderTurn(added))}

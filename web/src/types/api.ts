@@ -1683,6 +1683,9 @@ export interface StructuredSnapshot {
   start_expired?: boolean;
   turns: (StructuredTurn | StructuredAgentTurn)[];
   omitted_turns: number;
+  /** Where scrolling up continues (#1504): the oldest turn of the window, null at the first turn.
+   *  Absent on older servers and on clients without history. */
+  history_before?: string | null;
   pending_requests: StructuredRequest[];
   native?: {
     native_id: string | null;
@@ -1707,6 +1710,15 @@ export interface StructuredSnapshot {
   images?: boolean;
   /** Upload references supported by the running native worker (or its next generation). */
   files?: boolean;
+}
+
+/** The turns just older than a cursor (#1504), chronological, shaped as the snapshot's. */
+export interface StructuredHistoryPage {
+  session_key: string;
+  turns: (StructuredTurn | StructuredAgentTurn)[];
+  /** Where the next older page starts; null at the conversation's first turn. */
+  before: string | null;
+  has_more: boolean;
 }
 
 export interface StructuredEventPage {

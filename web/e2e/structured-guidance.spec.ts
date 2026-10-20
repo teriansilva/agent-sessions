@@ -62,7 +62,9 @@ for (const [engine, mode] of clients) {
           fixture.state.omitted_turns = 2;
         }
         fixture.state.revision++;
-        if (recovery === "turn omitted") await expect(page.getByText("2 earlier turns are not shown.")).toBeVisible();
+        // The omitted turn's snapshot has landed: the window is empty (#1504 retired the static
+        // "earlier turns are not shown" line; older turns now load on scrolling up).
+        if (recovery === "turn omitted") await expect(page.getByTestId("structured-empty")).toBeVisible();
         else await expect(page.getByTestId("structured-turn").first()).toHaveAttribute("data-state", "uncertain");
       }
       await expect(retry).toBeEnabled();

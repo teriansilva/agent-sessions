@@ -1058,3 +1058,56 @@ async def test_a_visitor_can_never_interrupt_the_agents_own_turn(env, host, proj
             r = await v.post("/api/public/interrupt", json={"turn_id": turn_id})
             assert r.status_code == 403
             assert "owner" in r.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_older_turns_from_history_carry_the_visitors_name_or_unknown(
+    env,
+    host,  # noqa: F811
+    project,  # noqa: F811
+    monkeypatch,
+):
+    """Scrolling up (#1504) never relabels a visitor's message as the operator's: a history page
+    gets the snapshot's attribution, failing closed the same way."""
+    key = await _session("codex", project)
+    v, _ = await _visitor(env, key)
+    st = env.app.state.share_store
+    async with contextlib.aclosing(v):
+        await v.post("/api/public/turns", json={"client_key": str(uuid.uuid4()), "text": "one"})
+        (first,) = st.authors(key)
+        await settle(key, first)
+        await v.post("/api/public/turns", json={"client_key": str(uuid.uuid4()), "text": "two"})
+        (second,) = set(st.authors(key)) - {first}
+        await settle(key, second)
+
+    async def older():
+        async with contextlib.aclosing(env.client()) as op:
+            await op.post("/login", data={"username": "marcus", "password": "hunter2"})
+            r = await op.get(
+                f"/api/structured/sessions/{key}/history", params={"before": second, "limit": 1}
+            )
+            assert r.status_code == 200, r.text
+            return r.json()
+
+    page = await older()
+    (turn,) = page["turns"]
+    assert turn["turn_id"] == first and turn["author"]["name"] == "Alex"
+    assert page["has_more"] is False
+
+    def boom(*_a, **_k):
+        raise RuntimeError("store unreadable")
+
+    with monkeypatch.context() as m:
+        m.setattr(shares.ShareStore, "authors", boom)
+        page = await older()
+    assert page["turns"][0]["author"] == {"name": None, "via": "unknown"}
+
+
+@pytest.mark.anyio
+async def test_history_needs_a_login(env, host, project):  # noqa: F811
+    key = await _session("codex", project)
+    async with contextlib.aclosing(env.client()) as anon:
+        r = await anon.get(
+            f"/api/structured/sessions/{key}/history", params={"before": str(uuid.uuid4())}
+        )
+    assert r.status_code == 401

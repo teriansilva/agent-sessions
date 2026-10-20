@@ -213,6 +213,7 @@ async def test_create_submit_replay_and_reconnect_observe_one_native_write(host,
         "submit",
         "decide",
         "events",
+        "history",  # older turns, scrolling up past the snapshot window (#1504)
         "interrupt",
         "send_now",
         "withdraw",  # remove a still-queued message (#1447)
