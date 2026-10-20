@@ -643,9 +643,11 @@ def test_edge_masking_is_fast_on_a_dense_snapshot_and_a_long_secret():
         }
         for n in range(50)
     ]
-    started = _time.monotonic()
+    # CPU time, not wall time: the bound catches a slow (e.g. quadratic) masking pass, and a
+    # loaded shared runner stretching wall time must not fail it (3.1–3.5 s wall seen in CI).
+    started = _time.process_time()
     share_api.project({"turns": turns}, {}, r, "s1")
-    assert _time.monotonic() - started < 3.0
+    assert _time.process_time() - started < 3.0
 
 
 def test_request_summaries_are_redacted_before_they_are_cut():
