@@ -26,6 +26,7 @@ export function AgentTiles({
   unavailable,
   value,
   defaultEngine,
+  projectEngine = "",
   onChange,
 }: {
   consoleEngines: string[];
@@ -33,6 +34,8 @@ export function AgentTiles({
   unavailable: UnavailableClient[];
   value: string;
   defaultEngine: string;
+  /** The selected project's own agent (#1508), badged `project` — it outranks the global default. */
+  projectEngine?: string;
   onChange: (id: string) => void;
 }) {
   const tile = (id: string) => {
@@ -48,7 +51,11 @@ export function AgentTiles({
         />
         <span className={styles.tileName}>
           {engineLabel(id)}
-          {id === defaultEngine && <span className={styles.badge}>default</span>}
+          {id === projectEngine ? (
+            <span className={styles.badge}>project</span>
+          ) : (
+            id === defaultEngine && !projectEngine && <span className={styles.badge}>default</span>
+          )}
         </span>
         {sub && <span className={styles.tileSub}>{sub}</span>}
       </label>

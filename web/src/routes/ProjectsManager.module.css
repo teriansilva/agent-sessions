@@ -271,3 +271,21 @@
   border: 1px solid var(--border-subtle);
   border-radius: 0;
 }
+
+/* Session defaults (#1508): the shared editor, framed under the row, with its own Save. */
+.defaultsPanel {
+  display: grid;
+  gap: 10px;
+  margin: 8px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+}
+.defaultsActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.defaultsActions .smallBtn {
+  min-height: 44px;
+  padding: 6px 14px;
+}

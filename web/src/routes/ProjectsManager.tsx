@@ -5,6 +5,7 @@ import {
   Palette,
   Pencil,
   Plus,
+  SlidersHorizontal,
   Star,
   Trash2,
   X,
@@ -14,11 +15,18 @@ import { Link } from "react-router-dom";
 import { useConfig, useConfigRefresh } from "../app/config";
 import { FolderPickerModal } from "../components/FolderPickerModal";
 import { ProjectColorPicker } from "../components/ProjectColorPicker";
+import { ProjectSessionDefaults } from "../components/projects/ProjectSessionDefaults";
+import { describeLaunchDefaults } from "../lib/launchDefaults";
 import type { WizardEntryState } from "../lib/newProject";
 import { NEW_PROJECT_PATH } from "../lib/routes";
 import { api, ApiError } from "../lib/api";
 import { shortCwd } from "../lib/format";
-import type { Folder, ProjectArchiveReport, ProjectEntity } from "../types/api";
+import type {
+  Folder,
+  LaunchDefaults,
+  ProjectArchiveReport,
+  ProjectEntity,
+} from "../types/api";
 import settings from "./Settings.module.css";
 import styles from "./ProjectsManager.module.css";
 
@@ -60,6 +68,10 @@ function EntityRow({
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(entity.name);
   const [showColors, setShowColors] = useState(false);
+  // Session defaults (#1508): edited as a draft and saved as one block — a half-picked agent and
+  // model never reach the server, and Cancel leaves the stored block untouched.
+  const [defaultsDraft, setDefaultsDraft] = useState<LaunchDefaults | null>(null);
+  const config = useConfig();
   const [folderSel, setFolderSel] = useState("");
   const [picking, setPicking] = useState(false);
   const [pickReturn, setPickReturn] = useState<HTMLElement | null>(null);
@@ -71,6 +83,7 @@ function EntityRow({
     color?: string;
     folders?: string[];
     default_folder?: string;
+    launch_defaults?: LaunchDefaults;
   }) => {
     setBusy(true);
     setRowError(null);
@@ -209,6 +222,19 @@ function EntityRow({
           <button
             type="button"
             className={styles.iconBtn}
+            aria-label={`Session defaults for ${entity.name}`}
+            aria-expanded={defaultsDraft !== null}
+            title="Session defaults"
+            disabled={busy}
+            onClick={() =>
+              setDefaultsDraft((d) => (d === null ? { ...(entity.launch_defaults ?? {}) } : null))
+            }
+          >
+            <SlidersHorizontal size={14} />
+          </button>
+          <button
+            type="button"
+            className={styles.iconBtn}
             aria-label={`Archive project ${entity.name}`}
             title="Archive"
             disabled={busy}
@@ -239,6 +265,54 @@ function EntityRow({
             void patch({ color }).then((ok) => ok && setShowColors(false))
           }
         />
+      )}
+
+      {defaultsDraft !== null && (
+        <section
+          className={styles.defaultsPanel}
+          aria-label={`Session defaults for ${entity.name}`}
+        >
+          <ProjectSessionDefaults
+            value={defaultsDraft}
+            onChange={setDefaultsDraft}
+            disabled={busy}
+          />
+          <div className={styles.defaultsActions}>
+            <button
+              type="button"
+              className={styles.smallBtn}
+              disabled={busy}
+              onClick={() =>
+                void patch({ launch_defaults: defaultsDraft }).then(
+                  (ok) => ok && setDefaultsDraft(null),
+                )
+              }
+            >
+              <Check size={14} /> Save session defaults
+            </button>
+            <button
+              type="button"
+              className={styles.smallBtn}
+              disabled={busy}
+              onClick={() => setDefaultsDraft(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        </section>
+      )}
+
+      {/* What new sessions start with (#1508), when the project sets anything. */}
+      {defaultsDraft === null && Object.keys(entity.launch_defaults ?? {}).length > 0 && (
+        <div className={styles.defaultRow} data-testid="project-launch-defaults">
+          <span className={styles.defaultLabel}>
+            sessions start as:{" "}
+            {describeLaunchDefaults(entity.launch_defaults ?? {}, {
+              engine: config?.agent_defaults?.default_engine ?? null,
+              bypass: config?.agent_defaults?.bypass ?? true,
+            })}
+          </span>
+        </div>
       )}
 
       {/* Default launch folder (#448): where new sessions in this project start. */}

@@ -80,6 +80,7 @@ import type {
   RecentWorkPayload,
   OrchestratorState_,
   ProjectArchiveReport,
+  LaunchDefaults,
   ProjectEntity,
   PromptEntry,
   PulseAskEvent,
@@ -1118,6 +1119,7 @@ export const api = {
     color?: string;
     folders?: string[];
     default_folder?: string;
+    launch_defaults?: LaunchDefaults;
   }) =>
     announceProjects(
       mutateJson<Omit<ProjectEntity, "session_count">>(
@@ -1143,6 +1145,8 @@ export const api = {
       color?: string;
       folders?: string[];
       default_folder?: string;
+      /** Replaces the whole block (#1508); `{}` clears it. */
+      launch_defaults?: LaunchDefaults;
     },
   ) =>
     announceProjects(

@@ -309,3 +309,15 @@
     align-items: start;
   }
 }
+
+/* A field the selected project's session defaults filled (#1508): the agent tiles' badge, inline. */
+.projectBadge {
+  margin-left: 8px;
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--badge-fg);
+  background: var(--badge-bg);
+}

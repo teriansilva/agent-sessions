@@ -164,6 +164,8 @@ async function fillToReview(page: Page, name = "Payments API") {
   await next(page);
   await expect(heading(page, "Pick a colour")).toBeVisible();
   await next(page);
+  await expect(heading(page, "Start sessions with")).toBeVisible();
+  await next(page);
   await expect(heading(page, "Choose a playbook")).toBeVisible();
   await next(page);
   await expect(heading(page, "Review and create")).toBeVisible();
@@ -220,6 +222,7 @@ test.describe("New project wizard (#1187)", () => {
       "aria-checked",
       "true",
     );
+    await next(page);
     await next(page);
     await expect(heading(page, "Choose a playbook")).toBeVisible();
     await next(page);
@@ -443,6 +446,9 @@ test.describe("New project wizard (#1187)", () => {
     await next(page);
     await check("colour");
     await next(page);
+    await expect(heading(page, "Start sessions with")).toBeVisible();
+    await check("agent");
+    await next(page);
     await expect(heading(page, "Choose a playbook")).toBeVisible();
     await check("playbook");
     await next(page);
@@ -529,6 +535,7 @@ test.describe("New project wizard — playbook setup (#1508)", () => {
     await page.getByLabel("Project name").fill("Payments API");
     await next(page);
     await expect(page.getByTestId("np-folder-preview")).toBeVisible();
+    await next(page);
     await next(page);
     await next(page);
     await expect(heading(page, "Choose a playbook")).toBeVisible();

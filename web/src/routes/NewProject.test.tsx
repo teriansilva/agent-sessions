@@ -113,7 +113,8 @@ function renderWizard(
 const next = (user: ReturnType<typeof userEvent.setup>) =>
   user.click(screen.getByRole("button", { name: "Next" }));
 
-/** NAME → FOLDER (new, suggested name) → COLOUR → REVIEW. */
+/** NAME → FOLDER (new, suggested name) → COLOUR → AGENT (left on the global defaults) → PLAYBOOK
+ *  → REVIEW. */
 async function toReview(
   user: ReturnType<typeof userEvent.setup>,
   name = "Payments API",
@@ -122,6 +123,8 @@ async function toReview(
   await next(user);
   await screen.findByTestId("np-folder-preview");
   await next(user);
+  await next(user);
+  await screen.findByRole("heading", { name: "Start sessions with" });
   await next(user);
   await screen.findByRole("heading", { name: "Choose a playbook" });
   await next(user);
@@ -170,6 +173,7 @@ test("the full journey: mkdir at CREATE, then the project, with the preselected 
   ).toHaveAttribute("aria-checked", "true");
   await next(user);
   await next(user);
+  await next(user);
   expect(screen.getByText("created if absent")).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Create project" }));
   expect(
@@ -216,6 +220,7 @@ test("an existing folder skips mkdir and creates the project on the pick", async
   expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
   await user.click(screen.getByRole("button", { name: "Choose folder…" }));
   await user.click(screen.getByRole("button", { name: "stub-pick" }));
+  await next(user);
   await next(user);
   await next(user);
   await next(user);
@@ -326,13 +331,11 @@ test("Back keeps what was entered, and the rail's Edit links jump to a step", as
   const user = userEvent.setup();
   renderWizard();
   await toReview(user, "Keep me");
-  await user.click(screen.getByRole("button", { name: "Back" }));
-  await user.click(screen.getByRole("button", { name: "Back" }));
-  await user.click(screen.getByRole("button", { name: "Back" }));
-  await user.click(screen.getByRole("button", { name: "Back" }));
+  for (let i = 0; i < 5; i++) await user.click(screen.getByRole("button", { name: "Back" }));
   expect(screen.getByLabelText("Project name")).toHaveValue("Keep me");
   await next(user);
   expect(screen.getByLabelText("Folder name")).toHaveValue("keep-me");
+  await next(user);
   await next(user);
   await next(user);
   await next(user);

@@ -64,12 +64,17 @@ hidden while it is open. It asks, one step at a time:
    other project uses. Settings → Projects uses the same picker; a project whose colour is not
    one of the sixteen (an older palette, or a hex set through the API) keeps it, shown first as
    *Current colour*.
-4. **Playbook**: choose one of your playbooks (**Library → Playbooks → Your playbooks**: the
+4. **Agent** (optional), *Start sessions with*: the agent, its model and reasoning effort, and
+   whether permission prompts are skipped, for new sessions in this project. Each can stay on
+   **Global default** (Settings → Agents). A model and effort belong to the project's own agent, so
+   they are offered once you pick one; an agent that sets its model in its own configuration says
+   so. Leaving everything on the global defaults stores nothing.
+5. **Playbook**: choose one of your playbooks (**Library → Playbooks → Your playbooks**: the
    bundled ones, the ones you created and the ones you added from the gallery) or **No playbook**.
    Each playbook is a card with its summary, its steps and how many files, inputs and agent steps
    it brings. A usable configured default is preselected; a missing default is explained. Local
    unsigned playbooks ask for your trust.
-5. **Inputs**, when a playbook is selected (*Set up ‹playbook›*): each input picks its source —
+6. **Inputs**, when a playbook is selected (*Set up ‹playbook›*): each input picks its source —
    **Value**, **Global** (the global variable of that name; a secret's value stays hidden) or
    **Default** — and each choice names what it resolves to, e.g. *Default · staging*, or *No
    default*. A required input that would be empty is marked in red on its card straight away, and
@@ -77,7 +82,7 @@ hidden while it is open. It asks, one step at a time:
    table — step, agent, model, state — with the agent's own models (an agent that sets its model
    in its own config says so) and *Set every step to …* to assign one agent to all of them.
    Values stay in the wizard until the project exists and its inputs are bound.
-6. **Review**: the project details and, for a playbook, proposed file changes, rendered
+7. **Review**: the project details and, for a playbook, proposed file changes, rendered
    instructions, resolved inputs and targets, assignments and capability requests. Confirm each
    target derived from a default. *Create project and apply* remains unavailable while the review
    has conflicts or a required target is unconfirmed.
@@ -125,3 +130,15 @@ escape it. The app itself no longer calls it: the New project wizard and the fol
 ::: info Verified against
 Commit `218cf3a` — `docs/reference.md § Sessions & projects`; `src/agent_sessions/projects.py`; `src/agent_sessions/fsbrowse.py § make_dir`; `web/src/routes/NewProject.tsx` (#1187); `src/agent_sessions/autosort.py § NEAR_MISS_CAP, CALL_SPACING_S`; `src/agent_sessions/prefs.py § PROJECT_MODES`.
 :::
+
+## Session defaults
+
+A project can say what its new sessions start with: an agent, that agent's model and reasoning
+effort, and whether permission prompts are skipped. Set them in the New project wizard's **Agent**
+step, or later with **Session defaults** on the project's row in **Settings → Projects**.
+
+On **New session**, choosing the project preselects them, marked *project*, and a line under the
+project list says what the project starts as. What you pick on the form always wins for that
+session; anything the project leaves unset follows your global defaults. A project's *skip
+prompts* applies only once the project list has loaded, and never to an agent that cannot skip.
+The defaults are only a preselection: missions, automations and other launches don't read them.

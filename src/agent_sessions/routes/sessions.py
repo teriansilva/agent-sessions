@@ -1068,6 +1068,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     color=payload.get("color"),
                     folders=folders,
                     default_folder=payload.get("default_folder"),  # #448: auto-adopted default
+                    launch_defaults=payload.get("launch_defaults"),  # #1508: a preselection only
                 )
             )
         except projects.ProjectError as e:
@@ -1106,7 +1107,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             raise HTTPException(status_code=422, detail="invalid JSON") from None
         if not isinstance(payload, dict):
             raise HTTPException(status_code=422, detail="expected a JSON object")
-        unknown = set(payload) - {"name", "color", "folders", "default_folder"}
+        unknown = set(payload) - {"name", "color", "folders", "default_folder", "launch_defaults"}
         if unknown:
             raise HTTPException(status_code=422, detail=f"unknown fields: {sorted(unknown)}")
         try:
@@ -1118,6 +1119,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     color=payload.get("color"),
                     folders=payload.get("folders"),
                     default_folder=payload.get("default_folder"),  # #448
+                    launch_defaults=payload.get("launch_defaults"),  # #1508: a preselection only
                 )
             )
         except projects.ProjectError as e:

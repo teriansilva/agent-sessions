@@ -28,7 +28,9 @@ import {
 } from "../app/engineRoster";
 import { unavailableDefaultNotice } from "../lib/agentDefaults";
 import { levelsOf, resolveSessionDefault } from "../lib/sessionDefaults";
-import { agentPath } from "./settingsTabs";
+import { describeLaunchDefaults } from "../lib/launchDefaults";
+import type { SessionDefault } from "../types/api";
+import { agentPath, settingsPath } from "./settingsTabs";
 import { owningProjectId } from "../lib/projectTree";
 import { shortCwd } from "../lib/format";
 import { useProjectPicker } from "../app/useProjectPicker";
@@ -161,83 +163,6 @@ export function NewSessionLanding() {
     };
   }, []);
 
-  const roster = useEngineRoster();
-  const engines = config?.new_session_engines ?? [];
-  // The stored default agent, resolved through THE resolver (#1128): used when it can start a new
-  // session here, else the first engine that can — and the notice below says so.
-  const defaultChoice = resolveDefault(
-    roster.engines.filter((e) => engines.includes(e.id)),
-    config?.agent_defaults?.default_engine,
-    "new",
-  );
-  const engine = engineChoice || defaultChoice.engine || engines[0] || "";
-  const runtimeOf = (id: string) => engineInfo(id)?.runtime;
-  const apiEngines = engines.filter((id) => runtimeOf(id) === "api" || runtimeOf(id) === "chat");
-  const consoleEngines = engines.filter((id) => !apiEngines.includes(id));
-  const unavailable = config?.unavailable_clients ?? [];
-  const isApi = runtimeOf(engine) === "api";
-  const apiSource = engineInfo(engine)?.api?.source ?? "";
-  const apiCanBypass = isApi && engineInfo(engine)?.api?.can_bypass === true;
-  // An API client follows the SAME stored default as a console agent (#1473, operator
-  // decision superseding #1339's "unticked by default"): the form's own choice, bound to the engine
-  // it was made for, wins for this one create. Only a client whose adapter maps it can skip at all.
-  // FAIL CLOSED (adopted from #1457): until a loaded config SAYS the default is on (`=== true` —
-  // the server always sends the stored boolean), an API client starts guarded. A missing or
-  // late config can never turn a Start already on screen into a skip.
-  const bypass = isApi
-    ? apiCanBypass &&
-      (apiBypassChoice?.engine === engine
-        ? apiBypassChoice.value
-        : config?.agent_defaults?.bypass === true)
-    : (bypassChoice ?? config?.agent_defaults?.bypass ?? true);
-  const setBypass = (value: boolean) =>
-    isApi ? setApiBypassChoice({ engine, value }) : setConsoleBypass(value);
-
-  // The model (#1189), BOUND to the engine it was chosen for: switching engine — by the select or
-  // by the default resolving differently — reads as `default` again, never as a model the other
-  // engine happens to share a name with. A choice the server no longer offers is sent as chosen and
-  // refused there (4422), never quietly swapped for `default` here.
-  const [modelChoice, setModelChoice] = useState<{ engine: string; model: string } | null>(
-    restore.draft?.modelChoice ?? null,
-  );
-  // A native API client's models come from its own CLI (#1313); a console agent's from the
-  // roster. Each option is what is sent (`id`) and what is shown. Every API client's list is
-  // asked for on arrival and kept above the router (#1503), so choosing one paints its last list
-  // at once and revalidates behind it; only a client never answered shows "asking…".
-  usePrefetchStructuredModels(engines.filter((id) => runtimeOf(id) === "api"));
-  const apiModels = useStructuredModels(isApi ? engine : null);
-  const apiList = isApi ? apiModels.list : null;
-  // The operator's new-session defaults for this API client (#1407) only PRESELECT: what the form
-  // shows is what is sent, and a value the client stopped offering is named, never preselected.
-  const savedDefault = isApi ? config?.agent_defaults?.session_defaults?.[engine] : undefined;
-  const preset = resolveSessionDefault(savedDefault, apiList);
-  const model =
-    modelChoice?.engine === engine ? modelChoice.model : (preset.model ?? "default");
-  // The level (#1407) is bound to the engine AND model it was chosen for: a model change reads as
-  // that model's preselection (or its own level) again, never a level another model offers.
-  const [effortChoice, setEffortChoice] = useState<
-    { engine: string; model: string; effort: string } | null
-  >(restore.draft?.effortChoice ?? null);
-  const levels = isApi ? levelsOf(apiList, model) : [];
-  const presetEffort = model === preset.model ? preset.effort : null;
-  const effort =
-    effortChoice?.engine === engine && effortChoice.model === model
-      ? effortChoice.effort
-      : (presetEffort ?? "default");
-  const changedFromDefaults =
-    preset.model !== null &&
-    (model !== preset.model || effort !== (presetEffort ?? "default"));
-  const models: { id: string; text: string }[] = isApi
-    ? (apiList?.models ?? []).map((m) => ({
-        id: m.id,
-        text: m.label && m.label !== m.id ? `${m.label} (${m.id})` : m.id,
-      }))
-    : offeredModels(engine).map((m) => ({
-        id: m.id,
-        text: m.aliases.length ? `${m.id} (${m.aliases.join(", ")})` : m.id,
-      }));
-  const modelSelect = engineInfo(engine)?.model_select;
-
   // Project entities own the default launch folder (#448). projectChoice === null = untouched
   // (use the default selection); "" = no project; else an entity id. The list paints from the
   // picker's cache and revalidates on every mount (#1436); `projectsFresh` = that revalidation
@@ -268,6 +193,143 @@ export function NewSessionLanding() {
   const defaultProjectId = (starredExists ? starredId : entities[0]?.id) ?? "";
   const projectSel = (choiceVanished ? null : projectChoice) ?? defaultProjectId;
   const selectedProject = entities.find((p) => p.id === projectSel);
+  // The selected project's session defaults (#1508) PRESELECT — between the operator's own choice
+  // on this form (which always wins) and the global agent defaults. Never sent as such: the create
+  // carries what the form shows. Switching project re-reads them for every field not chosen here.
+  const projectDefaults = selectedProject?.launch_defaults ?? {};
+
+  const roster = useEngineRoster();
+  const engines = config?.new_session_engines ?? [];
+  // The stored default agent, resolved through THE resolver (#1128): used when it can start a new
+  // session here, else the first engine that can — and the notice below says so.
+  const defaultChoice = resolveDefault(
+    roster.engines.filter((e) => engines.includes(e.id)),
+    config?.agent_defaults?.default_engine,
+    "new",
+  );
+  // The project's agent, when it can start a session here; otherwise the global default applies
+  // (and its own unavailable-default notice), never a guess.
+  const projectEngine =
+    projectDefaults.engine &&
+    resolveDefault(
+      roster.engines.filter((e) => engines.includes(e.id)),
+      projectDefaults.engine,
+      "new",
+    ).engine === projectDefaults.engine
+      ? projectDefaults.engine
+      : null;
+  const engine = engineChoice || projectEngine || defaultChoice.engine || engines[0] || "";
+  const runtimeOf = (id: string) => engineInfo(id)?.runtime;
+  const apiEngines = engines.filter((id) => runtimeOf(id) === "api" || runtimeOf(id) === "chat");
+  const consoleEngines = engines.filter((id) => !apiEngines.includes(id));
+  const unavailable = config?.unavailable_clients ?? [];
+  const isApi = runtimeOf(engine) === "api";
+  const apiSource = engineInfo(engine)?.api?.source ?? "";
+  const apiCanBypass = isApi && engineInfo(engine)?.api?.can_bypass === true;
+  // An API client follows the SAME stored default as a console agent (#1473, operator
+  // decision superseding #1339's "unticked by default"): the form's own choice, bound to the engine
+  // it was made for, wins for this one create. Only a client whose adapter maps it can skip at all.
+  // FAIL CLOSED (adopted from #1457): until a loaded config SAYS the default is on (`=== true` —
+  // the server always sends the stored boolean), an API client starts guarded. A missing or
+  // late config can never turn a Start already on screen into a skip.
+  //
+  // A project's permission default (#1508) sits between the two. Its `false` always applies (it is
+  // the narrower value). Its `true` applies only from a CONFIRMED project list and a loaded config —
+  // a cached list may name a project whose default has since changed, and a form on screen before
+  // either has settled must never turn into a skip. `fresh` alone is not confirmation: a FAILED
+  // revalidation settles it too and keeps the cached list, which then lets Start go ahead (Hermes
+  // on #1532) — so a failed read is no confirmation either.
+  const projectBypass =
+    projectDefaults.bypass === false ||
+    (projectDefaults.bypass === true && projectsFresh && !picker.failed && !!config)
+      ? projectDefaults.bypass
+      : undefined;
+  const bypass = isApi
+    ? apiCanBypass &&
+      (apiBypassChoice?.engine === engine
+        ? apiBypassChoice.value
+        : projectBypass !== undefined
+          ? projectBypass
+          : config?.agent_defaults?.bypass === true)
+    : (bypassChoice ?? projectBypass ?? config?.agent_defaults?.bypass ?? true);
+  const bypassFromProject =
+    projectBypass !== undefined &&
+    (isApi ? apiBypassChoice?.engine !== engine : bypassChoice === null);
+  const setBypass = (value: boolean) =>
+    isApi ? setApiBypassChoice({ engine, value }) : setConsoleBypass(value);
+
+  // The model (#1189), BOUND to the engine it was chosen for: switching engine — by the select or
+  // by the default resolving differently — reads as `default` again, never as a model the other
+  // engine happens to share a name with. A choice the server no longer offers is sent as chosen and
+  // refused there (4422), never quietly swapped for `default` here.
+  const [modelChoice, setModelChoice] = useState<{ engine: string; model: string } | null>(
+    restore.draft?.modelChoice ?? null,
+  );
+  // A native API client's models come from its own CLI (#1313); a console agent's from the
+  // roster. Each option is what is sent (`id`) and what is shown. Every API client's list is
+  // asked for on arrival and kept above the router (#1503), so choosing one paints its last list
+  // at once and revalidates behind it; only a client never answered shows "asking…".
+  usePrefetchStructuredModels(engines.filter((id) => runtimeOf(id) === "api"));
+  const apiModels = useStructuredModels(isApi ? engine : null);
+  const apiList = isApi ? apiModels.list : null;
+  // The operator's new-session defaults for this API client (#1407) only PRESELECT: what the form
+  // shows is what is sent, and a value the client stopped offering is named, never preselected.
+  //
+  // A project's model (#1508) belongs to the project's OWN agent: it applies only while that agent
+  // is the one on the form, and then replaces the global per-client default as the preselection —
+  // through the same resolver, so a model the client stopped offering is named, never preselected.
+  const projectModel: SessionDefault | null =
+    projectEngine && projectEngine === engine && projectDefaults.model
+      ? { model: projectDefaults.model, effort: projectDefaults.effort ?? null }
+      : null;
+  const savedDefault = isApi
+    ? (projectModel ?? config?.agent_defaults?.session_defaults?.[engine])
+    : undefined;
+  const preset = resolveSessionDefault(savedDefault, apiList);
+  // A terminal agent's project model preselects only while the roster still offers it.
+  const consolePreset =
+    !isApi && projectModel && offeredModels(engine).some((m) => m.id === projectModel.model)
+      ? projectModel.model
+      : null;
+  const model =
+    modelChoice?.engine === engine
+      ? modelChoice.model
+      : ((isApi ? preset.model : consolePreset) ?? "default");
+  const modelFromProject =
+    !!projectModel && modelChoice?.engine !== engine && model === projectModel.model;
+  // The level (#1407) is bound to the engine AND model it was chosen for: a model change reads as
+  // that model's preselection (or its own level) again, never a level another model offers.
+  const [effortChoice, setEffortChoice] = useState<
+    { engine: string; model: string; effort: string } | null
+  >(restore.draft?.effortChoice ?? null);
+  const levels = isApi ? levelsOf(apiList, model) : [];
+  const presetEffort = model === preset.model ? preset.effort : null;
+  const effort =
+    effortChoice?.engine === engine && effortChoice.model === model
+      ? effortChoice.effort
+      : (presetEffort ?? "default");
+  const effortFromProject =
+    modelFromProject &&
+    !(effortChoice?.engine === engine && effortChoice.model === model) &&
+    !!projectModel?.effort &&
+    effort === projectModel.effort;
+  const defaultsFrom = projectModel
+    ? `the ${selectedProject?.name ?? "project"} project’s defaults`
+    : `your ${engineLabel(engine)} defaults`;
+  const changedFromDefaults =
+    preset.model !== null &&
+    (model !== preset.model || effort !== (presetEffort ?? "default"));
+  const models: { id: string; text: string }[] = isApi
+    ? (apiList?.models ?? []).map((m) => ({
+        id: m.id,
+        text: m.label && m.label !== m.id ? `${m.label} (${m.id})` : m.id,
+      }))
+    : offeredModels(engine).map((m) => ({
+        id: m.id,
+        text: m.aliases.length ? `${m.id} (${m.aliases.join(", ")})` : m.id,
+      }));
+  const modelSelect = engineInfo(engine)?.model_select;
+
 
   // Folder: the project's default unless overridden for this session via the picker.
   // A created project brings its own folder, so a finish never restores the old override.
@@ -628,6 +690,7 @@ export function NewSessionLanding() {
               unavailable={unavailable}
               value={engine}
               defaultEngine={defaultChoice.engine ?? ""}
+              projectEngine={projectEngine ?? ""}
               onChange={(id) => {
                 setEngineChoice(id);
                 setModelChoice(null); // a model belongs to the engine it was chosen for
@@ -648,6 +711,7 @@ export function NewSessionLanding() {
           <label className={styles.field}>
             <span>
               Model
+              {modelFromProject && <ProjectBadge />}
               {/* The server is refreshing the list behind this one (#1503): said, never waited on. */}
               {refreshing && (
                 <span className={styles.fieldStatus} data-testid="new-session-model-refreshing">
@@ -708,7 +772,10 @@ export function NewSessionLanding() {
         )}
         {isApi && (levels.length > 0 || effort !== "default") && (
           <label className={styles.field}>
-            <span>Reasoning effort</span>
+            <span>
+              Reasoning effort
+              {effortFromProject && <ProjectBadge />}
+            </span>
             <select
               aria-label="Reasoning effort"
               data-testid="new-session-effort"
@@ -738,10 +805,10 @@ export function NewSessionLanding() {
                 : preset.effortStale
                   ? `Your default effort ${preset.effortStale} is no longer offered for ${model}. `
                   : changedFromDefaults
-                    ? `Changed for this session — your defaults are ${savedDefault.model}${savedDefault.effort ? ` · ${savedDefault.effort}` : ""}. `
+                    ? `Changed for this session — ${projectModel ? "the project’s" : "your"} defaults are ${savedDefault.model}${savedDefault.effort ? ` · ${savedDefault.effort}` : ""}. `
                     : preset.pending
-                      ? `From your ${engineLabel(engine)} defaults. `
-                      : `From your ${engineLabel(engine)} defaults; change them here for this session only. `}
+                      ? `From ${defaultsFrom}. `
+                      : `From ${defaultsFrom}; change them here for this session only. `}
             {changedFromDefaults ? (
               <button
                 type="button"
@@ -754,7 +821,9 @@ export function NewSessionLanding() {
                 Reset to defaults
               </button>
             ) : (
-              <Link to={agentPath(engine)}>Edit defaults</Link>
+              <Link to={projectModel ? settingsPath("projects") : agentPath(engine)}>
+                Edit defaults
+              </Link>
             )}
           </p>
         )}
@@ -790,6 +859,19 @@ export function NewSessionLanding() {
             onChange={chooseProject}
           />
 
+          {/* What the project's sessions start with (#1508) — the fields it fills are badged. */}
+          {selectedProject && Object.keys(projectDefaults).length > 0 && (
+            <p className={styles.hint} data-testid="new-session-project-defaults">
+              <b>{selectedProject.name}</b> starts as{" "}
+              {describeLaunchDefaults(projectDefaults, {
+                engine: defaultChoice.engine,
+                bypass: config?.agent_defaults?.bypass ?? true,
+              })}
+              .{" "}
+              <Link to={settingsPath("projects")}>Edit project defaults</Link>
+            </p>
+          )}
+
           {/* Where it starts (#448): the project's default folder, overridable for this session —
               one line, since each project row already shows its folder (#1473). */}
           <FolderLine
@@ -811,7 +893,10 @@ export function NewSessionLanding() {
             checked={bypass}
             onChange={(e) => setBypass(e.target.checked)}
           />
-          <span>Skip permission prompts</span>
+          <span>
+            Skip permission prompts
+            {bypassFromProject && <ProjectBadge />}
+          </span>
         </label>
         )}
         {isApi && apiCanBypass && bypass && (
@@ -898,5 +983,14 @@ export function NewSessionLanding() {
         />
       )}
     </div>
+  );
+}
+
+/** Marks a field the selected project's session defaults filled (#1508). */
+function ProjectBadge() {
+  return (
+    <span className={styles.projectBadge} data-testid="project-badge">
+      project
+    </span>
   );
 }

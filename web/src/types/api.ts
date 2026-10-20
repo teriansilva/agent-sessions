@@ -1147,6 +1147,17 @@ export interface ProjectEntity {
   archived: boolean;
   created_at: number;
   session_count: number;
+  /** What a NEW session in this project starts with (#1508). Every key is optional and an absent
+   *  one follows the global agent defaults; a model or effort only ever sits beside the project's
+   *  own engine. Only a PRESELECTION on the New session form — no launch path reads it. */
+  launch_defaults?: LaunchDefaults;
+}
+
+export interface LaunchDefaults {
+  engine?: string;
+  model?: string;
+  effort?: string;
+  bypass?: boolean;
 }
 
 /** A directory from GET /api/fs/dirs — the folder picker's tree node (#448), bounded to ~/. */

@@ -29,7 +29,7 @@ import os
 import secrets
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # Same file-locking discipline as the metadata sidecar — shared helpers, not a copy,
@@ -72,6 +72,11 @@ class Project:
     # Always one of ``folders`` (auto-adopted on create/update). Required for NEW projects at the
     # API; legacy entities may have "" and fall back to ``folders[0]`` on read (see ``_from_raw``).
     default_folder: str = ""
+    # What a NEW session in this project starts with (#1508): any of ``engine``, ``model``,
+    # ``effort``, ``bypass``; an absent key follows the global ``agent_defaults``. Only ever a
+    # PRESELECTION on the New session form — no launch path reads it (pinned by a test), and the
+    # create still sends what the operator submits.
+    launch_defaults: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {
@@ -82,6 +87,7 @@ class Project:
             "default_folder": self.default_folder,
             "archived": self.archived,
             "created_at": self.created_at,
+            "launch_defaults": dict(self.launch_defaults),
         }
 
 
@@ -137,6 +143,121 @@ def _validate_color(color: object) -> str:
         return validate_color(color)
     except ValueError as e:
         raise ProjectError(str(e), status=422) from None
+
+
+LAUNCH_DEFAULT_KEYS = ("engine", "model", "effort", "bypass")
+
+
+def _coerce_launch_defaults(raw: object) -> dict:
+    """Lenient READ (#1508): shape only, never the roster — a hand-edited file or an engine
+    removed since cannot 500 the SPA; the New session form, holding the roster and the model
+    lists, decides what it can preselect. The dependency chain holds on read too: a model only
+    beside an engine, an effort only beside a model."""
+    if not isinstance(raw, dict):
+        return {}
+    from .prefs import _EFFORT_SHAPE, _ENGINE_ID_SHAPE, _model_id_re
+
+    out: dict = {}
+    engine = raw.get("engine")
+    if isinstance(engine, str) and _ENGINE_ID_SHAPE.match(engine):
+        out["engine"] = engine
+        model = raw.get("model")
+        if isinstance(model, str) and _model_id_re().fullmatch(model) and model != "default":
+            out["model"] = model
+            effort = raw.get("effort")
+            if isinstance(effort, str) and _EFFORT_SHAPE.match(effort):
+                out["effort"] = effort
+    if isinstance(raw.get("bypass"), bool):
+        out["bypass"] = raw["bypass"]
+    return out
+
+
+def validate_launch_defaults(raw: object, *, stored_engine: str | None = None) -> dict:
+    """Strict WRITE (#1508), the same rules as the global defaults (``prefs``), raising 422.
+
+    ``{}`` clears. ``engine`` is one that can start a new session — or the project's already
+    stored engine, so saving an unrelated field never has to drop an absent agent (the global
+    ``default_engine`` rule). ``model`` needs ``engine``: a model belongs to one agent, so a project
+    model never floats free of it when the global default agent changes. A terminal agent's model
+    is one it offers (manifest names, aliases or operator-added ids) and is stored canonical; an
+    API client's is checked against its own list, read now, with its effort one of that model's
+    levels; an engine that takes no model at launch refuses one. ``bypass`` is a real boolean.
+
+    Blocking (it may ask an API client for its models): call it off the event loop, and BEFORE
+    taking the project store's lock."""
+    if not isinstance(raw, dict):
+        raise ProjectError("launch_defaults must be an object", status=422)
+    unknown = set(raw) - set(LAUNCH_DEFAULT_KEYS)
+    if unknown:
+        raise ProjectError(f"unknown launch_defaults fields: {sorted(unknown)}", status=422)
+    from . import engines, model_choice, native_models
+    from .prefs import _EFFORT_SHAPE, _model_id_re
+
+    out: dict = {}
+    if "bypass" in raw and raw["bypass"] is not None:
+        if not isinstance(raw["bypass"], bool):
+            raise ProjectError("launch_defaults.bypass must be a boolean", status=422)
+        out["bypass"] = raw["bypass"]
+    engine, model, effort = raw.get("engine"), raw.get("model"), raw.get("effort")
+    if engine is None:
+        if model is not None or effort is not None:
+            raise ProjectError(
+                "launch_defaults: a model needs the project's own agent (engine)", status=422
+            )
+        return out
+    startable = set(engines.ids_where(lambda m: m.can("new")))
+    if not isinstance(engine, str) or (engine not in startable and engine != stored_engine):
+        raise ProjectError(
+            "launch_defaults.engine must be an engine that can start a session", status=422
+        )
+    out["engine"] = engine
+    if model is None:
+        if effort is not None:
+            raise ProjectError("launch_defaults: an effort needs a model", status=422)
+        return out
+    if not isinstance(model, str) or not _model_id_re().fullmatch(model) or model == "default":
+        raise ProjectError("launch_defaults.model: invalid model id", status=422)
+    prov = engines.get(engine)
+    if prov is None:
+        raise ProjectError(f"launch_defaults: {engine!r} is not available", status=422)
+    if prov.manifest.runtime == "api":
+        listing = native_models.models(prov)
+        if listing.status != "ok":
+            raise ProjectError(
+                f"launch_defaults.model: {engine}'s model list is unavailable ({listing.reason})",
+                status=422,
+            )
+        offered = {m["id"]: m for m in listing.models}
+        if model not in offered:
+            raise ProjectError(f"launch_defaults.model: {model!r} is not offered", status=422)
+        out["model"] = model
+        if effort is not None:
+            if not isinstance(effort, str) or effort not in offered[model]["efforts"]:
+                raise ProjectError(
+                    f"launch_defaults.effort: {model!r} offers no effort {effort!r}", status=422
+                )
+            out["effort"] = effort
+        return out
+    if not model_choice.takes_model(prov.manifest):
+        raise ProjectError(
+            f"launch_defaults.model: {engine!r} does not take a model at launch", status=422
+        )
+    canonical = None
+    for m in model_choice.offered(prov.manifest):
+        if model == m["id"] or model in m["aliases"]:
+            canonical = m["id"]
+            break
+    if canonical is None:
+        raise ProjectError(f"launch_defaults.model: {model!r} is not offered", status=422)
+    out["model"] = canonical
+    if effort is not None:
+        # Levels are an API client's (#1407); a terminal agent has none to choose from.
+        if not isinstance(effort, str) or not _EFFORT_SHAPE.match(effort):
+            raise ProjectError("launch_defaults.effort: invalid effort", status=422)
+        raise ProjectError(
+            f"launch_defaults.effort: {engine!r} offers no effort levels", status=422
+        )
+    return out
 
 
 def _validate_name(name: object) -> str:
@@ -196,6 +317,7 @@ def _from_raw(pid: str, raw: dict) -> Project:
         color=validate_color(raw.get("color", ""), fail_soft=True),
         folders=folders,
         default_folder=default_folder,
+        launch_defaults=_coerce_launch_defaults(raw.get("launch_defaults")),
         archived=bool(raw.get("archived", False)),
         created_at=(
             float(raw["created_at"])
@@ -329,6 +451,7 @@ def create(
     color: object = None,
     folders: object = None,
     default_folder: object = None,
+    launch_defaults: object = None,
     path: Path | None = None,
 ) -> Project:
     """Create an entity. Creating "from a folder" is just ``folders=[cwd]``.
@@ -338,6 +461,8 @@ def create(
     UI requires one on create (the folder picker)."""
     name = _validate_name(name)
     color_v = _validate_color(color)
+    # Before the lock: it may ask an API client for its models (#1508).
+    launch_v = validate_launch_defaults(launch_defaults) if launch_defaults is not None else {}
     folder_list = [_normalize_folder(f) for f in (folders or [])]
     if len(set(folder_list)) != len(folder_list):
         raise ProjectError("duplicate folder in request", status=422)
@@ -359,6 +484,8 @@ def create(
             "archived": False,
             "created_at": time.time(),
         }
+        if launch_v:
+            entity["launch_defaults"] = launch_v
         data["projects"][pid] = entity
         _rewrite_in_place(fh, data)
         return _from_raw(pid, entity)
@@ -372,6 +499,7 @@ def update(
     folders: object = None,
     default_folder: object = None,
     archived: object = None,
+    launch_defaults: object = None,
     path: Path | None = None,
 ) -> Project:
     """Patch an entity: rename / recolor / adopt+release folders / set the default launch folder /
@@ -382,6 +510,15 @@ def update(
     ``folders`` patch that would drop the project's current explicit default folder is rejected
     unless the same request sets a new default (the default must always be one of the folders)."""
     path = path or _default_path()
+    launch_v: dict | None = None
+    if launch_defaults is not None:
+        # Before the lock: it may ask an API client for its models (#1508). The stored engine is
+        # read only to keep an absent agent writable; the write below replaces the whole block.
+        cur = load(path).get(pid)
+        launch_v = validate_launch_defaults(
+            launch_defaults,
+            stored_engine=cur.launch_defaults.get("engine") if cur is not None else None,
+        )
     with _exclusive(path) as fh:
         data = _read_locked(fh)
         raw = data["projects"].get(pid)
@@ -443,6 +580,11 @@ def update(
                     )
         if archived is not None:
             raw["archived"] = archived
+        if launch_v is not None:
+            if launch_v:
+                raw["launch_defaults"] = launch_v
+            else:
+                raw.pop("launch_defaults", None)
         data["projects"][pid] = raw
         _rewrite_in_place(fh, data)
         return _from_raw(pid, raw)

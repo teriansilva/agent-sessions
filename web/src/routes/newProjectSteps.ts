@@ -5,12 +5,13 @@
  *  The server stays the authority on everything it enforces — the name, the colour, `$HOME`
  *  containment and the one-project-per-folder rule (409). These checks only say it earlier. */
 import { COLOR_PRESETS } from "../lib/projectColors";
-import type { ProjectEntity } from "../types/api";
+import type { LaunchDefaults, ProjectEntity } from "../types/api";
 
 export const STEPS = [
   { id: "name", label: "Name" },
   { id: "folder", label: "Folder" },
   { id: "colour", label: "Colour" },
+  { id: "agent", label: "Agent" },
   { id: "playbook", label: "Playbook" },
   { id: "inputs", label: "Inputs" },
   { id: "review", label: "Review" },
@@ -32,6 +33,8 @@ export interface ProjectDraft {
   /** Existing folder: the picked path. */
   existingPath: string;
   color: string;
+  /** What new sessions in the project start with (#1508) — optional; `{}` sets nothing. */
+  launchDefaults: LaunchDefaults;
   makeDefault: boolean;
   /** What the operator changed themselves — the dirty test reads these rather than comparing
    *  values that the wizard also fills in on its own (the home parent, the name-derived folder
@@ -46,6 +49,7 @@ export const initialDraft = (color = ""): ProjectDraft => ({
   folderName: "",
   existingPath: "",
   color,
+  launchDefaults: {},
   makeDefault: false,
   touched: { parent: false, folderName: false, color: false },
 });
@@ -88,6 +92,7 @@ export function stepValid(step: StepId, d: ProjectDraft): boolean {
     case "folder":
       return folderPath(d) !== "";
     case "colour":
+    case "agent":
     case "playbook":
     case "inputs":
       return true;
@@ -148,6 +153,7 @@ export function isDirty(d: ProjectDraft): boolean {
     d.folderMode !== "new" ||
     d.existingPath !== "" ||
     d.makeDefault ||
+    Object.keys(d.launchDefaults).length > 0 ||
     d.touched.parent ||
     d.touched.folderName ||
     d.touched.color

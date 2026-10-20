@@ -11,9 +11,11 @@ import {
   usePlaybookGlobals,
 } from "../components/playbooks/usePlaybookGlobals";
 import { useLocation, useNavigate } from "react-router-dom";
-import { useConfigRefresh } from "../app/config";
+import { useConfig, useConfigRefresh } from "../app/config";
 import { FolderPickerModal } from "../components/FolderPickerModal";
 import { ProjectColorPicker } from "../components/ProjectColorPicker";
+import { ProjectSessionDefaults } from "../components/projects/ProjectSessionDefaults";
+import { describeLaunchDefaults } from "../lib/launchDefaults";
 import { projectColorName } from "../lib/projectColors";
 import { WizardShell } from "../components/wizard/WizardShell";
 import { ApiError, api } from "../lib/api";
@@ -47,6 +49,7 @@ const HEADINGS: Record<StepId, string> = {
   name: "Name the project",
   folder: "Where does it live?",
   colour: "Pick a colour",
+  agent: "Start sessions with",
   playbook: "Choose a playbook",
   inputs: "Set up the playbook",
   review: "Review and create",
@@ -86,6 +89,7 @@ export default function NewProject() {
   const location = useLocation();
   const navigate = useNavigate();
   const refreshConfig = useConfigRefresh();
+  const config = useConfig();
   const [entry] = useState(() => readWizardEntry(location.state));
 
   const [projects, setProjects] = useState<ProjectEntity[]>([]);
@@ -236,6 +240,10 @@ export default function NewProject() {
         name: draft.name.trim(),
         color: draft.color,
         default_folder: folder,
+        // #1508: only when something is set — `{}` and absent mean the same to the server.
+        ...(Object.keys(draft.launchDefaults).length
+          ? { launch_defaults: draft.launchDefaults }
+          : {}),
       });
     } catch (e) {
       // 409 = the folder belongs to another project; a 422 names the field it refused.
@@ -247,6 +255,8 @@ export default function NewProject() {
           ? "folder"
           : field && /colou?r/i.test(message)
             ? "colour"
+            : field && /launch_defaults/i.test(message)
+              ? "agent"
             : field && /name/i.test(message)
               ? "name"
               : null;
@@ -571,6 +581,16 @@ export default function NewProject() {
               </dd>
               {editLink("colour", "colour")}
             </div>
+            <div>
+              <dt>New sessions</dt>
+              <dd data-testid="np-review-launch-defaults">
+                {describeLaunchDefaults(draft.launchDefaults, {
+                  engine: config?.agent_defaults?.default_engine ?? null,
+                  bypass: config?.agent_defaults?.bypass ?? true,
+                })}
+              </dd>
+              {editLink("agent", "session defaults")}
+            </div>
           </dl>
           {book.id && <ProjectPlaybookReview book={book} />}
           <label className={styles.check}>
@@ -613,6 +633,21 @@ export default function NewProject() {
               )}
             </div>
           )}
+        </>
+      );
+      break;
+    case "agent":
+      body = (
+        <>
+          <p className={styles.lede}>
+            Optional. New sessions in this project start with these choices; the New session form
+            can still change any of them for one session. Anything left on <b>Global default</b>{" "}
+            follows Settings → Agents.
+          </p>
+          <ProjectSessionDefaults
+            value={draft.launchDefaults}
+            onChange={(launchDefaults) => patch({ launchDefaults })}
+          />
         </>
       );
       break;

@@ -67,7 +67,7 @@ const next = (page: Page) => page.getByRole("button", { name: "Next", exact: tru
 async function gallery(page: Page, id: string, name: string) {
   await page.goto(`http://127.0.0.1:${stack.appPort}/projects/new`);
   await page.getByLabel("Project name").fill(name);
-  await next(page); await next(page); await next(page);
+  await next(page); await next(page); await next(page); await next(page);
   await expect(page.getByRole("heading", { name: "Choose a playbook", exact: true })).toBeVisible();
   await page.getByLabel("Search playbooks").fill(id);
   await page.getByTestId(`playbook-card-${id}`).getByRole("radio").check();
@@ -178,7 +178,7 @@ for (const replaced of [false, true]) test(`a folder refusal after CREATE lets a
   }
   await page.getByRole("button", { name: "Change the folder", exact: true }).click();
   await page.getByLabel("Folder name").fill(`${id}-b`);
-  await next(page); await next(page); await next(page);
+  await next(page); await next(page); await next(page); await next(page);
   const reviewed = page.waitForResponse((r) => r.url().endsWith(`/api/playbooks/${id}/review`) && r.request().method() === "POST");
   await next(page);
   const response = await reviewed; expect(response.status(), await response.text()).toBe(200);
@@ -270,7 +270,7 @@ test("a missing configured default is explained and No playbook still creates no
   });
   await page.goto(`http://127.0.0.1:${stack.appPort}/projects/new`);
   await page.getByLabel("Project name").fill("without-playbook");
-  await next(page); await next(page); await next(page);
+  await next(page); await next(page); await next(page); await next(page);
   await expect(page.getByText(/configured default.*missing-configured-default/)).toBeVisible();
   await expect(page.getByRole("radio", { name: /^No playbook/ })).toBeChecked();
   await next(page);
@@ -284,7 +284,7 @@ test("a secret-reference-file bundle explains its limitation without blocking No
   const manifest = join(root, "playbook.toml"); writeFileSync(manifest, readFileSync(manifest, "utf8").replace("format = 2", "format = 3"));
   writeFileSync(join(root, "template", "RULES.md"), "Read the secret from {{secret_path:token}}.\n");
   await page.goto(`http://127.0.0.1:${stack.appPort}/projects/new`);
-  await page.getByLabel("Project name").fill(id); await next(page); await next(page); await next(page);
+  await page.getByLabel("Project name").fill(id); await next(page); await next(page); await next(page); await next(page);
   await page.getByTestId(`playbook-card-${id}`).getByRole("radio").check();
   await expect(page.getByRole("alert")).toContainText("needs an existing project before review");
   await expect(page.getByRole("button", { name: "Next", exact: true })).toBeDisabled();
