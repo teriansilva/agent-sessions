@@ -442,3 +442,24 @@ test.describe("wide desktop layout", () => {
     await expect(page.getByTestId("memory-graph")).toHaveCount(0);
   });
 });
+
+test("the page scrolls: the setup cards below the fold are reached with the wheel, not only from script", async ({ page, isMobile }) => {
+  await mockMemory(page);
+  // A short window, so the cards sit below the fold whatever the mock's size.
+  await page.setViewportSize({ width: page.viewportSize()!.width, height: 560 });
+  await page.goto(MEMORY_PATH);
+  const title = page.getByRole("heading", { level: 1, name: "Memory" });
+  await expect(title).toBeVisible();
+  if (isMobile) await page.getByRole("tab", { name: /Trays/ }).click();
+  const card = page.getByRole("region", { name: "Agent instructions" });
+  await expect(card).toBeAttached();
+  // The card's last control, so the assertion holds even when the card is taller than the window.
+  const last = card.getByRole("link", { name: "Which agents can reach it" });
+  await expect(last).not.toBeInViewport();
+  // A real wheel over the page heading, the way an operator scrolls. `scrollIntoViewIfNeeded`
+  // scrolls even an `overflow: hidden` box from script, which is how this hid (#1441).
+  const head = await title.boundingBox();
+  await page.mouse.move(head!.x + 10, head!.y + 10);
+  for (let i = 0; i < 12; i += 1) await page.mouse.wheel(0, 600);
+  await expect(last).toBeInViewport({ ratio: 1 });
+});
