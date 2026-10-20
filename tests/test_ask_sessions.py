@@ -931,3 +931,33 @@ def test_a_tap_waits_for_a_launch_that_is_just_letting_its_lock_go(live, ai, wor
     threading.Timer(0.3, os.close, args=(fd,)).start()  # …and goes a moment later
     assert live.decide(pid).status_code == 202
     assert live.settled(cid)["state"] == "started"
+
+
+def test_a_started_session_is_followed_from_its_conversation(live, ai, world):
+    """#1443 Phase 4: a session Ask started is followed; one that did not start is not."""
+    from agent_sessions import ask_follow
+
+    cid, _ = _propose(live, ai)
+    live.decide(live.card(cid)["action_id"])
+    card = live.settled(cid)
+    assert card["state"] == "started"
+    # The follow is written just AFTER the card settles (a separate step; the follower's pass
+    # reconciles a missed one), so a fast reader can land in between: wait for it, bounded.
+    deadline = time.monotonic() + 5.0
+    while ask_follow.state(cid)["following"] != [card["session_key"]]:
+        assert time.monotonic() < deadline, ask_follow.state(cid)
+        time.sleep(0.02)
+    # …counting its output from the START decision, so a first turn before any pass reports.
+    (row,) = ask_store.read_proposals(cid)
+    (follow,) = ask_store.read_follows(cid)["follows"]
+    assert follow["since"] == row["decided_at"]
+
+
+def test_a_launch_that_did_not_start_follows_nothing(live, ai, world):
+    from agent_sessions import ask_follow
+
+    world["result"] = _unbound
+    cid, _ = _propose(live, ai)
+    live.decide(live.card(cid)["action_id"])
+    assert live.settled(cid)["state"] == "unconfirmed"
+    assert ask_follow.state(cid)["following"] == []

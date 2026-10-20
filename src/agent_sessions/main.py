@@ -30,6 +30,7 @@ from fastapi.templating import Jinja2Templates
 from . import (
     agent_catalog_refresh,
     ai_review_loop,
+    ask_follow,
     ask_orchestrator,
     ask_proposals,
     automation_loop,
@@ -416,6 +417,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # Shared project memory (#1441): inbox files → each project's store, every 30 s, for
         # projects with memory on. Env kill-switch AGENT_SESSIONS_MEMORY_LOOP=0.
         memory_task = asyncio.create_task(memory_loop.run())
+        # Ask's follower (#1443 Phase 4): deterministic, no model call, no notification.
+        ask_follow_task = asyncio.create_task(ask_follow.run(registry))
         # API clients' model lists (#1503): warmed shortly after startup and re-probed before they
         # expire, one probe at a time on `native_models`' own refresher thread, never on the loop.
         # Env kill-switch AGENT_SESSIONS_MODELS_LOOP=0 (lists are then read on demand).
@@ -463,6 +466,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 needs_you_task,
                 automation_task,
                 memory_task,
+                ask_follow_task,
                 models_task,
             ):
                 task.cancel()

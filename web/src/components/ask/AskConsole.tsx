@@ -64,6 +64,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type RefObject,
@@ -83,6 +84,8 @@ import type {
   AskConversationTurn,
   AskProposalCard,
   AskSessionDecision,
+  AskFollow,
+  AskUpdate,
   AskQuestionCard,
   AskStoredMatch,
   AskStoredMissionMatch,
@@ -90,7 +93,8 @@ import type {
 } from "../../types/api";
 
 import styles from "../pulse/mission.module.css";
-import { NudgeCard, QuestionCard, SessionCard } from "./AskCards";
+import { FollowingRow, NudgeCard, QuestionCard, SessionCard, UpdateRow } from "./AskCards";
+import { ASK_SEEN_EVENT, placeUpdates } from "./askUpdates";
 import { AskComposer } from "./AskComposer";
 import { mapBatch, matchRoute, matchSeed } from "./askMatches";
 import a from "./AskConsole.module.css";
@@ -121,6 +125,9 @@ export interface AskTurn {
    *  to start (Phase 3a). */
   ask: AskQuestionCard | null;
   proposals: AskProposalCard[];
+  /** When it was asked (server time), to place followed sessions' updates around it; `null` for
+   *  a turn this page has not had back from the server yet. */
+  at: number | null;
 }
 
 /** How often a turn this page is not streaming is read again until it settles. */
@@ -128,6 +135,10 @@ const POLL_MS = 2000;
 /** How often a conversation with an undecided or in-flight card is read again, so a decision
  *  taken elsewhere (Needs you, another tab) or a proposal's expiry reaches the card. */
 export const CARD_POLL_MS = 15_000;
+/** How long a conversation keeps reading after one of its cards was decided, even with nothing
+ *  live or followed: the follow that decision earns is written by the server's next follower pass,
+ *  up to a minute later, and must still reach an open conversation (#1443 Phase 4). */
+export const RECONCILE_MS = 180_000;
 /** Projections that can still change on their own — including `unknown`, an unreadable ledger
  *  that recovers without anyone acting. */
 const LIVE_PROJECTIONS = new Set([
@@ -158,6 +169,7 @@ function fromServer(t: AskConversationTurn): AskTurn {
     pending: t.status === "pending",
     ask: t.ask ?? null,
     proposals: t.proposals ?? [],
+    at: typeof t.asked_at === "number" ? t.asked_at : null,
   };
 }
 
@@ -209,6 +221,8 @@ export function AskConsole({
   onClose,
   closeRef,
   cardPollMs = CARD_POLL_MS,
+  visible = true,
+  reconcileMs = RECONCILE_MS,
 }: {
   /** False when no AI endpoint is configured. Ask has no local fallback, so the control is
    *  disabled and says why. */
@@ -223,8 +237,38 @@ export function AskConsole({
   closeRef?: RefObject<HTMLButtonElement | null>;
   /** How often undecided cards are re-read; a test shortens it rather than faking the clock. */
   cardPollMs?: number;
+  /** Whether the operator can see this console (the sidebar is open): only then is an update
+   *  marked seen (#1443 Phase 4). */
+  visible?: boolean;
+  /** How long the read continues after a session starts; a test shortens it. */
+  reconcileMs?: number;
 }) {
   const [turns, setTurns] = useState<AskTurn[]>([]);
+  // #1443 Phase 4: followed sessions' updates, which sessions are followed, and unseen updates.
+  const [updates, setUpdates] = useState<AskUpdate[]>([]);
+  const [following, setFollowing] = useState<string[]>([]);
+  const [follows, setFollows] = useState<AskFollow[]>([]);
+  const [followsUnknown, setFollowsUnknown] = useState(false);
+  const [updatesPending, setUpdatesPending] = useState(false);
+  const [unread, setUnread] = useState(false);
+  // A session just started: keep reading for a while, so the follow it earns arrives.
+  const startedSeen = useRef(new Map<string, string>());
+  const [reconciling, setReconciling] = useState(false);
+  const reconcileTimer = useRef<number | null>(null);
+  const reconcile = useCallback(() => {
+    setReconciling(true);
+    if (reconcileTimer.current !== null) window.clearTimeout(reconcileTimer.current);
+    reconcileTimer.current = window.setTimeout(() => {
+      reconcileTimer.current = null;
+      setReconciling(false);
+    }, reconcileMs);
+  }, [reconcileMs]);
+  useEffect(
+    () => () => {
+      if (reconcileTimer.current !== null) window.clearTimeout(reconcileTimer.current);
+    },
+    [],
+  );
   const [cid, setCid] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [conversations, setConversations] = useState<AskConversationSummary[] | null>(null);
@@ -306,12 +350,41 @@ export function AskConsole({
       loadedFor.current = id;
       setTitle(c.title ?? "");
       setTurns((prev) => merge((c.turns ?? []).map(fromServer), prev));
+      setUpdates(c.updates ?? []);
+      // An unreadable follow state is not "following nothing" (Hermes on #1500): keep what was
+      // last verified, and keep reading (below) until a read succeeds.
+      setFollowsUnknown(Boolean(c.follows_incomplete));
+      setUpdatesPending(Boolean(c.updates_pending));
+      if (!c.follows_incomplete) {
+        setFollowing(c.following ?? []);
+        setFollows(c.follows ?? (c.following ?? []).map((key) => ({ key, title: "" })));
+        setUnread(Boolean(c.unread));
+      }
+      // A session STARTED — from this card or another tab's — earns a follow at the server's
+      // next follower pass, up to a minute later. Seen as started and not followed yet, the
+      // conversation keeps reading for a while (once per card's move into `started`).
+      const was = startedSeen.current;
+      let earned = false;
+      for (const t of c.turns ?? [])
+        for (const p of t.proposals ?? []) {
+          if (p.kind !== "session") continue;
+          const before = was.get(p.action_id);
+          was.set(p.action_id, p.state);
+          if (
+            p.state === "started" &&
+            before !== "started" &&
+            p.session_key &&
+            !(c.following ?? []).includes(p.session_key)
+          )
+            earned = true;
+        }
+      if (earned) reconcile();
     } catch {
       // Keep what is shown; a fresh array re-arms the poll of a still-pending turn.
       if (fresh()) setTurns((prev) => [...prev]);
     }
-    // `current` reads refs only.
-  }, []);
+    // `current` reads refs only; `reconcile` is stable.
+  }, [reconcile]);
 
   /** `initial`: the first selection, which may land under a question already asked — so it
    *  neither stops that question's watch nor clears it from the thread. */
@@ -322,6 +395,13 @@ export function AskConsole({
       setCid(id);
       setTitle("");
       setTurns((prev) => (initial ? prev.filter((t) => t.pending && !t.error) : []));
+      setUpdates([]);
+      setFollowing([]);
+      setFollows([]);
+      setFollowsUnknown(false);
+      setUpdatesPending(false);
+      setUnread(false);
+      startedSeen.current = new Map();
       void load(id);
     },
     [load],
@@ -363,7 +443,15 @@ export function AskConsole({
   // you, the bell, another tab) or the proposal's TTL can settle it under an open card, so while
   // any card is undecided or in flight the conversation is read again: on the app's own
   // action-resolved event at once, and on a timer for everything that event cannot see.
-  const cardsLive = turns.some((t) => t.proposals.some(cardLive));
+  // …and while sessions are followed: their updates land between turns (#1443 Phase 4).
+  const cardsLive =
+    turns.some((t) => t.proposals.some(cardLive)) ||
+    following.length > 0 ||
+    reconciling ||
+    // Keep reading while the follow state is unknown or an update is still being delivered:
+    // either would otherwise strand an update off the open screen (Hermes on #1500).
+    followsUnknown ||
+    updatesPending;
   // A session being started settles in seconds, not minutes: follow it at the turn poll's pace.
   const launching = turns.some((t) =>
     t.proposals.some((p) => p.kind === "session" && p.state === "deciding"),
@@ -399,6 +487,7 @@ export function AskConsole({
         pending: true,
         ask: null,
         proposals: [],
+        at: null,
       };
       setTurns((prev) => [...prev, optimistic]);
       const update = (fn: (t: AskTurn) => AskTurn) =>
@@ -559,10 +648,90 @@ export function AskConsole({
           else n.delete(pid);
           return n;
         });
-        if (id && cidRef.current === id) void load(id);
+        if (id && cidRef.current === id) {
+          reconcile();
+          void load(id);
+        }
+      }
+    },
+    [load, reconcile],
+  );
+
+  /** #1443 Phase 4: an update is SEEN once this conversation is on screen with it — the sidebar
+   *  open and the tab visible. Everything else showing the unread state (the Ask icon's dot, the
+   *  switcher) hears it at once. */
+  // Only what is ON SCREEN is seen: the newest update this page has rendered, never "now" — an
+  // update written after the last read stays unread until it is shown.
+  const shownThrough = updates.reduce((m, u) => Math.max(m, u.ts), 0);
+  // Only the NEWEST mark's answer applies: an older one resolving late never restores "unread".
+  const seenGen = useRef(0);
+  useEffect(() => {
+    if (!unread || !cid || !visible || shownThrough <= 0) return;
+    const id = cid;
+    const mark = () => {
+      if (document.visibilityState !== "visible") return;
+      const g = ++seenGen.current;
+      void api
+        .askSeen(id, shownThrough)
+        .then((r) => {
+          if (g !== seenGen.current) return;
+          if (cidRef.current === id) setUnread(Boolean(r.unread));
+          window.dispatchEvent(new CustomEvent(ASK_SEEN_EVENT));
+        })
+        .catch(() => {
+          /* still unread; the next read or visibility change tries again */
+        });
+    };
+    mark();
+    document.addEventListener("visibilitychange", mark);
+    return () => document.removeEventListener("visibilitychange", mark);
+  }, [unread, cid, visible, shownThrough]);
+
+  const [unfollowing, setUnfollowing] = useState<ReadonlySet<string>>(new Set());
+  const unfollow = useCallback(
+    async (key: string) => {
+      const id = cidRef.current;
+      if (!id) return;
+      setUnfollowing((s) => new Set(s).add(key));
+      try {
+        await api.askUnfollow(id, key);
+        if (cidRef.current === id) {
+          setFollowing((f) => f.filter((k) => k !== key));
+          setFollows((f) => f.filter((x) => x.key !== key));
+          setUpdates((us) => us.map((u) => (u.key === key ? { ...u, following: false } : u)));
+        }
+      } catch {
+        /* the re-read below shows whether it is still followed */
+      } finally {
+        setUnfollowing((s) => {
+          const n = new Set(s);
+          n.delete(key);
+          return n;
+        });
+        if (cidRef.current === id) void load(id);
       }
     },
     [load],
+  );
+
+  const placed = useMemo(() => placeUpdates(turns, updates), [turns, updates]);
+  const updateRow = (u: AskUpdate) => (
+    <UpdateRow
+      key={`${u.key}:${u.ts}:${u.kind}`}
+      u={u}
+      busy={unfollowing.has(u.key)}
+      onUnfollow={() => void unfollow(u.key)}
+      open={
+        <Link
+          className={styles.openSession}
+          to={matchRoute(u.key)}
+          aria-label={`Open ${u.title || "the session"}`}
+          data-testid="ask-update-open"
+        >
+          Open
+        </Link>
+      }
+    />
   );
 
   /** The newest turn is where the operator is looking: keep the thread scrolled to it, as a chat
@@ -602,6 +771,13 @@ export function AskConsole({
             setCid(null);
             setTitle("");
             setTurns([]);
+            setUpdates([]);
+            setFollowing([]);
+            setFollows([]);
+            setFollowsUnknown(false);
+            setUpdatesPending(false);
+            setUnread(false);
+            startedSeen.current = new Map();
             inputRef.current?.focus();
           }}
           data-testid="ask-new"
@@ -653,6 +829,7 @@ export function AskConsole({
             className={`${a.measure} ${styles.paneAtBottom}`}
             data-testid="ask-turns"
           >
+            {placed.before.map(updateRow)}
             {turns.map((t) => (
               <div key={t.id} data-testid="ask-turn">
                 <article
@@ -885,8 +1062,35 @@ export function AskConsole({
                     ),
                   )}
                 </article>
+                {(placed.after.get(t.id) ?? []).map(updateRow)}
               </div>
             ))}
+            {follows.length > 0 ? (
+              <section
+                className={a.following}
+                aria-label="Sessions this conversation follows"
+                data-testid="ask-following"
+              >
+                {follows.map((f) => (
+                  <FollowingRow
+                    key={f.key}
+                    title={f.title}
+                    busy={unfollowing.has(f.key)}
+                    onUnfollow={() => void unfollow(f.key)}
+                    open={
+                      <Link
+                        className={styles.openSession}
+                        to={matchRoute(f.key)}
+                        aria-label={`Open ${f.title || "the session"}`}
+                        data-testid="ask-following-open"
+                      >
+                        Open
+                      </Link>
+                    }
+                  />
+                ))}
+              </section>
+            ) : null}
           </div>
         )}
       </div>

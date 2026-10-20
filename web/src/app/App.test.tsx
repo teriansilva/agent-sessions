@@ -26,6 +26,8 @@ vi.mock("../lib/api", () => ({
     version: vi.fn().mockResolvedValue({ version: "0.0.0" }),
     // #726 Phase 3: the topbar mounts the notification bell, which polls on mount.
     notifications: vi.fn().mockResolvedValue({ notifications: [], unread: 0 }),
+    // #1443 Phase 4: the Ask icon asks whether a followed session has an unseen update.
+    askUnread: vi.fn().mockResolvedValue({ unread: false, conversations: 0 }),
     markNotificationsRead: vi
       .fn()
       .mockResolvedValue({ notifications: [], unread: 0, marked: 0 }),

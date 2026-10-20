@@ -38,6 +38,12 @@ export interface FakeConversation {
   created_at: number;
   updated_at: number;
   turns: FakeTurn[];
+  /** #1443 Phase 4: the follower's updates, the sessions followed, and an unseen update. */
+  updates?: { key: string; kind: string; title: string; ts: number; following: boolean }[];
+  following?: string[];
+  /** Titles for followed sessions; defaults to the title of their newest update. */
+  followTitles?: Record<string, string>;
+  unread?: boolean;
 }
 
 export interface FakeAsk {
@@ -57,6 +63,7 @@ function summary(c: FakeConversation) {
     title: c.turns[0]?.question ?? "",
     created_at: c.created_at,
     updated_at: c.updated_at,
+    unread: Boolean(c.unread),
   };
 }
 
@@ -66,7 +73,21 @@ function body(c: FakeConversation) {
   const turns = c.turns.map((t) =>
     t.ask ? { ...t, ask: { ...t.ask, answered: answered.has(t.ask.question_id) } } : t,
   );
-  return { ...summary(c), turns, running: false };
+  return {
+    ...summary(c),
+    turns,
+    running: false,
+    updates: c.updates ?? [],
+    following: c.following ?? [],
+    follows: (c.following ?? []).map((key) => ({
+      key,
+      title:
+        c.followTitles?.[key] ??
+        [...(c.updates ?? [])].reverse().find((u) => u.key === key)?.title ??
+        "",
+    })),
+    unread: Boolean(c.unread),
+  };
 }
 
 /** Install the fake conversation routes. `seed` conversations are listed newest-updated first. */
@@ -92,6 +113,31 @@ export async function mockAskConversations(
     return r.fulfill({
       json: { conversations: latestFirst().map(summary), configured: true },
     });
+  });
+  // #1443 Phase 4: the unread dot, marking a conversation seen, and Unfollow.
+  await page.route(/\/api\/ask\/unread$/, (r) =>
+    r.fulfill({
+      json: {
+        unread: fake.conversations.some((c) => c.unread),
+        conversations: fake.conversations.filter((c) => c.unread).length,
+      },
+    }),
+  );
+  await page.route(/\/api\/ask\/conversations\/(ask_[0-9a-f]{32})\/seen$/, (r) => {
+    const id = /\/(ask_[0-9a-f]{32})\/seen$/.exec(new URL(r.request().url()).pathname)![1];
+    const c = fake.conversations.find((x) => x.id === id);
+    if (c) c.unread = false;
+    return r.fulfill({ json: { unread: false } });
+  });
+  await page.route(/\/api\/ask\/conversations\/(ask_[0-9a-f]{32})\/follow\/.+$/, (r) => {
+    const m = /\/(ask_[0-9a-f]{32})\/follow\/(.+)$/.exec(new URL(r.request().url()).pathname)!;
+    const key = decodeURIComponent(m[2]);
+    const c = fake.conversations.find((x) => x.id === m[1]);
+    if (!c || !(c.following ?? []).includes(key))
+      return r.fulfill({ status: 404, json: { detail: "not followed" } });
+    c.following = (c.following ?? []).filter((k) => k !== key);
+    c.updates = (c.updates ?? []).map((u) => (u.key === key ? { ...u, following: false } : u));
+    return r.fulfill({ json: { following: false } });
   });
   await page.route(/\/api\/ask\/conversations\/(ask_[0-9a-f]{32})$/, (r) => {
     const id = /\/(ask_[0-9a-f]{32})$/.exec(new URL(r.request().url()).pathname)![1];

@@ -6,10 +6,11 @@ conversation is now an append-only JSONL file on the server:
 
     <root>/<cid>.jsonl            the records, one JSON object per LF-terminated line
     <root>/proposals/<cid>.json   Phase 3's session proposals (``ask_proposals`` writes them)
-    <root>/follows/<cid>.json     Phase 4's follow sidecar (read here by retention only)
+    <root>/follows/<cid>.json     Phase 4's follows (``ask_follow`` writes them, through here)
     <root>/.locks/<cid>.lock      the turn lock: held for as long as a turn runs
     <root>/.locks/<cid>.proposals.lock   held across every read-modify-write of the sidecar
     <root>/.locks/<cid>.decide.lock      held for as long as a launch from this conversation runs
+    <root>/.locks/<cid>.follows.lock     held across every read-modify-write of the follows
 
 ``root`` is ``AGENT_SESSIONS_ASK_DIR`` (default ``~/.config/agent-sessions/ask``), kept 0700 with
 0600 files. Its parent is the app's config dir (often 0775 by umask), so the chain is not held to
@@ -94,7 +95,7 @@ PINNING_PROPOSAL_STATES = frozenset({"deciding", "creating"})
 
 TURN_STATUSES = frozenset({"pending", "done", "failed"})
 RECORD_TYPES = frozenset(
-    {"conversation", "user", "assistant", "tool", "status", "question", "proposal"}
+    {"conversation", "user", "assistant", "tool", "status", "question", "proposal", "update"}
 )
 
 # Asking back (#1443 Phase 2): a question card's bounds.
@@ -108,6 +109,19 @@ NUDGE_MAX = 800
 BRIEF_MAX = 2_000
 _ACTION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 PROPOSAL_KINDS = frozenset({"nudge", "session"})
+# Follows (#1443 Phase 4): what a followed session's update says, as a kind — the words are the
+# client's, authored, so no model text is ever shown as an update.
+UPDATE_KINDS = frozenset({"finished", "needs_you", "ended"})
+#: Sessions one conversation follows at once, and entries kept (an unfollowed one is remembered so
+#: the same delivered nudge never re-follows it).
+MAX_FOLLOWS = 10
+MAX_FOLLOW_ROWS = 50
+#: Update records one conversation may hold; past it its follows end, so the size bound holds.
+MAX_UPDATES = 300
+#: Ids a conversation has followed FOR (a started proposal) — never
+#: forgotten, so a replayed reason never re-follows after Unfollow. Bounded by construction: a
+#: conversation holds at most MAX_TURNS × 3 proposals of either kind.
+MAX_CONSUMED = MAX_TURNS * 3
 
 
 class StoreRefused(Exception):
@@ -155,6 +169,10 @@ def _lock_path(cid: str) -> Path:
 
 def _proposals_lock_path(cid: str) -> Path:
     return root() / ".locks" / f"{cid}.proposals.lock"
+
+
+def _follows_lock_path(cid: str) -> Path:
+    return root() / ".locks" / f"{cid}.follows.lock"
 
 
 def _decide_lock_path(cid: str) -> Path:
@@ -337,6 +355,18 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
                 }
             )
         out["mission_matches"] = mission_matches
+    elif kind == "update":
+        # A followed session changed (#1443 Phase 4): an AUTHORED line, never model text.
+        key, ukind = rec.get("key"), rec.get("kind")
+        if not (isinstance(key, str) and _KEY_RE.match(key)):
+            raise ValueError("malformed update session key")
+        if ukind not in UPDATE_KINDS:
+            raise ValueError("unknown update kind")
+        eid = rec.get("event_id")
+        if not (isinstance(eid, str) and _ACTION_ID_RE.match(eid)):
+            raise ValueError("an update needs its event id")
+        out.update(key=key, kind=ukind, event_id=eid)
+        out["title"] = text(rec.get("title"), TITLE_MAX)
     elif kind == "tool":
         out["turn_id"] = _turn_id(rec)
         cid = rec.get("call_id")
@@ -796,6 +826,144 @@ def write_proposals(cid: str, rows: list[dict], *, fresh: str | None = None) -> 
     return admitted
 
 
+# ---- the follows sidecar (#1443 Phase 4) --------------------------------------------------------
+
+
+@contextlib.contextmanager
+def follows_lock(cid: str) -> Iterator[None]:
+    """The follows sidecar's lock, blocking and short, across one read-modify-write."""
+    if not valid_cid(cid):
+        raise ConversationNotFound(cid)
+    fd = _open_lock(_follows_lock_path(cid))
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _empty_follows() -> dict:
+    return {
+        "follows": [],
+        "seen_at": 0.0,
+        "last_update_at": 0.0,
+        "updates": 0,
+        "consumed": [],
+        "outbox": [],
+    }
+
+
+def read_follows(cid: str) -> dict:
+    """The conversation's follows; an empty document when there is none. SidecarUnreadable when
+    it exists and cannot be read — never a partial document."""
+    if not valid_cid(cid):
+        raise ConversationNotFound(cid)
+    try:
+        raw = _follows_path(cid).read_bytes()
+    except FileNotFoundError:
+        return _empty_follows()
+    except OSError as e:
+        raise SidecarUnreadable(type(e).__name__) from None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        raise SidecarUnreadable("not JSON") from None
+    if not isinstance(data, dict) or not isinstance(data.get("follows"), list):
+        raise SidecarUnreadable("malformed")
+    out = _empty_follows()
+    out["follows"] = [f for f in data["follows"] if isinstance(f, dict)]
+    for k in ("seen_at", "last_update_at"):
+        v = data.get(k)
+        if isinstance(v, int | float) and not isinstance(v, bool):
+            out[k] = float(v)
+    n = data.get("updates")
+    if isinstance(n, int) and not isinstance(n, bool) and n >= 0:
+        out["updates"] = n
+    consumed = data.get("consumed") or []
+    outbox = data.get("outbox") or []
+    if not isinstance(consumed, list) or not isinstance(outbox, list):
+        raise SidecarUnreadable("malformed")
+    out["consumed"] = [c for c in consumed if isinstance(c, str)]
+    out["outbox"] = [o for o in outbox if isinstance(o, dict)]
+    return out
+
+
+def _admit_follow(f: dict, secrets: list[str]) -> dict:
+    key = f.get("key")
+    if not (isinstance(key, str) and _KEY_RE.match(key)):
+        raise ValueError("malformed followed session key")
+    if f.get("via") != "start":
+        raise ValueError("unknown follow origin")
+    out: dict = {
+        "key": key,
+        "via": f["via"],
+        "title": guard_text(f.get("title"), TITLE_MAX, secrets=secrets),
+        "active": f.get("active") is True,
+        "misses": f.get("misses") if isinstance(f.get("misses"), int) else 0,
+    }
+    v = f.get("needs_you")
+    out["needs_you"] = v if isinstance(v, bool) else None
+    # The newest visible-output time a `finished` has accounted for (#1443 Phase 4): a turn that
+    # started AND ended between two passes still leaves a newer output time behind.
+    t = f.get("out_through")
+    out["out_through"] = (
+        float(t) if isinstance(t, int | float) and not isinstance(t, bool) else None
+    )
+    since = f.get("since")
+    out["since"] = float(since) if isinstance(since, int | float) else time.time()
+    return out
+
+
+def write_follows(cid: str, doc: dict) -> dict:
+    """Replace the follows sidecar, atomically and durably, through the store boundary (titles are
+    guarded). The CALLER holds :func:`follows_lock`. Returns the document as written."""
+    if not valid_cid(cid):
+        raise ConversationNotFound(cid)
+    rows = doc.get("follows") or []
+    if len(rows) > MAX_FOLLOW_ROWS:
+        raise ValueError("too many follow rows")
+    if sum(1 for f in rows if f.get("active") is True) > MAX_FOLLOWS:
+        raise ValueError("too many active follows")
+    _ensure_root()
+    d = root() / "follows"
+    _ensure_dir(d)
+    with template_secrets.registration_fence():
+        try:
+            secrets = template_secrets.redaction_values()
+        except template_secrets.RedactionUnavailable as e:
+            raise StoreRefused(f"{e} — nothing was stored") from None
+        consumed = list(doc.get("consumed") or [])
+        if len(consumed) > MAX_CONSUMED or not all(
+            isinstance(c, str) and _ACTION_ID_RE.match(c) for c in consumed
+        ):
+            raise ValueError("malformed consumed ids")
+        out = {
+            "follows": [_admit_follow(f, secrets) for f in rows],
+            "seen_at": float(doc.get("seen_at") or 0.0),
+            "last_update_at": float(doc.get("last_update_at") or 0.0),
+            "updates": int(doc.get("updates") or 0),
+            "consumed": consumed,
+            # Pending update records, admitted exactly as the conversation will store them.
+            "outbox": [_admit(dict(o, type="update"), secrets) for o in doc.get("outbox") or []],
+        }
+        data = json.dumps(out, ensure_ascii=False).encode("utf-8", "replace")
+        tmp = d / f".{cid}.{uuid.uuid4().hex}.tmp"
+        fd = os.open(
+            tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600
+        )
+        try:
+            try:
+                _write_all(fd, data)
+            finally:
+                os.close(fd)
+            os.replace(tmp, _follows_path(cid))
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+    _sync_dir(d)
+    return out
+
+
 # ---- retention ---------------------------------------------------------------------------------
 
 
@@ -825,7 +993,12 @@ def delete(cid: str) -> None:
     for p in (_proposals_path(cid), _follows_path(cid)):
         p.unlink(missing_ok=True)
     _path(cid).unlink(missing_ok=True)
-    for p in (_lock_path(cid), _decide_lock_path(cid), _proposals_lock_path(cid)):
+    for p in (
+        _lock_path(cid),
+        _decide_lock_path(cid),
+        _proposals_lock_path(cid),
+        _follows_lock_path(cid),
+    ):
         p.unlink(missing_ok=True)
 
 
@@ -853,7 +1026,10 @@ def sweep(now: float | None = None) -> list[str]:
             # Decided AGAIN under the locks — every writer holds one — so a turn that settled or
             # a tap that started deciding while this waited is seen: fresh age and rank, and the
             # proposal pin read under the sidecar's own lock.
-            with proposals_lock(cid):
+            # …and the follows lock, so a follower write that passed its own existence check is
+            # finished before this deletes, never left behind after it. Lock order: turn →
+            # proposals → follows.
+            with proposals_lock(cid), follows_lock(cid):
                 if not _still_expired(cid, cutoff) or _pinned_by_proposals(cid):
                     continue
                 delete(cid)
@@ -864,5 +1040,12 @@ def sweep(now: float | None = None) -> list[str]:
             for name in os.listdir(root() / sub):
                 cid = name[: -len(".json")] if name.endswith(".json") else ""
                 if valid_cid(cid) and not _path(cid).exists() and not _pinned_by_proposals(cid):
-                    (root() / sub / name).unlink(missing_ok=True)
+                    if sub == "follows":
+                        # Under the follows lock, like every follows write; the lock file goes
+                        # with it.
+                        with follows_lock(cid):
+                            (root() / sub / name).unlink(missing_ok=True)
+                            _follows_lock_path(cid).unlink(missing_ok=True)
+                    else:
+                        (root() / sub / name).unlink(missing_ok=True)
     return removed

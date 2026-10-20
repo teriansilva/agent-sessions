@@ -1643,6 +1643,21 @@ export const api = {
   askNewConversation: () =>
     mutateJson<AskConversation>("POST", "/api/ask/conversations", {}),
   askMessageStream: streamAskTurn,
+  /** Whether any conversation has an unseen update from a followed session (#1443 Phase 4). */
+  askUnread: () =>
+    getJson<{ unread: boolean; conversations: number }>("/api/ask/unread"),
+  /** Updates up to `through` (the newest one this page has SHOWN) have been seen; the answer says
+   *  whether a newer one is still unseen. */
+  askSeen: (id: string, through: number) =>
+    mutateJson<{ unread: boolean }>("POST", `/api/ask/conversations/${enc(id)}/seen`, {
+      through,
+    }),
+  /** Stop following a session from this conversation. */
+  askUnfollow: (id: string, key: string) =>
+    mutateJson<{ following: boolean }>(
+      "DELETE",
+      `/api/ask/conversations/${enc(id)}/follow/${enc(key)}`,
+    ),
   /** Start or dismiss a session Ask proposed (#1443 Phase 3a). The body names the decision and
    *  the bypass value the operator saw — never what to start; 202 while it launches. */
   decideAskProposal: (id: string, decision: "start" | "dismiss", bypass = false) =>

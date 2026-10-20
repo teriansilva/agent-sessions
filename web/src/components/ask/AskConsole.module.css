@@ -405,6 +405,27 @@
   font-size: 0.85rem;
   color: var(--text-1);
 }
+/* A conversation with an unseen update (#1443 Phase 4): the accent marker plus words for a screen
+ * reader — never the colour alone. */
+.menuUnread {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.menuUnreadDot {
+  width: 7px;
+  height: 7px;
+  background: var(--accent);
+}
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .menuMeta {
   margin-top: 2px;
   font-family: var(--font-mono);
@@ -421,4 +442,8 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-3);
+}
+/* Every session the conversation follows, at the thread's end: Unfollow never waits for an update. */
+.following {
+  margin-top: 6px;
 }

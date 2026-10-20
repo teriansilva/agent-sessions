@@ -7,6 +7,8 @@ the in-memory state, so "restart" is simulated by wiping the in-memory dicts onl
 
 from __future__ import annotations
 
+import pytest
+
 from agent_sessions import scrollback
 
 
@@ -952,3 +954,25 @@ def test_sweep_probe_count_is_linear_for_unknown_candidates(monkeypatch):
     assert len(scrollback._BUFFERS) <= 5  # cap converged in ONE sweep
     for k in keys:
         assert k in scrollback._TOTALS  # UNKNOWN never costs anyone their absolute total
+
+
+def test_the_visible_output_stamp_survives_a_restart_with_no_throttle_window(monkeypatch):
+    """#1443 Phase 4: Ask's follower reads it after a restart. It's the sidecar's mtime, set on
+    EVERY visible chunk (no throttle a short turn could fall into, Hermes on #1500), never moved
+    by a title-only chunk, recreated if the cache is cleared, and removed with the cache."""
+    key = "claude:00000000-0000-4000-8000-0000000000aa"
+    t = [1_000.0]
+    monkeypatch.setattr(scrollback.time, "time", lambda: t[0])
+    scrollback._buffer_append(key, b"hello\r\n")
+    assert scrollback.persisted_visible_output_at(key) == pytest.approx(1_000.0, abs=0.002)
+    t[0] = 1_000.5
+    scrollback._buffer_append(key, b"more\r\n")  # half a second later: recorded too
+    assert scrollback.persisted_visible_output_at(key) == pytest.approx(1_000.5, abs=0.002)
+    t[0] = 1_002.0
+    scrollback._buffer_append(key, b"\x1b]0;title\x07")  # a title only: not visible output
+    assert scrollback.persisted_visible_output_at(key) == pytest.approx(1_000.5, abs=0.002)
+    scrollback.clear_scrollback([key])
+    assert scrollback.persisted_visible_output_at(key) is None
+    t[0] = 1_003.0
+    scrollback._buffer_append(key, b"again\r\n")  # recreated after the clear
+    assert scrollback.persisted_visible_output_at(key) == pytest.approx(1_003.0, abs=0.002)

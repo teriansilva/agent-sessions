@@ -37,12 +37,14 @@ import type {
   AskConversationTurn,
   AskNudgeCard,
   AskSessionCard,
+  AskUpdate,
   AskStoredMatch,
   AskStoredMissionMatch,
   AskTurnEvent,
 } from "../../types/api";
 
 import { AskConsole } from "./AskConsole";
+import { ASK_SEEN_EVENT, placeUpdates } from "./askUpdates";
 import { mapBatch } from "./askMatches";
 
 vi.mock("../../lib/api", async () => {
@@ -58,6 +60,8 @@ vi.mock("../../lib/api", async () => {
       approveAction: vi.fn(),
       rejectAction: vi.fn(),
       decideAskProposal: vi.fn(),
+      askSeen: vi.fn(),
+      askUnfollow: vi.fn(),
     },
   };
 });
@@ -147,6 +151,10 @@ beforeEach(() => {
   vi.mocked(api.askConversations).mockResolvedValue({ conversations: [], configured: true });
   vi.mocked(api.askNewConversation).mockResolvedValue(conversation(CID));
   vi.mocked(api.askConversation).mockResolvedValue(conversation(CID));
+  vi.mocked(api.askSeen).mockReset();
+  vi.mocked(api.askUnfollow).mockReset();
+  vi.mocked(api.askSeen).mockResolvedValue({ unread: false });
+  vi.mocked(api.askUnfollow).mockResolvedValue({ following: false });
 });
 
 test("a question renders its answer in the thread (#522)", async () => {
@@ -1380,7 +1388,7 @@ test("a launch in flight is followed at the turn poll's pace, not the card timer
 });
 
 test("a settled session card stops re-reading", async () => {
-  withConversation([sessionTurn(settled({ state: "started", session_key: "claude:abc-1" }))]);
+  withConversation([sessionTurn(settled({ state: "dismissed" }))]);
   mount(<AskConsole configured cardPollMs={20} />);
   await screen.findByTestId("ask-session-outcome");
   const reads = vi.mocked(api.askConversation).mock.calls.length;
@@ -1437,4 +1445,299 @@ test("a start refused because the project was being changed says so and can be t
     "nothing started. Start it again.",
   );
   expect(screen.getByTestId("ask-session-start")).toBeEnabled();
+});
+
+// --- #1443 Phase 4: followed sessions' updates -------------------------------------------------
+
+const FOLLOWED = "claude:abc-1";
+
+function at(t: AskConversationTurn, asked: number): AskConversationTurn {
+  return { ...t, asked_at: asked };
+}
+
+function update(over: Partial<AskUpdate> = {}): AskUpdate {
+  return { key: FOLLOWED, kind: "finished", title: "api rebase", ts: 15, following: true, ...over };
+}
+
+function withUpdates(over: Partial<AskConversation>) {
+  const turns = [
+    at(turnOf("first", "t-1", { answer: "one" }), 10),
+    at(turnOf("second", "t-2", { answer: "two" }), 20),
+  ];
+  vi.mocked(api.askConversations).mockResolvedValue({
+    conversations: [{ id: CID, title: "first", created_at: 1, updated_at: 2 }],
+    configured: true,
+  });
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, turns),
+    updates: [],
+    following: [FOLLOWED],
+    unread: false,
+    ...over,
+  });
+}
+
+test("an update sits between the turns asked before and after it, in authored words", async () => {
+  withUpdates({
+    updates: [
+      update({ ts: 5, kind: "needs_you" }),
+      update({ ts: 15, kind: "finished" }),
+      update({ ts: 25, kind: "ended", following: false }),
+    ],
+  });
+  mount(<AskConsole configured />);
+  await screen.findAllByTestId("ask-update");
+  const turns = screen.getAllByTestId("ask-turn");
+  const rows = screen.getAllByTestId("ask-update");
+  expect(rows.map((r) => r.getAttribute("data-kind"))).toEqual(["needs_you", "finished", "ended"]);
+  // needs_you is before the first turn; finished is inside the first; ended after the second.
+  expect(turns[0].contains(rows[1])).toBe(true);
+  expect(turns[1].contains(rows[2])).toBe(true);
+  expect(turns.some((t) => t.contains(rows[0]))).toBe(false);
+  expect(rows[0]).toHaveTextContent("Needs you");
+  expect(rows[1]).toHaveTextContent("Finished its turn");
+  expect(rows[2]).toHaveTextContent("No longer followed");
+  // A way in while it can still be opened; none once the follow has ended.
+  expect(within(rows[1]).getByTestId("ask-update-open")).toHaveAttribute("href", "/s/claude/abc-1");
+  expect(within(rows[2]).queryByTestId("ask-update-open")).toBeNull();
+  expect(within(rows[2]).queryByTestId("ask-update-unfollow")).toBeNull();
+});
+
+test("Unfollow stops following and the row stops offering it", async () => {
+  withUpdates({ updates: [update()] });
+  mount(<AskConsole configured />);
+  const row = await screen.findByTestId("ask-update");
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [update({ following: false })],
+    following: [],
+    unread: false,
+  });
+  await userEvent.click(within(row).getByRole("button", { name: "Unfollow api rebase" }));
+  expect(api.askUnfollow).toHaveBeenCalledWith(CID, FOLLOWED);
+  await waitFor(() => expect(screen.queryByTestId("ask-update-unfollow")).toBeNull());
+});
+
+test("an unreadable follow state keeps the last verified follows and keeps reading until it recovers", async () => {
+  // Hermes on #1500: unknown is not "following nothing".
+  withUpdates({ updates: [], follows: [{ key: FOLLOWED, title: "api rebase" }] });
+  mount(<AskConsole configured cardPollMs={20} />);
+  await screen.findByTestId("ask-following-row");
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [],
+    following: [],
+    follows: [],
+    unread: false,
+    follows_incomplete: true,
+  });
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  await waitFor(() =>
+    expect(vi.mocked(api.askConversation).mock.calls.length).toBeGreaterThan(reads + 2),
+  );
+  expect(screen.getByTestId("ask-following-row")).toHaveTextContent("api rebase");
+  // The read recovers and carries the update that landed meanwhile.
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [update({ ts: 15 })],
+    following: [FOLLOWED],
+    follows: [{ key: FOLLOWED, title: "api rebase" }],
+    unread: true,
+  });
+  expect(await screen.findByTestId("ask-update", {}, { timeout: 5000 })).toHaveTextContent(
+    "Finished its turn",
+  );
+});
+
+test("an update still being delivered keeps the open screen reading until it lands", async () => {
+  // Hermes on #1500: stored but not appended yet, with nothing followed and no live card.
+  withUpdates({ updates: [], following: [], follows: [], unread: true, updates_pending: true });
+  mount(<AskConsole configured cardPollMs={20} />);
+  await waitFor(() => expect(api.askConversation).toHaveBeenCalled());
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [update({ ts: 15, following: false, kind: "ended" })],
+    following: [],
+    follows: [],
+    unread: true,
+    updates_pending: false,
+  });
+  expect(await screen.findByTestId("ask-update", {}, { timeout: 5000 })).toHaveTextContent(
+    "No longer followed",
+  );
+});
+
+test("a followed session with no update yet can be unfollowed (Hermes on #1500)", async () => {
+  withUpdates({ updates: [], follows: [{ key: FOLLOWED, title: "api rebase" }] });
+  mount(<AskConsole configured />);
+  const row = await screen.findByTestId("ask-following-row");
+  expect(row).toHaveTextContent("Following");
+  expect(row).toHaveTextContent("api rebase");
+  expect(screen.queryByTestId("ask-update")).toBeNull();
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [],
+    following: [],
+    follows: [],
+    unread: false,
+  });
+  await userEvent.click(within(row).getByRole("button", { name: "Unfollow api rebase" }));
+  expect(api.askUnfollow).toHaveBeenCalledWith(CID, FOLLOWED);
+  await waitFor(() => expect(screen.queryByTestId("ask-following")).toBeNull());
+});
+
+test("an unseen update is marked seen while the console is on screen, and says so to the icon", async () => {
+  withUpdates({ updates: [update()], unread: true });
+  const heard = vi.fn();
+  window.addEventListener(ASK_SEEN_EVENT, heard);
+  try {
+    mount(<AskConsole configured />);
+    // Through the newest update it has SHOWN — never "now".
+    await waitFor(() => expect(api.askSeen).toHaveBeenCalledWith(CID, 15));
+    await waitFor(() => expect(heard).toHaveBeenCalled());
+  } finally {
+    window.removeEventListener(ASK_SEEN_EVENT, heard);
+  }
+});
+
+test("…but not while the sidebar is closed", async () => {
+  withUpdates({ updates: [update()], unread: true });
+  mount(<AskConsole configured visible={false} />);
+  await screen.findByTestId("ask-update");
+  await new Promise((r) => setTimeout(r, 100));
+  expect(api.askSeen).not.toHaveBeenCalled();
+});
+
+test("a conversation that follows sessions keeps reading, so new updates arrive", async () => {
+  withUpdates({ updates: [] });
+  mount(<AskConsole configured cardPollMs={40} />);
+  await screen.findAllByTestId("ask-turn");
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [update({ kind: "needs_you" })],
+    following: [FOLLOWED],
+    unread: false,
+  });
+  expect(await screen.findByTestId("ask-update", {}, { timeout: 5000 })).toHaveTextContent(
+    "Needs you",
+  );
+});
+
+test("a conversation that follows nothing and has nothing live stops reading", async () => {
+  withUpdates({ updates: [], following: [] });
+  mount(<AskConsole configured cardPollMs={20} />);
+  await screen.findAllByTestId("ask-turn");
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  await new Promise((r) => setTimeout(r, 200));
+  expect(vi.mocked(api.askConversation).mock.calls.length).toBe(reads);
+});
+
+test("placeUpdates: before the first turn, between turns, and a turn still being sent sorts last", () => {
+  const u = (ts: number) => update({ ts });
+  const out = placeUpdates(
+    [
+      { id: "a", at: 10 },
+      { id: "b", at: 20 },
+      { id: "c", at: null },
+    ],
+    [u(25), u(5), u(10), u(19)],
+  );
+  expect(out.before.map((x) => x.ts)).toEqual([5]);
+  expect(out.after.get("a")?.map((x) => x.ts)).toEqual([10, 19]);
+  expect(out.after.get("b")?.map((x) => x.ts)).toEqual([25]);
+  expect(out.after.get("c")).toBeUndefined();
+});
+
+
+test("the switcher marks a conversation with an unseen update, in words as well as the dot", async () => {
+  withUpdates({});
+  vi.mocked(api.askConversations).mockResolvedValue({
+    conversations: [
+      { id: CID, title: "first", created_at: 1, updated_at: 3 },
+      { id: OTHER, title: "other", created_at: 1, updated_at: 2, unread: true },
+    ],
+    configured: true,
+  });
+  mount(<AskConsole configured />);
+  await screen.findAllByTestId("ask-turn");
+  await userEvent.click(screen.getByTestId("ask-switcher"));
+  const items = await screen.findAllByTestId("ask-switcher-item");
+  expect(within(items[0]).queryByTestId("ask-switcher-unread")).toBeNull();
+  expect(within(items[1]).getByTestId("ask-switcher-unread")).toHaveTextContent("New updates");
+});
+
+// --- Hermes round 2 on #1500 ----------------------------------------------------------------------
+
+test("a session started elsewhere is read until the follow it earns arrives", async () => {
+  // Another tab started it: this console's read shows it Started, not followed YET (the
+  // follower's next pass is up to a minute away), and nothing else is live — it keeps reading.
+  const turn = sessionTurn(sessionCard());
+  withConversation([turn]);
+  mount(<AskConsole configured cardPollMs={40} />);
+  await screen.findByTestId("ask-session-start");
+  const started = {
+    ...conversation(CID, [sessionTurn(settled({ state: "started", session_key: FOLLOWED }))]),
+    updates: [],
+    following: [],
+    unread: false,
+  };
+  vi.mocked(api.askConversation).mockResolvedValue(started);
+  expect(await screen.findByTestId("ask-session-outcome", {}, { timeout: 5000 })).toHaveTextContent(
+    "Started",
+  );
+  await new Promise((r) => setTimeout(r, 150)); // several empty reads
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...started,
+    updates: [update({ ts: 50, kind: "finished" })],
+    following: [FOLLOWED],
+  });
+  expect(await screen.findByTestId("ask-update", {}, { timeout: 5000 })).toHaveTextContent(
+    "Finished its turn",
+  );
+});
+
+test("the read after a start is bounded: it stops once the window ends", async () => {
+  withConversation([sessionTurn(settled({ state: "started", session_key: FOLLOWED }))]);
+  mount(<AskConsole configured cardPollMs={20} reconcileMs={120} />);
+  await screen.findByTestId("ask-session-outcome");
+  await new Promise((r) => setTimeout(r, 300)); // past the window
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  await new Promise((r) => setTimeout(r, 200));
+  expect(vi.mocked(api.askConversation).mock.calls.length).toBe(reads);
+});
+
+test("an older seen answer arriving late never brings 'unread' back", async () => {
+  withUpdates({ updates: [update({ ts: 15 })], unread: true });
+  const first = deferred<{ unread: boolean }>();
+  vi.mocked(api.askSeen)
+    .mockReturnValueOnce(first.promise)
+    .mockResolvedValue({ unread: false });
+  mount(<AskConsole configured cardPollMs={40} />);
+  await waitFor(() => expect(api.askSeen).toHaveBeenCalledTimes(1));
+  // A newer update arrives and is shown; its mark answers first…
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [update({ ts: 15 }), update({ ts: 25, kind: "needs_you" })],
+    following: [FOLLOWED],
+    unread: true,
+  });
+  await waitFor(() => expect(api.askSeen).toHaveBeenCalledWith(CID, 25));
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [update({ ts: 15 }), update({ ts: 25, kind: "needs_you" })],
+    following: [FOLLOWED],
+    unread: false,
+  });
+  // A poll already in flight may still answer "unread" and rightly mark it seen again. Let two
+  // reads land after the swap before taking the baseline, so only the stale answer is measured.
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  await waitFor(() =>
+    expect(vi.mocked(api.askConversation).mock.calls.length).toBeGreaterThan(reads + 1),
+  );
+  await act(async () => {});
+  const calls = vi.mocked(api.askSeen).mock.calls.length;
+  // …then the OLD mark's stale "still unread" lands. It must change nothing.
+  await act(async () => first.resolve({ unread: true }));
+  await new Promise((r) => setTimeout(r, 150));
+  expect(vi.mocked(api.askSeen).mock.calls.length).toBe(calls);
 });

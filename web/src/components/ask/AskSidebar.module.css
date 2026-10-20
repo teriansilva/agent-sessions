@@ -61,3 +61,15 @@
 .contents {
   display: contents;
 }
+
+/* The Ask icon's unread marker (#1443 Phase 4): the brand accent, square, on the button's corner.
+ * Never the only signal — the button's label says "new updates" too. */
+.dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg-1);
+}

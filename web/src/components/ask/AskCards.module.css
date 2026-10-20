@@ -290,6 +290,32 @@
   margin-left: auto;
 }
 
+/* A followed session's update (#1443 Phase 4): a compact row between turns, no card around it. */
+.update {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 10px 0;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.updateBody {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.updateTitle {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+  color: var(--text-1);
+}
+
 /* ≤800px: actions stack full width at the 44px floor (design.md); cards take the column. */
 @media (max-width: 800px) {
   .actions {
@@ -302,4 +328,11 @@
   .kv {
     grid-template-columns: 64px minmax(0, 1fr);
   }
+}
+/* A followed session's row (#1443 Phase 4): not a state, so a flat accent square, never an LED. */
+.bullet {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  background: var(--accent);
 }

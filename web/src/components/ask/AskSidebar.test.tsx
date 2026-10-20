@@ -8,7 +8,7 @@
  *    non-modal complementary panel that Escape closes, handing focus back to the icon.
  *  - With no AI endpoint, it says so — the notice the dashboard used to carry.
  */
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
@@ -31,6 +31,8 @@ vi.mock("../../lib/api", async () => {
       askConversation: vi.fn(),
       askNewConversation: vi.fn(),
       askMessageStream: vi.fn(),
+      askUnread: vi.fn(),
+      askSeen: vi.fn(),
       needsYou: vi.fn(),
     },
   };
@@ -39,6 +41,7 @@ vi.mock("../../lib/api", async () => {
 import { api } from "../../lib/api";
 import { AskPanelContext, type AskPanel } from "./askPanel";
 import { AskSidebar, AskToggle } from "./AskSidebar";
+import { ASK_SEEN_EVENT } from "./askUpdates";
 
 function Shell() {
   const [open, setOpen] = useState(false);
@@ -76,6 +79,8 @@ function setDrawer(matches: boolean) {
 const realMatchMedia = window.matchMedia;
 beforeEach(() => {
   config.value = { pulse: { configured: true } } as AppConfig;
+  vi.mocked(api.askUnread).mockResolvedValue({ unread: false, conversations: 0 });
+  vi.mocked(api.askSeen).mockResolvedValue({ unread: false });
   vi.mocked(api.needsYou).mockResolvedValue({
     rows: [],
     total: 0,
@@ -183,4 +188,43 @@ test("no AI endpoint: the sidebar says so and links to the page that fixes it", 
     screen.getByRole("link", { name: /endpoint & model/i }),
   ).toHaveAttribute("href", "/settings/ai-endpoint");
   expect(screen.getByTestId("composer-input")).toBeDisabled();
+});
+
+// --- #1443 Phase 4: the Ask icon's unread dot ----------------------------------------------------
+
+test("the Ask icon shows a dot AND says so when a followed session has an unseen update", async () => {
+  vi.mocked(api.askUnread).mockResolvedValue({ unread: true, conversations: 1 });
+  render(<Shell />);
+  expect(await screen.findByTestId("ask-unread-dot")).toBeInTheDocument();
+  expect(screen.getByTestId("ask-toggle")).toHaveAccessibleName(
+    "Ask — new updates from sessions you follow",
+  );
+});
+
+test("the dot clears when a conversation is marked seen", async () => {
+  vi.mocked(api.askUnread).mockResolvedValue({ unread: true, conversations: 1 });
+  render(<Shell />);
+  await screen.findByTestId("ask-unread-dot");
+  vi.mocked(api.askUnread).mockResolvedValue({ unread: false, conversations: 0 });
+  act(() => {
+    window.dispatchEvent(new CustomEvent(ASK_SEEN_EVENT));
+  });
+  await waitFor(() => expect(screen.queryByTestId("ask-unread-dot")).toBeNull());
+  expect(screen.getByTestId("ask-toggle")).toHaveAccessibleName("Ask");
+});
+
+test("an older unread answer arriving after a newer one never brings the dot back", async () => {
+  let resolveOld: (v: { unread: boolean; conversations: number }) => void = () => {};
+  vi.mocked(api.askUnread)
+    .mockReturnValueOnce(new Promise((r) => (resolveOld = r)))
+    .mockResolvedValue({ unread: false, conversations: 0 });
+  render(<Shell />);
+  await waitFor(() => expect(api.askUnread).toHaveBeenCalledTimes(1));
+  act(() => {
+    window.dispatchEvent(new CustomEvent(ASK_SEEN_EVENT)); // the newer read: nothing unread
+  });
+  await waitFor(() => expect(api.askUnread).toHaveBeenCalledTimes(2));
+  await act(async () => resolveOld({ unread: true, conversations: 1 })); // the stale one, late
+  await new Promise((r) => setTimeout(r, 50));
+  expect(screen.queryByTestId("ask-unread-dot")).toBeNull();
 });

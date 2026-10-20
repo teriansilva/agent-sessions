@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import os
 import re
 import threading
@@ -125,6 +126,12 @@ _LAST_OUTPUT_AT: OrderedDict[str, float] = OrderedDict()
 # nothing. The orchestrator's "working right now" test reads this; the `working` indicator keeps
 # reading `_LAST_OUTPUT_AT`, unchanged. Same replay grace, same eviction.
 _LAST_VISIBLE_OUTPUT_AT: OrderedDict[str, float] = OrderedDict()
+# The visible-output stamp survives a restart (#1443 Phase 4: Ask's follower must not lose a
+# turn that finished just before one). It is the MTIME of an empty `.visible` sidecar, set with
+# one `os.utime` per visible chunk: no data written, no rename, no throttle window for a short
+# turn to fall into (Hermes on #1500). It equals the in-memory stamp up to the filesystem's
+# mtime resolution (truncated, so it never runs ahead).
+_VISIBLE_SIDECAR_MADE: set[str] = set()
 
 # Post-attach replay grace (#195). A fresh ``dtach -a`` client triggers a screen REPLAY
 # (the TUI repaints its current state via SIGWINCH) — a byte burst that is NOT new agent
@@ -250,6 +257,40 @@ _MODE_PREFIX_RE = re.compile(rb"\x1b(?:\[(?:\?[0-9;]*)?)?\Z")
 # Bound the carried fragment so a never-completing ESC can't grow without limit. A real
 # private-mode param list is a handful of bytes — well under this.
 _MODE_CARRY_MAX = 64
+
+
+def _visible_path(key: str) -> Path:
+    return _SCROLLBACK_DIR / (key.replace(":", "__") + ".visible")
+
+
+def _persist_visible(key: str, now: float) -> None:
+    """Best-effort: stamp the sidecar's mtime with this visible chunk's time. One metadata
+    call per chunk; the empty file is created on the first one."""
+    path = _visible_path(key)
+    try:
+        if key not in _VISIBLE_SIDECAR_MADE:
+            _ensure_scrollback_dir()
+            path.touch(exist_ok=True)
+            _VISIBLE_SIDECAR_MADE.add(key)
+        os.utime(path, (now, now))
+    except FileNotFoundError:
+        # Cleared meanwhile (Settings cache management): recreate it and stamp this chunk.
+        with contextlib.suppress(OSError):
+            _ensure_scrollback_dir()
+            path.touch(exist_ok=True)
+            os.utime(path, (now, now))
+    except OSError:
+        pass
+
+
+def persisted_visible_output_at(key: str) -> float | None:
+    """The last visible-output time recorded on disk (the sidecar's mtime), which survives a
+    restart. ``None`` when absent or unreadable."""
+    try:
+        value = _visible_path(key).stat().st_mtime
+    except OSError:
+        return None
+    return value if math.isfinite(value) and value > 0 else None
 
 
 def _modes_path(key: str) -> Path:
@@ -617,7 +658,7 @@ def scrollback_cache_stats() -> dict[str, int]:
 # file but kept a sidecar (e.g. `_reset_ring` unlinks the mirror yet preserves `.modes`,
 # #397) is still fully cleared — keying off `.scrollback` alone left orphan sidecars that
 # replayed stale modes/width after a supposed clear (Hermes #409).
-_SIDECAR_SUFFIXES = (_SCROLLBACK_SUFFIX, ".cols", ".modes")
+_SIDECAR_SUFFIXES = (_SCROLLBACK_SUFFIX, ".cols", ".modes", ".visible")
 
 
 def _all_cached_keys() -> set[str]:
@@ -672,7 +713,7 @@ def clear_scrollback(keys: Iterable[str] | None = None) -> dict:
         else:
             freed += size
             cleared = True
-        for sidecar in (_cols_path(key), _modes_path(key), _ready_path(key)):
+        for sidecar in (_cols_path(key), _modes_path(key), _ready_path(key), _visible_path(key)):
             try:
                 sidecar.unlink()
                 cleared = True
@@ -787,6 +828,7 @@ def _drop_buffer(key: str) -> None:
     _TOTALS.pop(key, None)
     _LAST_OUTPUT_AT.pop(key, None)
     _LAST_VISIBLE_OUTPUT_AT.pop(key, None)
+    _VISIBLE_SIDECAR_MADE.discard(key)
     _SUPPRESS_OUTPUT_UNTIL.pop(key, None)
     # Private-mode state (#397) is in-memory only here; the `.modes` sidecar is durable
     # (removed solely by `clear_scrollback`), so a later touch re-hydrates it via
@@ -1143,6 +1185,7 @@ def _buffer_append(key: str, data: bytes) -> None:
         if vtscreen.has_visible_bytes(data):
             _LAST_VISIBLE_OUTPUT_AT[key] = now
             _LAST_VISIBLE_OUTPUT_AT.move_to_end(key)
+            _persist_visible(key, now)
         if first_output:
             # First genuine (post-replay-grace) output for this session (#552): wake the
             # AI-review loop now so a brand-new session's title/summary populates promptly

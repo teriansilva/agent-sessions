@@ -13,6 +13,11 @@
   follows it on the next read; a repeat returns the entry as it is, never a second launch. An
   absent ``bypass`` is ``false``. The client names the proposal, never what it starts.
 
+* ``POST /api/ask/conversations/{id}/seen`` — everything in it so far has been seen (the unread
+  marker, #1443 Phase 4). ``GET /api/ask/unread`` — whether any conversation has an unseen update
+  (the Ask icon's dot). ``DELETE /api/ask/conversations/{id}/follow/{key}`` — stop following a
+  session.
+
 Both message routes take ``{"turn_id": <uuid>, "text"}``. A repeat of a settled ``turn_id`` returns
 it without running the model again; a repeat while it runs watches the same turn. Leaving never
 cancels a turn (``ask_orchestrator``'s module note). ``/api/pulse/ask[/stream]`` is unchanged: the
@@ -29,7 +34,10 @@ from collections.abc import AsyncIterator
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .. import actuator, ask_orchestrator, ask_proposals, ask_store, prefs
+from .. import actuator, ask_follow, ask_orchestrator, ask_proposals, ask_store, prefs
+
+# The latest `seen` time a client may send (2100-01-01): any later or unbounded value is refused.
+_MAX_TS = 4_102_444_800
 
 
 def _ndjson(ev: dict) -> str:
@@ -42,11 +50,34 @@ def _conversation_body(cid: str, records: list[dict]) -> dict:
         if r.get("type") == "user" and isinstance(r.get("text"), str):
             title = " ".join(r["text"].split())[: ask_store.LIST_TITLE_MAX]
             break
+    follows = ask_follow.state(cid)
+    following = set(follows["following"])
+    updates = [
+        {
+            "key": r["key"],
+            "kind": r["kind"],
+            "title": r.get("title") or "",
+            "ts": r.get("ts"),
+            "following": r["key"] in following,
+        }
+        for r in records
+        if r.get("type") == "update" and isinstance(r.get("key"), str)
+    ]
     return {
         "id": cid,
         "title": title,
         "turns": ask_orchestrator.with_live(ask_orchestrator.turn_views(records), cid),
         "running": ask_orchestrator.running(cid),
+        # #1443 Phase 4: what the follower wrote, in order; the client places each by its time.
+        "updates": updates,
+        "following": sorted(following),
+        # Every active follow with its title: Unfollow is offered before any update exists.
+        "follows": sorted(follows["follows"], key=lambda f: f["key"]),
+        "unread": follows["unread"],
+        # The follow state could not be read this time: not "nothing followed".
+        "follows_incomplete": follows["incomplete"],
+        # An update is stored but not appended yet: it will land; keep reading.
+        "updates_pending": follows["pending"],
     }
 
 
@@ -64,7 +95,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     async def list_conversations(_: str = Depends(logged_in)) -> JSONResponse:
         def read() -> list[dict]:
             ask_store.sweep()
-            return ask_store.list_conversations()
+            rows = ask_store.list_conversations()
+            unread = set(ask_follow.unread_conversations())
+            return [{**r, "unread": r["id"] in unread} for r in rows]
 
         return JSONResponse(
             {"conversations": await asyncio.to_thread(read), "configured": _configured()},
@@ -260,3 +293,58 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 status_code=503,
             )
         return JSONResponse({"proposal": view}, status_code=status)
+
+    @app.get("/api/ask/unread")
+    async def ask_unread(_: str = Depends(logged_in)) -> JSONResponse:
+        cids = await asyncio.to_thread(ask_follow.unread_conversations)
+        return JSONResponse(
+            {"unread": bool(cids), "conversations": len(cids)},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post("/api/ask/conversations/{cid}/seen")
+    async def ask_seen(
+        cid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """``{"through": <ts>}``: the newest update the client has SHOWN. An update written after
+        it read the conversation stays unread."""
+        if not (ask_store.valid_cid(cid) and await asyncio.to_thread(ask_store.exists, cid)):
+            return _missing(cid)
+        body: object = None
+        with contextlib.suppress(Exception):
+            body = await request.json()
+        through = body.get("through") if isinstance(body, dict) else None
+        # A time within the epoch range, checked before float(): a huge JSON integer would
+        # overflow it (an unhandled 500), and inf/nan fail the range (Hermes on #1500).
+        if (
+            isinstance(through, bool)
+            or not isinstance(through, int | float)
+            or not 0 <= through <= _MAX_TS
+        ):
+            return JSONResponse({"detail": "through (a time) is required"}, status_code=422)
+        try:
+            remaining = await asyncio.to_thread(ask_follow.mark_seen, cid, float(through))
+        except ask_store.StoreRefused as e:
+            return _refused(e)
+        except ask_store.SidecarUnreadable:
+            return JSONResponse({"detail": "could not be read just now"}, status_code=503)
+        return JSONResponse({"unread": remaining})
+
+    @app.delete("/api/ask/conversations/{cid}/follow/{key:path}")
+    async def ask_unfollow(
+        cid: str, key: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        if not (ask_store.valid_cid(cid) and await asyncio.to_thread(ask_store.exists, cid)):
+            return _missing(cid)
+        try:
+            was = await asyncio.to_thread(ask_follow.unfollow, cid, key)
+        except ask_store.StoreRefused as e:
+            return _refused(e)
+        except ask_store.SidecarUnreadable:
+            return JSONResponse({"detail": "could not be read just now"}, status_code=503)
+        if not was:
+            return JSONResponse({"detail": "not followed"}, status_code=404)
+        return JSONResponse({"following": False})

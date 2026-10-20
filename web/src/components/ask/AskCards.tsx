@@ -19,7 +19,7 @@
 import { Eye, Play, Send } from "lucide-react";
 import { type ReactNode, useState } from "react";
 
-import type { AskNudgeCard, AskQuestionCard, AskSessionCard } from "../../types/api";
+import type { AskNudgeCard, AskQuestionCard, AskSessionCard, AskUpdate } from "../../types/api";
 
 import c from "./AskCards.module.css";
 
@@ -405,6 +405,97 @@ export function SessionCard({
           {p.state === "started" && ways ? <span className={c.ways}>{ways}</span> : null}
         </div>
       )}
+    </div>
+  );
+}
+
+/** A followed session changed (#1443 Phase 4): a compact row between turns — an LED plus a WORD,
+ *  the session's title, a way in, and Unfollow while it is still followed. The words are authored
+ *  here from the update's kind. */
+const UPDATE_WORDS: Record<AskUpdate["kind"], { word: string; tone: Tone; detail: string }> = {
+  finished: { word: "Finished its turn", tone: "neutral", detail: "It stopped working." },
+  needs_you: { word: "Needs you", tone: "warn", detail: "It is waiting for your decision." },
+  ended: {
+    word: "No longer followed",
+    tone: "neutral",
+    detail: "It was archived or is gone.",
+  },
+};
+
+/** One session the conversation follows (#1443 Phase 4). Listed whether or not it has an update
+ *  yet, so Unfollow never waits for the first change (Hermes on #1500). Not a state, so no LED:
+ *  the flat accent square is the non-status bullet (design.md §3). */
+export function FollowingRow({
+  title,
+  onUnfollow,
+  busy,
+  open,
+}: {
+  title: string;
+  onUnfollow: () => void;
+  busy: boolean;
+  open?: ReactNode;
+}) {
+  return (
+    <div className={c.update} data-testid="ask-following-row" data-kind="following">
+      <span className={c.bullet} aria-hidden="true" />
+      <span className={c.updateBody}>
+        <span className={c.ow}>Following</span>
+        <span className={c.updateTitle}>{title || "A session this conversation started"}</span>
+      </span>
+      <span className={c.ways}>
+        {open}
+        <button
+          type="button"
+          className={c.ghost}
+          disabled={busy}
+          onClick={onUnfollow}
+          aria-label={`Unfollow ${title || "this session"}`}
+          data-testid="ask-following-unfollow"
+        >
+          Unfollow
+        </button>
+      </span>
+    </div>
+  );
+}
+
+export function UpdateRow({
+  u,
+  onUnfollow,
+  busy,
+  open,
+}: {
+  u: AskUpdate;
+  onUnfollow: () => void;
+  busy: boolean;
+  /** The session's way in (Open), when it can still be opened. */
+  open?: ReactNode;
+}) {
+  const w = UPDATE_WORDS[u.kind];
+  return (
+    <div className={c.update} data-testid="ask-update" data-kind={u.kind} role="status">
+      <span className={`${c.led} ${c[`led_${w.tone}`]}`} aria-hidden="true" />
+      <span className={c.updateBody}>
+        <span className={`${c.ow} ${c[`ow_${w.tone}`]}`}>{w.word}</span>
+        <span className={c.updateTitle}>{u.title || "A session you follow"}</span>
+        <span className={c.od}>{w.detail}</span>
+      </span>
+      <span className={c.ways}>
+        {u.kind !== "ended" ? open : null}
+        {u.following ? (
+          <button
+            type="button"
+            className={c.ghost}
+            disabled={busy}
+            onClick={onUnfollow}
+            aria-label={`Unfollow ${u.title || "this session"}`}
+            data-testid="ask-update-unfollow"
+          >
+            Unfollow
+          </button>
+        ) : null}
+      </span>
     </div>
   );
 }

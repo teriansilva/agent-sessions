@@ -167,7 +167,15 @@ export function AskSwitcher({
                 onFocus={() => setActiveId(c.id)}
                 data-testid="ask-switcher-item"
               >
-                <span className={a.menuTitle}>{c.title || "Untitled conversation"}</span>
+                <span className={a.menuTitle}>
+                  {c.unread ? (
+                    <span className={a.menuUnread} data-testid="ask-switcher-unread">
+                      <span className={a.menuUnreadDot} aria-hidden="true" />
+                      <span className={a.srOnly}>New updates · </span>
+                    </span>
+                  ) : null}
+                  {c.title || "Untitled conversation"}
+                </span>
                 <span className={a.menuMeta}>{when(c.updated_at)}</span>
               </div>
             ))

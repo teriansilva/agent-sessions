@@ -329,8 +329,11 @@ async def decide(pid: str, decision: str, *, bypass: bool, registry) -> tuple[in
             raise ProposalError(409, DEFAULT_CHANGED, view(row or {}))
         # WHAT THE OPERATOR APPROVED is what launches: the brief and folder as read before the
         # `deciding` write, never a copy that write re-admitted (and may have scrubbed).
-        approved = {k: row[k] for k in ("id", "engine", "cwd", "real", "brief", "project_id")}
+        approved = {
+            k: row[k] for k in ("id", "engine", "cwd", "real", "brief", "project_id", "project")
+        }
         approved["bypass_default"] = row["bypass_default"]
+        approved["decided_at"] = decided_at = time.time()
         # DURABLE BEFORE ANYTHING IS SPAWNED: from here on a crash leaves `deciding`, which the
         # next read settles as `interrupted`.
         row = await asyncio.to_thread(
@@ -340,7 +343,7 @@ async def decide(pid: str, decision: str, *, bypass: bool, registry) -> tuple[in
             state=DECIDING,
             bypass=bool(bypass),
             notice="",
-            decided_at=time.time(),
+            decided_at=decided_at,
         )
         if row is None:
             raise ProposalError(404, "no such proposal")
@@ -463,11 +466,30 @@ async def _launch(cid: str, row: dict, fd: int, registry) -> None:
             )
         else:
             await asyncio.to_thread(_update, cid, pid, settled_at=time.time(), **outcome)
+            if outcome.get("state") == STARTED and outcome.get("session_key"):
+                # A session Ask started is FOLLOWED from its conversation (#1443 Phase 4).
+                await asyncio.to_thread(_follow_started, cid, outcome["session_key"], row)
     except Exception as e:  # noqa: BLE001 — the entry stays `deciding` → `interrupted`
         log.warning("ask launch outcome not recorded (%s)", type(e).__name__)
     finally:
         os.close(fd)
         _TASKS.pop(pid, None)
+
+
+def _follow_started(cid: str, key: str, row: dict) -> None:
+    from . import ask_follow
+
+    try:
+        ask_follow.follow(
+            cid,
+            key,
+            title=str(row.get("project") or ""),
+            via="start",
+            reason=row["id"],
+            since=row.get("decided_at"),
+        )
+    except Exception as e:  # noqa: BLE001 — the follower's pass reconciles it later
+        log.warning("ask follow not recorded yet (%s)", type(e).__name__)
 
 
 def _outcome(out, fenced_why: str) -> dict:

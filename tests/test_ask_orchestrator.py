@@ -638,7 +638,10 @@ def test_the_worst_case_conversation_fits_the_read_cap():
         {"type": "status", "turn_id": tid, "status": "failed", "detail": big},
     ]
     size = len(ask_store._records_bytes([ask_store._admit(r, []) for r in turn]))
-    assert size * ask_store.MAX_TURNS < ask_store.READ_MAX_BYTES
+    # …plus every update the follower may write (#1443 Phase 4), each at its caps.
+    update = {"type": "update", "key": key, "kind": "needs_you", "title": big, "event_id": "e" * 32}
+    size_u = len(ask_store._records_bytes([ask_store._admit(update, [])]))
+    assert size * ask_store.MAX_TURNS + size_u * ask_store.MAX_UPDATES < ask_store.READ_MAX_BYTES
 
 
 def test_retention_decides_again_under_the_lock(monkeypatch):

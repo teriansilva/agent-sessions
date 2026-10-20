@@ -109,6 +109,14 @@ opens the Dashboard with the sidebar open.
   - If the project, its folder, the agent or Session assistance changed since the card appeared,
     it says *Out of date* and starts nothing.
   - Starting needs Session assistance on (Suggest or YOLO). Ask doesn't create missions yet.
+- Ask **follows** the sessions it started (up to 10 per conversation). When one finishes its turn or
+  starts needing you, a short line appears in the conversation, at the point in time it happened,
+  with **Open** and **Unfollow**. When a followed session is archived, Ask stops following it and
+  says so.
+  - A dot on the Ask icon (and a mark in the conversation list) means there's an update you
+    haven't seen; it clears once that conversation is on screen.
+  - These lines are written by BattleLab itself, not by the AI, and they never send a
+    notification: the bell and push stay as they are.
 - An answer that names a session needing you carries the same *Needs you* marker and ⓘ as the
   list, whatever the list's filter.
 

@@ -886,6 +886,19 @@ export interface AskConversationSummary {
   title: string;
   created_at: number;
   updated_at: number;
+  /** A followed session changed since this conversation was last seen (#1443 Phase 4). */
+  unread?: boolean;
+}
+
+/** A followed session changed (#1443 Phase 4). A KIND and the session's title — the words are
+ *  authored here, never model text. */
+export interface AskUpdate {
+  key: string;
+  kind: "finished" | "needs_you" | "ended";
+  title: string;
+  ts: number;
+  /** Still followed — Unfollow is offered. */
+  following: boolean;
 }
 
 /** A session an answer named, AS STORED: its key, title and why — never the card's content. */
@@ -1010,6 +1023,22 @@ export interface AskConversation {
   title: string;
   turns: AskConversationTurn[];
   running: boolean;
+  /** #1443 Phase 4: the follower's updates, in order; the sessions followed; unseen updates. */
+  updates?: AskUpdate[];
+  following?: string[];
+  /** Every active follow with its title, so Unfollow is offered before any update exists. */
+  follows?: AskFollow[];
+  unread?: boolean;
+  /** The follow state could not be read this time: keep what was last verified, keep reading. */
+  follows_incomplete?: boolean;
+  /** An update is stored but not appended to the conversation yet: it will land, keep reading. */
+  updates_pending?: boolean;
+}
+
+/** A session the conversation follows (#1443 Phase 4). */
+export interface AskFollow {
+  key: string;
+  title: string;
 }
 
 /** One line of `POST /api/ask/conversations/{id}/message/stream` (#1443): `progress` while the
