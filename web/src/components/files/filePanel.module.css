@@ -978,6 +978,13 @@
 .modeSpacer {
   flex: 1;
 }
+/* An SVG's Preview | Source pair (#1530): the mode buttons, joined. */
+.modeSeg {
+  display: inline-flex;
+}
+.modeSeg .modeBtn + .modeBtn {
+  margin-left: -1px;
+}
 @media (pointer: coarse) {
   .modeBtn {
     min-height: 44px;

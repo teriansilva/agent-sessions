@@ -191,6 +191,13 @@ export function setApiFetch(fn: ApiFetch | null): void {
   apiFetch = fn ?? defaultFetch;
 }
 
+/** Whether `/api` traffic rides the Home Free tunnel (#1530). A native-origin `src`/`href` would
+ *  bypass the tunnel and ask the RELAY for the URL — a 404 that also puts the path in the relay's
+ *  request log — so anything that would hand an `/api` URL to the browser must branch on this. */
+export function isApiTunneled(): boolean {
+  return apiFetch !== defaultFetch;
+}
+
 /** Where to send an unauthenticated user: the server login form, carrying the
  *  current location so it can bounce back after sign-in (server open-redirect guards). */
 export function loginRedirectUrl(
@@ -616,6 +623,88 @@ export function uploadUrl(path: string): string {
  *  mode private HTTP reaches the box only via the tunnel `setApiFetch` installs; a native-origin
  *  `<img src>` would hit the relay instead (a 404, and the stored name in its logs). Callers turn
  *  the blob into an object URL and revoke it (`components/templates/UploadImage.tsx`). */
+/** Raw bytes of a file under the panel's root (#1530): the `src` of a native media element or the
+ *  `href` of a Download, on a DIRECT connection only (`isApiTunneled()` is false). `attempt`
+ *  re-requests after a busy refusal. */
+export function filesRawUrl(path: string, download = false, attempt = 0): string {
+  return (
+    `/api/files/raw?path=${enc(path)}` +
+    (download ? "&download=1" : "") +
+    (attempt > 0 ? `&attempt=${attempt}` : "")
+  );
+}
+
+/** What Home Free app mode may carry through the tunnel (#1530): the uploads cap. The tunnel
+ *  buffers a response and its proxy times out (#1177), so larger media is refused up front. */
+export const FILE_BLOB_CAP = 25 * 1024 * 1024;
+
+async function errorDetail(r: Response): Promise<string> {
+  try {
+    return ((await r.json()) as { detail?: string })?.detail ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** A file's raw bytes THROUGH the fetch seam (#1530) — how app mode previews and downloads,
+ *  bounded by `FILE_BLOB_CAP` whether or not the server sent a length. A refusal is an `ApiError`
+ *  whose `record` carries `{ retryAfter }` on a 503. */
+async function fileBlob(
+  path: string,
+  opts: { signal?: AbortSignal; download?: boolean } = {},
+): Promise<Blob> {
+  // `max`: the server refuses anything bigger BEFORE sending a byte, judged on the size at open —
+  // so a file that grew since the viewer's /read cannot fill the tunnel (Hermes, PR #1533).
+  const r = await apiFetch(`${filesRawUrl(path, opts.download)}&max=${FILE_BLOB_CAP}`, {
+    credentials: "same-origin",
+    signal: opts.signal,
+  });
+  if (r.status === 401) await authGate(r);
+  if (!r.ok) {
+    const retryAfter = Number(r.headers.get("retry-after")) || null;
+    throw new ApiError(r.status, (await errorDetail(r)) || `raw read → ${r.status}`, { retryAfter });
+  }
+  const declared = Number(r.headers.get("content-length"));
+  if (declared > FILE_BLOB_CAP) {
+    void r.body?.cancel();
+    throw new ApiError(413, "too large to bring through Home Free");
+  }
+  const type = r.headers.get("content-type") ?? "";
+  if (!r.body) return new Blob([await r.arrayBuffer()], { type });
+  const reader = r.body.getReader();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > FILE_BLOB_CAP) {
+      void reader.cancel();
+      throw new ApiError(413, "too large to bring through Home Free");
+    }
+    parts.push(value);
+  }
+  return new Blob(parts as BlobPart[], { type });
+}
+
+/** Why a media element failed (#1530): its `error` event cannot see the HTTP status, so ask with
+ *  one byte through the SAME transport the element used. */
+async function filesRawProbe(
+  path: string,
+  signal?: AbortSignal,
+): Promise<{ status: number; retryAfter: number | null; detail: string }> {
+  const r = await apiFetch(filesRawUrl(path), {
+    credentials: "same-origin",
+    headers: { Range: "bytes=0-0" },
+    signal,
+  });
+  if (r.status === 401) await authGate(r);
+  const retryAfter = Number(r.headers.get("retry-after")) || null;
+  const detail = r.ok ? "" : await errorDetail(r);
+  if (r.ok) void r.body?.cancel();
+  return { status: r.status, retryAfter, detail };
+}
+
 async function uploadBlob(path: string, signal?: AbortSignal): Promise<Blob> {
   const r = await apiFetch(uploadUrl(path), {
     credentials: "same-origin",
@@ -991,6 +1080,8 @@ export const api = {
     postJson<{ recovery_codes: string[] }>("/api/2fa/recovery-codes", proof),
   upload,
   uploadBlob,
+  fileBlob,
+  filesRawProbe,
   /** Instruction templates (#905): the operator's library of reusable messages. Its own
    *  route, off /api/config. Reads need a session; every mutation is CSRF-guarded. A stale
    *  PATCH/DELETE (the record moved since `expectedUpdatedAt`) is a 409 whose `record.current`

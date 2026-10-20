@@ -2030,6 +2030,9 @@ export interface FileContent {
   size: number;
   binary: boolean;
   mime?: string;
+  /** #1530: what the viewer may show inline, by extension and independent of `binary` — an SVG is
+   *  text (editable) AND an image. Absent from servers that predate it. */
+  preview?: "image" | "video" | "audio" | null;
   content?: string;
   truncated?: boolean;
   /** #950: sha256 of the complete bytes — what a save is bound to. `null` when the read was

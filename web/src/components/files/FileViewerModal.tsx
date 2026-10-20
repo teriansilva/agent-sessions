@@ -20,6 +20,7 @@ import type {
 } from "../../types/api";
 import type { CodeEditorHandle } from "./editor/CodeEditor";
 import { languageLabel } from "./editor/languages";
+import { MediaPreview, NotPreviewable } from "./MediaPreview";
 import styles from "./filePanel.module.css";
 
 // The editor is its own chunk: a session that never opens a file never downloads CodeMirror.
@@ -234,6 +235,12 @@ export function FileViewerModal({
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
   const [cursor, setCursor] = useState<{ line: number; col: number } | null>(null);
   const [confirmClose, setConfirmClose] = useState(false);
+  // An SVG's Preview | Source choice, tied to the path it was made for so another file opens on
+  // its preview again (#1530).
+  const [svgViewState, setSvgViewState] = useState<{
+    path: string;
+    view: "preview" | "source";
+  }>({ path, view: "preview" });
   const [pendingNav, setPendingNav] = useState<{
     proceed: () => void;
     reset: () => void;
@@ -595,7 +602,18 @@ export function FileViewerModal({
   }, []);
 
   const name = path.split("/").pop() || path;
-  const textFile = state.kind === "ok" && !state.file.binary ? state.file : null;
+  // #1530: render from `preview` first, whatever `binary` says. An SVG is the one previewable type
+  // that is also text: it opens on its image, with Source (today's editor, kept mounted so edits
+  // survive the toggle) one tap away. Any other previewable file — even a NUL-free one — is media.
+  const okFile = state.kind === "ok" ? state.file : null;
+  const mediaKind = okFile?.preview ?? null;
+  // SVG by its MIME, not by "an image that is not binary": a NUL-free PNG is also `binary: false`,
+  // and it must never be offered as editable source (Hermes, PR #1533).
+  const svgText =
+    okFile !== null && !okFile.binary && mediaKind === "image" && okFile.mime === "image/svg+xml";
+  const svgView = svgViewState.path === path ? svgViewState.view : "preview";
+  const textFile =
+    okFile && !okFile.binary && (mediaKind === null || svgText) ? okFile : null;
   const lines = textFile ? (textFile.content ?? "").split("\n") : [];
   const editable = Boolean(textFile?.editable && version);
   const readonlyReason = textFile && !editable ? textFile.readonly_reason : null;
@@ -614,6 +632,8 @@ export function FileViewerModal({
       : viewingDisk
         ? "Go back to Mine first — Diff would drop the version on disk you are comparing"
         : null;
+  const showMedia =
+    mode === "content" && okFile !== null && mediaKind !== null && (!svgText || (svgView === "preview" && !editing));
   const showModeBar = (showDiff && showContent) || (mode === "content" && textFile !== null);
   const saving = save.kind === "saving";
 
@@ -684,6 +704,30 @@ export function FileViewerModal({
                 </button>
               </>
             )}
+            {mode === "content" && svgText && (
+              <span className={styles.modeSeg} role="group" aria-label="SVG view">
+                <button
+                  type="button"
+                  className={`${styles.modeBtn} ${showMedia ? styles.modeBtnOn : ""}`}
+                  aria-pressed={showMedia}
+                  disabled={editing}
+                  title={editing ? "Finish editing first" : undefined}
+                  onClick={() => setSvgViewState({ path, view: "preview" })}
+                  data-svg-preview=""
+                >
+                  Preview
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.modeBtn} ${!showMedia ? styles.modeBtnOn : ""}`}
+                  aria-pressed={!showMedia}
+                  onClick={() => setSvgViewState({ path, view: "source" })}
+                  data-svg-source=""
+                >
+                  Source
+                </button>
+              </span>
+            )}
             {!(showDiff && showContent) && textFile && (
               // A file opened from the tree has no DIFF/CONTENT pair; the bar still says which
               // state the document is in, so its left side is information rather than a gap.
@@ -713,7 +757,10 @@ export function FileViewerModal({
                   title={
                     editable ? "Edit this file" : `Read-only — ${readonlyReason ?? "not editable"}`
                   }
-                  onClick={startEditing}
+                  onClick={() => {
+                    if (svgText) setSvgViewState({ path, view: "source" });
+                    startEditing();
+                  }}
                   data-edit-toggle=""
                 >
                   <Pencil size={12} aria-hidden="true" /> Edit
@@ -912,7 +959,7 @@ export function FileViewerModal({
         )}
 
         <div
-          className={`${styles.viewerBody} ${mode === "content" && textFile ? styles.viewerBodyEditor : ""}`}
+          className={`${styles.viewerBody} ${(mode === "content" && textFile) || showMedia ? styles.viewerBodyEditor : ""}`}
         >
           {mode === "diff" && diff.kind === "loading" && (
             <div className={styles.state} role="status">
@@ -1025,14 +1072,21 @@ export function FileViewerModal({
               {state.message}
             </div>
           )}
-          {mode === "content" && state.kind === "ok" && state.file.binary && (
-            <div className={styles.state}>
-              <span className={styles.stateTag}>Viewer // Binary file</span>
-              {`${name} is binary (${state.file.mime ?? "unknown type"}, ${fmtBytes(state.file.size)}). Not rendered.`}
-            </div>
+          {showMedia && okFile && mediaKind && (
+            <MediaPreview
+              key={path}
+              path={path}
+              name={name}
+              size={okFile.size}
+              mime={okFile.mime}
+              kind={mediaKind}
+            />
+          )}
+          {mode === "content" && okFile && okFile.binary && mediaKind === null && (
+            <NotPreviewable path={path} name={name} size={okFile.size} mime={okFile.mime} />
           )}
           {mode === "content" && textFile && (
-            <div className={styles.editorHost}>
+            <div className={styles.editorHost} hidden={showMedia}>
               {/* The plain renderer stands in while the editor chunk downloads, so the file is
                   readable immediately rather than after a spinner. */}
               <Suspense
@@ -1083,7 +1137,9 @@ export function FileViewerModal({
                         : `${staged ? "INDEX" : "WORKING TREE"} vs ${staged ? "HEAD" : "INDEX"}`
                 : "—"
               : state.kind === "ok"
-                ? state.file.binary
+                ? showMedia && mediaKind
+                  ? `${mediaKind.toUpperCase()} // ${fmtBytes(state.file.size)}`
+                  : state.file.binary
                   ? "BINARY"
                   : `${languageLabel(path)} // UTF-8 // ${state.file.eol === "\r\n" ? "CRLF" : "LF"}${state.file.bom ? " // BOM" : ""} // ${fmtBytes(state.file.size)}`
                 : "—"}

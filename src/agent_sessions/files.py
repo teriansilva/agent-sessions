@@ -563,12 +563,193 @@ def read_file(path: str) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- raw media (#1530)
+
+# The ONE table of what the viewer may show inline, keyed by lowercase extension. `/api/files/read`
+# reports `preview` from it and `/api/files/raw` serves `inline` with its MIME only for these; any
+# other file is reachable only as a download (`application/octet-stream`, attachment). The client
+# never chooses a Content-Type. HTML is deliberately absent: it would run on the app's origin.
+# Classification is by extension, independent of the NUL sniff, because an SVG (and the odd tiny
+# WAV) is NUL-free and would otherwise never be previewed.
+PREVIEW_TYPES: dict[str, tuple[str, str]] = {
+    ".png": ("image/png", "image"),
+    ".jpg": ("image/jpeg", "image"),
+    ".jpeg": ("image/jpeg", "image"),
+    ".gif": ("image/gif", "image"),
+    ".webp": ("image/webp", "image"),
+    ".avif": ("image/avif", "image"),
+    ".bmp": ("image/bmp", "image"),
+    ".ico": ("image/vnd.microsoft.icon", "image"),
+    ".svg": ("image/svg+xml", "image"),
+    ".mp4": ("video/mp4", "video"),
+    ".m4v": ("video/mp4", "video"),
+    ".webm": ("video/webm", "video"),
+    ".ogv": ("video/ogg", "video"),
+    ".mov": ("video/quicktime", "video"),
+    ".mp3": ("audio/mpeg", "audio"),
+    ".ogg": ("audio/ogg", "audio"),
+    ".oga": ("audio/ogg", "audio"),
+    ".opus": ("audio/ogg", "audio"),
+    ".wav": ("audio/wav", "audio"),
+    ".flac": ("audio/flac", "audio"),
+    ".m4a": ("audio/mp4", "audio"),
+    ".aac": ("audio/aac", "audio"),
+    ".weba": ("audio/webm", "audio"),
+}
+
+# Concurrent raw streams. Separate from the panel's worker budget on purpose: a playing video
+# holds its stream for minutes, so it must not hold a worker. Each chunk is read as its own short
+# job on the panel pool; this cap bounds how many such streams exist at once (#1530).
+RAW_MAX_STREAMS = 4
+RAW_CHUNK = 256 * 1024
+
+
+def preview_for(path: str) -> tuple[str, str] | None:
+    """``(mime, kind)`` for a previewable path, else None. Pure string work (safe on the loop)."""
+    return PREVIEW_TYPES.get(os.path.splitext(path)[1].lower())
+
+
+class RawBusy(FsError):
+    """Every raw stream slot is taken. 503 with ``Retry-After`` — never a silent queue."""
+
+    def __init__(self) -> None:
+        super().__init__("the file viewer is already streaming its maximum; try again", status=503)
+
+
+_raw_lock = threading.Lock()
+_raw_inflight = 0
+
+
+def raw_streams_inflight() -> int:
+    with _raw_lock:
+        return _raw_inflight
+
+
+def reset_raw_streams_for_test() -> None:
+    global _raw_inflight
+    with _raw_lock:
+        _raw_inflight = 0
+
+
+class RawFile:
+    """One admitted raw stream: the VERIFIED descriptor plus its stream slot.
+
+    Bytes are only ever read through this descriptor (``os.pread``), so a path swapped after the
+    containment proof can never be served. :meth:`close` is exactly-once and takes the same lock
+    every read holds, so it waits for an in-flight ``pread`` instead of closing the descriptor
+    under it (a closed-then-reused fd number would otherwise hand a late read another file's
+    bytes). The stream slot is released in the same step, so "closed" and "slot free" never
+    disagree.
+    """
+
+    __slots__ = ("fd", "size", "path", "mime", "kind", "_lock", "_closed")
+
+    def __init__(self, fd: int, size: int, path: str, mime: str | None, kind: str | None) -> None:
+        self.fd = fd
+        self.size = size
+        self.path = path
+        self.mime = mime
+        self.kind = kind
+        self._lock = threading.Lock()
+        self._closed = False
+
+    def read(self, offset: int, n: int) -> bytes:
+        with self._lock:
+            if self._closed:
+                raise FsError("the stream was closed", status=410)
+            return os.pread(self.fd, n, offset)
+
+    def close(self) -> bool:
+        """Close the descriptor and free the stream slot, exactly once. True if THIS call did."""
+        global _raw_inflight
+        with self._lock:
+            if self._closed:
+                return False
+            self._closed = True
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+        with _raw_lock:
+            if _raw_inflight > 0:
+                _raw_inflight -= 1
+        return True
+
+
+def open_raw(path: str) -> RawFile:
+    """Admit one raw stream and open ``path`` with ``/api/files/read``'s exact containment proof.
+
+    The stream slot is taken FIRST and handed to the returned :class:`RawFile`; any refusal on the
+    way (containment, not a regular file, busy) gives it back before raising, so a failed open can
+    never leak a slot.
+    """
+    global _raw_inflight
+    with _raw_lock:
+        if _raw_inflight >= RAW_MAX_STREAMS:
+            raise RawBusy()
+        _raw_inflight += 1
+    try:
+        _refuse_if_symlink(path)
+        resolved = contained_path(path)
+        fd, st, verified = _open_verified(resolved, directory=False)
+    except BaseException:
+        with _raw_lock:
+            _raw_inflight -= 1
+        raise
+    hit = preview_for(verified)
+    return RawFile(fd, st.st_size, verified, *(hit or (None, None)))
+
+
+def parse_range(header: str | None, size: int) -> tuple[int, int] | None:
+    """One ``bytes=`` range → inclusive ``(start, end)``; None means "send the whole file".
+
+    Raises ``FsError(416)`` for a well-formed single range that cannot be satisfied. A malformed
+    header and a multi-range request both fall back to the whole file (200), as RFC 9110 allows.
+    """
+    if not header:
+        return None
+    unit, _, spec = header.strip().partition("=")
+    if unit.strip().lower() != "bytes" or "," in spec:
+        return None
+    first, dash, last = spec.strip().partition("-")
+    if not dash:
+        return None
+    try:
+        if first == "":
+            n = int(last)
+            if n <= 0:
+                raise FsError("unsatisfiable range", status=416)
+            start, end = max(0, size - n), size - 1
+        else:
+            start = int(first)
+            end = int(last) if last else size - 1
+    except ValueError:
+        return None
+    if start < 0:
+        return None
+    if start >= size:
+        raise FsError("unsatisfiable range", status=416)
+    if end < start:
+        return None  # `bytes=5-2` is malformed, not unsatisfiable: send the whole file
+    return start, min(end, size - 1)
+
+
 __all__ = [
     "FILES_MAX_ENTRIES",
     "FILES_MAX_READ",
     "FILES_SCAN_BUDGET_MS",
     "Capabilities",
     "FilesBusy",
+    "PREVIEW_TYPES",
+    "RAW_CHUNK",
+    "RAW_MAX_STREAMS",
+    "RawBusy",
+    "RawFile",
+    "open_raw",
+    "parse_range",
+    "preview_for",
+    "raw_streams_inflight",
+    "reset_raw_streams_for_test",
     "FsError",
     "acquire",
     "Slot",

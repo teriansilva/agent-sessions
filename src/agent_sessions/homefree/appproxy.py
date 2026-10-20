@@ -47,6 +47,12 @@ from .mux import Stream, StreamReset
 #: Hard ceiling on one proxied request body, with headroom over the app's own 25 MiB per-file
 #: upload cap for multipart framing (#807). Env-overridable for an operator with a larger need.
 MAX_REQUEST_BODY = int(os.environ.get("HF_MAX_REQUEST_BODY") or 32 * 1024 * 1024)
+#: Ceiling on one proxied `/api/files/raw` response (#1530). This proxy buffers a response whole
+#: before it writes the envelope, so a raw file is the one response that could be arbitrarily
+#: large; the SPA only asks for one up to its own 25 MiB cap (`FILE_BLOB_CAP`), so anything bigger
+#: is refused here before it is accumulated, not after.
+MAX_RAW_RESPONSE = int(os.environ.get("HF_MAX_RAW_RESPONSE") or 25 * 1024 * 1024)
+_RAW_PREFIX = "/api/files/raw"
 
 _HOP = frozenset(
     {
@@ -196,7 +202,46 @@ class AppProxyTarget:
         headers = self._rewrite_headers(info.get("headers", {}))
         method = info.get("method", "GET")
 
+        async def too_large() -> None:
+            await self._send_meta(
+                stream,
+                413,
+                json.dumps(
+                    {"detail": f"the file is larger than {MAX_RAW_RESPONSE} bytes over Home Free"}
+                ).encode(),
+            )
+
+        async def do_raw(client: httpx.AsyncClient) -> None:
+            # Streamed upstream and counted as it arrives: refused on its declared length, or as
+            # soon as the bytes pass the ceiling — never after the whole body was held.
+            async with client.stream(
+                method, self.http_base + path, headers=headers, content=bytes(body)
+            ) as resp:
+                if int(resp.headers.get("content-length") or 0) > MAX_RAW_RESPONSE:
+                    await too_large()
+                    return
+                held = bytearray()
+                async for chunk in resp.aiter_bytes():
+                    held += chunk
+                    if len(held) > MAX_RAW_RESPONSE:
+                        await too_large()
+                        return
+                meta = json.dumps(
+                    {
+                        "status": resp.status_code,
+                        "headers": [
+                            [k, v] for k, v in resp.headers.items() if k.lower() not in _HOP
+                        ],
+                    }
+                ).encode()
+                await stream.write(struct.pack(">I", len(meta)) + meta)
+                await stream.write(bytes(held))
+                await stream.end()
+
         async def do(client: httpx.AsyncClient) -> None:
+            if path.startswith(_RAW_PREFIX):
+                await do_raw(client)
+                return
             resp = await client.request(
                 method, self.http_base + path, headers=headers, content=bytes(body)
             )

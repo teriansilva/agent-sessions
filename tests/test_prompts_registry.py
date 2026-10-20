@@ -132,6 +132,10 @@ POST_SITES = {
     ("review", "list_models"): 1,
     ("webpush", "send"): 1,  # Web Push delivery to the browser's push service — no prompts
     ("appproxy", "do"): 1,  # Home Free reverse proxy to the local app — no prompts
+    # #1530: the same proxy's `/api/files/raw` branch — one STREAMED request to the same local
+    # app, read as it arrives so a file over MAX_RAW_RESPONSE is refused before it is held. Same
+    # fixed destination, no prompts; counted so a third door beside these two is a mismatch.
+    ("appproxy", "do_raw"): 1,
     # THE OBJECTIVE PROBES (#891). Both are GETs against an address a HUMAN configured — a forge
     # the operator pointed at, or a URL they typed into a playbook. Neither carries a prompt, and
     # neither can be aimed by model output: `probe` / `probe_args` are refused as model input at

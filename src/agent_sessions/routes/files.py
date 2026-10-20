@@ -18,9 +18,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import threading
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .. import fileedit, files, filewrite, gitpanel, gitwrite
 from . import fileupload
@@ -32,7 +35,75 @@ def _json(payload: dict, status: int = 200) -> JSONResponse:
     return JSONResponse(payload, status_code=status, headers=_NO_STORE)
 
 
-async def _run(key: str, fn, *args):
+# Every raw response, success or refusal (#1530). The sandbox CSP gives a document opened straight
+# from this URL (an agent-written SVG, say) an opaque origin with no script; nosniff stops the
+# browser second-guessing the server's MIME; CORP stops another site embedding the bytes. The app's
+# security-header middleware uses `setdefault`, so this CSP is the one that reaches the browser.
+_RAW_HEADERS = {
+    **_NO_STORE,
+    "X-Content-Type-Options": "nosniff",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    # No `style-src`: under `default-src 'none'` a document opened from this URL gets no inline
+    # styles either. Previews render through <img>/<video>/<audio>, which this policy does not
+    # govern, so nothing the viewer shows needs a wider grant.
+    "Content-Security-Policy": (
+        "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'"
+    ),
+    "Accept-Ranges": "bytes",
+}
+_RAW_RETRY_AFTER_S = 3
+# A chunk read that meets a saturated panel pool waits this long (in short steps) before the
+# stream gives up — listings and reads keep their workers, the video just stalls briefly.
+_RAW_BUSY_WAIT_S = 2.0
+
+
+def _content_disposition(kind: str, path: str) -> str:
+    """RFC 6266/5987: an ASCII fallback plus the exact UTF-8 name."""
+    name = os.path.basename(path) or "download"
+    ascii_name = "".join(c if 32 <= ord(c) < 127 and c not in '"\\' else "_" for c in name)
+    return f"{kind}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name, safe='')}"
+
+
+def _close_in_background(raw: files.RawFile) -> None:
+    """Close the descriptor and free the stream slot WITHOUT blocking the event loop.
+
+    `RawFile.close` waits for an in-flight chunk read to finish (it shares the read lock), which
+    is bounded but not instant; a short daemon thread takes that wait instead of the loop.
+    """
+    threading.Thread(target=raw.close, name="files-raw-close", daemon=True).start()
+
+
+async def _open_raw(path: str) -> files.RawFile:
+    """`files.open_raw` on the panel pool, with an orphaned result closed rather than leaked.
+
+    A request cancelled while the open is running would otherwise drop a `RawFile` that holds a
+    descriptor and one of the four raw-stream slots; four such cancellations and the viewer could
+    never stream again (Hermes, PR #1533).
+    """
+    return await _run(path, files.open_raw, path, orphan=_close_in_background)
+
+
+class _RawStream(StreamingResponse):
+    """A StreamingResponse whose stream slot and descriptor are released however it ends.
+
+    Starlette cancels the sending task when the client disconnects and never closes a body
+    iterator that has not started, so a cleanup inside the generator can be skipped. This
+    `finally` runs on completion, on a client abort and on a send error alike; `RawFile.close`
+    is exactly-once, so the paths cannot double-release.
+    """
+
+    def __init__(self, raw: files.RawFile, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._raw = raw
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            _close_in_background(self._raw)
+
+
+async def _run(key: str, fn, *args, orphan=None):
     """Admit, then run off the loop on the panel's OWN pool, with the slot owned by the worker.
 
     Three properties, each of which the obvious version gets wrong:
@@ -68,6 +139,17 @@ async def _run(key: str, fn, *args):
         # running and owns it. `Slot.release` is exactly-once, so the two paths cannot both fire.
         if cf.cancelled():
             slot.release()
+        elif orphan is not None:
+            # The worker started (or already finished) but nobody will receive its result: a
+            # cancelled awaiter drops it on the floor. When the result is a resource — an open
+            # raw stream holds a descriptor and a stream slot (#1530) — hand it to `orphan` the
+            # moment it exists. `add_done_callback` on a finished future runs at once, so the
+            # finished-before-we-looked race is covered too.
+            def _settle(f) -> None:
+                if not f.cancelled() and f.exception() is None:
+                    orphan(f.result())
+
+            cf.add_done_callback(_settle)
         raise
 
 
@@ -153,6 +235,100 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                 status_code=500, detail="could not read the file", headers=_NO_STORE
             ) from None
         return _json(payload)
+
+    @app.get("/api/files/raw")
+    async def files_raw(request: Request, _user: str = Depends(logged_in)) -> Response:
+        # The raw bytes of one regular file, for the viewer's <img>/<video>/<audio> and Download
+        # (#1530). The same containment proof as /api/files/read, streamed from the verified
+        # descriptor in short per-chunk jobs on the panel pool, under its own stream cap.
+        path = request.query_params.get("path")
+        if not path or not path.strip():
+            raise HTTPException(status_code=422, detail="path is required", headers=_RAW_HEADERS)
+        download = request.query_params.get("download") == "1"
+        try:
+            raw: files.RawFile = await _open_raw(path)
+        except files.RawBusy as e:
+            raise HTTPException(
+                status_code=503,
+                detail=str(e),
+                headers={**_RAW_HEADERS, "Retry-After": str(_RAW_RETRY_AFTER_S)},
+            ) from None
+        except files.FsError as e:
+            raise HTTPException(status_code=e.status, detail=str(e), headers=_RAW_HEADERS) from None
+        except Exception:
+            raise HTTPException(
+                status_code=500, detail="could not read the file", headers=_RAW_HEADERS
+            ) from None
+        # From here until `_RawStream` owns it, THIS frame owns `raw`: every way out of the block —
+        # a refusal, or anything unexpected — closes it, or one malformed query leaks a stream slot
+        # and four of them lock the viewer out until restart (Hermes 6648: `max=²`).
+        try:
+            if raw.kind is None and not download:
+                raise files.FsError("not a type the viewer can show; download it", status=415)
+            # `max` (#1530): the caller's ceiling — Home Free's tunnel buffers a response whole, so
+            # it asks for nothing larger than it can carry. Judged on the size AT OPEN, which is
+            # also exactly how many bytes the body will ever send, so a file that grows after the
+            # viewer's /read cannot push a bigger response through. ASCII digits only: `str.isdigit`
+            # also accepts `²`, which `int` then refuses.
+            cap = request.query_params.get("max")
+            if cap is not None:
+                if not (cap.isascii() and cap.isdigit()):
+                    raise files.FsError("max must be a whole number of bytes", status=422)
+                if raw.size > int(cap):
+                    raise files.FsError(f"the file is larger than {cap} bytes", status=413)
+            span = files.parse_range(request.headers.get("range"), raw.size)
+            start, end = span if span else (0, raw.size - 1)
+            length = max(0, end - start + 1)
+            headers = {
+                **_RAW_HEADERS,
+                "Content-Length": str(length),
+                "Content-Disposition": _content_disposition(
+                    "attachment" if download else "inline", raw.path
+                ),
+            }
+            if span:
+                headers["Content-Range"] = f"bytes {start}-{end}/{raw.size}"
+            media_type = "application/octet-stream" if download or raw.mime is None else raw.mime
+
+            async def body():
+                pos, remaining = start, length
+                while remaining > 0:
+                    n = min(files.RAW_CHUNK, remaining)
+                    waited = 0.0
+                    while True:
+                        try:
+                            chunk = await _run(path, raw.read, pos, n)
+                            break
+                        except files.FilesBusy:
+                            if waited >= _RAW_BUSY_WAIT_S:
+                                raise
+                            await asyncio.sleep(0.05)
+                            waited += 0.05
+                    if not chunk:
+                        return
+                    pos += len(chunk)
+                    remaining -= len(chunk)
+                    yield chunk
+
+            response = _RawStream(
+                raw,
+                body(),
+                status_code=206 if span else 200,
+                media_type=media_type,
+                headers=headers,
+            )
+        except files.FsError as e:
+            _close_in_background(raw)
+            extra = {"Content-Range": f"bytes */{raw.size}"} if e.status == 416 else {}
+            raise HTTPException(
+                status_code=e.status, detail=str(e), headers={**_RAW_HEADERS, **extra}
+            ) from None
+        except BaseException:
+            _close_in_background(raw)
+            raise HTTPException(
+                status_code=500, detail="could not read the file", headers=_RAW_HEADERS
+            ) from None
+        return response
 
     @app.post("/api/files/write")
     async def files_write(

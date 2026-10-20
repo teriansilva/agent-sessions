@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vitest";
-import { api, type ApiFetch, loginRedirectUrl, setApiFetch } from "./api";
+import { api, type ApiFetch, FILE_BLOB_CAP, isApiTunneled, loginRedirectUrl, setApiFetch } from "./api";
 import { appendSent, readSent } from "./sentHistory";
 
 test("loginRedirectUrl encodes the current location as the next param", () => {
@@ -172,4 +172,30 @@ test("missionMessageStream: an error line and a refusal before the stream both t
   } finally {
     setApiFetch(null);
   }
+});
+
+test("fileBlob asks the server for no more than the tunnel carries, and refuses an over-cap body", async () => {
+  // #1530 / Hermes 6644: `max` makes the server refuse BEFORE sending a byte, judged on the size at
+  // open, so a file that grew since /read cannot fill the tunnel.
+  const seen: string[] = [];
+  const fetchStub: ApiFetch = async (input) => {
+    seen.push(input);
+    return new Response("x".repeat(10), { status: 200, headers: { "content-type": "image/png" } });
+  };
+  expect(isApiTunneled()).toBe(false);
+  setApiFetch(fetchStub);
+  try {
+    expect(isApiTunneled()).toBe(true);
+    const blob = await api.fileBlob("/home/u/a.png");
+    expect(blob.size).toBe(10);
+    expect(seen[0]).toBe(`/api/files/raw?path=%2Fhome%2Fu%2Fa.png&max=${FILE_BLOB_CAP}`);
+
+    setApiFetch(async () =>
+      new Response("too big", { status: 413, headers: { "content-type": "application/json" } }),
+    );
+    await expect(api.fileBlob("/home/u/big.webm")).rejects.toMatchObject({ status: 413 });
+  } finally {
+    setApiFetch(null);
+  }
+  expect(isApiTunneled()).toBe(false);
 });

@@ -406,3 +406,61 @@ def test_a_request_that_finishes_is_not_disturbed_by_the_reset_watch():
     meta, body, pending = _run(go())
     assert meta["status"] == 200 and len(body) == 70_000
     assert pending == []
+
+
+def _raw_through_proxy(handler, monkeypatch, cap=4096):
+    from agent_sessions.homefree import appproxy as ap
+
+    monkeypatch.setattr(ap, "MAX_RAW_RESPONSE", cap)
+
+    async def go():
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        proxy = AppProxyTarget(app_port=8765, client=client)
+        browser = _browser_to(proxy)
+        s = browser.open(
+            json.dumps({"k": "http", "method": "GET", "path": "/api/files/raw?path=/x"}).encode()
+        )
+        await s.end()
+        return await _read_http_response(s)
+
+    return _run(go())
+
+
+def test_a_raw_response_over_the_cap_is_a_named_413_not_a_buffered_file(monkeypatch):
+    """#1530 / Hermes 6644: the proxy holds a response whole before writing it, so a raw file
+    larger than the tunnel can carry is refused on its declared length, before any accumulation."""
+    meta, body = _raw_through_proxy(
+        lambda req: httpx.Response(200, content=b"x" * 8192), monkeypatch
+    )
+    assert meta["status"] == 413
+    assert b"x" * 100 not in body
+
+
+def test_a_raw_response_without_a_length_is_cut_off_as_it_passes_the_cap(monkeypatch):
+    seen = {"chunks": 0}
+
+    async def chunks():
+        for _ in range(64):
+            seen["chunks"] += 1
+            yield b"y" * 1024
+
+    meta, body = _raw_through_proxy(lambda req: httpx.Response(200, content=chunks()), monkeypatch)
+    assert meta["status"] == 413
+    assert seen["chunks"] < 64, "the proxy read the whole stream before refusing it"
+
+
+def test_a_raw_response_under_the_cap_is_forwarded_whole(monkeypatch):
+    meta, body = _raw_through_proxy(
+        lambda req: httpx.Response(200, content=b"z" * 1000, headers={"content-type": "image/png"}),
+        monkeypatch,
+    )
+    assert meta["status"] == 200
+    assert body == b"z" * 1000
+
+
+def test_the_raw_cap_matches_the_spa_blob_cap():
+    """The SPA asks for at most FILE_BLOB_CAP (25 MiB, web/src/lib/api.ts); the proxy must carry
+    exactly that much, not refuse a file the viewer was willing to fetch."""
+    from agent_sessions.homefree import appproxy as ap
+
+    assert ap.MAX_RAW_RESPONSE == 25 * 1024 * 1024

@@ -1,4 +1,6 @@
 import { expect, type Locator, type Page, test, type WebSocketRoute } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 /** Files INSIDE the window (#1109 P3) — real-browser proof, desktop only.
  *
@@ -253,6 +255,54 @@ test.describe("desktop", () => {
     const termBoxAfter = await win(page).locator(".xterm-screen").boundingBox();
     expect(termBoxAfter).toEqual(termBoxBefore);
     expect(log.resize[SESSION.id]).toBe(before);
+  });
+
+  test("a media file opens in the same viewer with its preview (#1530)", async ({ page }) => {
+    await mockApp(page);
+    // Registered after mockApp, so these win for the image the drawer lists alongside app.py.
+    const png = readFileSync(join(process.cwd(), "e2e", "fixtures", "media", "dot.png"));
+    await page.route("**/api/files/list**", (r) =>
+      r.fulfill({
+        json: {
+          path: CWD,
+          parent: "/home/u",
+          root: "/home/u",
+          entries: [
+            { name: "app.py", path: PY_PATH, kind: "file", size: PY.length, mtime: NOW },
+            { name: "shot.png", path: `${CWD}/shot.png`, kind: "file", size: png.length, mtime: NOW },
+          ],
+          total: 2,
+          complete: true,
+          truncated: false,
+        },
+      }),
+    );
+    await page.route("**/api/files/read**", (r) =>
+      r.fulfill({
+        json: {
+          path: `${CWD}/shot.png`,
+          size: png.length,
+          binary: true,
+          mime: "image/png",
+          preview: "image",
+          editable: false,
+          readonly_reason: "is binary",
+        },
+      }),
+    );
+    await page.route("**/api/files/raw**", (r) =>
+      r.fulfill({ status: 200, contentType: "image/png", body: png }),
+    );
+    await page.goto("/overview");
+    await expect(page.locator(".tr-ov-chip").first()).toBeVisible();
+    await page.locator(".tr-ov-chip").first().click();
+    await expect(win(page).locator(".xterm-screen")).toBeVisible();
+    const drawer = await openFiles(page);
+    await drawer.locator("[data-file-row]", { hasText: "shot.png" }).first().click();
+    const viewer = page.locator("[data-file-viewer]");
+    const img = viewer.locator("[data-media-el='image']");
+    await expect.poll(() => img.evaluate((el: HTMLImageElement) => el.naturalWidth)).toBe(64);
+    await expect(viewer.locator("[data-media-download]")).toBeVisible();
   });
 
   test("open a file, edit it, SAVE — the round-trip rides the existing editor path", async ({

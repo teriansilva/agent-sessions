@@ -24,6 +24,35 @@ Its limits exist because a working directory can be a monorepo:
 Scanning is parallel but capped — 8 workers overall, 3 per root — so browsing a large tree cannot
 starve the event loop that is also pumping your terminal.
 
+## Images, video and audio
+
+Open an image, a video or an audio file and the viewer shows it with the browser's own player
+instead of saying it is binary:
+
+| Kind | Types |
+|---|---|
+| Image | PNG, JPEG, GIF, WebP, AVIF, BMP, ICO, SVG |
+| Video | MP4 / M4V, WebM, Ogg (OGV), MOV |
+| Audio | MP3, Ogg / Opus / OGA, WAV, FLAC, M4A / AAC, WebM audio |
+
+The strip above it names the type, the size in pixels or the length, and the file size. Images
+open fitted to the viewer — **1:1** shows them at full size — on a checker so transparency is
+visible. Video and audio stream, so a long recording seeks without downloading first.
+
+An **SVG** is both a picture and text: it opens on its picture, and **Source** shows the text in
+the editor, where you can edit and save it as usual.
+
+**Download** is on every binary file, previewable or not. A file the browser cannot show (an MKV,
+say) says so and offers Download; one it cannot decode (an MP4 in a codec it lacks) says **Can't
+play here** rather than showing a broken player.
+
+The viewer streams at most four files at a time. A fifth says **Busy** and tries again on its own
+as soon as one finishes.
+
+**Over Home Free** the file has to come through the tunnel, so previews and downloads are limited
+to **25 MB**. A larger file says so; open BattleLab on the box's own address to play or download it.
+A file under the limit can still time out on a slow link — the viewer says so and offers Retry.
+
 ## Uploading files
 
 **Upload into this folder**, in the FILES panel's header, offers **Files…** and **Folder…**; a

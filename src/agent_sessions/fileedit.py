@@ -712,12 +712,17 @@ def read_file(path: str) -> dict:
         lease_reason = None if (binary or truncated) else _lease_probe(fd)
     finally:
         os.close(fd)
+    # What the viewer may show inline (#1530): by extension, whatever the NUL sniff says. An SVG
+    # is text AND previewable — it keeps its text payload and editor below.
+    hit = files.preview_for(verified)
+    preview = hit[1] if hit else None
     if binary:
         return {
             "path": verified,
             "size": st.st_size,
             "binary": True,
-            "mime": files._guess_mime(verified),
+            "mime": hit[0] if hit else files._guess_mime(verified),
+            "preview": preview,
             "editable": False,
             "readonly_reason": "is binary",
         }
@@ -725,6 +730,7 @@ def read_file(path: str) -> dict:
         "path": verified,
         "size": st.st_size,
         "binary": False,
+        "preview": preview,
         # The BOM is reported as `bom`, not rendered: left in, the editor would send U+FEFF back
         # as text and the save would restore a second BOM in front of it.
         "content": (data[len(_BOM) :] if data.startswith(_BOM) else data).decode(
@@ -749,6 +755,8 @@ def read_file(path: str) -> dict:
         reason = shape or _placement_refusal(verified, st) or lease_reason
     payload["editable"] = reason is None
     payload["readonly_reason"] = reason
+    if hit:
+        payload["mime"] = hit[0]
     return payload
 
 
