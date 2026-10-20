@@ -6,12 +6,35 @@ import { engineBadge, engineInfo, engineLabel, useEngineRoster } from "../../app
 import { ApiError, api } from "../../lib/api";
 import { agentPath } from "../../routes/settingsTabs";
 import type { AgentEndpoint, ChatSession, ChatToolCall, ChatTurn } from "../../types/api";
+import { OutboxBlock } from "../structured/Outbox";
+import { useAlive, useLeaveGuard, useOutbox } from "../structured/useOutbox";
+import {
+  nextToPost,
+  outboxEntry,
+  reconcile,
+  retried,
+  unrecorded,
+  updateEntry,
+  withoutEntry,
+  type OutboxEntry,
+} from "../structured/outbox";
 import styles from "./ChatPane.module.css";
 import { EditProposal } from "./EditProposal";
 
 /** How often a pending turn is re-read. The server owns the request (#1209): the pane only READS,
  *  so a reload, a lost response or a dropped connection recovers by polling, never by resending. */
 export const CHAT_POLL_MS = 2_000;
+/** After a busy refusal (409), the first fresh read waits this long, doubling per busy answer in a
+ *  row up to BUSY_BACKOFF_MAX_MS: a send never hammers a conversation another worker holds. */
+export const BUSY_BACKOFF_MS = 1_000;
+export const BUSY_BACKOFF_MAX_MS = 15_000;
+
+/** `chat_runtime`'s transient conflicts, told by the 409 itself (not by a read, which can race it):
+ *  another worker holds the conversation's fence (`in_flight — another worker owns …`, raised
+ *  BEFORE any turn is appended, so a read may still show nothing in flight), a reply is running,
+ *  or a proposed change awaits a decision. The bare `in_flight` is different: the server holds
+ *  THIS turn pending (an exact repeat). */
+const BUSY_DETAIL = /^in_flight — |still waiting for its reply|awaiting your decision/;
 
 function newTurnId(): string {
   return crypto.randomUUID();
@@ -120,47 +143,80 @@ export function ChatPane({ engine, id }: { engine: string; id: string }) {
   const [endpoint, setEndpoint] = useState<AgentEndpoint | null>(null);
   const [draft, setDraft] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const logRef = useRef<HTMLDivElement>(null);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  // The outbox (#1465), the same contract as the structured clients': Send moves the message here
+  // at once; FIFO, only the head in flight; a turn the conversation shows replaces its entry.
+  const { outbox, outboxRef, setOutbox } = useOutbox();
+  const alive = useAlive();
+  // A re-read that fails once the conversation is showing keeps it (and every pending entry) in
+  // view and says so; only a first read or a 404 replaces the pane with an error.
+  const [stale, setStale] = useState(false);
+  const shown = useRef(false);
+  // After a busy 409 nothing is posted again until a read that SUCCEEDED after the backoff
+  // (`until`) shows the conversation idle — never against an older idle read, which would re-POST
+  // in a loop while reads fail. `busyRun` counts busy answers in a row, for the backoff.
+  const [hold, setHoldState] = useState<{ until: number } | null>(null);
+  const holdRef = useRef<{ until: number } | null>(null);
+  const setHold = useCallback((next: { until: number } | null) => {
+    holdRef.current = next;
+    setHoldState(next);
+  }, []);
+  const busyRun = useRef(0);
+  const backOff = useCallback(() => {
+    busyRun.current += 1;
+    const wait = Math.min(BUSY_BACKOFF_MAX_MS, BUSY_BACKOFF_MS * 2 ** (busyRun.current - 1));
+    setHold({ until: Date.now() + wait });
+  }, [setHold]);
+
+  const take = useCallback((s: ChatSession) => {
+    shown.current = true;
+    setSession(s);
+    setLoadError(null);
+    setStale(false);
+    if (holdRef.current && Date.now() >= holdRef.current.until) setHold(null); // a fresh read
+    // Turns are keyed by the id the browser minted, so a recorded message replaces its entry.
+    setOutbox((list) => reconcile(list, s.turns.map((t) => t.turn_id)));
+  }, [setOutbox, setHold]);
+  const failedRead = useCallback((e: unknown) => {
+    const gone = e instanceof ApiError && e.status === 404;
+    if (shown.current && !gone) {
+      setStale(true);
+      return;
+    }
+    setLoadError(
+      gone
+        ? "This conversation does not exist (or was never started)."
+        : "Couldn’t load this conversation.",
+    );
+  }, []);
 
   const load = useCallback(async () => {
     try {
       const s = await api.chatGet(sid);
-      setSession(s);
-      setLoadError(null);
+      take(s);
       return s;
     } catch (e) {
-      setLoadError(
-        e instanceof ApiError && e.status === 404
-          ? "This conversation does not exist (or was never started)."
-          : "Couldn’t load this conversation.",
-      );
+      failedRead(e);
       return null;
     }
-  }, [sid]);
+  }, [sid, take, failedRead]);
 
   useEffect(() => {
     let alive = true;
     api
       .chatGet(sid)
       .then((s) => {
-        if (!alive) return;
-        setSession(s);
-        setLoadError(null);
+        if (alive) take(s);
       })
       .catch((e: unknown) => {
-        if (!alive) return;
-        setLoadError(
-          e instanceof ApiError && e.status === 404
-            ? "This conversation does not exist (or was never started)."
-            : "Couldn’t load this conversation.",
-        );
+        if (alive) failedRead(e);
       });
     return () => {
       alive = false;
     };
-  }, [sid]);
+  }, [sid, take, failedRead]);
 
   useEffect(() => {
     let alive = true;
@@ -174,21 +230,23 @@ export function ChatPane({ engine, id }: { engine: string; id: string }) {
   }, [engine]);
 
   const inFlight = session?.in_flight ?? null;
+  // A message on its way (or of unknown outcome) is settled by the conversation: read it too.
+  const settling = outbox.some((e) => e.phase === "sending" || e.phase === "unknown");
   // While a turn is pending: re-read it until it settles, and tick the elapsed clock.
   useEffect(() => {
-    if (!inFlight) return;
+    if (!inFlight && !settling) return;
     const poll = setInterval(() => void load(), CHAT_POLL_MS);
     const tick = setInterval(() => setNow(Date.now()), 1_000);
     return () => {
       clearInterval(poll);
       clearInterval(tick);
     };
-  }, [inFlight, load]);
+  }, [inFlight, settling, load]);
 
   useEffect(() => {
     const el = logRef.current;
     if (el && typeof el.scrollTo === "function") el.scrollTo({ top: el.scrollHeight });
-  }, [session?.turns.length, inFlight]);
+  }, [session?.turns.length, inFlight, outbox.length]); // a message just sent shows at the bottom
 
   const configured = endpoint ? endpoint.configured : engineInfo(engine)?.present !== false;
   const totalTokens = useMemo(
@@ -197,67 +255,106 @@ export function ChatPane({ engine, id }: { engine: string; id: string }) {
     [session],
   );
 
-  // The last send whose outcome is UNKNOWN (the request failed without a server answer): sending
-  // the same text again reuses its turn id, so if the server did take it the retry is a no-op
-  // instead of a second turn (Hermes on #1219). The pane is keyed per conversation, so this never
-  // crosses sessions.
-  const unsure = useRef<{ text: string; turn_id: string } | null>(null);
-
-  const send = async () => {
+  /** Send (#1465): the message becomes ONE outbox entry with its own turn id, and the composer is
+   *  free at once. Messages sent while a reply runs wait in order; the pump posts the head. */
+  const send = () => {
     const text = draft.trim();
-    if (!text || busy || inFlight) return;
-    const turn_id = unsure.current?.text === text ? unsure.current.turn_id : newTurnId();
-    setBusy(true);
-    setSendError(null);
-    // Optimistic: the turn shows as pending at once; the server's read replaces it.
-    setSession((s) =>
-      s
-        ? {
-            ...s,
-            in_flight: turn_id,
-            turns: [
-              ...s.turns,
-              {
-                turn_id,
-                text,
-                ts: Date.now() / 1000,
-                status: "pending",
-                reason: null,
-                reply: null,
-                reply_ts: null,
-                usage: null,
-                truncated: false,
-                dropped: 0,
-              },
-            ],
-          }
-        : s,
-    );
+    if (!text || !configured) return;
+    setOutbox((list) => [
+      ...list,
+      outboxEntry({ id: newTurnId(), text, draft, attachments: [], history: null }),
+    ]);
     setDraft("");
+    setSendError(null);
+  };
+
+  /** POST one entry: exactly its frozen turn id and text. The outcome only updates THAT entry, and
+   *  only while it is still in the outbox (a read may have settled it first). */
+  const post = async (entry: OutboxEntry) => {
+    const { id, text } = entry.request;
+    setOutbox((list) => updateEntry(list, id, (e) => ({ ...e, phase: "sending" })));
     try {
-      await api.chatSend(sid, turn_id, text);
-      unsure.current = null;
-      await load();
+      await api.chatSend(sid, id, text);
+      busyRun.current = 0;
+      if (!alive.current) return;
+      setOutbox((list) => updateEntry(list, id, (e) => ({ ...e, recorded: true })));
+      await load(); // its turn replaces the entry
     } catch (e) {
+      if (!alive.current) return;
+      const latest = await load();
+      if (!alive.current) return;
+      if (latest?.turns.some((t) => t.turn_id === id)) return; // the conversation has it
       // A 4xx is the server's answer: it did not take this turn. Anything else (no response, a
-      // gateway error) is ambiguous — it may have been accepted. Either way the transcript is the
-      // judge: a turn that is there was accepted, and its text is not put back in the box.
+      // gateway error) is ambiguous — it may have been accepted.
       const definite = e instanceof ApiError && e.status < 500;
-      const s = await load();
-      if (s?.turns.some((t) => t.turn_id === turn_id)) {
-        unsure.current = null;
-      } else {
-        setDraft(text); // nothing was lost: the message is back in the box
-        unsure.current = definite ? null : { text, turn_id };
-        setSendError(
-          definite && e.message
-            ? e.message
-            : "The message may not have reached BattleLab. Sending it again is safe — it will not be duplicated.",
-        );
-      }
-    } finally {
-      setBusy(false);
+      const detail = e instanceof ApiError ? e.message : "";
+      const conflict = e instanceof ApiError && e.status === 409;
+      // `chat_runtime` answers an exact repeat of a turn it holds pending with a bare 409
+      // "in_flight": the server HAS this message (a Retry after a lost response). Never a refusal.
+      const held = conflict && detail === "in_flight";
+      // Busy (another worker holds the conversation, a reply runs, a change awaits a decision —
+      // another tab got there first) is not a refusal of THIS message: it waits, under its id,
+      // and goes again only after a fresh successful read (see `hold`).
+      const notNow = conflict && !held && (BUSY_DETAIL.test(detail) || !!latest?.in_flight);
+      if (notNow) backOff();
+      const reason = detail || "refused";
+      setOutbox((list) =>
+        updateEntry(list, id, (x) =>
+          held
+            ? { ...x, phase: "sending", recorded: true }
+            : notNow
+              ? { ...x, phase: "waiting" }
+              : definite
+                ? { ...x, phase: "refused", reason }
+                : { ...x, phase: "unknown" },
+        ),
+      );
     }
+  };
+
+  // The pump. `chat_runtime` takes ONE reply at a time and refuses a second turn while a reply
+  // runs or a proposed change awaits a decision (409), so the head goes only when the latest read
+  // shows nothing in flight (`in_flight` covers both), and a recorded POST alone never advances
+  // the queue: the read that shows its turn also shows it running. The chat route carries no
+  // expected revision; admission is read fresh from the conversation instead.
+  const admitted = !!session && configured && !session.in_flight && !hold;
+  // The hold's re-read: at `until`, read; a failed read backs off again, so a waiting message is
+  // never stranded once the other worker lets go, and reads stay bounded while the server is down.
+  useEffect(() => {
+    if (!hold) return;
+    const timer = setTimeout(() => {
+      void load().then((s) => {
+        if (!s && alive.current && holdRef.current === hold) backOff();
+      });
+    }, Math.max(0, hold.until - Date.now()));
+    return () => clearTimeout(timer);
+  }, [hold, load, backOff, alive]);
+  useEffect(() => {
+    const head = nextToPost(outboxRef.current, admitted);
+    if (head) void post(head);
+    // `post` is per render; the outbox and the admission are the triggers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outbox, admitted]);
+
+  // Anything the server does not have yet is lost on a reload or close: ask first.
+  useLeaveGuard(unrecorded(outbox));
+
+  // Edit replaces nothing the operator is writing: it needs an empty composer.
+  const composerHolds = !!draft.trim();
+  /** Edit (refused only — the server took nothing under its id): the words go back into the
+   *  composer and the entry leaves the queue, releasing the messages behind it. Sent again, it is
+   *  a NEW message (new id) at the end of the queue. */
+  const editEntry = (id: string) => {
+    const entry = outboxRef.current.find((e) => e.request.id === id);
+    if (!entry || entry.phase !== "refused" || composerHolds) return;
+    setOutbox((list) => list.filter((e) => e.request.id !== id));
+    setDraft(entry.request.draft);
+    setSendError(null);
+    requestAnimationFrame(() => taRef.current?.focus());
+  };
+  const dropEntry = (id: string) => {
+    setOutbox((list) => withoutEntry(list, id));
+    requestAnimationFrame(() => taRef.current?.focus());
   };
 
   const retry = async (turn: ChatTurn) => {
@@ -273,7 +370,7 @@ export function ChatPane({ engine, id }: { engine: string; id: string }) {
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
-      void send();
+      send();
     }
   };
 
@@ -410,6 +507,28 @@ export function ChatPane({ engine, id }: { engine: string; id: string }) {
             )}
           </div>
         ))}
+        <OutboxBlock
+          entries={outbox}
+          agent={engineLabel(engine)}
+          headHold={
+            !configured
+              ? "Can’t go out until this agent has an endpoint."
+              : turns.some((t) => t.status === "awaiting_approval")
+                ? "Goes out once you have decided the proposed change."
+                : inFlight
+                  ? "Goes out when the current reply has finished."
+                  : null
+          }
+          editBlocked={composerHolds}
+          onRetry={(id) => setOutbox((list) => retried(list, id))}
+          onEdit={editEntry}
+          onDrop={dropEntry}
+        />
+        {stale && (
+          <p className={styles.notice} role="status" data-testid="chat-reconnecting">
+            Couldn’t re-read this conversation. Showing what was last read; nothing was re-sent.
+          </p>
+        )}
       </div>
       {sendError && (
         <p className={styles.sendError} role="alert" data-testid="chat-send-error">
@@ -420,26 +539,24 @@ export function ChatPane({ engine, id }: { engine: string; id: string }) {
         className={styles.comp}
         onSubmit={(e) => {
           e.preventDefault();
-          void send();
+          send();
         }}
       >
         <textarea
+          ref={taRef}
           className={styles.ta}
           aria-label="Message the agent"
           placeholder={configured ? "Message the agent…" : "This agent has no endpoint"}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={onKey}
-          // Read-only while a send settles: a refusal puts the message back, and there must be
-          // no newer typing for it to overwrite (Hermes on #1219).
-          readOnly={busy}
           rows={2}
           disabled={!configured}
         />
         <button
           type="submit"
           className={styles.send}
-          disabled={!configured || busy || Boolean(inFlight) || !draft.trim()}
+          disabled={!configured || !draft.trim()}
         >
           Send
         </button>

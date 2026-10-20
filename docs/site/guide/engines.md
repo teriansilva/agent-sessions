@@ -170,6 +170,13 @@ protocol needs, there is no systemd user session, or its console agent is disabl
 console agent is later disabled, existing API conversations stay readable but take no new
 messages until it is back.
 
+**Sending.** Send empties the composer at once: the message shows at the end of the conversation
+as *Sending…* while BattleLab records it, and you can write the next one straight away. Messages
+sent meanwhile wait and go out in order. If one is refused, it says why and offers **Edit** (its
+words and pictures back in the composer) or **Discard**; if its outcome is unknown, **Retry**
+sends the same message again, which is never recorded twice. Messages not yet recorded live only
+in this tab: the page asks before a reload or close, and leaving the session drops them.
+
 **Attachments.** The paperclip accepts documents and other files, including PDFs, Office
 documents, text, spreadsheets, archives and files without an extension. You can send files
 without a message, paste files into the composer, or mix them with images, up to four
@@ -245,6 +252,9 @@ What to know:
 - **Long conversations are trimmed.** Each request carries as many recent turns as fit the model's
   context window minus the reply reserve; older turns are left out, and the pane says how many. A
   single message too long for the window is refused.
+- **Messages wait for the reply.** It answers one message at a time: what you send while it is
+  replying shows as waiting and goes out, in order, once the reply is done. Send empties the
+  composer at once, the same as in the API clients (see **Sending** above).
 - **A failed turn keeps your message.** Retry sends that same turn again. A timeout means the
   endpoint may already have processed — and billed — the request, and the pane says so.
 - **Transcripts are BattleLab's.** Each conversation is a JSONL file under

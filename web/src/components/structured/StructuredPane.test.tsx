@@ -272,24 +272,34 @@ test("a decision with no answer keeps its id: retry sends the same decision", as
   expect(b.decision).toBe("reject");
 });
 
-test("a stale-revision refusal keeps the draft and says why", async () => {
+test("a stale-revision refusal says why and loses nothing: Edit puts the words back (#1465)", async () => {
   vi.mocked(api.structuredSubmit).mockRejectedValue(new ApiError(409, "the conversation changed (revision 4 → 5)"));
   renderPane();
   const box = await screen.findByRole("textbox");
   await userEvent.type(box, "run the logout spec too");
   await userEvent.click(screen.getByRole("button", { name: "Send" }));
-  expect(await screen.findByTestId("structured-error")).toHaveTextContent("revision 4 → 5");
+  const pending = await screen.findByTestId("structured-pending");
+  await waitFor(() => expect(pending).toHaveAttribute("data-phase", "refused"));
+  expect(pending).toHaveTextContent("Not sent: the conversation changed (revision 4 → 5)");
+  expect(box).toHaveValue(""); // it left the composer at Send
+  expect(within(pending).queryByRole("button", { name: "Retry" })).toBeNull();
+  await userEvent.click(within(pending).getByRole("button", { name: "Edit" }));
   expect(box).toHaveValue("run the logout spec too");
+  expect(screen.queryByTestId("structured-pending")).toBeNull();
 });
 
-test("a send with an unknown outcome reuses its operation id on retry", async () => {
+test("a send with an unknown outcome offers Retry under the same operation id, never Edit (#1465)", async () => {
   vi.mocked(api.structuredSubmit).mockRejectedValueOnce(new TypeError("network")).mockResolvedValueOnce({});
   renderPane();
   const box = await screen.findByRole("textbox");
   await userEvent.type(box, "hello");
   await userEvent.click(screen.getByRole("button", { name: "Send" }));
-  await screen.findByTestId("structured-error");
-  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+  const pending = await screen.findByTestId("structured-pending");
+  await waitFor(() => expect(pending).toHaveAttribute("data-phase", "unknown"));
+  expect(within(pending).queryByRole("button", { name: "Edit" })).toBeNull();
+  expect(within(pending).getByRole("button", { name: "Discard — it may still arrive" })).toBeVisible();
+  await userEvent.click(within(pending).getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(api.structuredSubmit).toHaveBeenCalledTimes(2));
   const [a, b] = vi.mocked(api.structuredSubmit).mock.calls;
   expect(b[1]).toBe(a[1]);
   expect(b[2]).toBe("hello");
@@ -749,9 +759,9 @@ test("a client that takes no pictures offers no attach", async () => {
   expect(screen.queryByRole("button", { name: "Attach images" })).toBeNull();
 });
 
-test("attached pictures ride the send by upload name; changing them mints a new operation", async () => {
+test("attached pictures ride the send by upload name; an edited resend is a new operation", async () => {
   vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ images: true }));
-  vi.mocked(api.structuredSubmit).mockRejectedValueOnce(new TypeError("network")).mockResolvedValue({});
+  vi.mocked(api.structuredSubmit).mockRejectedValueOnce(new ApiError(422, "a picture could not be read")).mockResolvedValue({});
   uploaded(1);
   uploaded(2);
   renderPane();
@@ -760,7 +770,12 @@ test("attached pictures ride the send by upload name; changing them mints a new 
   expect(await screen.findAllByTestId("structured-attachment")).toHaveLength(2);
   await userEvent.type(screen.getByRole("textbox"), "what is wrong here");
   await userEvent.click(screen.getByRole("button", { name: "Send" }));
-  await screen.findByTestId("structured-error"); // unknown outcome: kept for a safe retry
+  expect(screen.queryAllByTestId("structured-attachment")).toHaveLength(0); // left with the message
+  const pending = await screen.findByTestId("structured-pending");
+  expect(within(pending).getAllByTestId("structured-pending-attachment")).toHaveLength(2);
+  await waitFor(() => expect(pending).toHaveAttribute("data-phase", "refused"));
+  await userEvent.click(within(pending).getByRole("button", { name: "Edit" })); // pictures come back
+  expect(screen.getAllByTestId("structured-attachment")).toHaveLength(2);
   await userEvent.click(screen.getAllByRole("button", { name: "Remove shot.png" })[1]);
   await userEvent.click(screen.getByRole("button", { name: "Send" }));
   const [first, second] = vi.mocked(api.structuredSubmit).mock.calls;
@@ -890,13 +905,14 @@ test("a deferred clipboard read holds the send until its picture lands (Hermes o
   expect(vi.mocked(api.structuredSubmit).mock.calls[0][4]).toEqual(["20261008-010005-shot.png"]);
 });
 
-test("a paste while a message is sending joins nothing: no upload, no stray chip after", async () => {
+test("a paste while a message is sending joins the NEXT message, never the one on its way (#1465)", async () => {
   vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ images: true }));
   let post!: () => void;
   vi.mocked(api.structuredSubmit).mockImplementationOnce(
     () => new Promise((r) => (post = () => r({}))),
   );
   uploaded(6);
+  uploaded(8);
   renderPane();
   const box = await screen.findByRole("textbox");
   await userEvent.upload(screen.getByTestId("structured-file-input"), [png()]);
@@ -909,9 +925,10 @@ test("a paste while a message is sending joins nothing: no upload, no stray chip
     items: [{ kind: "file", type: "image/png", getAsFile: () => png("late.png") }],
     getData: () => "",
   } as unknown as DataTransfer);
+  expect(await screen.findByTestId("structured-attachment")).toBeVisible(); // in the composer
   await act(async () => post());
-  await waitFor(() => expect(screen.queryAllByTestId("structured-attachment")).toHaveLength(0));
-  expect(api.upload).toHaveBeenCalledTimes(1); // only the picture that was sent
+  expect(vi.mocked(api.structuredSubmit).mock.calls[0][4]).toEqual(["20261008-010006-shot.png"]);
+  expect(screen.getAllByTestId("structured-attachment")).toHaveLength(1); // still the next message's
 });
 
 // ---- sent history and templates (#1332 Phase 3b) ------------------------------------------------
@@ -943,8 +960,9 @@ test("a send is recorded once per operation, confirmed only when the server has 
   await screen.findByTestId("structured-attachment");
   await userEvent.type(screen.getByRole("textbox"), "look at this  ");
   await userEvent.click(screen.getByRole("button", { name: "Send" }));
-  await screen.findByTestId("structured-error");
-  let [entry] = readSent();
+  const pending = await screen.findByTestId("structured-pending");
+  await waitFor(() => expect(pending).toHaveAttribute("data-phase", "unknown"));
+  const [entry] = readSent();
   expect(readSent()).toHaveLength(1);
   expect(entry).toMatchObject({
     text: "look at this  ", // untrimmed, so Restore round-trips it
@@ -952,11 +970,10 @@ test("a send is recorded once per operation, confirmed only when the server has 
     session: KEY,
     confirmed: false,
   });
-  await userEvent.click(screen.getByRole("button", { name: "Send" })); // the safe retry
-  await waitFor(() => expect(screen.getByRole("textbox")).toHaveValue(""));
+  await userEvent.click(within(pending).getByRole("button", { name: "Retry" })); // the safe retry
+  await waitFor(() => expect(readSent()[0].confirmed).toBe(true));
   expect(readSent()).toHaveLength(1); // the same operation: no second entry
-  [entry] = readSent();
-  expect(entry.confirmed).toBe(true);
+  expect(vi.mocked(api.structuredSubmit).mock.calls[1][1]).toBe(vi.mocked(api.structuredSubmit).mock.calls[0][1]);
   await userEvent.click(screen.getByRole("button", { name: "Sent messages" }));
   await userEvent.click(await screen.findByRole("button", { name: /restore/i }));
   expect(screen.getByRole("textbox")).toHaveValue("look at this  ");
@@ -1081,7 +1098,7 @@ test("committed, answer and re-read lost, reload: Restore + Send re-sends under 
   const first = renderPane();
   await userEvent.type(await screen.findByRole("textbox"), "deploy it");
   await userEvent.click(screen.getByRole("button", { name: "Send" }));
-  await screen.findByTestId("structured-error");
+  await waitFor(() => expect(screen.getByTestId("structured-pending")).toHaveAttribute("data-phase", "unknown"));
   const lostOp = vi.mocked(api.structuredSubmit).mock.calls[0][1];
   expect(readSent()[0]).toMatchObject({ operation: lostOp, confirmed: false });
   first.unmount(); // a reload
@@ -1098,7 +1115,7 @@ test("committed, answer and re-read lost, reload: Restore + Send re-sends under 
   expect(readSent()).toHaveLength(1);
 });
 
-test("a held retry the conversation shows as recorded is retired: Send can never replay it (Hermes on #1346)", async () => {
+test("an unknown send the conversation shows as recorded is settled by it: a repeat is a new turn (Hermes on #1346)", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   let reads = 0;
   let landed: string | null = null;
@@ -1116,12 +1133,14 @@ test("a held retry the conversation shows as recorded is retired: Send can never
   const box = await screen.findByRole("textbox");
   await userEvent.type(box, "deploy it");
   await userEvent.click(screen.getByRole("button", { name: "Send" }));
-  await screen.findByTestId("structured-error");
-  expect(box).toHaveValue("deploy it"); // kept for a safe retry
+  await waitFor(() => expect(screen.getByTestId("structured-pending")).toHaveAttribute("data-phase", "unknown"));
+  expect(box).toHaveValue(""); // left the composer at Send
   await act(async () => {
     await vi.advanceTimersByTimeAsync(15_000); // the periodic re-read finds the turn
   });
-  await waitFor(() => expect(box).toHaveValue("")); // it WAS sent: the draft is cleared
+  // It WAS sent: the conversation's turn replaces the entry, once.
+  await waitFor(() => expect(screen.queryByTestId("structured-pending")).toBeNull());
+  expect(screen.getAllByTestId("structured-turn")).toHaveLength(1);
   await userEvent.type(box, "deploy it");
   await userEvent.click(screen.getByRole("button", { name: "Send" }));
   const calls = vi.mocked(api.structuredSubmit).mock.calls;
@@ -1327,4 +1346,202 @@ test("when attribution can't be read, no turn is labelled 'you' (#1404)", async 
   const row = await screen.findByTestId("structured-turn");
   expect(within(row).getByText("sender unknown")).toBeInTheDocument();
   expect(within(row).queryByText("you")).toBeNull();
+});
+
+// ---- the composer's outbox (#1465) -------------------------------------------------------------
+
+/** A tiny server: `current` is the snapshot; `record` adds an operator turn the way submit does. */
+function outboxServer(start: Partial<StructuredSnapshot> = {}) {
+  const server = {
+    current: snap(start),
+    record(id: string, text: string, state = "queued") {
+      server.current = { ...server.current, revision: server.current.revision + 1,
+        turns: [...server.current.turns, turn({ turn_id: id, operation_id: id, text, reply: "", state })] };
+    },
+  };
+  vi.mocked(api.structuredSnapshot).mockImplementation(async () => server.current);
+  vi.mocked(api.structuredEvents).mockImplementation(async () =>
+    ({ session_key: KEY, revision: server.current.revision, next_cursor: server.current.revision, events: [] }));
+  return server;
+}
+
+/** Submit calls that wait until the test releases them. */
+function heldSubmits() {
+  const held: { id: string; text: string; release: (fail?: unknown) => void }[] = [];
+  vi.mocked(api.structuredSubmit).mockImplementation((_k, id, text) =>
+    new Promise((resolve, reject) => {
+      held.push({ id, text, release: (fail) => (fail ? reject(fail) : resolve({})) });
+    }));
+  return held;
+}
+
+async function sendText(text: string) {
+  const box = screen.getByRole("textbox");
+  await userEvent.type(box, text);
+  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+}
+
+test("Send empties the composer at once; the message shows as Sending… and a second one waits its turn", async () => {
+  const server = outboxServer();
+  const held = heldSubmits();
+  renderPane();
+  await screen.findByRole("textbox");
+  await sendText("first");
+  expect(screen.getByRole("textbox")).toHaveValue("");
+  const [first] = await screen.findAllByTestId("structured-pending");
+  expect(first).toHaveTextContent("Sending to BattleLab…");
+  expect(screen.getByRole("button", { name: "Send" })).toBeDisabled(); // only for want of words
+  await sendText("second");
+  const entries = screen.getAllByTestId("structured-pending");
+  expect(entries[1]).toHaveAttribute("data-phase", "waiting");
+  expect(entries[1]).toHaveTextContent("Goes out after the message above.");
+  expect(held).toHaveLength(1);
+  server.record(held[0].id, "first");
+  await act(async () => held[0].release());
+  await waitFor(() => expect(held).toHaveLength(2));
+  expect(held.map((h) => h.text)).toEqual(["first", "second"]);
+  expect(held[1].id).not.toBe(held[0].id);
+  // The recorded turn replaced its entry: one turn, no duplicate.
+  expect(screen.getAllByTestId("structured-turn")).toHaveLength(1);
+  expect(screen.getAllByTestId("structured-pending")).toHaveLength(1);
+});
+
+test("a snapshot that shows the turn first wins: the late POST answer is ignored", async () => {
+  const server = outboxServer({ state: "running", active_turn: "busy", turns: [turn({ turn_id: "busy", state: "running" })] });
+  const held = heldSubmits();
+  renderPane();
+  await screen.findByRole("textbox");
+  await sendText("first");
+  await waitFor(() => expect(held).toHaveLength(1));
+  server.record(held[0].id, "first");
+  await waitFor(() => expect(screen.queryByTestId("structured-pending")).toBeNull(), { timeout: 4_000 });
+  await act(async () => held[0].release(new ApiError(409, "in_flight")));
+  await act(async () => {});
+  expect(screen.queryByTestId("structured-pending")).toBeNull(); // never resurrected as refused
+  expect(screen.getAllByTestId("structured-turn")).toHaveLength(2);
+});
+
+test("a failed snapshot read neither resurrects nor drops an entry", async () => {
+  outboxServer();
+  vi.mocked(api.structuredSubmit).mockRejectedValue(new TypeError("network"));
+  renderPane();
+  await screen.findByRole("textbox");
+  vi.mocked(api.structuredSnapshot).mockRejectedValue(new TypeError("offline"));
+  await sendText("first");
+  const pending = await screen.findByTestId("structured-pending");
+  await waitFor(() => expect(pending).toHaveAttribute("data-phase", "unknown"));
+  expect(screen.getAllByTestId("structured-pending")).toHaveLength(1);
+});
+
+test("Edit on a refused message releases the queue: the waiting one goes, the edit is a new id after it", async () => {
+  const server = outboxServer();
+  const held = heldSubmits();
+  renderPane();
+  await screen.findByRole("textbox");
+  await sendText("first");
+  await sendText("second");
+  await waitFor(() => expect(held).toHaveLength(1));
+  await act(async () => held[0].release(new ApiError(422, "the session is read only")));
+  const [refused, waiting] = screen.getAllByTestId("structured-pending");
+  await waitFor(() => expect(refused).toHaveAttribute("data-phase", "refused"));
+  expect(refused).toHaveTextContent("Not sent: the session is read only");
+  expect(waiting).toHaveAttribute("data-phase", "waiting");
+  await act(async () => {});
+  expect(held).toHaveLength(1); // the order holds behind a failure
+  await userEvent.click(within(refused).getByRole("button", { name: "Edit" }));
+  expect(screen.getByRole("textbox")).toHaveValue("first");
+  await waitFor(() => expect(held).toHaveLength(2));
+  expect(held[1].text).toBe("second");
+  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+  server.record(held[1].id, "second");
+  await act(async () => held[1].release());
+  await waitFor(() => expect(held).toHaveLength(3));
+  expect(held[2].text).toBe("first");
+  expect(held[2].id).not.toBe(held[0].id);
+});
+
+test("Edit never replaces a message being written", async () => {
+  outboxServer();
+  vi.mocked(api.structuredSubmit).mockRejectedValue(new ApiError(422, "no"));
+  renderPane();
+  await screen.findByRole("textbox");
+  await sendText("first");
+  const refused = await screen.findByTestId("structured-pending");
+  await waitFor(() => expect(refused).toHaveAttribute("data-phase", "refused"));
+  await userEvent.type(screen.getByRole("textbox"), "draft");
+  expect(within(refused).getByRole("button", { name: "Edit" })).toBeDisabled();
+});
+
+test("leaving the page asks first only while something is unrecorded", async () => {
+  const server = outboxServer();
+  const held = heldSubmits();
+  renderPane();
+  await screen.findByRole("textbox");
+  const prompts = () => {
+    const ev = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(ev);
+    return ev.defaultPrevented;
+  };
+  expect(prompts()).toBe(false);
+  await sendText("first");
+  expect(prompts()).toBe(true);
+  expect(screen.getByTestId("structured-outbox-note")).toHaveTextContent(
+    "Leaving drops this list; a message already on its way may still arrive");
+  server.record(held[0].id, "first");
+  await act(async () => held[0].release());
+  await waitFor(() => expect(screen.queryByTestId("structured-pending")).toBeNull());
+  expect(prompts()).toBe(false);
+});
+
+test("a pane left with a POST in flight sends nothing more when it answers late", async () => {
+  const server = outboxServer();
+  const held = heldSubmits();
+  const view = renderPane();
+  await screen.findByRole("textbox");
+  await sendText("first");
+  await sendText("second");
+  await waitFor(() => expect(held).toHaveLength(1));
+  expect(screen.getAllByTestId("structured-pending")[1]).toHaveTextContent("Goes out after the message above.");
+  expect(screen.getByTestId("structured-outbox-note")).toHaveTextContent("Leaving drops this list");
+  view.unmount(); // a session switch: the pane is keyed per session
+  server.record(held[0].id, "first");
+  await act(async () => held[0].release());
+  await act(async () => {});
+  expect(held).toHaveLength(1); // the waiting message went with the pane
+});
+
+test("an accepted head whose turn aged out of the snapshot is settled by the 2xx receipt's revision (Hermes on #1514)", async () => {
+  const server = outboxServer();
+  // The 2xx answer carries the journal revision read after recording the turn: the receipt.
+  vi.mocked(api.structuredSubmit).mockResolvedValue({ state: "queued", revision: 9 });
+  renderPane();
+  await screen.findByRole("textbox");
+  vi.mocked(api.structuredSnapshot).mockRejectedValue(new TypeError("offline")); // reads fail after the 2xx
+  await sendText("first");
+  await sendText("second");
+  await waitFor(() => expect(api.structuredSubmit).toHaveBeenCalledTimes(1));
+  const [head] = screen.getAllByTestId("structured-pending");
+  await waitFor(() => expect(head).toHaveTextContent("Recorded by BattleLab"));
+  // Reads recover; the conversation moved on, and the head's completed turn is no longer listed.
+  server.current = { ...server.current, revision: 70, turns: [turn({ text: "much later" })] };
+  vi.mocked(api.structuredSnapshot).mockImplementation(async () => server.current);
+  await waitFor(() => expect(api.structuredSubmit).toHaveBeenCalledTimes(2), { timeout: 4_000 });
+  expect(vi.mocked(api.structuredSubmit).mock.calls[1][2]).toBe("second");
+  await waitFor(() => expect(screen.queryByText("first")).toBeNull()); // no pending row left for it
+});
+
+test("a recovered read BEFORE the receipt's revision does not settle the head", async () => {
+  const server = outboxServer();
+  vi.mocked(api.structuredSubmit).mockResolvedValue({ state: "queued", revision: 9 });
+  renderPane();
+  await screen.findByRole("textbox");
+  vi.mocked(api.structuredSnapshot).mockRejectedValue(new TypeError("offline"));
+  await sendText("first");
+  await sendText("second");
+  await waitFor(() => expect(screen.getAllByTestId("structured-pending")[0]).toHaveTextContent("Recorded by BattleLab"));
+  server.current = { ...server.current, revision: 8 }; // older than the receipt, without the turn
+  vi.mocked(api.structuredSnapshot).mockImplementation(async () => server.current);
+  await new Promise((r) => setTimeout(r, 2_500)); // two active poll cycles
+  expect(api.structuredSubmit).toHaveBeenCalledTimes(1);
+  expect(screen.getAllByTestId("structured-pending")).toHaveLength(2);
 });

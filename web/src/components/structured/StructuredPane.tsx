@@ -107,6 +107,19 @@ import {
   waitingBehindOwnTurn,
 } from "./structuredView";
 import { ChoiceQuestions } from "./Questions";
+import {
+  nextToPost,
+  outboxEntry,
+  reconcile,
+  retried,
+  revisionFor,
+  unrecorded,
+  updateEntry,
+  withoutEntry,
+  type OutboxEntry,
+} from "./outbox";
+import { OutboxBlock } from "./Outbox";
+import { useAlive, useLeaveGuard, useOutbox } from "./useOutbox";
 
 /** While a turn runs, the event cursor is read this often; a change re-reads the snapshot. */
 export const STRUCTURED_ACTIVE_POLL_MS = 1_000;
@@ -1184,6 +1197,9 @@ export function StructuredPane({
   const source = engineInfo(engine)?.api?.source;
   const agent = source ? engineLabel(source) : engineLabel(engine);
   const [snap, setSnap] = useState<StructuredSnapshot | null>(null);
+  // The latest rendered snapshot, for a POST started from an effect or a click.
+  const snapRef = useRef<StructuredSnapshot | null>(null);
+  snapRef.current = snap;
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
   const [draft, setDraft] = useState("");
@@ -1212,7 +1228,7 @@ export function StructuredPane({
     ta.style.height = "auto";
     ta.style.height = `${Math.min(ta.scrollHeight, Math.round(window.innerHeight * 0.28))}px`;
   }, [draft]);
-  /** The history entry of the operation in flight: one entry per operation, not per retry. */
+  /** The history entry of a restored unconfirmed message (with `op`), so its re-send keeps ONE entry. */
   const historyFor = useRef<{ op: string; id: string | null } | null>(null);
   // An "outcome unknown" entry of THIS session is settled by the conversation itself: once its
   // operation shows up as a turn, the server had it (Hermes on #1346).
@@ -1299,15 +1315,24 @@ export function StructuredPane({
     tick: 0,
     ok: true,
   });
+  /** The composer's next request identity: set only by Restore of this session's unconfirmed
+   *  entry (#1346), so an unchanged re-send replays it. Consumed at Send; never the identity of a
+   *  queued message — each outbox entry carries its own (#1465). */
   const op = useRef<{ id: string; text: string } | null>(null);
   const cursor = useRef(0);
   const logRef = useRef<HTMLDivElement>(null);
+  // The outbox (#1465): sent messages the conversation does not show yet, FIFO, only the head in
+  // flight. A late POST result for an unmounted pane (a session switch) touches nothing.
+  const { outbox, outboxRef, setOutbox } = useOutbox();
+  const alive = useAlive();
 
   const apply = useCallback((s: StructuredSnapshot) => {
     // Reads race (the poll, and a re-read after every action): an older answer arriving last
     // must never roll the view back. The journal revision only grows.
     if (s.revision < cursor.current) return;
     cursor.current = s.event_cursor;
+    // A recorded turn replaces its pending entry, whatever that entry's POST says or will say.
+    setOutbox((list) => reconcile(list, operatorTurns(s).map((t) => t.turn_id), s.revision));
     if (s.bypass) setPermissionsOpen(null);
     setSnap((previous) => {
       // Lifecycle changes need not advance the journal. Reject the entire older snapshot:
@@ -1326,7 +1351,7 @@ export function StructuredPane({
     )));
     setLoadError(null);
     setReconnecting(false);
-  }, []);
+  }, [setOutbox]);
   const failed = useCallback((e: unknown) => {
     if (e instanceof ApiError && e.status === 404)
       setLoadError("This conversation does not exist.");
@@ -1357,7 +1382,9 @@ export function StructuredPane({
   // The cursor loop: cheap reads of the journal's revision; a change re-reads the snapshot.
   const active = isActive(snap);
   // Task progress reads live without changing the turn-active predicate used by Send (#1461).
-  const pollingActive = active || backgroundWorking(snap);
+  // A message on its way (or of unknown outcome) is settled by the conversation: read it promptly.
+  const pollingActive = active || backgroundWorking(snap) ||
+    outbox.some((e) => e.phase === "sending" || e.phase === "unknown");
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -1481,6 +1508,8 @@ export function StructuredPane({
   // in the conversation, or a newer question or another message closed it, it simply goes away.
   const [answer, setAnswer] = useState<HeldAnswer | null>(null);
 
+  /** Send (#1465): the composer's message becomes ONE outbox entry, frozen with its own operation
+   *  id, and the composer is free at once. The pump below posts it when it is the head. */
   const send = async () => {
     if (!dict.settled()) {
       sendAfterDictation.current = true;
@@ -1490,66 +1519,113 @@ export function StructuredPane({
     }
     const text = draft.trim();
     const names = attachments.map((a) => a.stored);
-    if ((!text && !names.length) || busy || readOnly || permissionPending || !snap) return;
-    if (slots.current.inFlight > 0 || sending.current) return; // a picture is still on its way
+    if ((!text && !names.length) || busy || readOnly || permissionPending || notStarted || !snap) return;
+    if (slots.current.inFlight > 0) return; // a picture is still on its way
     const attempt = operationFor(op.current, sendIdentity(text, names), uuid);
-    op.current = attempt;
-    if (historyFor.current?.op !== attempt.id) {
-      // Recorded at submit time, untrimmed, so Restore round-trips exactly what was typed.
-      historyFor.current = {
-        op: attempt.id,
-        id: appendSent({
-          text: draft,
-          attachments: names,
-          session: key,
-          operation: attempt.id,
-        }),
-      };
-      setHistory(readSent());
+    if (outboxRef.current.some((e) => e.request.id === attempt.id)) {
+      // A restored unconfirmed message that is already on its way: one operation, sent once.
+      setSendError("This message is already on its way.");
+      return;
     }
-    const sent = () => {
-      // The server recorded the turn — never a claim that the agent has acted on it.
-      if (historyFor.current?.op === attempt.id && historyFor.current.id) {
-        confirmSent(historyFor.current.id);
-        setHistory(readSent());
-      }
-    };
-    sending.current = true;
-    setBusy(true);
+    // Recorded at submit time, untrimmed, so Restore round-trips exactly what was typed. A
+    // restored unconfirmed entry re-sends under its own id and keeps its one history entry.
+    const history = historyFor.current?.op === attempt.id
+      ? historyFor.current.id
+      : appendSent({ text: draft, attachments: names, session: key, operation: attempt.id });
+    setHistory(readSent());
+    op.current = null;
+    historyFor.current = null;
+    setOutbox((list) => [
+      ...list,
+      outboxEntry({ id: attempt.id, text, draft, attachments, history }),
+    ]);
+    setDraft("");
+    clearAttachments();
     setSendError(null);
+  };
+
+  const confirmHistory = (history: string | null) => {
+    // The server recorded the turn — never a claim that the agent has acted on it.
+    if (!history) return;
+    confirmSent(history);
+    setHistory(readSent());
+  };
+
+  /** POST one entry: exactly its frozen request. The outcome only ever updates THAT entry, and
+   *  only while it is still in the outbox (a snapshot may have settled it first). */
+  const post = async (entry: OutboxEntry) => {
+    const s = snapRef.current;
+    if (!s) return;
+    const { id, text, attachments: files, history } = entry.request;
+    setOutbox((list) => updateEntry(list, id, (e) => ({ ...e, phase: "sending" })));
     try {
-      // Streaming observations advance revision continuously; a queued operator message binds
-      // its immutable operation ID, not a snapshot of the turn that is still running.
-      await api.structuredSubmit(key, attempt.id, text, active ? undefined : snap.revision, names);
-      sent();
-      op.current = null;
-      setDraft("");
-      clearAttachments();
+      const answer = await api.structuredSubmit(key, id, text, revisionFor(s), files.map((a) => a.stored));
+      confirmHistory(history);
+      if (!alive.current) return;
+      // The answer's revision is the durable receipt: a later snapshot at or past it settles the
+      // entry even if its (completed) turn has aged out of the bounded window meanwhile.
+      const receipt = typeof answer?.revision === "number" ? answer.revision : undefined;
+      setOutbox((list) => updateEntry(list, id, (e) => ({ ...e, recorded: true, receipt })));
       setContainment(null);
-      await load();
+      await load(); // its turn replaces the entry; then the next head goes
     } catch (e) {
-      const s = await load();
-      if (operatorTurns(s ?? null).some((t) => t.turn_id === attempt.id)) {
-        sent();
-        op.current = null;
-        setDraft("");
-        clearAttachments();
-      } else if (definite(e)) {
-        op.current = null; // refused: nothing was recorded under that id
-        setSendError(
-          e instanceof ApiError && e.status === 409
-            ? `Not sent: ${detail(e, "the conversation changed")}. Your message is kept; review the new activity and send again.`
-            : `Not sent: ${detail(e, "refused")}`,
-        );
-      } else {
-        setSendError(
-          "The message may not have reached BattleLab. Sending it again is safe — it will not be duplicated.",
-        );
+      if (!alive.current) return;
+      const latest = await load();
+      if (!alive.current) return;
+      if (operatorTurns(latest).some((t) => t.turn_id === id)) {
+        confirmHistory(history); // the conversation has it: `apply` already dropped the entry
+        return;
       }
-    } finally {
-      sending.current = false;
-      setBusy(false);
+      setOutbox((list) =>
+        updateEntry(list, id, (x) =>
+          definite(e)
+            ? {
+                ...x,
+                phase: "refused",
+                reason: detail(e, e instanceof ApiError && e.status === 409 ? "the conversation changed" : "refused"),
+              }
+            : { ...x, phase: "unknown" },
+        ),
+      );
     }
+  };
+
+  // The pump: the head goes when it is waiting and nothing holds it; a refused or unknown head
+  // stops the queue. A native worker queues turns itself, so a busy agent does not hold the head
+  // (the HTTP chat client, which takes one reply at a time, is ChatPane's: it waits for idle).
+  const blocked = readOnly || permissionPending || notStarted;
+  useEffect(() => {
+    const head = nextToPost(outboxRef.current, !!snap && !blocked);
+    if (head) void post(head);
+    // `post` reads the latest snapshot itself; the outbox, the snapshot and the guards are the triggers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outbox, snap, blocked]);
+
+  // Anything the server does not have yet is lost on a reload or close: ask first.
+  useLeaveGuard(unrecorded(outbox));
+
+  const retryEntry = (id: string) => setOutbox((list) => retried(list, id));
+  const dropEntry = (id: string) => {
+    setOutbox((list) => withoutEntry(list, id));
+    requestAnimationFrame(() => taRef.current?.focus());
+  };
+  // Edit replaces nothing the operator is writing: it needs an empty, settled composer.
+  const composerHolds = !!draft.trim() || attachments.length > 0 || uploading || dictating || busy;
+  /** Edit (refused only — the server took nothing under its id): its words and pictures go back
+   *  into the composer and it leaves the queue, releasing the messages behind it. Sent again, it
+   *  is a NEW message (new id) at the end of the queue. */
+  const editEntry = (id: string) => {
+    const entry = outboxRef.current.find((e) => e.request.id === id);
+    if (!entry || entry.phase !== "refused" || composerHolds || slots.current.inFlight > 0) return;
+    setOutbox((list) => list.filter((e) => e.request.id !== id));
+    clearAttachments();
+    slots.current.held = entry.request.attachments.length;
+    setAttachments(entry.request.attachments.map((a) => ({ name: a.name, stored: a.stored })));
+    op.current = null; // a new request
+    historyFor.current = null;
+    setDraft(entry.request.draft);
+    setSendError(null);
+    requestAnimationFrame(() => taRef.current?.focus());
   };
 
   const sendAnswer = async (attempt: { question: string; id: string; text: string }) => {
@@ -1875,8 +1951,8 @@ export function StructuredPane({
     setAttachments((prev) => prev.filter((x) => x.stored !== stored));
   };
 
-  // The retry this pane is holding (a lost answer, a failed re-read) has landed: retire its id
-  // so Send can never replay it (Hermes on #1346). If the draft is still exactly that message, it
+  // The restored unconfirmed message this composer holds (#1346) has landed: retire its id so
+  // Send can never replay it (Hermes on #1346). If the draft is still exactly that message, it
   // WAS sent — clear it as a send does; an edited draft stays, as a new request.
   useEffect(() => {
     const held = op.current;
@@ -2637,6 +2713,21 @@ export function StructuredPane({
             </Fragment>
           );
         })}
+        <OutboxBlock
+          entries={outbox}
+          agent={agent}
+          headHold={
+            readOnly
+              ? "Can’t go out while this conversation is read only."
+              : permissionPending
+                ? "Goes out once the permission change has finished."
+                : null
+          }
+          editBlocked={composerHolds}
+          onRetry={retryEntry}
+          onEdit={editEntry}
+          onDrop={dropEntry}
+        />
         {recoveringSendNow && (
           <div className={styles.queued} data-testid="structured-send-now-recovery">
             <div className={styles.queueRow}>

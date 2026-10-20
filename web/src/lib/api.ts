@@ -760,7 +760,8 @@ export const api = {
      *  question is still open. Omitted otherwise, so an ordinary turn's body is unchanged. */
     reply_to?: string,
   ) =>
-    mutateJson<{ state?: string }>("POST", `${structuredPath(key)}/turns`, {
+    // The 2xx answer is the recorded turn plus the journal `revision` read after recording it.
+    mutateJson<{ state?: string; revision?: number; turn_id?: string }>("POST", `${structuredPath(key)}/turns`, {
       operation_id,
       text,
       expected_revision,

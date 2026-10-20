@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -7,7 +7,7 @@ import { ApiError, api } from "../../lib/api";
 import fixture from "../../test/roster.fixture.json";
 import type { AgentEndpoint, ChatSession, ChatTurn, EngineInfo } from "../../types/api";
 import { RuntimeGate } from "../terminal/RuntimeGate";
-import { CHAT_POLL_MS, ChatPane } from "./ChatPane";
+import { BUSY_BACKOFF_MAX_MS, BUSY_BACKOFF_MS, CHAT_POLL_MS, ChatPane } from "./ChatPane";
 
 vi.mock("../../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
@@ -149,7 +149,7 @@ test("an unconfigured agent says nothing is sent, and links to its settings", as
   );
 });
 
-test("a refused send puts the message back and shows the reason", async () => {
+test("a refused send leaves the composer at once and loses nothing: Edit puts it back (#1465)", async () => {
   vi.mocked(api.chatSend).mockRejectedValue(
     new ApiError(413, "too long for this endpoint's context window"),
   );
@@ -157,8 +157,14 @@ test("a refused send puts the message back and shows the reason", async () => {
   await screen.findByTestId("chat-empty");
   const box = screen.getByLabelText("Message the agent");
   await userEvent.type(box, "a very long message{Enter}");
-  expect(await screen.findByTestId("chat-send-error")).toHaveTextContent(/context window/);
-  await waitFor(() => expect(box).toHaveValue("a very long message"));
+  expect(box).toHaveValue("");
+  const pending = await screen.findByTestId("structured-pending");
+  await waitFor(() => expect(pending).toHaveAttribute("data-phase", "refused"));
+  expect(pending).toHaveTextContent("Not sent: too long for this endpoint's context window");
+  expect(within(pending).queryByRole("button", { name: "Retry" })).toBeNull();
+  await userEvent.click(within(pending).getByRole("button", { name: "Edit" }));
+  expect(box).toHaveValue("a very long message");
+  expect(screen.queryByTestId("structured-pending")).toBeNull();
 });
 
 test("a reply is text: markup in it is shown, never rendered", async () => {
@@ -220,21 +226,26 @@ test("a send whose response was lost but which the server took is not offered ag
   expect(screen.queryByTestId("chat-send-error")).toBeNull();
 });
 
-test("an ambiguous failure the server did not take keeps the message, and resending reuses its turn id", async () => {
+test("an ambiguous failure the server did not take offers Retry under the same turn id, never Edit (#1465)", async () => {
   vi.mocked(api.chatSend).mockRejectedValueOnce(new TypeError("Failed to fetch"));
   renderPane();
   await screen.findByTestId("chat-empty");
   const box = screen.getByLabelText("Message the agent");
   await userEvent.type(box, "maybe sent{Enter}");
-  expect(await screen.findByTestId("chat-send-error")).toHaveTextContent(/will not be duplicated/);
-  await waitFor(() => expect(box).toHaveValue("maybe sent"));
+  const pending = await screen.findByTestId("structured-pending");
+  await waitFor(() => expect(pending).toHaveAttribute("data-phase", "unknown"));
+  expect(pending).toHaveTextContent("May not have reached BattleLab");
+  expect(within(pending).queryByRole("button", { name: "Edit" })).toBeNull();
+  expect(within(pending).getByRole("button", { name: "Discard — it may still arrive" })).toBeVisible();
   vi.mocked(api.chatSend).mockResolvedValueOnce({ turn: { turn_id: "x", status: "pending" } });
-  await userEvent.type(box, "{Enter}");
+  await userEvent.click(within(pending).getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(2));
   const [first, second] = vi.mocked(api.chatSend).mock.calls;
   expect(second[1]).toBe(first[1]); // the same turn: the server dedupes it
+  expect(second[2]).toBe("maybe sent");
 });
 
-test("the composer is read-only while a send settles, so a refusal cannot overwrite newer typing", async () => {
+test("the composer is free while a send settles; newer typing is never overwritten (#1465)", async () => {
   let reject!: (e: unknown) => void;
   vi.mocked(api.chatSend).mockReturnValue(
     new Promise((_, r) => {
@@ -245,12 +256,179 @@ test("the composer is read-only while a send settles, so a refusal cannot overwr
   await screen.findByTestId("chat-empty");
   const box = screen.getByLabelText("Message the agent");
   await userEvent.type(box, "first{Enter}");
-  expect(box).toHaveAttribute("readonly");
-  await userEvent.type(box, "second");
-  expect(box).toHaveValue("");
-  reject(new ApiError(413, "too long for this endpoint's context window"));
-  await waitFor(() => expect(box).toHaveValue("first"));
   expect(box).not.toHaveAttribute("readonly");
+  await userEvent.type(box, "second");
+  expect(box).toHaveValue("second");
+  await act(async () => reject(new ApiError(413, "too long for this endpoint's context window")));
+  await waitFor(() => expect(screen.getByTestId("structured-pending")).toHaveAttribute("data-phase", "refused"));
+  expect(box).toHaveValue("second"); // the refusal stays in its entry
+  expect(within(screen.getByTestId("structured-pending")).getByRole("button", { name: "Edit" })).toBeDisabled();
+});
+
+// ---- the composer's outbox (#1465) -------------------------------------------------------------
+
+/** A tiny chat server: `turns` is the conversation; a send records a pending turn. */
+function chatServer(initial: ChatTurn[] = []) {
+  const server = {
+    turns: initial,
+    finish() {
+      server.turns = server.turns.map((t) => (t.status === "pending" ? { ...t, status: "done", reply: "ok" } : t));
+    },
+  };
+  vi.mocked(api.chatGet).mockImplementation(async () => session(server.turns));
+  vi.mocked(api.chatSend).mockImplementation(async (_sid, turn_id, text) => {
+    if (server.turns.some((t) => t.status === "pending")) {
+      throw new ApiError(409, "another message is still waiting for its reply");
+    }
+    server.turns = [...server.turns, turn({ turn_id, text, status: "pending", reply: null, usage: null })];
+    return { turn: { turn_id, status: "pending" } };
+  });
+  return server;
+}
+
+test("two sends during a slow reply wait for it and go out one reply at a time, in order", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const server = chatServer([turn({ text: "slow", status: "pending", reply: null, usage: null })]);
+  renderPane();
+  await screen.findByTestId("chat-waiting");
+  const box = screen.getByLabelText("Message the agent");
+  await userEvent.type(box, "second{Enter}");
+  await userEvent.type(box, "third{Enter}");
+  expect(box).toHaveValue("");
+  const [a, b] = screen.getAllByTestId("structured-pending");
+  expect(a).toHaveTextContent("Goes out when the current reply has finished.");
+  expect(b).toHaveTextContent("Goes out after the message above.");
+  expect(api.chatSend).not.toHaveBeenCalled();
+  server.finish();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(CHAT_POLL_MS + 10);
+  });
+  await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(api.chatSend).mock.calls[0][2]).toBe("second");
+  await waitFor(() => expect(screen.getAllByTestId("structured-pending")).toHaveLength(1));
+  server.finish();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(CHAT_POLL_MS + 10);
+  });
+  await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(api.chatSend).mock.calls[1][2]).toBe("third");
+  await waitFor(() => expect(screen.queryByTestId("structured-pending")).toBeNull());
+  expect(screen.queryByText(/another message is still waiting/)).toBeNull(); // never refused
+});
+
+test("a 409 because another reply started meanwhile is not a refusal: the message waits, same id", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const server = chatServer();
+  renderPane();
+  await screen.findByTestId("chat-empty");
+  // Another tab starts a reply after this one's last read.
+  server.turns = [turn({ text: "from another tab", status: "pending", reply: null, usage: null })];
+  await userEvent.type(screen.getByLabelText("Message the agent"), "mine{Enter}");
+  await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(1));
+  const pending = await screen.findByTestId("structured-pending");
+  await waitFor(() => expect(pending).toHaveAttribute("data-phase", "waiting"));
+  server.finish();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(CHAT_POLL_MS + 10);
+  });
+  await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(2));
+  const [first, second] = vi.mocked(api.chatSend).mock.calls;
+  expect(second[1]).toBe(first[1]);
+});
+
+test("a Retry the server answers 409 in_flight is recorded, never refused (it holds that turn)", async () => {
+  vi.mocked(api.chatSend)
+    .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+    .mockRejectedValueOnce(new ApiError(409, "in_flight"));
+  renderPane();
+  await screen.findByTestId("chat-empty");
+  vi.mocked(api.chatGet).mockRejectedValue(new TypeError("offline")); // reads fail meanwhile
+  await userEvent.type(screen.getByLabelText("Message the agent"), "maybe sent{Enter}");
+  const pending = await screen.findByTestId("structured-pending");
+  await waitFor(() => expect(pending).toHaveAttribute("data-phase", "unknown"));
+  await userEvent.click(within(pending).getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(pending).toHaveTextContent("Recorded by BattleLab"));
+  expect(pending).toHaveAttribute("data-phase", "sending");
+  expect(within(pending).queryByRole("button", { name: "Edit" })).toBeNull();
+});
+
+test("Edit on a refused message releases the queue; the edit goes after it as a new id", async () => {
+  chatServer();
+  const inner = vi.mocked(api.chatSend).getMockImplementation()!;
+  let held!: () => void;
+  vi.mocked(api.chatSend).mockImplementationOnce(
+    () => new Promise((_, reject) => (held = () => reject(new ApiError(422, "text must be a non-empty string")))),
+  );
+  renderPane();
+  await screen.findByTestId("chat-empty");
+  const box = screen.getByLabelText("Message the agent");
+  await userEvent.type(box, "first{Enter}");
+  await userEvent.type(box, "second{Enter}");
+  await act(async () => held());
+  const [refused, waiting] = screen.getAllByTestId("structured-pending");
+  await waitFor(() => expect(refused).toHaveAttribute("data-phase", "refused"));
+  expect(waiting).toHaveAttribute("data-phase", "waiting"); // the order holds behind a failure
+  expect(api.chatSend).toHaveBeenCalledTimes(1);
+  vi.mocked(api.chatSend).mockImplementation(inner);
+  await userEvent.click(within(refused).getByRole("button", { name: "Edit" }));
+  expect(box).toHaveValue("first");
+  await waitFor(() => expect(vi.mocked(api.chatSend).mock.calls.map((c) => c[2])).toEqual(["first", "second"]));
+  const firstId = vi.mocked(api.chatSend).mock.calls[0][1];
+  // The second's reply runs now; the edit waits for it, then goes as a NEW turn.
+  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+  expect(screen.getByTestId("structured-pending")).toHaveTextContent("Goes out when the current reply has finished.");
+  expect(screen.getByTestId("structured-pending").getAttribute("data-operation")).not.toBe(firstId);
+});
+
+test("leaving the page asks first only while something is unrecorded", async () => {
+  chatServer();
+  let resolve!: () => void;
+  vi.mocked(api.chatSend).mockImplementationOnce(() => new Promise((r) => (resolve = () => r({ turn: { turn_id: "x", status: "pending" } }))));
+  renderPane();
+  await screen.findByTestId("chat-empty");
+  const prompts = () => {
+    const ev = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(ev);
+    return ev.defaultPrevented;
+  };
+  expect(prompts()).toBe(false);
+  await userEvent.type(screen.getByLabelText("Message the agent"), "first{Enter}");
+  expect(prompts()).toBe(true);
+  expect(screen.getByTestId("structured-outbox-note")).toHaveTextContent("Leaving drops this list");
+  await act(async () => resolve());
+  await waitFor(() => expect(prompts()).toBe(false));
+});
+
+test("a pane left with a send in flight sends nothing more when it answers late", async () => {
+  const server = chatServer();
+  let resolve!: () => void;
+  vi.mocked(api.chatSend).mockImplementationOnce((_s, turn_id, text) => new Promise((r) => (resolve = () => {
+    server.turns = [...server.turns, turn({ turn_id, text, status: "done" })];
+    r({ turn: { turn_id, status: "pending" } });
+  })));
+  const view = renderPane();
+  await screen.findByTestId("chat-empty");
+  const box = screen.getByLabelText("Message the agent");
+  await userEvent.type(box, "first{Enter}");
+  await userEvent.type(box, "second{Enter}");
+  view.unmount();
+  await act(async () => resolve());
+  await act(async () => {});
+  expect(api.chatSend).toHaveBeenCalledTimes(1);
+});
+
+test("a failed re-read keeps the conversation and its pending entries in view", async () => {
+  const server = chatServer();
+  vi.mocked(api.chatSend).mockRejectedValue(new TypeError("Failed to fetch"));
+  renderPane();
+  await screen.findByTestId("chat-empty");
+  vi.mocked(api.chatGet).mockRejectedValue(new TypeError("offline"));
+  await userEvent.type(screen.getByLabelText("Message the agent"), "first{Enter}");
+  const pending = await screen.findByTestId("structured-pending");
+  await waitFor(() => expect(pending).toHaveAttribute("data-phase", "unknown"));
+  expect(await screen.findByTestId("chat-reconnecting")).toBeInTheDocument();
+  expect(screen.getByTestId("chat-pane")).toBeInTheDocument();
+  void server;
 });
 
 // ---- read tools (#1222) ----------------------------------------------------------------------------
@@ -304,4 +482,52 @@ test.each([
   vi.mocked(api.agentEndpoint).mockResolvedValue({ ...ENDPOINT, tools });
   renderPane();
   await waitFor(() => expect(screen.getByTestId("chat-empty")).toHaveTextContent(copy));
+});
+
+// ---- busy conflicts (Hermes on #1514) -----------------------------------------------------------
+
+test("a fence 409 raised before the turn is appended is busy, not a refusal, even when the read shows nothing in flight", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  chatServer();
+  const inner = vi.mocked(api.chatSend).getMockImplementation()!;
+  vi.mocked(api.chatSend).mockRejectedValueOnce(new ApiError(409, "in_flight — another worker owns this conversation"));
+  renderPane();
+  await screen.findByTestId("chat-empty");
+  await userEvent.type(screen.getByLabelText("Message the agent"), "mine{Enter}");
+  const pending = await screen.findByTestId("structured-pending");
+  await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(pending).toHaveAttribute("data-phase", "waiting")); // never "refused"
+  vi.mocked(api.chatSend).mockImplementation(inner);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(BUSY_BACKOFF_MS + 50); // the fresh read after the backoff
+  });
+  await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(2));
+  const [first, second] = vi.mocked(api.chatSend).mock.calls;
+  expect(second[1]).toBe(first[1]);
+  await waitFor(() => expect(screen.queryByTestId("structured-pending")).toBeNull());
+});
+
+test("a busy 409 while reads fail never loops: POSTs stay bounded, then it is delivered once both recover", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const server = chatServer();
+  const inner = vi.mocked(api.chatSend).getMockImplementation()!;
+  vi.mocked(api.chatSend).mockRejectedValue(new ApiError(409, "in_flight — another worker owns this conversation"));
+  renderPane();
+  await screen.findByTestId("chat-empty"); // the last good read: idle
+  vi.mocked(api.chatGet).mockRejectedValue(new TypeError("offline"));
+  await userEvent.type(screen.getByLabelText("Message the agent"), "mine{Enter}");
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(30_000);
+  });
+  expect(vi.mocked(api.chatSend).mock.calls.length).toBeLessThanOrEqual(1); // no POST without a fresh read
+  expect(screen.getByTestId("structured-pending")).toHaveAttribute("data-phase", "waiting");
+  // Both recover: the next scheduled read admits it, and it goes once.
+  vi.mocked(api.chatGet).mockImplementation(async () => session(server.turns));
+  vi.mocked(api.chatSend).mockImplementation(inner);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(BUSY_BACKOFF_MAX_MS + 100);
+  });
+  await waitFor(() => expect(screen.queryByTestId("structured-pending")).toBeNull());
+  expect(vi.mocked(api.chatSend).mock.calls.length).toBe(2);
+  expect(server.turns.filter((t) => t.text === "mine")).toHaveLength(1);
 });
