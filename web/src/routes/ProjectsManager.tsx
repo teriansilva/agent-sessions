@@ -232,8 +232,9 @@ function EntityRow({
       {showColors && (
         <ProjectColorPicker
           label={`Color for ${entity.name}`}
+          value={entity.color}
+          clearLabel="Clear"
           disabled={busy}
-          clearClassName={styles.smallBtn}
           onChange={(color) =>
             void patch({ color }).then((ok) => ok && setShowColors(false))
           }

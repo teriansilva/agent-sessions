@@ -10,6 +10,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useConfigRefresh } from "../app/config";
 import { FolderPickerModal } from "../components/FolderPickerModal";
 import { ProjectColorPicker } from "../components/ProjectColorPicker";
+import { projectColorName } from "../lib/projectColors";
 import { WizardShell } from "../components/wizard/WizardShell";
 import { ApiError, api } from "../lib/api";
 import { shortCwd } from "../lib/format";
@@ -471,8 +472,6 @@ export default function NewProject() {
           <ProjectColorPicker
             label="Project colour"
             value={draft.color}
-            size="large"
-            clearLabel="None"
             onChange={(color) =>
               setDraft((d) => ({
                 ...d,
@@ -481,6 +480,18 @@ export default function NewProject() {
               }))
             }
           />
+          {/* Every swatch is named to a screen reader and on hover; the chosen one is named here
+              too, for touch, where there is no hover (#1508). */}
+          <p className={styles.picked} data-testid="np-colour-name">
+            {draft.color ? (
+              <>
+                Selected · <b>{projectColorName(draft.color)}</b>{" "}
+                <code>{draft.color}</code>
+              </>
+            ) : (
+              "No colour"
+            )}
+          </p>
           <div className={styles.previews} aria-label="Preview">
             <div className={styles.previewRow} data-testid="np-preview-row">
               <span

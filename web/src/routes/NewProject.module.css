@@ -148,6 +148,21 @@
 }
 
 /* Colour previews: a sidebar row and a map cluster, as they will look. */
+/* The chosen colour, named — the mono read-out under the swatches (#1508). */
+.picked {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.picked b {
+  color: var(--text);
+}
+.picked code {
+  text-transform: none;
+}
 .previews {
   display: flex;
   flex-wrap: wrap;

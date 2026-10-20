@@ -59,8 +59,11 @@ hidden while it is open. It asks, one step at a time:
    that is already there is labelled *existing folder, reused*: the project uses it as it is. A
    folder that overlaps one another project owns is flagged here, because a folder belongs to one
    project.
-3. **Colour**: one of the presets, or none, with a preview of the session-list row and the map
-   cluster. The wizard preselects the first preset no other project uses.
+3. **Colour**: one of the sixteen colours Settings → Interface → Accent offers, or none, with a
+   preview of the session-list row and the map cluster. The wizard preselects the first colour no
+   other project uses. Settings → Projects uses the same picker; a project whose colour is not
+   one of the sixteen (an older palette, or a hex set through the API) keeps it, shown first as
+   *Current colour*.
 4. **Playbook**: choose one of your playbooks (**Library → Playbooks → Your playbooks**: the
    bundled ones, the ones you created and the ones you added from the gallery) or **No playbook**. A usable configured default is
    preselected; a missing default is explained. Local unsigned playbooks ask for your trust.

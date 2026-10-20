@@ -126,12 +126,10 @@ const PURPLE_ALLOWED: Record<string, readonly string[]> = {
   // The terminal's ANSI palette. Magenta is one of the sixteen colours a program asks for by number,
   // and swapping in another hue would misrender agent output. These paint only the xterm canvas.
   "theme/themes.ts": ["#75507b", "#ad7fa8", "#8f2f96", "#7a3fd4"],
-  // One of six colours the operator can pick for a project (#361). It shows only where somebody chose
-  // it, so it is their content, not app chrome.
-  // It moved to `lib/projectColors.ts` with the shared picker (#1187).
-  "lib/projectColors.ts": ["#c792ea"],
   // The Violet accent preset (#1494). An accent is the one colour the operator picks for the chrome,
-  // so it is theirs to make purple; it applies only when chosen, and the default stays amber.
+  // so it is theirs to make purple; it applies only when chosen, and the default stays amber. The
+  // project colours are the same list (#1508; the old six-colour palette held #c792ea), so a violet
+  // project marker is likewise the operator's choice.
   "theme/accent.ts": ["#8b5cf6"],
   // Third-party terminal colour schemes (#1494 P2), at their published values — same reason as the
   // ANSI palette above: magenta is a colour a program asks for by number. Catppuccin Mocha's ground

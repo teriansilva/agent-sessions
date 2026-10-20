@@ -109,6 +109,35 @@ test.describe("Settings → Projects manager (#361/#448)", () => {
     await expect(page.getByText(/never moves session files/i)).toBeVisible();
   });
 
+  test("the colour picker offers the sixteen accent colours and keeps an old colour as Current (#1508)", async ({
+    page,
+  }) => {
+    const patches: unknown[] = [];
+    await page.route(/\/api\/projects(\?.*)?$/, (r) =>
+      r.fulfill({ json: { projects: [SAMPLEPROJECT] } }),
+    );
+    await page.route("**/api/projects/p-1", (r) => {
+      patches.push(r.request().postDataJSON());
+      return r.fulfill({ json: { ...SAMPLEPROJECT, color: "#38bdf8" } });
+    });
+    await page.goto(settingsPath("projects"));
+    await page.getByRole("button", { name: "Set color for SampleProject" }).click();
+    const group = page.getByRole("radiogroup", { name: "Color for SampleProject" });
+    // #5fd7ff was one of the old six; it is not among the sixteen, so it leads, checked.
+    const current = group.getByRole("radio", { name: "Current colour #5fd7ff" });
+    await expect(current).toHaveAttribute("aria-checked", "true");
+    await expect(group.getByRole("radio")).toHaveCount(18);
+    for (const name of ["Amber", "Signal Red", "Violet", "Sky", "Tactical Green", "Ice", "Clear"]) {
+      const radio = group.getByRole("radio", { name, exact: true });
+      await expect(radio).toBeVisible();
+      const box = (await radio.boundingBox())!;
+      expect(box.height).toBeGreaterThanOrEqual(44);
+      expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+    }
+    await group.getByRole("radio", { name: "Sky" }).click();
+    await expect.poll(() => patches).toEqual([{ color: "#38bdf8" }]);
+  });
+
   test("star: setting the default project persists default_project_id (#615)", async ({
     page,
   }) => {
@@ -198,7 +227,7 @@ test.describe("Settings → Projects manager (#361/#448)", () => {
     await page.getByRole("button", { name: "free" }).click();
     await page.getByRole("button", { name: /^Select/ }).click();
     await page.getByRole("button", { name: "Next", exact: true }).click();
-    await page.getByRole("button", { name: "None", exact: true }).click();
+    await page.getByRole("radio", { name: "None", exact: true }).click();
     await page.getByRole("button", { name: "Next", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Choose a playbook", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Next", exact: true }).click();

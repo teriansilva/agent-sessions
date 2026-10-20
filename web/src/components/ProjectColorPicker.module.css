@@ -1,35 +1,47 @@
-/* The project colour picker (#1187), moved from ProjectsManager.module.css unchanged for the
- * small size; the large size is the wizard's, at the 44 px touch-target floor (design.md §8). */
+/* The project colour picker (#1187), drawn like Settings → Interface → Accent (#1508): 44 px
+ * squares at the touch-target floor (design.md §8), eight to a row and wrapping on a narrow pane,
+ * with None beside them. */
+.picker {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
 .swatches {
   display: flex;
-  align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+  /* Eight swatches and their seven gaps: the second row starts at Cyan, as in the accent grid. */
+  max-width: calc(8 * 44px + 7 * 8px);
 }
 .swatch {
-  width: 20px;
-  height: 20px;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
   padding: 0;
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--dot);
   cursor: pointer;
 }
-.swatch:focus-visible {
+.swatch:focus-visible,
+.clear:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-.large {
-  gap: 10px;
+/* The chosen swatch: a reticle ring and a check, never colour alone. */
+.swatch.on {
+  box-shadow:
+    0 0 0 2px var(--panel),
+    0 0 0 4px var(--text);
 }
-.large .swatch {
-  width: 44px;
-  height: 44px;
-}
-/* The chosen swatch: a reticle ring, never colour alone — the clear button says "selected" by its
- * pressed border the same way. */
-.swatch[aria-pressed="true"] {
-  outline: 2px solid var(--text);
-  outline-offset: 3px;
+/* The check takes the ink computed for THIS swatch (onAccentFor), so it reads on every colour. */
+.swatch.on::after {
+  content: "\2713";
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--dot-ink);
 }
 .clear {
   min-height: 44px;
@@ -42,7 +54,7 @@
   border-radius: 0;
   cursor: pointer;
 }
-.clear[aria-pressed="true"] {
+.clear[aria-checked="true"] {
   color: var(--text);
   border-color: var(--accent);
 }

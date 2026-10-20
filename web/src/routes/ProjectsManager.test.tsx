@@ -284,8 +284,8 @@ test("rename commits via patchProject and color swatches set/clear the color", a
   expect(api.patchProject).toHaveBeenCalledWith("p-1", { name: "SampleProject 2" });
 
   await user.click(screen.getByRole("button", { name: "Set color for SampleProject" }));
-  await user.click(screen.getByRole("button", { name: "Color #ffb000" }));
-  expect(api.patchProject).toHaveBeenCalledWith("p-1", { color: "#ffb000" });
+  await user.click(screen.getByRole("radio", { name: "Sky" }));
+  expect(api.patchProject).toHaveBeenCalledWith("p-1", { color: "#38bdf8" });
 });
 
 // ---- Default project star (#615 Phase 2) ------------------------------------------------

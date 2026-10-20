@@ -12,7 +12,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigRefreshCtx } from "../app/config";
 import { api, ApiError } from "../lib/api";
 import type { NewSessionDraft, WizardEntryState } from "../lib/newProject";
-import { COLOR_PRESETS } from "../lib/projectColors";
+import { COLOR_PRESETS, PROJECT_COLORS } from "../lib/projectColors";
 import {
   DASHBOARD_PATH,
   MISSION_PATH,
@@ -166,8 +166,8 @@ test("the full journey: mkdir at CREATE, then the project, with the preselected 
   await next(user);
   // SampleProject already uses the first preset, so the second is preselected.
   expect(
-    screen.getByRole("button", { name: `Color ${COLOR_PRESETS[1]}` }),
-  ).toHaveAttribute("aria-pressed", "true");
+    screen.getByRole("radio", { name: PROJECT_COLORS[1].label }),
+  ).toHaveAttribute("aria-checked", "true");
   await next(user);
   await next(user);
   expect(screen.getByText("created if absent")).toBeInTheDocument();

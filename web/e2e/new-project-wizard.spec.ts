@@ -170,6 +170,36 @@ async function fillToReview(page: Page, name = "Payments API") {
 }
 
 test.describe("New project wizard (#1187)", () => {
+  test("the colour step offers the sixteen accent colours, all on screen, arrow keys move (#1508)", async ({
+    page,
+  }) => {
+    await mockApp(page);
+    await page.goto(NEW_PROJECT_PATH);
+    await page.getByLabel("Project name").fill("Payments API");
+    await next(page);
+    await expect(page.getByTestId("np-folder-preview")).toBeVisible();
+    await next(page);
+    await expect(heading(page, "Pick a colour")).toBeVisible();
+    const group = page.getByRole("radiogroup", { name: "Project colour" });
+    await expect(group.getByRole("radio")).toHaveCount(17);
+    const vw = page.viewportSize()!.width;
+    for (const radio of await group.getByRole("radio").all()) {
+      const box = (await radio.boundingBox())!;
+      expect(box.width).toBeGreaterThanOrEqual(44);
+      expect(box.height).toBeGreaterThanOrEqual(44);
+      expect(box.x + box.width).toBeLessThanOrEqual(vw);
+    }
+    // SampleProject is Amber, so Orange is preselected; the arrows walk the wheel.
+    const orange = group.getByRole("radio", { name: "Orange" });
+    await expect(orange).toHaveAttribute("aria-checked", "true");
+    await orange.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(group.getByRole("radio", { name: "Signal Red" })).toHaveAttribute("aria-checked", "true");
+    await expect(group.getByRole("radio", { name: "Signal Red" })).toBeFocused();
+    // Named for touch too, where there is no hover title.
+    await expect(page.getByTestId("np-colour-name")).toHaveText(/Selected · Signal Red #c02020/i);
+  });
+
   test("the full journey: new folder + colour → the project is selected in New session with its folder", async ({
     page,
   }) => {
@@ -185,9 +215,9 @@ test.describe("New project wizard (#1187)", () => {
     await expect(page.getByTestId("np-folder-preview")).toContainText("~/payments-api");
     await expect(page.getByTestId("np-folder-preview")).toContainText("created at the end");
     await next(page);
-    await page.getByRole("button", { name: "Color #c792ea" }).click();
-    await expect(page.getByRole("button", { name: "Color #c792ea" })).toHaveAttribute(
-      "aria-pressed",
+    await page.getByRole("radio", { name: "Violet" }).click();
+    await expect(page.getByRole("radio", { name: "Violet" })).toHaveAttribute(
+      "aria-checked",
       "true",
     );
     await next(page);
@@ -199,7 +229,7 @@ test.describe("New project wizard (#1187)", () => {
     await expect(heading(page, "Project created")).toBeVisible();
     expect(m.mkdirs).toEqual([{ parent: "/home/u", name: "payments-api" }]);
     expect(m.created).toEqual([
-      { name: "Payments API", color: "#c792ea", default_folder: "/home/u/payments-api" },
+      { name: "Payments API", color: "#8b5cf6", default_folder: "/home/u/payments-api" },
     ]);
 
     await page.getByRole("button", { name: "Start a session" }).click();
