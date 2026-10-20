@@ -45,6 +45,17 @@ def log(frame):
 
 
 _OUT = threading.Lock()
+# Background tasks the fake Claude runs (`BGTASK`): a plain interrupt is the CLI's Stop, which
+# ends them (`stop-ends-tasks`, #1526); its `send_now` interrupt does not.
+TASKS: set = set()
+
+
+def claude_init(session):
+    """`system/init`, advertising the CLI's own Send now while `advertise-send-now` exists."""
+    frame = {"type": "system", "subtype": "init", "model": "fake-claude", "session_id": session}
+    if os.path.exists("advertise-send-now"):
+        frame["capabilities"] = ["interrupt_receipt_v1", "interrupt_send_now_v1"]
+    return frame
 
 
 def send(frame):
@@ -395,6 +406,20 @@ def claude():
     # The notification turn in flight, if any: an interrupt stops IT (#1427 Send now).
     note = {"active": False, "cancel": threading.Event(), "queued": False}
     hanging = {"uuid": None}  # an operator input whose turn never ended by itself (`HANG`)
+    # A message written while an operator turn runs (#1526): the CLI queues it behind that turn.
+    ahead = {"frame": None}
+
+    def run_ahead():
+        held, ahead["frame"] = ahead["frame"], None
+        if held is None:
+            return
+        with turn:
+            lifecycle(held.get("uuid"), "started")
+            finished = claude_turn(held, stream, session, notification_turn)
+        if finished:
+            lifecycle(held.get("uuid"), "completed")
+        else:
+            hanging["uuid"] = held.get("uuid")
 
     def lifecycle(command, state):
         if os.path.exists("emit-lifecycle"):
@@ -411,6 +436,9 @@ def claude():
     def notification_turn():
         # Far longer than any test waits for a turn: a test must never see the task end by itself.
         _wait_file("release-bg-task", seconds=120)
+        if "bg1" not in TASKS:
+            return  # a Stop ended it
+        TASKS.discard("bg1")
         send(
             {
                 "type": "system",
@@ -431,9 +459,7 @@ def claude():
             note["queued"] = False
             note["active"] = True
             note["cancel"].clear()
-            send(
-                {"type": "system", "subtype": "init", "model": "fake-claude", "session_id": session}
-            )
+            send(claude_init(session))
             cancelled = False
             # Like the real CLI: every model request is announced, before any output.
             send(
@@ -502,6 +528,9 @@ def claude():
             if frame.get("priority") is not None and os.path.exists("reject-priority"):
                 continue  # a CLI that refuses the field: the input is never taken (#1475)
             lifecycle(frame.get("uuid"), "queued")
+            if hanging["uuid"] and os.path.exists("advertise-send-now"):
+                ahead["frame"] = frame  # waits behind the running turn (#1526)
+                continue
             if (
                 frame.get("priority") == "now"
                 and note["active"]
@@ -539,7 +568,63 @@ def claude():
                     },
                 }
             )
+        elif (
+            kind == "control_request"
+            and frame["request"]["subtype"] == "interrupt"
+            and (frame["request"].get("send_now") is True)
+        ):
+            # The CLI's own Send now (#1526): not a Stop. It cuts the running turn for a message
+            # it already holds and ends no background task.
+            held = ahead["frame"]
+            waiting = (
+                held is not None
+                and held.get("uuid") == frame["request"].get("message_uuid")
+                and hanging["uuid"]
+            )
+            send(
+                {
+                    "type": "control_response",
+                    "response": {
+                        "subtype": "success",
+                        "request_id": frame["request_id"],
+                        "response": {
+                            "still_queued": [held["uuid"]] if held else [],
+                            "send_now": "stopped" if waiting else "nothing_waiting",
+                        },
+                    },
+                }
+            )
+            if not waiting:
+                continue
+            send(
+                {
+                    "type": "result",
+                    "subtype": "error_during_execution",
+                    "uuid": str(uuid.uuid4()),
+                    "is_error": True,
+                    "terminal_reason": "aborted_tools",
+                    "result": "",
+                    "session_id": session,
+                    "origin": {"kind": "human"},
+                    "user_message_uuid": hanging["uuid"],
+                }
+            )
+            lifecycle(hanging["uuid"], "cancelled")
+            hanging["uuid"] = None
+            run_ahead()
         elif kind == "control_request" and frame["request"]["subtype"] == "interrupt":
+            if os.path.exists("stop-ends-tasks"):
+                for task in sorted(TASKS):  # a Stop ends every background task (#1526)
+                    send(
+                        {
+                            "type": "system",
+                            "subtype": "task_notification",
+                            "task_id": task,
+                            "status": "stopped",
+                            "session_id": session,
+                        }
+                    )
+                TASKS.clear()
             if note["active"] and not os.path.exists("refuse-interrupt"):
                 send(
                     {
@@ -614,6 +699,7 @@ def claude():
             if os.path.exists("emit-lifecycle") and hanging["uuid"]:
                 lifecycle(hanging["uuid"], "cancelled")
             hanging["uuid"] = None
+            run_ahead()  # a Stop cancels nothing that waits: the held message runs next
             # The CLI starts what it queued for itself before it reads the next input (#1475).
             deadline = time.monotonic() + 10
             while note["queued"] and not note["active"] and time.monotonic() < deadline:
@@ -635,7 +721,7 @@ def claude_turn(frame, stream, session, notification_turn):
     os.makedirs(history, exist_ok=True)
     with open(os.path.join(history, session + ".jsonl"), "a") as fh:
         fh.write(json.dumps({"type": "user", "message": text}) + "\n")
-    send({"type": "system", "subtype": "init", "model": "fake-claude", "session_id": session})
+    send(claude_init(session))
     if text == "DIE":
         sys.exit(9)
     if text == "HANG":
@@ -644,6 +730,7 @@ def claude_turn(frame, stream, session, notification_turn):
     answer = "echo:" + text
     if text == "BGTASK":
         send({"type": "system", "subtype": "task_started", "task_id": "bg1", "session_id": session})
+        TASKS.add("bg1")
         threading.Thread(target=notification_turn, daemon=True).start()
         answer = "started"
     if text == "APPROVE":

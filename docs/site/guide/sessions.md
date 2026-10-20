@@ -9,7 +9,10 @@ Codex, Claude and opencode API sessions share the same conversation controls. Yo
 typing while the agent works: **Send** queues your message without interrupting its response.
 
 For urgent guidance, choose **Send now** on the first queued message. Codex adds it to the
-current turn; Claude and opencode stop the current reply and then send the queue, in order. The
+current turn. Claude cuts the current reply for it but leaves the agent's background agents
+running. On a Claude version without its own Send now, it is refused while background agents run,
+and the message waits its turn. opencode stops the current reply and then sends the queue, in
+order. The
 hint beside the button explains which behavior applies. Only the first queued message offers Send
 now — the others say where they stand ("2nd in queue") — so the queue always runs in the order
 shown. A reply that Send now cut off says **Interrupted by Send now**. Guidance takes effect when the agent processes it; it cannot undo

@@ -54,6 +54,10 @@ EXIT_FAILED = 4
 INIT_TIMEOUT = 90.0
 IDLE_TIMEOUT = 1800.0  # an idle worker exits; the next turn resumes in a new generation
 SHUTTING_DOWN = "the native worker is shutting down; retry"
+SEND_NOW_WOULD_STOP = (
+    "Send now would also stop this agent's background agents here; "
+    "the message is sent when the current turn ends"
+)
 FLUSH_INTERVAL = 0.2
 STDERR_TAIL = 4096
 _URGENT = frozenset(
@@ -992,6 +996,11 @@ class Worker:
             # The target is the operator turn running now, or a turn the agent runs for itself
             # (#1427): never the other, and never one that has since ended.
             background = self._background_target(params["turn_id"])
+            if queued is not None and params["turn_id"] == getattr(self.codec, "_ahead", None):
+                # Sent now already (#1526): it runs as soon as the turn it cut has ended.
+                return self.error(
+                    request, "busy", "a message is already waiting for this response to stop"
+                )
             if queued is None or not (background or self.codec.operation_id == params["turn_id"]):
                 return self.error(
                     request, "stale", "the message is no longer queued behind that turn"
@@ -1007,6 +1016,8 @@ class Worker:
             expected = self.codec.send_now_background if background else self.codec.send_now_mode
             if params["mode"] != expected:
                 return self.error(request, "unsupported", "this worker uses another delivery mode")
+            if self._send_now_would_stop_background():
+                return self.error(request, "unsupported", SEND_NOW_WOULD_STOP)
             if self.priority_turn == params["turn_id"]:
                 return self.error(
                     request, "busy", "a message is already waiting for this response to stop"
@@ -1057,18 +1068,10 @@ class Worker:
                         params["operation_id"],
                         handoff,
                     )
+                elif self._native_send_now():
+                    receipt = await self._send_now_native(queued, params, receipt)
                 else:
-                    self.priority_turn = params["turn_id"]
-                    receipt = await self.handoff("interrupt", params, receipt=receipt)
-                    if receipt["handoff"] != "sent":
-                        self.priority_turn = None
-                    elif self.priority_turn == params["turn_id"] and not any(
-                        target[2] == params["operation_id"]
-                        for target in self.priority_requests.values()
-                    ):
-                        # Notification-only cancellation has no ack. RPC cancellation promotes
-                        # from its correlated success response; a refusal leaves FIFO intact.
-                        self.promote_queued(params["queued_turn_id"])
+                    receipt = await self._send_now_by_interrupt(params, receipt)
                 self.queue_wake.set()
                 return self.receipt(request, receipt)
         except (native_state.LockBusy, storage.LockBusy):
@@ -1083,6 +1086,73 @@ class Worker:
             )
         except (WorkerError, api_source.SourceError) as exc:
             return self.error(request, "unavailable", str(exc))
+
+    def _native_send_now(self) -> bool:
+        ready = getattr(self.codec, "send_now_ready", None)
+        return ready is not None and ready()
+
+    def _send_now_would_stop_background(self) -> bool:
+        would_stop = getattr(self.codec, "send_now_would_stop_background", None)
+        return would_stop is not None and would_stop()
+
+    async def _send_now_by_interrupt(self, params: dict, receipt: dict) -> dict:
+        """Send now on a serial protocol without its own: cancel the turn, and let the existing
+        dispatcher deliver the message after terminal evidence. Never while that cancellation,
+        a Stop, would also end background agents (#1526): the message keeps its place."""
+        if self._send_now_would_stop_background():
+            return await asyncio.to_thread(
+                native_journal.record_handoff,
+                self.journal_root,
+                self.binding,
+                params["operation_id"],
+                "not_sent",
+            )
+        self.priority_turn = params["turn_id"]
+        receipt = await self.handoff("interrupt", params, receipt=receipt)
+        if receipt["handoff"] != "sent":
+            self.priority_turn = None
+        elif self.priority_turn == params["turn_id"] and not any(
+            target[2] == params["operation_id"] for target in self.priority_requests.values()
+        ):
+            # Notification-only cancellation has no ack. RPC cancellation promotes
+            # from its correlated success response; a refusal leaves FIFO intact.
+            self.promote_queued(params["queued_turn_id"])
+        return receipt
+
+    async def _send_now_native(self, queued: dict, params: dict, receipt: dict) -> dict:
+        """The CLI's own Send now (#1526): the message is written to the CLI first, then a
+        `send_now` interrupt names it. A plain interrupt is a Stop, which also ends every
+        background agent; this cuts only the running turn. Whether the message is still current
+        is asked BEFORE it leaves the queue: a failed read leaves it queued."""
+        current = await self._answer_current(queued)
+        if not self._native_send_now():
+            # The connection changed while the journal was read (its fence was lost).
+            return await self._send_now_by_interrupt(params, receipt)
+        self.queued.remove(queued)
+        self.sent_now.discard(queued["operation_id"])
+        if current:
+            delivered = await self.handoff("ahead", queued, queued=True)
+        else:
+            # Like a steer: an answer whose question was replaced meanwhile is never sent (#1463).
+            delivered = await asyncio.to_thread(
+                native_journal.record_handoff,
+                self.journal_root,
+                self.binding,
+                queued["operation_id"],
+                "not_sent",
+            )
+        if delivered["handoff"] != "sent":
+            return await asyncio.to_thread(
+                native_journal.record_handoff,
+                self.journal_root,
+                self.binding,
+                params["operation_id"],
+                "not_sent",
+            )
+        # The message is at the CLI and runs next whatever this request does: a refusal or
+        # `nothing_waiting` only means it waits for the turn to end.
+        self.priority_turn = params["turn_id"]
+        return await self.handoff("send_now", params)
 
     async def _replayed(self, request: dict) -> dict | None:
         """The receipt of a request this journal already holds, so a retried interrupt answers
@@ -1235,7 +1305,7 @@ class Worker:
         return receipt
 
     def frame(self, action: str, params: dict, *, now: bool = False) -> dict | None:
-        if action in {"submit", "steer"}:
+        if action in {"submit", "steer", "ahead"}:
             images = ()
             text = params["text"]
             if params.get("attachments"):
@@ -1247,6 +1317,8 @@ class Worker:
             method = (
                 self.codec.steer
                 if action == "steer"
+                else self.codec.submit_ahead
+                if action == "ahead"
                 else self.codec.submit_now
                 if now
                 else self.codec.submit
@@ -1260,12 +1332,15 @@ class Worker:
                 cwd=self.config["cwd"],
                 answers=params.get("answers"),
             )
-        if action == "interrupt":
+        if action in {"interrupt", "send_now"}:
             # Any target but the operator turn running NOW goes to `interrupt_background`, which
             # refuses one that moved since the claim (#1438): a turn that ended between the
-            # check and this write is reported, never swapped for whatever runs now.
+            # check and this write is reported, never swapped for whatever runs now. Send now's
+            # own request (#1526) names the message it wrote, not a turn.
             frame = (
-                self.codec.interrupt()
+                self.codec.send_now_interrupt(params["queued_turn_id"])
+                if action == "send_now"
+                else self.codec.interrupt()
                 if self.codec.operation_id == params["turn_id"]
                 else self.codec.interrupt_background(params["turn_id"])
             )

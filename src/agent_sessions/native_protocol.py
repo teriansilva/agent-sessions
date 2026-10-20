@@ -937,6 +937,7 @@ class CodexCodec(_Codec):
 
 # How the CLI's lifecycle ends an input: answered, or interrupted (#1427).
 _LIFECYCLE_ENDED = frozenset({"completed", "cancelled"})
+_DROPPED = frozenset({"cancelled", "discarded"})  # an input the CLI never ran
 
 
 def _result_state(frame: dict) -> str:
@@ -981,6 +982,14 @@ class ClaudeCodec(_Codec):
         self._cycle: str | None = None  # the operator command: written | queued | started
         self._closing: str | None = None  # a command whose result came, awaiting `completed`
         self._tainted = False  # this command's cycle saw an anomaly: it proves nothing
+        # The CLI's own Send now (#1526): `system/init` advertises `interrupt_send_now_v1`. A plain
+        # interrupt is a Stop, which also ends every background agent; a `send_now` one cuts only
+        # the running turn for a message already written to the CLI.
+        self.native_send_now = False
+        # That message, written while the operator turn it cuts still runs: it becomes the
+        # operation when that turn ends. Its lifecycle state: written | queued.
+        self._ahead: str | None = None
+        self._ahead_cycle: str | None = None
 
     @staticmethod
     def argv(
@@ -1039,6 +1048,9 @@ class ClaudeCodec(_Codec):
         self.native_turn_id = self.operation_id
         self._cycle = "written"
         self._tainted = False
+        return self._user_frame(text, self.operation_id, images)
+
+    def _user_frame(self, text: str, operation_id: str, images=()) -> dict:
         content: str | list[dict] = text
         if images:
             content = [
@@ -1049,7 +1061,7 @@ class ClaudeCodec(_Codec):
                 content.append({"type": "text", "text": text})
         return {
             "type": "user",
-            "uuid": self.operation_id,
+            "uuid": operation_id,
             "session_id": self.native_id,
             "message": {"role": "user", "content": content},
             "parent_tool_use_id": None,
@@ -1063,6 +1075,60 @@ class ClaudeCodec(_Codec):
         takes `now` before `next` and cuts a turn it has just started for it (captured: before
         any output; the notification stays in the history the message is answered with)."""
         return {**self.submit(text, operation_id, images), "priority": "now"}
+
+    def send_now_ready(self) -> bool:
+        """May Send now go the CLI's own way (#1526): the message written first, then a
+        `send_now` interrupt that ends no background agent? Only with the capability, a lifecycle
+        fence that tells the message's frames from the turn it cuts, and nothing already written
+        ahead. The fence is proved, or the operator turn running now has started cleanly inside
+        its own lifecycle: the first turn of a generation, whose end proves it (captured: the
+        cut turn's result, then its `cancelled`, then the message's `started`)."""
+        fenced = self.lifecycle_proven or (
+            self.operation_id is not None and self._cycle == "started" and not self._tainted
+        )
+        return self.native_send_now and fenced and self._ahead is None and not self._closed
+
+    def send_now_would_stop_background(self) -> bool:
+        """Would Send now's fallback, a plain interrupt (a Stop), end background work (#1526)?"""
+        return bool(self._background) and not self.send_now_ready()
+
+    def submit_ahead(self, text: str, operation_id: str, images=()) -> dict:
+        """Send now's message (#1526), written while the operator turn it cuts still runs. That
+        turn stays the operation until its own result or lifecycle end; the message takes over
+        from there and owns output only from its own `started`. With no operator turn running
+        (the agent's own turn is the one cut) it is simply the next operation."""
+        if self.operation_id is None:
+            return self.submit(text, operation_id, images)
+        if not self.send_now_ready():
+            raise ProtocolError("this connection cannot write a message ahead of its turn")
+        if len(self._results) >= MAX_RESULTS:
+            raise ProtocolError(
+                "native result replay capacity exceeded; a new connection is required"
+            )
+        validate_text(text, allow_empty=bool(images))
+        ahead = _uuid(operation_id)
+        if ahead == self.operation_id:
+            raise ProtocolError("a message cannot be written ahead of its own turn")
+        self._ahead, self._ahead_cycle = ahead, "written"
+        return self._user_frame(text, ahead, images)
+
+    def send_now_interrupt(self, message_uuid: str) -> dict:
+        """The CLI's Send now for a message it already holds (#1526): not a Stop. It cuts the
+        running turn (or moves what it waits on to the background) and ends no background task.
+        A message the CLI already runs, or no longer counts as waiting, makes it do nothing."""
+        if message_uuid is None or message_uuid not in (self._ahead, self.operation_id):
+            raise ProtocolError("no written message to send now")
+        return self._request("interrupt", send_now=True, message_uuid=message_uuid)
+
+    def _promote_ahead(self) -> None:
+        """The cut turn has ended: the message written ahead of it is the operation now."""
+        if self._ahead is None:
+            return
+        self.operation_id = self.native_turn_id = self._ahead
+        self._cycle = self._ahead_cycle
+        self._tainted = False
+        self._consumed.clear()
+        self._ahead = self._ahead_cycle = None
 
     def interrupt(self) -> dict:
         if self.operation_id is None:
@@ -1093,6 +1159,23 @@ class ClaudeCodec(_Codec):
 
     def _lifecycle(self, frame: dict) -> list[NativeEvent]:
         command, state = frame.get("command_uuid"), frame.get("state")
+        if command is not None and command == self._ahead:
+            # Send now's message (#1526), written while the turn it cuts still runs: the CLI
+            # queues it behind that turn and starts it once that turn has ended.
+            if state == "queued" and self._ahead_cycle == "written":
+                self._ahead_cycle = "queued"
+                return []
+            if state == "started" and self._ahead_cycle == "queued":
+                # The cut turn ended without a result or lifecycle end naming it: close it as
+                # interrupted (which distrusts the fence) and let the message run.
+                ended = self._ended_without_result("cancelled")
+                self._cycle = "started"
+                return [*ended, *self._agent_turn(False)]
+            if state in _DROPPED:
+                # The CLI dropped it before it ran: it was sent, and it never will run.
+                ahead = self._ahead
+                self._ahead = self._ahead_cycle = None
+                return self._dropped(ahead)
         if command is not None and command == self.operation_id:
             expected = {"queued": "written", "started": "queued"}.get(state)
             if expected is not None and self._cycle == expected:
@@ -1104,6 +1187,15 @@ class ClaudeCodec(_Codec):
                 # The CLI ended this input without the result that names it: complete it
                 # visibly, never leave it running for ever, and trust the fence no longer.
                 return self._ended_without_result(state)
+            if state in _DROPPED and self._cycle in {"written", "queued"}:
+                # Dropped before it ran (Hermes on #1528): e.g. Send now's message, promoted when
+                # the turn it cut ended, then cancelled. It never runs: settle it, never wait.
+                operation = self.operation_id
+                self._cycle = None
+                self.operation_id = None
+                self.native_turn_id = None
+                self._approvals.clear()
+                return self._dropped(operation)
         elif command is not None and command == self._closing and state in _LIFECYCLE_ENDED:
             # `cancelled` is how the CLI ends an interrupted input (captured, #1427).
             self._closing = None
@@ -1133,6 +1225,7 @@ class ClaudeCodec(_Codec):
         self.operation_id = None
         self.native_turn_id = None
         self._approvals.clear()
+        self._promote_ahead()
         interrupted = state == "cancelled"
         return [
             _event(
@@ -1143,6 +1236,22 @@ class ClaudeCodec(_Codec):
                 background_active=bool(self._background),
                 native_state=self._session_state,
                 error="" if interrupted else "the agent ended this turn without its result",
+            )
+        ]
+
+    def _dropped(self, operation: str | None) -> list[NativeEvent]:
+        """An input the CLI dropped before it started completes as failed."""
+        self._distrust()
+        return [
+            _event(
+                "turn_completed",
+                operation_id=operation,
+                native_turn_id=operation,
+                state="failed",
+                text="",
+                background_active=bool(self._background),
+                native_state=self._session_state,
+                error="the agent dropped this message before it ran",
             )
         ]
 
@@ -1335,6 +1444,9 @@ class ClaudeCodec(_Codec):
         if kind == "command_lifecycle":
             return self._lifecycle(frame)
         if kind == "system" and subtype == "init":
+            capabilities = frame.get("capabilities")
+            if isinstance(capabilities, list):
+                self.native_send_now = "interrupt_send_now_v1" in capabilities
             return [
                 _event(
                     "session",
@@ -1493,6 +1605,7 @@ class ClaudeCodec(_Codec):
             self.operation_id = None
             self.native_turn_id = None
             self._approvals.clear()
+            self._promote_ahead()
             return [
                 _event(
                     "turn_completed",
