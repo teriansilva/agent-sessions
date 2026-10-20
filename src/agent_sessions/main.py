@@ -44,6 +44,8 @@ from . import (
     mission_plan,
     mission_supervisor_loop,
     missions,
+    models_loop,
+    native_models,
     needs_you_notify,
     orchestrator_loop,
     owner,
@@ -414,6 +416,11 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # Shared project memory (#1441): inbox files → each project's store, every 30 s, for
         # projects with memory on. Env kill-switch AGENT_SESSIONS_MEMORY_LOOP=0.
         memory_task = asyncio.create_task(memory_loop.run())
+        # API clients' model lists (#1503): warmed shortly after startup and re-probed before they
+        # expire, one probe at a time on `native_models`' own refresher thread, never on the loop.
+        # Env kill-switch AGENT_SESSIONS_MODELS_LOOP=0 (lists are then read on demand).
+        native_models.start()
+        models_task = asyncio.create_task(models_loop.run())
         try:
             yield
         finally:
@@ -432,6 +439,11 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             # …and Ask's launches in flight (#1443 Phase 3a): one cut short reads `interrupted`.
             with contextlib.suppress(Exception):
                 await ask_proposals.drain()
+            # A model probe in flight is a child process (#1503): stop queueing, and wait for it at
+            # most its own deadline plus its kill — it persists nothing, so nothing is lost.
+            models_task.cancel()
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(native_models.shutdown)
             # Interrupt compaction, then drain its actual SQLite worker before its task/runner
             # or launch-admission lock can be released.
             await _app.state.opencode_compaction.shutdown()
@@ -451,6 +463,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 needs_you_task,
                 automation_task,
                 memory_task,
+                models_task,
             ):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):

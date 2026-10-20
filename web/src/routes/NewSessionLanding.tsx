@@ -32,13 +32,14 @@ import { agentPath } from "./settingsTabs";
 import { owningProjectId } from "../lib/projectTree";
 import { shortCwd } from "../lib/format";
 import { useProjectPicker } from "../app/useProjectPicker";
+import { usePrefetchStructuredModels, useStructuredModels } from "../app/useStructuredModels";
+import { listAgeMinutes, structuredModelsStore } from "../lib/structuredModelsStore";
 import {
   AgentTiles,
   FolderLine,
   ProjectList,
   type FolderState,
 } from "../components/newSession/NewSessionControls";
-import type { StructuredModelList } from "../types/api";
 import styles from "./NewSessionLanding.module.css";
 
 /** Landing at "/" — no session selected. Pick an engine + project + folder and start a new
@@ -63,6 +64,11 @@ type PendingCreate = {
   id: string;
   bypass?: boolean;
 };
+
+/** "12 min old" — how old a kept model list is (#1503). */
+function ageText(minutes: number): string {
+  return minutes < 1 ? "less than a minute old" : `${minutes} min old`;
+}
 
 function readPendingCreate(): PendingCreate | null {
   try {
@@ -194,27 +200,13 @@ export function NewSessionLanding() {
   const [modelChoice, setModelChoice] = useState<{ engine: string; model: string } | null>(
     restore.draft?.modelChoice ?? null,
   );
-  // A native API client's models come from its own CLI (#1313), asked when it is selected; a
-  // console agent's from the roster. Each option is what is sent (`id`) and what is shown.
-  const [apiModels, setApiModels] = useState<{ engine: string; list: StructuredModelList } | null>(
-    null,
-  );
-  useEffect(() => {
-    if (!isApi) return;
-    let live = true;
-    api
-      .structuredModels(engine)
-      .then((list) => live && setApiModels({ engine, list }))
-      .catch((e) => {
-        if (!live) return;
-        const reason = e instanceof ApiError && e.message ? e.message : "it could not be asked";
-        setApiModels({ engine, list: { status: "unavailable", models: [], reason } });
-      });
-    return () => {
-      live = false;
-    };
-  }, [engine, isApi]);
-  const apiList = isApi && apiModels?.engine === engine ? apiModels.list : null;
+  // A native API client's models come from its own CLI (#1313); a console agent's from the
+  // roster. Each option is what is sent (`id`) and what is shown. Every API client's list is
+  // asked for on arrival and kept above the router (#1503), so choosing one paints its last list
+  // at once and revalidates behind it; only a client never answered shows "asking…".
+  usePrefetchStructuredModels(engines.filter((id) => runtimeOf(id) === "api"));
+  const apiModels = useStructuredModels(isApi ? engine : null);
+  const apiList = isApi ? apiModels.list : null;
   // The operator's new-session defaults for this API client (#1407) only PRESELECT: what the form
   // shows is what is sent, and a value the client stopped offering is named, never preselected.
   const savedDefault = isApi ? config?.agent_defaults?.session_defaults?.[engine] : undefined;
@@ -352,8 +344,13 @@ export function NewSessionLanding() {
   const mintKnown = roster.loaded && mintsOwnId(engine) !== undefined;
   // A saved API default is shown while the client's list is still answering, but nothing starts
   // on it until that list has vouched for it (#1407 PR review): a quick Start must never send the
-  // value the screen would then have called stale.
+  // value the screen would then have called stale. Only with NO list for the client (#1503): a
+  // cached one vouches, and its background refresh never holds Start.
   const awaitingDefaults = isApi && !!savedDefault && preset.pending && modelChoice?.engine !== engine;
+  const checkingSaved = awaitingDefaults && apiList === null && model !== "default";
+  const refreshing = isApi && apiList?.status === "ok" && !!apiList.stale && !apiList.refresh_error;
+  const refreshFailed =
+    isApi && apiList?.status === "ok" && !!(apiList.refresh_error || apiModels.error);
   // A project selection is launched only from a CONFIRMED list (#1436): until this mount's
   // revalidation settles, Start waits — a few ms with the count-free read. "No project", chosen
   // explicitly, has nothing to confirm.
@@ -503,7 +500,12 @@ export function NewSessionLanding() {
         api.setSessionProject(key, projectSel).catch(() => {});
       }
     } catch (e) {
-      if (e instanceof ApiError && e.status < 500) clearAttempt(); // refused
+      if (e instanceof ApiError && e.status < 500) {
+        clearAttempt(); // refused
+        // The server's reason is shown below; a refusal may mean the client's list moved on (a
+        // CLI upgrade), so the cached list is asked again rather than offered as it was (#1503).
+        if (e.status === 422) void structuredModelsStore.revalidate(engine, { force: true });
+      }
       if (!mounted.current) return;
       setStartError(
         (e instanceof ApiError && e.message ? e.message : "Couldn’t start that session.") +
@@ -644,7 +646,15 @@ export function NewSessionLanding() {
         )}
         {models.length > 0 || model !== "default" ? (
           <label className={styles.field}>
-            <span>Model</span>
+            <span>
+              Model
+              {/* The server is refreshing the list behind this one (#1503): said, never waited on. */}
+              {refreshing && (
+                <span className={styles.fieldStatus} data-testid="new-session-model-refreshing">
+                  refreshing…
+                </span>
+              )}
+            </span>
             <select
               aria-label="Model"
               data-testid="new-session-model"
@@ -678,6 +688,24 @@ export function NewSessionLanding() {
           </p>
         ) : null}
 
+        {checkingSaved && (
+          // A saved default no list has confirmed yet (#1503, state d): Start waits for it — but
+          // the select stays, so `default` (which needs no list) is one pick away, and any pick
+          // ends the wait (#1503 PR review).
+          <p className={styles.hint} data-testid="new-session-model-checking">
+            Checking your saved model <code>{model}</code>… or pick one to start now.
+          </p>
+        )}
+        {refreshFailed && (
+          <p
+            className={`${styles.hint} ${styles.degraded}`}
+            role="status"
+            data-testid="new-session-model-refresh-failed"
+          >
+            <span className={styles.led} aria-hidden="true" />
+            Couldn’t refresh the list — showing the last one ({ageText(listAgeMinutes(apiModels))}).
+          </p>
+        )}
         {isApi && (levels.length > 0 || effort !== "default") && (
           <label className={styles.field}>
             <span>Reasoning effort</span>
@@ -711,7 +739,9 @@ export function NewSessionLanding() {
                   ? `Your default effort ${preset.effortStale} is no longer offered for ${model}. `
                   : changedFromDefaults
                     ? `Changed for this session — your defaults are ${savedDefault.model}${savedDefault.effort ? ` · ${savedDefault.effort}` : ""}. `
-                    : `From your ${engineLabel(engine)} defaults; change them here for this session only. `}
+                    : preset.pending
+                      ? `From your ${engineLabel(engine)} defaults. `
+                      : `From your ${engineLabel(engine)} defaults; change them here for this session only. `}
             {changedFromDefaults ? (
               <button
                 type="button"
@@ -826,7 +856,9 @@ export function NewSessionLanding() {
         </div>
         <div className={styles.startBar}>
           <p className={styles.summary} data-testid="new-session-summary">
-            {awaitingProjects ? (
+            {checkingSaved ? (
+              "Checking your saved model…"
+            ) : awaitingProjects ? (
               "Checking projects…"
             ) : awaitingConfig ? (
               "Loading your settings…"

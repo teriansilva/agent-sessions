@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useConfig, useConfigReload } from "../../app/config";
+import { useStructuredModels } from "../../app/useStructuredModels";
 import { ApiError, api } from "../../lib/api";
 import { levelsOf, resolveSessionDefault } from "../../lib/sessionDefaults";
-import type { StructuredModelList } from "../../types/api";
+import { structuredModelsStore } from "../../lib/structuredModelsStore";
 import button from "../ui/actionButton.module.css";
 import s from "./SessionDefaults.module.css";
 
@@ -12,7 +13,8 @@ import s from "./SessionDefaults.module.css";
  *
  *  Both choices come from the client's OWN list (`/api/structured/clients/{id}/models`), the same
  *  list the server validates the save and every create against. A level belongs to a model, so
- *  none can be saved beside the client's default. */
+ *  none can be saved beside the client's default. The list is the New session form's cached one
+ *  (#1503): painted at once, revalidated behind it. */
 export function SessionDefaults({
   engine,
   label,
@@ -26,26 +28,7 @@ export function SessionDefaults({
   const config = useConfig();
   const reloadConfig = useConfigReload();
   const saved = config?.agent_defaults?.session_defaults?.[engine] ?? null;
-  // The answer is keyed by the request it answers (engine + retry), so a new request reads as
-  // "asking…" without resetting state inside the effect.
-  const [attempt, setAttempt] = useState(0);
-  const key = `${engine}#${attempt}`;
-  const [loaded, setLoaded] = useState<{ key: string; list: StructuredModelList } | null>(null);
-  const list = loaded?.key === key ? loaded.list : null;
-  useEffect(() => {
-    let live = true;
-    api
-      .structuredModels(engine)
-      .then((l) => live && setLoaded({ key, list: l }))
-      .catch((e) => {
-        if (!live) return;
-        const reason = e instanceof ApiError && e.message ? e.message : "it could not be asked";
-        setLoaded({ key, list: { status: "unavailable", models: [], reason } });
-      });
-    return () => {
-      live = false;
-    };
-  }, [engine, key]);
+  const { list } = useStructuredModels(engine);
 
   const resolved = resolveSessionDefault(saved, list);
   // The form: null = untouched (shows the resolved default). A draft and a status belong to the
@@ -140,7 +123,7 @@ export function SessionDefaults({
           <button
             type="button"
             className={button.ghost}
-            onClick={() => setAttempt((n) => n + 1)}
+            onClick={() => void structuredModelsStore.revalidate(engine, { force: true })}
           >
             Retry
           </button>
@@ -167,6 +150,14 @@ export function SessionDefaults({
               {m.label && m.label !== m.id ? `${m.label} (${m.id})` : m.id}
             </option>
           ))}
+          {/* An unsaved choice the list has since dropped (a background revalidation landed
+              under the draft) stays visible, so the select shows what Save would send — and the
+              server would refuse — never a different option (#1503 PR review). */}
+          {model !== "default" && !(list?.models ?? []).some((m) => m.id === model) && (
+            <option value={model}>
+              {model} {list === null ? "(checking…)" : "(not offered now)"}
+            </option>
+          )}
         </select>
         <span className={s.hint}>
           {list === null
@@ -183,7 +174,7 @@ export function SessionDefaults({
             aria-label="Default reasoning effort"
             data-testid="session-defaults-effort"
             value={effort}
-            disabled={busy || model === "default" || levels.length === 0}
+            disabled={busy || model === "default" || (levels.length === 0 && effort === "default")}
             onChange={(e) => {
               setForm({ engine, model, effort: e.target.value });
               setStatus(null);
@@ -195,6 +186,9 @@ export function SessionDefaults({
                 {l}
               </option>
             ))}
+            {effort !== "default" && !levels.includes(effort) && (
+              <option value={effort}>{effort} (not offered now)</option>
+            )}
           </select>
           <span className={s.hint}>
             {model === "default"

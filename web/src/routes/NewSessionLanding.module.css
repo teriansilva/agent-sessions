@@ -86,6 +86,28 @@
   opacity: 0.6;
   cursor: default;
 }
+/* A background refresh of the model list (#1503): quiet, beside the label, never moving it. */
+.fieldStatus {
+  margin-left: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+}
+/* The list could not be refreshed and the last one is shown (#1503): a degraded state, not an
+   error — one line, left-aligned under the select it describes, with a status LED. */
+.degraded {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+  opacity: 1;
+}
+.led {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--status-degraded);
+}
 .checkbox {
   display: flex;
   align-items: center;

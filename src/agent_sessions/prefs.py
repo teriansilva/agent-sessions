@@ -2553,7 +2553,8 @@ def validate_session_defaults_patch(patch: object, path: Path | None = None) -> 
             return f"agent_defaults.session_defaults.{eid}: invalid model id"
         if not is_api:
             return f"agent_defaults.session_defaults: {eid!r} is not an API client"
-        listing = native_models.models(prov)
+        # ONE snapshot for model and effort, re-asked once for a choice a stale list lacks (#1503).
+        listing = native_models.snapshot_for(prov, model, effort)
         if listing.status != "ok":
             return (
                 f"agent_defaults.session_defaults.{eid}: its model list is unavailable "

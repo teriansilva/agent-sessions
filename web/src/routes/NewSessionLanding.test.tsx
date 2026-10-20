@@ -8,6 +8,7 @@ import fixture from "../test/roster.fixture.json";
 import { ApiError, api } from "../lib/api";
 import { mintNewSessionId } from "../lib/newSession";
 import { projectPickerStore } from "../lib/projectPickerStore";
+import { structuredModelsStore } from "../lib/structuredModelsStore";
 import type { NewSessionDraft } from "../lib/newProject";
 import { MAP_PATH, NEW_PROJECT_PATH } from "../lib/routes";
 import type { AppConfig, EngineInfo } from "../types/api";
@@ -139,6 +140,7 @@ const CLI_MODELS = {
 
 beforeEach(() => {
   projectPickerStore.reset(); // the picker's cache outlives a render, as it outlives a route
+  structuredModelsStore.reset(); // the model lists outlive a render too (#1503)
   navigateMock.mockReset();
   mockEntities.mockReset();
   mockEntities.mockResolvedValue({ projects: ENTITIES });
@@ -1377,7 +1379,7 @@ test("choosing another level after a lost create is a new create, never the same
   expect(b[2]).not.toBe(a[2]);
 });
 
-test("a saved default is shown while the list answers, but Start waits for it (#1407 PR review)", async () => {
+test("true cold with a saved default: Start is held while the saved model is checked, then enabled (#1407, #1503)", async () => {
   setRoster(FIXTURE);
   sessionStorage.clear();
   let answer: (v: typeof LEVELS) => void = () => {};
@@ -1385,10 +1387,180 @@ test("a saved default is shown while the list answers, but Start waits for it (#
   const user = userEvent.setup();
   renderLanding(["codex-api"], DEFAULTS("gpt-6.1-sol", "high"));
   await chooseProject(user, "");
-  expect(await screen.findByRole("combobox", { name: "Model" })).toHaveValue("gpt-6.1-sol");
+  // State (d): no list has confirmed the saved model yet — said, and Start waits.
+  expect(await screen.findByTestId("new-session-model-checking")).toHaveTextContent(
+    "Checking your saved model gpt-6.1-sol… or pick one to start now.",
+  );
+  expect(screen.getByTestId("new-session-summary")).toHaveTextContent("Checking your saved model…");
+  expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("gpt-6.1-sol");
+  expect(screen.getByRole("option", { name: "gpt-6.1-sol (checking…)" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
   await act(async () => answer(LEVELS));
   await vi.waitFor(() => expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled());
+  expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("gpt-6.1-sol");
+  expect(screen.getByTestId("new-session-effort")).toHaveValue("high");
+  expect(screen.queryByTestId("new-session-model-checking")).toBeNull();
+});
+
+// ---- #1503: model lists are served from cache and refreshed behind it -------------------------
+
+test("a hung list never traps the form: picking default ends the wait and starts on default (#1503 PR review)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  vi.mocked(api.structuredModels).mockReturnValue(new Promise(() => {})); // never answers
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockResolvedValue({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+  const user = userEvent.setup();
+  renderLanding(["codex-api"], DEFAULTS("gpt-6.1-sol", "high"));
+  await chooseProject(user, "");
+  const select = await screen.findByRole("combobox", { name: "Model" });
+  expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
+  await user.selectOptions(select, "default"); // an explicit pick — default needs no list
+  expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
+  expect(screen.queryByTestId("new-session-model-checking")).toBeNull();
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  const [call] = vi.mocked(api.structuredCreate).mock.calls;
+  expect(call).toEqual(["codex-api", "/d", call[2], "default", false]);
+});
+
+/** A request that never answers — the revalidation behind a cached list, still running. */
+const hang = () => new Promise<never>(() => {});
+/** Put a list in the store as an earlier visit (or the prefetch) would have. */
+async function cacheList(engine: string, list: typeof LEVELS & Record<string, unknown>) {
+  vi.mocked(api.structuredModels).mockResolvedValueOnce(list);
+  await structuredModelsStore.revalidate(engine);
+}
+
+test("a cached list paints at once: no “asking…” hint, and Start is not held by the refresh (#1503)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  await cacheList("codex-api", LEVELS);
+  vi.mocked(api.structuredModels).mockImplementation(hang);
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockResolvedValue({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+  const user = userEvent.setup();
+  renderLanding(["codex-api"], DEFAULTS("gpt-6.1-sol", "high"));
+  // The first paint already has the saved model and its level, from the cache.
+  expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("gpt-6.1-sol");
+  expect(screen.getByTestId("new-session-effort")).toHaveValue("high");
+  expect(screen.queryByTestId("new-session-model-loading")).toBeNull();
+  expect(screen.queryByTestId("new-session-model-checking")).toBeNull();
+  await chooseProject(user, "");
+  expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  const [call] = vi.mocked(api.structuredCreate).mock.calls;
+  expect(call).toEqual(["codex-api", "/d", call[2], "gpt-6.1-sol", false, "high"]);
+});
+
+test("true cold without a saved default: “asking…”, Start enabled, and it sends default because nothing was chosen (#1503)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  vi.mocked(api.structuredModels).mockImplementation(hang);
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockResolvedValue({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+  const user = userEvent.setup();
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
+  await chooseProject(user, "");
+  expect(screen.getByTestId("new-session-model-loading")).toHaveTextContent(
+    "Model: asking the agent which models it offers…",
+  );
+  expect(screen.queryByTestId("new-session-effort")).toBeNull();
+  expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(api.structuredCreate).mock.calls[0][3]).toBe("default");
+});
+
+test("a saved default the fresh list dropped gets the “no longer offered” notice, never a silent swap (#1503)", async () => {
+  setRoster(FIXTURE);
+  await cacheList("codex-api", LEVELS); // the cached list still has gpt-6.1-sol…
+  const fresh = { ...LEVELS, models: LEVELS.models.filter((m) => m.id !== "gpt-6.1-sol") };
+  vi.mocked(api.structuredModels).mockResolvedValue(fresh); // …the revalidation does not
+  renderLanding(["codex-api"], DEFAULTS("gpt-6.1-sol", "high"));
+  expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("gpt-6.1-sol");
+  expect(await screen.findByTestId("new-session-defaults")).toHaveTextContent(
+    /Your default model gpt-6.1-sol is no longer offered/,
+  );
+  expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("default");
+});
+
+test("a create the server refuses (a CLI upgrade dropped the id) shows its reason and re-asks the list (#1503)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  await cacheList("codex-api", LEVELS);
+  vi.mocked(api.structuredModels).mockClear().mockResolvedValue(LEVELS);
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockRejectedValue(new ApiError(422, "codex-api: model 'gpt-6-luna' is not offered"));
+  const user = userEvent.setup();
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
+  await chooseProject(user, "");
+  await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), "gpt-6-luna");
+  const calls = vi.mocked(api.structuredModels).mock.calls.length;
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  expect(await screen.findByTestId("start-error")).toHaveTextContent(
+    "codex-api: model 'gpt-6-luna' is not offered",
+  );
+  expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("gpt-6-luna"); // not swapped
+  await vi.waitFor(() =>
+    expect(vi.mocked(api.structuredModels).mock.calls.length).toBeGreaterThan(calls),
+  );
+});
+
+test("a list the server is refreshing says “refreshing…” beside Model, and Start stays enabled (#1503)", async () => {
+  setRoster(FIXTURE);
+  await cacheList("codex-api", { ...LEVELS, stale: true, fetched_age_s: 640 });
+  vi.mocked(api.structuredModels).mockImplementation(hang);
+  const user = userEvent.setup();
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
+  await chooseProject(user, "");
+  expect(screen.getByTestId("new-session-model-refreshing")).toHaveTextContent("refreshing…");
+  expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
+  expect(screen.queryByTestId("new-session-model-refresh-failed")).toBeNull();
+});
+
+test("a failed refresh keeps the last list and says how old it is (#1503)", async () => {
+  setRoster(FIXTURE);
+  vi.mocked(api.structuredModels).mockResolvedValue({
+    ...LEVELS,
+    stale: true,
+    fetched_age_s: 720,
+    refresh_error: "the agent did not answer in time",
+  });
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
+  expect(await screen.findByTestId("new-session-model-refresh-failed")).toHaveTextContent(
+    "Couldn’t refresh the list — showing the last one (12 min old).",
+  );
+  expect(screen.getByRole("combobox", { name: "Model" })).toBeInTheDocument();
+  expect(screen.queryByTestId("new-session-model-refreshing")).toBeNull();
+});
+
+test("every API client's list is asked for on arrival, so switching between them paints at once (#1503)", async () => {
+  setRoster(FIXTURE);
+  const claudeList = {
+    ...LEVELS,
+    models: [{ id: "opus", label: "Opus", description: null, efforts: [], is_default: false }],
+  };
+  vi.mocked(api.structuredModels).mockImplementation(async (engine: string) =>
+    engine === "claude-api" ? claudeList : LEVELS,
+  );
+  const user = userEvent.setup();
+  renderLanding(["codex-api", "claude-api"], { ...GUARDED, default_project: "/d" });
+  await vi.waitFor(() =>
+    expect(vi.mocked(api.structuredModels).mock.calls.map((c) => c[0]).sort()).toEqual(
+      expect.arrayContaining(["claude-api", "codex-api"]),
+    ),
+  );
+  await screen.findByRole("combobox", { name: "Model" });
+  vi.mocked(api.structuredModels).mockImplementation(hang); // the switch's revalidation hangs
+  await chooseAgent(user, "claude-api");
+  expect(screen.queryByTestId("new-session-model-loading")).toBeNull();
+  expect(screen.getByRole("option", { name: "Opus (opus)" })).toBeInTheDocument();
 });
 
 // ---- #1436: the polished form — cached projects, start-time freshness, folder contract --------

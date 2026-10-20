@@ -36,6 +36,7 @@ pytestmark = pytest.mark.anyio
 def _fresh_cache(monkeypatch):
     monkeypatch.setattr(native_models, "_CACHE", {})
     monkeypatch.setattr(native_models, "_LOCKS", {})
+    monkeypatch.setattr(native_models, "_REFRESHER", native_models._Refresher())
 
 
 def _ids(listing):
@@ -179,6 +180,8 @@ def test_an_unforeseen_reply_shape_is_unavailable_through_the_route_and_create(
         "status": "unavailable",
         "models": [],
         "reason": "the agent's answer was not understood",
+        "stale": False,
+        "fetched_age_s": 0,
     }
     with pytest.raises(model_choice.ModelRefused) as refused:
         model_choice.select_api(registry.get(ENGINES["codex"]), "fake-small")

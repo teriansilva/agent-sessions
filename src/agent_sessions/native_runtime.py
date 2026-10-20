@@ -758,12 +758,12 @@ def _create_sync(
         raise NativeError(422, "this client cannot skip permission prompts yet")
     session_key = f"{engine_id}:{session_id}"
     # The model is checked against the client's own list NOW, at the write boundary (#1313): an id
-    # the client does not list is refused before anything exists. A refusal only blocks a NEW
-    # creation; an exact replay compares the request as sent.
+    # the client does not list is refused before anything exists. Model and effort are checked
+    # against ONE snapshot of that list, and an id absent from a stale one is re-asked once
+    # (#1503). A refusal only blocks a NEW creation; an exact replay compares the request as sent.
     refused = None
     try:
-        model = model_choice.select_api(prov, model)
-        effort = model_choice.select_api_effort(prov, model, effort)
+        model, effort = model_choice.select_api_choice(prov, model, effort)
     except model_choice.ModelRefused as exc:
         refused = exc
     request = {"cwd": cwd, "model": model, "adapter": adapter}

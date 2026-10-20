@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx, ConfigReloadCtx } from "../../app/config";
 import { api } from "../../lib/api";
+import { structuredModelsStore } from "../../lib/structuredModelsStore";
 import type { AppConfig, StructuredModelList } from "../../types/api";
 import { SessionDefaults } from "./SessionDefaults";
 
@@ -49,6 +50,7 @@ function renderIt(
 
 beforeEach(() => {
   vi.mocked(api.structuredModels).mockReset().mockResolvedValue(LIST);
+  structuredModelsStore.reset(); // the model lists outlive a render too (#1503)
   vi.mocked(api.setAgentDefaults).mockReset().mockResolvedValue({} as never);
 });
 
@@ -191,4 +193,39 @@ test("a save that finishes after switching clients is not announced on the new c
   await act(async () => finish());
   await act(async () => {});
   expect(screen.queryByTestId("session-defaults-status")).toBeNull();
+});
+
+test("the agent page paints the New session form's cached list at once (#1503)", async () => {
+  await structuredModelsStore.revalidate("opencode-api"); // an earlier visit, or the prefetch
+  vi.mocked(api.structuredModels).mockReturnValue(new Promise(() => {})); // revalidation hangs
+  renderIt({ model: "local/coder", effort: "high" });
+  const model = screen.getByTestId("session-defaults-model");
+  expect(model).toBeEnabled();
+  expect(model).toHaveValue("local/coder");
+  expect(screen.getByTestId("session-defaults-effort")).toHaveValue("high");
+  expect(screen.queryByText(/Asking opencode/)).toBeNull();
+});
+
+test("a draft the revalidated list dropped stays shown as what Save sends (#1503 PR review)", async () => {
+  const user = userEvent.setup();
+  renderIt();
+  const model = await screen.findByTestId("session-defaults-model");
+  await vi.waitFor(() => expect(model).toBeEnabled());
+  await user.selectOptions(model, "local/coder");
+  await user.selectOptions(screen.getByTestId("session-defaults-effort"), "high");
+  // A background revalidation lands a list without the drafted model.
+  vi.mocked(api.structuredModels).mockResolvedValue({ ...LIST, models: [LIST.models[1]] });
+  await act(() => structuredModelsStore.revalidate("opencode-api", { force: true }));
+  expect(model).toHaveValue("local/coder");
+  expect(screen.getByRole("option", { name: "local/coder (not offered now)" })).toBeInTheDocument();
+  const effort = screen.getByTestId("session-defaults-effort");
+  expect(effort).toHaveValue("high");
+  expect(screen.getByRole("option", { name: "high (not offered now)" })).toBeInTheDocument();
+  expect(effort).toBeEnabled(); // the dropped level can still be changed
+  await user.click(screen.getByRole("button", { name: "Save defaults" }));
+  await vi.waitFor(() =>
+    expect(api.setAgentDefaults).toHaveBeenCalledWith({
+      session_defaults: { "opencode-api": { model: "local/coder", effort: "high" } },
+    }),
+  );
 });

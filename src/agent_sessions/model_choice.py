@@ -100,19 +100,22 @@ def takes_model(manifest) -> bool:
     )
 
 
-def select_api(prov, requested: object) -> str | None:
+def select_api(prov, requested: object, *, listing=None) -> str | None:
     """Resolve a NEW native API session's model (#1313): the model id, or None for `default`.
 
     The client's own list is the only authority (`native_models` asks its CLI), read now — at the
-    create's write boundary. A list that cannot be read admits `default` only; an id the client
-    does not list is refused, never replaced. Raises `ModelRefused`; nothing is created."""
+    create's write boundary — unless the caller passes the ONE snapshot it checks everything
+    against (`select_api_choice`, #1503). A list that cannot be read admits `default` only; an id
+    the client does not list is refused, never replaced. Raises `ModelRefused`; nothing is
+    created."""
     if requested is None or requested == DEFAULT:
         return None
     if not isinstance(requested, str) or not _MODEL_ID_RE.fullmatch(requested):
         raise ModelRefused("invalid", "model is not a valid model id")
-    from . import native_models  # lazy: spawns the client only when a model is asked for
+    if listing is None:
+        from . import native_models  # lazy: spawns the client only when a model is asked for
 
-    listing = native_models.models(prov)
+        listing = native_models.snapshot_for(prov, requested)
     if listing.status != "ok":
         raise ModelRefused(
             "unavailable",
@@ -124,21 +127,23 @@ def select_api(prov, requested: object) -> str | None:
     return requested
 
 
-def select_api_effort(prov, model: str | None, requested: object) -> str | None:
+def select_api_effort(prov, model: str | None, requested: object, *, listing=None) -> str | None:
     """Resolve a NEW native API session's reasoning effort (#1407), or None for the model's own.
 
     A level belongs to a model: none can be asked of the client's default model, whose identity
     (and so its levels) can change underneath us. The level must be one the client lists for the
-    chosen model — read now, from the same cached list `select_api` used. Raises `ModelRefused`."""
+    chosen model — checked against `listing`, the same snapshot `select_api` used, when the caller
+    passes it (`select_api_choice`). Raises `ModelRefused`."""
     if requested is None:
         return None
     if not isinstance(requested, str) or not _EFFORT_RE.fullmatch(requested):
         raise ModelRefused("invalid", "effort is not a valid level")
     if model is None:
         raise ModelRefused("needs_model", "an effort needs a model: pick one first")
-    from . import native_models
+    if listing is None:
+        from . import native_models
 
-    listing = native_models.models(prov)
+        listing = native_models.snapshot_for(prov, model, requested)
     if listing.status != "ok":
         raise ModelRefused("unavailable", f"{prov.engine_id}: its model list is unavailable")
     offered = {m["id"]: m for m in listing.models}
@@ -147,6 +152,21 @@ def select_api_effort(prov, model: str | None, requested: object) -> str | None:
             "not_offered", f"{prov.engine_id}: {model!r} offers no effort {requested!r}"
         )
     return requested
+
+
+def select_api_choice(prov, model: object, effort: object) -> tuple[str | None, str | None]:
+    """A create's model AND effort, checked against ONE snapshot of the client's list (#1503).
+
+    Two reads could straddle a background refresh and check the model against one list and the
+    level against another; one `native_models.snapshot_for` read cannot. No list is read for
+    `default` (it needs none, and a level without a model is refused before any read)."""
+    listing = None
+    if isinstance(model, str) and model != DEFAULT and _MODEL_ID_RE.fullmatch(model):
+        from . import native_models
+
+        listing = native_models.snapshot_for(prov, model, effort)
+    chosen = select_api(prov, model, listing=listing)
+    return chosen, select_api_effort(prov, chosen, effort, listing=listing)
 
 
 def operator_ids(engine_id: str) -> list[str]:

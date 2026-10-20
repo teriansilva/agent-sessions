@@ -1589,11 +1589,17 @@ export interface StructuredModel {
   is_default: boolean;
 }
 
-/** `GET /api/structured/clients/{engine}/models`: `unavailable` offers `default` only. */
+/** `GET /api/structured/clients/{engine}/models`: `unavailable` offers `default` only. Served
+ *  from the server's cache and refreshed behind it (#1503): `stale` = past its TTL, a refresh is
+ *  running; `refresh_error` = the newest refresh failed and this is still the last good list. */
 export interface StructuredModelList {
   status: "ok" | "unavailable";
   models: StructuredModel[];
   reason: string | null;
+  stale?: boolean;
+  /** Seconds since the agent was asked for this list, when the server answered. */
+  fetched_age_s?: number | null;
+  refresh_error?: string;
 }
 
 /** A live worker's reported background task (#1461). Times are journal observations, never
