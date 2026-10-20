@@ -1485,7 +1485,9 @@ export const api = {
   reviewNow: (id: string) =>
     mutateJson<{
       id: string;
-      title: string;
+      /** The row's resolved display title (#1510); null when the server could not resolve it —
+       *  the row keeps the title it has. */
+      title: string | null;
       ai_summary: string;
       ai_title: string;
       intervention_required: boolean;

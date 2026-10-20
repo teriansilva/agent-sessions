@@ -173,6 +173,9 @@ def build_cards(
         aliases = metadata.load_aliases()
         sessions = scanned if scanned is not None else engines.scan_all()
     project_index = projects.load()
+    # The card title is the one the operator sees (notifications, Ask), so it follows the same
+    # "keep session titles" choice as the list (#1510).
+    use_ai_title = prefs.renames_sessions()
 
     cards: list[dict] = []
     for s in sessions:
@@ -189,7 +192,7 @@ def build_cards(
             {
                 "id": key,
                 "engine": s.engine,
-                "title": metadata.display_title(m, s.first_user_message),
+                "title": metadata.display_title(m, s.first_user_message, use_ai_title=use_ai_title),
                 "cwd": s.cwd,
                 "project": projects.resolve(
                     s.cwd, m.project_id, project_index, alias=m.project_alias
@@ -230,13 +233,22 @@ def build_cards(
 def _fingerprint(cards: list[dict], window_days: int, depth: str) -> str:
     """sha256 over the in-window session set + scan params. Stable across scans when nothing
     relevant changed (so #441 Phase 3's loop can skip a no-op scan); changes when a session's
-    activity or its review result changes."""
+    activity, its review result or its displayed title changes."""
     payload = json.dumps(
         {
             "window_days": window_days,
             "depth": depth,
+            # The displayed title is an input too (#1510): "Rename sessions with the reviewed
+            # title" (or a manual rename) changes it with no activity and no new review, and an
+            # unchanged sweep would keep serving the cached one.
             "sessions": sorted(
-                [c["id"], c["last_activity"], c["_review_fingerprint"], c["_recap_fingerprint"]]
+                [
+                    c["id"],
+                    c["last_activity"],
+                    c["_review_fingerprint"],
+                    c["_recap_fingerprint"],
+                    c["title"],
+                ]
                 for c in cards
             ),
         },

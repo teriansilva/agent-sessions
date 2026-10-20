@@ -253,7 +253,7 @@ def title_candidate(text: str) -> str:
     return s.splitlines()[0][:TITLE_FALLBACK_MAX] if s else ""
 
 
-def display_title(meta: SessionMeta, first_user_message: str) -> str:
+def display_title(meta: SessionMeta, first_user_message: str, *, use_ai_title: bool = True) -> str:
     """THE display-title precedence (#356, fixes #284): a manual rename always wins,
     the AI title fills the gap, the first user message is the legacy fallback — but the
     auto-derived first message only counts when it's meaningful (``_is_meaningful``), so
@@ -261,10 +261,14 @@ def display_title(meta: SessionMeta, first_user_message: str) -> str:
     ``""`` (an empty display title) instead of leaking that character as the name. A
     user-set ``meta.title`` is kept verbatim even at one char. Single helper so every
     row-shaping / search / filter path agrees. The fallback is title-normalized here
-    (``title_candidate``, #670) — the raw message stays searchable upstream."""
+    (``title_candidate``, #670) — the raw message stays searchable upstream.
+
+    ``use_ai_title=False`` is the operator's "keep session titles" choice
+    (``session_review.rename_sessions``, #1510): the AI title is skipped, never erased, so turning
+    the option back on restores it with no re-review."""
     if meta.title:
         return meta.title
-    if meta.ai_title:
+    if use_ai_title and meta.ai_title:
         return meta.ai_title
     candidate = title_candidate(first_user_message)
     return candidate if _is_meaningful(candidate) else ""

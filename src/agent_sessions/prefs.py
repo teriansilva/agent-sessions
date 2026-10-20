@@ -1563,7 +1563,17 @@ _SESSION_REVIEW_DEFAULTS: dict[str, object] = {
     # (#1086 Phase 4). Retraction is NOT optional and has no setting: switching this off closes
     # every open needs-you notification on the next sync.
     "notify": True,
+    # Show the review's AI title as the session's name (#1510). Off: every display path skips
+    # `ai_title` — the review still writes it, with the summary, recap and flag, and auto-sort still
+    # reads it — so a session keeps its own name, and turning this back on restores the AI titles.
+    "rename_sessions": True,
 }
+
+
+def renames_sessions(path: Path | None = None) -> bool:
+    """Whether the review's AI title is shown as the session's name (#1510). One read per request:
+    every display path asks this and passes it to `metadata.display_title`."""
+    return get_session_review(path)["rename_sessions"] is not False
 
 
 def get_session_review(path: Path | None = None) -> dict:
@@ -1580,6 +1590,8 @@ def _merge_session_review(base: dict, raw: object) -> dict:
             base["decision_context"] = raw["decision_context"]
         if isinstance(raw.get("notify"), bool):
             base["notify"] = raw["notify"]
+        if isinstance(raw.get("rename_sessions"), bool):
+            base["rename_sessions"] = raw["rename_sessions"]
     return base
 
 
@@ -1596,6 +1608,8 @@ def validate_session_review_patch(patch: object) -> str | None:
         return f"session_review.decision_context must be one of {list(SESSION_REVIEW_CONTEXTS)}"
     if "notify" in patch and not isinstance(patch["notify"], bool):
         return "session_review.notify must be a boolean"
+    if "rename_sessions" in patch and not isinstance(patch["rename_sessions"], bool):
+        return "session_review.rename_sessions must be a boolean"
     return None
 
 

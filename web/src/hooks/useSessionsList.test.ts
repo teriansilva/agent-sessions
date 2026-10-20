@@ -1,7 +1,9 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
-import type { Session, SessionsPage } from "../types/api";
+import { createElement, type ReactNode } from "react";
+import { ConfigCtx } from "../app/config";
+import type { AppConfig, Session, SessionsPage } from "../types/api";
 import { useSessionsList } from "./useSessionsList";
 
 vi.mock("../lib/api", async (importOriginal) => {
@@ -15,6 +17,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       favorite: vi.fn(),
       unfavorite: vi.fn(),
       setSessionProject: vi.fn(),
+      reviewNow: vi.fn(),
     },
   };
 });
@@ -475,4 +478,86 @@ test("setProject writes the assignment and folds the new resolution into the row
     kind: "folder",
     id: "/x",
   });
+});
+
+// ---- #1510: keep session titles ----
+
+test("Review now adopts the server's resolved title verbatim, even an empty one (#1510)", async () => {
+  mockSessions.mockResolvedValueOnce(pageOf([sess("Old AI title")]));
+  vi.mocked(api.reviewNow).mockResolvedValue({
+    id: "claude:Old AI title",
+    title: "",
+    ai_summary: "s",
+    ai_title: "New AI title",
+    intervention_required: false,
+    intervention_reason: "",
+    reviewed_at: 1,
+    review_excluded: false,
+    ai_recap: "",
+    recap_fingerprint: "",
+  });
+  const { result } = renderHook(() => useSessionsList());
+  await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+  await act(async () => {
+    await result.current.reviewRow("claude:Old AI title");
+  });
+  expect(result.current.sessions[0].title).toBe("");
+});
+
+test("flipping rename_sessions re-reads every loaded row at once; the first config load does not (#1510)", async () => {
+  mockSessions.mockResolvedValue(pageOf([sess("A")]));
+  let config = { session_review: { rename_sessions: true } } as unknown as AppConfig;
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(ConfigCtx.Provider, { value: config }, children);
+  const { rerender } = renderHook(() => useSessionsList(), { wrapper });
+  await waitFor(() => expect(mockSessions).toHaveBeenCalledTimes(1));
+  rerender();
+  expect(mockSessions).toHaveBeenCalledTimes(1);
+  config = { session_review: { rename_sessions: false } } as unknown as AppConfig;
+  rerender();
+  await waitFor(() => expect(mockSessions).toHaveBeenCalledTimes(2));
+});
+
+test("a rename_sessions flip during a pending visible read never strands loading (#1510, #168)", async () => {
+  // The bootstrap is still in flight when the setting flips: the flip's read supersedes it, so
+  // it must be a VISIBLE read that clears `loading` itself — a silent one would leave the list
+  // loading forever and Load more disabled.
+  let resolveInit!: (v: SessionsPage) => void;
+  mockSessions.mockReturnValueOnce(new Promise<SessionsPage>((res) => (resolveInit = res)));
+  mockSessions.mockResolvedValue(pageOf([sess("A")]));
+  let config = { session_review: { rename_sessions: true } } as unknown as AppConfig;
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(ConfigCtx.Provider, { value: config }, children);
+  const { result, rerender } = renderHook(() => useSessionsList(), { wrapper });
+  expect(result.current.loading).toBe(true);
+  config = { session_review: { rename_sessions: false } } as unknown as AppConfig;
+  rerender();
+  await waitFor(() => expect(mockSessions).toHaveBeenCalledTimes(2));
+  await act(async () => {
+    resolveInit(pageOf([sess("stale")]));
+  });
+  await waitFor(() => expect(result.current.loading).toBe(false));
+  expect(result.current.sessions.map((s) => s.title)).toEqual(["A"]);
+});
+
+test("Review now keeps the row's title when the server could not resolve one (#1510)", async () => {
+  mockSessions.mockResolvedValueOnce(pageOf([sess("Mine")]));
+  vi.mocked(api.reviewNow).mockResolvedValue({
+    id: "claude:Mine",
+    title: null,
+    ai_summary: "s",
+    ai_title: "AI",
+    intervention_required: false,
+    intervention_reason: "",
+    reviewed_at: 1,
+    review_excluded: false,
+    ai_recap: "",
+    recap_fingerprint: "",
+  });
+  const { result } = renderHook(() => useSessionsList());
+  await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+  await act(async () => {
+    await result.current.reviewRow("claude:Mine");
+  });
+  expect(result.current.sessions[0].title).toBe("Mine");
 });

@@ -1193,6 +1193,9 @@ export interface SessionReviewConfig {
   /** Notify (bell + push) when a session no mission holds starts needing you (#1086 Phase 4).
    *  Optional so a server predating the field still parses; absent means on. */
   notify?: boolean;
+  /** Show the review's AI title as the session's name (#1510). Off keeps each session's own
+   *  title; the review still writes it. Optional like `notify`; absent means on. */
+  rename_sessions?: boolean;
 }
 
 export interface AppConfig {

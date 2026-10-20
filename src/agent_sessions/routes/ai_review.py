@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 
@@ -23,6 +24,19 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from .. import aitasks, engines, metadata, prefs, review
+
+
+def _first_message(key: str) -> str | None:
+    """The session's first user message, for its display-title fallback (#1510), or None when the
+    walk cannot say (the session is not in it, or the walk failed) — the review is already saved,
+    so this must never turn it into an error. Blocking."""
+    try:
+        for s in engines.scan_all_cached():
+            if engines.session_key(s) == key:
+                return s.first_user_message
+    except Exception:
+        return None
+    return None
 
 
 def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
@@ -110,9 +124,19 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         # The new DISPLAY title rides along so the sidebar row can update in place
         # without a refetch (precedence: user title → ai_title → first message). Read via
         # the resolved sidecar key (Hermes #367): a reconciled opencode session's user
-        # title may live under its placeholder physical key.
+        # title may live under its placeholder physical key. It is the row's own RESOLVED title,
+        # first-message fallback included (#1510): with the AI title kept off the display, the
+        # row adopts this verbatim, so it must be the title the list would show.
         meta = metadata.get(metadata.resolve_key(key))
-        return JSONResponse({"id": key, "title": metadata.display_title(meta, ""), **fields})
+        # The walk is cached, but a cold one reads every store: off the event loop.
+        first = await asyncio.to_thread(_first_message, key)
+        title: str | None = metadata.display_title(
+            meta, first or "", use_ai_title=prefs.renames_sessions()
+        )
+        if first is None and not title:
+            # Not resolvable here: no title, rather than a wrong empty one — the row keeps its own.
+            title = None
+        return JSONResponse({"id": key, "title": title, **fields})
 
     @app.post("/api/sessions/{sid}/review-exclude")
     async def review_exclude(

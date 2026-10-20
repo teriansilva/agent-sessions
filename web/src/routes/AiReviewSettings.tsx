@@ -27,6 +27,7 @@ const DEPTH_FALLBACK: SessionReviewConfig = {
   recognise_prompts: true,
   decision_context: "standard",
   notify: true,
+  rename_sessions: true,
 };
 
 /** How deeply a session is read before a decision (#1086 Phase 2): the `session_review` block.
@@ -92,6 +93,22 @@ export function SessionReviewDepth() {
         Reads the live screen for numbered options, yes/no prompts and permission
         requests, so a session that needs you says what kind of answer it is waiting
         for, and the orchestrator can see the options.
+      </p>
+      <span className={styles.aiFieldLabel}>Titles</span>
+      <label className={styles.aiToggle}>
+        <input
+          type="checkbox"
+          checked={block.rename_sessions !== false}
+          disabled={saving}
+          onChange={(e) => void save({ rename_sessions: e.currentTarget.checked })}
+          data-testid="session-review-rename"
+        />
+        <span>Rename sessions with the reviewed title</span>
+      </label>
+      <p className={styles.hint}>
+        Off: every session keeps its own title, if it has one — the review still writes its
+        summary, recap and intervention flag, and project sorting still reads them. A manual
+        rename always wins. Turning it back on restores the reviewed titles at once.
       </p>
       <span className={styles.aiFieldLabel} id="decision-context-label">
         Decision context

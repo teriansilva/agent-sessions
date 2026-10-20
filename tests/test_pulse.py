@@ -70,6 +70,40 @@ def test_window_filter(pulse_cache, monkeypatch):
     assert [c["id"] for c in cards] == ["claude:u-recent"]
 
 
+def test_card_title_follows_the_keep_session_titles_choice(pulse_cache, monkeypatch, tmp_path):
+    """#1510: the card title is what a needs-you notification and Ask show, so it skips the AI
+    title exactly when the session list does."""
+    now = 1_000_000.0
+    s = FakeSession("claude", "u-t", "/a", now - 3600, first_user_message="fix the parser")
+    _setup(monkeypatch, [s], {"claude:u-t": metadata.SessionMeta(ai_title="Refactor parser")})
+    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "prefs.json"))
+    assert pulse.build_cards(window_days=3, now=now)[0]["title"] == "Refactor parser"
+    prefs.set_session_review({"rename_sessions": False})
+    assert pulse.build_cards(window_days=3, now=now)[0]["title"] == "fix the parser"
+
+
+def test_flipping_rename_sessions_moves_the_fingerprint_with_no_activity(
+    pulse_cache, monkeypatch, tmp_path
+):
+    """#1510 (Hermes): the loop skips a sweep whose fingerprint is unchanged and the cached
+    artifact keeps its card titles, so a flip with no session or review activity must still count
+    as a change — both ways."""
+    now = 1_000_000.0
+    s = FakeSession("claude", "u-t", "/a", now - 3600, first_user_message="fix the parser")
+    _setup(monkeypatch, [s], {"claude:u-t": metadata.SessionMeta(ai_title="Refactor parser")})
+    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "prefs.json"))
+
+    def fingerprint():
+        return asyncio.run(pulse.fingerprint_for(window_days=3, depth="fast", now=now))
+
+    on = fingerprint()
+    prefs.set_session_review({"rename_sessions": False})
+    off = fingerprint()
+    assert off != on
+    prefs.set_session_review({"rename_sessions": True})
+    assert fingerprint() == on
+
+
 def test_excludes_archived_and_review_excluded(pulse_cache, monkeypatch):
     now = 1_000_000.0
     native_arch = FakeSession("claude", "u-arch", "/a", now - 3600, archived=True)

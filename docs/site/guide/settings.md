@@ -99,6 +99,10 @@ Periodic review on or off, how often it runs, and the list of sessions excluded 
 exclude one from its row actions in the sidebar). **Review now** on a session works whenever the
 endpoint is configured, even with periodic review off. See [AI review](/guide/ai-review).
 
+**Titles** — *Rename sessions with the reviewed title* (on). Off, every session keeps its own title
+(a manual rename still wins); the review still writes its summary, recap and intervention flag, and
+auto-sort still reads them. Turning it back on restores the reviewed titles at once.
+
 **Reading sessions** sets how deeply a session is read before a decision, and whether you are told:
 *Recognise questions and choices* (on), *Decision context* Standard | Deep (Standard), and *Notify
 me when a session needs me* (on). A notification is taken back when the session stops needing you,

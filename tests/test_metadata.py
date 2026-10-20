@@ -219,6 +219,17 @@ def test_display_title_ai_title_fills_gap_when_no_manual_rename():
     assert metadata.display_title(m, "a") == "Refactor the parser"
 
 
+def test_display_title_without_ai_title_keeps_the_sessions_own_name():
+    # #1510 "keep session titles": the AI title is skipped, the session's own title (or its
+    # meaningful first message) shows, and a manual rename still wins. The AI title stays stored.
+    m = metadata.SessionMeta(ai_title="Refactor the parser")
+    assert metadata.display_title(m, "fix the parser", use_ai_title=False) == "fix the parser"
+    assert metadata.display_title(m, "a", use_ai_title=False) == ""
+    assert m.ai_title == "Refactor the parser"
+    manual = metadata.SessionMeta(title="Manual", ai_title="Refactor the parser")
+    assert metadata.display_title(manual, "x y", use_ai_title=False) == "Manual"
+
+
 def test_is_meaningful_threshold():
     assert metadata._is_meaningful("go") is True
     assert metadata._is_meaningful("a1") is True

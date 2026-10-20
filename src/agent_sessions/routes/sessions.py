@@ -275,6 +275,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         m: metadata.SessionMeta,
         project_index: dict[str, projects.Project],
         requested_model: str,
+        *,
+        use_ai_title: bool,
     ) -> dict:
         key = engines.session_key(s)
         # #156 working signal: last byte we observed flowing into the shared ring.
@@ -315,8 +317,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             "first_user_message": s.first_user_message,
             # Display precedence (#356, fixes #284): user title → ai_title → MEANINGFUL
             # first message (a stray "a" / "." normalizes to "") — via THE shared helper,
-            # so every row consumer agrees on one value.
-            "title": metadata.display_title(m, s.first_user_message),
+            # so every row consumer agrees on one value. The AI title is skipped when the operator
+            # keeps session titles (#1510).
+            "title": metadata.display_title(m, s.first_user_message, use_ai_title=use_ai_title),
             "sticky": m.sticky,
             # Custom per-session tag (#551): a short user label rendered before the AI summary
             # on the row's second line. "" when unset (the row renders exactly as before).
@@ -543,6 +546,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         row reads as not running and a count built on it must say it could not read.
         Blocking."""
         meta_index = metadata.load()
+        use_ai_title = prefs.renames_sessions()
         # opencode new-session alias (#127): the live row is the real ``ses_…`` from
         # scan_all (the placeholder never appears here — it isn't in opencode.db), so
         # there is no ghost row to drop. But metadata set while the session was still on
@@ -599,6 +603,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     _meta_for(s),
                     project_index,
                     metadata.requested_model_in(meta_index, aliases, engines.session_key(s)),
+                    use_ai_title=use_ai_title,
                 )
             ]
             if keep(row["cwd"], row["project"], archived=row["archived"], want_archived=archived)
@@ -896,7 +901,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             if engines.session_key(s) != key:
                 continue
             m = meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
-            row = _row(s, m, project_index, metadata.requested_model_in(meta_index, aliases, key))
+            row = _row(
+                s,
+                m,
+                project_index,
+                metadata.requested_model_in(meta_index, aliases, key),
+                use_ai_title=prefs.renames_sessions(),
+            )
             # The HARD boundary still applies (#867 review). Roots/exclusions are not a listing
             # preference: the ws resume path enforces the same predicate and calls bypassing it
             # a back door, so a session outside it cannot be opened at all — and a caller holding

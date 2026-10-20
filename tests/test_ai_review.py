@@ -425,6 +425,65 @@ def test_manual_review_route_and_row_surface(auth_cfg, ai_prefs, fake_jsonl, mon
     assert rows[SID]["title"] == "My name"
 
 
+def test_keep_session_titles_shows_the_sessions_own_name(
+    auth_cfg, ai_prefs, fake_jsonl, monkeypatch
+):
+    """#1510: with "Rename sessions with the reviewed title" off, the review still writes its
+    summary and AI title, but neither the review echo nor the row shows that title; turning it
+    back on restores it with no re-review."""
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    headers = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    own = {s["id"]: s for s in c.get("/api/sessions?limit=50").json()["sessions"]}[SID]["title"]
+    assert own and own != "Refit repo-a"
+    r = c.post("/api/prefs", json={"session_review": {"rename_sessions": False}}, headers=headers)
+    assert r.status_code == 200 and r.json()["session_review"]["rename_sessions"] is False
+    monkeypatch.setattr(
+        review, "_TRANSPORT", _chat_transport(_ok_result(title="Refit repo-a", required=True))
+    )
+
+    d = c.post(f"/api/sessions/{SID}/review", headers=headers).json()
+    assert d["ai_title"] == "Refit repo-a"  # still written
+    assert d["title"] == own  # the row's own resolved title, first-message fallback included
+    rows = {s["id"]: s for s in c.get("/api/sessions?limit=50").json()["sessions"]}
+    assert rows[SID]["title"] == own
+    assert rows[SID]["ai_summary"] == "Editing tests"
+    assert rows[SID]["intervention_required"] is True
+    assert c.get(f"/api/sessions/{SID}").json()["title"] == own
+
+    c.post("/api/prefs", json={"session_review": {"rename_sessions": True}}, headers=headers)
+    rows = {s["id"]: s for s in c.get("/api/sessions?limit=50").json()["sessions"]}
+    assert rows[SID]["title"] == "Refit repo-a"
+
+
+def test_review_echo_names_no_title_when_the_walk_cannot_resolve_it(
+    auth_cfg, ai_prefs, fake_jsonl, monkeypatch
+):
+    """#1510 (independent review): the walk for the first message runs AFTER the review is saved.
+    If it fails or misses the session, the echo answers 200 with `title: null` (the row keeps its
+    own), never a 500 and never a wrong empty title."""
+    from agent_sessions.routes import ai_review as ai_review_routes
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    headers = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    c.post("/api/prefs", json={"session_review": {"rename_sessions": False}}, headers=headers)
+    monkeypatch.setattr(review, "_TRANSPORT", _chat_transport(_ok_result(title="Refit repo-a")))
+
+    def boom():
+        raise OSError("store unreadable")
+
+    monkeypatch.setattr(ai_review_routes.engines, "scan_all_cached", boom)
+    r = c.post(f"/api/sessions/{SID}/review", headers=headers)
+    assert r.status_code == 200 and r.json()["title"] is None
+    assert r.json()["ai_title"] == "Refit repo-a"
+    monkeypatch.setattr(ai_review_routes.engines, "scan_all_cached", lambda: [])
+    assert c.post(f"/api/sessions/{SID}/review", headers=headers).json()["title"] is None
+    # On, the stored AI title resolves without the walk.
+    c.post("/api/prefs", json={"session_review": {"rename_sessions": True}}, headers=headers)
+    assert c.post(f"/api/sessions/{SID}/review", headers=headers).json()["title"] == "Refit repo-a"
+
+
 def test_manual_review_409_when_unconfigured(auth_cfg, fake_jsonl, tmp_home, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_home / "prefs.json"))
     c = _client(auth_cfg)

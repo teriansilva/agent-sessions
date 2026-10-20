@@ -124,3 +124,13 @@ test("the notify switch saves session_review.notify and defaults to on (#1086 P4
   expect(api.setPrefs).toHaveBeenLastCalledWith({ session_review: { notify: false } });
   await waitFor(() => expect(box).not.toBeChecked());
 });
+
+test("the rename switch saves session_review.rename_sessions and defaults to on (#1510)", async () => {
+  // A server predating the field sends no `rename_sessions`: that reads as ON (today's titles).
+  renderDepth({ recognise_prompts: true, decision_context: "standard" });
+  const box = screen.getByLabelText(/rename sessions with the reviewed title/i);
+  expect(box).toBeChecked();
+  await userEvent.click(box);
+  expect(api.setPrefs).toHaveBeenLastCalledWith({ session_review: { rename_sessions: false } });
+  await waitFor(() => expect(box).not.toBeChecked());
+});

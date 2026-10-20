@@ -206,6 +206,25 @@ export function useSessionsList() {
       void fetchPage(0, true);
   }, [order, fetchPage]);
 
+  // Refetch every loaded row when "Rename sessions with the reviewed title" flips (#1510): the
+  // server resolves titles, so the open list must re-read to show (or drop) the AI titles now
+  // rather than on the next poll. Same prev-compare as the order above: the config's first load
+  // is not a flip. A VISIBLE replacement read, like the mission change below, never a silent
+  // one: it may supersede a bootstrap, filter reload or Load more still in flight, and only a
+  // visible read clears `loading` when it settles (a silent one would strand it, #168). A
+  // failure keeps the rows; the poll converges.
+  const renames = useConfig()?.session_review?.rename_sessions;
+  const seenRenames = useRef(renames);
+  useEffect(() => {
+    const prev = seenRenames.current;
+    seenRenames.current = renames;
+    if (renames !== undefined && prev !== undefined && prev !== renames)
+      void fetchPage(0, true, {
+        limit: Math.max(PAGE, sessionsCount.current),
+        keepOnError: true,
+      });
+  }, [renames, fetchPage]);
+
   /** Silent refresh from offset 0 covering every loaded row, so a session that just got new
    *  activity moves up + relative-time labels stay fresh without losing pages the user has
    *  already loaded (#159). Skipped while any visible request (bootstrap / filter / loadMore)
@@ -328,7 +347,10 @@ export function useSessionsList() {
         s.id === id
           ? {
               ...s,
-              title: r.title || s.title,
+              // The server's RESOLVED title, adopted verbatim (#1510): with reviewed titles kept
+              // off the display, "" is a real answer (an untitled session), not a missing one.
+              // null = the server could not resolve it: keep the row's own.
+              title: typeof r.title === "string" ? r.title : s.title,
               ai_summary: r.ai_summary,
               ai_title: r.ai_title,
               intervention_required: r.intervention_required,
