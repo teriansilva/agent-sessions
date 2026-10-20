@@ -65,11 +65,18 @@ hidden while it is open. It asks, one step at a time:
    one of the sixteen (an older palette, or a hex set through the API) keeps it, shown first as
    *Current colour*.
 4. **Playbook**: choose one of your playbooks (**Library → Playbooks → Your playbooks**: the
-   bundled ones, the ones you created and the ones you added from the gallery) or **No playbook**. A usable configured default is
-   preselected; a missing default is explained. Local unsigned playbooks ask for your trust.
-5. **Inputs**, when a playbook is selected: enter project values, use saved values or defaults,
-   and review step assignments. A secret requires an explicit value or global reference. Values
-   stay in the wizard until the project exists and its inputs are bound.
+   bundled ones, the ones you created and the ones you added from the gallery) or **No playbook**.
+   Each playbook is a card with its summary, its steps and how many files, inputs and agent steps
+   it brings. A usable configured default is preselected; a missing default is explained. Local
+   unsigned playbooks ask for your trust.
+5. **Inputs**, when a playbook is selected (*Set up ‹playbook›*): each input picks its source —
+   **Value**, **Global** (the global variable of that name; a secret's value stays hidden) or
+   **Default** — and each choice names what it resolves to, e.g. *Default · staging*, or *No
+   default*. A required input that would be empty is marked in red on its card straight away, and
+   **Next** waits until it is filled; the review stays the final check. **Agents per step** is one
+   table — step, agent, model, state — with the agent's own models (an agent that sets its model
+   in its own config says so) and *Set every step to …* to assign one agent to all of them.
+   Values stay in the wizard until the project exists and its inputs are bound.
 6. **Review**: the project details and, for a playbook, proposed file changes, rendered
    instructions, resolved inputs and targets, assignments and capability requests. Confirm each
    target derived from a default. *Create project and apply* remains unavailable while the review

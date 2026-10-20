@@ -23,22 +23,12 @@
   display: grid;
   gap: 10px;
 }
-.selected {
-  border: 2px solid var(--accent);
-  border-radius: 0;
-  padding: 4px;
-}
-.fields {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
 .root label {
   display: grid;
   gap: 6px;
   min-width: 0;
 }
-.root input:not([type="checkbox"]),
+.root input:not([type="checkbox"]):not([type="radio"]),
 .root select,
 .root textarea {
   width: 100%;
@@ -100,14 +90,413 @@
   word-break: break-all;
   font-size: 0.8rem;
 }
-@media (max-width: 800px) {
-  .fields {
-    grid-template-columns: 1fr;
-  }
-}
 /* Where gallery playbooks come from (#1440): a quiet line, no navigation away mid-wizard. */
 .hint {
   margin: 0;
   font-size: 13px;
   color: var(--text-2);
+}
+
+/* ---- The playbook steps laid out to use the page (#1508) ---------------------------------- */
+.lede {
+  max-width: 640px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.optionHint {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 200px;
+  gap: 10px;
+}
+
+/* The library: native radios drawn as cards. The visible box is the radio's label. */
+.library {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 10px;
+}
+.optionCell {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.root .option {
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-height: 44px;
+  padding: 12px 14px 12px 42px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.option input {
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: inherit;
+}
+.option:has(input:checked) {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.option:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.option:has(input:disabled) {
+  cursor: default;
+  opacity: 0.7;
+}
+.root .none {
+  grid-column: 1 / -1;
+}
+.optionHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 14.5px;
+}
+.none .optionHead {
+  font-size: 14px;
+}
+.sourceTag {
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  border: 1px solid var(--line-strong);
+}
+.optionHead .sourceTag:first-of-type {
+  margin-left: auto;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chips span {
+  padding: 3px 8px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+}
+.root .counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+/* Sections: a heading row with a mono meta line on the right. */
+.section {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.sectionHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+.sectionMeta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.missingCount {
+  color: var(--danger-text);
+}
+
+/* Inputs: two columns of cards. A required input that is missing is a STATE, so it takes the
+ * status colour (design.md §3) from the first render, not at the review. */
+.vars {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+.var {
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+}
+.varMissing {
+  border-color: var(--status-down);
+}
+.varMissing input[aria-invalid="true"],
+.varMissing textarea[aria-invalid="true"],
+.varMissing select[aria-invalid="true"] {
+  border-color: var(--status-down);
+}
+.varHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.varHead code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.varType {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.reqMissing {
+  color: var(--danger-text);
+}
+.varLabel {
+  font-size: 13px;
+  color: var(--text);
+}
+.err {
+  font-size: 12px;
+  color: var(--danger-text);
+}
+/* The source picker: three native radios drawn as one segmented row, each naming its value. */
+.seg {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.root .segOpt {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  margin-right: -1px;
+  padding: 4px 8px;
+  font-size: 12px;
+  text-align: center;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.segOpt span {
+  overflow-wrap: anywhere;
+}
+.segOpt input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+.segOpt:has(input:checked) {
+  z-index: 1;
+  color: var(--text);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.segOpt:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  z-index: 2;
+}
+
+/* Agents per step: one table — step, agent, model, state — grouped by flow. */
+.root .everyStep {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.root .everyStep label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.root .everyStep select {
+  width: auto;
+  min-width: 200px;
+}
+.steps {
+  border: 1px solid var(--border);
+}
+.stepsHead,
+.root .stepRow {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) minmax(160px, 1fr) minmax(190px, 1.2fr) 130px;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+}
+.stepsHead {
+  min-height: 34px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--line);
+}
+.flowRow {
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--line);
+}
+.root .stepRow {
+  min-width: 0;
+  margin: 0;
+  min-height: 60px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+}
+.stepGroup:last-child .stepRow {
+  border-bottom: 0;
+}
+.stepName {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.stepNo {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+/* An unresolved assignment's note spans the row, under its controls. */
+.root .rowNote {
+  grid-column: 1 / -1;
+  font-size: 12.5px;
+}
+/* The agent's own colour as a rule on its select, like the agent tiles. */
+.root .engineSelect {
+  border-left: 3px solid var(--eng);
+}
+.state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+/* State LEDs: static (no blink) — they report a fact, not activity. */
+.led {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.ledUp {
+  background: var(--status-up);
+}
+.ledDown {
+  background: var(--status-down);
+}
+.ledWarn {
+  background: var(--status-degraded);
+}
+.ledIdle {
+  background: var(--status-unknown);
+}
+.reqs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.req {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  border: 1px solid var(--border);
+}
+
+@media (max-width: 800px) {
+  .bar,
+  .library,
+  .vars {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .steps {
+    border: 0;
+    display: grid;
+    gap: 10px;
+  }
+  .stepsHead {
+    display: none;
+  }
+  .flowRow {
+    border: 0;
+    background: none;
+    padding: 4px 0 0;
+  }
+  /* Each step becomes a card: name and state on top, agent and model stacked. */
+  .root .stepRow {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "name state"
+      "agent agent"
+      "model model"
+      "note note";
+    padding: 12px;
+    border: 1px solid var(--border);
+  }
+  .stepGroup:last-child .stepRow {
+    border-bottom: 1px solid var(--border);
+  }
+  .stepRow > .stepName {
+    grid-area: name;
+  }
+  .stepRow > .state {
+    grid-area: state;
+  }
+  .stepRow > select:first-of-type {
+    grid-area: agent;
+  }
+  .stepRow > :nth-child(4) {
+    grid-area: model;
+  }
+  .stepRow > .rowNote {
+    grid-area: note;
+  }
 }

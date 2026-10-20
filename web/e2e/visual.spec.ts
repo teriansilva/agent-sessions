@@ -105,13 +105,13 @@ async function runPrepare(page: Page, p: VisualPath): Promise<void> {
     await next.click(); await next.click();
     await page.getByRole("heading", { name: "Choose a playbook", exact: true }).waitFor();
     if (p.prepare === "project-playbook-inputs") {
-      await page.locator('[data-testid^="playbook-card-"] button:not([disabled])').first().click();
+      await page.locator('[data-testid^="playbook-card-"] input[type="radio"]:not([disabled])').first().check();
       const trust = page.getByRole("checkbox", { name: /unsigned local playbook/ });
       // The source is loaded after selection; wait for Next or the explicit trust control.
       await page.waitForFunction(() => !!document.querySelector('input[type="checkbox"]') || Array.from(document.querySelectorAll("button")).some((b) => b.textContent?.trim() === "Next" && !b.disabled));
       if (await trust.isVisible()) await trust.check();
       await next.click();
-      await page.getByRole("heading", { name: "Set the playbook inputs", exact: true }).waitFor();
+      await page.getByRole("heading", { name: /^Set up / }).waitFor();
     }
   }
   if (p.prepare === "open-first-window") await prepareOpenFirstWindow(page);

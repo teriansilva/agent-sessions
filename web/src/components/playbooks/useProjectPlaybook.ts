@@ -497,6 +497,9 @@ export function useProjectPlaybook(
       void loadSelection(next);
     },
     variables,
+    /** The project exists (a retry after create): an input may then resolve from a saved project
+     *  binding the wizard cannot see, so it stops calling inputs missing (#1508). */
+    projectExists: !!projectId,
     agents,
     choices,
     setChoices,

@@ -1038,7 +1038,8 @@ export const api = {
   /** Shared project memory (#1441): one notebook per project, read and added to by its agents. */
   memoryProjects: () => getJsonWithDetail<{ projects: MemoryProject[] }>("/api/memory"),
   memory: (pid: string) => getJsonWithDetail<MemoryView>(`/api/memory/${enc(pid)}`),
-  ingestMemory: (pid: string) => mutateJson<Record<string, unknown>>("POST", `/api/memory/${enc(pid)}/ingest`, {}),
+  // The pass's counts, plus the fresh view when the server sends it (#1501); an older server sends counts only.
+  ingestMemory: (pid: string) => mutateJson<Record<string, unknown> & { view?: MemoryView }>("POST", `/api/memory/${enc(pid)}/ingest`, {}),
   setMemoryEnabled: (pid: string, enabled: boolean) =>
     mutateJson<{ enabled: boolean }>("PUT", `/api/memory/${enc(pid)}/enabled`, { enabled }),
   editMemoryNote: (pid: string, slug: string, edit: NoteEdit) =>

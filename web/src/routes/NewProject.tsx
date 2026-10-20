@@ -6,6 +6,10 @@ import {
   ProjectPlaybookOutcome,
   ProjectPlaybookReview,
 } from "../components/playbooks/ProjectPlaybook";
+import {
+  playbookMissing,
+  usePlaybookGlobals,
+} from "../components/playbooks/usePlaybookGlobals";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useConfigRefresh } from "../app/config";
 import { FolderPickerModal } from "../components/FolderPickerModal";
@@ -44,10 +48,12 @@ const HEADINGS: Record<StepId, string> = {
   folder: "Where does it live?",
   colour: "Pick a colour",
   playbook: "Choose a playbook",
-  inputs: "Set the playbook inputs",
+  inputs: "Set up the playbook",
   review: "Review and create",
   done: "Project created",
 };
+
+const PROSE_STEPS: ReadonlySet<StepId> = new Set(["name", "folder", "colour"]);
 
 type Created = Omit<ProjectEntity, "session_count">;
 
@@ -147,6 +153,10 @@ export default function NewProject() {
     draft.folderMode === "new" && !reused,
     created?.id,
   );
+  const globals = usePlaybookGlobals(!!book.id);
+  // Required inputs the wizard KNOWS are missing hold Next on the inputs step (#1508); anything it
+  // cannot be sure of is left to the server's review.
+  const missingInputs = book.id ? playbookMissing(book, globals) : [];
   const visibleSteps = book.id ? STEPS : STEPS.filter((s) => s.id !== "inputs");
   const visibleIndex = visibleSteps.findIndex((s) => s.id === stepId);
 
@@ -610,7 +620,7 @@ export default function NewProject() {
       body = <ProjectPlaybookLibrary book={book} />;
       break;
     case "inputs":
-      body = <ProjectPlaybookInputs book={book} />;
+      body = <ProjectPlaybookInputs book={book} globals={globals} />;
       break;
     case "done":
       body = created && (
@@ -710,7 +720,17 @@ export default function NewProject() {
                   book.selectedReady)
         }
         onJump={(i) => go(stepIndex(visibleSteps[i].id))}
-        heading={HEADINGS[stepId]}
+        heading={
+          stepId === "inputs" && book.detail
+            ? `Set up ${book.detail.name || book.detail.id}`
+            : HEADINGS[stepId]
+        }
+        wide
+        nextNote={
+          stepId === "inputs" && missingInputs.length > 0
+            ? `Fill ${missingInputs.length} required input${missingInputs.length === 1 ? "" : "s"} to continue`
+            : undefined
+        }
         onBack={
           visibleIndex > 0 &&
           !isDone &&
@@ -742,6 +762,7 @@ export default function NewProject() {
           createUnknown ||
           !stepValid(stepId, draft) ||
           (stepId === "playbook" && !book.selectedReady) ||
+          (stepId === "inputs" && missingInputs.length > 0) ||
           (isReview && !book.canCreate)
         }
         secondary={
@@ -762,7 +783,9 @@ export default function NewProject() {
             }
           : {})}
       >
-        {body}
+        {/* Prose steps keep a reading measure inside the wide frame (#1508); the playbook steps
+            and the review use the width for their grids. */}
+        {PROSE_STEPS.has(stepId) ? <div className={styles.measure}>{body}</div> : body}
       </WizardShell>
       {picker && (
         <FolderPickerModal

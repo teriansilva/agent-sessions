@@ -89,10 +89,12 @@ export default function Memory() {
     const next = await api.memoryProjects();
     if (live.current) setProjects(next.projects);
   }, []);
-  const loadView = useCallback(async (id: string) => {
+  // `given` is a view the caller already has (the ingest pass returns one, #1501): it is applied
+  // under the same generation rule as a fetched one, so it never overwrites a newer load.
+  const loadView = useCallback(async (id: string, given?: MemoryView) => {
     const generation = (loadGeneration.current.get(id) ?? 0) + 1;
     loadGeneration.current.set(id, generation);
-    const next = await api.memory(id);
+    const next = given ?? await api.memory(id);
     // The newest load of THIS project wins; other projects' slots are never touched.
     if (live.current && loadGeneration.current.get(id) === generation) setViews(v => ({ ...v, [id]: next }));
   }, []);
@@ -112,8 +114,9 @@ export default function Memory() {
     let stale = false;
     const tick = () => {
       if (document.visibilityState === "hidden") return;
+      // One request per tick: the pass answers with the fresh view (#1501).
       api.ingestMemory(pid)
-        .then(() => { if (!stale) return loadView(pid); })
+        .then(res => { if (!stale) return loadView(pid, res.view); })
         .catch(e => { if (!stale && live.current) setStatusFor({ pid, text: e instanceof ApiError ? e.message : "Couldn't take in new notes." }); });
     };
     tick();

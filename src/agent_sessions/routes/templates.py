@@ -40,7 +40,14 @@ import asyncio
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
-from .. import review, session_input, template_secrets, template_send, template_suggest
+from .. import (
+    review,
+    secretfence,
+    session_input,
+    template_secrets,
+    template_send,
+    template_suggest,
+)
 from .. import template_vars as vstore
 from .. import templates as store
 from .upload import NO_STORE
@@ -108,6 +115,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                 {"detail": "busy sending into a session — nothing was saved; try again"},
                 status_code=503,
                 headers=NO_STORE,
+            )
+        except secretfence.SecretWriteBusy:
+            # A memory import holds the secret-inventory fence (#1501): refused, nothing written.
+            return JSONResponse(
+                {"detail": secretfence.SECRET_WRITE_BUSY}, status_code=503, headers=NO_STORE
             )
         except Exception:
             return JSONResponse(

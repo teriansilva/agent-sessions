@@ -50,7 +50,9 @@ from __future__ import annotations
 import contextlib
 import errno
 import fcntl
+import logging
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -68,6 +70,26 @@ CONTENTION_BUDGET_S = 2.0
 _RETRY_S = 0.002
 
 _NAME = "authorization.lock"
+
+#: A hold longer than this is logged with the holder's call site (#1501). Logging only: the fence's
+#: behaviour is unchanged. Contention is otherwise invisible — a waiter learns only that the fence
+#: was "held elsewhere", never by whom.
+SLOW_HOLD_S = 1.0
+
+log = logging.getLogger(__name__)
+
+
+def _holder() -> str:
+    """The first frame outside this module and `contextlib`/`session_input`'s fence wrappers:
+    ``module.function``. Code locations only, never arguments or content."""
+    frame = sys._getframe(2)
+    skip = {__name__, "contextlib", "agent_sessions.session_input"}
+    while frame is not None:
+        mod = frame.f_globals.get("__name__", "?")
+        if mod not in skip:
+            return f"{mod.rsplit('.', 1)[-1]}.{frame.f_code.co_name}"
+        frame = frame.f_back
+    return "?"
 
 
 class FenceBusy(RuntimeError):
@@ -111,11 +133,15 @@ def hold(*, timeout: float = CONTENTION_BUDGET_S):
                         f"the authorization fence was held elsewhere for more than {timeout:g}s"
                     ) from None
                 time.sleep(_RETRY_S)
+        held_at = time.monotonic()
         try:
             yield
         finally:
             with contextlib.suppress(OSError):
                 fcntl.flock(fd, fcntl.LOCK_UN)
+            held = time.monotonic() - held_at
+            if held > SLOW_HOLD_S:
+                log.warning("authorization fence held %.1fs by %s", held, _holder())
     finally:
         os.close(fd)
 

@@ -70,15 +70,15 @@ async function gallery(page: Page, id: string, name: string) {
   await next(page); await next(page); await next(page);
   await expect(page.getByRole("heading", { name: "Choose a playbook", exact: true })).toBeVisible();
   await page.getByLabel("Search playbooks").fill(id);
-  await page.getByTestId(`playbook-card-${id}`).getByRole("button", { name: "Select", exact: true }).click();
+  await page.getByTestId(`playbook-card-${id}`).getByRole("radio").check();
   await page.getByRole("checkbox", { name: /unsigned local playbook/ }).check();
 }
 async function review(page: Page, id: string, name: string, secret = "fictional-input-for-verification") {
   await gallery(page, id, name);
   await next(page);
-  await expect(page.getByRole("heading", { name: "Set the playbook inputs" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Set up / })).toBeVisible();
   if (secret) {
-    await page.getByLabel("Source for token", { exact: true }).selectOption("value");
+    await page.getByRole("radiogroup", { name: "Source for token" }).getByRole("radio", { name: "Value", exact: true }).check();
     await page.getByLabel("Value for token", { exact: true }).fill(secret);
   }
   const response = page.waitForResponse((r) => r.url().endsWith(`/api/playbooks/${id}/review`) && r.request().method() === "POST");
@@ -272,7 +272,7 @@ test("a missing configured default is explained and No playbook still creates no
   await page.getByLabel("Project name").fill("without-playbook");
   await next(page); await next(page); await next(page);
   await expect(page.getByText(/configured default.*missing-configured-default/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Selected: No playbook", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("radio", { name: /^No playbook/ })).toBeChecked();
   await next(page);
   await page.getByRole("button", { name: "Create project", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Project created", exact: true })).toBeVisible();
@@ -285,10 +285,10 @@ test("a secret-reference-file bundle explains its limitation without blocking No
   writeFileSync(join(root, "template", "RULES.md"), "Read the secret from {{secret_path:token}}.\n");
   await page.goto(`http://127.0.0.1:${stack.appPort}/projects/new`);
   await page.getByLabel("Project name").fill(id); await next(page); await next(page); await next(page);
-  await page.getByTestId(`playbook-card-${id}`).getByRole("button", { name: "Select", exact: true }).click();
+  await page.getByTestId(`playbook-card-${id}`).getByRole("radio").check();
   await expect(page.getByRole("alert")).toContainText("needs an existing project before review");
   await expect(page.getByRole("button", { name: "Next", exact: true })).toBeDisabled();
-  await page.getByRole("button", { name: "Select No playbook", exact: true }).click();
+  await page.getByRole("radio", { name: /^No playbook/ }).check();
   await next(page); await page.getByRole("button", { name: "Create project", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Project created", exact: true })).toBeVisible();
 });
@@ -327,9 +327,9 @@ test("gallery, inputs, review and result fit both themes at 1440, 390 and 320px"
     await page.getByRole("heading", { name: "Choose a playbook", exact: true }).scrollIntoViewIfNeeded();
     await capture("gallery", theme, width);
     await next(page);
-    await page.getByLabel("Source for token", { exact: true }).selectOption("value");
+    await page.getByRole("radiogroup", { name: "Source for token" }).getByRole("radio", { name: "Value", exact: true }).check();
     await page.getByLabel("Value for token", { exact: true }).fill("fictional-preview-secret");
-    await page.getByRole("heading", { name: "Set the playbook inputs", exact: true }).scrollIntoViewIfNeeded();
+    await page.getByRole("heading", { name: /^Set up / }).scrollIntoViewIfNeeded();
     await capture("inputs", theme, width);
     await next(page);
     await expect(page.getByRole("heading", { name: "Resolved targets" })).toBeVisible();

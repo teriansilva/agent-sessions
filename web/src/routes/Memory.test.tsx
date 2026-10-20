@@ -181,6 +181,16 @@ describe("Memory page — one project never shows another's data (#1453 review)"
       vi.useRealTimers();
     }
   });
+
+  test("a pass that answers with the fresh view is shown without a second request (#1501)", async () => {
+    vi.mocked(api.memoryProjects).mockResolvedValue({ projects: [two.projects[0]] } as never);
+    vi.mocked(api.memory).mockResolvedValue(viewOf("p-a", "alpha") as never);
+    vi.mocked(api.ingestMemory).mockResolvedValue({ notes: 1, view: viewOf("p-a", "alpha", [note("fresh", "fresh from the pass")]) } as never);
+    renderAt("/library/memory?project=p-a", { csrf: "x" } as unknown as AppConfig);
+    expect(await screen.findAllByText("fresh from the pass")).not.toHaveLength(0);
+    // The mount load only: the pass's own view replaced it, with no GET after the POST.
+    expect(api.memory).toHaveBeenCalledTimes(1);
+  });
 });
 
 

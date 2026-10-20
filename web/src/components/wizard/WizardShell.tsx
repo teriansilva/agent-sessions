@@ -31,6 +31,8 @@ export function WizardShell({
   onNext,
   nextLabel = "Next",
   nextDisabled = false,
+  nextNote,
+  wide = false,
   secondary,
   leaveGuard,
   leaveTitle,
@@ -52,6 +54,11 @@ export function WizardShell({
   onNext?: () => void;
   nextLabel?: string;
   nextDisabled?: boolean;
+  /** Why Next is held, said beside it (#1508) — a held button alone does not explain itself. */
+  nextNote?: ReactNode;
+  /** A wizard whose steps hold grids (the New project playbook steps, #1508) gets a wider frame;
+   *  its prose steps keep their own measure. */
+  wide?: boolean;
   /** Left of the nav buttons — typically Cancel. */
   secondary?: ReactNode;
   leaveGuard: boolean;
@@ -91,7 +98,7 @@ export function WizardShell({
 
   return (
     <div className={styles.page}>
-      <div className={styles.frame}>
+      <div className={wide ? `${styles.frame} ${styles.wide}` : styles.frame}>
         <div className={styles.kicker}>{kicker}</div>
 
         <nav className={styles.rail} aria-label={`${kicker} steps`}>
@@ -154,6 +161,11 @@ export function WizardShell({
         {(onBack || onNext || secondary) && (
           <div className={styles.nav}>
             <div className={styles.secondary}>{secondary}</div>
+            {nextNote && onNext && (
+              <span className={styles.nextNote} role="status">
+                {nextNote}
+              </span>
+            )}
             {onBack && (
               <button type="button" className={styles.back} onClick={onBack}>
                 Back

@@ -11,10 +11,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from .. import memory, template_secrets
+from .. import memory, secretfence, template_secrets
 from .templates import _err, _json_object
 from .upload import NO_STORE
 
@@ -26,6 +26,14 @@ async def _run(fn: Callable, *args):
         raise _err(exc.status, str(exc)) from None
     except template_secrets.RedactionUnavailable as exc:
         raise _err(503, f"secret check unavailable — nothing was taken in ({exc})") from None
+    except secretfence.SecretFenceBusy:
+        # Another memory operation (an import) holds the fence past its budget: retryable, and
+        # never a 500 (#1501). Nothing was changed.
+        raise HTTPException(
+            status_code=503,
+            detail="shared memory is busy — try again in a moment",
+            headers={**NO_STORE, "Retry-After": "5"},
+        ) from None
 
 
 def _ok(payload, status: int = 200) -> JSONResponse:
@@ -51,9 +59,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     async def memory_ingest(
         pid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
     ) -> JSONResponse:
-        # The page asks for a pass when it opens, so what it shows is never 30 s stale.
-        await _run(memory.view, pid)  # 404 for anything that is not a live project
-        return _ok(await _run(memory.ingest, pid))
+        # The page asks for a pass when it opens, so what it shows is never 30 s stale. One call:
+        # the project check (404), the pass, and the fresh view in the same response (#1501).
+        return _ok(await _run(memory.ingest_for_page, pid))
 
     @app.get("/api/memory/{pid}/import")
     async def memory_import_preview(pid: str, _user: str = Depends(logged_in)) -> JSONResponse:

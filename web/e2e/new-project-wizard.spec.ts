@@ -453,3 +453,163 @@ test.describe("New project wizard (#1187)", () => {
     await check("done");
   });
 });
+
+/** The playbook steps laid out to use the page (#1508), with one mocked playbook: three inputs (a
+ *  required text with no default, an enum with a default, a secret with a saved global) and three
+ *  agent steps (Claude Code with a model, opencode which takes none, Codex). */
+const ISSUE_TO_LIVE = {
+  id: "issue-to-live",
+  ok: true,
+  error: null,
+  source: "bundled",
+  editable: false,
+  revision: "r1",
+  default: false,
+  name: "Issue to live",
+  summary: "Plan, implement and ship a change from an issue to a deployed build.",
+  flows: [
+    {
+      id: "main",
+      title: "Issue to live",
+      steps: [
+        { id: "plan", title: "Plan the change", actor: { kind: "agent", engine: "claude", model: "opus" }, after: [], note: false },
+        { id: "impl", title: "Implement and validate", actor: { kind: "agent", engine: "opencode" }, after: ["plan"], note: false },
+        { id: "ship", title: "Ship", actor: { kind: "agent", engine: "codex" }, after: ["impl"], note: false },
+        { id: "audit", title: "Audit", actor: { kind: "agent", engine: "absent-agent", model: "future-model" }, after: ["ship"], note: false },
+      ],
+    },
+  ],
+  ships: { materials: 4, runbooks: 1, templates: 0, variables: 4 },
+  requires: { binaries: ["git"], connections: [] },
+};
+
+async function mockPlaybook(page: Page) {
+  await page.route("**/api/playbooks", (r) =>
+    r.fulfill({ json: { playbooks: [ISSUE_TO_LIVE], default: null, recovery_total: 0 } }),
+  );
+  await page.route("**/api/playbooks/authoring/schema", (r) =>
+    r.fulfill({ json: { agents: ["claude", "opencode", "codex"] } }),
+  );
+  await page.route("**/api/playbooks/issue-to-live", (r) =>
+    r.fulfill({
+      json: {
+        ...ISSUE_TO_LIVE,
+        recovery_total: 0,
+        requires_present: { binaries: { git: true } },
+        documents: {
+          "playbook.toml": {
+            variables: [
+              { name: "repo_url", kind: "text", type: "url", required: true },
+              { name: "house_rules", kind: "text", type: "text", required: false },
+              { name: "deploy_target", kind: "text", type: "enum", choices: ["staging", "prod"], default: "staging", required: true },
+              { name: "forge_token", kind: "secret", required: true },
+            ],
+          },
+        },
+      },
+    }),
+  );
+  await page.route("**/api/template-variables", (r) =>
+    r.fulfill({
+      json: {
+        variables: [{ name: "forge_token", kind: "secret", set: true, created_at: 0, updated_at: 0, used_by: [] }],
+        limits: {},
+      },
+    }),
+  );
+}
+
+test.describe("New project wizard — playbook setup (#1508)", () => {
+  test("a missing required input is red from the first render, defaults show their value, steps are one table", async ({
+    page,
+  }, testInfo) => {
+    await mockApp(page);
+    await mockPlaybook(page);
+    await page.goto(NEW_PROJECT_PATH);
+    await page.getByLabel("Project name").fill("Payments API");
+    await next(page);
+    await expect(page.getByTestId("np-folder-preview")).toBeVisible();
+    await next(page);
+    await next(page);
+    await expect(heading(page, "Choose a playbook")).toBeVisible();
+    await page.getByRole("radio", { name: /Issue to live/ }).check();
+    await expect(page.getByRole("radio", { name: /Issue to live/ })).toBeChecked();
+    await next(page);
+    await expect(heading(page, "Set up Issue to live")).toBeVisible();
+
+    // repo_url: required, no default → flagged in place before anything is typed.
+    const repo = page.getByTestId("pb-input-repo_url");
+    await expect(repo.getByText("Required — this playbook declares no default.")).toBeVisible();
+    // forge_token is missing too: a secret has no default and never falls back to a global alone.
+    await expect(page.getByTestId("pb-missing-count")).toHaveText(/2 required missing/);
+    expect(await repo.evaluate((el) => getComputedStyle(el).borderTopColor)).toBe("rgb(192, 32, 32)");
+    const nextBtn = page.getByRole("button", { name: "Next", exact: true });
+    await expect(nextBtn).toBeDisabled();
+    await expect(page.getByText("Fill 2 required inputs to continue")).toBeVisible();
+
+    // The source pickers name what each choice resolves to.
+    await expect(
+      page.getByRole("radiogroup", { name: "Source for deploy_target" }).getByRole("radio", { name: "Default · staging" }),
+    ).toBeChecked();
+    await expect(
+      page.getByRole("radiogroup", { name: "Source for forge_token" }).getByRole("radio", { name: "Global · set" }),
+    ).toBeVisible();
+    await page.getByRole("radiogroup", { name: "Source for forge_token" }).getByRole("radio", { name: "Global · set" }).check();
+    await page.getByRole("radiogroup", { name: "Source for repo_url" }).getByRole("radio", { name: "Value" }).check();
+    await page.getByLabel("Value for repo_url", { exact: true }).fill("https://git.example.com/acme/site.git");
+    await expect(page.getByTestId("pb-missing-count")).toHaveCount(0);
+    await expect(nextBtn).toBeEnabled();
+
+    // Steps: agent names, the agent's models with their aliases, and no model picker for opencode.
+    await expect(page.getByLabel("Agent for Plan the change")).toHaveValue("claude");
+    await expect(page.getByLabel("Agent for Plan the change").locator("option:checked")).toHaveText("Claude Code");
+    await expect(page.getByLabel("Model for Plan the change").locator("option", { hasText: "opus · claude-opus-5" })).toHaveCount(1);
+    // The playbook stores the alias `opus`: it shows as that model, never as the first option.
+    await expect(page.getByLabel("Model for Plan the change")).toHaveValue("claude-opus-5");
+    const impl = page.getByTestId("pb-step-main:impl");
+    await expect(impl.getByText("Model is set in opencode’s own config")).toBeVisible();
+    await expect(page.getByLabel("Model for Implement and validate")).toHaveCount(0);
+
+    // Desktop: a step is one row. Mobile: a card, agent above model, inside the screen.
+    const agentBox = (await page.getByLabel("Agent for Plan the change").boundingBox())!;
+    const modelBox = (await page.getByLabel("Model for Plan the change").boundingBox())!;
+    const vw = page.viewportSize()!.width;
+    if (testInfo.project.name === "mobile") {
+      expect(modelBox.y).toBeGreaterThan(agentBox.y + agentBox.height - 1);
+      expect(modelBox.x + modelBox.width).toBeLessThanOrEqual(vw);
+    } else {
+      expect(Math.abs(modelBox.y - agentBox.y)).toBeLessThan(4);
+      expect(modelBox.x).toBeGreaterThan(agentBox.x + agentBox.width);
+    }
+
+    // An agent the roster does not know stays visibly unresolved, its requested model shown.
+    await expect(page.getByLabel("Agent for Audit")).toHaveValue("absent-agent");
+    await expect(page.getByLabel("Model for Audit")).toHaveValue("future-model");
+    await expect(page.getByTestId("pb-step-main:audit").getByText(/This assignment is unresolved/)).toBeVisible();
+    await expect(page.getByTestId("pb-step-main:audit").getByText("agent unavailable")).toBeVisible();
+
+    // A `text` input is multiline (the server keeps its newlines): it must reach the review
+    // request intact, not flattened by a single-line <input>.
+    const reviews: { bindings?: { name: string; value?: string }[] }[] = [];
+    await page.route("**/api/playbooks/issue-to-live/review", (r) => {
+      reviews.push(r.request().postDataJSON());
+      return r.fulfill({ status: 503, json: { detail: "review unavailable in this test" } });
+    });
+    await page.getByRole("radiogroup", { name: "Source for house_rules" }).getByRole("radio", { name: "Value" }).check();
+    const rules = page.getByLabel("Value for house_rules", { exact: true });
+    await rules.fill("first line\nsecond line");
+    await expect(rules).toHaveValue("first line\nsecond line");
+
+    // Set every step to one agent.
+    await page.getByLabel("Agent for every step").selectOption("codex");
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+    for (const step of ["Plan the change", "Implement and validate", "Ship", "Audit"])
+      await expect(page.getByLabel(`Agent for ${step}`)).toHaveValue("codex");
+
+    await next(page);
+    await expect(heading(page, "Review and create")).toBeVisible();
+    await expect.poll(() => reviews.length).toBeGreaterThan(0);
+    const bound = reviews.at(-1)!.bindings?.find((b) => b.name === "house_rules");
+    expect(bound?.value).toBe("first line\nsecond line");
+  });
+});

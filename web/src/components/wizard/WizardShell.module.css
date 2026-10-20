@@ -21,6 +21,12 @@
   row-gap: 14px;
 }
 
+/* The New project wizard's playbook steps hold grids (#1508): the frame widens for the whole wizard
+ * so it does not jump between steps, and prose keeps a measure of its own. */
+.wide {
+  max-width: 1120px;
+}
+
 .kicker {
   grid-area: kicker;
   font-family: var(--font-mono);
@@ -144,6 +150,10 @@ button.railItem:focus-visible {
   gap: 10px;
   padding-top: 14px;
   border-top: 1px solid var(--line);
+}
+.nextNote {
+  font-size: 12.5px;
+  color: var(--danger-text);
 }
 .secondary {
   margin-right: auto;

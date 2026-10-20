@@ -23,13 +23,16 @@ writes into a workspace.
 
 * Withhold, never rewrite: a credential shape or a stored secret value — in the content OR the
   file name it may be named after — is quarantined, not ingested. The check is repeated against
-  the CURRENT secret inventory inside `session_input.mutation_fence` (which secret writes hold)
-  immediately before commit, and every render sweeps notes that now contain a stored secret into
-  quarantine. If stored-secret redaction is unavailable the pass fails CLOSED — inbox files stay,
-  and the read view is withdrawn rather than rendered unchecked.
-* The agent-readable view is written ONLY under the secret writers' fence and then the scope lock
+  the CURRENT secret inventory inside the secret-inventory fence (`secretfence`, which the secret
+  writer holds across its write, #1501) immediately before commit, and every render sweeps notes
+  that now contain a stored secret into quarantine. If stored-secret redaction is unavailable the
+  pass fails CLOSED — inbox files stay, and the read view is withdrawn rather than rendered
+  unchecked.
+* The agent-readable view is written ONLY under the secret-inventory fence and then the scope lock
   (`publish`; lock order is fence → scope lock everywhere, and a launch takes neither the fence nor
-  a render). Secret writes re-publish every view inside their own fence (`secrets_changed`).
+  a render). Secret writes re-publish every view inside the same fence (`secrets_changing`).
+  Memory never takes the authorization fence (#1501): its work must not hold up terminal input,
+  launches or policy edits.
 * Clear and delete win: a scope generation (bumped by `clear`) is re-checked under the lock before
   anything commits, and every consumed file leaves a receipt of its digest. Entry and receipt
   commit in ONE sqlite transaction, so a crash between them cannot exist. Every version a note
@@ -66,10 +69,13 @@ import secrets
 import shutil
 import sqlite3
 import stat
+import sys
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from . import secretfence
 
 log = logging.getLogger(__name__)
 
@@ -100,7 +106,7 @@ INBOX_SCAN_MAX = 2 * INBOX_MAX_PENDING
 TYPES = ("decision", "finding", "pitfall", "reference")
 DEFAULT_TYPE = "finding"
 _TOKEN_RE = re.compile(r"m[0-9a-f]{32}")
-# Set while this thread holds `session_input.mutation_fence` (see `_fenced`).
+# Set while this thread holds the secret-inventory fence (see `_fenced`).
 _FENCE = threading.local()
 _SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 # Control characters except TAB and LF. CR is folded away before this runs.
@@ -309,21 +315,26 @@ def _create_scope(pid: str) -> None:
 # ---- which project a launch belongs to -----------------------------------------------------------
 
 
-def _fenced():
-    """The secret writers' fence (`session_input.mutation_fence`), taken OUTSIDE any scope lock.
+def _fenced(timeout: float | None = None):
+    """The secret-inventory fence (`secretfence`, #1501), taken OUTSIDE any scope lock.
 
-    Lock order is fence → scope lock, everywhere. The fence is not re-entrant, so a thread that
-    already holds it (an outer `_fenced`, or a secret write calling `secrets_changed`) passes."""
-    return _FencedContext()
+    Never the authorization fence: memory work must not hold up terminal input, launches or policy
+    edits, and this fence orders exactly what memory needs — a render against a secret write. Lock
+    order is fence → scope lock, everywhere. The fence is not re-entrant, so a thread that already
+    holds it (an outer `_fenced`, or a secret write inside `secrets_changing`) passes."""
+    return _FencedContext(timeout)
 
 
 class _FencedContext:
+    def __init__(self, timeout: float | None = None):
+        # Resolved at entry, not definition: `None` is memory's own budget.
+        self._timeout = timeout
+
     def __enter__(self):
         self._outer = getattr(_FENCE, "held", False)
         if not self._outer:
-            from . import session_input
-
-            self._cm = session_input.mutation_fence()
+            budget = secretfence.CONTENTION_BUDGET_S if self._timeout is None else self._timeout
+            self._cm = secretfence.hold(timeout=budget)
             self._cm.__enter__()
             _FENCE.held = True
         return self
@@ -338,7 +349,7 @@ class _FencedContext:
 def publish(pid: str) -> None:
     """(Re)write a project's agent-readable view — the ONLY way `notes/` is written.
 
-    Under the secret writers' fence and then the scope lock, so the inventory the view is checked
+    Under the secret-inventory fence and then the scope lock, so the inventory the view is checked
     against cannot change before its files are in place; a secret write re-publishes every view
     inside its own fence (`secrets_changed`), so a value stored later is withdrawn before the write
     returns."""
@@ -354,9 +365,10 @@ def publish(pid: str) -> None:
 
 
 def secrets_changed() -> None:
-    """Re-check every scope now (both phases at once). The secret writers use
+    """Re-check every scope now (both phases at once), under the fence. The secret writers use
     `secrets_changing` instead, which enumerates BEFORE their write."""
-    _recheck_scopes(_list_scopes())
+    with _fenced():
+        _recheck_scopes(_list_scopes())
 
 
 def _republish_or_withdraw(pid: str, conn: sqlite3.Connection) -> None:
@@ -582,9 +594,15 @@ def _scrub_dir(dfd: int, failed: list[str]) -> None:
 
 
 def secrets_changing():
-    """Wrap a secret write (`template_vars`, INSIDE its `session_input.mutation_fence`) in two
-    phases, so the write can never settle with a view that was not checked:
+    """Wrap a secret write (`template_vars`) in the secret-inventory fence and two phases, so the
+    write can never settle with a view that was not checked:
 
+    0. The fence (`secretfence`) is taken first and held across the write AND the re-check, so no
+       render can read the inventory in between (#1501: this is what used to need the writer's
+       authorization fence). The writer already holds its own outer locks; this one is inside them.
+       It waits at most `secretfence.SECRET_WRITE_BUDGET_S`: the writer holds the authorization
+       fence, so a long import must not hold terminal input up through it. Past the budget this
+       raises `secretfence.SecretWriteBusy` BEFORE anything is written.
     1. BEFORE the write: enumerate every scope. If the memory root cannot be listed this raises,
        and the secret is never written — fail before commit.
     2. AFTER a successful write: re-check exactly those scopes (`_recheck_scopes`). A scope created
@@ -595,12 +613,24 @@ def secrets_changing():
 
 class _SecretsChanging:
     def __enter__(self):
-        self.scopes = _list_scopes()
+        self._fence = _fenced(secretfence.SECRET_WRITE_BUDGET_S)
+        try:
+            self._fence.__enter__()
+        except secretfence.SecretFenceBusy:
+            raise secretfence.SecretWriteBusy(secretfence.SECRET_WRITE_BUSY) from None
+        try:
+            self.scopes = _list_scopes()
+        except BaseException:
+            self._fence.__exit__(*sys.exc_info())
+            raise
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        if exc_type is None:
-            _recheck_scopes(self.scopes)
+        try:
+            if exc_type is None:
+                _recheck_scopes(self.scopes)
+        finally:
+            self._fence.__exit__(exc_type, exc, tb)
         return False
 
 
@@ -622,7 +652,8 @@ def _list_scopes() -> list[str]:
 
 
 def _recheck_scopes(scopes: list[str]) -> None:
-    """Re-publish every listed view against the new secret inventory, under the caller's fence.
+    """Re-publish every listed view against the new secret inventory, under the caller's fence
+    (`secrets_changing` / `secrets_changed` hold it).
 
     Every scope is handled on its own, so one broken scope never stops the others. A view that
     cannot be re-checked is withdrawn to its index; one that cannot be withdrawn — or whose store
@@ -675,7 +706,8 @@ def launch_env(session_key: str, cwd: str, *, kind: str) -> dict[str, str]:
 
     Called only where a new agent process is born (a terminal LAUNCH, an unattended dispatch, an
     API worker generation), never on attach. Mints this launch's inbox. Takes only the scope lock
-    — never the secret writers' fence, which a launch may already be inside — and never renders:
+    — never the secret-inventory fence: a launch may be inside the authorization fence and must
+    not wait behind a memory import — and never renders:
     the view is published when memory is turned on and on every pass. Never raises: memory is
     optional, so a broken store logs and the launch proceeds without it.
     """
@@ -905,6 +937,15 @@ class _Candidate:
     note: dict | None = None
 
 
+def ingest_for_page(pid: str) -> dict:
+    """The Memory page's pass (#1501): 404 for anything that is not a live project, then one
+    ingest, then the fresh view — one request, and no page build just to check existence."""
+    pid = _pid(pid)
+    _project(pid)
+    counts = ingest(pid)
+    return {**counts, "view": view(pid)}
+
+
 def ingest_all() -> None:
     """One pass over every enabled scope. A scope whose secret check is unavailable keeps its
     inbox files (fail closed) and the others still run."""
@@ -973,7 +1014,13 @@ def ingest(pid: str) -> dict:
                     why = _withheld(f"{c.filename}\n{c.text}", known)
                     if why:
                         c.outcome, c.reason = "quarantine", why
-            consumed = _commit(conn, candidates, counts)
+            # Nothing collected → no write transaction; the render below then rewrites only what
+            # does not already match (#1501), so an idle pass writes and fsyncs nothing.
+            if candidates:
+                consumed = _commit(conn, candidates, counts)
+            else:
+                consumed = []
+                _trim_if_due(conn, time.time())
             for c in consumed:
                 _remove_inbox_file(pid, c)
             _prune_launches(pid, conn)
@@ -1118,6 +1165,20 @@ def _trim(conn: sqlite3.Connection, now: float) -> None:
     conn.execute(
         "DELETE FROM receipts WHERE at < ? AND outcome != 'deleted'", (now - LEDGER_TTL_S,)
     )
+
+
+def _trim_if_due(conn: sqlite3.Connection, now: float) -> None:
+    """`_trim` for a pass that collected nothing — in a write transaction only when it has
+    something to remove, so an idle pass writes nothing (#1501) yet receipts still age out."""
+    due = conn.execute(
+        "SELECT (SELECT COUNT(*) FROM quarantine) > ? OR (SELECT COUNT(*) FROM refused) > ?"
+        " OR COALESCE((SELECT SUM(size) FROM quarantine), 0) > ?"
+        " OR EXISTS(SELECT 1 FROM receipts WHERE at < ? AND outcome != 'deleted')",
+        (QUARANTINE_MAX_ITEMS, REFUSED_MAX, QUARANTINE_MAX_BYTES, now - LEDGER_TTL_S),
+    ).fetchone()[0]
+    if due:
+        with _txn(conn):
+            _trim(conn, now)
 
 
 def _collect(pid: str, known: list[str]) -> list[_Candidate]:
@@ -1390,9 +1451,38 @@ def _write_at(dfd: int, name: str, text: str) -> None:
     os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)  # replaces a planted link, never follows
 
 
+def _holds(dfd: int, name: str, st, text: str) -> bool:
+    """True when ``name`` under ``dfd`` is a regular, single-link file of this user whose bytes
+    are exactly ``text``. Opened without following a link; any doubt answers False (rewrite)."""
+    if st is None or not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid != os.getuid():
+        return False
+    want = text.encode("utf-8")
+    if st.st_size != len(want):
+        return False
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dfd)
+    except OSError:
+        return False
+    try:
+        got = os.fstat(fd)
+        if (got.st_ino, got.st_dev) != (st.st_ino, st.st_dev) or not stat.S_ISREG(got.st_mode):
+            return False
+        data = b""
+        while len(data) <= len(want):
+            chunk = os.read(fd, len(want) + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+        return data == want
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+
+
 def _render(pid: str, conn: sqlite3.Connection, *, withdraw: bool = False) -> None:
     """Rebuild ``notes/`` from the store. Only `publish`, `ingest` and `secrets_changed` call it,
-    each holding the secret writers' fence (asserted): the inventory read here cannot change before
+    each holding the secret-inventory fence (asserted): the inventory read here cannot change before
     the files are written.
 
     First, any note that now contains a stored secret moves to quarantine, so the view never
@@ -1403,7 +1493,7 @@ def _render(pid: str, conn: sqlite3.Connection, *, withdraw: bool = False) -> No
     from . import template_secrets
 
     if not getattr(_FENCE, "held", False):
-        raise RuntimeError("the memory view is only written under the secret writers' fence")
+        raise RuntimeError("the memory view is only written under the secret-inventory fence")
     known: list[str] | None = None
     if not withdraw:
         try:
@@ -1412,9 +1502,13 @@ def _render(pid: str, conn: sqlite3.Connection, *, withdraw: bool = False) -> No
             known = None
     if known:
         now = time.time()
-        with _txn(conn):
-            for r in conn.execute("SELECT * FROM notes").fetchall():
-                if _carries_secret(r, known):
+        # Judged first, written only if something moves: a pass with nothing to quarantine opens
+        # no write transaction (#1501). Every writer of `notes` holds the scope lock, as we do.
+        rows = conn.execute("SELECT * FROM notes").fetchall()
+        carrying = [r for r in rows if _carries_secret(r, known)]
+        if carrying:
+            with _txn(conn):
+                for r in carrying:
                     conn.execute(
                         "INSERT INTO quarantine(digest, token, filename, body, reason, size, at)"
                         " VALUES(?,?,?,?,?,?,?)",
@@ -1437,11 +1531,16 @@ def _render(pid: str, conn: sqlite3.Connection, *, withdraw: bool = False) -> No
             for name in os.listdir(nfd):
                 if name not in files:
                     _remove_entry(nfd, name)
-            # 2. Write, clearing a planted directory out of each file's way first.
+            # 2. Write, clearing a planted directory out of each file's way first. A file that
+            #    already holds exactly these bytes — a regular, single-link file of ours, read
+            #    without following a link — is left alone: an unchanged view costs no write and
+            #    no fsync (#1501), while a missing, edited or planted entry is always rewritten.
             for name, text in files.items():
                 st = _lstat_at(nfd, name)
                 if st is not None and stat.S_ISDIR(st.st_mode):
                     _remove_entry(nfd, name)
+                elif _holds(nfd, name, st, text):
+                    continue
                 _write_at(nfd, name, text)
         finally:
             os.close(nfd)
@@ -1607,16 +1706,24 @@ def view(pid: str) -> dict:
     }
     if not _exists(pid):
         return out
-    # Under the secret writers' fence, like every agent-readable render: the inventory this response
-    # is judged against cannot change before it is built. A note that holds a stored secret is
-    # withheld from the page exactly as from the agents' view — including when an earlier
-    # re-check could only WITHDRAW the view and left the note in the store.
+    return _view_built(pid, out, _inventory_snapshot())
+
+
+def _inventory_snapshot() -> list[str] | None:
+    """The stored-secret inventory as of NOW, read under the secret-inventory fence and released.
+
+    For the operator-facing builds (the page, the import preview, the export), which are judged
+    against the inventory at read time; none of them writes anything an agent reads, so they need
+    not hold the fence across the build (#1501) — the agent-readable view is still written only
+    under it. A value stored a moment after this read leaves the page on its next load."""
     with _fenced():
-        return _view_locked(pid, out)
+        return _inventory()
 
 
-def _view_locked(pid: str, out: dict) -> dict:
-    known = _inventory()  # one read: every field below is judged against the same set
+def _view_built(pid: str, out: dict, known: list[str] | None) -> dict:
+    # One inventory: every field below is judged against the same set. A note that holds a stored
+    # secret is withheld from the page exactly as from the agents' view — including when an
+    # earlier re-check could only WITHDRAW the view and left the note in the store.
     conn = _connect(pid)
     try:
         out["enabled"] = _enabled(conn)
@@ -1833,17 +1940,13 @@ def export_zip(pid: str) -> bytes:
     pid = _pid(pid)
     _project(pid)
     buf = io.BytesIO()
-    # The fence spans the inventory read, the filter and the zip: a secret stored meanwhile waits.
-    with _fenced(), zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+    # Judged against the inventory as of the request (`_inventory_snapshot`, #1501): the export is
+    # the operator's own download, not an agent-readable view, so the fence is not held across it.
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         if _exists(pid):
-            from . import template_secrets
-
-            try:
-                known: list[str] | None = template_secrets.redaction_values()
-            except template_secrets.RedactionUnavailable as exc:
-                raise MemoryStoreError(
-                    f"secret check unavailable — nothing exported ({exc})", 503
-                ) from None
+            known = _inventory_snapshot()
+            if known is None:
+                raise MemoryStoreError("secret check unavailable — nothing exported", 503)
             conn = _connect(pid)
             try:
                 # `_view_files` leaves out every note holding a stored secret in any field it shows.
@@ -1922,17 +2025,16 @@ def import_preview(pid: str) -> dict:
     out: dict = {"sources": [s.public() for s in sources], "last": None, "held": []}
     if not _exists(pid):
         return out
-    with _fenced():
-        known = _inventory()
-        conn = _connect(pid)
-        try:
-            raw = _meta(conn, "last_import", "")
-            rows = conn.execute(
-                "SELECT source, file, state, reason, at FROM imports"
-                " WHERE reason != '' AND state != 'deleted' ORDER BY at DESC, file"
-            ).fetchall()
-        finally:
-            conn.close()
+    known = _inventory_snapshot()
+    conn = _connect(pid)
+    try:
+        raw = _meta(conn, "last_import", "")
+        rows = conn.execute(
+            "SELECT source, file, state, reason, at FROM imports"
+            " WHERE reason != '' AND state != 'deleted' ORDER BY at DESC, file"
+        ).fetchall()
+    finally:
+        conn.close()
     if raw:
         with contextlib.suppress(ValueError):
             out["last"] = json.loads(raw)

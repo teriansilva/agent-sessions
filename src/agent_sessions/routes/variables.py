@@ -13,7 +13,7 @@ from collections.abc import Callable
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
-from .. import session_input, template_secrets, variables
+from .. import secretfence, session_input, template_secrets, variables
 from .. import template_vars as store
 from .templates import _conflict, _err, _expected, _json, _json_object
 from .upload import NO_STORE
@@ -53,6 +53,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             response = await call_next(request)
         except session_input.AuthorityFenceBusy:
             return _json_error("busy sending into a session — nothing was saved; try again", 503)
+        except secretfence.SecretWriteBusy:
+            # A memory import holds the secret-inventory fence (#1501): refused, nothing written.
+            return _json_error(secretfence.SECRET_WRITE_BUSY, 503)
         except Exception:
             return _json_error("the variables store failed", 500)
         response.headers.update(NO_STORE)

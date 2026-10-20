@@ -331,3 +331,13 @@
     flex: 1 1 100%;
   }
 }
+
+/* The reading measure for the prose steps inside the wide wizard frame (#1508). A column, like the
+ * wizard body it sits in, so the steps keep their own vertical rhythm. */
+.measure {
+  max-width: 640px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
