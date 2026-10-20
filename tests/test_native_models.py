@@ -338,6 +338,94 @@ async def test_the_requested_effort_reaches_the_client_on_every_generation(
 
 
 @pytest.mark.anyio
+async def test_an_agent_default_session_shows_what_its_client_reports_it_runs(
+    host, project, monkeypatch
+):
+    """#1511: with nothing requested, the snapshot and the lookup's `model_facts` carry the model
+    and level the client REPORTS, apart from the request; a successor generation's newer report
+    wins. A fresh session that has not reported yet reads null, and claude reports no level."""
+    from agent_sessions import native_runtime, native_state
+
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 0.5)
+    created = await runtime.create_session(
+        ENGINES["codex"], str(project), operation_id=str(uuid.uuid4())
+    )
+    key = created["session_key"]
+    first = str(uuid.uuid4())
+    await runtime.submit_turn(key, operation_id=first, text="one")
+    snap, _ = await settle(key, first)
+    assert snap["model_requested"] is None and snap["effort_requested"] is None
+    assert snap["model_configured"] == "fake-model" and snap["effort_configured"] == "medium"
+    assert runtime.model_facts(key) == {
+        "model_requested": None,
+        "effort_requested": None,
+        "model_configured": "fake-model",
+        "effort_configured": "medium",
+        "model_effective": None,
+    }
+    worker = snap["native"]["worker"]
+    for _ in range(200):
+        if native_state.read_lifecycle(worker).get("phase") == "exited":
+            break
+        await asyncio.sleep(0.05)
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 60.0)
+    second = str(uuid.uuid4())
+    await runtime.submit_turn(key, operation_id=second, text="two")
+    snap, _ = await settle(key, second)
+    assert snap["native"]["worker"] != worker
+    assert snap["effort_configured"] == "high"  # the resumed generation's report
+    assert runtime.model_facts(key)["effort_configured"] == "high"
+
+    claude = await runtime.create_session(
+        ENGINES["claude"], str(project), operation_id=str(uuid.uuid4())
+    )
+    turn = str(uuid.uuid4())
+    await runtime.submit_turn(claude["session_key"], operation_id=turn, text="one")
+    snap, _ = await settle(claude["session_key"], turn)
+    assert snap["model_configured"] == "fake-claude" and snap["effort_configured"] is None
+
+
+def test_model_facts_is_none_for_what_it_cannot_read(host, monkeypatch):
+    """The lookup must answer without it (#1511): an unknown key, a console engine and a read
+    that raises are all "nothing known", never an error."""
+    from agent_sessions import native_runtime
+
+    assert runtime.model_facts(f"{ENGINES['codex']}:{uuid.uuid4()}") is None
+    assert runtime.model_facts("claude:11111111-1111-1111-1111-111111111111") is None
+
+    def boom(*_a, **_k):
+        raise OSError("journal unreadable")
+
+    monkeypatch.setattr(native_runtime, "model_facts", boom)
+    assert runtime.model_facts(f"{ENGINES['codex']}:{uuid.uuid4()}") is None
+
+
+@pytest.mark.anyio
+async def test_model_facts_keeps_the_request_when_the_journal_cannot_be_read(
+    host, project, monkeypatch
+):
+    """A starting session's record holds the request before any journal does (#1511, independent
+    review): an unreadable journal reports nothing, it never erases what was asked for."""
+    from agent_sessions import native_runtime
+
+    created = await runtime.create_session(
+        ENGINES["codex"],
+        str(project),
+        operation_id=str(uuid.uuid4()),
+        model="fake-large",
+        effort="high",
+    )
+
+    def unreadable(*_a, **_k):
+        raise native_runtime.NativeError(404, "no journal yet")
+
+    monkeypatch.setattr(native_runtime, "_journal", unreadable)
+    facts = runtime.model_facts(created["session_key"])
+    assert facts["model_requested"] == "fake-large" and facts["effort_requested"] == "high"
+    assert facts["model_configured"] is None and facts["model_effective"] is None
+
+
+@pytest.mark.anyio
 async def test_a_create_without_effort_sends_none_and_records_none(host, project):
     """No level chosen = today's request, byte for byte: nothing recorded, nothing sent."""
     engine = ENGINES["codex"]

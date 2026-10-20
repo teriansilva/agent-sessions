@@ -464,6 +464,11 @@
   gap: 7px;
   overflow-wrap: anywhere;
 }
+/* #1511: "agent default" beside the model it resolved to — a qualifier, quieter than the fact. */
+.infoMuted {
+  color: var(--text-3);
+  font-size: 0.9em;
+}
 .infoFacts code {
   font: calc(12px * var(--api-scale, 1)) var(--font-mono);
   overflow-wrap: anywhere;

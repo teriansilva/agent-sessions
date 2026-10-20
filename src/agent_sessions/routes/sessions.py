@@ -371,6 +371,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # reads it (a transcript tail per row would make the list a walk); the one-session
             # lookup fills it in `_lookup_row`.
             "model_effective": None,
+            # An API session's model and reasoning level (#1511), on every row like the above and
+            # filled only by the one-session lookup: the client's REPORT of what it runs (an
+            # "agent default" session's actual model), and the requested and reported level.
+            # Null for terminal sessions, whose levels nothing reports.
+            "model_configured": None,
+            "effort_requested": None,
+            "effort_configured": None,
             # The structured assessment (#1020), projected with its per-source freshness. Like
             # `model_effective`, every row carries the key and only the one-session lookup fills
             # it (`_lookup_row`): the list stays lean, `null` there means "not read here".
@@ -925,6 +932,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             row["running"] = engines.physical_key(row["id"], aliases) in _running_keys()
             # Filled only here (#1189): the key is on every row (`_row`), null = not read/unknown.
             row["model_effective"] = transcript.effective_model(s.engine, s.uuid, Path.home())
+            # An API session's model and level come from its journal, not a transcript (#1511).
+            # Fail-soft: an unreadable or still-starting session leaves them null.
+            prov = engines.get_any(s.engine)
+            if prov is not None and prov.manifest.runtime == "api":
+                # Local: structured_runtime → native_runtime → native_ipc is a cycle at import.
+                from .. import structured_runtime
+
+                facts = structured_runtime.model_facts(key)
+                if facts is not None:  # unreadable: the row's own values stand
+                    row.update(facts)
             row["assessment"] = assessment.project(
                 m.ai_assessment,
                 review_fingerprint=m.review_fingerprint,

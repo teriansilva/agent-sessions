@@ -47,6 +47,7 @@ import { HeadFacts } from "../terminal/HeadFacts";
 import { KeyBar, type KeyAction } from "../terminal/KeyBar";
 import type { PaneHost } from "../terminal/paneHost";
 import { SessionRecapModal } from "../terminal/SessionRecapModal";
+import { resolveApiModel } from "../../lib/apiModel";
 import { SharePubliclyModal } from "../shares/SharePubliclyModal";
 import { SentMessagesModal } from "../terminal/SentMessagesModal";
 import { TemplatePickerModal } from "../templates/TemplatePickerModal";
@@ -2053,9 +2054,9 @@ export function StructuredPane({
         : live
           ? { cls: styles.ledUp, text: "worker live" }
           : { cls: styles.ledIdle, text: "no worker" };
-  const model = snap?.model_effective ?? snap?.model_requested ?? null;
-  // The requested level (#1407) rides beside the model it belongs to.
-  const effort = model ? (snap?.effort_requested ?? null) : null;
+  // What this session runs (#1511): an "agent default" session names the model and level its
+  // client reported, not the literal "agent default" — the same resolution the recap uses.
+  const running = resolveApiModel(snap ?? {});
 
   // A map window's chrome LED reads this pane's connection state (#1109), as it reads the
   // terminal's socket status: the journal read is this pane's connection.
@@ -2577,8 +2578,19 @@ export function StructuredPane({
                 <div>
                   <dt>Model</dt>
                   <dd data-testid="structured-model">
-                    {model ?? "agent default"}
-                    {effort ? ` · ${effort}` : ""}
+                    {/* One inline run: `dd` is a flex row, which would gap every fragment. */}
+                    <span>
+                      {running.model ? (
+                        <>
+                          {running.model} · {running.effort}
+                          {running.agentDefault && (
+                            <span className={styles.infoMuted}> · agent default</span>
+                          )}
+                        </>
+                      ) : (
+                        "agent default"
+                      )}
+                    </span>
                   </dd>
                 </div>
                 <div>

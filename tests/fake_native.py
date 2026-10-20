@@ -123,7 +123,13 @@ def codex():
             send(
                 {
                     "id": rid,
-                    "result": {"thread": {"id": thread, "turns": []}, "model": "fake-model"},
+                    # The level an unpinned thread runs at (#1511); a resume reports another, so
+                    # "the newest report wins" is observable.
+                    "result": {
+                        "thread": {"id": thread, "turns": []},
+                        "model": "fake-model",
+                        "reasoningEffort": "medium",
+                    },
                 }
             )
         elif method == "thread/resume":
@@ -134,6 +140,7 @@ def codex():
                     "result": {
                         "thread": {"id": thread, "turns": [{"id": "old", "status": "completed"}]},
                         "model": "fake-model",
+                        "reasoningEffort": "high",
                     },
                 }
             )

@@ -74,6 +74,11 @@ export interface Session {
   /** What the engine's own transcript says it ran (#1189) — only on the single-session lookup.
    *  null = unknown. */
   model_effective?: string | null;
+  /** An API session's client-reported model and its requested / reported level (#1511) — only on
+   *  the single-session lookup, null elsewhere and for terminal sessions. */
+  model_configured?: string | null;
+  effort_requested?: string | null;
+  effort_configured?: string | null;
   /** The mission holding this session (#948): `null` when none does. ABSENT when the server
    *  could not read the mission store — unknown, so no adopt/open control is offered. */
   mission?: SessionMissionRef | null;
@@ -1615,6 +1620,10 @@ export interface StructuredSnapshot {
   model_effective?: string | null;
   /** The reasoning level requested at create (#1407): configuration, never an observation. */
   effort_requested?: string | null;
+  /** What the client REPORTS it runs (#1511): an "agent default" session's actual model and level.
+   *  A report, apart from the request and the per-turn observation. Absent from an older server. */
+  model_configured?: string | null;
+  effort_configured?: string | null;
   /** Effective permission mode, including an explicit existing-session enable (#1388). */
   bypass?: boolean;
   can_enable_bypass?: boolean;

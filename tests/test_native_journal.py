@@ -1119,3 +1119,60 @@ def test_a_decision_written_before_actor_binding_still_folds(conversation):
     folded = journal.read(root, session_id)
     op = folded.operations[claim["params"]["operation_id"]]
     assert op.request["action"] == "decide" and "actor" not in op.request["params"]
+
+
+def test_a_newer_session_report_retires_the_previous_generations_observed_model(
+    conversation, monkeypatch
+):
+    """#1511 (Hermes): after a restart that reports a different model, the earlier per-turn model
+    must not outrank it — before the next turn the report shows, after it the new observation. The
+    same model reported again keeps it. The fold and the lookup's `model_facts` agree."""
+    from agent_sessions import native_runtime
+
+    root, sid, binding = conversation
+
+    def turn():
+        claim = request(binding, revision=journal.read(root, sid).revision)
+        journal.claim(root, claim)
+        return claim["params"]["operation_id"]
+
+    def session(model, effort):
+        return {
+            "kind": "session",
+            "data": {
+                "native_id": "native-history",
+                "model_configured": model,
+                "effort_configured": effort,
+                "model_effective": None,
+            },
+        }
+
+    def observed(op, model):
+        return {
+            "kind": "model",
+            "data": {"operation_id": op, "native_turn_id": "t", "model_effective": model},
+        }
+
+    record = {"request": {"model": None}, "adapter": binding.adapter}
+    monkeypatch.setattr(native_runtime, "_session", lambda *_a, **_k: (None, record))
+    monkeypatch.setattr(native_runtime, "_journal", lambda *_a: journal.read(root, sid))
+
+    def facts():
+        view = native_runtime.project(journal.read(root, sid), record, binding.worker_id)
+        mine = native_runtime.model_facts("codex-api", sid)
+        keys = ("model_configured", "effort_configured", "model_effective")
+        assert {k: view[k] for k in keys} == {k: mine[k] for k in keys}
+        return mine["model_configured"], mine["effort_configured"], mine["model_effective"]
+
+    first = turn()
+    journal.append_events(root, binding, [session("model-a", "high"), observed(first, "model-a-1")])
+    assert facts() == ("model-a", "high", "model-a-1")
+    journal.append_events(root, binding, [session("model-b", None)])  # a resumed generation
+    assert facts() == ("model-b", None, None)
+    second = turn()
+    journal.append_events(root, binding, [observed(second, "model-b-1")])
+    assert facts() == ("model-b", None, "model-b-1")
+    # claude's `system/init` opens EVERY turn with the same model: that keeps the observation
+    # (the public share reads it), including across an own turn that never reports a model.
+    journal.append_events(root, binding, [session("model-b", None)])
+    assert facts() == ("model-b", None, "model-b-1")

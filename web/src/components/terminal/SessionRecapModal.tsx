@@ -14,7 +14,8 @@ import { sessionStatus, type SessionStatusBase } from "../../lib/sessionStatus";
 import type { ProjectRef } from "../../types/api";
 import styles from "./SessionRecapModal.module.css";
 import { useFocusContainment } from "../pulse/useModalDrawer";
-import { useEngineRoster } from "../../app/engineRoster";
+import { engineInfo, useEngineRoster } from "../../app/engineRoster";
+import { type ApiModel, resolveApiModel } from "../../lib/apiModel";
 
 /** Session-brief modal (#481): the recap icon in the terminal header opens this. Re-entering a
  *  session, this is where you find out what it IS and what happened in it without scrolling the
@@ -96,6 +97,27 @@ export function SessionRecapModal({
     interventionReason: interventionReason ?? "",
     reviewedAt: reviewedAt ?? null,
   });
+  // What an API session runs (#1511): read from the one-session lookup on open, so every entry
+  // point (pane, sidebar, Overview map) shows the same answer whatever row it holds. Terminal
+  // sessions are not asked — nothing reports their level. A failed read shows nothing.
+  const isApi = engineInfo(engine)?.runtime === "api";
+  // Keyed by the session it answers for: a brief re-pointed at another session never shows the
+  // previous one's model while (or if) the new read does not land.
+  const [read, setRead] = useState<{ id: string; model: ApiModel } | null>(null);
+  const running = isApi && read?.id === sessionId ? read.model : null;
+  useEffect(() => {
+    if (!isApi) return;
+    let live = true;
+    api
+      .session(sessionId)
+      .then((row) => {
+        if (live) setRead({ id: sessionId, model: resolveApiModel(row) });
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [sessionId, isApi]);
   const [reviewing, setReviewing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -289,6 +311,15 @@ export function SessionRecapModal({
                 <span className={styles.projectDot} aria-hidden="true" />
               )}
               {projectLabel}
+            </span>
+          )}
+          {running?.model && (
+            <span
+              className={styles.modelChip}
+              data-testid="recap-model"
+              title={running.agentDefault ? "The agent's default model" : undefined}
+            >
+              {running.model} · {running.effort}
             </span>
           )}
           {lastMtime != null && (

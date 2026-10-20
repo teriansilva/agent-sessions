@@ -34,6 +34,8 @@ vi.mock("../../lib/api", async () => {
       templates: vi.fn(),
       templateVariables: vi.fn(() => Promise.resolve({ variables: [], limits: {} })),
       uploadBlob: vi.fn(() => new Promise(() => {})),
+      // The session brief reads the lookup for the model it shows (#1511).
+      session: vi.fn(() => new Promise(() => {})),
     },
   };
 });
@@ -554,6 +556,29 @@ test("the pane wears the terminal's bar and composer, and opens on an info scree
   const chips = Array.from(form.querySelectorAll("[data-key]")).map((b) => b.getAttribute("aria-label"));
   expect(chips).toEqual(["Use a template"]);
   expect(within(form).getByRole("button", { name: "Send" })).toBeDisabled();
+});
+
+test("an agent-default session's info names the model and level its client reported (#1511)", async () => {
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(
+    snap({
+      model_requested: null,
+      model_effective: null,
+      model_configured: "gpt-6-codex",
+      effort_configured: "high",
+    }),
+  );
+  renderPane();
+  const model = await screen.findByTestId("structured-model");
+  await waitFor(() => expect(model).toHaveTextContent("gpt-6-codex · high · agent default"));
+});
+
+test("before the client reports, an agent-default session still says so (#1511)", async () => {
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(
+    snap({ model_requested: null, model_effective: null }),
+  );
+  renderPane();
+  const model = await screen.findByTestId("structured-model");
+  await waitFor(() => expect(model).toHaveTextContent(/^agent default$/));
 });
 
 test("a conversation with turns shows no info screen", async () => {

@@ -1309,6 +1309,9 @@ def project(
     decided: set[str] = set()
     native_id = record.get("native_id")
     model_effective = None
+    # What the client REPORTS it runs (#1511): the newest `session` event's model and level. A
+    # report, not evidence; `model_effective` stays the per-turn observation.
+    model_configured = effort_configured = None
     background = False
     background_worker: str | None = None  # the worker that reported `background`
     background_turn: tuple[str | None, str] | None = None  # (target, the worker that minted it)
@@ -1418,6 +1421,14 @@ def project(
             if "agent_turn" in data
             else turns.get(data.get("operation_id") or "")
         )
+        if kind == "session":
+            # A report of a DIFFERENT model retires the earlier observation (#1511): it was made
+            # under the previous model and must not outrank what the client now says it runs.
+            # The same model reported again (claude's `system/init` opens every turn) keeps it.
+            if data.get("model_configured") != model_configured:
+                model_effective = None
+            model_configured = data.get("model_configured")
+            effort_configured = data.get("effort_configured")
         if kind == "session" and data.get("native_id"):
             native_id = data["native_id"]
         elif kind == "model" and data.get("model_effective"):
@@ -1685,6 +1696,8 @@ def project(
         },
         **pending_start_view(record),
         "model_effective": model_effective,
+        "model_configured": model_configured,
+        "effort_configured": effort_configured,
         "pending_requests": requests,
         "native": {
             "native_id": native_id,
@@ -1799,6 +1812,34 @@ def _snapshot_sync(engine_id: str, session_id: str) -> dict:
     if life.get("withdraw") is True:
         view["native"]["withdraw"] = True
     return view
+
+
+def model_facts(engine_id: str, session_id: str) -> dict:
+    """The model and reasoning level of one session (#1511), for the one-session lookup: what was
+    requested, what the client reports it runs (the newest `session` event) and the newest per-turn
+    observation. Reads only the journal's session-wide events — `session` and `model` are indexed
+    there — and projects no turns. Blocking; raises like a snapshot read."""
+    prov, record = _session(engine_id, session_id, retiring_ok=True)
+    facts = {"model_configured": None, "effort_configured": None, "model_effective": None}
+    try:
+        events = list(_journal(prov, session_id).events.for_operations(set()))
+    except (NativeError, native_journal.JournalError, OSError):
+        events = []  # not written yet (a starting session) or unreadable: the request still holds
+    for item in events:
+        kind, data = item["event"]["kind"], item["event"]["data"]
+        if kind == "session":
+            # The same rule as `project`: only a different reported model retires the observation.
+            if data.get("model_configured") != facts["model_configured"]:
+                facts["model_effective"] = None
+            facts["model_configured"] = data.get("model_configured")
+            facts["effort_configured"] = data.get("effort_configured")
+        elif kind == "model" and data.get("model_effective"):
+            facts["model_effective"] = data["model_effective"]
+    return {
+        "model_requested": record["request"]["model"],
+        "effort_requested": record["request"].get("effort"),
+        **facts,
+    }
 
 
 # --- adapter operations ------------------------------------------------------------------------

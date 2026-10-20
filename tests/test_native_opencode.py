@@ -58,6 +58,29 @@ def anyio_backend():
 # --- codec ----------------------------------------------------------------------------------
 
 
+def test_session_new_reports_the_effort_option_it_runs_at():
+    """#1511: ACP's `effort` option is the level an "agent default" opencode session runs at."""
+    codec = OpencodeAcpCodec(agent=AGENT)
+    init = codec.initialize()
+    codec.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": init["id"],
+            "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}},
+        }
+    )
+    new = codec.create("/w")
+    config = [
+        {"id": "model", "currentValue": "local/b"},
+        {"id": "effort", "currentValue": "high"},
+    ]
+    [event] = codec.feed(
+        {"jsonrpc": "2.0", "id": new["id"], "result": {"sessionId": SES, "configOptions": config}}
+    )
+    assert event.data["model_configured"] == "local/b"
+    assert event.data["effort_configured"] == "high"
+
+
 def _codec(*, pinned=True) -> OpencodeAcpCodec:
     codec = OpencodeAcpCodec(agent=AGENT)
     init = codec.initialize()
@@ -81,6 +104,7 @@ def _codec(*, pinned=True) -> OpencodeAcpCodec:
     )
     assert event.kind == "session" and event.data["native_id"] == SES
     assert event.data["model_configured"] == "local/a" and event.data["model_effective"] is None
+    assert event.data["effort_configured"] is None  # no `effort` option offered: no report (#1511)
     if pinned:
         pin = codec.pin_mode()
         assert pin["params"] == {"sessionId": SES, "configId": "mode", "value": AGENT}

@@ -158,6 +158,33 @@ def test_session_response_cannot_claim_configured_model_is_actual_execution():
     assert event.data["model_effective"] is None
 
 
+@pytest.mark.parametrize(("reported", "expected"), [("high", "high"), ("x y", None), (3, None)])
+def test_session_events_carry_the_reported_reasoning_level(reported, expected):
+    """#1511: codex reports the level an "agent default" thread runs at; anything not shaped like a
+    level is no report. Claude's `system/init` names none, so its report is always null."""
+    codec = CodexCodec()
+    request = codec.create("/project", None)
+    result = codec.feed(
+        {
+            "id": request["id"],
+            "result": {
+                "thread": {"id": SESSION, "turns": []},
+                "model": "gpt-6-codex",
+                "reasoningEffort": reported,
+            },
+        }
+    )[0].data
+    assert result["model_configured"] == "gpt-6-codex"
+    assert result["effort_configured"] == expected
+    # The journal boundary accepts the new field (and still accepts events without it).
+    assert native_ipc.normalize_event({"kind": "session", "data": result})["data"] == result
+    event = ClaudeCodec(SESSION).feed(
+        {"type": "system", "subtype": "init", "session_id": SESSION, "model": "claude-opus-5-5"}
+    )[0]
+    assert event.data["model_configured"] == "claude-opus-5-5"
+    assert event.data["effort_configured"] is None
+
+
 def test_read_is_an_observation_not_resume_or_completion():
     codec = CodexCodec()
     request = codec.read(SESSION)

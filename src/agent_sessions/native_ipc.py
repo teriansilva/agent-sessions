@@ -448,9 +448,11 @@ _COMMON = {"operation_id", "native_turn_id"}
 _RPC = {"request_id", "action"}
 _EVENT_FIELDS = {
     "initialized": ({"request_id"}, {"action"}),
+    # `effort_configured` (#1511): the reasoning level the client reports it runs at. Optional, so
+    # a journal written before it, and a worker of an older release, read unchanged.
     "session": (
         {"native_id", "model_configured", "model_effective"},
-        _RPC | {"turns", "omitted_turns"},
+        _RPC | {"turns", "omitted_turns", "effort_configured"},
     ),
     "turn_started": (_COMMON, _RPC),
     "input_accepted": (_COMMON, _RPC),
@@ -512,6 +514,7 @@ def _event(value):
             "native_turn_id",
             "model_configured",
             "model_effective",
+            "effort_configured",
             "native_state",
             "background_turn",
         }:
@@ -579,7 +582,7 @@ def _event(value):
                 else 128
                 if key == "action"
                 else 64
-                if key in {"state", "native_state", "task_state"}
+                if key in {"state", "native_state", "task_state", "effort_configured"}
                 else MAX_EVENT_TEXT,
             )
     if kind in {"text", "tool"} and (

@@ -495,6 +495,10 @@ def _snapshot(session_key: str, raw: dict) -> dict:
         **({"start_expired": True} if raw.get("start_expired") else {}),
         # Configuration is a request, never proof of the model the endpoint actually executed.
         "model_effective": raw.get("model_effective"),
+        # What the client reports it runs (#1511) — the model and level an "agent default" session
+        # actually got. A report, named apart from the request and the per-turn observation.
+        "model_configured": raw.get("model_configured"),
+        "effort_configured": raw.get("effort_configured"),
         "turns": turns,
         "omitted_turns": max(0, raw.get("omitted_turns", 0)) + max(0, len(all_turns) - len(turns)),
         "pending_requests": requests,
@@ -721,6 +725,20 @@ def _observation_target(session_key: str, operation: str):
         engine, native, adapter = _containment_target(session_key)
         problem = engines.registry.current().problems.get(engine)
         return engine, native, adapter, problem or engines.REMOVED_REASON
+
+
+def model_facts(session_key: str) -> dict | None:
+    """A native API session's requested, client-reported and observed model and level (#1511), or
+    None when the key is not a native API session or nothing could be read. Fail-soft like
+    `transcript.effective_model`: the one-session lookup must answer without it, never 500.
+    Blocking."""
+    try:
+        engine, native, adapter, _ = _observation_target(session_key, "snapshot")
+        if not isinstance(adapter, _NativeAdapter):
+            return None
+        return native_runtime.model_facts(engine, native)
+    except Exception:
+        return None
 
 
 async def stop(session_key: str) -> dict:

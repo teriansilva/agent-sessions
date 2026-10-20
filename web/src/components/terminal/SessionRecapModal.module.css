@@ -115,6 +115,12 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
+/* #1511: what an API session runs — a fact of the session, in the text colour of its name. */
+.modelChip {
+  min-width: 0;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
 .projectDot {
   display: inline-block;
   width: 7px;
@@ -293,5 +299,9 @@
   }
   .foot {
     text-align: center;
+  }
+  /* Its own line on a phone: a long model id never squeezes the update / review facts. */
+  .modelChip {
+    flex-basis: 100%;
   }
 }

@@ -328,3 +328,43 @@ test("a row that arrives while the brief is open fills it in (#867)", async () =
   expect(screen.getByText("Fixed bug.")).toBeInTheDocument();
   expect(screen.queryByText("No summary yet.")).not.toBeInTheDocument();
 });
+
+// ---- #1511: what an API session runs ----
+
+test("an API session's brief shows the model and level its lookup reports", async () => {
+  const lookup = vi
+    .spyOn(api, "session")
+    .mockResolvedValue({ model_configured: "gpt-6-codex", effort_configured: "high" } as never);
+  renderModal({ sessionId: "codex-api:abc", engine: "codex-api" });
+  expect(await screen.findByTestId("recap-model")).toHaveTextContent("gpt-6-codex · high");
+  expect(lookup).toHaveBeenCalledWith("codex-api:abc");
+});
+
+test("claude's unreported level reads as the default, and a request wins over a report", async () => {
+  vi.spyOn(api, "session").mockResolvedValue({
+    model_requested: "opus",
+    model_configured: "claude-opus-5-5",
+    effort_configured: null,
+  } as never);
+  renderModal({ sessionId: "claude-api:abc", engine: "claude-api" });
+  expect(await screen.findByTestId("recap-model")).toHaveTextContent("opus · default effort");
+});
+
+test("a terminal session's brief asks nothing and shows no model; a failed read shows none", async () => {
+  const lookup = vi.spyOn(api, "session").mockRejectedValue(new ApiError(503, "x"));
+  renderModal();
+  expect(lookup).not.toHaveBeenCalled();
+  renderModal({ sessionId: "codex-api:zzz", engine: "codex-api" });
+  await waitFor(() => expect(lookup).toHaveBeenCalledWith("codex-api:zzz"));
+  expect(screen.queryByTestId("recap-model")).toBeNull();
+});
+
+test("a brief re-pointed at another session never shows the previous one's model", async () => {
+  vi.spyOn(api, "session")
+    .mockResolvedValueOnce({ model_configured: "gpt-6-codex", effort_configured: "high" } as never)
+    .mockReturnValueOnce(new Promise(() => {}) as never);
+  const { rerender, props } = renderModal({ sessionId: "codex-api:one", engine: "codex-api" });
+  expect(await screen.findByTestId("recap-model")).toHaveTextContent("gpt-6-codex · high");
+  rerender(<SessionRecapModal {...props} sessionId="codex-api:two" />);
+  expect(screen.queryByTestId("recap-model")).toBeNull();
+});

@@ -238,3 +238,44 @@ def test_the_native_keys_terminal_socket_is_refused_and_spawns_nothing(
     headers = test_webterm._login_headers(client, auth_cfg)
     code = test_webterm._close_code(client, f"/ws/term/{source}:{native}", headers)
     assert code is not None and code >= 4000, code
+
+
+def test_the_lookup_carries_an_api_sessions_model_and_level_and_never_fails_on_them(
+    auth_cfg, stores, walk, monkeypatch
+):
+    """#1511: the one-session lookup (what the recap reads) fills an API session's requested,
+    reported and observed model and level from `structured_runtime.model_facts`; when nothing is
+    readable they are null and the lookup still answers. A console row is never asked."""
+    from agent_sessions import structured_runtime
+
+    owner = _setup(walk, "codex", "codex-api", PAIRS[0][2])
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    unread = c.get(f"/api/sessions/{owner}")
+    assert unread.status_code == 200  # this fixture has no native record: nothing readable
+    assert {k: unread.json()[k] for k in ("model_configured", "effort_configured")} == {
+        "model_configured": None,
+        "effort_configured": None,
+    }
+    asked: list[str] = []
+
+    def facts(key):
+        asked.append(key)
+        return {
+            "model_requested": None,
+            "effort_requested": None,
+            "model_configured": "gpt-6-codex",
+            "effort_configured": "high",
+            "model_effective": None,
+        }
+
+    monkeypatch.setattr(structured_runtime, "model_facts", facts)
+    row = c.get(f"/api/sessions/{owner}").json()
+    assert row["model_configured"] == "gpt-6-codex" and row["effort_configured"] == "high"
+    assert row["model_requested"] is None and row["effort_requested"] is None
+    console = c.get(f"/api/sessions/codex:{UNOWNED['codex']}")
+    assert console.status_code == 200 and console.json()["model_configured"] is None
+    assert asked == [owner]
+    # The list never reads them: every row carries the keys, null.
+    listed = {s["id"]: s for s in c.get("/api/sessions?limit=50").json()["sessions"]}
+    assert listed[owner]["model_configured"] is None and asked == [owner]

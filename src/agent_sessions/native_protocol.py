@@ -144,6 +144,11 @@ def _observed_model(value: Any) -> str | None:
     return value if isinstance(value, str) and _MODEL.fullmatch(value) else None
 
 
+def _observed_effort(value: Any) -> str | None:
+    # The level a client REPORTS it runs at (#1511); anything not shaped like a level is no report.
+    return value if isinstance(value, str) and _EFFORT.fullmatch(value) else None
+
+
 def _copy_frame(value: Any, limit: int = MAX_FRAME_BYTES) -> dict[str, Any]:
     """A bounded deep copy also prevents callers mutating a pending approval."""
     if not isinstance(value, dict):
@@ -661,6 +666,7 @@ class CodexCodec(_Codec):
                     action=action,
                     native_id=native_id,
                     model_configured=_observed_model(result.get("model") or thread.get("model")),
+                    effort_configured=_observed_effort(result.get("reasoningEffort")),
                     model_effective=None,
                     turns=observed,
                     omitted_turns=max(0, len(turns) - 50),
@@ -1334,6 +1340,8 @@ class ClaudeCodec(_Codec):
                     "session",
                     native_id=self.native_id,
                     model_configured=_observed_model(frame.get("model")),
+                    # `system/init` names no reasoning level (#1511): no report, never a guess.
+                    effort_configured=None,
                     model_effective=None,
                 )
             ]
@@ -1941,6 +1949,7 @@ class OpencodeAcpCodec(_Codec):
                     action=action,
                     native_id=native_id,
                     model_configured=_observed_model(config.get("model")),
+                    effort_configured=_observed_effort(config.get("effort")),
                     model_effective=None,
                 )
             ]
@@ -1966,6 +1975,7 @@ class OpencodeAcpCodec(_Codec):
                     action=action,
                     native_id=self.native_id,
                     model_configured=_observed_model(config.get("model")),
+                    effort_configured=_observed_effort(config.get("effort")),
                     model_effective=None,
                 )
             ]
