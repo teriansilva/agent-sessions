@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -2150,10 +2151,13 @@ def test_ws_new_session_does_not_stall_the_loop_behind_a_cold_walk(
     the snapshot lock the walk held."""
     import threading
 
-    from agent_sessions import engines, prefs, project_dirs
+    from agent_sessions import engines, fsbrowse, prefs, project_dirs
 
     monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
     monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    # Since #1505 a browsable folder is admitted WITHOUT the walk; this pins the walk path, so the
+    # cheap check says no and the picker (the ~/claude subdirs) has to admit it.
+    monkeypatch.setattr(fsbrowse, "is_browsable_dir", lambda path: False)
     engines.set_scan_cache_ttl(30.0)
     entered = threading.Event()
 
@@ -2707,3 +2711,121 @@ def test_disable_during_terminal_setup_fences_spawn_but_keeps_attach(
                 break
     assert code == (4404 if action == "LAUNCH" else 4502)
     assert bool(dispatched) == (action == "ATTACH")
+
+
+# --- #1505: a terminal launch skips the session walk and keeps blocking calls off the loop -------
+
+
+def _new_url(cwd) -> str:
+    return f"/ws/term/claude:12345678-1234-4234-8234-123456789abc?new=1&cwd={cwd}"
+
+
+def test_ws_new_session_in_a_browsable_folder_never_walks(
+    fake_jsonl, tmp_home, auth_cfg, monkeypatch
+):
+    """The cheap check goes first: a browsable, in-scope folder is admitted without the walk
+    (seconds cold, and every pinned-id launch invalidates it)."""
+    from agent_sessions import engines, prefs, project_dirs
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    walks: list[int] = []
+    monkeypatch.setattr(engines, "scan_all_cached", lambda *a, **k: walks.append(1) or [])
+    _dispatch_as(monkeypatch, "LAUNCH")
+    _stop_at_the_bridge(monkeypatch)
+    cwd = tmp_home / "projects" / "fresh"
+    cwd.mkdir(parents=True)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    walks.clear()
+    assert _close_code(c, _new_url(cwd), headers) == 4500  # admitted: it got as far as the bridge
+    assert walks == [], "a browsable in-scope folder still paid for the session walk"
+
+
+def test_ws_new_session_outside_the_roots_is_still_refused(
+    fake_jsonl, tmp_home, auth_cfg, monkeypatch
+):
+    """Same boolean (`in_picker or browsable_ok`), only the order changed: a browsable folder
+    outside the configured roots is still refused, after the walk had its say."""
+    from agent_sessions import engines, prefs, project_dirs
+
+    allowed = tmp_home / "allowed"
+    (allowed / "inside").mkdir(parents=True)
+    outside = tmp_home / "elsewhere"
+    outside.mkdir()
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [str(allowed)])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    real = engines.scan_all_cached
+    walks: list[int] = []
+    monkeypatch.setattr(engines, "scan_all_cached", lambda *a, **k: walks.append(1) or real())
+    _dispatch_as(monkeypatch, "LAUNCH")
+    _stop_at_the_bridge(monkeypatch)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    walks.clear()
+    assert _close_code(c, _new_url(outside), headers) == 4404
+    assert walks, "a folder the cheap check refuses must still be asked of the picker"
+    walks.clear()
+    assert _close_code(c, _new_url(allowed / "inside"), headers) == 4500
+    assert walks == []
+
+
+def test_ws_launch_runs_its_blocking_calls_off_the_loop(
+    fake_jsonl, tmp_home, auth_cfg, monkeypatch, engine_bin, caplog
+):
+    """The prefs flock (projects mode / auto-include), the scope probe and the fresh roster
+    snapshot of `registry.admits` all run in worker threads during a LAUNCH; the launch logs one
+    timing line with durations only."""
+    from agent_sessions import engines, prefs, project_dirs, ptybridge, scopedspawn
+    from agent_sessions.routes import terminal as terminal_route
+
+    def on_loop() -> bool:
+        try:
+            asyncio.get_running_loop()
+            return True
+        except RuntimeError:
+            return False
+
+    seen: dict[str, list[bool]] = {}
+
+    def spy(name, result):
+        def call(*_a, **_k):
+            seen.setdefault(name, []).append(on_loop())
+            return result
+
+        return call
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    monkeypatch.setattr(prefs, "get_projects_mode", spy("projects_mode", "included"))
+    monkeypatch.setattr(prefs, "add_project_included", spy("add_included", None))
+    monkeypatch.setattr(scopedspawn, "enabled", lambda: True)
+    monkeypatch.setattr(scopedspawn, "available", spy("scope_probe", False))
+    real_admits = engines.registry.admits
+
+    def admits(prov):
+        seen.setdefault("admits", []).append(on_loop())
+        return real_admits(prov)
+
+    monkeypatch.setattr(engines.registry, "admits", admits)
+    monkeypatch.setattr(ptybridge, "launch_argv", lambda **_k: ["/bin/true"])
+
+    async def no_bridge(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(terminal_route.webterm, "run", no_bridge)
+    _dispatch_as(monkeypatch, "LAUNCH")
+    engine_bin("claude")
+    cwd = tmp_home / "work" / "launch"
+    cwd.mkdir(parents=True)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    seen.clear()
+    with caplog.at_level(logging.INFO, logger="agent_sessions.launchtiming"):
+        _close_code(c, _new_url(cwd), headers)
+    assert seen.get("admits") and not any(seen["admits"]), seen
+    assert seen.get("projects_mode") == [False] and seen.get("add_included") == [False], seen
+    assert seen.get("scope_probe") == [False], seen
+    lines = [r.getMessage() for r in caplog.records if "launch timings" in r.getMessage()]
+    assert len(lines) == 1 and "engine=claude op=terminal" in lines[0], lines
+    assert str(cwd) not in lines[0] and "12345678" not in lines[0]

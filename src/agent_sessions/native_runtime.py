@@ -29,10 +29,12 @@ import asyncio
 import bisect
 import contextlib
 import json
+import logging
 import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -41,6 +43,7 @@ from pathlib import Path
 
 from . import (
     chat_store,
+    launchtiming,
     model_choice,
     native_attachments,
     native_containment,
@@ -54,6 +57,8 @@ from . import (
     risk_marks,
 )
 from .plugins import api_source, kinds, storage
+
+log = logging.getLogger("agent_sessions.native_runtime")
 
 READY_TIMEOUT = 120.0
 SHUTTING_DOWN = "the native worker is shutting down; retry"
@@ -301,15 +306,29 @@ def _proved_gone(worker_id: str) -> bool:
     return HOST.cgroup(identity.control_group).state in {"absent", "empty"}
 
 
+#: Crash cleanup, not launch-critical (#1505): at most one sweep per this many seconds per
+#: process. A dead generation's lease can outlive it this much longer; a live one is never swept.
+SWEEP_INTERVAL = 60.0
+_SWEPT_AT: float | None = None
+_SWEEP_LOCK = threading.Lock()
+
+
 def _sweep_leases(release: Path | None) -> None:
     """Drop leases of generations whose pinned processes provably no longer run, in EVERY release.
 
     Workers drop their own lease on a clean exit; this catches crashes and kills. A lease whose
     generation has no pinned invocation yet (being launched right now by another session) is
-    never touched.
+    never touched. Throttled to once per ``SWEEP_INTERVAL`` per process (#1505): it walks every
+    release and asks systemd about each lease, and every launch used to pay for that.
     """
+    global _SWEPT_AT
     if release is None:
         return
+    with _SWEEP_LOCK:
+        now = time.monotonic()
+        if _SWEPT_AT is not None and now - _SWEPT_AT < SWEEP_INTERVAL:
+            return
+        _SWEPT_AT = now
     with contextlib.suppress(OSError):
         for leases in release.parent.glob(f"*/{native_state.LEASES}"):
             for entry in leases.iterdir():
@@ -509,7 +528,9 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -
     record.setdefault("workers", []).append(worker.worker_id)
     record["generations"] = record.get("generations", 0) + 1
     native_state.write_session(session_id, record)  # durable startup intent BEFORE launch
+    launchtiming.mark("config")
     _sweep_leases(release)
+    launchtiming.mark("sweep")
     _lease(release, worker.worker_id)
     argv = native_containment.launch_argv(
         worker,
@@ -520,7 +541,9 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -
         tasks_max=policy["api_tasks"],
         memory_gib=policy["api_memory_gib"],
     )
+    launchtiming.mark("lease")
     launched = HOST.launch(argv)
+    launchtiming.mark("spawn")
     observation = HOST.show(worker)
     if observation is None or observation.load_state != "loaded" or not observation.invocation_id:
         native_state.update_lifecycle(worker.worker_id, phase="launch_unknown", launched=launched)
@@ -536,6 +559,7 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -
         control_group=identity.control_group,
         launched_at=time.time(),
     )
+    launchtiming.mark("pin")
     return worker.worker_id
 
 
@@ -741,8 +765,13 @@ def _create_sync(
     model: str | None,
     bypass: bool = False,
     effort: str | None = None,
-) -> bool:
-    """Returns True when a generation must be awaited (a new launch happened).
+    record_launch: bool = False,
+) -> str | None:
+    """The worker id of a new launch (a generation to await), or None when nothing launched.
+
+    ``record_launch`` (#1505, the HTTP route only): the caller returns at launch, so the new
+    generation's launch view (`starting`) is written in the same locked section that launched it,
+    for the background readiness waiter to settle.
 
     ``bypass`` (#1339) is part of the immutable create request: recorded only when set, so a
     guarded request is byte-identical to one written before the field existed, and a replay of
@@ -753,6 +782,7 @@ def _create_sync(
         binding = api_source.resolve(prov)
     except api_source.SourceError as exc:
         raise NativeError(409, str(exc)) from None
+    launchtiming.mark("resolve")
     adapter = prov.manifest.api.kind
     if bypass and adapter not in kinds.API_BYPASS_KINDS:
         raise NativeError(422, "this client cannot skip permission prompts yet")
@@ -766,6 +796,7 @@ def _create_sync(
         model, effort = model_choice.select_api_choice(prov, model, effort)
     except model_choice.ModelRefused as exc:
         refused = exc
+    launchtiming.mark("model")
     request = {"cwd": cwd, "model": model, "adapter": adapter}
     if effort is not None:
         request["effort"] = effort
@@ -773,6 +804,7 @@ def _create_sync(
         request["bypass"] = True
     root = _journal_root(prov)
     with native_state.session_lock(session_id):
+        launchtiming.mark("lock")
         record = native_state.read_session(session_id)
         if record is not None:
             if record["request"] != request or record["session_key"] != session_key:
@@ -784,11 +816,12 @@ def _create_sync(
             if record.get("generations"):
                 if record.get("native_id") is None and _live_worker(session_id) is None:
                     raise NativeError(409, "this creation did not complete; use a new operation id")
-                return False  # exact replay: observe, never launch a second creation
+                return None  # exact replay: observe, never launch a second creation
         else:
             if refused is not None:
                 raise NativeError(422, refused.detail)
             ready, reason = readiness(prov)
+            launchtiming.mark("version")
             if not ready:
                 raise NativeError(409, reason or "native client is not ready")
             if not os.path.isdir(cwd):
@@ -823,12 +856,18 @@ def _create_sync(
             )
         except FileExistsError:
             native_journal.read(root, session_id)  # an existing header must be ours, intact
+        launchtiming.mark("record")
         if record["request"].get("bypass"):
             # A skip creation reserves and launches NOTHING from create — not the first call, not
             # a replay, not after an interrupted start (Hermes 5908): only `start` does (#1339).
-            return False
-        _reserve_and_launch_locked(session_id, record, prov, binding)
-        return True
+            return None
+        worker_id = _reserve_and_launch_locked(session_id, record, prov, binding)
+        if record_launch:
+            # Same lock, same write sequence as the launch: the route's caller sees `starting`
+            # from its first snapshot, and only this generation's waiter may settle it.
+            _write_launch(record, worker_id, STARTING)
+            native_state.write_session(session_id, record)
+        return worker_id
 
 
 def _reserve_and_launch_locked(
@@ -843,6 +882,7 @@ def _reserve_and_launch_locked(
     if source is None:
         raise NativeError(409, "the native source has no recognised history store")
     with storage.locked("launch", wait=30):
+        launchtiming.mark("launch_lock")
         if not registry.admits(binding.source) or not api_source.admits(binding):
             raise NativeError(409, "the agent changed or was removed")
         native_ownership.reserve(
@@ -860,6 +900,7 @@ def _reserve_and_launch_locked(
                 owner_token=record["owner_token"],
                 native_id=record["native_id"],
             )
+    launchtiming.mark("admit")
     return _launch_locked(session_id, record, prov, binding, mode=mode)
 
 
@@ -872,7 +913,12 @@ async def create(
     effort: str | None = None,
     bypass: bool = False,
     execution_admission=None,
+    wait_ready: bool = True,
 ) -> str:
+    """Create (or replay) one API session. ``wait_ready=True`` (every internal caller) returns
+    once the worker reports ready, as it always has. ``wait_ready=False`` (#1505, the HTTP route
+    only) returns as soon as the generation is recorded and launched; a background waiter then
+    applies today's exact failure handling and settles the session's ``launch`` view."""
     if not isinstance(bypass, bool):
         raise NativeError(422, "bypass must be a boolean")
     if effort is not None and (
@@ -884,26 +930,54 @@ async def create(
             409, "native clients cannot enforce caller authority across processes yet"
         )
     cwd, model = _validate_create(cwd, model)
+    timings = launchtiming.start(engine_id, "create")
+    # Set once a background waiter owns the rest of this start (and its timing line).
+    handed: dict = {}
+    launch = partial(
+        _create_sync,
+        engine_id,
+        session_id,
+        cwd,
+        model,
+        bypass,
+        effort,
+        record_launch=not wait_ready,
+    )
     try:
-        launched = await asyncio.to_thread(
-            _create_sync, engine_id, session_id, cwd, model, bypass, effort
-        )
-    except (native_state.StateError, native_ownership.OwnershipError, storage.StateError) as exc:
-        raise NativeError(503, str(exc)) from None
-    except native_journal.JournalError as exc:
-        raise NativeError(503, exc.detail) from None
-    if launched:
+        try:
+            if not wait_ready:
+                # The route answers at launch; the waiter is installed by the launch itself.
+                await _launch_handed_off(launch, engine_id, session_id, "create", handed)
+                launchtiming.mark("respond")
+                return session_id
+            launched = await asyncio.to_thread(launch)
+        except (
+            native_state.StateError,
+            native_ownership.OwnershipError,
+            storage.StateError,
+        ) as exc:
+            raise NativeError(503, str(exc)) from None
+        except native_journal.JournalError as exc:
+            raise NativeError(503, exc.detail) from None
+        if not launched:
+            return session_id  # a replay, or a skip creation: nothing was launched
         gen = await asyncio.to_thread(_generation, session_id)
-        if gen is not None:
-            try:
-                await _wait_ready(gen.worker_id)
-            except NativeError:
-                # A creation that never became ready must not keep its reservation (which
-                # holds new console launches for the source) — stop proves it gone first.
-                with contextlib.suppress(Exception):
-                    await stop(engine_id, session_id)
-                raise
-    return session_id
+        if gen is None:
+            return session_id
+        try:
+            await _wait_ready(gen.worker_id)
+            launchtiming.mark("ready")
+        except NativeError:
+            # A creation that never became ready must not keep its reservation (which
+            # holds new console launches for the source) — stop proves it gone first.
+            with contextlib.suppress(Exception):
+                await stop(engine_id, session_id)
+            launchtiming.mark("failed")
+            raise
+        return session_id
+    finally:
+        if not handed:
+            timings.emit()
 
 
 # --- start (the second phase of a skip-permissions creation, #1339) ---------------------------
@@ -947,8 +1021,13 @@ def _set_start(record: dict, state: str, gen: str | None = None) -> None:
     record["start"] = {**(record.get("start") or {}), "state": state, "gen": gen, "at": time.time()}
 
 
-def pending_start_view(record: dict) -> dict:
-    """What a snapshot says about a skip creation's start."""
+def pending_start_view(record: dict, live_worker: str | None = None) -> dict:
+    """What a snapshot says about a skip creation's start.
+
+    Starting and failed are separate (#1505): a launched worker that is not ready yet is
+    `start_in_flight` (no Start, and never "nothing has run"); a failed start is `start_failed`
+    with its reason when the launch view has one. A `starting` whose worker is gone still reads
+    incomplete, so Start reconciles it as before."""
     state = _start_state(record)
     if state is None or state in {STARTED, DISCARDED}:
         return {"pending_start": False}
@@ -956,17 +1035,40 @@ def pending_start_view(record: dict) -> dict:
         return {"pending_start": False, "start_expired": True}
     if state == PENDING:
         return {"pending_start": True, "start_expires_at": record["start"]["expires_at"]}
-    return {"pending_start": True, "start_incomplete": True}  # starting / failed: Start reconciles
+    if state == STARTING:
+        gen = record["start"].get("gen")
+        if gen is not None and gen == live_worker:
+            return {"pending_start": False, "start_in_flight": True}
+        return {"pending_start": True, "start_incomplete": True}  # a dead starting: Start again
+    view = launch_view(record)
+    reason = view.get("reason") if view is not None and view["state"] == FAILED else None
+    return {
+        "pending_start": True,
+        "start_incomplete": True,
+        "start_failed": True,
+        **({"start_failed_reason": reason} if reason else {}),
+    }
 
 
-def _start_sync(engine_id: str, session_id: str) -> str | None:
-    """The worker id this call launched, or None when the start is already complete."""
+def _start_sync(engine_id: str, session_id: str, record_launch: bool = False) -> str | None:
+    """The worker id this call launched, or None when the start is already complete.
+
+    ``record_launch`` (#1505, the HTTP route only): the launched generation's view is recorded
+    as `starting` in the same write as `starting(W)`, and a refusal BEFORE any worker exists is
+    recorded as a `failed` launch view (``gen: null``) under the session lock before it raises —
+    no waiter exists to publish it, and the route's caller may never see the response. The start
+    state itself moves exactly as without it, so Start again works."""
     prov, _ = _session(engine_id, session_id)
+    unresolved = None
     try:
         binding = api_source.resolve(prov)
     except api_source.SourceError as exc:
-        raise NativeError(409, str(exc)) from None
+        if not record_launch:
+            raise NativeError(409, str(exc)) from None
+        unresolved, binding = str(exc), None
+    launchtiming.mark("resolve")
     with native_state.session_lock(session_id):
+        launchtiming.mark("lock")
         _, record = _session(engine_id, session_id)
         state = _start_state(record)
         if state is None:
@@ -993,38 +1095,59 @@ def _start_sync(engine_id: str, session_id: str) -> str | None:
                 raise NativeError(409, "this session is starting; wait for it")
             # starting, but its worker is gone: treat as failed and start again below
         # pending, failed, or a dead starting: (re)launch. Checked on EVERY launch (Hermes 5913).
-        if binding.source.engine_id != record["source_engine"]:
-            raise NativeError(409, "the session's original native source is not available")
-        ready, reason = readiness(prov)
-        if not ready:
-            raise NativeError(409, reason or "native client is not ready")
-        mode = "create"
-        if record.get("generations"):
-            # A retry after a failed launch: every earlier generation must be PROVED gone first.
-            if _settle_generations(session_id, record):
-                raise NativeError(
-                    409, "the previous start's worker is not proved gone; discard and start anew"
-                )
-            if record.get("native_id") is None:
-                intent = native_ownership.lookup(record["session_key"])
-                if intent is not None and intent.native_id is not None:
-                    record["native_id"] = intent.native_id
-            if record["adapter"] == "codex-app-server" and record.get("native_id"):
-                mode = "resume"
-            elif record["adapter"] == "claude-stream-json" and _claude_history_exists(
-                binding.source, record["native_id"]
-            ):
-                mode = "resume"
+        try:
+            if unresolved is not None:
+                raise NativeError(409, unresolved)
+            if binding.source.engine_id != record["source_engine"]:
+                raise NativeError(409, "the session's original native source is not available")
+            ready, reason = readiness(prov)
+            launchtiming.mark("version")
+            if not ready:
+                raise NativeError(409, reason or "native client is not ready")
+            mode = "create"
+            if record.get("generations"):
+                # A retry after a failed launch: every earlier generation must be PROVED gone.
+                if _settle_generations(session_id, record):
+                    raise NativeError(
+                        409,
+                        "the previous start's worker is not proved gone; discard and start anew",
+                    )
+                if record.get("native_id") is None:
+                    intent = native_ownership.lookup(record["session_key"])
+                    if intent is not None and intent.native_id is not None:
+                        record["native_id"] = intent.native_id
+                if record["adapter"] == "codex-app-server" and record.get("native_id"):
+                    mode = "resume"
+                elif record["adapter"] == "claude-stream-json" and _claude_history_exists(
+                    binding.source, record["native_id"]
+                ):
+                    mode = "resume"
+        except NativeError as exc:
+            if record_launch:
+                _write_launch(record, None, FAILED, exc.detail)
+                native_state.write_session(session_id, record)
+            raise
         # The operator's start, durable BEFORE anything is reserved or launched.
         _set_start(record, STARTING, None)
         native_state.write_session(session_id, record)
         try:
             worker_id = _reserve_and_launch_locked(session_id, record, prov, binding, mode=mode)
-        except Exception:
+        except Exception as exc:
             _set_start(record, FAILED, None)
+            if record_launch:
+                _write_launch(
+                    record,
+                    None,
+                    FAILED,
+                    exc.detail
+                    if isinstance(exc, NativeError)
+                    else "the native worker could not be started",
+                )
             native_state.write_session(session_id, record)
             raise
         _set_start(record, STARTING, worker_id)
+        if record_launch:
+            _write_launch(record, worker_id, STARTING)
         native_state.write_session(session_id, record)
         return worker_id
 
@@ -1046,24 +1169,443 @@ def _finish_start(session_id: str, worker_id: str, ok: bool) -> bool:
         return ok
 
 
-async def start(engine_id: str, session_id: str) -> str:
+async def start(engine_id: str, session_id: str, *, wait_ready: bool = True) -> str:
+    """Launch a skip creation's generation. ``wait_ready`` as for :func:`create` (#1505)."""
+    timings = launchtiming.start(engine_id, "start")
+    handed: dict = {}
+    launch = partial(_start_sync, engine_id, session_id, record_launch=not wait_ready)
     try:
-        worker_id = await asyncio.to_thread(_start_sync, engine_id, session_id)
-    except (native_state.StateError, native_ownership.OwnershipError, storage.StateError) as exc:
-        raise NativeError(503, str(exc)) from None
-    if worker_id is None:
+        try:
+            if not wait_ready:
+                # The route answers at launch; the waiter is installed by the launch itself.
+                await _launch_handed_off(launch, engine_id, session_id, "start", handed)
+                launchtiming.mark("respond")
+                return session_id
+            worker_id = await asyncio.to_thread(launch)
+        except (
+            native_state.StateError,
+            native_ownership.OwnershipError,
+            storage.StateError,
+        ) as exc:
+            raise NativeError(503, str(exc)) from None
+        if worker_id is None:
+            return session_id
+        try:
+            await _wait_ready(worker_id)
+        except NativeError:
+            # Contain it (internal: NOT a discard), then fail the start only if still ours.
+            with contextlib.suppress(Exception):
+                await stop(engine_id, session_id, discard=False)
+            await asyncio.to_thread(_finish_start, session_id, worker_id, False)
+            launchtiming.mark("failed")
+            raise
+        if not await asyncio.to_thread(_finish_start, session_id, worker_id, True):
+            launchtiming.mark("failed")
+            raise NativeError(409, "this start was discarded or replaced before it completed")
+        launchtiming.mark("ready")
         return session_id
+    finally:
+        if not handed:
+            timings.emit()
+
+
+# --- the launch view and background readiness (#1505) ----------------------------------------
+#
+# The HTTP create/start return once a generation is recorded and launched (`wait_ready=False`).
+# Readiness then moves to the snapshot: `record["launch"] = {gen, state, reason, since}`, one
+# bounded, GENERATION-SCOPED view. `starting` is written with the launch, under the session lock.
+# The generation's background waiter owns it from then on and writes ONLY that field, and only
+# while it still names its generation as `starting` (`_settle_launch`): it never touches `closed`,
+# `current_worker`, the reservation or start admission, so a failure recorded on a record its own
+# `stop` just closed reopens nothing. A replacement start rewrites `gen`, and the operator's
+# Discard drops the view, so a stale waiter's write is a no-op. A refusal before any worker
+# exists is recorded by `_start_sync` with `gen: null`.
+
+LAUNCH_READY = "ready"
+LAUNCH_REASON_MAX = 200
+RESTARTED = "BattleLab restarted before the worker became ready"
+UNCONFIRMED_STOP = "couldn't confirm the worker stopped"
+#: Background readiness waiters (and the startup reconciliation pass), drained at shutdown.
+_READINESS_TASKS: set[asyncio.Task] = set()
+
+
+def _launch_reason(reason: object) -> str:
+    text = " ".join(str(reason or "the native worker did not become ready").split())
+    return text if len(text) <= LAUNCH_REASON_MAX else text[: LAUNCH_REASON_MAX - 1] + "…"
+
+
+def _write_launch(record: dict, gen: str | None, state: str, reason: object = None) -> None:
+    view = {"gen": gen, "state": state, "since": time.time()}
+    if state == FAILED:
+        view["reason"] = _launch_reason(reason)
+    record["launch"] = view
+
+
+def launch_view(record: dict) -> dict | None:
+    """The snapshot's launch view, or None when there is none (or it is unreadable)."""
+    view = record.get("launch")
+    if not isinstance(view, dict) or view.get("state") not in {STARTING, LAUNCH_READY, FAILED}:
+        return None
+    gen = view.get("gen")
+    if gen is not None and not isinstance(gen, str):
+        return None
+    since = view.get("since")
+    out = {
+        "gen": gen,
+        "state": view["state"],
+        "since": since if isinstance(since, int | float) else None,
+    }
+    if view["state"] == FAILED:
+        out["reason"] = _launch_reason(view.get("reason"))
+    return out
+
+
+def _settle_launch(session_id: str, gen: str, state: str, reason: object = None) -> bool:
+    """Owned-generation settlement: `launch` only, only while it is still `gen`'s `starting`."""
+    with native_state.session_lock(session_id):
+        record = native_state.read_session(session_id)
+        if record is None:
+            return False
+        view = record.get("launch")
+        if not isinstance(view, dict) or view.get("gen") != gen or view.get("state") != STARTING:
+            return False
+        _write_launch(record, gen, state, reason)
+        native_state.write_session(session_id, record)
+        return True
+
+
+#: Transient errors (a lock or state read that failed) are retried with these pauses before a
+#: readiness owner gives up; the last failure is logged by the task's done-callback.
+LAUNCH_RETRY_DELAYS = (0.5, 1.0, 2.0, 5.0, 10.0)
+#: The slow in-process owner (#1505): every this many seconds, every `starting` launch view with
+#: no live owner in this process gets one again — after an owner exhausted its retries, or a
+#: launch whose record landed after a scan. Cancelled at shutdown.
+RECONCILE_INTERVAL = 30.0
+#: How long shutdown waits for launch threads still in flight before cancelling owners, so a
+#: thread that is about to persist `starting` does so before the next process can scan.
+LAUNCH_DRAIN_TIMEOUT = 75.0
+#: Launch threads in flight (route create/start), keyed by nothing: drained, never cancelled.
+_LAUNCHES: set[asyncio.Future] = set()
+#: Worker id → the task that owns settling its launch view in this process.
+_OWNERS: dict[str, asyncio.Task] = {}
+_sleep = asyncio.sleep  # one seam for the retry / periodic clocks (tests use a fake clock)
+
+
+def _owned_task(coro, what: str, gen: str | None = None) -> asyncio.Task | None:
+    """A drained background task whose unexpected failure is logged, never lost silently. With
+    ``gen``, it is that launch's ONE owner in this process: a second owner is not started."""
+    if gen is not None and gen in _OWNERS and not _OWNERS[gen].done():
+        coro.close()
+        return None
+    task = asyncio.create_task(coro)
+    _READINESS_TASKS.add(task)
+    if gen is not None:
+        _OWNERS[gen] = task
+
+    def done(finished: asyncio.Task) -> None:
+        _READINESS_TASKS.discard(finished)
+        if gen is not None and _OWNERS.get(gen) is finished:
+            del _OWNERS[gen]
+        if not finished.cancelled() and finished.exception() is not None:
+            log.error("%s failed", what, exc_info=finished.exception())
+
+    task.add_done_callback(done)
+    return task
+
+
+def _spawn_waiter(
+    engine_id: str, session_id: str, worker_id: str, kind: str
+) -> asyncio.Task | None:
+    return _owned_task(
+        _await_launch(engine_id, session_id, worker_id, kind),
+        "an API session's readiness waiter",
+        gen=worker_id,
+    )
+
+
+async def _launch_handed_off(launch, engine_id: str, session_id: str, kind: str, handed: dict):
+    """Run a route's launch thread so that ownership survives the request being cancelled.
+
+    A cancelled request does not stop the thread: it may still launch a `starting` generation.
+    The waiter is therefore installed from the THREAD's completion (a done-callback on a shielded
+    task), never from the request's continuation, so every launched generation gets its owner.
+    Shutdown waits for these (bounded) instead of cancelling them: cancelling the task would not
+    stop the thread, only lose its handoff."""
+    task = asyncio.ensure_future(asyncio.to_thread(launch))
+    _LAUNCHES.add(task)
+
+    def hand_off(done: asyncio.Future) -> None:
+        _LAUNCHES.discard(done)
+        if done.cancelled() or done.exception() is not None:
+            return  # nothing launched
+        worker_id = done.result()
+        if worker_id:
+            handed["waiter"] = True
+            _spawn_waiter(engine_id, session_id, worker_id, kind)
+
+    task.add_done_callback(hand_off)
+    return await asyncio.shield(task)
+
+
+def _emit_timings(outcome: str) -> None:
+    launchtiming.mark(outcome)
+    recorder = launchtiming.current()
+    if recorder is not None:
+        recorder.emit()
+
+
+async def _retrying(step, what: str):
+    """Run ``step()`` with bounded retries on transient errors. A `NativeError` is an answer,
+    not a transient failure, unless it is a 503 (state or lock unavailable); cancellation is
+    never retried. The last failure propagates (and is logged by the task's done-callback)."""
+    for delay in (*LAUNCH_RETRY_DELAYS, None):
+        try:
+            return await step()
+        except asyncio.CancelledError:
+            raise
+        except NativeError as exc:
+            if exc.status != 503 or delay is None:
+                raise
+            log.warning("%s hit a transient error; retrying in %ss", what, delay, exc_info=True)
+            await _sleep(delay)
+        except Exception:
+            if delay is None:
+                raise
+            log.warning("%s hit a transient error; retrying in %ss", what, delay, exc_info=True)
+            await _sleep(delay)
+
+
+def _start_is_started(session_id: str, worker_id: str) -> bool:
+    record = native_state.read_session(session_id) or {}
+    start = record.get("start") or {}
+    return start.get("state") == STARTED and start.get("gen") == worker_id
+
+
+async def _settle_once(engine_id: str, session_id: str, worker_id: str, kind: str) -> str:
+    """One attempt to settle a launch; idempotent, so a transient failure can simply retry."""
     try:
         await _wait_ready(worker_id)
-    except NativeError:
-        # Contain it (internal: NOT a discard), then fail the start only if still ours.
-        with contextlib.suppress(Exception):
-            await stop(engine_id, session_id, discard=False)
-        await asyncio.to_thread(_finish_start, session_id, worker_id, False)
-        raise
-    if not await asyncio.to_thread(_finish_start, session_id, worker_id, True):
-        raise NativeError(409, "this start was discarded or replaced before it completed")
-    return session_id
+    except NativeError as exc:
+        await asyncio.to_thread(
+            _fail_owned_generation, engine_id, session_id, worker_id, kind, exc.detail
+        )
+        return "failed"
+    if kind == "start":
+        ok = await asyncio.to_thread(_finish_start, session_id, worker_id, True)
+        # A retry after a transient error may find its own completion already recorded.
+        if not ok and not await asyncio.to_thread(_start_is_started, session_id, worker_id):
+            # It vanished after reporting ready (`_finish_start` recorded `failed`), or Discard / a
+            # newer start moved the state on — then the generation fence makes this a no-op.
+            await asyncio.to_thread(
+                _settle_launch,
+                session_id,
+                worker_id,
+                FAILED,
+                "the native worker exited before it became ready",
+            )
+            return "failed"
+    await asyncio.to_thread(_settle_launch, session_id, worker_id, LAUNCH_READY)
+    return "ready"
+
+
+async def _await_launch(engine_id: str, session_id: str, worker_id: str, kind: str) -> None:
+    """One generation's readiness, after its route returned. Cancellation is NOT a failure: a
+    cancelled waiter settles nothing (the worker is its own unit and may still come up), and the
+    next app start's `reconcile_launches` settles the view instead. A transient read or lock
+    error is retried (bounded), so the only owner of a launch does not vanish on a hiccup."""
+    outcome = await _retrying(
+        lambda: _settle_once(engine_id, session_id, worker_id, kind), "an API session's launch"
+    )
+    _emit_timings(outcome)
+
+
+def _owns_launch(record: dict, worker_id: str, kind: str) -> bool:
+    view = record.get("launch")
+    if not isinstance(view, dict) or view.get("gen") != worker_id or view.get("state") != STARTING:
+        return False
+    if kind == "start":
+        start = record.get("start") or {}
+        return start.get("state") == STARTING and start.get("gen") == worker_id
+    return True
+
+
+def _stop_generation_locked(session_id: str, record: dict, worker_id: str) -> str:
+    """Stop exactly ``worker_id``'s pinned invocation and prove it gone. Never any other
+    generation of the session. The caller holds the session lock."""
+    identity = _identity(worker_id)
+    if identity is not None:
+        observation = HOST.show(identity.worker)
+        if observation is not None and observation.invocation_id == identity.invocation_id:
+            with contextlib.suppress(native_containment.ContainmentError):
+                HOST.stop(native_containment.stop_argv(identity, observation))
+    deadline = time.monotonic() + STOP_TIMEOUT
+    while True:
+        if _gone(session_id, worker_id):
+            life = native_state.read_lifecycle(worker_id)
+            release = Path(life["release"]) if life.get("release") else None
+            _lease(release, worker_id, remove=True)
+            native_state.forget_config(worker_id)
+            native_state.update_lifecycle(worker_id, phase="gone", gone_at=time.time())
+            record["workers"] = [w for w in record.get("workers", []) if w != worker_id]
+            native_state.write_session(session_id, record)
+            return "gone"
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.2)
+    return "live" if classify(session_id, worker_id) == "live" else "unknown"
+
+
+def _fail_owned_generation(
+    engine_id: str, session_id: str, worker_id: str, kind: str, reason: str
+) -> bool:
+    """The failure handling of a launch that never became ready, fenced BEFORE any side effect.
+
+    Under the session lock, and only while ``worker_id`` still owns the launch view (and, for a
+    skip start, the start state): close admission for that generation, stop THAT generation's
+    worker only, then — as the waiting create/start always did — discharge an unused creation's
+    reservation, or fail the start; finally record `failed` + reason. A replacement generation,
+    a Discard or a settled view makes this a no-op that touches nothing (False)."""
+    with native_state.session_lock(session_id, wait=STOP_TIMEOUT):
+        record = native_state.read_session(session_id)
+        if record is None or not _owns_launch(record, worker_id, kind):
+            return False
+        if record.get("current_worker") == worker_id:
+            record["closed"] = True
+        native_state.write_session(session_id, record)
+        contained = _stop_generation_locked(session_id, record, worker_id)
+        if contained == "gone" and kind == "create" and not record.get("workers"):
+            _discharge_if_unused(engine_id, session_id, record)
+        if kind == "start":
+            _set_start(record, FAILED, None)
+        if contained != "gone":
+            reason = f"{reason}; {UNCONFIRMED_STOP}"
+        _write_launch(record, worker_id, FAILED, reason)
+        native_state.write_session(session_id, record)
+        return True
+
+
+async def drain_readiness() -> None:
+    """Shutdown: first let launch threads in flight finish (bounded), so their `starting` view is
+    on disk before this process goes — the next start's scan settles it. Then cancel every owner
+    without settling it (see `_await_launch`), and await them."""
+    launches = [task for task in _LAUNCHES if not task.done()]
+    if launches:
+        _done, pending = await asyncio.wait(launches, timeout=LAUNCH_DRAIN_TIMEOUT)
+        if pending:
+            log.warning("%d API session launch(es) still in flight at shutdown", len(pending))
+    tasks = list(_READINESS_TASKS)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _starting_launches() -> tuple[list[tuple[str, str, str, str]], int]:
+    """(engine, session id, worker id, kind) for every record whose launch view is `starting`,
+    and how many records could not be read (the caller retries those)."""
+    found, unreadable = [], 0
+    paths = sorted(native_state.root().glob("*.json"))
+    for path in paths:
+        try:
+            record = native_state.read(path)
+        except (OSError, ValueError, native_state.StateError):
+            unreadable += 1
+            continue
+        if not isinstance(record, dict) or not isinstance(record.get("request"), dict):
+            continue
+        view = launch_view(record)
+        if view is None or view["state"] != STARTING or not view["gen"]:
+            continue
+        engine, _, session_id = str(record.get("session_key", "")).partition(":")
+        if not engine or session_id != path.stem:
+            continue
+        kind = "start" if record["request"].get("bypass") else "create"
+        found.append((engine, session_id, view["gen"], kind))
+    return found, unreadable
+
+
+def _invocation_live(worker_id: str) -> bool:
+    """The generation's pinned invocation is the unit's active one (systemd's word, not a file)."""
+    identity = _identity(worker_id)
+    if identity is None:
+        return False
+    observation = HOST.show(identity.worker)
+    return (
+        observation is not None
+        and observation.active_state == "active"
+        and observation.invocation_id == identity.invocation_id
+    )
+
+
+def _restart_verdict(worker_id: str) -> str:
+    """ready / failed / starting for a launch an earlier app process left `starting`. A `ready`
+    lifecycle counts only while that generation's worker is still live: a worker that reported
+    ready and then died left the file behind."""
+    phase = native_state.read_lifecycle(worker_id).get("phase")
+    if phase == "ready":
+        return LAUNCH_READY if _invocation_live(worker_id) else FAILED
+    if phase in {"exited", "refused", "launch_unknown", "gone"} or _proved_gone(worker_id):
+        return FAILED
+    return STARTING
+
+
+#: Why a launch an owner found already dead failed, when no earlier process is to blame.
+STOPPED_BEFORE_READY = "the native worker stopped before it became ready"
+
+
+async def _reconcile_once(
+    engine_id: str, session_id: str, worker_id: str, kind: str, reason: str
+) -> None:
+    verdict = await asyncio.to_thread(_restart_verdict, worker_id)
+    if verdict == LAUNCH_READY:
+        if kind == "start":
+            ok = await asyncio.to_thread(_finish_start, session_id, worker_id, True)
+            if not ok and not await asyncio.to_thread(_start_is_started, session_id, worker_id):
+                await asyncio.to_thread(_settle_launch, session_id, worker_id, FAILED, reason)
+                return
+        await asyncio.to_thread(_settle_launch, session_id, worker_id, LAUNCH_READY)
+    elif verdict == FAILED:
+        await asyncio.to_thread(
+            _fail_owned_generation, engine_id, session_id, worker_id, kind, reason
+        )
+    else:
+        # Still starting: this owner waits for it (one owner per launch in this process).
+        await _settle_once(engine_id, session_id, worker_id, kind)
+
+
+async def reconcile_launches(*, periodic: bool = False) -> None:
+    """Give every `starting` launch view without an owner in this process a retrying owner.
+
+    Run once at startup (``RESTARTED`` names the earlier process), and with ``periodic`` it keeps
+    going every ``RECONCILE_INTERVAL`` until shutdown: an owner that exhausted its retries, an
+    unreadable record, or a record that landed after a scan is picked up again in-process."""
+    reason = RESTARTED
+    while True:
+        try:
+            found, unreadable = await asyncio.to_thread(_starting_launches)
+        except Exception:  # noqa: BLE001 — the state directory itself: the next pass lists again
+            log.warning("launch reconciliation could not list API sessions", exc_info=True)
+            found, unreadable = [], 1
+        for engine_id, session_id, worker_id, kind in found:
+            _owned_task(
+                _retrying(
+                    partial(_reconcile_once, engine_id, session_id, worker_id, kind, reason),
+                    "launch reconciliation",
+                ),
+                "launch reconciliation for an API session",
+                gen=worker_id,
+            )
+        if unreadable:
+            log.warning("launch reconciliation could not read %d API session(s)", unreadable)
+        if not periodic:
+            return
+        reason = STOPPED_BEFORE_READY  # later passes: this process was here all along
+        await _sleep(RECONCILE_INTERVAL)
+
+
+def start_reconciliation() -> asyncio.Task:
+    """The startup pass, then the slow periodic owner, as one drained task."""
+    return _owned_task(reconcile_launches(periodic=True), "launch reconciliation")
 
 
 # --- resume (a new generation for a session whose worker is proved gone) ----------------------
@@ -1106,6 +1648,11 @@ def _relaunch_sync(engine_id: str, session_id: str, permission_operation: str | 
             # Refuse BEFORE touching the record: a turn must neither launch a skip creation that
             # `start` has not launched, nor close it as a side effect (#1339, Hermes 5908).
             raise NativeError(409, "this session has not been started; start or discard it")
+        view = launch_view(record)
+        if view is not None and view["state"] == STARTING:
+            # Its waiter still owns this launch (#1505): a successor now would race the waiter's
+            # failure handling, whose stop would close it. Settles within one readiness wait.
+            raise NativeError(409, "this session is starting; wait for it")
         if binding.source.engine_id != record["source_engine"]:
             raise NativeError(409, "the session's original native source is not available")
         current = record.get("current_worker")
@@ -1710,7 +2257,9 @@ def project(
             for key, value in _permission_change(record).items()
             if key in {"operation_id", "state"}
         },
-        **pending_start_view(record),
+        **pending_start_view(record, live_worker),
+        # The generation-scoped launch view (#1505): starting / ready / failed + reason.
+        "launch": launch_view(record),
         "model_effective": model_effective,
         "model_configured": model_configured,
         "effort_configured": effort_configured,
@@ -2429,11 +2978,22 @@ def _discharge_if_unused(engine_id: str, session_id: str, record: dict) -> None:
 def _discard_start(session_id: str) -> None:
     """Record the operator's Discard of an unfinished skip start FIRST, under the session lock,
     before any await (Hermes 5941): a completion that lands while the worker stop is in flight
-    then fails its CAS instead of marking the discarded creation started."""
+    then fails its CAS instead of marking the discarded creation started.
+
+    The same write drops the launch view (#1505), so a waiter still waiting on that generation
+    settles nothing and runs no cleanup."""
     with native_state.session_lock(session_id, wait=STOP_TIMEOUT):
         record = native_state.read_session(session_id)
-        if record is not None and _start_state(record) in {PENDING, STARTING, FAILED, EXPIRED}:
+        if record is None:
+            return
+        changed = False
+        if _start_state(record) in {PENDING, STARTING, FAILED, EXPIRED}:
             _set_start(record, DISCARDED)
+            changed = True
+        if "launch" in record:
+            del record["launch"]
+            changed = True
+        if changed:
             native_state.write_session(session_id, record)
 
 

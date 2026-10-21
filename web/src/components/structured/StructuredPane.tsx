@@ -19,6 +19,7 @@ import {
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { useNavigate } from "react-router-dom";
 import { engineInfo, engineLabel, isAgent, useEngineRoster } from "../../app/engineRoster";
 import { isNewSessionPlaceholder } from "../../app/sessionsStore";
 import { useSessionRow } from "../../app/useSessionRow";
@@ -41,6 +42,7 @@ import { substituteFields, uploadStoredName } from "../../lib/templateMessage";
 import { shareLink } from "../../lib/shareLink";
 import type { TermStatus } from "../../lib/termSocket";
 import { useIsMobile } from "../../lib/useIsMobile";
+import { SESSIONS_PATH } from "../../lib/routes";
 import { reloadRoster } from "../../app/reloadRoster";
 import { HandoffModal } from "../terminal/HandoffModal";
 import { HeadActions, type HeadAction } from "../terminal/HeadActions";
@@ -74,6 +76,7 @@ import { interleave } from "./activityOrder";
 import { autoSendNowHead, useAlwaysSendNow } from "./alwaysSendNow";
 import { conversationGroups, type ConversationGroup } from "./conversationOrder";
 import { PermissionsDialog } from "./PermissionsDialog";
+import { consumeStart, peekStart, type StartOutcome } from "./startHandoff";
 import { HistoryTop } from "./HistoryTop";
 import { useApiHistory } from "./useApiHistory";
 import styles from "./StructuredPane.module.css";
@@ -1179,6 +1182,24 @@ const LINK_FAILED_TOAST_MS = 2600;
  *  structured protocol and keeps a journal; this view only READS it and sends operator input.
  *  Reconnects resume from the event cursor — a closed tab never cancels a turn — and every send
  *  and decision carries an id that makes a retry a no-op on the server. */
+/** The SERVER-side order of one launch (#1505), for responses the client sequence fence cannot
+ *  order (both sent after the last action): within a generation a launch only moves forward
+ *  (starting → ready | failed), and a later generation is never replaced by an earlier one.
+ *  Response ORDER on this client is the sequence fence's job (`apply`), not this one's. */
+const LAUNCH_ORDER = { starting: 1, ready: 2, failed: 2 } as const;
+function staleLaunch(previous: StructuredSnapshot, incoming: StructuredSnapshot): boolean {
+  const before = previous.launch;
+  const after = incoming.launch;
+  if (!before || !after) return false;
+  if (before.gen !== after.gen) {
+    // Another generation (#1518): a Start again's launch replaces the one before it, and a late
+    // read of the earlier one must not replace it back. Each view is stamped when it is written,
+    // and only ever by its own generation, so an earlier stamp is an earlier generation.
+    return before.since != null && after.since != null && after.since < before.since;
+  }
+  return LAUNCH_ORDER[after.state] < LAUNCH_ORDER[before.state];
+}
+
 export function StructuredPane({
   engine,
   id,
@@ -1207,6 +1228,15 @@ export function StructuredPane({
   const source = engineInfo(engine)?.api?.source;
   const agent = source ? engineLabel(source) : engineLabel(engine);
   const [snap, setSnap] = useState<StructuredSnapshot | null>(null);
+  // A skip start's own outcome (#1505): handed over by New session, or this pane's Start. A
+  // refusal shows its reason; a lost answer says the start may not have reached BattleLab.
+  // Keyed, so an outcome never shows on another session's pane.
+  const [attempt, setStartOutcome] = useState<
+    | null
+    | { key: string; phase: "sending" }
+    | { key: string; phase: "refused"; reason: string }
+    | { key: string; phase: "unknown" }
+  >(() => (peekStart(key) ? { key, phase: "sending" } : null));
   // The latest rendered snapshot, for a POST started from an effect or a click.
   const snapRef = useRef<StructuredSnapshot | null>(null);
   snapRef.current = snap;
@@ -1336,10 +1366,20 @@ export function StructuredPane({
   const { outbox, outboxRef, setOutbox } = useOutbox();
   const alive = useAlive();
 
-  const apply = useCallback((s: StructuredSnapshot) => {
+  // ONE ordering fence for everything this pane shows (#1505, Hermes on #1518). Every snapshot
+  // read and every state-changing request takes a sequence number WHEN IT IS SENT. A response is
+  // applied only if it was sent after the last one applied, and a completed action raises the
+  // floor past everything sent before it finished — so no read sent before an action (or while
+  // it ran) can overwrite that action's result; the read that follows the action shows it. The
+  // journal revision and `staleLaunch` stay as secondary guards for the server's own order.
+  const sentSeq = useRef(0);
+  const floorSeq = useRef(-1);
+  const apply = useCallback((s: StructuredSnapshot, sent: number): boolean => {
+    if (sent <= floorSeq.current) return false;
     // Reads race (the poll, and a re-read after every action): an older answer arriving last
     // must never roll the view back. The journal revision only grows.
-    if (s.revision < cursor.current) return;
+    if (s.revision < cursor.current) return false;
+    floorSeq.current = sent;
     cursor.current = s.event_cursor;
     // A recorded turn replaces its pending entry, whatever that entry's POST says or will say.
     setOutbox((list) => reconcile(list, operatorTurns(s).map((t) => t.turn_id), s.revision));
@@ -1350,7 +1390,8 @@ export function StructuredPane({
       const prior = previous?.permission_change?.state;
       const incoming = s.permission_change?.state;
       return previous && ((prior === "enabled" && incoming !== "enabled") ||
-        (prior === "stopping" && !incoming))
+        (prior === "stopping" && !incoming) ||
+        staleLaunch(previous, s))
         ? previous
         : s;
     });
@@ -1361,16 +1402,34 @@ export function StructuredPane({
     )));
     setLoadError(null);
     setReconnecting(false);
+    return true;
   }, [setOutbox]);
+  /** A state-changing request: sequenced when sent; when it settles (either way) nothing sent
+   *  before that moment may be applied. Its own snapshot, if it answers with one, is applied at
+   *  its send sequence — so a newer read already shown is never replaced by it. */
+  const act = useCallback(
+    async <T,>(request: Promise<T>, own?: (value: T) => StructuredSnapshot): Promise<T> => {
+      const sent = ++sentSeq.current;
+      try {
+        const value = await request;
+        if (own) apply(own(value), sent);
+        return value;
+      } finally {
+        floorSeq.current = Math.max(floorSeq.current, sentSeq.current);
+      }
+    },
+    [apply],
+  );
   const failed = useCallback((e: unknown) => {
     if (e instanceof ApiError && e.status === 404)
       setLoadError("This conversation does not exist.");
     else setReconnecting(true);
   }, []);
   const load = useCallback(async (): Promise<StructuredSnapshot | null> => {
+    const sent = ++sentSeq.current;
     try {
       const s = await api.structuredSnapshot(key);
-      apply(s);
+      apply(s, sent);
       return s;
     } catch (e) {
       failed(e);
@@ -1382,21 +1441,74 @@ export function StructuredPane({
 
   useEffect(() => {
     let alive = true;
+    const sent = ++sentSeq.current;
     api
       .structuredSnapshot(key)
-      .then((s) => alive && apply(s))
+      .then((s) => alive && apply(s, sent))
       .catch((e: unknown) => alive && failed(e));
     return () => {
       alive = false;
     };
   }, [key, apply, failed]);
 
+  // The skip start New session fired without waiting (#1505): its outcome, read once.
+  useEffect(() => {
+    const handed = peekStart(key);
+    if (!handed) return;
+    let alive = true;
+    // Sent before this pane's first read: the oldest request here. Its answer applies only if
+    // nothing has been shown since, and its completion — like any action's — retires every read
+    // sent before it settled.
+    void handed.then((outcome: StartOutcome) => {
+      if (!alive) return;
+      consumeStart(key, handed);
+      const shown = outcome.kind === "ok" && apply(outcome.snap, 0);
+      floorSeq.current = Math.max(floorSeq.current, sentSeq.current);
+      if (outcome.kind === "ok") {
+        setStartOutcome(null);
+        if (!shown) void load(); // a newer read was shown first: read again, after the start
+      } else if (outcome.kind === "refused") {
+        setStartOutcome({ key, phase: "refused", reason: outcome.reason });
+      } else {
+        setStartOutcome({ key, phase: "unknown" });
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, [key, apply, load]);
+
+  // The launch view (#1505): the page opens on launch, and the snapshot says when it is ready.
+  const launch = snap?.launch;
+  const launchStarting = launch?.state === "starting" || !!snap?.start_in_flight;
+  // Once the snapshot shows a launch, its truth wins over a refused or lost start answer.
+  const startAttempt =
+    attempt?.key !== key ||
+    (attempt.phase !== "sending" && (launchStarting || launch?.state === "ready"))
+      ? null
+      : attempt;
+  // A guarded create whose worker never became ready: its own stop closed it, and `/start` does
+  // not relaunch a guarded creation, so it offers New session — never Start again.
+  const createFailed =
+    launch?.state === "failed" && !snap?.pending_start && !snap?.start_expired;
+  const startFailure =
+    startAttempt?.phase === "refused"
+      ? startAttempt.reason
+      : launch?.state === "failed"
+        ? (launch.reason ?? "the agent did not become ready")
+        : snap?.start_failed
+          ? (snap.start_failed_reason ?? "the agent did not become ready")
+          : null;
   // The cursor loop: cheap reads of the journal's revision; a change re-reads the snapshot.
   const active = isActive(snap);
   // Task progress reads live without changing the turn-active predicate used by Send (#1461).
-  // A message on its way (or of unknown outcome) is settled by the conversation: read it promptly.
-  const pollingActive = active || backgroundWorking(snap) ||
+  // Starting polls too (#1505): ready or failed repaints within one tick. A message on its way
+  // (or of unknown outcome) is settled by the conversation: read it promptly too (#1465).
+  const startSending = startAttempt?.phase === "sending";
+  const pollingActive = active || backgroundWorking(snap) || launchStarting || startSending ||
     outbox.some((e) => e.phase === "sending" || e.phase === "unknown");
+  // Starting, or a start request still in flight: the snapshot itself is read every tick.
+  const readSnapshotEachTick = launchStarting || startSending;
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -1405,14 +1517,22 @@ export function StructuredPane({
     const tick = async () => {
       ticks += 1;
       try {
-        const page = await api.structuredEvents(key, cursor.current, 1);
-        if (!alive) return;
-        backoff = 0;
-        setReconnecting(false);
-        // A changed journal re-reads at once. Lifecycle facts that write no journal record — a
-        // worker's idle exit, the client turning read only — are picked up by a full re-read
-        // every idle tick and every 5th active tick (Hermes on #1315).
-        if (page.revision !== cursor.current || !pollingActive || ticks % 5 === 0) await load();
+        if (readSnapshotEachTick) {
+          // Starting (#1505): readiness changes the lifecycle, not the journal, so the cursor
+          // need not move — the snapshot itself is read every tick until the launch settles. So
+          // is the pending → starting handoff while a start request is in flight.
+          await load();
+          if (!alive) return;
+        } else {
+          const page = await api.structuredEvents(key, cursor.current, 1);
+          if (!alive) return;
+          backoff = 0;
+          setReconnecting(false);
+          // A changed journal re-reads at once. Lifecycle facts that write no journal record — a
+          // worker's idle exit, the client turning read only — are picked up by a full re-read
+          // every idle tick and every 5th active tick (Hermes on #1315).
+          if (page.revision !== cursor.current || !pollingActive || ticks % 5 === 0) await load();
+        }
       } catch (e) {
         if (!alive) return;
         if (e instanceof ApiError && e.status === 409) await load();
@@ -1432,7 +1552,7 @@ export function StructuredPane({
       alive = false;
       clearTimeout(timer);
     };
-  }, [key, pollingActive, load]);
+  }, [key, pollingActive, readSnapshotEachTick, load]);
 
   useLayoutEffect(() => {
     const el = logRef.current;
@@ -1532,6 +1652,8 @@ export function StructuredPane({
     const text = draft.trim();
     const names = attachments.map((a) => a.stored);
     if ((!text && !names.length) || busy || readOnly || permissionPending || notStarted || !snap) return;
+    // Starting (#1505): Send waits for ready; the draft stays in the box, nothing is queued.
+    if (launchStarting || createFailed) return;
     if (slots.current.inFlight > 0) return; // a picture is still on its way
     const attempt = operationFor(op.current, sendIdentity(text, names), uuid);
     if (outboxRef.current.some((e) => e.request.id === attempt.id)) {
@@ -1571,7 +1693,10 @@ export function StructuredPane({
     const { id, text, attachments: files, history } = entry.request;
     setOutbox((list) => updateEntry(list, id, (e) => ({ ...e, phase: "sending" })));
     try {
-      const answer = await api.structuredSubmit(key, id, text, revisionFor(s), files.map((a) => a.stored));
+      // Sequenced (#1505): no snapshot read sent before this settles can overwrite what follows it.
+      const answer = await act(
+        api.structuredSubmit(key, id, text, revisionFor(s), files.map((a) => a.stored)),
+      );
       confirmHistory(history);
       if (!alive.current) return;
       // The answer's revision is the durable receipt: a later snapshot at or past it settles the
@@ -1648,7 +1773,7 @@ export function StructuredPane({
     setAnswer({ session: key, ...attempt, phase: "sending" });
     try {
       // No revision expectation: Codex keeps working, and the question binding is the check.
-      await api.structuredSubmit(key, attempt.id, attempt.text, undefined, [], attempt.question);
+      await act(api.structuredSubmit(key, attempt.id, attempt.text, undefined, [], attempt.question));
       setAnswer(null);
       await load();
     } catch (e) {
@@ -1692,14 +1817,14 @@ export function StructuredPane({
     setDeciding((all) => ({ ...all, [reqKey]: next }));
     setActionError(null);
     try {
-      await api.structuredDecide(key, {
+      await act(api.structuredDecide(key, {
         decision_id,
         turn_id: req.turn_id,
         request_id: req.request_id,
         decision: choice,
         ...(grant ? { grant } : {}),
         ...(answers ? { answers } : {}),
-      });
+      }));
       setDeciding((all) => ({ ...all, [reqKey]: { ...next, phase: "sent" } })); // settled by the next snapshot, not by this answer
       await load();
     } catch (e) {
@@ -1733,7 +1858,7 @@ export function StructuredPane({
       });
     set({ ...attempt, phase: "sending" });
     try {
-      await api.structuredSubmit(key, attempt.id, attempt.text, undefined);
+      await act(api.structuredSubmit(key, attempt.id, attempt.text, undefined));
     } catch (e) {
       const s = await load();
       // Already in the conversation — this send, or an earlier one with other picks (the server
@@ -1767,7 +1892,7 @@ export function StructuredPane({
     setInterrupting(true);
     setActionError(null);
     try {
-      await api.structuredInterrupt(key, uuid(), turnId);
+      await act(api.structuredInterrupt(key, uuid(), turnId));
       setStoppingTurn(turnId);
     } catch (e) {
       setActionError(`Interrupt not sent: ${detail(e, "no answer")}`);
@@ -1826,7 +1951,7 @@ export function StructuredPane({
     setSendingNow(queuedTurnId);
     setActionError(null);
     try {
-      await api.structuredSendNow(key, operation.id, operation.turnId, queuedTurnId);
+      await act(api.structuredSendNow(key, operation.id, operation.turnId, queuedTurnId));
       setSendNowUnknown(null);
     } catch (e) {
       // Refusing a recovery request says nothing about the original unknown handoff.
@@ -1855,7 +1980,7 @@ export function StructuredPane({
     setRemoving(queuedTurnId);
     setActionError(null);
     try {
-      await api.structuredWithdraw(key, operation, queuedTurnId);
+      await act(api.structuredWithdraw(key, operation, queuedTurnId));
       removeIds.current.delete(target);
     } catch (e) {
       if (definite(e)) {
@@ -1897,21 +2022,54 @@ export function StructuredPane({
   const startPending = async () => {
     setStarting(true);
     setActionError(null);
+    setStartOutcome({ key, phase: "sending" });
     try {
-      apply(await api.structuredStart(key));
+      await act(api.structuredStart(key), (s) => s);
+      setStartOutcome(null);
     } catch (e) {
-      setActionError(`Couldn’t start: ${detail(e, "no answer")}`);
+      // A definite refusal shows its reason; no answer may still have reached BattleLab (#1505).
+      setStartOutcome(
+        e instanceof ApiError && e.status >= 400 && e.status < 500
+          ? { key, phase: "refused", reason: detail(e, "refused") }
+          : { key, phase: "unknown" },
+      );
     } finally {
       setStarting(false);
       await load();
     }
   };
+  const [checking, setChecking] = useState(false);
+  const checkStart = async () => {
+    setChecking(true);
+    const s = await load();
+    setChecking(false);
+    if (s && (s.launch || s.start_in_flight || !s.pending_start)) setStartOutcome(null);
+  };
+  const navigate = useNavigate();
+  // Back to New session with this session's agent, folder and model preselected (#1505) —
+  // and GUARDED, as this session was: the form's stored skip default must not turn it into one.
+  const newSessionLikeThis = () =>
+    navigate(SESSIONS_PATH, {
+      state: {
+        apiGuardedEngine: engine,
+        restoreDraft: {
+          engineChoice: engine,
+          bypassChoice: null,
+          returnTo: null,
+          projectChoice: null,
+          cwdOverride: snap?.cwd ?? null,
+          ...(snap?.model_requested
+            ? { modelChoice: { engine, model: snap.model_requested } }
+            : {}),
+        },
+      },
+    });
 
   const stop = async () => {
     setStopping(true);
     setActionError(null);
     try {
-      setContainment((await api.structuredStop(key)).containment);
+      setContainment((await act(api.structuredStop(key))).containment);
     } catch (e) {
       setContainment("unknown");
       setActionError(`Stop not confirmed: ${detail(e, "no answer")}`);
@@ -1929,7 +2087,7 @@ export function StructuredPane({
     setEnablingPermissions(true);
     setPermissionError(null);
     try {
-      apply(await api.structuredEnableBypass(key, id));
+      await act(api.structuredEnableBypass(key, id), (s) => s);
       setPermissionsOpen(null);
     } catch (e) {
       const latest = await load();
@@ -2135,6 +2293,10 @@ export function StructuredPane({
   const live = !!snap?.native?.worker;
   const workerChip = reconnecting
     ? { cls: styles.ledWarn, text: "reconnecting" }
+    : launchStarting
+      ? { cls: styles.ledIdle, text: "starting" }
+      : startFailure && (createFailed || snap?.pending_start)
+        ? { cls: styles.ledDown, text: "start failed" }
     : containment === "gone"
       ? { cls: styles.ledIdle, text: "stopped" }
       : containment === "unknown"
@@ -2611,24 +2773,73 @@ export function StructuredPane({
         </div>
       )}
       {snap?.pending_start && (
-        <div className={styles.banner} role="status" data-testid="structured-pending-start">
-          <p>
-            {snap.start_incomplete
-              ? "This session’s start didn’t finish. Nothing has run; start it again or discard it."
-              : "This session skips permission prompts and hasn’t started. Nothing has run."}
-          </p>
+        <div
+          className={`${styles.banner} ${startFailure && startAttempt?.phase !== "unknown" ? styles.failBanner : ""}`}
+          role="status"
+          data-testid="structured-pending-start"
+        >
+          {startAttempt?.phase === "unknown" ? (
+            <p data-testid="structured-start-unknown">
+              Start may not have reached BattleLab. Check again, or start it again — a repeat
+              start only observes one that already went through.
+            </p>
+          ) : startFailure && startAttempt?.phase !== "sending" ? (
+            <p data-testid="structured-start-failed">
+              <b>Couldn’t start:</b> {startFailure}
+            </p>
+          ) : (
+            <p>
+              {snap.start_incomplete
+                ? "This session’s start didn’t finish. Nothing has run; start it again or discard it."
+                : "This session skips permission prompts and hasn’t started. Nothing has run."}
+            </p>
+          )}
+          {startAttempt?.phase === "unknown" && (
+            <button
+              type="button"
+              className={`${chat.ghost} ${styles.inline}`}
+              disabled={checking || starting || stopping}
+              onClick={() => void checkStart()}
+            >
+              Check again
+            </button>
+          )}
           <button
             type="button"
             className={chat.send}
-            disabled={starting || stopping}
+            disabled={starting || stopping || startAttempt?.phase === "sending"}
             onClick={() => void startPending()}
           >
-            Start (skips prompts)
+            {startFailure || startAttempt?.phase === "unknown"
+              ? "Start again"
+              : "Start (skips prompts)"}
           </button>
           <button
             type="button"
             className={`${chat.ghost} ${styles.inline}`}
             disabled={starting || stopping}
+            onClick={() => void stop()}
+          >
+            Discard
+          </button>
+        </div>
+      )}
+      {createFailed && (
+        <div
+          className={`${styles.banner} ${styles.failBanner}`}
+          role="status"
+          data-testid="structured-create-failed"
+        >
+          <p>
+            <b>Couldn’t start:</b> {startFailure}
+          </p>
+          <button type="button" className={chat.send} onClick={newSessionLikeThis}>
+            New session
+          </button>
+          <button
+            type="button"
+            className={`${chat.ghost} ${styles.inline}`}
+            disabled={stopping}
             onClick={() => void stop()}
           >
             Discard
@@ -2668,6 +2879,14 @@ export function StructuredPane({
       >
         {snap && turns.length === 0 && (
           <div className={chat.center} data-testid="structured-empty">
+            {launchStarting && (
+              <div className={styles.starting} role="status" data-testid="structured-starting">
+                <p>
+                  Starting {agent} API… <span>the agent is getting ready</span>
+                </p>
+                <div className={styles.startingBar} aria-hidden="true" />
+              </div>
+            )}
             <section className={styles.info} aria-label="Session info">
               <p className={styles.infoTag}>{agent} · API</p>
               <dl className={styles.infoFacts}>
@@ -2824,7 +3043,9 @@ export function StructuredPane({
             placeholder={
               readOnly
                 ? "This conversation is read only"
-                : notStarted
+                : createFailed
+                  ? "This session didn’t start"
+                  : notStarted
                   ? "Start this session first"
                   : active && alwaysSendNow && sendNowTarget(snap)
                     ? sendNowTarget(snap)?.mode === "steer"
@@ -2840,7 +3061,7 @@ export function StructuredPane({
             onPaste={onPaste}
             readOnly={busy}
             rows={2}
-            disabled={readOnly || notStarted || permissionPending}
+            disabled={readOnly || notStarted || createFailed || permissionPending}
           />
         </div>
         <div className={`${compose.row} ${styles.composeRow}`}>
@@ -2865,7 +3086,7 @@ export function StructuredPane({
             )}
           </div>
           <span className={`${compose.spacer} ${styles.composeNote}`} role="status">
-            {dictNote}
+            {dictNote || (launchStarting && !readOnly ? "Type now — Send unlocks when the agent is ready." : "")}
           </span>
           {!readOnly && snap && dictSupported && (
             <button
@@ -2908,15 +3129,18 @@ export function StructuredPane({
             disabled={
               readOnly ||
               notStarted ||
+              createFailed ||
+              launchStarting ||
               permissionPending ||
               busy ||
               uploading ||
               !snap ||
               (!draft.trim() && attachments.length === 0)
             }
+            data-testid="structured-send"
           >
             <Send size={15} aria-hidden />
-            {uploading ? "Uploading" : "Send"}
+            {uploading ? "Uploading" : launchStarting ? "Starting…" : "Send"}
           </button>
         </div>
         {snap?.native?.worker && snap.files === false && !readOnly && (

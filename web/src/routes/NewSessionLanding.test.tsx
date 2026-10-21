@@ -1993,3 +1993,73 @@ test("a skip-capable API agent waits for the config: no Start until the default 
   await vi.waitFor(() => expect(api.structuredCreate).toHaveBeenCalledTimes(1));
   expect(vi.mocked(api.structuredCreate).mock.calls[0][4]).toBe(true);
 });
+
+test("a skip create opens the session at once; its start is fired, not awaited, and not swallowed (#1505)", async () => {
+  const { peekStart, resetStartHandoff } = await import("../components/structured/startHandoff");
+  resetStartHandoff();
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  const user = userEvent.setup();
+  const key = "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f";
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockResolvedValueOnce({ session_key: key } as never);
+  let refuse: (e: unknown) => void = () => {};
+  vi.mocked(api.structuredStart)
+    .mockReset()
+    .mockReturnValueOnce(new Promise((_resolve, reject) => (refuse = reject)) as never);
+  renderLanding(["codex-api"], { default_project: "/d", agent_defaults: { bypass: true } });
+  await chooseProject(user, "");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  // The page opens while the start is still in flight…
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  expect(navigateMock.mock.calls[0][0]).toBe("/s/codex-api/5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f");
+  expect(api.structuredStart).toHaveBeenCalledWith(key);
+  // …and its outcome is handed to that session's pane under the same key, never dropped.
+  const handed = peekStart(key);
+  expect(handed).toBeDefined();
+  refuse(new ApiError(409, "the CLI went away"));
+  await expect(handed).resolves.toEqual({ kind: "refused", reason: "the CLI went away" });
+  resetStartHandoff();
+});
+
+test("a guarded create navigates as soon as the create answers (#1505)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  const user = userEvent.setup();
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
+  await chooseProject(user, "");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  expect(api.structuredStart).not.toHaveBeenCalled();
+});
+
+test("New session after a guarded create failed stays guarded with skip-by-default on (#1505)", async () => {
+  // Hermes on #1518 (4): the replacement form used to fall back to the stored skip default.
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  const user = userEvent.setup();
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+  const state = {
+    apiGuardedEngine: "codex-api",
+    restoreDraft: {
+      engineChoice: "codex-api",
+      bypassChoice: null,
+      returnTo: null,
+      projectChoice: null,
+      cwdOverride: "/d",
+    },
+  };
+  renderLanding(["claude", "codex-api"], { default_project: "/d", agent_defaults: { bypass: true } }, state);
+  const skip = await screen.findByRole("checkbox", { name: /skip permission prompts/i });
+  expect(skip).not.toBeChecked();
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(api.structuredCreate).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(api.structuredCreate).mock.calls[0][4]).toBe(false);
+  expect(api.structuredStart).not.toHaveBeenCalled();
+});

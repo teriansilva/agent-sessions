@@ -12,6 +12,8 @@ Behaviour is selected by the turn text, so a test drives it purely through the p
 * ``HANG``    — start the turn and never finish it (for interrupt / worker death).
 * ``WAIT_RELEASE`` — finish normally after the test creates ``release-queued-turn``.
 * ``DIE``     — exit right after accepting the turn (native crash mid-turn).
+* a ``hold-initialize`` file in the working directory — (codex) answer ``initialize`` only once
+  ``release-initialize`` exists: the worker is launched but not ready (#1505).
 * ``BGTASK``  — (claude) start a background task and reply ``started``. Once the test creates
   ``release-bg-task`` the task completes and the agent runs a turn of its own for the
   notification (output ``notified``, a ``task-notification`` result). It is held open until
@@ -105,6 +107,9 @@ def codex():
         method, rid = frame.get("method"), frame.get("id")
         params = frame.get("params", {})
         if method == "initialize":
+            # #1505: a worker that is launched but not ready yet, until the test releases it.
+            if os.path.exists("hold-initialize"):
+                _wait_file("release-initialize", 30)
             send({"id": rid, "result": {"userAgent": "fake/0.160.0"}})
         elif method == "model/list" and os.path.exists("malformed-models"):
             # A CLI reply of the wrong shape (#1313, Hermes): efforts a number, data items odd.

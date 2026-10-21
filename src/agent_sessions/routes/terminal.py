@@ -45,6 +45,7 @@ from .. import (
     engines,
     fsbrowse,
     handoff,
+    launchtiming,
     memory,
     missions,
     model_choice,
@@ -468,11 +469,19 @@ def register(
         action, lock = await _open_action_offloop(prov.engine_id, phys_native)
         if action == sessions.BUSY:
             return await reject(4409)  # held by another writer; client should retry → attach
+        timings = None
+        if action == sessions.LAUNCH:
+            # One INFO line per launch (#1505), timed from the connect's arrival; it is emitted
+            # at the agent's first output (webterm) or, failing that, when this connection ends.
+            timings = launchtiming.start(prov.engine_id, "terminal", started=accept_at)
+            launchtiming.mark("open")
         # A RETIRING engine (#853 P3 — its manifest is gone) is ATTACH-ONLY: a live master stays
         # reachable, but a dead one is never relaunched and no new session starts. Refused with the
         # terminal code, so the client stops retrying instead of hammering a launch that cannot be.
+        # The admission check takes a FRESH roster snapshot (state files, the roster lock): off the
+        # event loop with the rest of the launch path (#1505).
         if action != sessions.ATTACH and (
-            engines.is_retiring(prov) or not engines.registry.admits(prov)
+            engines.is_retiring(prov) or not await asyncio.to_thread(engines.registry.admits, prov)
         ):
             if lock is not None:
                 lock.release()
@@ -594,22 +603,29 @@ def register(
                 # flight), and on the loop it froze every terminal stream for that long. The
                 # picker is a list of offered cwds, not a session binding, so the TTL snapshot
                 # is acceptable here.
+                #
+                # The cheap check goes FIRST (#1505): a browsable, in-scope folder is admitted
+                # without the session walk (seconds cold, and every pinned-id launch invalidates
+                # it). The walk runs only when that is false. Same boolean either way:
+                # `in_picker or browsable_ok`, only the evaluation order changed.
                 def _new_cwd_allowed() -> bool:
                     roots = project_dirs.effective_roots()
                     exclusions = prefs.get_folder_exclusions()
-                    in_picker = new_cwd in set(
-                        scanner.pickable_projects(
-                            sessions=engines.scan_all_cached(), roots=roots, exclusions=exclusions
-                        )
-                    )
                     browsable_ok = fsbrowse.is_browsable_dir(new_cwd) and (
                         not roots
                         or project_dirs.in_scope(new_cwd, roots=roots, exclusions=exclusions)
                     )
-                    return in_picker or browsable_ok
+                    if browsable_ok:
+                        return True
+                    return new_cwd in set(
+                        scanner.pickable_projects(
+                            sessions=engines.scan_all_cached(), roots=roots, exclusions=exclusions
+                        )
+                    )
 
                 if not await asyncio.to_thread(_new_cwd_allowed):
                     return await reject(4404)
+                launchtiming.mark("cwd")
                 # Honor the modal's permission-bypass choice (default on); only "0" is off.
                 bypass = ws.query_params.get("bypass") != "0"
                 # The requested model (#1189), resolved by THE resolver before anything is
@@ -623,6 +639,7 @@ def register(
                     )
                 except model_choice.ModelRefused as e:
                     return await reject(4422, e.detail)  # the finally hands back the lock
+                launchtiming.mark("model")
                 # Mint-its-own-id engines (opencode, codex) can't pin a new-session id: they
                 # launch under the placeholder and we diff the engine's store to find the real
                 # id (#127/#315). Snapshot the cwd's existing ids BEFORE launch so the diff
@@ -662,18 +679,25 @@ def register(
                     # No binary, or one provenance refuses (#853 §2b): the same terminal code a
                     # misconfigured launch has always had.
                     return await reject(4500)
+                launchtiming.mark("argv")
                 cwd = new_cwd
                 if model_sel.model is not None:  # a new `default` launch has nothing to record
                     model_record = (f"{prov.engine_id}:{native}", model_sel)
+
                 # Auto-include the launch cwd in `included` mode (#335): now that the new-session
                 # request has PASSED validation (cwd is a real pickable project) and the launch is
                 # accepted, add the dir to the allowlist so the session is visible in the curated
                 # sidebar now. Reached only past the 4404 rejections above, so a typo/invalid
                 # cwd never grows the list. No-op in `all` mode; best-effort (a write must never
                 # block the terminal).
-                if prefs.get_projects_mode() == "included":
-                    with contextlib.suppress(Exception):
-                        prefs.add_project_included(new_cwd)
+                # Both take the prefs flock: off the event loop (#1505).
+                def _include_new_cwd() -> None:
+                    if prefs.get_projects_mode() == "included":
+                        with contextlib.suppress(Exception):
+                            prefs.add_project_included(new_cwd)
+
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(_include_new_cwd)
                 if new_snapshot is not None:
                     reconcile_task = asyncio.create_task(
                         reconcile_new_session(ws, prov, native, new_cwd, new_snapshot)
@@ -716,6 +740,7 @@ def register(
                     native,
                     arrival=accept_at,
                 )
+
                 # Hard root scope (#465/#467): a session whose cwd is outside the configured roots
                 # (or under an exclusion) is hidden from the list/picker AND not resumable here —
                 # otherwise the ws would be a back door to the scoped-out sessions.
@@ -727,21 +752,28 @@ def register(
                 # excluded session stayed resumable, which is precisely the back door this block
                 # exists to close. Empty roots still leave the ROOT half off; an exclusion binds
                 # either way.
-                roots = project_dirs.effective_roots()
-                exclusions = prefs.get_folder_exclusions()
                 # (The old `match.cwd in scanned_cwds(all_sessions)` clause was implied by `match`
                 # coming from that same list; a resolved row carries its own cwd, so it is gone.)
-                if match is None or not project_dirs.in_scope(
-                    match.cwd, roots=roots, exclusions=exclusions
-                ):
-                    return await reject(4404)
-                # Background-agent guard (#631): this id is resumable on disk, but action is
-                # LAUNCH (no master of ours) AND a live process already owns its transcript — a
-                # Claude background agent (``claude daemon`` fork). ``claude --resume`` would print
-                # "currently running as a background agent" and exit instantly, relaunch-looping.
-                # Refuse with a terminal code so the client shows "not attachable" instead of
-                # retrying. Claude-only (background agents are a Claude concept).
-                if transcript_owner.owned_elsewhere(prov, native):
+                #
+                # Both checks run OFF the event loop (#1505): the scope reads prefs (a file lock)
+                # and the ownership guard below walks `/proc`.
+                def _resume_refused() -> bool:
+                    roots = project_dirs.effective_roots()
+                    exclusions = prefs.get_folder_exclusions()
+                    if match is None or not project_dirs.in_scope(
+                        match.cwd, roots=roots, exclusions=exclusions
+                    ):
+                        return True
+                    # Background-agent guard (#631): this id is resumable on disk, but action is
+                    # LAUNCH (no master of ours) AND a live process already owns its transcript —
+                    # a Claude background agent (``claude daemon`` fork). ``claude --resume``
+                    # would print "currently running as a background agent" and exit instantly,
+                    # relaunch-looping. Refuse with a terminal code so the client shows "not
+                    # attachable" instead of retrying. Claude-only (background agents are a Claude
+                    # concept).
+                    return transcript_owner.owned_elsewhere(prov, native)
+
+                if await asyncio.to_thread(_resume_refused):
                     return await reject(4404)
                 # A model on RESUME (#1189): applied only where the manifest says the engine honours
                 # it (`on_resume`); otherwise only the model the session recorded is accepted — and
@@ -778,18 +810,25 @@ def register(
                 if action == sessions.ATTACH:
                     argv = ptybridge.attach_argv(engine=prov.engine_id, session_id=phys_native)
                 else:
-                    argv = ptybridge.launch_argv(
-                        engine=prov.engine_id, session_id=phys_native, launch_argv=launch
-                    )
                     # Per-session transient scope (#346 Phase B): the dtach master + the
                     # agent tree it forks land in their own cgroup, so one runaway session
                     # can't fail the broker unit or drain its task budget. Falls through
                     # unwrapped when scopes are disabled/unavailable (logged inside wrap).
-                    argv, scope_unit = scopedspawn.wrap(
-                        argv, engine=prov.engine_id, session_id=phys_native
-                    )
+                    # OFF the loop (#1505): `scopedspawn.available()` may probe the user manager
+                    # (`systemd-run --scope /bin/true`, 10 s timeout), and the scope properties
+                    # read the resource policy from prefs.
+                    def _launch_command() -> tuple[list[str], str | None]:
+                        built = ptybridge.launch_argv(
+                            engine=prov.engine_id, session_id=phys_native, launch_argv=launch
+                        )
+                        return scopedspawn.wrap(
+                            built, engine=prov.engine_id, session_id=phys_native
+                        )
+
+                    argv, scope_unit = await asyncio.to_thread(_launch_command)
                     if scope_unit is not None:
                         log.info("launching %s in scope %s", phys_key, scope_unit)
+                    launchtiming.mark("command")
             except ptybridge.PtyBridgeError:
                 # A pinned-id new session persisted a record above; the launch argv was rejected,
                 # so drop it rather than leave a phantom row (best-effort, no-op for engines
@@ -851,6 +890,7 @@ def register(
                 memory_env = await asyncio.to_thread(
                     memory.launch_env, transcript_key, cwd, kind="terminal"
                 )
+                launchtiming.mark("memory")
             # Cross-engine handoff (#597): a committed handoff bound to this physical key
             # delivers its seed via webterm's PTY injector (input, never argv). ATTACH also
             # carries the key: if the launching viewer dropped before the TUI was ready, the
@@ -968,6 +1008,10 @@ def register(
                 with contextlib.suppress(Exception):
                     await registry.on_detach(prov.engine_id, phys_native, viewer_id=ws)
         finally:
+            # A launch whose agent never printed (rejected, failed spawn, client gone) still
+            # logs its line once, here; after a first output this is a no-op.
+            if timings is not None:
+                timings.emit(outcome="ended")
             # Early rejection never reaches webterm's handoff; release its admission here.
             if maintenance_admission is not None:
                 maintenance_admission.release()

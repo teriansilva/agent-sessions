@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 from dataclasses import asdict, dataclass
+from functools import partial
 from types import MappingProxyType
 
 from . import chat_config, chat_runtime, chat_store, engines, native_attachments, native_runtime
@@ -76,7 +77,8 @@ class _ChatAdapter:
             return False, "configure this agent's endpoint in Settings → Agents"
         return True, None
 
-    async def create(self, *args, bypass=False, effort=None, **kwargs):
+    async def create(self, *args, bypass=False, effort=None, wait_ready=True, **kwargs):
+        # A chat conversation launches no worker, so it has no readiness to wait for (#1505).
         if bypass:
             raise StructuredError(422, "this agent has no permission prompts to skip")
         if effort is not None:
@@ -132,6 +134,7 @@ class _NativeAdapter:
         effort=None,
         bypass=False,
         execution_admission=None,
+        wait_ready=True,
     ):
         return await _native(
             native_runtime.create,
@@ -142,6 +145,7 @@ class _NativeAdapter:
             effort=effort,
             bypass=bypass,
             execution_admission=execution_admission,
+            wait_ready=wait_ready,
         )
 
     async def snapshot(self, engine, native):
@@ -161,8 +165,8 @@ class _NativeAdapter:
     async def history(self, engine, native, before, limit):
         return await _native(native_runtime.history, engine, native, before, limit)
 
-    async def start(self, engine, native):
-        return await _native(native_runtime.start, engine, native)
+    async def start(self, engine, native, *, wait_ready=True):
+        return await _native(native_runtime.start, engine, native, wait_ready=wait_ready)
 
     async def interrupt(self, engine, native, **kwargs):
         return await _native(native_runtime.interrupt, engine, native, **kwargs)
@@ -497,6 +501,17 @@ def _snapshot(session_key: str, raw: dict) -> dict:
         ),
         **({"start_incomplete": True} if raw.get("start_incomplete") else {}),
         **({"start_expired": True} if raw.get("start_expired") else {}),
+        # Starting vs failed (#1505): a launched worker that is not ready yet, or a start that
+        # failed, with its bounded reason. Neither offers or implies anything on its own.
+        **({"start_in_flight": True} if raw.get("start_in_flight") else {}),
+        **({"start_failed": True} if raw.get("start_failed") else {}),
+        **(
+            {"start_failed_reason": raw["start_failed_reason"]}
+            if raw.get("start_failed") and raw.get("start_failed_reason")
+            else {}
+        ),
+        # The generation-scoped launch view (#1505): {gen, state, reason, since} or absent.
+        **({"launch": dict(raw["launch"])} if raw.get("launch") else {}),
         # Configuration is a request, never proof of the model the endpoint actually executed.
         "model_effective": raw.get("model_effective"),
         # What the client reports it runs (#1511) — the model and level an "agent default" session
@@ -514,14 +529,20 @@ def _snapshot(session_key: str, raw: dict) -> dict:
 
 async def snapshot(session_key: str) -> dict:
     """The bounded view. ``read_only`` is None while the client can take new work, else why not:
-    a retiring native client (its source disabled or removed) still shows its history (#1311)."""
-    engine, native, adapter, read_only = _observation_target(session_key, "snapshot")
+    a retiring native client (its source disabled or removed) still shows its history (#1311).
+
+    The client lookups take a fresh roster snapshot (state files, the roster lock): off the event
+    loop (#1505), like every other blocking read on the create/start path."""
+    engine, native, adapter, read_only = await asyncio.to_thread(
+        _observation_target, session_key, "snapshot"
+    )
     raw = await adapter.snapshot(engine, native)
+    images = (await asyncio.to_thread(partial(describe, engine, check_ready=False))).images
     return {
         **_snapshot(f"{engine}:{native}", raw),
         "read_only": read_only,
         # Whether the composer offers pictures (#1332 Phase 3); submit re-checks it.
-        "images": describe(engine, check_ready=False).images,
+        "images": images,
         "files": bool(raw.get("native", {}).get("files")),
     }
 
@@ -535,8 +556,12 @@ async def create_session(
     effort: str | None = None,
     bypass: bool = False,
     execution_admission: ExecutionGuard | None = None,
+    wait_ready: bool = True,
 ) -> dict:
-    adapter = _adapter(engine, "create")
+    """``wait_ready`` (#1505): True — every internal caller — returns once the session is ready,
+    as it always has. Only the HTTP route passes False: it returns as soon as the session is
+    recorded and its worker launched, and the snapshot's ``launch`` view reports readiness."""
+    adapter = await asyncio.to_thread(_adapter, engine, "create")  # a fresh roster read
     # `effort` (#1407) is sent only when chosen, so a create without one is the call it always was.
     extra = {"effort": effort} if effort is not None else {}
     sid = await adapter.create(
@@ -547,6 +572,7 @@ async def create_session(
         **extra,
         bypass=bypass,
         execution_admission=execution_admission,
+        wait_ready=wait_ready,
     )
     return await snapshot(f"{engine}:{sid}")
 
@@ -680,11 +706,13 @@ async def history(session_key: str, *, before: object, limit: object = SNAPSHOT_
     }
 
 
-async def start_session(session_key: str) -> dict:
+async def start_session(session_key: str, *, wait_ready: bool = True) -> dict:
     """Launch a skip-permissions creation the operator has SEEN succeed (#1339): its create
-    reserved and launched nothing. Idempotent: a repeat after a launch only observes."""
-    engine, native = _key(session_key)
-    await _adapter(engine, "start").start(engine, native)
+    reserved and launched nothing. Idempotent: a repeat after a launch only observes.
+    ``wait_ready`` as for :func:`create_session` (#1505)."""
+    engine, native = await asyncio.to_thread(_key, session_key)  # fresh roster reads: off-loop
+    adapter = await asyncio.to_thread(_adapter, engine, "start")
+    await adapter.start(engine, native, wait_ready=wait_ready)
     return await snapshot(f"{engine}:{native}")
 
 

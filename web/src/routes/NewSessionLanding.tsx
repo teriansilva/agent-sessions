@@ -42,6 +42,7 @@ import {
   ProjectList,
   type FolderState,
 } from "../components/newSession/NewSessionControls";
+import { handStart } from "../components/structured/startHandoff";
 import styles from "./NewSessionLanding.module.css";
 
 /** Landing at "/" — no session selected. Pick an engine + project + folder and start a new
@@ -134,8 +135,13 @@ export function NewSessionLanding() {
   // it (back to the stored default, #1473), and it is never restored from a draft. It is never
   // replayed — not on reload, not for a retry (Hermes on #1341, rounds 1–2): an unresolved create
   // is resolved by ASKING THE SERVER below, never by re-sending a skip.
+  // The one exception is GUARDED (#1505): "New session" after a guarded create failed asks for
+  // that client guarded again, whatever the stored default — never a skip it did not choose.
   const [apiBypassChoice, setApiBypassChoice] = useState<{ engine: string; value: boolean } | null>(
-    null,
+    () => {
+      const guarded = restore.apiGuardedEngine ?? restore.draft?.apiGuardedEngine;
+      return guarded ? { engine: guarded, value: false } : null;
+    },
   );
   // An earlier create that the server DID make, found on load (its operation id is its session id).
   const [recovered, setRecovered] = useState<PendingCreate | null>(null);
@@ -382,6 +388,8 @@ export function NewSessionLanding() {
     cwdOverride,
     ...(modelChoice ? { modelChoice } : {}),
     ...(effortChoice ? { effortChoice } : {}),
+    // A GUARDED API choice survives the detour (#1505); a skip choice never does.
+    ...(apiBypassChoice?.value === false ? { apiGuardedEngine: apiBypassChoice.engine } : {}),
   };
   const wizardState: WizardEntryState = { from: "new-session", draft };
   // …and the browser's Back too: before pushing the wizard, the draft is written into THIS entry's
@@ -545,9 +553,10 @@ export function NewSessionLanding() {
         : api.structuredCreate(...args));
       clearAttempt(); // only THIS attempt's slot — a lost guarded one stays recoverable (5916)
       if (attempt.bypass) {
-        // Phase 2 (#1339): only now — the create's response is in hand — does it launch. A lost
-        // start is safe: the session view shows Start / Discard until it is confirmed.
-        await api.structuredStart(key).catch(() => {});
+        // Phase 2 (#1339): only now — the create's response is in hand — does it launch. Fired,
+        // not awaited (#1505): the page opens at once, and the request's own outcome goes to the
+        // session pane under the same key (a refusal shows its reason; a lost answer says so).
+        handStart(key, api.structuredStart(key));
       }
       if (!mounted.current) return;
       const id = key.slice(key.indexOf(":") + 1);

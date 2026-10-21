@@ -38,7 +38,15 @@ import time  # noqa: F401 — kept so `webterm.time` stays patchable by tests
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
-from . import opencode_admission, perfstats, scrollback, session_input, sessionlock, tty_health
+from . import (
+    launchtiming,
+    opencode_admission,
+    perfstats,
+    scrollback,
+    session_input,
+    sessionlock,
+    tty_health,
+)
 from .scrollback import (  # noqa: F401 — re-exported so `webterm.<name>` stays the public surface
     _ATTACH_REPLAY_GRACE_S,
     _BUFFERS,
@@ -654,6 +662,13 @@ async def run(
     """
     from .plugins import admission
 
+    # The thread default is a prefs read (a file lock): off the event loop (#1505), and before the
+    # pty exists, so a cancellation here leaks no descriptor.
+    thread_env = None
+    if launch_provider is not None:
+        from . import resource_limits
+
+        thread_env = await asyncio.to_thread(resource_limits.thread_environment, dict(os.environ))
     master, slave = os.openpty()
     _set_winsize(slave, rows, cols)
     # A real color terminal: without TERM, Ink-based agents (claude) disable color.
@@ -662,9 +677,9 @@ async def run(
     env.setdefault("TERM", "xterm-256color")
     env.setdefault("COLORTERM", "truecolor")
     if launch_provider is not None:
-        from . import memory, resource_limits
+        from . import memory
 
-        env.update(resource_limits.thread_environment(env))
+        env.update(thread_env or {})
         # Shared project memory (#1441) reaches a NEW agent process only: an attach is a dtach
         # client, and the running agent's environment was fixed when it started. Never inherited
         # from the app's own environment — absent unless this launch was given it.
@@ -731,6 +746,8 @@ async def run(
         os.close(master)
         os.close(slave)
         raise
+    if launch_provider is not None:
+        launchtiming.mark("spawn")
     # Where our bytes wait for the dtach client (#1070's paste boundary). Kept as a path + device
     # number, never as an open fd: the parent holding the slave open would stop the master from
     # seeing EOF when the client exits.
@@ -1024,10 +1041,16 @@ async def run(
         renudge["task"] = asyncio.create_task(_trail())
 
     async def pump_out() -> None:
+        timings = launchtiming.current() if launch_provider is not None else None
         while True:
             data = await loop.run_in_executor(None, _read, master)
             if not data:
                 break
+            if timings is not None:
+                # The launch's first output byte ends its timing line (#1505).
+                launchtiming.mark("first_output")
+                timings.emit(outcome="output")
+                timings = None
             out_bytes["n"] += len(data)  # #443: proof-of-repaint signal for _force_repaint
             # #678 probe: the per-chunk event-loop cost (sanitize + ring append + WS send).
             _chunk_at = time.monotonic()

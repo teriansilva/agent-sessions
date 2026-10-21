@@ -1667,6 +1667,14 @@ export interface StructuredBackgroundTask {
   updated_at: number;
 }
 
+export interface StructuredLaunch {
+  gen: string | null;
+  state: "starting" | "ready" | "failed";
+  /** ≤200 characters, failures only. */
+  reason?: string;
+  since: number | null;
+}
+
 export interface StructuredSnapshot {
   session_key: string;
   revision: number;
@@ -1693,6 +1701,14 @@ export interface StructuredSnapshot {
   start_incomplete?: boolean;
   /** It waited too long and was never launched. */
   start_expired?: boolean;
+  /** A launched skip worker that is not ready yet (#1505): no Start, nothing "didn't run". */
+  start_in_flight?: boolean;
+  /** The skip start failed (#1505), with its bounded reason when known: Start again reconciles. */
+  start_failed?: boolean;
+  start_failed_reason?: string;
+  /** The generation-scoped launch view (#1505): the HTTP create/start answer at launch, and this
+   *  turns `ready` or `failed` by itself. `gen` is null for a refusal before any worker existed. */
+  launch?: StructuredLaunch;
   turns: (StructuredTurn | StructuredAgentTurn)[];
   omitted_turns: number;
   /** Where scrolling up continues (#1504): the oldest turn of the window, null at the first turn.

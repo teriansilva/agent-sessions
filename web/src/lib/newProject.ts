@@ -46,6 +46,9 @@ export interface NewSessionDraft {
   modelChoice?: { engine: string; model: string };
   /** The reasoning level chosen for that engine AND model (#1407); absent ⇒ the preselection. */
   effortChoice?: { engine: string; model: string; effort: string };
+  /** An API client the form had GUARDED (#1505): kept through the wizard and the browser's Back
+   *  so a stored skip default never turns it into a skip. Guarded-only: no skip is ever carried. */
+  apiGuardedEngine?: string;
 }
 
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
@@ -62,6 +65,7 @@ export function readDraft(v: unknown): NewSessionDraft | null {
     cwdOverride: str(d.cwdOverride),
     ...readModelChoice(d.modelChoice),
     ...readEffortChoice(d.effortChoice),
+    ...(str(d.apiGuardedEngine) ? { apiGuardedEngine: str(d.apiGuardedEngine) as string } : {}),
   };
 }
 
@@ -105,6 +109,9 @@ export interface LandingRestoreState {
   returnTo?: string;
   restoreDraft?: NewSessionDraft;
   selectProjectId?: string;
+  /** An API client to start GUARDED (#1505): "New session" after a guarded create failed. Only
+   *  ever the guarded direction — a skip choice is never restored from anywhere. */
+  apiGuardedEngine?: string;
 }
 
 /** Cancel (leaving before CREATE): the draft exactly as it was, and never a project id. */
@@ -135,8 +142,14 @@ export function finishState(
 export function readLandingRestore(state: unknown): {
   draft: NewSessionDraft | null;
   selectProjectId: string | null;
+  apiGuardedEngine?: string;
 } {
   const s = (state && typeof state === "object" ? state : {}) as Record<string, unknown>;
   const selectProjectId = str(s.selectProjectId) || null;
-  return { draft: readDraft(s.restoreDraft), selectProjectId };
+  const apiGuardedEngine = str(s.apiGuardedEngine);
+  return {
+    draft: readDraft(s.restoreDraft),
+    selectProjectId,
+    ...(apiGuardedEngine ? { apiGuardedEngine } : {}),
+  };
 }

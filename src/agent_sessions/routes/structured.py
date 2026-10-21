@@ -9,8 +9,10 @@ mission correlation is ever read from a browser (mission callers use the facade 
 * ``GET  /api/structured/clients/{engine}/models`` — the models the client's CLI reports (#1313).
 * ``POST /api/structured/sessions {engine, cwd, operation_id, model?, bypass?}`` — create; an
   exact repeat of ``operation_id`` returns the same session (a ``bypass`` one waits for ``start``).
+  It answers once the worker is launched, not ready (#1505): the snapshot's ``launch`` view
+  (``{gen, state, reason, since}``) turns ``ready`` or ``failed`` by itself.
 * ``POST /api/structured/sessions/{key}/start`` — launch a skip-permissions creation (#1339);
-  its create reserved and launched nothing. Idempotent.
+  its create reserved and launched nothing. Idempotent. Answers at launch too (#1505).
 * ``GET  /api/structured/sessions/{key}`` — bounded snapshot (turns, exact pending requests).
 * ``GET  /api/structured/sessions/{key}/events?after=&limit=`` — durable journal cursor page.
 * ``GET  /api/structured/sessions/{key}/history?before=&limit=`` — the turns just older than one
@@ -118,6 +120,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                 model=body.get("model"),
                 effort=body.get("effort"),
                 bypass=body.get("bypass", False),
+                # The page opens on launch, not on ready (#1505): the snapshot's `launch` view
+                # reports readiness. Only this route and `/start` below pass False.
+                wait_ready=False,
             )
         )
         return JSONResponse(out, status_code=201)
@@ -128,7 +133,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     ) -> JSONResponse:
         # The second phase of a skip-permissions creation (#1339): the SPA calls it only after it
         # has received the create response, so a lost response can never launch unobserved.
-        return JSONResponse(await _run(structured_runtime.start_session(key)))
+        # It answers at launch (#1505); a refusal before any worker exists is recorded in the
+        # snapshot's `launch` view too, so a lost answer still has a truthful state to read.
+        return JSONResponse(await _run(structured_runtime.start_session(key, wait_ready=False)))
 
     async def _attributed(view: dict, key: str) -> dict:
         # A visitor's turns (#1404 P2) carry their self-chosen name in the operator's view too.

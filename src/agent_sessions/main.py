@@ -47,6 +47,7 @@ from . import (
     missions,
     models_loop,
     native_models,
+    native_runtime,
     needs_you_notify,
     orchestrator_loop,
     owner,
@@ -417,6 +418,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # Shared project memory (#1441): inbox files → each project's store, every 30 s, for
         # projects with memory on. Env kill-switch AGENT_SESSIONS_MEMORY_LOOP=0.
         memory_task = asyncio.create_task(memory_loop.run())
+        # API sessions answer at launch (#1505): a launch the previous process left `starting`
+        # is settled from its worker's own lifecycle and liveness. A drained task, not an await.
+        with contextlib.suppress(Exception):
+            native_runtime.start_reconciliation()
         # Ask's follower (#1443 Phase 4): deterministic, no model call, no notification.
         ask_follow_task = asyncio.create_task(ask_follow.run(registry))
         # API clients' model lists (#1503): warmed shortly after startup and re-probed before they
@@ -442,6 +447,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             # …and Ask's launches in flight (#1443 Phase 3a): one cut short reads `interrupted`.
             with contextlib.suppress(Exception):
                 await ask_proposals.drain()
+            # …and API sessions' background readiness waiters (#1505): cancelled WITHOUT settling.
+            # A worker is its own unit and may still come up; the next start reconciles it.
+            with contextlib.suppress(Exception):
+                await native_runtime.drain_readiness()
             # A model probe in flight is a child process (#1503): stop queueing, and wait for it at
             # most its own deadline plus its kill — it persists nothing, so nothing is lost.
             models_task.cancel()

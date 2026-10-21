@@ -126,3 +126,13 @@ describe("the New session handoff", () => {
     });
   });
 });
+
+test("a guarded API choice survives cancel, finish and the Back entry; anything else is dropped (#1505)", () => {
+  const guarded: NewSessionDraft = { ...DRAFT, engineChoice: "codex-api", apiGuardedEngine: "codex-api" };
+  expect(readLandingRestore(cancelState(guarded)).draft?.apiGuardedEngine).toBe("codex-api");
+  expect(readLandingRestore(finishState(guarded, "p-new")).draft?.apiGuardedEngine).toBe("codex-api");
+  expect(readLandingRestore({ restoreDraft: guarded }).draft?.apiGuardedEngine).toBe("codex-api");
+  // Validated: only a string names an engine, and there is no field that could carry a skip.
+  expect(readDraft({ ...DRAFT, apiGuardedEngine: 7 })).not.toHaveProperty("apiGuardedEngine");
+  expect(readDraft({ ...DRAFT, apiGuardedEngine: "" })).not.toHaveProperty("apiGuardedEngine");
+});

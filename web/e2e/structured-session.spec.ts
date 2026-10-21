@@ -575,7 +575,8 @@ test("New session: Skip permission prompts creates, THEN starts the session — 
   await page.getByRole("button", { name: /start session/i }).click();
   await expect(page).toHaveURL(new RegExp(`/s/codex-api/${ID}$`));
   expect(created).toMatchObject({ engine: "codex-api", cwd: "/home/u/proj", bypass: true });
-  expect(calls).toEqual(["create", "start"]); // launched only after the create's response
+  // Launched only after the create's response; fired, not awaited (#1505), so poll for it.
+  await expect.poll(() => calls).toEqual(["create", "start"]);
   await expect(page.getByTestId("structured-bypass")).toBeVisible();
   await expect(page.getByTestId("structured-bypass")).toHaveText(/skip permissions/i);
   await expect(page.getByTestId("structured-pending-start")).toHaveCount(0);
