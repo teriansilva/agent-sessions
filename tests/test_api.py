@@ -2874,3 +2874,31 @@ def test_manual_apply_runs_off_the_event_loop(auth_cfg, fake_jsonl, monkeypatch)
     r = c.post("/api/update/apply", headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin})
     assert r.status_code == 202
     assert seen == {"on_loop": False}
+
+
+# ---- the list builds rows only for sessions it returns (#1561) ------------------------------
+
+
+def test_list_builds_rows_only_for_scoped_sessions_and_loads_aliases_once(auth_cfg, fake_jsonl):
+    """Membership is decided before a row is built: an archived session is never enriched for
+    the active list (and vice versa), and the alias map is read once per request, not per row."""
+    from agent_sessions import metadata, webterm
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    expected = {
+        archived: c.get(f"/api/sessions?archived={archived}&limit=50").json() for archived in (0, 1)
+    }
+    real_aliases = metadata.load_aliases
+    real_last = webterm.get_last_output_at
+    for archived in (0, 1):
+        with (
+            mock.patch.object(metadata, "load_aliases", side_effect=real_aliases) as aliases,
+            mock.patch.object(webterm, "get_last_output_at", side_effect=real_last) as built,
+        ):
+            got = c.get(f"/api/sessions?archived={archived}&limit=50").json()
+        assert got == expected[archived]  # the response is unchanged
+        # One enrichment per returned row — nothing built for the other archive state.
+        assert built.call_count == got["total"] == len(got["sessions"])
+        # The request loads the alias map a bounded number of times, independent of row count.
+        assert aliases.call_count <= 3

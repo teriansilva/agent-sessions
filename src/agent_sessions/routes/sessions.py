@@ -277,7 +277,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         requested_model: str,
         *,
         use_ai_title: bool,
+        aliases: dict | None = None,
+        project: dict | None = None,
     ) -> dict:
+        """``aliases``: the request's alias map, loaded once (#1561), else read here. ``project``:
+        the row's already-resolved project ref, when the caller resolved it to decide scope."""
         key = engines.session_key(s)
         # #156 working signal: last byte we observed flowing into the shared ring.
         # Slice 2 (#183): the server-owned SessionStream writes under the PHYSICAL
@@ -285,7 +289,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # the LOGICAL key (real ``ses_…``) so the URL/sidebar are unchanged — but
         # the lookup must resolve through the alias map first, or a headless
         # reconciled-opencode row would always report idle.
-        phys_key = engines.physical_key(key)
+        phys_key = engines.physical_key(key, aliases)
         last_out = webterm.get_last_output_at(phys_key)
         return {
             "id": key,
@@ -299,7 +303,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # change from the old `project_alias or cwd` string — the SPA (the only
             # consumer) moves in the same PR; with zero entities every ref is a folder
             # ref whose id == cwd, so behaviour is unchanged.
-            "project": projects.resolve(
+            "project": project
+            if project is not None
+            else projects.resolve(
                 s.cwd, m.project_id, project_index, alias=m.project_alias
             ).as_dict(),
             # Last-activity time (#525): the newest conversation-record timestamp, NOT the raw JSONL
@@ -600,21 +606,31 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # predicate the per-project count badge (`/api/projects`) also uses — so the badge
         # can never again overstate what the list shows. Stripped server-side BEFORE
         # pagination + facets, so totals/next_offset/facets all describe the visible set.
+        #
+        # Membership is decided BEFORE the row is built (#1561): from the same three facts the
+        # row would carry (its cwd, its resolved project, its effective archive state), so the
+        # archived and out-of-scope sessions — most of the walk — are never turned into full rows
+        # only to be dropped.
         keep = _scope_filter()
-        scoped = [
-            row
-            for s in sessions
-            for row in [
+        scoped = []
+        for s in sessions:
+            m = _meta_for(s)
+            ref = projects.resolve(s.cwd, m.project_id, project_index, alias=m.project_alias)
+            ref = ref.as_dict()
+            effective_archived = m.archived if m.archived is not None else s.archived
+            if not keep(s.cwd, ref, archived=effective_archived, want_archived=archived):
+                continue
+            scoped.append(
                 _row(
                     s,
-                    _meta_for(s),
+                    m,
                     project_index,
                     metadata.requested_model_in(meta_index, aliases, engines.session_key(s)),
                     use_ai_title=use_ai_title,
+                    aliases=aliases,
+                    project=ref,
                 )
-            ]
-            if keep(row["cwd"], row["project"], archived=row["archived"], want_archived=archived)
-        ]
+            )
         # Which mission holds each row (#948). Read ONCE per request, after scoping and before
         # filtering, so the stamp, the filter and the facet all describe the same answer.
         memberships = _membership_index()
@@ -914,6 +930,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 project_index,
                 metadata.requested_model_in(meta_index, aliases, key),
                 use_ai_title=prefs.renames_sessions(),
+                aliases=aliases,
             )
             # The HARD boundary still applies (#867 review). Roots/exclusions are not a listing
             # preference: the ws resume path enforces the same predicate and calls bypassing it
