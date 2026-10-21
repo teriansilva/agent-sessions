@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { EMPTY_MISSIONS, missionList, missionRow } from "./mission-console";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 /** #1233 — switching sections keeps the session list.
  *
@@ -106,7 +107,7 @@ const sectionLink = (page: Page, section: string) =>
 
 /** Load a second page into the list, opening the phone drawer first where there is one. */
 async function loadTwoPages(page: Page, mobile: boolean) {
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   if (mobile) await page.locator("header .navToggle").click();
   await expect(sidebarRows(page)).toHaveCount(20);
   await page.getByRole("button", { name: "Load more" }).click();
@@ -117,7 +118,7 @@ async function loadTwoPages(page: Page, mobile: boolean) {
 /** Back to Sessions, and the SAME list: 40 rows and not one listing request since `settled`. */
 async function expectSurvived(page: Page, reqs: Req[], settled: number) {
   await sectionLink(page, "sessions").click();
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(new RegExp(`${NEW_SESSION_PATH}$`));
   // Shown again — the URL moves before the render that un-hides the list commits, and a count
   // alone would also pass on a list still `display: none`.
   await expect(sidebarRows(page).first()).toBeVisible();
@@ -210,11 +211,11 @@ test.describe("section switches keep the session list (#1233)", () => {
     });
     const rows = page.getByTestId("rail-mission");
 
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     await sectionLink(page, "mission").click();
     await expect(rows).toHaveCount(1);
     await sectionLink(page, "sessions").click();
-    await expect(page).toHaveURL(/\/$/);
+    await expect(page).toHaveURL(new RegExp(`${NEW_SESSION_PATH}$`));
 
     await sectionLink(page, "mission").click();
     await expect(page).toHaveURL(/\/mission/);

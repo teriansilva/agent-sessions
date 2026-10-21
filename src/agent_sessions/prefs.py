@@ -30,6 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import hq_contacts
 from .atomicjson import atomic_write_json, json_write_lock, read_json_doc
 
 # Mirror of web/src/theme/themes.ts THEME_CHOICES. Kept in sync by
@@ -477,6 +478,54 @@ def get_session_list_order(path: Path | None = None) -> str:
 def set_session_list_order(value: str, path: Path | None = None) -> str:
     """Persist the session-list sort order (invalid input → default). Preserves other keys."""
     return _set("session_list_order", coerce_session_list_order(value), path)
+
+
+# The primary HQ contact (#1525): a contact id, "random" (the client's daily pick) or "off". A
+# closed set from `hq_contacts`; an unknown or removed id READS as the default, so a contact
+# dropped from the gallery never strands the setting. Strict on write (the route's 422).
+HQ_CONTACT_VALUES: tuple[str, ...] = hq_contacts.PREF_VALUES
+DEFAULT_HQ_CONTACT = hq_contacts.DEFAULT_PREF
+
+
+def get_hq_contact(path: Path | None = None) -> str:
+    """The persisted primary HQ contact, or the default when unset/unknown."""
+    return hq_contacts.coerce_pref(_load(path or _default_path()).get("hq_contact"))
+
+
+def _hq_rev(raw: object) -> int:
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else 0
+
+
+def get_hq_contact_rev(path: Path | None = None) -> int:
+    """How many times the HQ contact has been written: the server's ORDER of those writes, so a
+    client can tell whether a config it read is at least as new as a write it made (#1525)."""
+    return _hq_rev(_load(path or _default_path()).get("hq_contact_rev"))
+
+
+def get_hq_contact_state(path: Path | None = None) -> tuple[str, int]:
+    """``(contact, its revision)`` from ONE read of the prefs document: read separately, a write
+    between the two could pair the old contact with the new revision (Hermes on #1535)."""
+    doc = _load(path or _default_path())
+    return hq_contacts.coerce_pref(doc.get("hq_contact")), _hq_rev(doc.get("hq_contact_rev"))
+
+
+def set_hq_contact_versioned(value: object, path: Path | None = None) -> tuple[str, int]:
+    """Persist the primary HQ contact and bump its revision in ONE locked write. Returns
+    ``(stored value, its revision)``."""
+    path = path or _default_path()
+    stored = hq_contacts.coerce_pref(value)
+    with json_write_lock(path):
+        data = read_json_doc(path)
+        rev = _hq_rev(data.get("hq_contact_rev")) + 1
+        data["hq_contact"] = stored
+        data["hq_contact_rev"] = rev
+        atomic_write_json(path, data)
+    return stored, rev
+
+
+def set_hq_contact(value: object, path: Path | None = None) -> str:
+    """Persist the primary HQ contact (invalid input → default). Preserves other keys."""
+    return set_hq_contact_versioned(value, path)[0]
 
 
 def get_onboarded(path: Path | None = None) -> bool | None:

@@ -1,6 +1,7 @@
 import { expect, type Page, test } from "@playwright/test";
 import { clickHeadAction } from "./headActions";
 import { mockRoster } from "./roster";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // What an "agent default" API session runs (#1511) — real-browser proof on desktop + mobile.
 // The session asked for no model; its client reported gpt-6-codex at "high". The pane's info card
@@ -129,7 +130,7 @@ test("the pane names the model an agent-default session runs, and its brief says
 
 test("the sidebar row's brief shows the same model and level", async ({ page }, testInfo) => {
   await mockApp(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   if (testInfo.project.name === "mobile") await page.locator("header .navToggle").click();
   const row = page.getByRole("listitem").filter({ hasText: TITLE });
   await expect(row).toBeVisible();

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // #494 → #1085: the drawer's action row shrank from Help / Overview / Templates / Settings to
 // Help / Settings (#1058), and is now gone — Help and Settings live in the operator menu, which the
@@ -35,7 +36,7 @@ test.describe("Mobile drawer — no action row (#494, #1085)", () => {
       r.fulfill({ json: { version: "test" } }),
     );
     await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     // Open the off-canvas drawer so its action row is on-screen and measurable.
     await page.getByRole("button", { name: /open session list/i }).click();
   });

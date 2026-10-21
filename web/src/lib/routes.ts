@@ -10,9 +10,12 @@
  *  imports it has to change: one home for the values, both import sites valid.
  */
 
+/** The new-session landing (#1525). It was `/` until the dashboard became the start page. */
+export const NEW_SESSION_PATH = "/new";
+
 /** The Sessions section's front door — the new-session landing. A session itself is
  *  `/s/:engine/:id`, and the nav links to whichever of the two was last on screen. */
-export const SESSIONS_PATH = "/";
+export const SESSIONS_PATH = NEW_SESSION_PATH;
 
 /** The Missions section (#948). */
 export const MISSION_PATH = "/mission";
@@ -20,13 +23,15 @@ export const MISSION_PATH = "/mission";
 /** The pre-#948 mission path, still served as a permanent replace-redirect. */
 export const LEGACY_MISSION_PATH = "/pulse";
 
-/** The BattleLab dashboard (#1123): what is running, what needs you, quota, and the Ask field
- *  that opens a conversation on `ASK_PATH` (#1171). */
+/** The BattleLab dashboard (#1123), and since #1525 the start page: `/` redirects here. */
 export const DASHBOARD_PATH = "/dashboard";
 
 /** Ask's old conversation page (#878, #1171). Since #1294 Ask is the right-hand sidebar the corner
  *  icon opens; this path survives only as a link that lands on the dashboard with the sidebar open. */
 export const ASK_PATH = "/ask";
+
+/** HQ's link (#1525: Ask is now HQ): like `ASK_PATH`, the dashboard with the HQ panel open. */
+export const HQ_PATH = "/hq";
 
 /** The session map (#208 / #424). Labelled MAP in the nav; the path is unchanged. */
 export const MAP_PATH = "/overview";

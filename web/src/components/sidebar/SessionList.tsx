@@ -28,6 +28,7 @@ import {
   relTime,
 } from "../../lib/format";
 import { sessionStatus } from "../../lib/sessionStatus";
+import { SESSIONS_PATH } from "../../lib/routes";
 import type { ProjectRef, Session } from "../../types/api";
 import { FiltersBar } from "./Filters";
 import { RowMenu } from "./RowMenu";
@@ -595,7 +596,7 @@ export function SessionList({
 
   // Archiving the session you're currently viewing must leave its `/s/:engine/:id` route (#631):
   // otherwise the terminal stays mounted, its socket keeps trying to reconnect to a session that
-  // is now archived (a background agent would relaunch-loop). navigate("/") unmounts SessionView →
+  // is now archived (a background agent would relaunch-loop). navigate(SESSIONS_PATH) unmounts SessionView →
   // Terminal, whose cleanup disposes the socket (`sock.close()`). Only on ARCHIVE (not unarchive)
   // and only when the archived id IS the open route.
   const handleToggleArchive = useCallback(
@@ -604,7 +605,7 @@ export function SessionList({
       const openId = openMatch
         ? `${openMatch.params.engine}:${openMatch.params.id}`
         : null;
-      if (!currentlyArchived && openId === id) navigate("/");
+      if (!currentlyArchived && openId === id) navigate(SESSIONS_PATH);
     },
     [setArchived, openMatch, navigate],
   );
@@ -696,7 +697,7 @@ export function SessionList({
         spare — so the map's address rides along in router state and the form returns there. The
         `returnTo` idiom is the topbar Settings link's, reused rather than reinvented. */}
       <Link
-        to="/"
+        to={SESSIONS_PATH}
         state={newSessionReturnsToMap ? { returnTo: MAP_PATH } : undefined}
         className={`${styles.newBtn} shine`}
         onClick={onNavigate}

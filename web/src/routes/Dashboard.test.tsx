@@ -1,8 +1,8 @@
 /** The dashboard (#1123) — its head row since #1294.
  *
- *  Ask is the right-hand sidebar now (`AskSidebar`), so what is asserted here is what the dashboard
- *  holds of it: NOTHING but a button that opens the sidebar — no docked field, no "needs an AI
- *  endpoint" notice (the sidebar says that itself). And New is one menu with the three ways to start
+ *  HQ (Ask until #1525) is the right-hand sidebar (`AskSidebar`), so what is asserted here is what the
+ *  dashboard holds of it: NOTHING but the primary contact's card that opens the sidebar — no docked
+ *  field, no "needs an AI endpoint" notice (the sidebar says that itself). And New is one menu with the three ways to start
  *  work: a session, a mission, a project (keyed to come back here, #1187).
  */
 import { render, screen, within } from "@testing-library/react";
@@ -79,13 +79,37 @@ test.each([
   expect(screen.queryByTestId("ask-needs-endpoint")).toBeNull();
 });
 
-test("the Ask button opens the sidebar and asks nothing itself (#1294)", async () => {
-  const openAsk = mount({ pulse: { configured: true } } as Partial<AppConfig>);
-  await userEvent.click(screen.getByRole("button", { name: "Ask" }));
+test("the start page greets the Commander; its own HQ button is gone, New is the primary action (#1525)", () => {
+  mount({ pulse: { configured: true }, hq_contact: "us-man" } as Partial<AppConfig>);
+  expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Welcome, Commander.");
+  expect(screen.queryByTestId("dashboard-ask")).toBeNull();
+  expect(screen.queryByRole("button", { name: /^(Ask|HQ)$/ })).toBeNull();
+  expect(screen.getByTestId("dashboard-new").className).toMatch(/newPrimary/);
+});
+
+test("the primary HQ contact is one button that opens the HQ panel and asks nothing itself (#1525)", async () => {
+  const openAsk = mount({ pulse: { configured: true }, hq_contact: "romania-woman" } as Partial<AppConfig>);
+  const card = screen.getByRole("button", { name: "Open HQ — General Ileana Lupu" });
+  expect(card).toHaveAttribute("data-contact", "romania-woman");
+  expect(within(card).getByText("Primary HQ contact")).toBeInTheDocument();
+  await userEvent.click(card);
   expect(openAsk).toHaveBeenCalledTimes(1);
-  // It stays on the dashboard: Ask is not a page.
+  // It stays on the dashboard: HQ is the sidebar, not a page.
   expect(screen.getByTestId("where")).toHaveTextContent(DASHBOARD_PATH);
   expect(api.pulseAskStream).not.toHaveBeenCalled();
+});
+
+test("Off: a placeholder with Open HQ and Select contact, no face and no media (#1525)", async () => {
+  const openAsk = mount({ pulse: { configured: true }, hq_contact: "off" } as Partial<AppConfig>);
+  const card = screen.getByTestId("hq-primary-contact");
+  expect(card.tagName).not.toBe("BUTTON");
+  expect(card).toHaveTextContent("No HQ contact");
+  expect(card.querySelector("video, img")).toBeNull();
+  expect(within(card).getByTestId("hq-silhouette")).toBeInTheDocument();
+  await userEvent.click(within(card).getByRole("button", { name: "Open HQ →" }));
+  expect(openAsk).toHaveBeenCalledTimes(1);
+  await userEvent.click(within(card).getByRole("link", { name: "Select contact" }));
+  expect(screen.getByTestId("where")).toHaveTextContent("/settings/appearance");
 });
 
 test("New is a menu: a session, a mission, a project (#1294)", async () => {

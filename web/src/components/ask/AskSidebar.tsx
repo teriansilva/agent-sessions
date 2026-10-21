@@ -1,4 +1,4 @@
-/** ASK, as a right-hand sidebar on every route (#1294).
+/** HQ (Ask until #1525), as a right-hand sidebar on every route (#1294).
  *
  *  The operator wanted Ask one tap away wherever they are, not a page under Dashboard (#1171). The
  *  corner icon beside the bell (`AskToggle`) opens this panel, which slides in from the right edge
@@ -89,8 +89,8 @@ export function AskToggle({ unreadPollMs = UNREAD_POLL_MS }: { unreadPollMs?: nu
         onClick={toggle}
         aria-expanded={open}
         aria-controls="ask-sidebar"
-        aria-label={unread ? "Ask — new updates from sessions you follow" : "Ask"}
-        title={unread ? "Ask — new updates" : "Ask"}
+        aria-label={unread ? "HQ — new updates from sessions you follow" : "HQ"}
+        title={unread ? "HQ — new updates" : "HQ"}
         data-testid="ask-toggle"
       >
         <MessageSquare size={18} aria-hidden="true" />
@@ -194,7 +194,7 @@ export function AskSidebar() {
         <button
           type="button"
           className={s.scrim}
-          aria-label="Dismiss Ask"
+          aria-label="Dismiss HQ"
           tabIndex={-1}
           onClick={close}
         />
@@ -205,7 +205,7 @@ export function AskSidebar() {
         className={`${s.panel} ${open ? s.open : ""}`}
         role={drawer ? "dialog" : "complementary"}
         aria-modal={open && drawer ? true : undefined}
-        aria-label="Ask"
+        aria-label="HQ"
         aria-hidden={open ? undefined : true}
         inert={!open}
         onKeyDown={onKeyDown}

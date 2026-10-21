@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 /** Phase-0 smoke: the SPA shell renders and routes work on both desktop + mobile
  *  viewports (the harness that ends blind mobile iteration). Backend-dependent
@@ -6,7 +7,7 @@ import { expect, test } from "@playwright/test";
  *  with the terminal in later phases and run against a live app via E2E_BASE_URL. */
 
 test("shell renders + new-session landing at /", async ({ page }) => {
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   // The BATTLELAB wordmark lives in the full-width command topbar (one bar, all widths).
   await expect(page.locator(".hud-brand")).toBeVisible();
   await expect(
@@ -32,7 +33,7 @@ test("deep-link to /s/:engine/:id mounts the terminal (URL = identity)", async (
 test("responsive nav: drawer hamburger on mobile; single collapse affordance on desktop", async ({
   page,
 }, testInfo) => {
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   // One command-bar toggle for all widths (#211 redux): drawer on mobile, collapse on desktop.
   const toggle = page.locator(".navToggle");
   const app = page.locator(".app");
@@ -66,7 +67,7 @@ test("responsive nav: drawer hamburger on mobile; single collapse affordance on 
 test("the command topbar spans the top and the pane floats below it (#134/#211)", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const top = await page.locator(".hud-topbar").boundingBox();
   const pane = await page.locator(".terminal-pane").boundingBox();
   expect(top).not.toBeNull();
@@ -80,7 +81,7 @@ test("the command topbar spans the top and the pane floats below it (#134/#211)"
 test("opens the fullscreen session map from the Sessions sub-menu at every width (#139/#211, #1058, #1069)", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   // #1069: the map is a sub-menu entry of Sessions, behind the chevron beside its label — at every
   // width, so there is still no drawer hop on mobile. The drawer's nested copy is asserted below.
   const bar = page.locator(".hud-topbar");
@@ -125,7 +126,7 @@ test("the Sessions label still goes straight to the sessions view; Escape closes
   await expect(chevron).toBeFocused();
   // One click on the label — no menu in the way of the common case.
   await bar.getByRole("link", { name: "Sessions", exact: true }).click();
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(new RegExp(`${NEW_SESSION_PATH}$`));
   await expect(
     bar.getByRole("link", { name: "Sessions", exact: true }),
   ).toHaveAttribute("aria-current", "page");
@@ -135,7 +136,7 @@ test("on a phone the drawer carries no second copy of the sections, and its filt
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "the drawer only exists ≤800px");
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await page.locator(".navToggle").click();
   const sidebar = page.locator("aside.sidebar");
   await expect(sidebar).toBeVisible();
@@ -166,7 +167,7 @@ test("on a phone the drawer carries no second copy of the sections, and its filt
 test("layout snapshot (per-project: desktop + mobile viewports)", async ({
   page,
 }, testInfo) => {
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   // Screenshot named per project → mobile vs desktop layout regressions are visible/diffable.
   await testInfo.attach(`shell-${testInfo.project.name}`, {
     body: await page.screenshot({ fullPage: true }),
@@ -177,7 +178,7 @@ test("layout snapshot (per-project: desktop + mobile viewports)", async ({
 test("Missions carries a BETA tag inside its own tile at every width, and keeps its name (#1085)", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   for (const width of [320, 412, 800, 801, 1440]) {
     await page.setViewportSize({ width, height: 740 });
     const link = page

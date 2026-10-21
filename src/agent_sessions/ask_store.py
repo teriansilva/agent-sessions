@@ -51,7 +51,7 @@ import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
-from . import missions, template_secrets, template_suggest
+from . import hq_contacts, missions, template_secrets, template_suggest
 
 CID_RE = re.compile(r"^ask_[0-9a-f]{32}$")
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -281,6 +281,13 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
             if not valid_turn_id(answers):
                 raise ValueError("malformed question id")
             out["answers"] = answers
+        # Who answers this turn (#1525): a known HQ contact id or "off", resolved by the route.
+        # Stored on the turn so an earlier answer keeps its speaker after the operator switches.
+        contact = rec.get("contact")
+        if contact is not None:
+            if not isinstance(contact, str) or contact not in (*hq_contacts.IDS, hq_contacts.OFF):
+                raise ValueError("unknown HQ contact")
+            out["contact"] = contact
     elif kind == "question":
         out["turn_id"] = _turn_id(rec)
         qid = rec.get("question_id")

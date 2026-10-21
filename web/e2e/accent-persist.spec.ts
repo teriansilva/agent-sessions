@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // #211 Phase 2: a device-cached custom accent must be applied pre-paint (inline `--accent`
 // on <html>) and stick across reloads, with the local choice winning over a stale server
@@ -46,7 +47,7 @@ test.beforeEach(async ({ page }) => {
 test("a device-cached custom accent is applied pre-paint and wins over the server (#211)", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const accent = () =>
     page.evaluate(() =>
       document.documentElement.style.getPropertyValue("--accent").trim(),

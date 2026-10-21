@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 /** What's new (#971) — the once-per-operator slideshow, in a real browser (desktop + mobile).
  *
@@ -110,7 +111,7 @@ async function navigateInApp(page: Page, path: string) {
 
 test("shows once on 0.20.0; Escape dismisses and records it; a reload does not show it again", async ({ page }) => {
   const { writes } = await setup(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const d = whatsNew(page);
   await expect(d).toBeVisible();
   await expect(d.getByText("1 / 7")).toBeVisible();
@@ -141,7 +142,7 @@ for (const [name, scenario] of GATED) {
 
 test("a fresh install gets the wizard, and finishing it records the notes so the dialog never follows", async ({ page }) => {
   const { writes } = await setup(page, { onboarded: false });
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const wizard = page.getByRole("dialog", { name: /set up battlelab/i });
   await expect(wizard).toBeVisible();
   await expect(whatsNew(page)).toHaveCount(0);
@@ -155,7 +156,7 @@ test("a fresh install gets the wizard, and finishing it records the notes so the
 
 test("a wizard save that fails closes the wizard without the dialog in that tab; the next load decides again", async ({ page }) => {
   const { writes, state } = await setup(page, { onboarded: false, prefsFail: true });
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const wizard = page.getByRole("dialog", { name: /set up battlelab/i });
   await wizard.getByRole("button", { name: /skip setup/i }).click();
   await expect(wizard).toHaveCount(0);
@@ -172,7 +173,7 @@ test("a wizard save that fails closes the wizard without the dialog in that tab;
 
 test("an open slideshow survives a version refresh: still on 2 / 7, nothing recorded (#977 review)", async ({ page }) => {
   const { state, writes } = await setup(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const d = whatsNew(page);
   await d.getByRole("button", { name: /show me/i }).click();
   await expect(d.getByText("2 / 7")).toBeVisible();
@@ -195,7 +196,7 @@ test("an open slideshow survives a version refresh: still on 2 / 7, nothing reco
 
 test("✕ dismisses and records; a tap on the backdrop does neither", async ({ page }) => {
   const { writes } = await setup(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const d = whatsNew(page);
   await expect(d).toBeVisible();
   await page.mouse.click(4, 4);
@@ -208,7 +209,7 @@ test("✕ dismisses and records; a tap on the backdrop does neither", async ({ p
 
 test("the last slide's button dismisses and records", async ({ page }) => {
   const { writes } = await setup(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const d = whatsNew(page);
   await d.getByRole("button", { name: /show me/i }).click();
   for (let i = 2; i < 7; i++) await d.getByRole("button", { name: /^next$/i }).click();
@@ -224,7 +225,7 @@ for (const [tile, cta, path] of [
 ] as const) {
   test(`the ${cta} CTA navigates and records the dismissal`, async ({ page }) => {
     const { writes } = await setup(page);
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     const d = whatsNew(page);
     await d.getByRole("button", { name: new RegExp(`^${tile}`, "i") }).click();
     await d.getByRole("button", { name: cta }).click();
@@ -236,7 +237,7 @@ for (const [tile, cta, path] of [
 
 test("a save that fails keeps it closed in this tab — moving around does not reopen it — and a reload shows it again", async ({ page }) => {
   const { writes } = await setup(page, { prefsFail: true });
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const d = whatsNew(page);
   await d.getByRole("button", { name: "Close what's new" }).click();
   await expect(d).toHaveCount(0);
@@ -266,7 +267,7 @@ test("reopening from Settings → About after a newer release was seen records n
 
 test("keyboard: the arrows move, Tab stays inside, and the page behind is inert", async ({ page }) => {
   await setup(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const d = whatsNew(page);
   await expect(d).toBeVisible();
   await expect(page.locator("#root")).toHaveAttribute("inert", "");
@@ -288,7 +289,7 @@ test("keyboard: the arrows move, Tab stays inside, and the page behind is inert"
 test("desktop: the dots jump to a slide", async ({ page }, info) => {
   test.skip(info.project.name === "mobile", "the dots are hidden at ≤800px, where the counter carries position");
   await setup(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const d = whatsNew(page);
   await d.getByRole("button", { name: "Slide 4 of 7" }).click();
   await expect(d.getByText("4 / 7")).toBeVisible();
@@ -299,7 +300,7 @@ test("phone: 44px targets, no horizontal overflow at 320px, and the footer reach
   test.skip(info.project.name !== "mobile", "phone layout");
   await page.setViewportSize({ width: 320, height: 640 });
   await setup(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const d = whatsNew(page);
   await expect(d.getByRole("group", { name: "Slides" })).toBeHidden();
   await d.getByRole("button", { name: /show me/i }).click();
@@ -319,7 +320,7 @@ test("phone: 44px targets, no horizontal overflow at 320px, and the footer reach
 test("the illustration loads, and Pause swaps it to the still image", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await setup(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const d = whatsNew(page);
   await d.getByRole("button", { name: /show me/i }).click();
   const img = d.locator("img");

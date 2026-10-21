@@ -11,6 +11,7 @@
  */
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { missionList, missionRow, mockMissions, openMissionRail } from "./mission-console";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 const SESSION = {
   id: "claude:11111111-1111-4111-8111-111111111111",
@@ -89,7 +90,7 @@ function controls(page: Page, route: "sessions" | "missions") {
 }
 
 async function measure(page: Page, route: "sessions" | "missions", mobile: boolean) {
-  await page.goto(route === "sessions" ? "/" : "/mission");
+  await page.goto(route === "sessions" ? NEW_SESSION_PATH : "/mission");
   if (mobile) await openMissionRail(page);
   const out: Record<string, unknown> = {};
   for (const [name, loc] of Object.entries(controls(page, route))) {
@@ -121,7 +122,7 @@ test("the mission sidebar footer counts missions and held sessions, not sessions
       facets: { projects: [], states: ["running"] },
     },
   });
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await openMissionRail(page);
   // #1085: the sessions footer counts the filtered list and its running agents.
   await expect(page.locator(".sidebar-foot")).toContainText(/\S+ SESSIONS · \S+ LIVE$/);
@@ -133,7 +134,7 @@ test("the mission sidebar footer counts missions and held sessions, not sessions
   await expect(foot).not.toContainText("SESSIONS ·");
   // Same typography as the sessions footer it replaces: both are the shell's .hud-tag.
   const tag = await styleOf(foot.getByTestId("rail-foot"), TYPE);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await openMissionRail(page);
   expect(await styleOf(page.locator(".sidebar-foot .hud-tag"), TYPE)).toEqual(tag);
 });
@@ -142,7 +143,7 @@ test("both sidebars keep the 44px touch floor on a phone", async ({ page }, test
   test.skip(testInfo.project.name !== "mobile", "touch floor is a phone property");
   await setup(page);
   for (const route of ["sessions", "missions"] as const) {
-    await page.goto(route === "sessions" ? "/" : "/mission");
+    await page.goto(route === "sessions" ? NEW_SESSION_PATH : "/mission");
     await openMissionRail(page);
     const c = controls(page, route);
     for (const name of ["new button", "search", "project select", "active tab"] as const) {

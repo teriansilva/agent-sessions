@@ -8,6 +8,7 @@
 // NOTE: needs CI or a local browser to run (`npx playwright test e2e/terminal/archive-active-nav`);
 // the dev host is too loaded to run Playwright here, so this spec ships unverified-in-env.
 import { expect, test } from "@playwright/test";
+import { NEW_SESSION_PATH } from "../../src/lib/routes";
 import { expectTerminalShows, setupBench } from "./harness";
 
 const SESSIONS = [{ engine: "claude", uuid: "aaa", title: "Archive Me" }];
@@ -51,7 +52,7 @@ test("archiving the active session leaves the terminal route and disposes its so
   await page.getByRole("menuitem", { name: /archive session/i }).click();
 
   // Left the session route for the new-session landing; the terminal is gone.
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(new RegExp(`${NEW_SESSION_PATH}$`));
   await expect(page.locator(".xterm-rows")).toHaveCount(0);
 
   // The socket was disposed — NOT left reconnecting to the now-archived session.

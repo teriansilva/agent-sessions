@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { connect, PY_STACK_AVAILABLE, SESSION_UUID, startStack, type Stack } from "./appmode";
+import { connect, openSessions, PY_STACK_AVAILABLE, SESSION_UUID, startStack, type Stack } from "./appmode";
 import { clickHeadAction, FILES_ACTION } from "./headActions";
 
 /** #807's acceptance evidence: an upload **through the tunnel**, appearing in the tree (#579).
@@ -48,6 +48,7 @@ test("a picked file crosses the relay, lands on disk, and shows up in the tree",
   expect(existsSync(landed)).toBe(false);
 
   await connect(page, stack);
+  await openSessions(page);
   await page.locator(`a[href*="${SESSION_UUID}"]`).first().click({ timeout: 30_000 });
   await clickHeadAction(page, FILES_ACTION, { timeout: 30_000 });
   await expect(page.locator("[data-file-panel]")).toBeVisible({ timeout: 20_000 });
@@ -86,6 +87,7 @@ test("an over-cap upload is refused through the relay with a NAMED error, not a 
   // real status. Against the previous adapter this hung — the browser blocked writing before it
   // ever read the response — so "resolves at all" is part of the assertion.
   await connect(page, stack);
+  await openSessions(page);
   const result = await page.evaluate(async () => {
     const body = new Uint8Array(40 * 1024 * 1024); // comfortably past HF_MAX_REQUEST_BODY
     const started = Date.now();

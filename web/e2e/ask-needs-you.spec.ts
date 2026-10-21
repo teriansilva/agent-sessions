@@ -359,7 +359,7 @@ test("after asking, answer rows mark who needs you and open the same details (#1
   await expect(page.getByTestId("needs-you-dialog")).toHaveCount(0);
   // One Escape closed the dialog, not the sidebar under it.
   await expect(panel).toHaveAttribute("data-open", "true");
-  await panel.getByRole("button", { name: "Close Ask" }).click();
+  await panel.getByRole("button", { name: "Close HQ" }).click();
   await expect(needs(page).getByTestId("needs-you-row")).toHaveCount(3);
 });
 

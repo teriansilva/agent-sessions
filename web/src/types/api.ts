@@ -1017,6 +1017,9 @@ export interface AskConversationTurn {
   proposals?: AskProposalCard[];
   /** The question this turn answers. */
   answers?: string | null;
+  /** Who answered (#1525): the HQ contact's id, stored on the turn so an earlier answer keeps its
+   *  speaker after the operator switches; "off" (or absent, before HQ) reads as plain HQ. */
+  contact?: string;
 }
 
 export interface AskConversation {
@@ -1272,6 +1275,12 @@ export interface AppConfig {
   analytics?: AnalyticsState;
   /** Per-user UI theme id (dark|light); applied at load. Absent on older servers. */
   theme?: string;
+  /** The primary HQ contact (#1525): a contact id from `components/hq/contacts.ts`, "random" (a
+   *  new contact every day) or "off". Absent on older servers (→ "random"). */
+  hq_contact?: string;
+  /** The server's write revision of `hq_contact` (#1525): orders a client's own write against this
+   *  read. Absent on older servers. */
+  hq_contact_rev?: number;
   /** Per-user brand accent (#rrggbb) driving --accent + the xterm cursor (#211 Phase 2);
    *  applied at load. Absent on older servers (→ client default phosphor-amber). */
   accent?: string;

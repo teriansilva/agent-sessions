@@ -501,7 +501,7 @@ async function streamMissionMessage(
  *  stops watching; it never cancels the turn. */
 async function streamAskTurn(
   id: string,
-  body: { turnId: string; text: string; answers?: string; option?: number },
+  body: { turnId: string; text: string; answers?: string; option?: number; contact?: string },
   onEvent: (ev: AskTurnEvent) => void,
   signal?: AbortSignal,
 ): Promise<AskConversationTurn> {
@@ -515,6 +515,8 @@ async function streamAskTurn(
       text: body.text,
       ...(body.answers ? { answers: body.answers } : {}),
       ...(body.option !== undefined ? { option: body.option } : {}),
+      // Who answers (#1525): the client's resolved contact. The server validates it.
+      ...(body.contact ? { contact: body.contact } : {}),
     }),
     ...(signal ? { signal } : {}),
   });

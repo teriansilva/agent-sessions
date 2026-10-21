@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // #172: a local theme choice must STICK on reload even when the server's persisted theme
 // has drifted. Mocked config returns theme:"dark"; localStorage already has "light" from
@@ -47,7 +48,7 @@ test.beforeEach(async ({ page }) => {
 test("local theme wins over stale server theme on reload (#172)", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   // The page settled; data-theme should still be light, not dark.
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   // Give the reconcile effect a moment to NOT fire.

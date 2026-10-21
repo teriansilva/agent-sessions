@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { openMapFromNav } from "./mapNav";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 /** #1007 Phase 1, task 1 — PIN the sidebar's survive-navigation behaviour.
  *
@@ -139,7 +140,7 @@ test("the sidebar list survives /overview ⇄ /s/:engine/:id with no mount fetch
   // Before navigation, so the 15 s interval is created against the fake clock.
   await page.clock.install();
 
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await openDrawer(page, project);
   await expect(rows(page)).toHaveCount(20);
 

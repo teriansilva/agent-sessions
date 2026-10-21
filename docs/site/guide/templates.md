@@ -147,7 +147,7 @@ What you see instead of the value:
   file.
 - A **Quick** handoff copies recent turns into a new session; a secret in those turns is replaced
   with `[secret]` first, in the preview and in what the new agent receives.
-- **Before anything goes to your AI endpoint** (reviews, recaps, Ask, missions), BattleLab
+- **Before anything goes to your AI endpoint** (reviews, recaps, HQ, missions), BattleLab
   replaces every stored secret, and every value typed once in the last 24 hours, with `[secret]`.
   This covers the plain text, JSON- and URL-encoded copies, and copies split by terminal colour
   codes. It **cannot** catch a secret the agent's screen wrapped across two lines, or one the

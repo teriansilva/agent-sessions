@@ -376,3 +376,13 @@ export async function connect(page: Page, stack: Stack): Promise<void> {
   });
   await expect(page.locator("#app-root")).toBeVisible({ timeout: 60_000 });
 }
+
+/** The streamed SPA starts on the dashboard (#1525), which hides the session list. Go to Sessions
+ *  the way an operator does from there: the dashboard's "All sessions →". (The connect shell's
+ *  "Connected to …" strip sits over part of the top bar, so the section nav is not the path.) */
+export async function openSessions(page: Page): Promise<void> {
+  await page.getByTestId("dashboard-sessions-history").click({ timeout: 30_000 });
+  await expect(page.getByRole("heading", { level: 1, name: "Start a new session" })).toBeVisible({
+    timeout: 30_000,
+  });
+}

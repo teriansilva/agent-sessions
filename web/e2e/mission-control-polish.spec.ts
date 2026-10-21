@@ -19,6 +19,7 @@ import {
   openMissionRail,
 } from "./mission-console";
 import { setupBench } from "./terminal/harness";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 const T = 1_700_000_000;
 const ENGINE = "claude";
@@ -549,7 +550,7 @@ async function handOffReference(page: Page) {
       json: { handle: "h-p1", preview: "# Handoff", meta: { mode: "quick", turns: 1, bytes: 9, cap: 8192 } },
     }),
   );
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const toggle = page.getByRole("button", { name: /Open session list/i });
   if ((await toggle.count()) && !(await page.locator('aside.sidebar[role="dialog"]').count())) {
     await toggle.first().click();

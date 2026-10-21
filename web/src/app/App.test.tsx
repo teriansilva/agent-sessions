@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
+import { NEW_SESSION_PATH } from "../lib/routes";
 import App from "./App";
 import { applySWUpdate } from "./swUpdate";
 
@@ -64,8 +65,8 @@ beforeEach(() => {
   localStorage.clear();
   delete document.documentElement.dataset.theme;
   // App mounts a BrowserRouter on the real jsdom location — navigations leak across tests
-  // in this file, so pin every test back to the landing route.
-  window.history.replaceState(null, "", "/");
+  // in this file, so pin every test back to the landing route (`/new` since #1525).
+  window.history.replaceState(null, "", NEW_SESSION_PATH);
 });
 
 afterEach(() => {
@@ -181,7 +182,7 @@ test("the command topbar names every work section, Library last, the map under S
   ).toEqual([
     ["Dashboard", "/dashboard"],
     ["Missions", "/mission"],
-    ["Sessions", "/"],
+    ["Sessions", NEW_SESSION_PATH],
     ["Library", "/templates"],
   ]);
   // The map is one click away behind the Sessions chevron.
@@ -194,7 +195,7 @@ test("the command topbar names every work section, Library last, the map under S
       .getAllByRole("menuitem")
       .map((a) => [a.textContent, a.getAttribute("href")]),
   ).toEqual([
-    ["Sessions", "/"],
+    ["Sessions", NEW_SESSION_PATH],
     ["Sessions map", "/overview"],
   ]);
   // …and the cluster beside them is actions ONLY. An `/overview` or `/templates` link outside the
@@ -205,7 +206,7 @@ test("the command topbar names every work section, Library last, the map under S
   expect(within(actions).getByTestId("operator-menu")).toBeInTheDocument();
 });
 
-test("Ask is the icon directly beside the bell, and it opens the right-hand sidebar (#1294)", async () => {
+test("HQ (Ask until #1525) is the icon directly beside the bell, and it opens the right-hand sidebar (#1294)", async () => {
   const { container } = render(<App />);
   const topbar = container.querySelector(".hud-topbar") as HTMLElement;
   const ask = await within(topbar).findByTestId("ask-toggle");
@@ -219,9 +220,9 @@ test("Ask is the icon directly beside the bell, and it opens the right-hand side
   const panel = await screen.findByTestId("ask-sidebar");
   expect(panel).toHaveAttribute("data-open", "true");
   expect(ask).toHaveAttribute("aria-expanded", "true");
-  expect(within(panel).getByRole("heading", { name: "Ask" })).toBeInTheDocument();
+  expect(within(panel).getByRole("heading", { name: "HQ" })).toBeInTheDocument();
   // Closing hides it but keeps it MOUNTED — that is what keeps a conversation (module note).
-  await userEvent.click(within(panel).getByRole("button", { name: "Close Ask" }));
+  await userEvent.click(within(panel).getByRole("button", { name: "Close HQ" }));
   expect(screen.getByTestId("ask-sidebar")).toHaveAttribute("data-open", "false");
   expect(ask).toHaveAttribute("aria-expanded", "false");
 });
@@ -392,7 +393,7 @@ test("Settings renders without the session sidebar: noSidebar class, no toggle, 
 });
 
 test("a work route keeps the sidebar and its toggle — the removal is Settings-specific (#1129)", async () => {
-  window.history.replaceState(null, "", "/");
+  window.history.replaceState(null, "", NEW_SESSION_PATH);
   const { container } = render(<App />);
   expect(
     await screen.findByRole("button", { name: "Collapse session list" }),

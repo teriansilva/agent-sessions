@@ -127,6 +127,8 @@ def _preflight_prefs(payload: dict) -> None:
         raise bad("unknown session_list_order")
     if "projects_mode" in payload and payload["projects_mode"] not in prefs.PROJECT_MODES:
         raise bad("unknown projects_mode")
+    if "hq_contact" in payload and not _known_hq_contact(payload["hq_contact"]):
+        raise bad("unknown hq_contact")
     if "mission_playbooks" in payload:
         # STRICT here, and deliberately not the read path's forgiving normalization: an operator
         # typing a probe target into Settings must be told their mistake at the moment they can
@@ -193,6 +195,10 @@ def _preflight_prefs(payload: dict) -> None:
         if prefs.release_tuple(payload["whats_new_seen"]) is None:
             raise bad("whats_new_seen must be a release version like 0.20.0")
         _require_onboarded_for_whats_new(payload)
+
+
+def _known_hq_contact(value: object) -> bool:
+    return isinstance(value, str) and value in prefs.HQ_CONTACT_VALUES
 
 
 def _require_onboarded_for_whats_new(payload: dict) -> None:
@@ -615,6 +621,7 @@ def register(
         # Native API clients that cannot start, with why (#1311): the picker lists them disabled
         # instead of dropping them. Display data only — create re-checks readiness.
         unavailable_clients = await asyncio.to_thread(engines.registry.unavailable_api_clients)
+        hq_state = prefs.get_hq_contact_state()  # one read: contact + its revision (#1525)
         onboarded_explicit = prefs.get_onboarded()
         if onboarded_explicit is not None:
             onboarded_val = onboarded_explicit
@@ -702,6 +709,13 @@ def register(
                 # or created_at (stable, newest-created first). Server-side sort key; the SPA's
                 # Appearance toggle writes it and the list refetches.
                 "session_list_order": prefs.get_session_list_order(),
+                # The primary HQ contact (#1525): a contact id | "random" | "off", default
+                # "random"; an unknown or removed id reads as the default. Follows the operator
+                # across devices; the client resolves "random" to the day's pick.
+                # One snapshot: the contact and its write revision, which a client orders its own
+                # unconfirmed write against, must come from the same read.
+                "hq_contact": hq_state[0],
+                "hq_contact_rev": hq_state[1],
                 # Session Overview view-state (#144): expanded cluster cwds (default collapsed).
                 # Per-user.
                 "overview_expanded": prefs.get_overview_expanded(),
@@ -935,6 +949,13 @@ def register(
             if payload["session_list_order"] not in prefs.SESSION_LIST_ORDERS:
                 raise HTTPException(status_code=422, detail="unknown session_list_order")
             out["session_list_order"] = prefs.set_session_list_order(payload["session_list_order"])
+        if "hq_contact" in payload:
+            # The primary HQ contact (#1525): a closed set, strict on write like the keys above.
+            if not _known_hq_contact(payload["hq_contact"]):
+                raise HTTPException(status_code=422, detail="unknown hq_contact")
+            out["hq_contact"], out["hq_contact_rev"] = prefs.set_hq_contact_versioned(
+                payload["hq_contact"]
+            )
         if "projects_mode" in payload:
             # Project-visibility mode (#335): all|included.
             if payload["projects_mode"] not in prefs.PROJECT_MODES:

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // #508: real-browser proof for the session-row redesign — folder chip dropped, time spelled
 // out, favorite moved into the ⋯ menu and shown as a ★ prefix on favorited rows. Runs on both
@@ -77,7 +78,7 @@ async function setup(page: Page, project: string): Promise<void> {
     r.fulfill({ json: { id: "claude:pinned", sticky: false } }),
   );
 
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   // Desktop renders the sidebar as a grid column; mobile hides it behind the drawer toggle.
   if (project === "mobile") {
     await page.locator("header .navToggle").click();

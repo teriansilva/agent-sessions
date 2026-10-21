@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 import { mockRoster } from "./roster";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 /** The map as a workspace (#936) — the parts of it a DOM emulator structurally cannot see.
  *
@@ -319,7 +320,7 @@ test.describe("map workspace", () => {
     // red on `main` before #940 touched anything; fixed here because it gates this PR, and the
     // correction is to pick a route that still has a session list rather than to weaken the
     // assertion, which is the behaviour the test is actually about.
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     await sidebarRow(page, 3).click();
     await expect(page).toHaveURL(/\/s\/claude\/s3$/);
   });
@@ -387,8 +388,8 @@ test.describe("map workspace", () => {
     const conns = await mockApp(page, { engines: ["claude"] });
     await openMap(page);
 
-    await page.locator('.sidebar .sidebarBody a[href="/"]').first().click();
-    await expect(page).toHaveURL("/");
+    await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
+    await expect(page).toHaveURL(NEW_SESSION_PATH);
     await page.getByRole("button", { name: /start session/i }).click();
 
     // Back on the map, as a window — not full screen.
@@ -411,7 +412,7 @@ test.describe("map workspace", () => {
     const conns = await mockApp(page, { engines: ["opencode"] });
     await openMap(page);
 
-    await page.locator('.sidebar .sidebarBody a[href="/"]').first().click();
+    await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
     await page.getByRole("button", { name: /start session/i }).click();
     await expect(page).toHaveURL(/\/overview$/);
     // It launched under the placeholder, then adopted the id the engine minted.
@@ -453,7 +454,7 @@ test.describe("map workspace", () => {
     await mockApp(page, { engines: ["opencode"] });
     await openMap(page);
 
-    await page.locator('.sidebar .sidebarBody a[href="/"]').first().click();
+    await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
     await page.getByRole("button", { name: /start session/i }).click();
     await expect(page).toHaveURL(/\/overview$/);
     const w = page.locator("[data-session-window]");
@@ -483,7 +484,7 @@ test.describe("map workspace", () => {
     await chip(page, 1).click();
     await expect(page.locator("[data-session-window]")).toHaveCount(1);
 
-    await page.locator('.sidebar .sidebarBody a[href="/"]').first().click();
+    await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
     await page.getByRole("button", { name: /start session/i }).click();
 
     // Full screen, and it really launched.
@@ -510,8 +511,8 @@ test.describe("map workspace", () => {
     const conns = await mockApp(page, { engines: ["opencode"] });
     await openMap(page);
 
-    await page.locator('.sidebar .sidebarBody a[href="/"]').first().click();
-    await expect(page).toHaveURL("/");
+    await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
+    await expect(page).toHaveURL(NEW_SESSION_PATH);
     // Too short to host a window at its 560×320 floor, while still far wider than the ≤800px
     // mobile breakpoint — the exact gap a width-only gate leaves open.
     await page.setViewportSize({ width: 1920, height: 400 });
@@ -548,8 +549,8 @@ test.describe("map workspace", () => {
     await expect(page.locator("[data-session-window]")).toHaveCount(1);
     await page.waitForTimeout(700); // let the debounced layout write settle
 
-    await page.locator('.sidebar .sidebarBody a[href="/"]').first().click();
-    await expect(page).toHaveURL("/");
+    await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
+    await expect(page).toHaveURL(NEW_SESSION_PATH);
     await page.reload(); // fresh provider, layout unhydrated, history keeps returnTo
     await page.getByRole("button", { name: /start session/i }).click();
 
@@ -569,8 +570,8 @@ test.describe("map workspace", () => {
     const conns = await mockApp(page, { engines: ["opencode"] });
     await openMap(page);
 
-    await page.locator('.sidebar .sidebarBody a[href="/"]').first().click();
-    await expect(page).toHaveURL("/");
+    await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
+    await expect(page).toHaveURL(NEW_SESSION_PATH);
     await page.setViewportSize({ width: 1920, height: 120 });
     await page.getByRole("button", { name: /start session/i }).click();
 
@@ -635,8 +636,8 @@ test.describe("map workspace", () => {
 
     await openMap(page);
     // From the map: "+ New session" → the landing → back as a window.
-    await page.locator('.sidebar .sidebarBody a[href="/"]').first().click();
-    await expect(page).toHaveURL("/");
+    await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
+    await expect(page).toHaveURL(NEW_SESSION_PATH);
     await page.getByRole("button", { name: /start session/i }).click();
     await expect(page).toHaveURL(/\/overview/);
     await expect(page.locator("[data-session-window]")).toHaveCount(1);

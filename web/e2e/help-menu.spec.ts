@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { DOCS_HOME_URL } from "../src/lib/links";
 import { mockRoster } from "./roster";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 /** Help — in the operator menu since #1085, the `?` menu before (#987) — and the setup wizard's docs
  *  links, in a real browser (desktop + mobile).
@@ -65,7 +66,7 @@ test("the operator menu carries Settings and Help: first item focused, arrows mo
 }) => {
   await setup(page);
   await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const t = trigger(page);
   await expect(t).toHaveAttribute("aria-haspopup", "menu");
   // No `?` and no ⚙ of their own any more (#1085).
@@ -105,7 +106,7 @@ test("a second click closes it, a double-click does not leave it open, and an ou
 }) => {
   await setup(page);
   await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const t = trigger(page);
 
   await t.click();
@@ -127,7 +128,7 @@ test("a second click closes it, a double-click does not leave it open, and an ou
 test("Tab and Shift+Tab leave the menu: it closes and focus is back on the tile", async ({ page }) => {
   await setup(page);
   await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const t = trigger(page);
 
   for (const key of ["Tab", "Shift+Tab"]) {
@@ -144,7 +145,7 @@ test("Intro tour opens the tour, What's new opens the dialog, Settings opens Set
 }) => {
   await setup(page);
   await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
 
   await trigger(page).click();
   await helpMenu(page).getByRole("menuitem", { name: "Intro tour" }).click();
@@ -169,7 +170,7 @@ test("Intro tour opens the tour, What's new opens the dialog, Settings opens Set
 test("Documentation opens the docs home in a new tab with no opener", async ({ page }) => {
   await setup(page);
   await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await trigger(page).click();
   const docs = helpMenu(page).getByRole("menuitem", { name: "Documentation (opens in a new tab)" });
   await expect(docs).toHaveAttribute("href", DOCS_HOME_URL);
@@ -189,7 +190,7 @@ test("measured: 44px rows, and the panel sits inside the viewport under the tile
 }) => {
   await setup(page);
   await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const t = trigger(page);
   await t.click();
   const menu = helpMenu(page);
@@ -210,7 +211,7 @@ test("the setup wizard's Welcome and Launch steps link the docs in a new tab and
 }) => {
   await setup(page, { onboarded: false });
   await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const wizard = page.getByRole("dialog", { name: "Set up BattleLab" });
   await expect(wizard.getByRole("heading", { name: "Welcome to BattleLab" })).toBeVisible();
 

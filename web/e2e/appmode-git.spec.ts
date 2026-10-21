@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { execFileSync } from "node:child_process";
-import { connect, PY_STACK_AVAILABLE, SESSION_UUID, startStack, type Stack } from "./appmode";
+import { connect, openSessions, PY_STACK_AVAILABLE, SESSION_UUID, startStack, type Stack } from "./appmode";
 import { HOOK_TIMEOUT_MS } from "./harness";
 import { clickHeadAction, FILES_ACTION } from "./headActions";
 
@@ -50,6 +50,7 @@ test("the panel switches a real branch through the relay, and the repo moves on 
   expect(branchOf(stack.repo)).toBe("master");
 
   await connect(page, stack);
+  await openSessions(page);
   // The streamed SPA lists the seeded session; open it, then the file panel's GIT tab.
   // The sidebar renders each session as a link to `/s/<engine>/<uuid>`.
   await page.locator(`a[href*="${SESSION_UUID}"]`).first().click({ timeout: 30_000 });

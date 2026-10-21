@@ -50,6 +50,11 @@ How BattleLab itself looks: the frame, menus, buttons and panels.
 - **Opening links**: how a session link from outside the app opens on this device: *Ask each
   time*, *Full screen* or *In map*. Desktop only; *Ask each time* resets a remembered choice. See
   [Opening links](/guide/sessions#opening-links).
+- **Select your primary HQ contact**: who answers in [HQ](/guide/hq#hq-contacts), as a gallery of
+  portrait cards: **Random** (the default, *A new contact every day*), the thirteen contacts, and
+  **Off** (*No portrait*). Arrow keys move and select. Unlike the rest of Appearance, it is saved
+  on the server and follows you across devices. `/settings/appearance#hq-contact` links straight
+  to it.
 
 ### Terminal sessions · `terminal-appearance`
 
@@ -106,7 +111,7 @@ auto-sort still reads them. Turning it back on restores the reviewed titles at o
 **Reading sessions** sets how deeply a session is read before a decision, and whether you are told:
 *Recognise questions and choices* (on), *Decision context* Standard | Deep (Standard), and *Notify
 me when a session needs me* (on). A notification is taken back when the session stops needing you,
-with one exception described under [Notifications](/guide/notifications). See [Ask](/guide/ask#settings).
+with one exception described under [Notifications](/guide/notifications). See [HQ](/guide/hq#settings).
 
 ### Auto-sort · `ai-auto-sort`
 
@@ -146,7 +151,8 @@ redirects there.
 ### Prompts · `ai-prompts`
 
 Every system prompt BattleLab sends, with the JSON shape each one must return and **Reset to
-default**. The list of prompts is in the [Reference](/reference/).
+default**. **HQ contacts** holds each General's voice, labelled by name, and **HQ — conversation**
+is HQ's own prompt. The list of prompts is in the [Reference](/reference/).
 
 ### Activity · `ai-activity`
 

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // The `.shine` buttons (incl. "New session") run `hud-btn-glitch`, which animates
 // `clip-path: inset(...)`. clip-path removes the clipped region from hit-testing, so a
@@ -9,7 +10,7 @@ import { expect, test } from "@playwright/test";
 test("New session keeps its full hit-area during the .shine glitch", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   // On mobile the New session link lives in the off-canvas drawer — open it so the button is
   // actually on-screen before we measure its hit-area.
   const hamburger = page.getByRole("button", { name: /open session list/i });

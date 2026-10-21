@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // #561 Phase 1: typing in the sidebar search box must debounce — a burst of keystrokes issues ONE
 // `/api/sessions?q=…` request (for the final value), not one per key. Each request server-side is a
@@ -41,7 +42,7 @@ async function setup(page: Page, project: string): Promise<string[]> {
     r.fulfill({ json: { version: "test" } }),
   );
 
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   // Desktop renders the sidebar as a grid column; mobile hides it behind the drawer toggle.
   if (project === "mobile") {
     await page.locator("header .navToggle").click();

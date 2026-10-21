@@ -1,0 +1,10 @@
+/* HQ contacts (#1525). A face, not an LED: a square frame, a 1px --line-strong border, no radius,
+ * no status colour. */
+.portrait {
+  display: block;
+  flex: none;
+  object-fit: cover;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--bg-2);
+}

@@ -31,6 +31,8 @@ export interface FakeTurn {
   } | null;
   proposals?: Record<string, unknown>[];
   answers?: string | null;
+  /** Who answered (#1525): the request's contact, echoed as the server stores it. */
+  contact?: string;
 }
 
 export interface FakeConversation {
@@ -195,6 +197,7 @@ export function fulfillAsk(
     text: string;
     answers?: string;
     option?: number;
+    contact?: string;
   };
   const id = /\/(ask_[0-9a-f]{32})\/message\/stream$/.exec(
     new URL(route.request().url()).pathname,
@@ -213,7 +216,11 @@ export function fulfillAsk(
     const q = c?.turns.find((t) => t.ask?.question_id === req.answers)?.ask;
     text = q?.options[req.option] ?? text;
   }
-  const turn = { ...turnOf(text, result, req.turn_id), answers: req.answers ?? null };
+  const turn = {
+    ...turnOf(text, result, req.turn_id),
+    answers: req.answers ?? null,
+    contact: req.contact ?? "off",
+  };
   if (c) {
     c.turns = [...c.turns.filter((t) => t.turn_id !== turn.turn_id), turn];
     c.updated_at = ++clock;

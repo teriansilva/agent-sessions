@@ -137,7 +137,7 @@ export default defineConfig({
         collapsed: false,
         items: [
           { text: "Dashboard", link: "/guide/dashboard" },
-          { text: "Ask", link: "/guide/ask" },
+          { text: "HQ", link: "/guide/hq" },
           { text: "Engines", link: "/guide/engines" },
           { text: "Public agent catalog", link: "/guide/agent-catalog" },
           { text: "Agent definitions", link: "/guide/plugins" },

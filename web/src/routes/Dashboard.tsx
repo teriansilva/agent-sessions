@@ -3,17 +3,16 @@ import {
   ChevronDown,
   Crosshair,
   FolderPlus,
-  MessageSquare,
   Plus,
   TerminalSquare,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import a from "../components/ask/AskConsole.module.css";
-import { useAskPanel } from "../components/ask/askPanel";
 import { NeedsYou } from "../components/ask/NeedsYou";
 import { NeedsYouDetailsDialog } from "../components/ask/NeedsYouDetailsDialog";
 import { RecentWork } from "../components/ask/RecentWork";
+import { PrimaryContact } from "../components/hq/PrimaryContact";
 import { useNeedsYou } from "../components/ask/useNeedsYou";
 import {
   KpiStrip,
@@ -45,15 +44,14 @@ import styles from "./Ask.module.css";
  *  RECENT WORK is opt-in (#1467): opening it mounts and revalidates its retained snapshot; closing
  *  it retires its reads. Session history has one link instead of another list of the same sessions.
  *
- *  **Ask is not on this page (#1294).** It is the right-hand sidebar the corner icon opens on every
- *  route; the head row's Ask button opens the same sidebar, and that is all the dashboard holds of
- *  it. The docked Ask field (#1171) is gone, and so is the "needs an AI endpoint" notice, which the
- *  sidebar says itself. Beside Ask, **New** is the one way to start work from here: a session, a
- *  mission or a project (#1187's wizard, which comes back here when it is done). */
+ *  **The start page (#1525).** `/` lands here, greeting the operator: "Welcome, Commander." HQ (Ask
+ *  until #1525) is the right-hand sidebar the corner icon opens on every route (#1294); here the
+ *  primary HQ contact's card opens the same sidebar, and it is all the dashboard holds of it. Its
+ *  own HQ button is gone. **New** is the page's primary action and the one way to start work from
+ *  here: a session, a mission or a project (#1187's wizard, which comes back here when it is done). */
 export default function Dashboard() {
   const cfg = useConfig();
   const refreshConfig = useConfigRefresh();
-  const { openAsk } = useAskPanel();
 
   // ONE window for Needs you and Recent work: the stored preference, changed in the recap.
   const stored = coerceRecentWindowDays(cfg?.pulse?.window_days);
@@ -155,20 +153,20 @@ export default function Dashboard() {
         <RefreshBar active={revalidating} />
         <div className={m.pane} data-testid="dashboard-pane">
           <div className={a.dashboard}>
-            <div className={styles.kicker}>Dashboard // what is going on</div>
-            <div className={d.headRow}>
-              <h1 className={styles.h1}>BattleLab dashboard</h1>
+            {/* #1525: the headline row takes the KPI strip's columns, so the contact card in the
+                last one is exactly as wide as the Plan quota tile below it. New sits directly left
+                of it, top edges aligned. */}
+            <div className={d.top} data-testid="dashboard-top">
+            <div className={d.headBlock}>
+            <div className={`${styles.kicker} ${d.kicker}`}>Dashboard // what is going on</div>
+            <h1 className={`${styles.h1} ${d.welcome}`}>Welcome, Commander.</h1>
+            <p className={`${styles.sub} ${d.sub}`}>
+              What is running, what needs you and what you did.
+            </p>
+            </div>
               <div className={d.headActions}>
-                <button
-                  type="button"
-                  className={d.headBtn}
-                  onClick={openAsk}
-                  data-testid="dashboard-ask"
-                >
-                  <MessageSquare size={14} aria-hidden="true" /> Ask
-                </button>
                 {/* New (#1294): a session, a mission or a project. The project entry keeps the
-                    wizard's way back here (#1187). */}
+                    wizard's way back here (#1187). Since #1525 it is the page's primary action. */}
                 <AnchoredMenu
                   label="New"
                   trigger={
@@ -178,7 +176,7 @@ export default function Dashboard() {
                       <ChevronDown size={14} aria-hidden="true" />
                     </>
                   }
-                  triggerClassName={d.headBtn}
+                  triggerClassName={d.newPrimary}
                   triggerTestId="dashboard-new"
                   menuTestId="dashboard-new-menu"
                   focus="first-item"
@@ -223,10 +221,8 @@ export default function Dashboard() {
                   )}
                 </AnchoredMenu>
               </div>
+              <PrimaryContact className={d.topCard} />
             </div>
-            <p className={styles.sub}>
-              What is running, what needs you and what you did.
-            </p>
             <KpiStrip
               sessions={sessions}
               missions={missionsRes}

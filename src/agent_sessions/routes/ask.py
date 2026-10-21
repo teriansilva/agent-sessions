@@ -18,7 +18,10 @@
   (the Ask icon's dot). ``DELETE /api/ask/conversations/{id}/follow/{key}`` — stop following a
   session.
 
-Both message routes take ``{"turn_id": <uuid>, "text"}``. A repeat of a settled ``turn_id`` returns
+Both message routes take ``{"turn_id": <uuid>, "text", "contact"?}``. ``contact`` is the HQ
+contact who answers (#1525), the client's resolved choice: a contact id or ``"off"``; absent,
+unknown or not a string is ``"off"`` (plain HQ). It is stored on the turn, and every turn in the
+conversation body carries its own ``contact``. A repeat of a settled ``turn_id`` returns
 it without running the model again; a repeat while it runs watches the same turn. Leaving never
 cancels a turn (``ask_orchestrator``'s module note). ``/api/pulse/ask[/stream]`` is unchanged: the
 transient, read-only Ask seam stays for its other callers (#1397).
@@ -34,7 +37,15 @@ from collections.abc import AsyncIterator
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .. import actuator, ask_follow, ask_orchestrator, ask_proposals, ask_store, prefs
+from .. import (
+    actuator,
+    ask_follow,
+    ask_orchestrator,
+    ask_proposals,
+    ask_store,
+    hq_contacts,
+    prefs,
+)
 
 # The latest `seen` time a client may send (2100-01-01): any later or unbounded value is refused.
 _MAX_TS = 4_102_444_800
@@ -159,7 +170,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 {"detail": f"text too long (max {ask_orchestrator.QUERY_MAX} chars)"},
                 status_code=422,
             )
-        return turn_id, text, answers, option  # type: ignore[return-value]
+        # Never free text: anything but a known contact id is plain HQ (#1525).
+        contact = hq_contacts.resolve(body.get("contact"))
+        return turn_id, text, answers, option, contact  # type: ignore[return-value]
 
     async def _begin(cid: str, request: Request):
         """``(task, settled view)`` or the JSONResponse that refuses the turn."""
@@ -168,7 +181,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         parsed = await _message_body(request)
         if isinstance(parsed, JSONResponse):
             return parsed
-        turn_id, text, answers, option = parsed
+        turn_id, text, answers, option, contact = parsed
         try:
             return await ask_orchestrator.begin(
                 cid,
@@ -178,6 +191,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 busy_keys=actuator.busy_keys(registry),
                 answers=answers,
                 option=option,
+                contact=contact,
             )
         except ask_store.ConversationNotFound:
             return _missing(cid)

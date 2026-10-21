@@ -59,7 +59,7 @@
  * composer already made for the session pane's Send (`terminal/Compose.module.css`). One box, drawn
  * one way, wherever it appears.
  */
-import { Info, X } from "lucide-react";
+import { Info, Plus, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -101,6 +101,9 @@ import a from "./AskConsole.module.css";
 import type { AskStep } from "./askStep";
 import { AskSwitcher } from "./AskSwitcher";
 import { AskWorking } from "./AskWorking";
+import { contactById } from "../hq/contacts";
+import { HqPortrait } from "../hq/HqPortrait";
+import { useHqContact } from "../hq/useHqContact";
 import { RevealText } from "./RevealText";
 
 export interface AskTurn {
@@ -118,6 +121,8 @@ export interface AskTurn {
   step: AskStep | null;
   /** Still running on the server. */
   pending: boolean;
+  /** Who answers it (#1525): a contact id, or "off" for plain HQ. */
+  contact: string;
   /** Its answer arrived while this page watched — the only answer that writes itself out. One read
    *  back from the server is history and shows at once. */
   live?: boolean;
@@ -172,7 +177,34 @@ function fromServer(t: AskConversationTurn): AskTurn {
     ask: t.ask ?? null,
     proposals: t.proposals ?? [],
     at: typeof t.asked_at === "number" ? t.asked_at : null,
+    contact: t.contact ?? "off",
   };
+}
+
+/** An answer's speaker (#1525): the contact stored on ITS turn, so switching relabels only new
+ *  answers. Off, a removed contact and a turn from before HQ read as plain HQ. */
+function speakerName(id: string): string {
+  return contactById(id)?.name ?? "HQ";
+}
+
+function AnswerHead({ contact }: { contact: string }) {
+  const who = contactById(contact);
+  return (
+    <div className={`${styles.eventHead} ${a.label} ${a.speaker}`} data-testid="ask-speaker">
+      {who ? (
+        <img
+          className={a.speakerPoster}
+          src={who.poster}
+          alt=""
+          aria-hidden="true"
+          width={24}
+          height={32}
+          draggable={false}
+        />
+      ) : null}
+      {who ? who.name : "HQ"}
+    </div>
+  );
 }
 
 /** Fold one streamed progress line into its turn. */
@@ -251,6 +283,13 @@ export function AskConsole({
   const [following, setFollowing] = useState<string[]>([]);
   const [follows, setFollows] = useState<AskFollow[]>([]);
   const [followsUnknown, setFollowsUnknown] = useState(false);
+  // The ONE resolver the header, the dashboard card and a turn's `contact` share (#1525).
+  const { contact, wire: contactWire } = useHqContact();
+  // Read at send time: a send callback made before a switch must still say who answers now.
+  const contactRef = useRef(contactWire);
+  useEffect(() => {
+    contactRef.current = contactWire;
+  }, [contactWire]);
   const [updatesPending, setUpdatesPending] = useState(false);
   const [followsExhausted, setFollowsExhausted] = useState(false);
   const [unread, setUnread] = useState(false);
@@ -492,6 +531,7 @@ export function AskConsole({
         ask: null,
         proposals: [],
         at: null,
+        contact: contactRef.current,
       };
       setTurns((prev) => [...prev, optimistic]);
       const update = (fn: (t: AskTurn) => AskTurn) =>
@@ -522,6 +562,7 @@ export function AskConsole({
             text: reply?.option !== undefined ? "" : q,
             ...(reply ? { answers: reply.answers } : {}),
             ...(reply?.option !== undefined ? { option: reply.option } : {}),
+            contact: optimistic.contact,
           },
           (ev) => {
             if (current(id)) update((t) => applyEvent(t, ev));
@@ -753,8 +794,30 @@ export function AskConsole({
 
   return (
     <div className={`${styles.threadCol} ${a.col}`} data-testid="ask-col">
-      <header className={`${a.measure} ${a.head}`} data-testid="ask-head">
-        <h2 className={a.title}>Ask</h2>
+      <header
+        className={`${a.measure} ${a.head} ${contact ? a.headContact : ""}`}
+        data-testid="ask-head"
+        data-contact={contact ? contact.id : "off"}
+      >
+        {/* #1525: [portrait] [HQ + the contact's name / picker · + · ×]. Off keeps one row. */}
+        {contact ? (
+          <HqPortrait
+            contact={contact}
+            playing={visible}
+            className={a.headPortrait}
+            testId="hq-head-portrait"
+          />
+        ) : null}
+        <div className={a.headMain}>
+        <div className={a.who}>
+          <h2 className={a.title}>HQ</h2>
+          {contact ? (
+            <span className={a.whoName} data-testid="hq-head-name">
+              {contact.name}
+            </span>
+          ) : null}
+        </div>
+        <div className={a.headTools}>
         <AskSwitcher
           conversations={conversations}
           currentId={cid}
@@ -786,22 +849,24 @@ export function AskConsole({
             inputRef.current?.focus();
           }}
           data-testid="ask-new"
+          title="New conversation"
         >
-          <span className={a.long}>New conversation</span>
-          <span className={a.short}>New</span>
+          <Plus size={18} aria-hidden="true" />
         </button>
         {onClose ? (
           <button
             ref={closeRef}
             type="button"
             className={a.back}
-            aria-label="Close Ask"
+            aria-label="Close HQ"
             onClick={onClose}
             data-testid="ask-close"
           >
             <X size={18} aria-hidden="true" />
           </button>
         ) : null}
+        </div>
+        </div>
       </header>
       <div
         className={styles.pane}
@@ -846,10 +911,11 @@ export function AskConsole({
                 </article>
                 <article
                   className={styles.event}
-                  aria-label="Answer"
+                  aria-label={`Answer from ${speakerName(t.contact)}`}
                   aria-busy={t.pending}
+                  data-speaker={t.contact}
                 >
-                  <div className={`${styles.eventHead} ${a.label}`}>Answer</div>
+                  <AnswerHead contact={t.contact} />
                   {t.answer !== null ? (
                     <>
                       <RevealText

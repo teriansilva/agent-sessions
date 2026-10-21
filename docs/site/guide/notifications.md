@@ -22,12 +22,12 @@ question that has already been answered.
 ## Sessions that need you
 
 For a session no mission holds, there is exactly **one** notification per time it starts needing
-you, an *episode*. It is the same list as [Ask → Needs you](/guide/ask#needs-you): a session that
+you, an *episode*. It is the same list as [HQ → Needs you](/guide/hq#needs-you): a session that
 isn't on that list never notifies. The episode is remembered across restarts, so the same
 situation is never announced twice, and clearing the bell doesn't bring it back.
 
-When the session stops needing you (answered in its terminal, its decision settled, dismissed on
-Ask, archived, or taken into a mission), the notification is **taken back**. The bell row goes on
+When the session stops needing you (answered in its terminal, its decision settled, dismissed in
+Needs you, archived, or taken into a mission), the notification is **taken back**. The bell row goes on
 the next check: straight away after a settlement, a dismissal or an archive, otherwise within a
 minute. On a device you subscribed, the push is closed the next time BattleLab is open there, or when
 the next notification arrives, whichever comes first. A push that arrives late, after its session

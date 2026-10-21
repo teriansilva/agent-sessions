@@ -8,6 +8,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { ASK_STREAM, fulfillAsk, mockAskConversations } from "./askStream";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 const NOW = Math.floor(Date.now() / 1000);
 const A = "claude:aaaaaaaa-0000-4000-8000-00000000000a";
@@ -319,7 +320,7 @@ test("every tile renders its own read, and the strip counts what the tiles show"
   await mockAll(page);
   await page.goto("/dashboard");
   await expect(
-    page.getByRole("heading", { name: "BattleLab dashboard" }),
+    page.getByRole("heading", { name: "Welcome, Commander." }),
   ).toBeVisible();
   await expect(page.getByTestId("kpi-agents")).toContainText("7");
   await expect(page.getByTestId("kpi-agents")).toContainText("3 working");
@@ -535,7 +536,7 @@ test("Ask opens the sidebar beside the tiles; the dashboard has no Ask field of 
   await page.goto("/dashboard");
   await expect(page.getByTestId("kpi-agents")).toContainText("7");
   await expect(page.getByTestId("dashboard-page").getByTestId("composer-input")).toHaveCount(0);
-  await page.getByTestId("dashboard-ask").click();
+  await page.getByTestId("hq-primary-contact").click();
   const panel = page.getByTestId("ask-sidebar");
   await expect(panel).toHaveAttribute("data-open", "true");
   await panel.getByTestId("composer-input").fill("what ran today?");
@@ -553,7 +554,7 @@ test("New is a menu — session, mission, project — that opens on screen and g
   await page.goto("/dashboard");
   const vw = page.viewportSize()!.width;
   for (const [item, url] of [
-    ["New session", /\/$/],
+    ["New session", new RegExp(`${NEW_SESSION_PATH}$`)],
     ["New mission", /\/mission$/],
     ["New project", /\/projects\/new$/],
   ] as const) {
@@ -621,10 +622,10 @@ test("All sessions opens the session history without expanding Recent work", asy
     "aria-expanded",
     "false",
   );
-  await expect(history).toHaveAttribute("href", "/");
+  await expect(history).toHaveAttribute("href", NEW_SESSION_PATH);
   expect((await history.boundingBox())!.height).toBeGreaterThanOrEqual(44);
   await history.click();
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(new RegExp(`${NEW_SESSION_PATH}$`));
 });
 
 for (const theme of ["dark", "light"] as const) {

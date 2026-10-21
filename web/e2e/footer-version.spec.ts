@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // #661: the status footer shows the running version. The preview build is unstamped ("dev"),
 // so the tag mirrors the server's /api/version — route it deterministically (the static
@@ -20,7 +21,7 @@ test("the status footer renders the running version as a hud tag (#661)", async 
   await page.route("**/api/version", (r) =>
     r.fulfill({ json: { version: "9.9.9" } }),
   );
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const footer = page.locator("footer.hud-classbar");
   await expect(footer).toBeVisible();
   await expect(footer.locator(".hud-version")).toHaveText("V9.9.9");

@@ -99,7 +99,7 @@ test("Ask is the icon beside the bell on every route; it slides in from the righ
   const pb = (await panel.boundingBox())!;
   expect(pb.x).toBeGreaterThan(0);
   expect(pb.y).toBeGreaterThanOrEqual(50);
-  await expect(panel.getByRole("heading", { name: "Ask" })).toBeVisible();
+  await expect(panel.getByRole("heading", { name: "HQ" })).toBeVisible();
   // Every head control holds the 44px floor (design §8).
   for (const b of await panel.getByTestId("ask-head").getByRole("button").all()) {
     expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44);
@@ -110,27 +110,30 @@ test("Ask is the icon beside the bell on every route; it slides in from the righ
     await page.locator('.hud-topbar [data-testid="ask-toggle"]').click();
   } else {
     await expect(panel).toHaveAttribute("aria-modal", "true");
-    await panel.getByRole("button", { name: "Close Ask" }).click();
+    await panel.getByRole("button", { name: "Close HQ" }).click();
   }
   await expect(panel).toHaveAttribute("data-open", "false");
   await expect(panel).toBeHidden();
   await expect(page.locator('.hud-topbar [data-testid="ask-toggle"]')).toBeFocused();
 });
 
-test("the dashboard's Ask button opens the sidebar, and an old /ask link lands there too (#1294)", async ({
+test("the dashboard's primary HQ contact opens the sidebar, and old /ask and new /hq links land there too (#1294, #1525)", async ({
   page,
 }) => {
   await mockShell(page);
   await page.goto("/dashboard");
-  // No Ask field on the dashboard any more — just the button.
+  // No Ask field on the dashboard any more — the primary HQ contact's card opens the sidebar.
   await expect(page.getByTestId("dashboard-page")).toBeVisible();
   await expect(page.getByTestId("dashboard-page").getByTestId("composer-input")).toHaveCount(0);
-  await page.getByTestId("dashboard-ask").click();
+  await expect(page.getByTestId("dashboard-ask")).toHaveCount(0);
+  await page.getByTestId("hq-primary-contact").click();
   await expect(page.getByTestId("ask-sidebar")).toHaveAttribute("data-open", "true");
 
-  await page.goto("/ask");
-  await expect(page).toHaveURL(/\/dashboard$/);
-  await expect(page.getByTestId("ask-sidebar")).toHaveAttribute("data-open", "true");
+  for (const path of ["/ask", "/hq"]) {
+    await page.goto(path);
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(page.getByTestId("ask-sidebar")).toHaveAttribute("data-open", "true");
+  }
 });
 
 test("a question answers, names the sessions it matched, and jumps into one", async ({
@@ -240,7 +243,7 @@ test("the conversation outlives closing the panel, navigating AND a reload (#129
   await panel.getByTestId("composer-input").press("Enter");
   await expect(panel.getByTestId("ask-turn")).toHaveCount(1);
 
-  await panel.getByRole("button", { name: "Close Ask" }).click();
+  await panel.getByRole("button", { name: "Close HQ" }).click();
   await expect(panel).toHaveAttribute("data-open", "false");
   // In-app navigation, not a reload: the sidebar lives above the router.
   await openMapFromNav(page);
@@ -274,7 +277,7 @@ test("an answer still running survives closing the panel, navigating, and reopen
   await panel.getByTestId("composer-input").press("Enter");
   await expect(panel.getByTestId("ask-working")).toBeVisible();
 
-  await panel.getByRole("button", { name: "Close Ask" }).click();
+  await panel.getByRole("button", { name: "Close HQ" }).click();
   await openMapFromNav(page);
   await expect(page).toHaveURL(/\/overview$/);
   release!();
@@ -297,8 +300,8 @@ test("the shell's mobile line decides the form: modal at <=800px, beside the pag
   await page.setViewportSize({ width: 720, height: 800 });
   let panel = await openAsk(page);
   await expect(panel).toHaveAttribute("aria-modal", "true");
-  await expect(page.getByRole("button", { name: "Dismiss Ask" })).toBeVisible();
-  await page.getByRole("button", { name: "Dismiss Ask" }).click({ position: { x: 20, y: 400 } });
+  await expect(page.getByRole("button", { name: "Dismiss HQ" })).toBeVisible();
+  await page.getByRole("button", { name: "Dismiss HQ" }).click({ position: { x: 20, y: 400 } });
   await expect(panel).toHaveAttribute("data-open", "false");
 
   // 1024px: non-modal. No scrim, and the page beside it still works — a nav link navigates and
@@ -306,7 +309,7 @@ test("the shell's mobile line decides the form: modal at <=800px, beside the pag
   await page.setViewportSize({ width: 1024, height: 800 });
   panel = await openAsk(page);
   await expect(panel).not.toHaveAttribute("aria-modal");
-  await expect(page.getByRole("button", { name: "Dismiss Ask" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Dismiss HQ" })).toHaveCount(0);
   await page
     .getByRole("navigation", { name: "Main sections" })
     .getByRole("link", { name: "Missions", exact: true })
@@ -409,10 +412,10 @@ test("Ask is a chat column: composer docked at the bottom, the thread grows up t
   await page.getByTestId("composer-input").fill("which mission fixed the upload retry?");
   await page.getByTestId("composer-send").click();
 
-  // The conversation replaced the greeting, as "You" then "Answer" messages…
+  // The conversation replaced the greeting, as "You" then "Answer from <contact>" messages…
   const turn = page.getByTestId("ask-turn");
   await expect(turn.getByRole("article", { name: "You" })).toContainText("upload retry");
-  await expect(turn.getByRole("article", { name: "Answer" })).toContainText(
+  await expect(turn.getByRole("article", { name: /^Answer from / })).toContainText(
     "Two sessions touched",
   );
   await expect(page.getByTestId("ask-empty")).toHaveCount(0);

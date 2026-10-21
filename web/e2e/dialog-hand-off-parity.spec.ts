@@ -19,6 +19,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { missionRow } from "./mission-console";
 import { setupBench } from "./terminal/harness";
 import { mockRoster } from "./roster";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 const ENGINE = "claude";
 const UUID = "cccccccc-1111-2222-3333-444444444444";
@@ -223,7 +224,7 @@ for (const theme of ["dark", "light"] as const) {
     const mobile = testInfo.project.name === "mobile";
     await stub(page, theme);
     await mockRoster(page, { only: ["claude", "codex"] }); // the manifest-generated roster (#853 P4)
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
 
     await openRowMenu(page);

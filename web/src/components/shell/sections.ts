@@ -136,7 +136,8 @@ export function activeSection(pathname: string): SectionId | null {
   const sub = activeSubsection(pathname);
   if (sub === "sessions" || sub === "map") return "sessions";
   if (sub !== null) return "library";
-  if (pathname === DASHBOARD_PATH) return "ask";
+  // `/` redirects to the dashboard since #1525: it lights Dashboard for the render before it lands.
+  if (pathname === DASHBOARD_PATH || pathname === "/") return "ask";
   if (pathname === MISSION_PATH || pathname === LEGACY_MISSION_PATH)
     return "mission";
   return null;

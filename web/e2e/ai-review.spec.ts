@@ -1,5 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 import { promptPath, settingsPath } from "../src/routes/settingsTabs";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // Real-browser checks for the AI session review surface (#356 PR 1, manual slice):
 // Settings → AI → Endpoint & model (the two-step connection/model flow, the write-only key, the
@@ -550,7 +551,7 @@ test("sidebar: summary line + amber intervention badge with the reason as toolti
     testInfo.project.name === "mobile",
     "sidebar is off-canvas on mobile — desktop covers the row surface",
   );
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await expect(
     page.getByText("Editing systemd limits; tests rerunning after thread cap"),
   ).toBeVisible();

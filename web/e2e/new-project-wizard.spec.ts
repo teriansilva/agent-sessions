@@ -1,11 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 import { mockRoster } from "./roster";
-import {
-  DASHBOARD_PATH,
-  MAP_PATH,
-  NEW_PROJECT_PATH,
-  SESSIONS_PATH,
-} from "../src/lib/routes";
+import { DASHBOARD_PATH, MAP_PATH, NEW_PROJECT_PATH, SESSIONS_PATH, NEW_SESSION_PATH } from "../src/lib/routes";
 import { agentPicker, projectPicker, launchFolder } from "./newSessionForm";
 
 /** The New project wizard (#1187), in a real browser on the desktop AND mobile projects.
@@ -322,7 +317,7 @@ test.describe("New project wizard (#1187)", () => {
     });
     await page.goto(MAP_PATH);
     await expect(page.locator(".tr-overview .tr-ov-chip").first()).toBeVisible();
-    await page.locator('.sidebar .sidebarBody a[href="/"]').first().click();
+    await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
     await expect(page.getByRole("heading", { name: "Start a new session" })).toBeVisible();
     await agentPicker(page).selectOption("codex");
     await page.getByRole("checkbox", { name: /skip permission/i }).uncheck();

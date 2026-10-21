@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
 
 import { mockMissions } from "./mission-console";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // #750 — the #726 Pulse surfaces on a phone.
 //
@@ -141,7 +142,7 @@ async function settled(page: Page, selector: string) {
 }
 
 const openBell = async (page: Page) => {
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await page.getByRole("button", { name: /notifications/i }).click();
 };
 
@@ -149,7 +150,7 @@ test("the corner cluster sits at the right edge of the topbar, not stranded mid-
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "mobile layout");
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const vw = page.viewportSize()!.width;
   // Measured at 122px of dead space to the right before the fix, because the cluster was carried
   // right only by `.hud-telemetry`'s auto margin — and the telemetry is display:none at this
@@ -307,7 +308,7 @@ test("desktop keeps the anchored dropdown under the bell", async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop layout");
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const trigger = page.getByRole("button", { name: /notifications/i });
   const tb = (await trigger.boundingBox())!;
   await trigger.click();

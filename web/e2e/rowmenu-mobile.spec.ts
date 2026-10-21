@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { mockRoster } from "./roster";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 const now = Math.floor(Date.now() / 1000);
 const sessions = [
@@ -74,7 +75,7 @@ test.describe("Mobile Context Menu", () => {
     );
     await stubShell(page);
     await mockRoster(page); // the manifest-generated roster (#853 P4)
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     await expect(page.locator("header .navToggle")).toBeVisible();
   });
 
@@ -312,7 +313,7 @@ test.describe("the drawer survives its own portalled menu (#940)", () => {
     test.skip(testInfo.project.name !== "mobile", "drawer behavior is mobile-specific");
     await stubShell(page);
     await mockRoster(page); // the manifest-generated roster (#853 P4)
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     await expect(page.locator("header .navToggle")).toBeVisible();
   });
 

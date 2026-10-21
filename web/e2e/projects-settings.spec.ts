@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
 import { projectPicker, launchFolder } from "./newSessionForm";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // Real-browser check of the project-entity surfaces: the Settings → Projects manager (list /
 // create-with-default-folder / archive report) and the new-session Project→Folder flow (#448:
@@ -280,7 +281,7 @@ test.describe("New-session Project → Folder (#448)", () => {
   test("the selected project prefills the folder; the picker overrides it", async ({
     page,
   }) => {
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     await expect(projectPicker(page).radio("p-1")).toBeChecked(); // SampleProject is default
     await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/sampleproject"); // its default folder
 

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 function sess(id: string, title: string, mtime: number) {
   return {
@@ -66,7 +67,7 @@ async function setup(
     r.fulfill({ json: { projects: [] } }),
   );
 
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   if (project === "mobile") {
     await page.getByRole("button", { name: "Open session list" }).click();
   }

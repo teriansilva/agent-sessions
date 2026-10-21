@@ -14,6 +14,7 @@ import {
   mockMissions,
   openMissionRail,
 } from "./mission-console";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 const T = 1_700_000_000;
 const CONFIG = {
@@ -148,7 +149,7 @@ test.describe("the shell's sidebar is the mission rail (#935)", () => {
     await page.setViewportSize({ width: 1600, height: 900 });
     await stub(page);
 
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     await expect(
       page.getByRole("heading", { name: "Sessions" }),
     ).toBeAttached();
@@ -162,7 +163,7 @@ test.describe("the shell's sidebar is the mission rail (#935)", () => {
       0,
     );
 
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     await expect(
       page.getByRole("heading", { name: "Sessions" }),
     ).toBeAttached();
@@ -326,7 +327,7 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
    *  closes and returns focus to the opener — and the scrim tap still works for pointers. */
   for (const [route, open] of [
     ["/mission", /Open mission list/i],
-    ["/", /Open session list/i],
+    [NEW_SESSION_PATH, /Open session list/i],
   ] as const) {
     test(`the ${route} drawer shows no ✕ yet keeps an accessible Close inside the dialog`, async ({
       page,
@@ -402,7 +403,7 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
   }, testInfo) => {
     test.skip(testInfo.project.name !== "mobile", "phone shell");
     await stub(page, []);
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     const trigger = page.getByRole("button", { name: /Open session list/i });
     await expect(trigger).toBeVisible();
     await trigger.click();
@@ -612,7 +613,7 @@ test("navigating to the mission route does not remount the shell (#935)", async 
   await page.setViewportSize({ width: 1600, height: 900 });
   await stub(page);
 
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await page.locator(".sidebar").waitFor();
 
   // Brand the shell's long-lived nodes. A property on the element survives re-render and dies
@@ -824,7 +825,7 @@ test.describe("#937 review 1 — the sidebar with a real list", () => {
     ).toEqual([]);
 
     // …and it is still there for the collection it belongs to.
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     await expect(page.getByRole("radio", { name: /^created$/i })).toBeVisible();
   });
 });

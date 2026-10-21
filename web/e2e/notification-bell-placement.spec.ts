@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // #726 Phase 3: where the notification bell lives.
 //
@@ -69,7 +70,7 @@ test.beforeEach(async ({ page }) => {
 test("the bell is in the topbar and never in the drawer's nav row", async ({
   page,
 }, testInfo) => {
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
 
   // THREE kept controls: the bell and the operator tile (#1058), and Ask beside the bell (#1294).
   // All stay in the bar at every width — the corner has to keep answering "is anything waiting?"
@@ -100,7 +101,7 @@ test("the bell is in the topbar and never in the drawer's nav row", async ({
 });
 
 test("the unread badge is reachable and opens the panel", async ({ page }) => {
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
 
   const trigger = page.getByRole("button", {
     name: /notifications, 1 unread/i,

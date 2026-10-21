@@ -2,6 +2,7 @@ import { expect, test, type Page, type Route } from "@playwright/test";
 import { mockRoster } from "./roster";
 import directoryGrants from "../../tests/fixtures/claude_directory_grants.json" with { type: "json" };
 import { agentPicker } from "./newSessionForm";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // #1311: a native API client's session is a STRUCTURED VIEW, never a terminal. The server is
 // mocked: the snapshot route is a small state machine, so the spec drives the real client through
@@ -141,7 +142,7 @@ async function recoverOpencode(page: Page, theme: "dark" | "light") {
   await page.route(/\/api\/structured\/sessions\/opencode-api(?::|%3A)[0-9a-f-]+(\/[a-z]+)?(\?.*)?$/, (r) =>
     r.fulfill({ json: snapshot({ session_key: `opencode-api:${ID}`, native: null }) }),
   );
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await page.evaluate((id) => sessionStorage.setItem("battlelab.pendingStructuredCreate", JSON.stringify({
     engine: "opencode-api", cwd: "/home/u/proj", model: "default", id,
   })), ID);
@@ -225,7 +226,7 @@ test("New session: opening recovery during a retry keeps its identity after a lo
   await lost;
   expect(stored).not.toBeNull();
   expect(JSON.parse(stored!).id).toBe(ID);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await agentPicker(page).selectOption("opencode-api");
   await expect(page.getByTestId("api-recovered-create")).toBeVisible();
   await page.getByRole("button", { name: /start session/i }).click();
@@ -510,7 +511,7 @@ test("New session: API clients are their own group, unavailable ones say why; a 
     await r.fulfill({ status: 201, json: snapshot() });
   });
   await serveSession(page, () => snapshot());
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const agent = agentPicker(page);
   // Terminal and API groups; a client that cannot start is a disabled tile with its reason on it
   // (#1436 — no separate "unavailable" or "API client · ready" box).
@@ -565,7 +566,7 @@ test("New session: Skip permission prompts creates, THEN starts the session — 
       return r.fulfill({ json: snapshot({ bypass: true }) });
     },
   });
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await agentPicker(page).selectOption("codex-api");
   const skip = page.getByRole("checkbox", { name: /skip permission prompts/i });
   await skip.check();
@@ -615,7 +616,7 @@ test("New session: a console skip choice never carries into an API client (Herme
     await r.fulfill({ status: 201, json: snapshot() });
   });
   await serveSession(page, () => snapshot());
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const skip = page.getByRole("checkbox", { name: /skip permission prompts/i });
   await skip.uncheck(); // the console agent: off…
   await skip.check(); // …and explicitly on again
@@ -650,7 +651,7 @@ test("New session: a lost skip create keeps no client slot — the error points 
       ? r.fulfill({ json: { session_key: s.session_key, revision: 4, next_cursor: 4, events: [] } })
       : r.fulfill({ json: s });
   });
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await agentPicker(page).selectOption("codex-api");
   await page.getByRole("checkbox", { name: /skip permission prompts/i }).check();
   await page.getByRole("button", { name: /start session/i }).click();
@@ -684,7 +685,7 @@ test("New session: a later skip create never erases a lost guarded create — re
     if (url.includes("/events")) return r.fulfill({ json: { session_key: `codex-api:${ID}`, revision: 4, next_cursor: 4, events: [] } });
     return r.fulfill({ json: snapshot({ session_key: `codex-api:${String(bodies[0]?.operation_id)}` }) });
   });
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const agent = agentPicker(page);
   await agent.selectOption("codex-api");
   await page.getByRole("button", { name: /start session/i }).click();
@@ -694,7 +695,7 @@ test("New session: a later skip create never erases a lost guarded create — re
   await expect(page).toHaveURL(new RegExp(`/s/codex-api/${ID}$`));
   const slot = await page.evaluate(() => sessionStorage.getItem("battlelab.pendingStructuredCreate"));
   expect(JSON.parse(slot!).id).toBe(bodies[0].operation_id);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await expect(page.getByTestId("api-recovered-create")).toHaveCount(0); // ordinary Claude selected
   await agentPicker(page).selectOption("codex-api");
   await expect(page.getByTestId("api-recovered-create")).toContainText("previous Codex — API session is saved");
@@ -702,7 +703,7 @@ test("New session: a later skip create never erases a lost guarded create — re
 
 test("New session: a skip tick never survives an agent change (Hermes 5913)", async ({ page }) => {
   await setup(page, "dark", ["claude", "codex-api"]);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const agent = agentPicker(page);
   const skip = page.getByRole("checkbox", { name: /skip permission prompts/i });
   await agent.selectOption("codex-api");
@@ -726,7 +727,7 @@ test("New session: an API client whose adapter cannot skip prompts offers no tog
       },
     },
   });
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await agentPicker(page).selectOption("codex-api");
   await expect(page.getByRole("checkbox", { name: /skip permission prompts/i })).toHaveCount(0);
 });
@@ -797,7 +798,7 @@ test("New session: an API client offers the models its CLI reports and creates o
     await r.fulfill({ status: 201, json: snapshot() });
   });
   await serveSession(page, () => snapshot());
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const model = page.getByRole("combobox", { name: "Model" });
   await expect(model.locator("option")).toHaveText(["default", "GPT-6.1 Sol (gpt-6.1-sol)", "gpt-6-luna"]);
   await model.selectOption("gpt-6.1-sol");

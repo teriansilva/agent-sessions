@@ -2063,11 +2063,11 @@ test("Session overview refetches /api/folders when the discovery scope changes (
 test.each([
   ["/s/claude/abc", "/s/claude/abc"], // an in-app session path is honored
   ["/overview", "/overview"], // any internal path is fine
-  [undefined, "/"], // opened directly (no state) → landing
-  ["//evil.example", "/"], // protocol-relative → rejected
-  ["https://evil.example", "/"], // absolute external → rejected
-  ["/settings", "/"], // self → rejected (no loop)
-  ["/settings/about", "/"], // self (tab URL) → rejected too (#357)
+  [undefined, "/new"], // opened directly (no state) → the sessions (`/` is the dashboard since #1525)
+  ["//evil.example", "/new"], // protocol-relative → rejected
+  ["https://evil.example", "/new"], // absolute external → rejected
+  ["/settings", "/new"], // self → rejected (no loop)
+  ["/settings/about", "/new"], // self (tab URL) → rejected too (#357)
 ])(
   "Settings back link honors only internal returnTo: %s → %s (#155)",
   (returnTo, expected) => {

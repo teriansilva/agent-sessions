@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mockRoster } from "./roster";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 /** An old `/s/<source>/<native-id>` link opens the API session that owns that history (#1405).
  *
@@ -102,7 +103,7 @@ for (const pair of PAIRS) {
   test(`/s/${pair.source}/<native> opens the owning ${pair.api} session, replacing the URL`, async ({ page }) => {
     await setup(page, pair);
     // A first page, so "back" has somewhere to go that is not the native URL.
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     await expect(page.locator("#root")).toBeVisible();
     await page.goto(`/s/${pair.source}/${pair.native}`);
 

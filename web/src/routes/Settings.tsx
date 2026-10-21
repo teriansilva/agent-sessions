@@ -91,6 +91,7 @@ import styles from "./Settings.module.css";
 import { UpdateProgressPanel } from "../components/updates/UpdateProgressPanel";
 import { UpdateWhatsNew } from "../components/updates/UpdateWhatsNew";
 import { SOURCE_URL } from "../lib/links";
+import { SESSIONS_PATH } from "../lib/routes";
 import { whatsNewLabel } from "../whatsnew/due";
 import { useOpenWhatsNew } from "../whatsnew/WhatsNewContext";
 import { engineLabel, useEngineRoster } from "../app/engineRoster";
@@ -1879,7 +1880,8 @@ export function Settings() {
       r !== "/settings" &&
       !r.startsWith("/settings/")
       ? r
-      : "/";
+      : // "Back to sessions" means the sessions: `/` is the dashboard since #1525.
+        SESSIONS_PATH;
   })();
   // Canonical section from the URL (#956): /settings/:section. On desktop, bare /settings and
   // unknown sections replace-redirect to the first section; on a phone bare /settings IS the

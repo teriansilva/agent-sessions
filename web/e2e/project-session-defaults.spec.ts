@@ -1,6 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 import { ROSTER } from "./roster";
-import { NEW_PROJECT_PATH } from "../src/lib/routes";
+import { NEW_PROJECT_PATH, NEW_SESSION_PATH } from "../src/lib/routes";
 import { settingsPath } from "../src/routes/settingsTabs";
 import { agentPicker, projectPicker } from "./newSessionForm";
 
@@ -148,7 +148,7 @@ const TERMINAL = project("p-term", "Terminal", { engine: "codex", model: "gpt-5-
 test.describe("New session follows the selected project's defaults (#1508)", () => {
   test("project over global, the operator's own pick over the project, and the create carries it", async ({ page }) => {
     const state = await mockApp(page, { projects: [PLAIN, TERMINAL, WEBSITE] });
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
 
     // Plain sets nothing: the global defaults (claude, skip) — no project badges.
     await chooseProject(page, "p-plain");
@@ -206,7 +206,7 @@ test.describe("New session follows the selected project's defaults (#1508)", () 
       bypass: false,
       overrides: { "codex-api": { api: { kind: "codex-app-server", source: "codex", can_bypass: false } } },
     });
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     await chooseProject(page, "p-skip");
     await expect(skip(page)).toBeChecked(); // confirmed list: the project's skip applies
     await expect(page.getByTestId("project-badge")).toHaveCount(1);
@@ -217,7 +217,7 @@ test.describe("New session follows the selected project's defaults (#1508)", () 
     state.hold = new Promise<void>((r) => (release = r));
     await spaGo(page, settingsPath("projects"));
     await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
-    await spaGo(page, "/");
+    await spaGo(page, NEW_SESSION_PATH);
     await expect(agentChecked(page, API)).toBeChecked();
     await expect(skip(page)).not.toBeChecked();
     await expect(page.getByRole("button", { name: /start session/i })).toBeDisabled();
@@ -229,7 +229,7 @@ test.describe("New session follows the selected project's defaults (#1508)", () 
     state.failNext = true;
     await spaGo(page, settingsPath("projects"));
     await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
-    await spaGo(page, "/");
+    await spaGo(page, NEW_SESSION_PATH);
     await expect(page.getByRole("button", { name: /start session/i })).toBeEnabled();
     await expect(agentChecked(page, API)).toBeChecked();
     await expect(skip(page)).not.toBeChecked();
@@ -238,7 +238,7 @@ test.describe("New session follows the selected project's defaults (#1508)", () 
     await expect.poll(() => state.creates.length).toBe(1);
     expect(state.creates[0]).toMatchObject({ engine: API });
     expect(state.creates[0].bypass ?? false).toBe(false);
-    await page.goto("/"); // a fresh, confirmed load for the next case
+    await page.goto(NEW_SESSION_PATH); // a fresh, confirmed load for the next case
 
     // A client whose adapter cannot skip: no checkbox, and the create never asks for a skip.
     await chooseProject(page, "p-noskip");

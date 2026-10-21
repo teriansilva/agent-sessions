@@ -118,11 +118,11 @@ test("the Ask icon's dot says there is an unseen update, and clears once it is o
   await page.goto("/dashboard");
   const toggle = page.getByTestId("ask-toggle");
   await expect(page.getByTestId("ask-unread-dot")).toBeVisible();
-  await expect(toggle).toHaveAccessibleName("Ask — new updates from sessions you follow");
+  await expect(toggle).toHaveAccessibleName("HQ — new updates from sessions you follow");
   await openAsk(page);
   await expect(page.getByTestId("ask-update").first()).toBeVisible();
   await expect(page.getByTestId("ask-unread-dot")).toHaveCount(0);
-  await expect(toggle).toHaveAccessibleName("Ask");
+  await expect(toggle).toHaveAccessibleName("HQ");
   await noSidewaysScroll(page);
 });
 
@@ -263,7 +263,7 @@ test("a nudge sent from the card is followed by THAT conversation once the follo
   await expect(page.getByTestId("ask-unread-dot")).toHaveCount(0);
 
   // Panel closed: a later refusal (the follow cap) is unread until the conversation is on screen.
-  await panel.getByRole("button", { name: "Close Ask" }).click();
+  await panel.getByRole("button", { name: "Close HQ" }).click();
   conv.unread = true;
   conv.updates = [
     ...conv.updates,

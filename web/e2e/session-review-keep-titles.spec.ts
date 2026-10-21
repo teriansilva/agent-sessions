@@ -1,5 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // "Rename sessions with the reviewed title" (#1510) — real-browser proof. The server resolves the
 // title (`metadata.display_title`); this stands in for it: with the option off, the row's title is
@@ -80,7 +81,7 @@ test("turning the option off shows each session's own title, and back on the rev
 }, testInfo) => {
   test.skip(testInfo.project.name === "mobile", "the session sidebar is a column on desktop only");
   await statefulServer(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const sidebar = page.locator("aside.sidebar");
   await expect(sidebar.getByText(AI_TITLE)).toBeVisible();
   // To Settings and back IN-APP (no reload): what the list shows is what the server now resolves.
@@ -95,7 +96,7 @@ test("turning the option off shows each session's own title, and back on the rev
     await expect(box).toBeChecked({ checked: !on });
     await box.setChecked(on);
     await expect(box).toBeChecked({ checked: on });
-    await go("/");
+    await go(NEW_SESSION_PATH);
   };
   await toggle(false);
   await expect(sidebar.getByText(OWN_TITLE, { exact: true })).toBeVisible();

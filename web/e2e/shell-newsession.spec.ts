@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { mockRoster } from "./roster";
 import { agentPicker, launchFolder } from "./newSessionForm";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // #636: the plain-terminal "shell" engine. Real browser, backend mocked so the landing renders
 // without a server. Runs on both the desktop and mobile Playwright projects.
@@ -42,7 +43,7 @@ test("shell Start opens a bare-uuid /s/shell/<uuid>, not a new- placeholder (#63
   page,
 }) => {
   await mockBackend(page, ["shell"]);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/proj");
   await page.getByRole("button", { name: /start session/i }).click();
   await expect(page).toHaveURL(new RegExp(`/s/shell/${UUID.source}$`));
@@ -54,7 +55,7 @@ test("shell is selectable in the engine picker alongside an agent engine (#636)"
   page,
 }) => {
   await mockBackend(page, ["claude", "shell"]);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   // The Agent picker shows only when >1 engine is offered; shell is one of its options.
   const agent = agentPicker(page);
   await expect(page.getByRole("radiogroup", { name: "Agent" })).toBeVisible();

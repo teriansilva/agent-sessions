@@ -33,6 +33,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 
 import { api, ApiError } from "../../lib/api";
 import type {
+  AppConfig,
   AskConversation,
   AskConversationTurn,
   AskNudgeCard,
@@ -43,6 +44,7 @@ import type {
   AskTurnEvent,
 } from "../../types/api";
 
+import { ConfigCtx } from "../../app/config";
 import { AskConsole } from "./AskConsole";
 import { ASK_SEEN_EVENT, placeUpdates } from "./askUpdates";
 import { mapBatch } from "./askMatches";
@@ -433,14 +435,15 @@ test("a stream cut mid-turn reads the conversation again and waits for the turn 
   expect(screen.getAllByTestId("ask-turn")).toHaveLength(1);
 });
 
-test("the head is the switcher, New conversation and the sidebar's Close — nothing else (#1294, #1443)", async () => {
+test("the head is HQ, the switcher, New conversation and the sidebar's Close — nothing else (#1294, #1443, #1525)", async () => {
   answerWith({ answer: "ok" });
   const onClose = vi.fn();
   mount(<AskConsole configured onClose={onClose} />);
   const head = screen.getByTestId("ask-head");
+  expect(within(head).getByRole("heading", { level: 2 })).toHaveTextContent("HQ");
   const switcher = within(head).getByTestId("ask-switcher");
   const fresh = within(head).getByRole("button", { name: "New conversation" });
-  const close = within(head).getByRole("button", { name: "Close Ask" });
+  const close = within(head).getByRole("button", { name: "Close HQ" });
   expect(within(head).getAllByRole("button")).toEqual([switcher, fresh, close]);
   // No way "back": Ask is not a page any more.
   expect(within(head).queryAllByRole("link")).toHaveLength(0);
@@ -1821,4 +1824,78 @@ test("an older seen answer arriving late never brings 'unread' back", async () =
   await act(async () => first.resolve({ unread: true }));
   await new Promise((r) => setTimeout(r, 150));
   expect(vi.mocked(api.askSeen).mock.calls.length).toBe(calls);
+});
+
+// ---- HQ contacts (#1525) -------------------------------------------------------------------------
+
+function withContact(choice: string, ui: React.ReactNode) {
+  return (
+    <ConfigCtx.Provider value={{ hq_contact: choice } as AppConfig}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </ConfigCtx.Provider>
+  );
+}
+
+function answerEchoingContact() {
+  vi.mocked(api.askMessageStream).mockImplementation(async (_id, body) => ({
+    ...turnOf(body.text, body.turnId, { answer: `answer to ${body.text}` }),
+    contact: body.contact ?? "off",
+  }));
+}
+
+test("the head shows the selected contact: portrait, HQ and the name over the picker, + and ×", () => {
+  render(withContact("southamerica-woman", <AskConsole configured onClose={() => undefined} />));
+  const head = screen.getByTestId("ask-head");
+  expect(head).toHaveAttribute("data-contact", "southamerica-woman");
+  expect(within(head).getByTestId("hq-head-portrait")).toHaveAttribute("aria-hidden", "true");
+  expect(within(head).getByTestId("hq-head-name")).toHaveTextContent("General Valentina Cruz");
+  expect(within(head).getAllByRole("button")).toEqual([
+    within(head).getByTestId("ask-switcher"),
+    within(head).getByRole("button", { name: "New conversation" }),
+    within(head).getByRole("button", { name: "Close HQ" }),
+  ]);
+});
+
+test("Off: the head is one row, with no portrait and no media at all", () => {
+  const { container } = render(withContact("off", <AskConsole configured onClose={() => undefined} />));
+  const head = screen.getByTestId("ask-head");
+  expect(head).toHaveAttribute("data-contact", "off");
+  expect(within(head).queryByTestId("hq-head-portrait")).toBeNull();
+  expect(within(head).queryByTestId("hq-head-name")).toBeNull();
+  expect(container.querySelector("video, img")).toBeNull();
+});
+
+test("each answer is labelled by ITS turn's contact; switching relabels new answers only", async () => {
+  answerEchoingContact();
+  vi.mocked(api.askNewConversation).mockResolvedValue(conversation(CID, []));
+  const ui = (choice: string) => withContact(choice, <AskConsole configured />);
+  const { rerender } = render(ui("southamerica-woman"));
+  await userEvent.type(screen.getByRole("textbox"), "status?{Enter}");
+  expect(await screen.findByRole("article", { name: "Answer from General Valentina Cruz" })).toBeInTheDocument();
+  expect(vi.mocked(api.askMessageStream).mock.calls[0][1]).toMatchObject({ contact: "southamerica-woman" });
+
+  rerender(ui("romania-woman"));
+  await userEvent.type(screen.getByRole("textbox"), "and now?{Enter}");
+  expect(await screen.findByRole("article", { name: "Answer from General Ileana Lupu" })).toBeInTheDocument();
+  expect(vi.mocked(api.askMessageStream).mock.calls[1][1]).toMatchObject({ contact: "romania-woman" });
+  // The first answer keeps its speaker.
+  expect(screen.getByRole("article", { name: "Answer from General Valentina Cruz" })).toBeInTheDocument();
+  expect(screen.getAllByTestId("ask-speaker").map((h) => h.textContent)).toEqual([
+    "General Valentina Cruz",
+    "General Ileana Lupu",
+  ]);
+});
+
+test("Off, an unknown contact and a turn from before HQ all answer as plain HQ", async () => {
+  twoConversations();
+  vi.mocked(api.askConversation).mockResolvedValue(
+    conversation(CID, [
+      turnOf("old", "t1", { answer: "before HQ" }),
+      { ...turnOf("gone", "t2", { answer: "removed contact" }), contact: "general-nobody" },
+      { ...turnOf("off", "t3", { answer: "off" }), contact: "off" },
+    ]),
+  );
+  render(withContact("us-man", <AskConsole configured />));
+  await screen.findByText("removed contact");
+  expect(screen.getAllByRole("article", { name: "Answer from HQ" })).toHaveLength(3);
 });

@@ -9,6 +9,7 @@
  *  and check the click landed.
  */
 import { expect, test, type Page } from "@playwright/test";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 async function mockShell(
   page: Page,
@@ -59,7 +60,7 @@ test("the corner names the operator beside the bell, and no gear or ? of its own
   page,
 }) => {
   await mockShell(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const tile = page.getByTestId("operator-menu");
   await expect(tile).toBeVisible();
   await expect(tile).toHaveAccessibleName("Operator nightowl");
@@ -83,7 +84,7 @@ test("the panel opens ABOVE the terminal pane and its items are actually clickab
   page,
 }) => {
   await mockShell(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await page.getByTestId("operator-menu").click();
   const panel = page.getByTestId("operator-menu-panel");
   await expect(panel).toBeVisible();
@@ -109,7 +110,7 @@ test("the panel opens ABOVE the terminal pane and its items are actually clickab
 
 test("Escape closes it and returns focus to the tile", async ({ page }) => {
   await mockShell(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const tile = page.getByTestId("operator-menu");
   await tile.click();
   await expect(page.getByTestId("operator-menu-panel")).toBeVisible();
@@ -124,7 +125,7 @@ test("a no-login install reads LOCAL and offers no Sign out", async ({
   // `auth_mode: "none"` has no session to end. A Sign out here would be a control the app cannot
   // honour, and a username would claim a login the install does not have.
   await mockShell(page, { auth_mode: "none", username: null });
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const tile = page.getByTestId("operator-menu");
   await expect(tile).toHaveAccessibleName(/no login/i);
   await tile.click();
@@ -144,7 +145,7 @@ test("on a short landscape screen every item — Sign out included — stays rea
   // cannot scroll. The panel is bounded to the room under the tile and scrolls inside itself.
   await page.setViewportSize({ width: 667, height: 320 });
   await mockShell(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await page.getByTestId("operator-menu").click();
   const panel = page.getByTestId("operator-menu-panel");
   await expect(panel).toBeVisible();

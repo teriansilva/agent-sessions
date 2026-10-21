@@ -12,6 +12,7 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 import { mockRoster } from "./roster";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 const ENGINE = "claude";
 const UUID = "aaaaaaaa-1111-2222-3333-444444444444";
@@ -67,7 +68,7 @@ async function setup(page: Page): Promise<void> {
   );
   await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
 
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   // Desktop renders the sidebar as a grid column; mobile hides it behind the drawer toggle.
   if (page.viewportSize()!.width <= 800) {
     await page.locator("header .navToggle").click();

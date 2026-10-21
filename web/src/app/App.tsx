@@ -70,6 +70,9 @@ import {
 } from "./sidebarWidth";
 import {
   ASK_PATH,
+  HQ_PATH,
+  NEW_SESSION_PATH,
+  SESSIONS_PATH,
   AUTOMATION_NEW_PATH,
   AUTOMATIONS_PATH,
   CHECKLISTS_PATH,
@@ -203,9 +206,9 @@ function Layout() {
   const [sectionMemory] = useState(() => new Map<string, unknown>());
   const routePath = location.pathname + location.search;
   const isSessionPath =
-    location.pathname === "/" || location.pathname.startsWith("/s/");
+    location.pathname === SESSIONS_PATH || location.pathname.startsWith("/s/");
   const [lastSessionPath, setLastSessionPath] = useState(
-    isSessionPath ? routePath : "/",
+    isSessionPath ? routePath : SESSIONS_PATH,
   );
   if (isSessionPath && lastSessionPath !== routePath)
     setLastSessionPath(routePath);
@@ -227,7 +230,7 @@ function Layout() {
     setNavOpen(false);
   }, [location.pathname]);
 
-  // Same-route nav targets — New session (Link to="/"), the already-active session row, and
+  // Same-route nav targets — New session (Link to={SESSIONS_PATH}), the already-active session row, and
   // Overview/Settings when you're already there — don't change location.pathname, so the
   // route-change effect above never fires and the off-canvas drawer would stay open (#283).
   // The sidebar links/rows call this directly on tap. It touches ONLY navOpen, never the
@@ -762,7 +765,9 @@ function Layout() {
               {/* The console reads the slot from here (#935) — see `railSlot.tsx`. */}
               <MissionRailSlotProvider value={railSlot}>
                 <Routes>
-                  <Route path="/" element={<NewSessionLanding />} />
+                  {/* #1525: the dashboard is the start page; the landing has its own path. */}
+                  <Route path="/" element={<Navigate to={DASHBOARD_PATH} replace />} />
+                  <Route path={NEW_SESSION_PATH} element={<NewSessionLanding />} />
                   {/* Canonical Settings form is /settings/:tab (#357); the bare path mounts the
                   same component, which replace-redirects to the first tab (state preserved). */}
                   <Route path="/settings" element={<Settings />} />
@@ -786,6 +791,7 @@ function Layout() {
                   <Route path={DASHBOARD_PATH} element={<Dashboard />} />
                   {/* Ask's old page (#1171): now the dashboard with the sidebar open (#1294). */}
                   <Route path={ASK_PATH} element={<AskRedirect />} />
+                  <Route path={HQ_PATH} element={<AskRedirect />} />
                   {/* #1440: the public gallery is a view inside Playbooks and Skills; the old
                       `/library/gallery[/<digest>][?kind=&id=]` links redirect into it. */}
                   <Route
@@ -809,7 +815,7 @@ function Layout() {
                   <Route path="/templates/new" element={<TemplateEditor />} />
                   <Route path="/templates/:id" element={<TemplateEditor />} />
                   <Route path="/s/:engine/:id" element={<SessionView />} />
-                  <Route path="*" element={<Navigate to="/" replace />} />
+                  <Route path="*" element={<Navigate to={DASHBOARD_PATH} replace />} />
                 </Routes>
               </MissionRailSlotProvider>
             </Suspense>

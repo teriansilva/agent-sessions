@@ -42,7 +42,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import prefs
+from . import hq_contacts, prefs
 
 # The one canonical guard clause. It is NOT part of any editable text: `effective()` appends
 # it to every `guarded` prompt, last, and the client can neither submit nor suppress it.
@@ -661,8 +661,9 @@ REGISTRY: tuple[Prompt, ...] = (
     Prompt(
         id="ask_orchestrator",
         group="Mission control",
-        label="Ask — conversation",
-        description="The Ask sidebar's conversation (#1443): answers from read tools, asks you "
+        # The operator reads "HQ" (#1525); the id stays `ask_orchestrator`.
+        label="HQ — conversation",
+        description="The HQ panel's conversation (#1443): answers from read tools, asks you "
         "back, and proposes messages to sessions that are sent only when you approve the card, "
         "whatever this says.",
         contract="free text, read-only tool calls, questions and proposals",
@@ -878,6 +879,25 @@ REGISTRY: tuple[Prompt, ...] = (
         max_chars=8000,
         block=BLOCK,
         field="chat_agent_edits",
+    ),
+    # HQ contacts (#1525): one persona per contact, each its OWN entry, so a persona is an exact
+    # registry string and can never be spliced into another prompt at runtime. Sent as a separate
+    # system message BEFORE the guarded `ask_orchestrator`, which stays last, guard and all.
+    # Unguarded: the persona is tone only, and the guarded prompt after it is the last word.
+    *(
+        Prompt(
+            id=c.prompt_id,
+            group="HQ contacts",
+            label=c.name,
+            description=f"How {c.name} speaks in HQ. Tone only: facts, tools and proposals follow "
+            "the HQ conversation prompt, which is always sent after this one.",
+            contract="free text — a voice, sent before the HQ conversation prompt",
+            default=c.persona,
+            max_chars=2000,
+            block=BLOCK,
+            field=c.prompt_id,
+        )
+        for c in hq_contacts.CONTACTS
     ),
 )
 

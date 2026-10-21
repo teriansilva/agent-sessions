@@ -14,7 +14,9 @@ import { activeSection, activeSubsection, SECTIONS } from "./sections";
 
 describe("activeSection", () => {
   test.each([
-    ["/", "sessions"],
+    // #1525: the landing moved to `/new`; `/` redirects to the dashboard and lights it meanwhile.
+    ["/new", "sessions"],
+    ["/", "ask"],
     ["/s/claude/abc-123", "sessions"],
     ["/mission", "mission"],
     // The pre-#948 path still redirects, and the nav must not flash the wrong section for the
@@ -54,7 +56,8 @@ describe("activeSection", () => {
   );
 
   test.each([
-    ["/", "sessions"],
+    ["/new", "sessions"],
+    ["/", null],
     ["/s/claude/abc-123", "sessions"],
     ["/overview", "map"],
     // #1294: Dashboard has no sub-menu; Ask is the sidebar.

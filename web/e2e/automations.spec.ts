@@ -10,12 +10,7 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 
-import {
-  AUTOMATION_NEW_PATH,
-  AUTOMATIONS_PATH,
-  automationEditPath,
-  automationPath,
-} from "../src/lib/routes";
+import { AUTOMATION_NEW_PATH, AUTOMATIONS_PATH, automationEditPath, automationPath, NEW_SESSION_PATH } from "../src/lib/routes";
 import { automation, mockAutomations } from "./automations";
 
 const SESSION_ACTION = {
@@ -317,7 +312,7 @@ test("a session an automation started wears its badge in the sidebar", async ({ 
       },
     },
   });
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const open = page.getByRole("button", { name: /Open (session|mission) list/i });
   if (await open.count()) await open.first().click();
   const row = page.locator("ul[aria-label$='sessions'] li").filter({ hasText: "Nightly review session" });

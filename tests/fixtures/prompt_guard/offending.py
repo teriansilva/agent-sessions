@@ -1,6 +1,6 @@
 """Fixture: every shape the guard must REJECT.
 
-Fifteen ways a prompt can slip back out of the registry — a bare module constant, an f-string
+The ways a prompt can slip back out of the registry — a bare module constant, an f-string
 assembled at the call, a variable built elsewhere, the editable text (which for a guarded
 prompt is missing the clause `effective()` appends), a `dict(role=…)` call instead of a dict
 literal, a role that is only readable at runtime, and a payload handed to the sink as a
@@ -133,3 +133,24 @@ async def payload_assembled_elsewhere(client):
     """The whole list is built out of view. Fail closed: an unreadable payload is an offence."""
     messages = [{"role": "system", "content": SYSTEM}]
     return await client.complete_json(messages)
+
+
+class hq_contacts:  # noqa: N801 — deliberately shadows the real module name (#1525)
+    """A local lookalike of the persona resolver: it can return any id at all."""
+
+    @staticmethod
+    def prompt_id(_contact):
+        return "chat_instruct"
+
+
+async def spoofed_persona_resolver(client, contact):
+    return await client.complete_json(
+        [{"role": "system", "content": prompts.effective(hq_contacts.prompt_id(contact))}]
+    )
+
+
+async def persona_id_in_a_variable(client, persona_id):
+    """The id is only knowable at runtime and came through no pinned resolver."""
+    return await client.complete_json(
+        [{"role": "system", "content": prompts.effective(persona_id)}]
+    )

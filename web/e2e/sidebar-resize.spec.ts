@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // #507: real-browser proof for the resizable desktop sidebar — drag the handle to change the
 // `--sidebar-w` grid track, the pane reflows (which drives the xterm ResizeObserver), the width
@@ -31,7 +32,7 @@ async function setup(page: Page): Promise<void> {
   await page.route("**/api/version", (r) =>
     r.fulfill({ json: { version: "test" } }),
   );
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
 }
 
 /** The resolved `--sidebar-w` custom property on `.app`, in px. */

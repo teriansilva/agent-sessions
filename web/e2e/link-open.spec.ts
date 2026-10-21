@@ -6,6 +6,7 @@ import {
 } from "@playwright/test";
 import { clickHeadAction } from "./headActions";
 import { mockRoster } from "./roster";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 /** BattleLab links from outside the app (#1232) — in a real browser, because every part of it is
  *  something a DOM emulator cannot model: a real entry navigation (`PerformanceNavigationTiming`),
@@ -134,7 +135,7 @@ test.describe("opening BattleLab links", () => {
     await page.getByTestId("opening-links").getByRole("radio", { name: /Ask each time/ }).click();
 
     // A page WITH the session sidebar: Dashboard has none since #1233, so the landing stands in.
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     await page.locator('.sidebar a[href="/s/claude/s2"]').first().click();
     await expect(page).toHaveURL(/\/s\/claude\/s2$/);
     await page.reload();
@@ -162,7 +163,7 @@ test.describe("opening BattleLab links", () => {
     await mockRoster(first);
     await first.setViewportSize({ width: 1600, height: 1000 });
     // Any BattleLab page with the sidebar up — the landing, since Dashboard has none (#1233).
-    await first.goto("/");
+    await first.goto(NEW_SESSION_PATH);
     await expect(first.locator(".sidebar")).toBeVisible();
 
     const second = await context.newPage();
@@ -197,7 +198,7 @@ test.describe("opening BattleLab links", () => {
     await mockRoster(first);
     await first.setViewportSize({ width: 1600, height: 1000 });
     // Any BattleLab page with the sidebar up — the landing, since Dashboard has none (#1233).
-    await first.goto("/");
+    await first.goto(NEW_SESSION_PATH);
     await expect(first.locator(".sidebar")).toBeVisible();
     const [opened] = await Promise.all([
       context.waitForEvent("page"),
@@ -208,7 +209,7 @@ test.describe("opening BattleLab links", () => {
     await expect(opened.getByTestId("link-handoff-stub")).toHaveCount(0);
     await expect(dialog(opened)).toHaveCount(0);
     await expect(dialog(first)).toHaveCount(0);
-    await expect(first).toHaveURL(/\/$/);
+    await expect(first).toHaveURL(new RegExp(`${NEW_SESSION_PATH}$`));
   });
 
   test("Share link copies the session's canonical URL when there is no share sheet", async ({

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_sessions import prompts
+from agent_sessions import hq_contacts, prompts
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "agent_sessions"
 FIXTURES = Path(__file__).parent / "fixtures" / "prompt_guard"
@@ -51,6 +51,9 @@ EXPECTED_SITES = {
     ("chat_runtime.py", "chat_agent"),  # #1209: the API agent's system prompt
     ("chat_runtime.py", "chat_agent_edits"),  # #1230: approved file edits
     ("chat_runtime.py", "chat_agent_tools"),  # #1222: the same, with read tools on
+    # #1525: the HQ contact's persona, sent before `ask_orchestrator` — ONE site that can send any
+    # of the 13, through the pinned `hq_contacts.prompt_id` (see PERSONA_* below).
+    *(("ask_orchestrator.py", pid) for pid in hq_contacts.PROMPT_IDS),
 }
 
 
@@ -170,6 +173,14 @@ GLOBAL_HTTP_VERBS = frozenset({"post", "request"})
 SANITIZER_MODULE = "pulse_chat"
 SANITIZER_FUNC = "bound_history"
 
+# The ONE non-literal id `effective()` may take (#1525): an HQ contact's persona, chosen per turn.
+# `hq_contacts.prompt_id` returns only a registered `hq_persona_*` id and raises for anything else
+# (pinned by `tests/test_hq_contacts.py`), so a site written this way can send exactly those
+# prompts, and is counted as sending each of them. Identity, not spelling, as for the sanitizer:
+# the receiver must be the real module, imported and never rebound.
+PERSONA_MODULE = "hq_contacts"
+PERSONA_FUNC = "prompt_id"
+
 
 def _name_of(func: ast.expr) -> str | None:
     if isinstance(func, ast.Attribute):
@@ -181,33 +192,31 @@ def _is_sink(func: ast.expr) -> bool:
     return _name_of(func) in SINKS
 
 
-def _imports_sanitizer_module(tree: ast.Module) -> bool:
-    """Whether this module binds the name ``pulse_chat`` to `agent_sessions.pulse_chat` — and
-    to nothing else. A receiver NAME proves nothing on its own: a class, function or assignment
-    can bind `pulse_chat` to anything, and then `pulse_chat.bound_history(...)` gates nothing
-    while reading identically. So the binding has to be an import of the real module, and the
-    name must not be rebound anywhere in the file.
+def _imports_sanitizer_module(tree: ast.Module, module: str = SANITIZER_MODULE) -> bool:
+    """Whether this module binds the name ``pulse_chat`` (or ``module``) to the real
+    `agent_sessions` module — and to nothing else. A receiver NAME proves nothing on its own: a
+    class, function or assignment can bind `pulse_chat` to anything, and then
+    `pulse_chat.bound_history(...)` gates nothing while reading identically. So the binding has
+    to be an import of the real module, and the name must not be rebound anywhere in the file.
     """
     imported = False
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             for alias in node.names:
-                if (alias.asname or alias.name) == SANITIZER_MODULE and alias.name == (
-                    SANITIZER_MODULE
-                ):
+                if (alias.asname or alias.name) == module and alias.name == module:
                     imported = True
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if (alias.asname or alias.name.split(".")[0]) == SANITIZER_MODULE and (
-                    alias.name.endswith(SANITIZER_MODULE)
+                if (alias.asname or alias.name.split(".")[0]) == module and (
+                    alias.name.endswith(module)
                 ):
                     imported = True
         elif isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
-            if node.name == SANITIZER_MODULE:
+            if node.name == module:
                 return False  # rebound to something local
         elif isinstance(node, ast.Assign):
             for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == SANITIZER_MODULE:
+                if isinstance(target, ast.Name) and target.id == module:
                     return False  # rebound to something local
     return imported
 
@@ -407,6 +416,29 @@ def _reads_registry(content: ast.expr | None) -> bool:
     )
 
 
+def _reads_persona(content: ast.expr | None, tree: ast.Module) -> bool:
+    """``prompts.effective(hq_contacts.prompt_id(…))`` with ``hq_contacts`` the real module."""
+    if not (
+        isinstance(content, ast.Call)
+        and isinstance(content.func, ast.Attribute)
+        and content.func.attr == "effective"
+        and isinstance(content.func.value, ast.Name)
+        and content.func.value.id in {"prompts", "registry"}
+        and len(content.args) == 1
+        and not content.keywords
+    ):
+        return False
+    arg = content.args[0]
+    return (
+        isinstance(arg, ast.Call)
+        and isinstance(arg.func, ast.Attribute)
+        and arg.func.attr == PERSONA_FUNC
+        and isinstance(arg.func.value, ast.Name)
+        and arg.func.value.id == PERSONA_MODULE
+        and _imports_sanitizer_module(tree, PERSONA_MODULE)
+    )
+
+
 def scan(path: Path) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
     """``(ok, offending)`` for one module.
 
@@ -437,6 +469,8 @@ def scan(path: Path) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
         seen.add(id(node))
         if _reads_registry(content):
             ok.append((content.lineno, content.args[0].value))
+        elif _reads_persona(content, tree):
+            ok.extend((content.lineno, pid) for pid in hq_contacts.PROMPT_IDS)
         else:
             bad.append((node.lineno, ast.unparse(content) if content else ast.unparse(node)))
 
@@ -664,7 +698,10 @@ def test_checker_accepts_the_compliant_fixture():
     assert not bad
     # Three message sites; the compliant `system=` kwarg is not a message, so it contributes
     # no id — it just has to not be flagged (asserted above).
-    assert sorted(pid for _, pid in ok) == ["chat_route", "handoff_brief", "session_recap"]
+    # #1525: the persona site counts as sending each of the 13, beside its own `chat_route`.
+    assert sorted(pid for _, pid in ok) == sorted(
+        ["chat_route", "chat_route", "handoff_brief", "session_recap", *hq_contacts.PROMPT_IDS]
+    )
 
 
 @pytest.mark.parametrize(
@@ -680,6 +717,9 @@ def test_checker_accepts_the_compliant_fixture():
         "system=SYSTEM",  # the SDK-style sink, no message list involved
         "*bound_history([])",  # a same-named local sanitizer that gates nothing
         "*pulse_chat.bound_history([])",  # the MODULE name rebound to a local class
+        # #1525: the persona form, but `hq_contacts` is a local lookalike, not the module.
+        "prompts.effective(hq_contacts.prompt_id(contact))",
+        "prompts.effective(persona_id)",  # an id held in a variable
     ],
 )
 def test_checker_flags_every_way_a_prompt_can_slip_out_of_the_registry(snippet):

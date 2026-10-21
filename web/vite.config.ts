@@ -83,6 +83,8 @@ export default defineConfig({
       // websocket, terminal, auth, and upload paths so they're never served stale
       // from cache (per #64 PWA rule). No runtimeCaching entries for them on purpose.
       injectManifest: {
+        // No webm/mp4/jpg: the HQ contact loops and posters (#1525) are never precached, so only the
+        // chosen contact's loop loads, on first open (src/components/hq/contacts.test.ts pins it).
         globPatterns: ["**/*.{js,css,html,svg,png,woff2}"],
       },
       manifest: {
@@ -92,7 +94,7 @@ export default defineConfig({
         theme_color: "#0d0e10",
         background_color: "#0d0e10",
         display: "standalone",
-        start_url: "./",
+        start_url: "./dashboard", // #1525: the dashboard is the start page
         // Link capture (#1232): the installed app owns its whole origin, and a link into it
         // focuses the open window and is delivered through `window.launchQueue` (handled by
         // `EntryLinks`) instead of opening a browser tab or a second app window. `focus-existing`,

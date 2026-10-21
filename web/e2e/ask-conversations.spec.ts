@@ -167,7 +167,7 @@ test("a long title stays inside the head; nothing scrolls sideways on a phone (#
   await expect(trigger).toContainText("flaky upload retry");
   const head = await panel.getByTestId("ask-head").boundingBox();
   const sw = await trigger.boundingBox();
-  const close = await panel.getByRole("button", { name: "Close Ask" }).boundingBox();
+  const close = await panel.getByRole("button", { name: "Close HQ" }).boundingBox();
   expect(sw && head && close).toBeTruthy();
   // The switcher shrinks; New conversation and Close keep their place on the same row.
   expect(sw!.x + sw!.width).toBeLessThanOrEqual(close!.x);

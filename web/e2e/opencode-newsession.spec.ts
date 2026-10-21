@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { mockRoster } from "./roster";
 import { launchFolder } from "./newSessionForm";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // Reconcile engines (#163/#315/#449): creating a session must navigate to a `new-<uuid>`
 // placeholder id (which the ws new=1 launch accepts + reconciles), NOT a bare UUID (which 4404s
@@ -31,7 +32,7 @@ for (const engine of ["opencode", "antigravity"] as const) {
     );
 
     await mockRoster(page); // the manifest-generated roster (#853 P4)
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/proj");
     await page.getByRole("button", { name: /start session/i }).click();
     await expect(page).toHaveURL(

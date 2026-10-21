@@ -56,8 +56,9 @@ def _patch(c, cfg, csrf, pid, body):
 def test_registry_covers_every_system_prompt():
     # #956 removed pulse_banner; #1088 added mission_judge; #1086 added pulse_recap;
     # #1090 added template_suggest + template_write; #1209 added chat_agent; #1222 chat_agent_tools
-    # #1443 added ask_orchestrator
-    assert len(prompts.REGISTRY) == 22
+    # #1443 added ask_orchestrator; #1525 the 13 HQ contact personas (unguarded: tone only, sent
+    # BEFORE the guarded ask_orchestrator, whose guard stays the last word)
+    assert len(prompts.REGISTRY) == 35
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -125,6 +126,20 @@ EXPECTED_DEFAULT_SHA = {
     "mission_judge": "604e82e9d100c1dc",
     # #1443: the Ask conversation — read-only tools, guarded.
     "ask_orchestrator": "07fc428218d6a5a8",
+    # #1525: the HQ contacts' voices — archetypes, the no-stereotype rules written into each.
+    "hq_persona_asia_woman": "3ab034163472b139",
+    "hq_persona_asia_man": "e98526534b590f1d",
+    "hq_persona_europe_woman": "f0e2690b4e1d5b42",
+    "hq_persona_europe_man": "ca7910c7d67c0386",
+    "hq_persona_russia_woman": "d7ab24c23e2aa74b",
+    "hq_persona_russia_man": "87120dd4c13faa0e",
+    "hq_persona_us_woman": "a4318efe7e6a6898",
+    "hq_persona_us_man": "d2902cf1b6fe3636",
+    "hq_persona_africa_woman": "f42d457316e80fde",
+    "hq_persona_africa_man": "deff0125712af712",
+    "hq_persona_southamerica_woman": "5c36be44f26eb5d6",
+    "hq_persona_southamerica_man": "8ebd20290941c65d",
+    "hq_persona_romania_woman": "5ceabcc8049fa2d7",
 }
 
 

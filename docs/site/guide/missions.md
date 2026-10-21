@@ -6,8 +6,8 @@ about it without opening a terminal.
 It is the `/mission` route (`/pulse` redirects there), and it used to be a dashboard: a grid of session cards, a "state of your
 work" banner, and a separate Ask box. That told you what mattered and then handed you off to a
 terminal to act. The console replaces all three with a shape you already know — a rail of missions
-on the left, one thread in the middle, and the mission's own detail beside it. Ask was not folded
-into the console: it is the [Ask](/guide/ask) sidebar, opened from the icon beside the notification
+on the left, one thread in the middle, and the mission's own detail beside it. Ask (now HQ) was not folded
+into the console: it is the [HQ](/guide/hq) sidebar, opened from the icon beside the notification
 bell on any page.
 
 ## A mission is the unit of work
@@ -366,7 +366,7 @@ relocated — out of mission control entirely, into its own section:
 |---|---|
 | A session card in the grid | A mission row in the rail |
 | The banner | The mission's own recap stream |
-| The Ask box | The [Ask](/guide/ask) sidebar, opened beside the notification bell on any page |
+| The Ask box | The [HQ](/guide/hq) sidebar, opened beside the notification bell on any page |
 | A session no mission owns | Adopted from the session itself — its row menu or its pane header |
 
 Deliberately unchanged: the **terminal**, the **sidebar**, and the **per-session recap** — which is

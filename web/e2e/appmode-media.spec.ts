@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { connect as tcpConnect, type Socket } from "node:net";
 import { join } from "node:path";
-import { connect, PY_STACK_AVAILABLE, SESSION_UUID, startStack, type Stack } from "./appmode";
+import { connect, openSessions, PY_STACK_AVAILABLE, SESSION_UUID, startStack, type Stack } from "./appmode";
 import { clickHeadAction, FILES_ACTION } from "./headActions";
 import { openLinksFullScreen } from "./linkMode";
 
@@ -69,6 +69,7 @@ test("app mode: previews and Download come through the tunnel, never as a relay 
     if (r.url().includes("/api/files/raw")) nativeRaw.push(r.url());
   });
   await connect(page, stack);
+  await openSessions(page);
   await page.locator(`a[href*="${SESSION_UUID}"]`).first().click({ timeout: 30_000 });
   await clickHeadAction(page, FILES_ACTION, { timeout: 30_000 });
   await expect(page.locator("[data-file-tree]")).toBeVisible({ timeout: 20_000 });

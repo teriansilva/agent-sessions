@@ -7,7 +7,9 @@ so the answer survives a reload or a client that went away.
 
 **One transport.** Each round is ``review.post_chat_response`` with the AI-review configuration:
 the registered-prompt check and template-secret redaction apply, and no outbound-HTTP site is
-added. The system prompt is ``prompts.effective("ask_orchestrator")``, a GUARDED prompt.
+added. The system prompt is ``prompts.effective("ask_orchestrator")``, a GUARDED prompt. A turn
+with an HQ contact (#1525) sends that contact's registered persona as its own system message
+FIRST, so the guarded prompt, and its guard, stay the last instruction the model reads.
 
 **Nothing here sends or starts.** :data:`TOOLS` is pinned by name AND kind: read tools,
 ``ask_operator`` (ends the turn on a stored question), ``propose_nudge`` (Phase 2: stages a ledger
@@ -51,6 +53,7 @@ from dataclasses import dataclass, field
 from . import (
     ask_store,
     engines,
+    hq_contacts,
     mission_plan,
     missions,
     prompts,
@@ -142,6 +145,8 @@ class _Turn:
     matches: dict[str, dict] = field(default_factory=dict)
     mission_matches: dict[str, dict] = field(default_factory=dict)
     proposals: int = 0
+    #: Who answers (#1525): a known HQ contact id, or ``off`` for plain HQ (no persona).
+    contact: str = hq_contacts.OFF
     #: Sessions VISIBLY working right now (`actuator.busy_keys`), snapshotted when the turn began.
     busy_keys: set[str] = field(default_factory=set)
     #: The question this turn answers (`ask_operator`, #1443 Phase 2): ``{"question", ...}``.
@@ -1071,6 +1076,14 @@ def _asked_records(turn: _Turn) -> list[dict]:
     ]
 
 
+def _persona(turn: _Turn) -> list[dict]:
+    """The contact's persona as its own system message, or nothing for ``off`` (#1525). An exact
+    registry string: the outbound check holds as it is, and it goes BEFORE the guarded prompt."""
+    if turn.contact not in hq_contacts.IDS:
+        return []
+    return [{"role": "system", "content": prompts.effective(hq_contacts.prompt_id(turn.contact))}]
+
+
 async def run_turn(turn: _Turn) -> list[dict]:
     """The turn itself. Writes tool records as it goes; RETURNS the records that settle it."""
 
@@ -1084,6 +1097,9 @@ async def run_turn(turn: _Turn) -> list[dict]:
     records = await asyncio.to_thread(ask_store.read, turn.cid)
     history = _history(records, turn.turn_id)
     convo: list[dict] = [
+        # The persona first, the guarded prompt LAST of the system messages: its guard is then
+        # the final instruction the model reads, whatever the voice says (`prompt-registry.md`).
+        *_persona(turn),
         {"role": "system", "content": prompts.effective("ask_orchestrator")},
         # Stored user/assistant text only; the pinned sanitizer gates the role at the sink.
         *pulse_chat.bound_history(history),
@@ -1253,6 +1269,9 @@ def turn_views(records: list[dict]) -> list[dict]:
                 "ask": None,
                 "proposals": [],
                 "answers": r.get("answers"),
+                # #1525: who answered this turn — its own, kept when the operator switches.
+                # A turn from before HQ contacts (or with a contact since removed) is plain HQ.
+                "contact": hq_contacts.resolve(r.get("contact")),
             }
             order.append(tid)
             continue
@@ -1463,6 +1482,7 @@ async def begin(
     busy_keys: set[str] | None = None,
     answers: str | None = None,
     option: int | None = None,
+    contact: str = hq_contacts.OFF,
 ) -> tuple[asyncio.Task | None, dict | None]:
     """Start a turn, or find the one this ``turn_id`` already names.
 
@@ -1474,7 +1494,11 @@ async def begin(
     Every decision that admits a NEW turn — the id is unused, nothing is pending, the conversation
     has room — is taken again after the cross-process turn lock is held, on a fresh read: the
     first look is only a fast path, and another process may have run and settled this very id in
-    between."""
+    between.
+
+    ``contact`` is who answers (#1525): resolved here to a known id or ``off`` and stored on the
+    turn's own record."""
+    contact = hq_contacts.resolve(contact)
     answering = None
     if answers is not None or option is not None:
         # A question record never changes once written, so resolving outside the lock is exact.
@@ -1518,7 +1542,13 @@ async def begin(
                 raise TurnError(409, "that question was already answered")
             if len(turn_views(records)) >= ask_store.MAX_TURNS:
                 raise TurnError(409, "this conversation is full — start a new one")
-            user: dict = {"type": "user", "turn_id": turn_id, "text": text, "qd": qd}
+            user: dict = {
+                "type": "user",
+                "turn_id": turn_id,
+                "text": text,
+                "qd": qd,
+                "contact": contact,
+            }
             if answering is not None:
                 user["answers"] = answering["question_id"]
             await _append(cid, user, {"type": "status", "turn_id": turn_id, "status": "pending"})
@@ -1533,6 +1563,7 @@ async def begin(
             working_keys=working_keys,
             busy_keys=set(busy_keys or ()),
             answering=answering,
+            contact=contact,
             progress=lambda ev: _broadcast(cid, ev),
         )
         task = asyncio.get_running_loop().create_task(_settle(turn, lock_fd), name=f"ask:{cid}")

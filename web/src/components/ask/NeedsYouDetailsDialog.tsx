@@ -267,7 +267,7 @@ export function NeedsYouDetailsDialog({
 
             {!action && !outdated ? (
               <p className={dlg.help}>
-                Nothing here can be approved from Ask — {d.reason || "open the session to answer."}
+                Nothing here can be approved from HQ — {d.reason || "open the session to answer."}
               </p>
             ) : null}
 

@@ -118,7 +118,7 @@ test("not mounted until first opened; NEEDS YOU is read only while open", async 
   await userEvent.click(screen.getByTestId("ask-toggle"));
   expect(screen.getByTestId("ask-sidebar")).toHaveAttribute("data-open", "true");
   expect(api.needsYou).toHaveBeenCalledTimes(1);
-  await userEvent.click(screen.getByRole("button", { name: "Close Ask" }));
+  await userEvent.click(screen.getByRole("button", { name: "Close HQ" }));
   const n = vi.mocked(api.needsYou).mock.calls.length;
   // Closed: still mounted, hidden from assistive tech and the keyboard, and not polling.
   const panel = screen.getByTestId("ask-sidebar");
@@ -142,7 +142,7 @@ test("a conversation survives closing the panel AND navigating; New conversation
   await userEvent.type(screen.getByTestId("composer-input"), "where?{Enter}");
   expect(await screen.findByText("answer to where?")).toBeInTheDocument();
 
-  await userEvent.click(screen.getByRole("button", { name: "Close Ask" }));
+  await userEvent.click(screen.getByRole("button", { name: "Close HQ" }));
   await userEvent.click(screen.getByRole("link", { name: "go two" }));
   expect(screen.getByText("page two")).toBeInTheDocument();
   await userEvent.click(screen.getByTestId("ask-toggle"));
@@ -159,7 +159,7 @@ test("desktop: a non-modal panel; the question box takes focus; Escape closes it
   const panel = screen.getByTestId("ask-sidebar");
   expect(panel).toHaveAttribute("role", "complementary");
   expect(panel).not.toHaveAttribute("aria-modal");
-  expect(screen.queryByRole("button", { name: "Dismiss Ask" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Dismiss HQ" })).toBeNull();
   expect(screen.getByTestId("composer-input")).toHaveFocus();
   await userEvent.keyboard("{Escape}");
   expect(panel).toHaveAttribute("data-open", "false");
@@ -170,10 +170,10 @@ test("phone: a modal drawer with a scrim; focus goes to Close; the scrim dismiss
   setDrawer(true);
   render(<Shell />);
   await userEvent.click(screen.getByTestId("ask-toggle"));
-  const panel = screen.getByRole("dialog", { name: "Ask" });
+  const panel = screen.getByRole("dialog", { name: "HQ" });
   expect(panel).toHaveAttribute("aria-modal", "true");
-  expect(within(panel).getByRole("button", { name: "Close Ask" })).toHaveFocus();
-  await userEvent.click(screen.getByRole("button", { name: "Dismiss Ask" }));
+  expect(within(panel).getByRole("button", { name: "Close HQ" })).toHaveFocus();
+  await userEvent.click(screen.getByRole("button", { name: "Dismiss HQ" }));
   expect(screen.getByTestId("ask-sidebar")).toHaveAttribute("data-open", "false");
 });
 
@@ -197,7 +197,7 @@ test("the Ask icon shows a dot AND says so when a followed session has an unseen
   render(<Shell />);
   expect(await screen.findByTestId("ask-unread-dot")).toBeInTheDocument();
   expect(screen.getByTestId("ask-toggle")).toHaveAccessibleName(
-    "Ask — new updates from sessions you follow",
+    "HQ — new updates from sessions you follow",
   );
 });
 
@@ -210,7 +210,7 @@ test("the dot clears when a conversation is marked seen", async () => {
     window.dispatchEvent(new CustomEvent(ASK_SEEN_EVENT));
   });
   await waitFor(() => expect(screen.queryByTestId("ask-unread-dot")).toBeNull());
-  expect(screen.getByTestId("ask-toggle")).toHaveAccessibleName("Ask");
+  expect(screen.getByTestId("ask-toggle")).toHaveAccessibleName("HQ");
 });
 
 test("an older unread answer arriving after a newer one never brings the dot back", async () => {

@@ -11,6 +11,7 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 import { MISSION, missionList, missionRow, mockMissions } from "./mission-console";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 const FIRST = "msn_" + "a".repeat(32);
 const LINKED = "msn_" + "b".repeat(32);
@@ -67,7 +68,7 @@ function missionDetailRequests(page: Page): string[] {
 
 test("the Missions section lives at /mission", async ({ page }) => {
   await setup(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const link = page.getByRole("navigation", { name: "Main sections" }).getByRole("link", { name: "Missions" });
   await expect(link).toHaveAttribute("href", "/mission");
   await link.click();

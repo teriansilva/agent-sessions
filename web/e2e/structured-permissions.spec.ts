@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { mockRoster, ROSTER } from "./roster";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 const ID = "d410d52a-4d13-4e9b-a4f6-5c4110378070";
 const TURN = "d410d52a-4d13-4e9b-a4f6-5c4110378071";
@@ -81,7 +82,7 @@ test("OpenCode skip prompts is opt-in and starts only after create succeeds", as
     calls.push("start");
     return route.fulfill({ json: state });
   });
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const skip = page.getByRole("checkbox", { name: /skip permission prompts/i });
   await expect(skip).not.toBeChecked();
   await skip.check();

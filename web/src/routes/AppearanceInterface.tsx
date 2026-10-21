@@ -1,5 +1,6 @@
 import { useState, type CSSProperties } from "react";
 import { Link, useLocation } from "react-router-dom";
+import { HqContactGallery } from "../components/hq/HqContactGallery";
 import { OpeningLinksSetting } from "../components/links/OpeningLinksSetting";
 import { onRadioGroupKeyDown, rovingTabIndex } from "../lib/radioArrows";
 import {
@@ -53,8 +54,8 @@ function MiniApp({ mode }: { mode: ThemeId }) {
   );
 }
 
-/** Settings → Appearance → Interface (#1494): how BattleLab itself looks — mode, accent, and how
- *  outside links open. The terminal and API-session looks have their own pages. */
+/** Settings → Appearance → Interface (#1494): how BattleLab itself looks — mode, accent, the
+ *  primary HQ contact (#1525), and how outside links open. The terminal and API-session looks have their own pages. */
 export function AppearanceInterface() {
   const { choice, setTheme } = useTheme();
   const { accent, setAccent } = useAccent();
@@ -195,6 +196,8 @@ export function AppearanceInterface() {
           {accent === DEFAULT_ACCENT ? " · default" : ""}
         </span>
       </div>
+
+      <HqContactGallery subheadClass={styles.subhead} hintClass={styles.hint} />
 
       <OpeningLinksSetting />
 

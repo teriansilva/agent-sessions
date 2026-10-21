@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { mockRoster } from "./roster";
 import { throttleIfAsked } from "./browserTiming";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // #533: the first compose Send into a FRESH session raced the agent's boot — the clear/paste/
 // Enter frames landed before the TUI's input loop was live, the pasted text was swallowed, and
@@ -101,7 +102,7 @@ test("first compose Send into a fresh session waits for the agent's first paint 
   // Drive the REAL fresh-launch flow (landing → Start), not a deep link: only a fresh launch
   // carries the router state that arms the gate — a deep-link attach must stay ungated (pinned
   // by compose-empty-send.spec.ts, which deep-links and sends immediately).
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await page.getByRole("button", { name: /start session/i }).click();
   await expect(page).toHaveURL(/\/s\/claude\//);
   await expect(page.locator(".xterm")).toBeVisible();
@@ -209,7 +210,7 @@ test("fresh Codex send waits for boot output to go quiet before using fallback r
   );
   await page.addInitScript(BOOTING_WS);
 
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await page.getByRole("button", { name: /start session/i }).click();
   await expect(page).toHaveURL(/\/s\/codex\/new-/);
   await expect(page.locator(".xterm")).toBeVisible();

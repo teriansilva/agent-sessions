@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mockRoster } from "./roster";
 import { agentPicker } from "./newSessionForm";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // #1189: the new-session form's Model select, in a real browser on the desktop AND mobile
 // projects. The backend is mocked; the terminal socket is intercepted so the spec asserts the
@@ -39,7 +40,7 @@ test("default is selected and launches with no model; a chosen model rides the s
 }) => {
   await mockBackend(page, ["claude"]);
   const sockets = await captureSockets(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const model = page.getByRole("combobox", { name: "Model" });
   await expect(model).toBeVisible();
   await expect(model).toHaveValue("default");
@@ -63,7 +64,7 @@ test("default is selected and launches with no model; a chosen model rides the s
 test("a default launch sends no model parameter at all (#1189)", async ({ page }) => {
   await mockBackend(page, ["claude"]);
   const sockets = await captureSockets(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await expect(page.getByRole("combobox", { name: "Model" })).toHaveValue("default");
   await page.getByRole("button", { name: /start session/i }).click();
   await expect.poll(() => sockets.length).toBeGreaterThan(0);
@@ -75,7 +76,7 @@ test("switching engine clears the model, and a configured-elsewhere engine offer
 }) => {
   await mockBackend(page, ["claude", "codex", "opencode"]);
   const sockets = await captureSockets(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const agent = agentPicker(page);
   const model = page.getByRole("combobox", { name: "Model" });
   await model.selectOption("claude-sonnet-5");

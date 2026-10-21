@@ -1,11 +1,12 @@
 # Dashboard
 
-The **Dashboard** (`/dashboard`, first in the top bar's section nav) is BattleLab's home: what your
-agents are doing right now, what is running and what needs you, on one page. Two buttons sit beside
-its title: **Ask**, which opens the [Ask](/guide/ask) sidebar, and **New**, a menu with **New
-session**, **New mission** and **New project**.
+The **Dashboard** (`/dashboard`, first in the top bar's section nav) is BattleLab's home and its
+start page: `/` opens it, and so does the installed app. It shows what your agents are doing right
+now, what is running and what needs you, on one page. Its heading reads **Welcome, Commander.**
+Beside it are **New**, the page's primary action (a menu with **New session**, **New mission** and
+**New project**), and your [primary HQ contact](#your-hq-contact).
 
-Apart from those two buttons, it adds no new actions. Every number is a count of something you can open, and every tile reads on
+Apart from those two, it adds no new actions. Every number is a count of something you can open, and every tile reads on
 its own schedule, so one slow or failing read never blanks the rest.
 
 ## The strip across the top
@@ -49,12 +50,19 @@ The **Needs you** list with its actions (approve, reply, dismiss) is always visi
 is collapsed beneath it: open it to read the recap and choose its time window. The recap is loaded
 only when opened. Closing it retires its in-flight read; opening it again shows its last successful
 snapshot immediately and refreshes it. A failed read says so; close and reopen to try again.
-How the list and recap behave is on the [Ask](/guide/ask) page.
+How the list and recap behave is on the [HQ](/guide/hq) page.
 
-## Asking
+## Your HQ contact
 
-Ask is not part of the Dashboard. It is a sidebar you can open from any page: the **Ask** button here
-opens it, and so does the speech-bubble icon beside the notification bell. See [Ask](/guide/ask).
+The card beside New shows your primary [HQ contact](/guide/hq#hq-contacts): the looping portrait,
+the contact's name and *Primary HQ contact*, with **Open HQ →**. Clicking it opens the
+[HQ](/guide/hq) sidebar, the same one the speech-bubble icon beside the notification bell opens
+from any page. With **Random**, it is today's contact. On a desktop the card is exactly as wide as
+the Plan quota number below it.
+
+With the contact **Off**, the same place holds a placeholder: a silhouette, *No HQ contact* and
+*Choose who briefs you*, with **Open HQ →** and **Select contact**, which opens the gallery in
+[Settings](/guide/settings).
 
 ## Starting work
 
@@ -62,13 +70,14 @@ opens it, and so does the speech-bubble icon beside the notification bell. See [
 
 | Item | Opens |
 |---|---|
-| **New session** | The new-session page (`/`). |
+| **New session** | The new-session page (`/new`). |
 | **New mission** | The new-mission form in [Missions](/guide/missions) (`/mission`). |
 | **New project** | The New project wizard (`/projects/new`), which returns to the Dashboard when it finishes. |
 
 ## On a phone
 
-The Dashboard is one column: the overview cards first, then Needs you, the collapsed Recent work
+The Dashboard is one column: the heading and New, your HQ contact as a full-width row under
+them, then the overview cards, then Needs you, the collapsed Recent work
 control and All sessions link, followed by Running sessions, Missions and Quota.
 
 ## What it does not do

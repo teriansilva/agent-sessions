@@ -7,6 +7,7 @@
 import { expect, test } from "@playwright/test";
 
 import { commonMocks } from "./mission-directions";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 const MENUS = ["sessions", "library"] as const;
 
@@ -16,7 +17,7 @@ test.beforeEach(async ({ page }) => {
 
 for (const id of MENUS) {
   test(`the ${id} section menu stays inside the viewport`, async ({ page }) => {
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     if ((await page.locator(".app.navOpen").count()) > 0) {
       await page.keyboard.press("Escape");
       await expect(page.locator(".app.navOpen")).toHaveCount(0);

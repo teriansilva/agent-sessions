@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // #506: real-browser proof for the session-list sort-order toggle in Settings → Appearance.
 // The radio click + persisted POST is exercised here; the actual list re-sort is server-side
@@ -153,7 +154,7 @@ async function setupSidebar(page: Page): Promise<void> {
     if (body.session_list_order) order = body.session_list_order;
     return r.fulfill({ json: { session_list_order: order } });
   });
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
 }
 
 test.describe("sidebar sort-order toggle (#548)", () => {

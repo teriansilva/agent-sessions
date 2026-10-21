@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 /** #1129 — Settings renders WITHOUT the session sidebar.
  *
@@ -134,7 +135,7 @@ test.describe("Settings has no session sidebar (#1129)", () => {
   }, testInfo) => {
     test.skip(testInfo.project.name === "mobile", "desktop shell");
     await mockApp(page);
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     await expect(page.locator("aside.sidebar")).toBeVisible();
     await expect(page.locator("header .navToggle")).toHaveCount(1);
     await expect(page.locator(".sidebar-resize")).toHaveCount(1);
@@ -170,7 +171,7 @@ test.describe("Settings has no session sidebar (#1129)", () => {
     // Before navigation, so the 15 s poll interval is created against the fake clock.
     await page.clock.install();
 
-    await page.goto("/");
+    await page.goto(NEW_SESSION_PATH);
     await expect(sidebarRows(page)).toHaveCount(20);
     await page.getByRole("button", { name: "Load more" }).click();
     await expect(sidebarRows(page)).toHaveCount(40);
@@ -184,7 +185,7 @@ test.describe("Settings has no session sidebar (#1129)", () => {
     await page
       .locator('[data-testid="section-nav"] a[data-section="sessions"]')
       .click();
-    await expect(page).toHaveURL(/\/$/);
+    await expect(page).toHaveURL(new RegExp(`${NEW_SESSION_PATH}$`));
     await expect(sidebarRows(page)).toHaveCount(40);
 
     // NOT ONE listing request across the round trip. A remount's bootstrap is immediate and

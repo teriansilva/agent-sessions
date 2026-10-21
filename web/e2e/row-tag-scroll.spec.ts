@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openLinksFullScreen } from "./linkMode";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // #551: real-browser proof for the custom per-session tag + the selected-row auto-scroll.
 //   1. A tag renders (in the accent voice) BEFORE the AI summary on the row's second line.
@@ -96,7 +97,7 @@ async function setup(page: Page, project: string): Promise<void> {
     });
   });
 
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   if (project === "mobile") await page.locator("header .navToggle").click();
   await expect(page.locator("aside.sidebar")).toBeVisible();
 }

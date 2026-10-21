@@ -1,5 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 import { ROSTER } from "./roster";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // API new-session defaults (#1407) in a real browser: save a model + level on the opencode — API
 // agent page, then the new-session screen preselects them and the create carries them. What
@@ -122,11 +123,11 @@ for (const theme of ["dark", "light"] as const) {
 
     // The new-session screen preselects them — reached INSIDE the SPA (no reload), so it is the
     // refreshed config the app holds that carries them (#1407 PR review), not a fresh page load.
-    await page.evaluate(() => {
-      window.history.pushState({}, "", "/");
+    await page.evaluate((p) => {
+      window.history.pushState({}, "", p);
       window.dispatchEvent(new PopStateEvent("popstate"));
-    });
-    await expect(page).toHaveURL(/\/$/);
+    }, NEW_SESSION_PATH);
+    await expect(page).toHaveURL(new RegExp(`${NEW_SESSION_PATH}$`));
     await expect(page.getByRole("combobox", { name: "Model" })).toHaveValue("local/coder");
     await expect(page.getByTestId("new-session-effort")).toHaveValue("high");
     await expect(page.getByTestId("new-session-defaults")).toContainText("defaults");
@@ -139,7 +140,7 @@ for (const theme of ["dark", "light"] as const) {
 test("a level changed for one session is sent, and Reset to defaults restores the saved one", async ({ page }) => {
   const state = await mockApp(page);
   state.sessionDefaults[ENGINE] = { model: "local/coder", effort: "high" };
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   const effort = page.getByTestId("new-session-effort");
   await expect(effort).toHaveValue("high");
   await effort.selectOption("low");

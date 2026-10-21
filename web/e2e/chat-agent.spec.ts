@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mockRoster } from "./roster";
 import { launchFolder } from "./newSessionForm";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // #1209 (#853 P9a-3): an API agent's session is a CHAT PANE, not a terminal. The server is mocked:
 // `GET /api/chat/<sid>` is a small state machine, so the spec drives the real client through a
@@ -287,7 +288,7 @@ test("Start on an API agent creates the conversation on the server and opens it 
       },
     }),
   );
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/proj");
   await expect(page.getByText("Skip permission prompts")).toHaveCount(0);
   await page.getByRole("button", { name: /start session/i }).click();

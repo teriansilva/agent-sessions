@@ -52,6 +52,21 @@
 .label.label {
   font-size: 0.7rem;
 }
+/* #1525: an answer's head names its speaker, in --text-2: the --text-3 label measures only 3.7:1
+ * dark and 4.0:1 light; --text-2 gives 7.55:1 and 8.22:1. The poster is decoration. */
+.speaker.speaker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+}
+.speakerPoster {
+  width: 24px;
+  height: 32px;
+  flex: none;
+  object-fit: cover;
+  border: 1px solid var(--line-strong);
+}
 
 /* An answer's markdown, through `blockMarkup` — the enumerated subset, no html sink. Quiet
  * structure at the answer's own size: blocks spaced like paragraphs, lists indented, code in mono. */
@@ -159,6 +174,48 @@
   gap: 10px;
   padding: 10px 0;
 }
+/* #1525: Off is one row (HQ, picker, +, ×); with a contact the 60×80 portrait spans two rows —
+ * "HQ" over the name, then the picker, + and × — so the picker keeps its width at 390px. */
+.headMain {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+.headContact {
+  align-items: stretch;
+}
+.headContact .headMain {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.headPortrait {
+  width: 60px;
+  height: 80px;
+}
+.who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.whoName {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.headTools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
 .back {
   display: inline-flex;
   align-items: center;
@@ -185,19 +242,21 @@
   flex: 1;
 }
 .newBtn {
-  min-height: 44px;
-  padding: 0 14px;
+  width: 44px;
+  height: 44px;
+  flex: none;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   border: 1px solid var(--line-strong);
   background: transparent;
   color: var(--text-1);
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
   cursor: pointer;
+}
+.newBtn:focus-visible,
+.back:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
 }
 .newBtn:hover:not(:disabled) {
   border-color: var(--accent);
@@ -205,17 +264,6 @@
 .newBtn:disabled {
   opacity: 0.55;
   cursor: default;
-}
-.short {
-  display: none;
-}
-@media (max-width: 800px) {
-  .long {
-    display: none;
-  }
-  .short {
-    display: inline;
-  }
 }
 
 .greeting {

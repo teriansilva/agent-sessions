@@ -9,6 +9,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { missionRow } from "./mission-console";
 import { MISSION_PATH } from "../src/lib/missionLink";
 import { setupBench } from "./terminal/harness";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 const ENGINE = "claude";
 const UUID = "bbbbbbbb-1111-2222-3333-444444444444";
@@ -119,7 +120,7 @@ test("adopt from the row menu: refusable missions say why, and the row flips to 
   page,
 }) => {
   const { posts } = await setup(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await openRowMenu(page);
   await page.getByRole("menuitem", { name: "Adopt session to a mission" }).click();
 
@@ -156,7 +157,7 @@ test("a refusal shows the server's own detail and keeps the dialog open", async 
   await setup(page, {
     adopt: { status: 409, json: { detail: `session ${KEY} is held by mission ${DONE}` } },
   });
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await openRowMenu(page);
   await page.getByRole("menuitem", { name: "Adopt session to a mission" }).click();
   const dialog = page.getByRole("dialog", { name: "Adopt to mission" });
@@ -193,7 +194,7 @@ test("adopt from the pane header; the header then names the mission", async ({ p
 
 test("unknown membership offers neither adopt nor open", async ({ page }, testInfo) => {
   await setup(page, { initial: "unknown" });
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await openRowMenu(page);
   await expect(page.getByRole("menuitem", { name: /Adopt session|Open mission/ })).toHaveCount(0);
   await page.keyboard.press("Escape");
@@ -206,7 +207,7 @@ test("unknown membership offers neither adopt nor open", async ({ page }, testIn
 
 test("filtering the list by mission asks the server, before pagination", async ({ page }) => {
   const { sessionUrls } = await setup(page);
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await openSessionDrawer(page);
   await page.getByLabel("Filter by mission").selectOption("none");
   await expect.poll(() => sessionUrls.some((u) => new URL(u).searchParams.get("mission") === "none")).toBe(true);
@@ -245,7 +246,7 @@ test("the picker restarts when the mission list moves between pages, instead of 
   );
   const urls: string[] = [];
   await page.route(/\/api\/missions(\?.*)?$/, pagedMissions(() => missions, urls));
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await openRowMenu(page);
   await page.getByRole("menuitem", { name: "Adopt session to a mission" }).click();
   const dialog = page.getByRole("dialog", { name: "Adopt to mission" });
@@ -277,7 +278,7 @@ test("an unreadable mission store is said, with a retry — not 'no open mission
       },
     }),
   );
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await openRowMenu(page);
   await page.getByRole("menuitem", { name: "Adopt session to a mission" }).click();
   const dialog = page.getByRole("dialog", { name: "Adopt to mission" });
@@ -349,7 +350,7 @@ async function adoptUnderNoneFilter(page: Page, opts: { failReplacement?: boolea
     return r.fulfill({ json: { id: RUNNING } });
   });
 
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await openSessionDrawer(page);
   await page.getByLabel("Filter by mission").selectOption("none");
   const list = page.locator("ul[aria-label$='sessions']");

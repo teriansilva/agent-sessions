@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // #283: same-route nav taps must close the mobile off-canvas drawer in ONE tap. The bug:
 // New session is a `Link to="/"`, so when you're already on "/" the click doesn't change
@@ -33,7 +34,7 @@ async function openDrawerIfMobile(
 test("New session closes the drawer in one tap when already at / (#283)", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   await expect(landing(page)).toBeVisible();
 
   const isMobile = await openDrawerIfMobile(page);
@@ -54,6 +55,6 @@ test("from a session view, one New session click shows the landing (#283)", asyn
   await page.getByRole("link", { name: /new session/i }).click();
 
   await expect(landing(page)).toBeVisible();
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(new RegExp(`${NEW_SESSION_PATH}$`));
   if (isMobile) await expect(page.locator(".app")).not.toHaveClass(/navOpen/);
 });

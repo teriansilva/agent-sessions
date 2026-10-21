@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // #1009: usage-analytics consent, in a real browser on the desktop AND the mobile (Pixel 7)
 // projects. The wizard asks between Tour and Launch; the choice is posted as `analytics_consent`,
@@ -96,7 +97,7 @@ test("a fresh install is asked, unticked; ticking posts true and lands on Launch
   page,
 }) => {
   const log = await mockApp(page, { onboarded: false, analytics: UNDECIDED });
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.goto(NEW_SESSION_PATH, { waitUntil: "domcontentloaded" });
   const dialog = page.getByRole("dialog", { name: /set up battlelab/i });
   await expect(dialog).toBeVisible();
   await walkToAnalyticsStep(dialog);
@@ -129,7 +130,7 @@ test("continuing without ticking posts a no; a failed save keeps the step and na
     analytics: UNDECIDED,
     failConsentSave: true,
   });
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.goto(NEW_SESSION_PATH, { waitUntil: "domcontentloaded" });
   const dialog = page.getByRole("dialog", { name: /set up battlelab/i });
   await walkToAnalyticsStep(dialog);
 

@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openSettingsFromMenu } from "./settingsNav";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 // Real-browser checks for TEMPLATES — the instruction-template gallery + editor (#905 P2).
 // Runs on desktop AND mobile: the one-column reflow, the bottom-sheet confirm and the 44px
@@ -137,7 +138,7 @@ async function mockTemplates(page: Page, templates: Tpl[]) {
 }
 
 async function openGalleryFromTheShell(page: Page) {
-  await page.goto("/");
+  await page.goto(NEW_SESSION_PATH);
   // #1058: all five sections ride the top bar at EVERY width — icon-only below 640px — so there
   // is no drawer hop on mobile any more. Scoped to the bar's nav because the drawer renders the
   // same five links, and on a phone with the drawer open both are in the accessibility tree.

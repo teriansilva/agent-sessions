@@ -77,7 +77,7 @@ export const VISUAL_PATHS: VisualPath[] = [
     requireAuth: "admin",
     waitFor: {
       selector:
-        '[data-testid="dashboard-page"]:has([data-testid="dash-quota"]):not(:has([data-testid="tile-loading"])):has([data-testid="needs-you-empty"], [data-testid="needs-you-row"], [data-testid="needs-you-error"])',
+        '[data-testid="dashboard-page"]:has([data-testid="hq-primary-contact"]):has([data-testid="dash-quota"]):not(:has([data-testid="tile-loading"])):has([data-testid="needs-you-empty"], [data-testid="needs-you-row"], [data-testid="needs-you-error"])',
       timeoutMs: 12000,
     },
   },
@@ -322,17 +322,25 @@ export const VISUAL_PATHS: VisualPath[] = [
     group: "authed",
     path: "/",
     name: "app-home",
-    description: "Session list sidebar + new-session panel (all engine badges)",
+    description:
+      "Start page: / redirects to the dashboard — Welcome, Commander. + the primary HQ contact (#1525)",
     requireAuth: "admin",
-    waitFor: SPA_MOUNTED,
+    waitFor: {
+      selector: '[data-testid="dashboard-page"] [data-testid="hq-primary-contact"]',
+      timeoutMs: DEFAULT_SELECTOR_TIMEOUT_MS,
+    },
   },
   {
     group: "authed",
-    path: "/?new=1",
+    path: "/new",
     name: "new-session",
-    description: "New-session landing — agent + project picker",
+    description:
+      "New-session landing (/new since #1525) — session list sidebar + agent and project picker",
     requireAuth: "admin",
-    waitFor: SPA_MOUNTED,
+    waitFor: {
+      selector: 'h1:has-text("Start a new session")',
+      timeoutMs: DEFAULT_SELECTOR_TIMEOUT_MS,
+    },
   },
   {
     group: "authed",
