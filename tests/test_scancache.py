@@ -234,6 +234,42 @@ def test_stats_counts_hits_and_misses(tmp_path):
     assert (s["hits"], s["misses"], s["entries"]) == (1, 1, 1)
 
 
+def test_byte_budget_evicts_the_least_recently_used_without_changing_rows(tmp_path, monkeypatch):
+    monkeypatch.setattr(scancache, "MAX_BYTES", 500_000)
+    files = [_touch(tmp_path / f"large-{i}.jsonl", str(i)) for i in range(3)]
+    message = "x" * 200_000
+    for path in files[:2]:
+        assert scancache.memoized("ns", path, _Counter(message)) == message
+    assert scancache.stats()["entries"] == 2
+    touched = _Counter(message)
+    scancache.memoized("ns", files[0], touched)
+    assert touched.calls == 0
+    scancache.memoized("ns", files[2], _Counter(message))
+    assert scancache.stats()["entries"] == 2
+    assert scancache._bytes <= scancache.MAX_BYTES
+    evicted = _Counter(message)
+    assert scancache.memoized("ns", files[1], evicted) == message
+    assert evicted.calls == 1
+    newest = _Counter(message)
+    scancache.memoized("ns", files[2], newest)
+    assert newest.calls == 0
+
+
+def test_one_oversized_row_is_returned_uncached_and_preserves_small_rows(tmp_path, monkeypatch):
+    monkeypatch.setattr(scancache, "MAX_BYTES", 50_000)
+    small = _touch(tmp_path / "small.jsonl", "small")
+    big = _touch(tmp_path / "big.jsonl", "big")
+    scancache.memoized("ns", small, _Counter("kept"))
+    large = _Counter("x" * scancache.MAX_BYTES)
+    for _ in range(2):
+        assert scancache.memoized("ns", big, large) == large.value
+    assert large.calls == 2
+    probe = _Counter("kept")
+    assert scancache.memoized("ns", small, probe) == "kept"
+    assert probe.calls == 0
+    assert scancache.stats()["entries"] == 1
+
+
 # --- the route invariant --------------------------------------------------------------------
 
 _WALKS = {"scan_all", "scan_all_cached", "scan_all_pinned"}

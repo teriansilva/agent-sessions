@@ -34,6 +34,10 @@ belongs to its LATEST attempt: a ``pending`` status (send or Retry) starts it af
 
 The store kind below plugs this into the roster exactly as `ShellProvider` plugs its records in:
 ``scan``/``lookup`` list sessions, archive rides the metadata sidecar.
+
+Native API discovery reuses validated rows in the bounded per-file memo (#1539), independently
+of the much smaller conversation projection cache. Every read still checks the private journal
+under its shared flock; changed bytes are folded in full, including malformed-record rejection.
 """
 
 from __future__ import annotations
@@ -509,31 +513,51 @@ class ChatStoreKind:
 
     def _native_row(self, root: Path, sid: str) -> Session | None:
         """A native API client's conversation (#1311): the same store layout holds its journal
-        (#1278), whose records are not chat turns — read through the journal's own fold."""
-        from . import native_journal
+        (#1278), whose records are not chat turns — validate through the journal's own fold.
+
+        Memoize only the discovery row, never its event spool: a roster larger than the journal
+        cache otherwise evicts and rebuilds every conversation on every walk (#1539). The memo
+        stays INSIDE observe_shared so a warm hit cannot bypass private-file checks or fsync.
+        ctime also binds the memo, matching journal.read's restored-mtime rewrite protection.
+        """
+        from . import native_journal, scancache
+
+        def observe(fd, st):
+            def build():
+                raw = os.pread(fd, native_journal.MAX_BYTES + 1, 0)
+                if len(raw) != st.st_size:
+                    raise ValueError("conversation changed while reading")
+                journal = native_journal.fold(raw, sid, directory=root)
+                first = next(
+                    (
+                        op.request["params"].get("text") or ""
+                        for op in journal.operations.values()
+                        if op.request.get("action") == "submit"
+                    ),
+                    "",
+                )
+                return Session(
+                    engine=self.owner.engine_id,
+                    uuid=sid,
+                    cwd=journal.header["cwd"],
+                    last_mtime=st.st_mtime,
+                    first_user_message=first,
+                    archived=False,
+                    created_at=journal.header["created_at"] or fs_created_at(st),
+                )
+
+            # Bind the CHECKED descriptor as well as scancache's path stat. If the pathname is
+            # replaced while our shared snapshot is open, its identity cannot lend a cached
+            # row from the replacement to this descriptor (or vice versa).
+            stamp = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+            return scancache.memoized(
+                f"native-row:{self.owner.engine_id}:{stamp}", root / f"{sid}.jsonl", build
+            )
 
         try:
-            journal = native_journal.read(root, sid)
-            st = (root / f"{sid}.jsonl").stat()
-        except (native_journal.JournalError, OSError):
+            return observe_shared(root, sid, observe, max_bytes=native_journal.MAX_BYTES)
+        except (ValueError, OSError):
             return None
-        first = next(
-            (
-                op.request["params"].get("text") or ""
-                for op in journal.operations.values()
-                if op.request.get("action") == "submit"
-            ),
-            "",
-        )
-        return Session(
-            engine=self.owner.engine_id,
-            uuid=sid,
-            cwd=journal.header["cwd"],
-            last_mtime=st.st_mtime,
-            first_user_message=first,
-            archived=False,
-            created_at=journal.header["created_at"] or fs_created_at(st),
-        )
 
     def scan(self) -> list[Session]:
         root = self._root()

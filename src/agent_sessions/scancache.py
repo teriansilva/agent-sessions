@@ -45,9 +45,10 @@ old identity again would be served a row built from different bytes.
   what happened when they were unified: "exactly what hid every healthy ``shell`` session behind
   one malformed record". A fail-soft ``None`` cached here must never reach a measurement that
   authorises deletion, so the checked paths simply do not call this.
-* **It does not bound by bytes.** Rows are small — measured across 1,527 real sessions, every
-  ``first_user_message`` together came to 119 KB, the largest single one 5.5 KB — so a bounded
-  entry count is a bounded memory footprint. The cap is enforced, not assumed.
+* **It never truncates rows to fit.** Native API prompts can contain 200,000 characters (#1539),
+  so an entry-count limit alone could retain hundreds of megabytes. Both an aggregate retained
+  object-byte budget and the entry cap apply. Oversized rows are returned uncached; eviction
+  preserves the complete first message for search rather than silently truncating it.
 
 A **leaf module on purpose**, like ``checked_scan``: it imports nothing from the app, so
 ``scanner.py`` and the engine providers can both use it without an import cycle.
@@ -56,10 +57,12 @@ A **leaf module on purpose**, like ``checked_scan``: it imports nothing from the
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
+from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +70,8 @@ from typing import Any
 #: install several times larger before eviction starts costing re-reads, and is a real bound rather
 #: than a reassurance — `_entries` is trimmed to it on every insert.
 MAX_ENTRIES = 4096
+#: Account for keys, row objects and their retained fields, including wide Unicode prompts.
+MAX_BYTES = 8 * 1024 * 1024
 
 #: How recently a file may have been modified and still be memoised (#1048).
 #:
@@ -90,7 +95,8 @@ RACY_WINDOW_NS = 1_000_000_000
 _MISSING = object()
 
 _lock = threading.Lock()
-_entries: OrderedDict[tuple, Any] = OrderedDict()
+_entries: OrderedDict[tuple, tuple[Any, int]] = OrderedDict()
+_bytes = 0
 _hits = 0
 _misses = 0
 
@@ -100,6 +106,25 @@ def identity(st: os.stat_result) -> tuple[int, int, int, int]:
     return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
 
 
+def _retained_size(value: Any, seen: set[int] | None = None) -> int:
+    """Count the row/key object graph, conservatively counting shared objects per entry."""
+    seen = set() if seen is None else seen
+    if id(value) in seen:
+        return 0
+    seen.add(id(value))
+    size = sys.getsizeof(value)
+    if isinstance(value, dict):
+        size += sum(_retained_size(k, seen) + _retained_size(v, seen) for k, v in value.items())
+    elif isinstance(value, tuple | list | set | frozenset):
+        size += sum(_retained_size(item, seen) for item in value)
+    elif is_dataclass(value) and not isinstance(value, type):
+        if hasattr(value, "__dict__"):
+            size += _retained_size(vars(value), seen)
+        else:
+            size += sum(_retained_size(getattr(value, f.name), seen) for f in fields(value))
+    return size
+
+
 def memoized(namespace: str, path: Path, build: Callable[[], Any]) -> Any:
     """``build()``'s result for ``path``, reused while the file's identity is unchanged.
 
@@ -107,7 +132,7 @@ def memoized(namespace: str, path: Path, build: Callable[[], Any]) -> Any:
     key on, so it is called and its answer returned unmemoised — which is what lets a fail-soft
     builder stay fail-soft and a raising one keep raising.
     """
-    global _hits, _misses
+    global _hits, _misses, _bytes
     try:
         st = path.stat()
     except OSError:
@@ -121,7 +146,7 @@ def memoized(namespace: str, path: Path, build: Callable[[], Any]) -> Any:
         if hit is not _MISSING:
             _entries.move_to_end(key)
             _hits += 1
-            return hit
+            return hit[0]
         _misses += 1
 
     row = build()
@@ -140,19 +165,26 @@ def memoized(namespace: str, path: Path, build: Callable[[], Any]) -> Any:
     if time.time_ns() - st_after.st_mtime_ns < RACY_WINDOW_NS:
         return row
 
+    weight = _retained_size((key, row)) + sys.getsizeof(0)
     with _lock:
-        _entries[key] = row
+        if previous := _entries.pop(key, None):
+            _bytes -= previous[1]
+        if weight > MAX_BYTES:
+            return row  # one oversized row must not evict every useful small row
+        _entries[key] = (row, weight)
+        _bytes += weight
         _entries.move_to_end(key)
-        while len(_entries) > MAX_ENTRIES:
-            _entries.popitem(last=False)
+        while len(_entries) > MAX_ENTRIES or _bytes > MAX_BYTES:
+            _bytes -= _entries.popitem(last=False)[1][1]
     return row
 
 
 def clear() -> None:
     """Drop every entry and reset the counters. For tests, and for an explicit operator purge."""
-    global _hits, _misses
+    global _hits, _misses, _bytes
     with _lock:
         _entries.clear()
+        _bytes = 0
         _hits = 0
         _misses = 0
 
