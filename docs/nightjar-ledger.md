@@ -191,7 +191,6 @@ the same list.
 | `landing/index.html` | page | 12b | n/a: rebuilt in NIGHTJAR by #1544 (PR #1548); 12b checks conformance only | — | — |
 | `landing/legal.html` | page | 12b | todo |  |  |
 | `landing/privacy.html (+ landing/consent.js)` | page | 12b | todo |  |  |
-| `landing/dictation-probe.html` | page | 12b | todo |  |  |
 | `landing/404.html (new)` | page | 12b | todo |  |  |
 | `landing/og.svg` | page | 12b | todo |  |  |
 | `docs/site home (index.md)` | page | 12c | todo |  |  |

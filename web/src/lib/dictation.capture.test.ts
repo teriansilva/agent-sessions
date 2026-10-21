@@ -2,7 +2,8 @@ import { expect, test } from "vitest";
 import { assembleSpoken, type SpokenSegment } from "./dictation";
 
 // A REAL device capture, replayed verbatim: Android 10 / Chrome 150, `continuous: true` (no
-// single-utterance fallback), taken from /dictation-probe.html on the device that reported #749.
+// single-utterance fallback), taken with the former dictation probe page (removed; it is in git
+// history) on the device that reported #749.
 //
 // Its shape is the whole point. Every entry but the last is born final; three of them are finalized
 // EMPTY strings (the #711 stacker fingerprint); each event appends exactly one cumulative snapshot;
