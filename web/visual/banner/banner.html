@@ -1,0 +1,248 @@
+<!doctype html>
+<!-- The banner (#1544): General Ileana Lupu greets the Commander, in NIGHTJAR // OPS (amber).
+     A scene, not a page. It is driven by a clock: renderAt(t) draws the exact frame for t seconds, so
+     render.mjs can capture every frame at 2x and encode the README WebP and the landing videos.
+     `?layout=tall` is the phone version. Edit LINES below, then run `node visual/banner/render.mjs`
+     from web/. Open the file directly to watch it play. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  @font-face { font-family:"Chakra Petch"; font-weight:600; src:url(chakra-petch-600.woff2) format("woff2"); }
+  @font-face { font-family:"JetBrains Mono"; font-weight:100 800; src:url(jetbrains-mono.woff2) format("woff2"); }
+  :root {
+    --ground:#07080a; --panel:#0e1015; --text-1:#e8e9ec; --text-2:#a7abb3; --text-3:#7a7f88;
+    --line:rgba(255,255,255,.08); --accent:#ffb000; --on-accent:#120c00; --brand-soft:#ffd47a;
+    --hud:var(--accent); --status-up:#3fbf6f; --status-degraded:#f59e0b;
+    --warn-text:color-mix(in srgb, var(--status-degraded) 60%, var(--text-1));
+    --mono:"JetBrains Mono",ui-monospace,monospace; --display:"Chakra Petch","JetBrains Mono",sans-serif;
+    --body:system-ui,"DejaVu Sans",sans-serif; --cut:14px;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; overflow:hidden; }
+  body { width:1200px; height:600px; position:relative; background:var(--ground); color:var(--text-1); font:15px/1.5 var(--body); }
+  .atmo { position:absolute; inset:0; pointer-events:none; }
+  .hex { position:absolute; inset:0; opacity:.6; background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='56' height='97' viewBox='0 0 56 97'><path d='M28 0 L56 16 L56 48 L28 64 L0 48 L0 16 Z M28 64 L28 97' fill='none' stroke='%23ffffff' stroke-opacity='0.05' stroke-width='1'/></svg>"); }
+  .vig { position:absolute; inset:0; background:radial-gradient(ellipse at 40% 40%, transparent 0 45%, rgba(0,0,0,.65) 100%); }
+  .scan { position:absolute; inset:0; background:repeating-linear-gradient(0deg, rgba(255,255,255,.022) 0 1px, transparent 1px 3px); }
+  .sweep { position:absolute; left:0; right:0; top:-120px; height:120px; background:linear-gradient(180deg, transparent, rgba(255,176,0,.03) 70%, rgba(255,176,0,.08) 99%, transparent); animation:sweep 7s linear infinite; }
+  @keyframes sweep { to { transform:translateY(720px); } }
+
+  .top { position:absolute; left:0; right:0; top:0; height:52px; display:flex; align-items:center; gap:14px; padding:0 28px;
+    border-bottom:1px solid color-mix(in srgb, var(--hud) 40%, transparent); background:rgba(11,12,16,.85); }
+  .brand { font:600 17px/1 var(--display); letter-spacing:.22em; color:var(--brand-soft); display:flex; gap:10px; align-items:center; }
+  .brand b { color:var(--accent); font-weight:600; } .brand .mk { color:var(--accent); }
+  .tag { font:400 11px/1.2 var(--mono); letter-spacing:.18em; text-transform:uppercase; color:var(--text-3); }
+  .tag b { color:var(--accent); font-weight:600; }
+  .top .r { margin-left:auto; display:flex; gap:10px; align-items:center; }
+  .led { width:8px; height:8px; border-radius:50%; background:var(--status-up); box-shadow:0 0 6px var(--status-up); display:inline-block; }
+  .led.att { background:var(--status-degraded); box-shadow:0 0 6px var(--status-degraded); animation:blink 1.2s ease-in-out infinite; }
+  @keyframes blink { 50% { opacity:.3; } }
+
+  .cf { --c:var(--cut); position:absolute; padding:1px; background:color-mix(in srgb, var(--hud) 40%, transparent);
+    clip-path:polygon(var(--c) 0,100% 0,100% calc(100% - var(--c)),calc(100% - var(--c)) 100%,0 100%,0 var(--c)); }
+  .cf > .face { clip-path:inherit; background:color-mix(in srgb, var(--panel) 94%, transparent); height:100%; position:relative; }
+  .rail { position:absolute; left:calc(var(--cut) + 2px); right:0; top:0; height:2px; background:var(--hud); box-shadow:0 0 5px rgba(255,176,0,.25); }
+  .notch { width:22px; height:10px; display:inline-block; background:repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px); }
+
+  /* the contact */
+  .contact { left:28px; top:76px; width:300px; height:470px; }
+  .contact .head { display:flex; align-items:center; gap:8px; padding:10px 14px; font:600 10.5px/1 var(--mono); letter-spacing:.18em; text-transform:uppercase;
+    color:var(--warn-text); background:rgba(245,158,11,.12); border-bottom:1px solid rgba(245,158,11,.4); }
+  .portrait { position:relative; margin:14px 14px 0; height:316px; border:1px solid color-mix(in srgb, var(--hud) 50%, transparent); overflow:hidden; }
+  .portrait video { width:100%; height:100%; object-fit:cover; display:block; filter:saturate(.92) contrast(1.05); }
+  .portrait::after { content:""; position:absolute; inset:0; background:repeating-linear-gradient(0deg, rgba(0,0,0,.18) 0 1px, transparent 1px 3px); }
+  .portrait .live { position:absolute; left:6px; bottom:6px; z-index:1; font:600 10px/1 var(--mono); letter-spacing:.14em; color:#fff; background:rgba(0,0,0,.62); padding:4px 6px; display:flex; gap:6px; align-items:center; }
+  .who { padding:12px 14px 0; }
+  .name { font:600 19px/1.1 var(--display); letter-spacing:.06em; text-transform:uppercase; }
+  .role { margin-top:6px; }
+  .wave { position:absolute; right:16px; bottom:18px; display:flex; gap:2px; align-items:flex-end; height:18px; opacity:0; }
+  .wave.on { opacity:1; }
+  .wave i { width:3px; background:var(--hud); animation:wave .9s ease-in-out infinite; transform-origin:bottom; }
+  @keyframes wave { 0%,100% { transform:scaleY(.3); } 50% { transform:scaleY(1); } }
+
+  /* the thread */
+  .thread { position:absolute; left:360px; top:184px; right:28px; bottom:118px; display:flex; flex-direction:column; justify-content:flex-start; gap:12px; overflow:hidden; padding-left:10px; }
+  .msg { position:relative; align-self:flex-start; max-width:740px; }
+  .who2 { font:600 10px/1 var(--mono); letter-spacing:.18em; text-transform:uppercase; color:var(--accent); margin:0 0 6px 4px; display:flex; gap:8px; align-items:center; }
+  .bubble { --c:10px; position:relative; padding:1px; background:color-mix(in srgb, var(--hud) 45%, transparent);
+    clip-path:polygon(var(--c) 0,100% 0,100% calc(100% - var(--c)),calc(100% - var(--c)) 100%,0 100%,0 var(--c)); }
+  .bubble > div { clip-path:inherit; background:#12141a; padding:12px 18px 13px; font:16px/1.5 var(--body); color:var(--text-1); min-height:48px; }
+  .bubble b { color:var(--accent); font-weight:600; }
+  .hello { position:absolute; left:362px; top:84px; right:28px; }
+  .hello h1 { margin:6px 0 0; min-height:62px; font:600 50px/1.1 var(--display); letter-spacing:.04em; text-transform:uppercase; color:var(--accent);
+    text-shadow:0 0 10px rgba(255,176,0,.18); }
+  .hello .caret { height:40px; width:16px; vertical-align:-4px; }
+  .tail { position:absolute; left:-9px; top:16px; width:10px; height:12px; background:color-mix(in srgb, var(--hud) 45%, transparent); clip-path:polygon(100% 0, 0 50%, 100% 100%); }
+  .caret { display:inline-block; width:9px; height:17px; vertical-align:-3px; margin-left:2px; background:var(--accent); animation:blink .8s step-end infinite; }
+  .big .caret { height:26px; width:12px; }
+
+  /* the sign-off */
+  .install { position:absolute; left:360px; right:28px; bottom:66px; opacity:0; display:flex; align-items:center; gap:14px; }
+  .install code { font:400 13.5px/1 var(--mono); color:var(--text-1); border:1px dashed rgba(255,255,255,.18); padding:10px 12px; background:rgba(0,0,0,.35); }
+  .install code i { color:var(--accent); font-style:normal; }
+  .cta { --c:8px; font:600 12px/1 var(--display); letter-spacing:.16em; text-transform:uppercase; background:var(--accent); color:var(--on-accent); padding:12px 16px;
+    clip-path:polygon(var(--c) 0,100% 0,100% calc(100% - var(--c)),calc(100% - var(--c)) 100%,0 100%,0 var(--c)); }
+
+  .classbar { position:absolute; left:0; right:0; bottom:0; height:34px; display:flex; align-items:center; gap:18px; padding:0 28px;
+    border-top:1px solid color-mix(in srgb, var(--hud) 30%, transparent); background:rgba(11,12,16,.9); }
+  .stripe { width:60px; height:8px; background:repeating-linear-gradient(-45deg, var(--accent) 0 4px, transparent 4px 8px); opacity:.8; }
+  .classbar .r { margin-left:auto; color:var(--accent); }
+
+  /* ---- the phone version: 600x1000, portrait beside the name, the thread below ---- */
+  body.tall { width:600px; height:1000px; }
+  body.tall .top { padding:0 20px; }
+  body.tall .top > .tag:not(.r) { display:none; }
+  body.tall .contact { left:20px; top:72px; width:560px; height:250px; }
+  body.tall .portrait { position:absolute; left:14px; top:48px; width:150px; height:186px; margin:0; }
+  body.tall .who { position:absolute; left:184px; top:64px; padding:0; }
+  body.tall .name { font-size:24px; }
+  body.tall .hello { left:22px; top:346px; right:20px; }
+  body.tall .hello h1 { font-size:44px; min-height:52px; }
+  body.tall .thread { left:20px; top:438px; right:20px; bottom:150px; }
+  body.tall .msg { max-width:100%; }
+  body.tall .bubble > div { font-size:19px; padding:13px 18px 14px; }
+  body.tall .caret { height:20px; }
+  body.tall .install { left:20px; right:20px; bottom:52px; gap:10px; }
+  body.tall .install code { font-size:12.5px; padding:12px 10px; flex:1; min-width:0; white-space:nowrap; }
+  body.tall .classbar { padding:0 20px; }
+  body.tall .classbar > span:nth-child(2) { display:none; }
+</style>
+</head>
+<body>
+<div class="atmo"><div class="hex"></div><div class="vig"></div></div>
+
+<div class="top">
+  <span class="brand"><span class="mk">◢</span><span>BATTLE<b>LAB</b></span></span>
+  <span class="tag">// COMMAND &amp; CODE</span>
+  <span class="r tag"><span class="led"></span> UPLINK // <b>STABLE</b></span>
+</div>
+
+<section class="cf contact">
+  <div class="face">
+    <div class="head"><span class="led att"></span> Incoming transmission // HQ</div>
+    <div class="portrait">
+      <video id="v" src="../../public/hq/romania-woman.webm" muted loop playsinline autoplay></video>
+      <span class="live"><span class="led"></span> LIVE</span>
+    </div>
+    <div class="who">
+      <div class="name">Gen. Ileana Lupu</div>
+      <div class="role tag">HQ // Your primary contact</div>
+    </div>
+    <div class="wave" id="wave"><i style="height:40%"></i><i style="height:80%;animation-delay:.1s"></i><i style="height:100%;animation-delay:.2s"></i><i style="height:55%;animation-delay:.3s"></i><i style="height:85%;animation-delay:.4s"></i><i style="height:45%;animation-delay:.5s"></i><i style="height:70%;animation-delay:.6s"></i></div>
+  </div>
+</section>
+
+<div class="hello"><div class="who2" id="hellowho"><span class="notch"></span> Gen. Ileana Lupu // HQ</div><h1 id="hello"></h1></div>
+<div class="thread" id="thread"></div>
+
+<div class="install" id="install">
+  <code><i>▸</i> curl -fsSL https://battlelabos.com/install.sh | sh</code>
+  <span class="cta">Deploy ▸</span>
+</div>
+
+<div class="classbar tag"><span class="stripe"></span><span>UNCLASSIFIED // SELF-HOSTED // AGPL-3.0</span><span class="r">battlelabos.com</span></div>
+
+<script>
+// What she says. Punchy; her voice is the rebel with a smirk (src/agent_sessions/hq_contacts.py).
+// `big` = the headline line. `at` = seconds from the start. A {b} wraps a highlight.
+const LINES = [
+  { at: 0.6, big: true, text: "Welcome, Commander." },
+  { at: 2.4, text: "This is {BattleLab} — your command deck for AI coding agents." },
+  { at: 5.0, text: "Claude Code, Codex, opencode, Gemini, Kimi… they {all report to you} here. Sessions survive reboots." },
+  { at: 8.6, text: "I tell you {who needs you}. Missions (beta) run your objectives. You command it all — even from your phone." },
+  { at: 12.4, text: "Miss me already? {One line} to deploy. Don't keep me waiting." },
+];
+const INSTALL_AT = 15.2;
+const CPS = 46; // typing speed, characters per second
+const CARET_HOLD = 0.5; // the caret lingers after a line is typed
+const FADE = 0.25; // a bubble's fade-in, seconds
+// Two loops of the portrait, so the scene and her loop restart together.
+window.SCENE_SECONDS = 24.668;
+
+if (new URLSearchParams(location.search).get("layout") === "tall") document.body.classList.add("tall");
+
+const thread = document.getElementById("thread");
+const wave = document.getElementById("wave");
+const install = document.getElementById("install");
+const hellowho = document.getElementById("hellowho");
+const html = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+const clamp01 = (x) => Math.max(0, Math.min(1, x));
+
+// Build every bubble once; renderAt only shows, hides and fills them.
+const items = LINES.map((line) => {
+  const runs = [];
+  line.text.replace(/\{([^}]*)\}|([^{]+)/g, (_, hi, plain) =>
+    runs.push(hi !== undefined ? { b: true, t: hi } : { b: false, t: plain }),
+  );
+  const total = runs.reduce((n, r) => n + r.t.length, 0);
+  let el, box;
+  if (line.big) {
+    el = hellowho;
+    box = document.getElementById("hello");
+  } else {
+    el = document.createElement("div");
+    el.className = "msg";
+    el.innerHTML = '<div class="bubble"><div></div></div><span class="tail"></span>';
+    thread.appendChild(el);
+    box = el.querySelector(".bubble > div");
+  }
+  return { line, runs, total, el, box, last: null };
+});
+
+function typed(runs, shown) {
+  let left = shown, out = "";
+  for (const r of runs) {
+    const part = r.t.slice(0, Math.max(0, left));
+    left -= r.t.length;
+    out += r.b ? `<b>${html(part)}</b>` : html(part);
+    if (left <= 0) break;
+  }
+  return out;
+}
+
+/** Draw the frame for `t` seconds: which lines show, how much of each is typed, the caret, the
+ *  voice wave, the install line, and every CSS animation's position. */
+window.renderAt = (t) => {
+  let speaking = false;
+  for (const it of items) {
+    const since = t - it.line.at;
+    const on = since >= 0;
+    if (!it.line.big) it.el.style.display = on ? "" : "none";
+    const a = clamp01(since / FADE);
+    it.el.style.opacity = on ? String(a) : "0";
+    if (!it.line.big) it.el.style.transform = `translateY(${(1 - a) * 8}px)`;
+    const shown = on ? Math.min(it.total, Math.floor(since * CPS)) : 0;
+    const caret = on && since < it.total / CPS + CARET_HOLD;
+    if (on && shown < it.total) speaking = true;
+    const key = `${shown}:${caret}`;
+    if (key !== it.last) {
+      it.box.innerHTML = typed(it.runs, shown) + (caret ? '<span class="caret"></span>' : "");
+      it.last = key;
+    }
+  }
+  wave.style.opacity = speaking ? "1" : "0";
+  install.style.opacity = String(clamp01((t - INSTALL_AT) / 0.4));
+  for (const anim of document.getAnimations()) {
+    anim.pause();
+    anim.currentTime = t * 1000;
+  }
+};
+
+// Opened directly (not by render.mjs): play it on the wall clock, looping.
+if (!location.search.includes("capture")) {
+  const v = document.getElementById("v");
+  const t0 = performance.now();
+  const tick = () => {
+    const t = ((performance.now() - t0) / 1000) % window.SCENE_SECONDS;
+    window.renderAt(t);
+    requestAnimationFrame(tick);
+  };
+  v.addEventListener("loadeddata", () => v.play().catch(() => {}));
+  tick();
+} else {
+  window.renderAt(0);
+}
+</script>
+</body>
+</html>

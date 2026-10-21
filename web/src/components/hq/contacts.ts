@@ -1,8 +1,7 @@
-/** HQ contacts (#1525): the gallery's ONLY source. Each entry is an original generated General
- *  whose loop lives in `public/hq/<id>.{webm,mp4,jpg}` (provenance and licences in
- *  `public/hq/SOURCES.md`). The ids are the server's too: `hq_contacts.py` maps each to its
- *  registered voice (`hq_persona_<id>`), and a test pins the two lists equal. Adding a contact means
- *  adding its files, one entry here and one there. */
+/** HQ contacts (#1525): the gallery's ONLY source. Each entry is an original General whose loop
+ *  lives in `public/hq/<id>.{webm,mp4,jpg}`. The ids are the server's too: `hq_contacts.py` maps
+ *  each to its registered voice (`hq_persona_<id>`), and a test pins the two lists equal. Adding a
+ *  contact means adding its files, one entry here and one there. */
 
 export interface HqContact {
   id: string;

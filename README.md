@@ -2,76 +2,92 @@
 
 <p align="center"><strong>Command &amp; Code.</strong> A mobile-first, self-hosted command deck for your AI-coding agents.</p>
 
-<p align="center"><a href="https://battlelab.superstatus.io">battlelab.superstatus.io</a></p>
+<p align="center"><a href="https://battlelabos.com">battlelabos.com</a> · <a href="https://docs.battlelabos.com">docs</a></p>
 
 <p align="center">
-  <img src="docs/banner.png" alt="BattleLab — Command &amp; Code: a self-hosted command deck for your AI-coding agents" width="900">
+  <img src="docs/banner.webp" alt="General Ileana Lupu of BattleLab HQ greets you: “Welcome, Commander. This is BattleLab — your command deck for AI coding agents. Claude Code, Codex, opencode, Gemini, Kimi… they all report to you here. Sessions survive reboots. I tell you who needs you. Missions (beta) run your objectives. You command it all — even from your phone. Miss me already? One line to deploy.”" width="900">
 </p>
 
-**One web app that organizes every session from Claude Code, Codex, opencode, Gemini, Antigravity, Kimi Code — plus plain shells**,
-with a real terminal that survives reboots and deploys, and an end-to-end-encrypted blind relay so you can drive your
-whole fleet from a laptop or your phone.
+**Welcome, Commander.** BattleLab puts Claude Code, Codex, opencode, Gemini, Antigravity, Kimi Code
+— plus plain shells — under one command. Every agent gets a real terminal that survives reboots and
+deploys. **HQ** briefs you on what needs you, **Missions** (beta) take an objective and run it, and an
+end-to-end-encrypted blind relay lets you give orders from a laptop or your phone.
 
 ![license: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue) ![self-hosted](https://img.shields.io/badge/self--hosted-rootless-0e8a16) ![engines](https://img.shields.io/badge/engines-claude%20·%20codex%20·%20opencode%20·%20gemini%20·%20antigravity%20·%20kimi-ffb000)
 
-### Why
+<p align="center">
+  <img src="docs/screenshots/dashboard.webp" alt="The dashboard: “Welcome, Commander.”, your HQ contact, what needs you, running sessions, missions and quota" width="900">
+</p>
 
-- **Every agent, one place.** A live sidebar of every session across every engine, grouped by
-  project, with per-row badges + filtering.
-- **Persistent terminals.** Each session runs under its own `dtach` PTY — close the tab, reboot, or
-  upgrade the app and reattach to the exact conversation, with clean console-style scroll-up.
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/hq.webp" alt="HQ: the General answers what needs you"><br><sub><b>HQ</b> — your General on the line</sub></td>
+    <td width="50%"><img src="docs/screenshots/sessions.webp" alt="A terminal session beside the session list"><br><sub><b>Sessions</b> — every agent, persistent</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/missions.webp" alt="A mission console with its plan and objectives"><br><sub><b>Missions</b> (beta) — objective in, plan out</sub></td>
+    <td><img src="docs/screenshots/files.webp" alt="The Files panel with the Git tab and a diff"><br><sub><b>Files &amp; git</b> — edit, diff, commit, push</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/map.webp" alt="The tactical map of sessions grouped into projects"><br><sub><b>Map</b> — the operation at a glance</sub></td>
+    <td><img src="docs/screenshots/library.webp" alt="The Library: playbooks"><br><sub><b>Library</b> — how your work gets done</sub></td>
+  </tr>
+</table>
+
+### What's on the deck
+
+- **HQ — your General on the line.** One front door for the whole operation: ask HQ what needs
+  you, have it start or nudge sessions, and follow up on what it started. Answers come from your
+  **primary contact** — one of thirteen fictional Generals, a new one every day, or none — shown on
+  the dashboard and at the top of HQ. Pick yours in setup or in Settings.
+- **A dashboard that greets you.** The start page is the sitrep: what needs you, what's running,
+  your missions, recent work, and each agent's quota before its reset.
+- **Every agent, one deck.** A live sidebar of every session across every engine, grouped by
+  project, with per-row badges and filters. Claude, Codex and opencode also run as **API sessions**
+  with a structured view, approvals and a message queue.
+- **Persistent terminals.** Each terminal session runs under its own `dtach` PTY — close the tab,
+  reboot, or upgrade the app and reattach to the exact conversation, with clean console-style
+  scroll-up.
+- **Missions (beta).** State the objective: mission control proposes a plan — a project, an agent
+  and the objectives that say what "done" means — runs it on your go, adopts sessions you started
+  yourself, settles the objectives it can check on evidence, nudges a stalled agent, and proposes
+  completion rather than declaring it. Includes the plain-language finder for past sessions ("which
+  session fixed the ws reconnect bug?"). Beta: still settling, so expect changes between releases.
+- **Your AI, local or hosted.** One OpenAI-compatible endpoint powers HQ, session review and
+  recaps, auto-sort and Missions — a local server (Ollama, LM Studio, llama.cpp, vLLM; setup has
+  one-tap presets) or a hosted API. What **these features** send — session excerpts for HQ,
+  review and Missions — goes only to that endpoint: a local model keeps it on your machine, a hosted
+  API receives it. The key only ever goes to the host it was saved for. This endpoint does not
+  change where your coding agents talk: Claude Code, Codex, opencode and the others reach their own
+  providers exactly as they do outside BattleLab.
 - **Files + git, per session.** A file browser rooted at each session's own working directory —
   upload files or whole folders into it, and edit text files in place — plus a `GIT` tab: branch
   name, ahead/behind, the working tree's changed paths grouped conflicts/staged/changes/untracked
   (capped at `GIT_MAX_ENTRIES`, and flagged as truncated past it), and a unified diff one click
   away. It can also fetch, fast-forward pull, switch branches, stage, discard, commit and push —
   each one refusing rather than forcing when the tree has moved under you.
-- **Prompt Templates.** A library of instructions you send more than once: the text, its reference images,
-  and `{{field}}` slots you fill in at send time. Send one from any session's composer, or insert
-  it into a mission brief.
-- **Playbook library.** Browse installed bundles by source, domain, flow step or agent. Each
-  detail page shows its flow, instructions, materials, variables and requirements. Duplicate a
-  bundle into the local library, choose the default, or delete an unused local copy. Projects
-  stay on their deployed revision; verify their recorded deployment on demand and review the
-  exact file changes before applying an eligible fleet update. Interrupted updates retain their
-  retry identity in the current browser tab. Flow execution and the new-project wizard's
-  playbook selection remain separate slices of the rollout.
-- **Playbook authoring.** Open **Library → Playbooks → New playbook**, name the playbook,
-  then add steps and choose each step's actor and model. Dependencies determine execution order;
-  checklist evidence, bounded rework and independent-review constraints describe completion.
-  On desktop, **Canvas** draws dependency arrows and bounded rework paths; select a step to edit
-  it in the inspector. **List** offers the same controls for keyboard use and is used on phones.
-  Dragging nodes changes only the layout. Saving a flow does not execute it.
-  **Save playbook** adds it to your local library; **Edit playbook** opens a saved local bundle.
-  Duplicate bundled/catalog playbooks to local before editing. A conflicting save keeps the draft
-  for comparison, saving as a new playbook, or explicit discard. Drafts live in this tab; cancel
-  the leave/reload prompt to keep them. Saved projects retain their pinned playbook revision.
-- **Bundled playbooks.** The **Forgejo workflow** and **Research brief** offer starting points:
-  duplicate one to local to customize it. They describe bounded review/fix loops; saving does not
-  execute a flow. See the [playbooks guide](https://docs.battlelab.superstatus.io/guide/playbooks).
-- **Mission control.** A chat-first console over your work: a rail of *missions*, a thread per
-  mission, and an objective list that says what "done" means before the work starts. It adopts
-  sessions you started yourself, checks the objectives it can check, and follows through — nudging
-  a stalled agent, and proposing completion rather than declaring it. Includes the plain-language
-  finder for past sessions ("which session fixed the ws reconnect bug?"). Reuses your own
-  OpenAI-compatible endpoint; session content goes nowhere else, and the console still works with
-  no endpoint at all.
-- **AI review + auto-sort.** A one-line AI summary on each session flags what needs you, and new
-  sessions file themselves into the right project.
-- **Every prompt is yours.** Every system prompt — the recap, the handoff brief, the console, the
-  orchestrator — are editable in Settings, with the JSON shape each one must return and a
+- **The Library.** Prompt Templates (text, reference images and `{{field}}` slots filled at send
+  time), variables, project memory, automations, skills and **playbooks** — browse, duplicate and
+  author flows on a canvas or as a list, and pin projects to a playbook revision. See the
+  [playbooks guide](https://docs.battlelabos.com/guide/playbooks).
+- **Tactical map + auto-sort.** A live flowchart of every session grouped into projects, with
+  several agents open side by side; a one-line AI summary on each session flags what needs you,
+  and new sessions file themselves into the right project.
+- **Every prompt is yours.** Every system prompt — the recap, the handoff brief, HQ, the
+  orchestrator — is editable in Settings, with the JSON shape each one must return and a
   one-tap reset. The six that shape autonomous action — the orchestrator pass, chat instruct and
   the four mission prompts — keep a server-appended clause that says session output is
   untrusted; that part isn't editable, by design.
 - **Home Free.** Your box dials *out* to a blind relay — open the Connect page in any browser and
   drive the full app from your phone. End-to-end encrypted (X25519 → AES-256-GCM); the relay sees
   only ciphertext. No VPN, no port-forwarding.
-- **Mobile-first, one-line install.** A touch-ready terminal (compose bar, control keys, image
-  paste); a first-run wizard wires up your AI endpoint + optional 2FA. Rootless install, atomic
-  releases with one-step rollback.
+- **Mobile-first, one-line install.** A touch-ready terminal (compose bar, control keys, dictation,
+  image paste) and push notifications when an agent needs you. A first-run briefing walks you
+  through optional 2FA, your agents, your AI and — once the AI is connected — your HQ contact.
+  Rootless install, atomic releases with one-step rollback.
 
 ```sh
-curl -fsSL https://battlelab.superstatus.io/install.sh | sh
+curl -fsSL https://battlelabos.com/install.sh | sh
 ```
 
 > Single-admin tool — it launches agents with permission bypass by design. Run it on your own host,
@@ -130,7 +146,7 @@ Rootless, user-level — no system daemon, no root. The installer drops everythi
 
 ```sh
 # Read the script first if you like — it's plain POSIX sh.
-curl -fsSL https://battlelab.superstatus.io/install.sh | sh
+curl -fsSL https://battlelabos.com/install.sh | sh
 ```
 
 > A worked reverse-proxy example lives in [`deploy/nginx.example.conf`](deploy/nginx.example.conf);
@@ -347,7 +363,7 @@ the code freely; give your fork its own name.
 **Commercial licensing** is available for cases AGPL doesn't fit — embedding
 BattleLab in a proprietary product, or an organisation whose policy bars AGPL
 dependencies. BattleLab Cloud and BattleLab Pro are separate, separately
-licensed products. Enquiries: [battlelab.superstatus.io](https://battlelab.superstatus.io).
+licensed products. Enquiries: [battlelabos.com](https://battlelabos.com).
 
 ### Relicensed from BSL 1.1
 
