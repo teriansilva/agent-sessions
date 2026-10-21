@@ -1026,9 +1026,8 @@ textarea.control {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .runRow,
-  .seg {
-    transition: none;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .runRow,
+:root:not([data-motion="full"]) .seg {
+  transition: none;
 }

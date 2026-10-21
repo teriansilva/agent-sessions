@@ -17,22 +17,52 @@
  * already centres its content. e2e/dialog-hand-off-parity.spec.ts holds the dialogs to the Hand off
  * dialog, and e2e/mission-control-polish.spec.ts holds the mission buttons to it as well.
  *
- * No radius, no gradient, tokens only (src/theme/cssGuard.test.ts). */
+ * NIGHTJAR (#1531, docs/design.md v2 §6): chamfered (`--cut-sm`, a STATIC clip-path — the glitch never
+ * touches it, e2e/shine-hitarea.spec.ts), display caps, the inset focus ring. No radius, no gradient,
+ * tokens only (src/theme/cssGuard.test.ts, nightjarLedger.test.ts). */
 
-.primary {
+.primary,
+.ghost {
+  --c: var(--cut-sm);
   min-height: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 6px 16px;
-  font-size: 12.5px;
+  font-family: var(--font-display);
+  font-size: var(--fs-meta);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border-radius: 0;
+  cursor: pointer;
+  clip-path: polygon(
+    var(--c) 0,
+    100% 0,
+    100% calc(100% - var(--c)),
+    calc(100% - var(--c)) 100%,
+    0 100%,
+    0 var(--c)
+  );
+  transition:
+    filter var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+.primary:focus-visible,
+.ghost:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+
+.primary {
+  padding: 6px 18px;
   font-weight: 700;
   color: var(--on-accent);
   background: var(--accent);
   border: 1px solid color-mix(in srgb, var(--accent) 85%, black);
-  border-radius: 0;
-  cursor: pointer;
+}
+.primary:focus-visible {
+  outline-color: var(--on-accent);
 }
 .primary:hover:not(:disabled),
 .primary:focus-visible:not(:disabled) {
@@ -44,23 +74,16 @@
 }
 
 .ghost {
-  min-height: 44px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 6px 14px;
-  font-size: 12.5px;
+  padding: 6px 16px;
+  font-weight: 500;
   color: var(--text-2);
-  background: transparent;
+  background: color-mix(in srgb, var(--text-1) 5%, transparent);
   border: 1px solid var(--border);
-  border-radius: 0;
-  cursor: pointer;
 }
 .ghost:hover,
 .ghost:focus-visible {
   color: var(--text-1);
-  border-color: var(--line-strong);
+  border-color: var(--hud-dim);
 }
 
 /* A glyph-only ghost at the §8 floor in both directions: ⋯ is narrow content, not a narrow target. */
@@ -69,4 +92,28 @@
   width: 44px;
   height: 44px;
   padding: 0;
+}
+
+/* Destructive (#1531): outlined in the failure hue, never filled in a list or a header — red is
+ * rare so it keeps meaning "this destroys". A destructive dialog's confirm composes `filled`. */
+.danger {
+  composes: ghost;
+  color: var(--danger-text);
+  border-color: color-mix(in srgb, var(--status-down) 60%, transparent);
+}
+.danger:hover,
+.danger:focus-visible {
+  color: var(--danger-text);
+  border-color: var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 10%, transparent);
+}
+.dangerFilled {
+  composes: primary;
+  color: var(--on-danger);
+  background: var(--status-down);
+  border-color: var(--status-down);
+}
+.dangerFilled:hover:not(:disabled),
+.dangerFilled:focus-visible:not(:disabled) {
+  background: color-mix(in srgb, var(--status-down) 85%, white);
 }

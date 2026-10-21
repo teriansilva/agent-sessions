@@ -120,11 +120,10 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .flash > * {
-    animation: none;
-    box-shadow: 0 0 0 2px var(--accent);
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .flash > * {
+  animation: none;
+  box-shadow: 0 0 0 2px var(--accent);
 }
 
 .notice {

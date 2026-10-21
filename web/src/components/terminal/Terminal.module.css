@@ -236,14 +236,13 @@
   background: color-mix(in srgb, var(--bg) 70%, transparent);
   transform: translateY(-1px);
 }
-@media (prefers-reduced-motion: reduce) {
-  .scrollFab {
-    transition: none;
-  }
-  .scrollFab:hover,
-  .scrollFab:active {
-    transform: none;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .scrollFab {
+  transition: none;
+}
+:root:not([data-motion="full"]) .scrollFab:hover,
+:root:not([data-motion="full"]) .scrollFab:active {
+  transform: none;
 }
 /* Solid-background fallback for browsers without backdrop-filter support
  * (older Android WebViews). Loses the see-through effect but stays legible. */
@@ -396,10 +395,9 @@
     transform: rotate(360deg);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .histSpin {
-    animation: none;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .histSpin {
+  animation: none;
 }
 
 /* Auto copy-on-select confirmation (#554). A transient tactical-HUD telemetry chip shown when a
@@ -465,11 +463,10 @@
     transform: translate(-50%, 0);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .copiedToast {
-    animation: none;
-    transform: translateX(-50%);
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .copiedToast {
+  animation: none;
+  transform: translateX(-50%);
 }
 
 /* Touch targets (#783). The head gains a fourth action, and a 44px `::after` hit box on a 20px

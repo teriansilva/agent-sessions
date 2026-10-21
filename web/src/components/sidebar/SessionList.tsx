@@ -6,6 +6,7 @@ import {
   X,
   Crosshair,
 } from "lucide-react";
+import { motionMode } from "../../theme/motion";
 import {
   type CSSProperties,
   type ReactNode,
@@ -85,8 +86,7 @@ function MarqueeText({
   useEffect(() => {
     const wrap = wrapRef.current;
     if (!wrap) return;
-    const reduce =
-      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    const reduce = motionMode() !== "full";
     const measure = () => {
       // scrollWidth − clientWidth is the hidden overflow regardless of the inner display mode;
       // transforms don't affect it, so it stays stable once scrolling.
@@ -556,7 +556,7 @@ export function SessionList({
     const prevTops = previousRowTops.current;
     previousRowTops.current = nextTops;
     if (prevTops.size === 0) return; // initial load
-    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    if (motionMode() !== "full") return;
 
     for (const timer of reorderTimers.current) window.clearTimeout(timer);
     reorderTimers.current = [];

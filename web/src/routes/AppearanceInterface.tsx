@@ -13,6 +13,9 @@ import {
 import { useAccent } from "../theme/accentStore";
 import type { ThemeChoice, ThemeId } from "../theme/themes";
 import { useTheme } from "../theme/themeStore";
+import { Seg } from "../components/hud/Controls";
+import type { MotionChoice } from "../theme/motion";
+import { useMotion } from "../theme/motionStore";
 import a from "./Appearance.module.css";
 import styles from "./Settings.module.css";
 import { settingsPath } from "./settingsTabs";
@@ -26,6 +29,24 @@ const MODES: { id: ThemeChoice; label: string; description: string }[] = [
     description: "Follows your OS, switches live",
   },
 ];
+
+/** The motion choices (#1531, docs/design.md v2 §8). `system` follows the device's
+ *  prefers-reduced-motion (Reduced when it asks, else Full). */
+const MOTIONS: { value: MotionChoice; label: string; description: string }[] = [
+  { value: "system", label: "Match device", description: "Follows your device's reduce-motion setting." },
+  {
+    value: "full",
+    label: "Full",
+    description: "Ambient scanlines and pulses, boot sequence, arrivals, streaming and transitions.",
+  },
+  {
+    value: "reduced",
+    label: "Reduced",
+    description: "Short fades on state changes only. No loops, no boot, no video; LEDs hold steady.",
+  },
+  { value: "off", label: "Off", description: "Nothing moves. The look stays complete." },
+];
+const MODE_WORD = { full: "Full", reduced: "Reduced", off: "Off" } as const;
 
 /** A miniature of the app in one mode: sidebar, title, a panel with a CTA (no status LED — a preview is not a state, design §3). The
  *  ground is the mode's own (fixed — a card must show ITS mode, not the one in force), while the
@@ -54,11 +75,13 @@ function MiniApp({ mode }: { mode: ThemeId }) {
   );
 }
 
-/** Settings → Appearance → Interface (#1494): how BattleLab itself looks — mode, accent, the
+/** Settings → Appearance → Interface (#1494): how BattleLab itself looks — mode, motion (#1531), accent, the
  *  primary HQ contact (#1525), and how outside links open. The terminal and API-session looks have their own pages. */
 export function AppearanceInterface() {
   const { choice, setTheme } = useTheme();
   const { accent, setAccent } = useAccent();
+  const motion = useMotion();
+  const motionDesc = MOTIONS.find((m) => m.value === motion.choice)?.description ?? "";
   // Draft for the free-text hex field — committed on Enter/blur so mid-typing (e.g. a
   // transient valid #rgb prefix) doesn't churn the live accent or the server. When the
   // accent changes elsewhere (a preset, the colour well, another device) we reflect it into
@@ -128,6 +151,25 @@ export function AppearanceInterface() {
           );
         })}
       </div>
+
+      <h3 className={styles.subhead} id="motion-h">
+        Motion
+      </h3>
+      <p className={styles.hint}>
+        Animation in the frame: never on the terminal, the editor or text you are typing, and never
+        delaying input. Saved on this device.
+      </p>
+      <Seg
+        label="Motion"
+        options={MOTIONS.map(({ value, label }) => ({ value, label }))}
+        value={motion.choice}
+        onChange={motion.setMotion}
+        testId="motion-seg"
+      />
+      <p className={styles.hint} data-testid="motion-desc" aria-live="polite">
+        {motionDesc}
+        {motion.choice === "system" ? ` Now: ${MODE_WORD[motion.mode]}.` : ""}
+      </p>
 
       <h3 className={styles.subhead} id="accent-h">
         Accent

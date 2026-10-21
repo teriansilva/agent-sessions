@@ -356,15 +356,14 @@
     transform: translateX(0);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .rowReordering {
-    transition: none !important;
-    transform: none !important;
-  }
-  .marqScroll {
-    animation: none;
-    transform: none;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .rowReordering {
+  transition: none !important;
+  transform: none !important;
+}
+:root:not([data-motion="full"]) .marqScroll {
+  animation: none;
+  transform: none;
 }
 .spin {
   animation: reviewSpin 1.2s linear infinite;

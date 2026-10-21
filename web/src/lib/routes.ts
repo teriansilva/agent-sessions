@@ -96,3 +96,7 @@ export const NEW_PROJECT_PATH = "/projects/new";
  *  module exists to prevent. It is also not a section — it is an action in the corner cluster and an
  *  item in the operator menu — so the nav never links it.
  */
+
+/** The NIGHTJAR primitives gallery (#1531): every primitive in every state, the Playwright baseline
+ *  for the design system. Unlinked from the app, behind the normal login like every route. */
+export const NIGHTJAR_GALLERY_PATH = "/__nightjar";

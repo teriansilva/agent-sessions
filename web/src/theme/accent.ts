@@ -155,15 +155,36 @@ export function accentTextFor(accentHex: string, mode: "dark" | "light"): string
   return readableAccent(accentHex, text, grounds);
 }
 
+/** The grounds NIGHTJAR's chrome lines (`--hud`: rails, notches, ticks, panel edges) sit on, per
+ *  mode: the page ground, the atmosphere's ground and a panel face (#1531). */
+export const HUD_LINE_GROUNDS = {
+  dark: { text: "#e8e9ec", grounds: ["#0d0e10", "#131418", "#090a0c"] },
+  light: { text: "#14161a", grounds: ["#e7e8ea", "#f2f3f5", "#e4e6e9"] },
+} as const;
+
+/** The chrome LINE colour for an accent (#1531, docs/design.md v2 §3): the accent itself where it
+ *  already reads as a graphic (≥ 3:1, WCAG 1.4.11) on every chrome ground of the mode, else the
+ *  accent mixed toward the mode's text by the largest share that does. So a custom accent
+ *  recolours the whole frame and a pale one (Yellow, Ice) still draws a visible line on light. */
+export function hudLineFor(accentHex: string, mode: "dark" | "light"): string {
+  const { text, grounds } = HUD_LINE_GROUNDS[mode];
+  return readableAccent(accentHex, text, grounds, 3);
+}
+
 /** The accent, or the accent mixed toward `ink` by the largest share (1% steps) that holds AA on
  *  EVERY one of `grounds` — for any valid accent, custom ones included. `ink` must itself hold AA
  *  on the grounds (share 0 is the ink), which is what makes this total. Used for the app's
  *  accent text and for an API-session palette's links (#1494). */
-export function readableAccent(accentHex: string, ink: string, grounds: readonly string[]): string {
+export function readableAccent(
+  accentHex: string,
+  ink: string,
+  grounds: readonly string[],
+  min: number = 4.5,
+): string {
   const accent = coerceAccent(accentHex);
   const text = ink;
   const lumOf = (h: string) => relativeLuminance(h);
-  const passes = (h: string) => grounds.every((g) => contrastRatio(lumOf(h), lumOf(g)) >= 4.5);
+  const passes = (h: string) => grounds.every((g) => contrastRatio(lumOf(h), lumOf(g)) >= min);
   for (let pct = 100; pct > 0; pct -= 1) {
     const c = pct === 100 ? accent : mixHex(accent, text, pct / 100);
     if (passes(c)) return c;

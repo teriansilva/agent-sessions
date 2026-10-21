@@ -3,18 +3,16 @@
 // Home Free connect shell (web/connect.html — plain DOM, no React until the SPA streams in) runs
 // the *same* effects as the app instead of a look-alike copy.
 //
-// Both are cosmetic, non-interactive, and a no-op under prefers-reduced-motion. Each returns its
+// Both follow the ONE motion mode (#1531, theme/motion.ts): they run only while
+// `ambientAllowed()` (Full, not paused by a hidden tab or 10 idle minutes) and, for the canvas,
+// on the dark theme. A live switch is honoured without a reload: each subscribes to
+// `onMotionChange` and tears its rAF loop / timers down, or starts them again. Each returns its
 // own teardown; callers must invoke it (React does so from useEffect's cleanup).
 
 import "./buttonGlitch.css";
+import { ambientAllowed, onMotionChange } from "../../theme/motion";
 
-const noop = () => {};
-
-function prefersReducedMotion(): boolean {
-  return (
-    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false
-  );
-}
+const darkTheme = () => document.documentElement.dataset.theme !== "light";
 
 /**
  * Paint the ambient data-flow field onto `canvas`: a faint 48px grid plus sparse signal trails
@@ -22,9 +20,8 @@ function prefersReducedMotion(): boolean {
  * rAF loop and unbinds the resize listener.
  */
 export function runDataFlow(canvas: HTMLCanvasElement): () => void {
-  if (prefersReducedMotion()) return noop; // static-only; CSS paints the faint grid instead
   const ctx = canvas.getContext("2d");
-  if (!ctx) return noop;
+  if (!ctx) return () => {};
 
   let W = 0;
   let H = 0;
@@ -37,7 +34,7 @@ export function runDataFlow(canvas: HTMLCanvasElement): () => void {
     a: number;
   }[] = [];
   let raf = 0;
-  let cancelled = false;
+  let running = false;
 
   const mk = () => {
     const amber = Math.random() < 0.08;
@@ -47,58 +44,57 @@ export function runDataFlow(canvas: HTMLCanvasElement): () => void {
       // Calmer than the mock default — matches the landing tuning the user asked for
       // ("too many and too fast"): slower drift + a lower density (see size()).
       v: 0.12 + Math.random() * 0.5,
-      len: 30 + Math.random() * 90,
+      len: (30 + Math.random() * 90) * SCALE,
       c: amber ? "255,176,0" : "180,190,210",
       a: amber ? 0.8 : 0.32 + Math.random() * 0.3,
     };
   };
+  // Half resolution: the canvas is stretched to the viewport by CSS (`width/height: 100%`), so it
+  // paints a quarter of the pixels. The trails are faint and soft; the difference is invisible, and
+  // a 2D canvas rasterises on the main thread wherever there is no GPU.
+  const SCALE = 0.5;
   const size = () => {
-    W = canvas.width = window.innerWidth;
-    H = canvas.height = window.innerHeight;
+    W = canvas.width = Math.max(1, Math.round(window.innerWidth * SCALE));
+    H = canvas.height = Math.max(1, Math.round(window.innerHeight * SCALE));
     const mask =
       "radial-gradient(ellipse at center, #000 55%, transparent 95%)";
     canvas.style.maskImage = mask;
     canvas.style.webkitMaskImage = mask;
-    const n = Math.min(34, Math.round((W * H) / 44000));
+    const n = Math.min(26, Math.round((window.innerWidth * window.innerHeight) / 52000));
     parts = Array.from({ length: n }, mk);
   };
-  const grid = () => {
-    // A touch more present than a hairline (#211 review): the floating panels are frosted
-    // glass, and a continuous grid is what makes the backdrop-blur actually read — sparse
-    // trails alone are too thin to show a blur. Still faint enough to stay ambient.
-    ctx.strokeStyle = "rgba(150,170,210,0.06)";
-    ctx.lineWidth = 1;
-    for (let x = 0; x < W; x += 48) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, H);
-      ctx.stroke();
-    }
-    for (let y = 0; y < H; y += 48) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(W, y);
-      ctx.stroke();
-    }
+  /** The still frame Reduced / Off / paused leave behind: empty — the 48 px grid itself is CSS
+   *  behind the canvas (`.hud-canvas` background), so it never costs a frame. */
+  const still = () => {
+    ctx.clearRect(0, 0, W, H);
   };
-  const frame = () => {
-    if (cancelled) return;
-    ctx.fillStyle = "rgba(13,14,16,0.55)";
+  // ~20 fps: the trails drift a fraction of a pixel per frame, so painting every other frame looks
+  // the same. Each frame fades what is there toward transparent (one composite fill, no full-screen
+  // repaint of a grid) and strokes each trail once in a flat colour: no per-particle gradient
+  // objects. Together that keeps the idle budget in e2e/motion-modes.spec.ts.
+  let lastPaint = 0;
+  const frame = (now: number = performance.now()) => {
+    if (!running) return;
+    if (now - lastPaint < 50) {
+      raf = requestAnimationFrame(frame);
+      return;
+    }
+    const steps = lastPaint ? Math.min(4, (now - lastPaint) / 16.7) * SCALE : SCALE;
+    lastPaint = now;
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.fillStyle = "rgba(0,0,0,0.45)";
     ctx.fillRect(0, 0, W, H);
-    grid();
+    ctx.globalCompositeOperation = "source-over";
+    ctx.lineWidth = 1;
     for (const p of parts) {
-      const g = ctx.createLinearGradient(p.x - p.len, p.y, p.x, p.y);
-      g.addColorStop(0, `rgba(${p.c},0)`);
-      g.addColorStop(1, `rgba(${p.c},${p.a})`);
-      ctx.strokeStyle = g;
-      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = `rgba(${p.c},${p.a * 0.6})`;
       ctx.beginPath();
-      ctx.moveTo(p.x - p.len, p.y);
+      ctx.moveTo(p.x - p.len * 0.35, p.y);
       ctx.lineTo(p.x, p.y);
       ctx.stroke();
       ctx.fillStyle = `rgba(${p.c},${Math.min(1, p.a + 0.3)})`;
-      ctx.fillRect(p.x - 1, p.y - 1, 2.2, 2.2);
-      p.x += p.v;
+      ctx.fillRect(p.x - 0.5, p.y - 0.5, 1.4, 1.4);
+      p.x += p.v * steps;
       if (p.x - p.len > W) {
         p.x = -Math.random() * 80;
         p.y = Math.random() * H;
@@ -106,14 +102,35 @@ export function runDataFlow(canvas: HTMLCanvasElement): () => void {
     }
     raf = requestAnimationFrame(frame);
   };
+  const onResize = () => {
+    size();
+    if (!running) still();
+  };
+  /** Start or stop the loop to match the mode, the pause and the theme. Idempotent. */
+  const sync = () => {
+    const want = ambientAllowed() && darkTheme();
+    if (want === running) return;
+    running = want;
+    if (want) {
+      lastPaint = 0;
+      frame();
+    }
+    else {
+      cancelAnimationFrame(raf);
+      still();
+    }
+  };
 
   size();
-  frame();
-  window.addEventListener("resize", size);
+  still();
+  sync();
+  window.addEventListener("resize", onResize);
+  const unsubscribe = onMotionChange(sync);
   return () => {
-    cancelled = true;
+    running = false;
     cancelAnimationFrame(raf);
-    window.removeEventListener("resize", size);
+    unsubscribe();
+    window.removeEventListener("resize", onResize);
   };
 }
 
@@ -124,53 +141,64 @@ export function runDataFlow(canvas: HTMLCanvasElement): () => void {
  * both timers and any in-flight class before the connect shell yields to the SPA.
  */
 export function runButtonGlitch(): () => void {
-  if (prefersReducedMotion()) return noop;
-  let timer: ReturnType<typeof setTimeout>;
-  let clearCls: ReturnType<typeof setTimeout>;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let clearCls: ReturnType<typeof setTimeout> | undefined;
   let current: HTMLElement | undefined;
+  const pick = () => {
+    const btns = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'button, [role="button"], input[type="button"], input[type="submit"], input[type="reset"], .shine, .gear, .section-nav a',
+      ),
+    ).filter((b) => {
+      if (
+        b.matches(":disabled") ||
+        b.closest('[inert], [hidden], [aria-hidden="true"], [aria-disabled="true"]')
+      )
+        return false;
+      const style = getComputedStyle(b);
+      return (
+        (b.offsetParent !== null || b.getClientRects().length > 0) &&
+        style.visibility !== "hidden" &&
+        style.visibility !== "collapse" &&
+        style.opacity !== "0"
+      );
+    });
+    if (!btns.length) return;
+    const b = btns[Math.floor(Math.random() * btns.length)];
+    current = b;
+    b.classList.add("glitching");
+    clearCls = setTimeout(() => {
+      b.classList.remove("glitching");
+      current = undefined;
+    }, 300);
+  };
   const schedule = () => {
     timer = setTimeout(
       () => {
-        const btns = prefersReducedMotion()
-          ? []
-          : Array.from(
-              document.querySelectorAll<HTMLElement>(
-                'button, [role="button"], input[type="button"], input[type="submit"], input[type="reset"], .shine, .gear, .section-nav a',
-              ),
-            ).filter((b) => {
-              if (
-                b.matches(":disabled") ||
-                b.closest(
-                  '[inert], [hidden], [aria-hidden="true"], [aria-disabled="true"]',
-                )
-              )
-                return false;
-              const style = getComputedStyle(b);
-              return (
-                (b.offsetParent !== null || b.getClientRects().length > 0) &&
-                style.visibility !== "hidden" &&
-                style.visibility !== "collapse" &&
-                style.opacity !== "0"
-              );
-            });
-        if (btns.length) {
-          const b = btns[Math.floor(Math.random() * btns.length)];
-          current = b;
-          b.classList.add("glitching");
-          clearCls = setTimeout(() => {
-            b.classList.remove("glitching");
-            current = undefined;
-          }, 300);
-        }
+        timer = undefined;
+        if (!ambientAllowed()) return; // the next sync() re-arms it
+        pick();
         schedule();
       },
       7000 + Math.random() * 16000,
     );
   };
-  schedule();
-  return () => {
-    clearTimeout(timer);
-    clearTimeout(clearCls);
+  const stop = () => {
+    if (timer) clearTimeout(timer);
+    if (clearCls) clearTimeout(clearCls);
+    timer = clearCls = undefined;
     current?.classList.remove("glitching");
+    current = undefined;
+  };
+  /** Armed only in Full and while nothing paused it; a live switch to Reduced/Off clears it. */
+  const sync = () => {
+    if (!ambientAllowed()) stop();
+    else if (!timer) schedule();
+  };
+  sync();
+  const unsubscribe = onMotionChange(sync);
+  return () => {
+    unsubscribe();
+    stop();
   };
 }

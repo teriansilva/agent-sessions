@@ -50,11 +50,10 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .panel,
-  .open {
-    transition: none;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .panel,
+:root:not([data-motion="full"]) .open {
+  transition: none;
 }
 
 /* The details dialog's wrapper: a React-tree ancestor for its events, nothing in layout. */

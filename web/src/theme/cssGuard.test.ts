@@ -191,3 +191,107 @@ describe("no text colour reads the raw --accent (#1494)", () => {
     expect(findings(CODE, codeSource, RAW_TEXT).map(({ at }) => at)).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------------------------------
+// Motion budget (#1531, docs/design.md v2 §8)
+// ---------------------------------------------------------------------------------------------------
+
+/** What a keyframe may animate: compositor-friendly properties only. `clip-path` and box geometry
+ *  are never animated (#211: a clip-path mid-change drops clicks), and nothing else forces layout
+ *  or paint on every frame. */
+const KEYFRAME_PROPS = new Set([
+  "transform",
+  "opacity",
+  "filter",
+  "stroke-dashoffset",
+  "offset",
+  "animation-timing-function",
+]);
+/** Keyframes that predate the budget, each pinned to the phase that redraws it. Keyed by file and
+ *  keyframe name, so a new violation in the same file still fails. Remove an entry with its fix. */
+const KEYFRAME_PENDING: Record<string, readonly string[]> = {
+  // Phase 9: the map's pulse and window flash become opacity on a pseudo-element.
+  "components/overview/overview.css": ["tr-ov-pulse"],
+  "components/overview/windowLayer.module.css": ["window-flash"],
+  // Phase 10: the suggestions caret blinks with opacity like `.nj-caret`.
+  "components/templates/SuggestionsPanel.module.css": ["blink"],
+  // Phase 6: the mic pulse uses the `--rec` LED glow on a pseudo-element.
+  "components/terminal/Compose.module.css": ["micPulse"],
+};
+
+function keyframes(css: string): { name: string; props: string[] }[] {
+  const out: { name: string; props: string[] }[] = [];
+  for (const m of css.matchAll(/@keyframes\s+([\w-]+)\s*\{/g)) {
+    let depth = 0;
+    let j = (m.index ?? 0) + m[0].length - 1;
+    const start = j;
+    for (; j < css.length; j++) {
+      if (css[j] === "{") depth++;
+      else if (css[j] === "}" && --depth === 0) break;
+    }
+    const body = css.slice(start, j);
+    out.push({ name: m[1], props: [...body.matchAll(/([\w-]+)\s*:/g)].map((p) => p[1].toLowerCase()) });
+  }
+  return out;
+}
+
+describe("keyframes animate only transform, opacity, filter and stroke-dashoffset (#1531)", () => {
+  test("the parser sees what it is for", () => {
+    expect(keyframes("@keyframes a { from { clip-path: inset(0) } to { opacity: 1 } }")).toEqual([
+      { name: "a", props: ["clip-path", "opacity"] },
+    ]);
+  });
+  test("in every stylesheet", () => {
+    const bad = ALL_CSS.flatMap((f) =>
+      keyframes(cssSource(f))
+        .filter((k) => !(KEYFRAME_PENDING[f] ?? []).includes(k.name))
+        .flatMap((k) =>
+          k.props.filter((p) => !KEYFRAME_PROPS.has(p)).map((p) => `${f} @keyframes ${k.name}: ${p}`),
+        ),
+    );
+    expect(bad).toEqual([]);
+  });
+  test("every pending entry still exists (remove it with its fix)", () => {
+    const stale = Object.entries(KEYFRAME_PENDING).flatMap(([f, names]) =>
+      names.filter((n) => !keyframes(cssSource(f)).some((k) => k.name === n)).map((n) => `${f} ${n}`),
+    );
+    expect(stale).toEqual([]);
+  });
+});
+
+/** `--hud` is the chrome LINE colour (the accent on dark). As text it is `--hud-text`, which is
+ *  `--accent-text` and holds AA for every preset; `color: var(--hud)` would bring back exactly the
+ *  pale-accent text #1494 removed. */
+describe("no text colour reads the raw --hud (#1531)", () => {
+  const RAW_HUD = /(?<![-\w])color:[^;{}\n]*var\(\s*--hud\s*[,)]/g;
+  test("in stylesheets", () => {
+    expect(findings(CSS, cssSource, RAW_HUD).map(({ at }) => at)).toEqual([]);
+  });
+  test("in inline styles set from code", () => {
+    expect(findings(CODE, codeSource, RAW_HUD).map(({ at }) => at)).toEqual([]);
+  });
+});
+
+/** The pages outside the SPA (#1531 Phase 12): the server templates, connect.html and share.html
+ *  restate the palette today. REPORT-ONLY until their ledger rows turn `done`; then the row's
+ *  literals fail through nightjarLedger.test.ts like any other done surface. */
+describe("pages outside the SPA (report only until Phase 12)", () => {
+  const REPO = resolve(process.cwd(), "..");
+  const PAGES = [
+    "src/agent_sessions/templates/login.html",
+    "src/agent_sessions/templates/login_totp.html",
+    "src/agent_sessions/templates/change_password.html",
+    "src/agent_sessions/templates/link_approve.html",
+    "web/connect.html",
+    "web/share.html",
+  ];
+  test("each page is readable and its colour literals are counted", () => {
+    const report = PAGES.map((p) => {
+      const src = readFileSync(join(REPO, p), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+      const n = (src.match(/#[0-9a-fA-F]{3,8}(?![\w-])|\brgba?\(/g) ?? []).length;
+      return `${p}: ${n} colour literal(s)`;
+    });
+    console.info(`[nightjar] pages outside the SPA:\n  ${report.join("\n  ")}`);
+    expect(report).toHaveLength(PAGES.length);
+  });
+});

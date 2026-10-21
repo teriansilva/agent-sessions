@@ -47,10 +47,9 @@
 .toggle[aria-expanded="true"] .chev {
   transform: rotate(90deg);
 }
-@media (prefers-reduced-motion: reduce) {
-  .chev {
-    transition: none;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .chev {
+  transition: none;
 }
 .body {
   display: flex;

@@ -170,6 +170,37 @@ test("connect page starts no animation loop under reduced motion, and falls back
   );
 });
 
+// #1531: in Full the canvas paints only the trails; the 48px grid is the canvas's static CSS
+// background, so the page never loses its grid. And this shell owns the hidden-tab pause until the
+// streamed app takes over: hiding the tab stops the canvas loop, showing it starts it again.
+test("connect page keeps its static grid in Full and pauses the ambient loop while hidden (#1531)", async ({
+  page,
+}) => {
+  await countRaf(page);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.goto("/connect.html");
+  await expect(page.locator("html")).toHaveAttribute("data-motion", "full");
+  await expect(page.locator("canvas#bg")).toHaveCSS("background-image", /linear-gradient/);
+  await expect.poll(() => rafCount(page)).toBeGreaterThan(0);
+
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect(page.locator("html")).toHaveAttribute("data-motion-paused", "hidden");
+  await page.waitForTimeout(200);
+  const a = await rafCount(page);
+  await page.waitForTimeout(600);
+  expect(await rafCount(page), "no frames while hidden").toBe(a);
+
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect(page.locator("html")).not.toHaveAttribute("data-motion-paused", /.+/);
+  await expect.poll(() => rafCount(page)).toBeGreaterThan(a);
+});
+
 test.use({
   launchOptions: {
     args: ["--host-resolver-rules=MAP battlelab.superstatus.io 127.0.0.1"],

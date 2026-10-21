@@ -111,10 +111,9 @@
     transform: rotate(360deg);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .spin {
-    animation: none;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .spin {
+  animation: none;
 }
 
 .note {
@@ -216,10 +215,9 @@
     opacity: 0.35;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .led_in_flight {
-    animation: none;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .led_in_flight {
+  animation: none;
 }
 
 .cardTitle {

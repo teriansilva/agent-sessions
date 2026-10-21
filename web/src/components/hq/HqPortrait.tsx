@@ -3,8 +3,8 @@
  *
  *  - It plays only while `playing` (the panel is open, the card is on screen) and the tab is
  *    visible; otherwise it is paused on its current frame.
- *  - Under `prefers-reduced-motion: reduce`, or where `matchMedia` is missing, only the poster
- *    renders: no `<video>` at all.
+ *  - In the Reduced and Off motion modes (#1531) only the poster renders: no `<video>` at all.
+ *    While ambient motion is paused (hidden tab, 10 idle minutes) the loop pauses on its frame.
  *  - A loop that fails to load (both sources) falls back to the poster, so a missing file never
  *    leaves an empty frame.
  *
@@ -12,25 +12,9 @@
  *  `failed`. */
 import { useEffect, useRef, useState } from "react";
 
+import { useMotion } from "../../theme/motionStore";
 import type { HqContact } from "./contacts";
 import s from "./hq.module.css";
-
-function reducedMotion(): boolean {
-  if (typeof window === "undefined" || !window.matchMedia) return true;
-  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
-
-function useReducedMotion(): boolean {
-  const [reduce, setReduce] = useState(reducedMotion);
-  useEffect(() => {
-    const mq = window.matchMedia?.("(prefers-reduced-motion: reduce)");
-    if (!mq) return;
-    const on = () => setReduce(mq.matches);
-    mq.addEventListener?.("change", on);
-    return () => mq.removeEventListener?.("change", on);
-  }, []);
-  return reduce;
-}
 
 function useDocumentVisible(): boolean {
   const [visible, setVisible] = useState(() => document.visibilityState !== "hidden");
@@ -53,13 +37,14 @@ export function HqPortrait({
   className?: string;
   testId?: string;
 }) {
-  const reduce = useReducedMotion();
+  const { mode, paused } = useMotion();
+  const reduce = mode !== "full";
   const visible = useDocumentVisible();
   const [failedId, setFailedId] = useState<string | null>(null);
   const failed = failedId === contact.id;
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const lastSourceRef = useRef<HTMLSourceElement | null>(null);
-  const run = playing && visible;
+  const run = playing && visible && paused === null;
 
   useEffect(() => {
     const v = videoRef.current;

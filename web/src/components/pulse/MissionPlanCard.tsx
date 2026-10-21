@@ -22,6 +22,7 @@
  * Nothing on the card starts an agent: its buttons are Cancel, Review plan, Plan manually and the
  * manual plan's Save, and none of them launches anything. */
 import { Pencil } from "lucide-react";
+import { motionMode } from "../../theme/motion";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import type { Mission } from "../../types/api";
@@ -215,8 +216,7 @@ export function MissionPlanCard({
     if (!validConfirmation) return;
     const el = confirmRef.current;
     if (!el) return;
-    const reduce =
-      window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
+    const reduce = motionMode() !== "full";
     // `nearest` moves the pane only as far as needed; `scroll-margin` keeps the block off its edge.
     el.scrollIntoView?.({
       block: "nearest",

@@ -681,12 +681,16 @@ test("phone: an unknown section lands on the index, not the first section", asyn
 
 // ---- Appearance tab ----
 
+/** The Mode radio group. Motion (#1531) offers "Match device" too, so the mode cards are found
+ *  inside their own group. */
+const modeGroup = () => within(screen.getByRole("radiogroup", { name: "Mode" }));
+
 test("renders the mode radios, Match device included (#1494)", async () => {
   renderSettings();
   expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
   for (const label of ["Dark", "Light", "Match device"]) {
     expect(
-      screen.getByRole("radio", { name: new RegExp(label) }),
+      modeGroup().getByRole("radio", { name: new RegExp(label) }),
     ).toBeInTheDocument();
   }
   await flushFetches();
@@ -694,11 +698,11 @@ test("renders the mode radios, Match device included (#1494)", async () => {
 
 test("the active theme is marked aria-checked", async () => {
   renderSettings("light");
-  expect(screen.getByRole("radio", { name: /Light/ })).toHaveAttribute(
+  expect(modeGroup().getByRole("radio", { name: /Light/ })).toHaveAttribute(
     "aria-checked",
     "true",
   );
-  expect(screen.getByRole("radio", { name: /Dark/ })).toHaveAttribute(
+  expect(modeGroup().getByRole("radio", { name: /Dark/ })).toHaveAttribute(
     "aria-checked",
     "false",
   );
@@ -707,20 +711,20 @@ test("the active theme is marked aria-checked", async () => {
 
 test("picking a theme calls setTheme with its id", async () => {
   const { setTheme } = renderSettings("light");
-  await userEvent.click(screen.getByRole("radio", { name: /Dark/ }));
+  await userEvent.click(modeGroup().getByRole("radio", { name: /Dark/ }));
   expect(setTheme).toHaveBeenCalledWith("dark");
-  await userEvent.click(screen.getByRole("radio", { name: /Match device/ }));
+  await userEvent.click(modeGroup().getByRole("radio", { name: /Match device/ }));
   expect(setTheme).toHaveBeenCalledWith("system");
   await flushFetches();
 });
 
 test("Match device is the checked card when the CHOICE is system, whatever mode it resolved to (#1494)", async () => {
   renderSettings("system");
-  expect(screen.getByRole("radio", { name: /Match device/ })).toHaveAttribute(
+  expect(modeGroup().getByRole("radio", { name: /Match device/ })).toHaveAttribute(
     "aria-checked",
     "true",
   );
-  expect(screen.getByRole("radio", { name: /Dark/ })).toHaveAttribute(
+  expect(modeGroup().getByRole("radio", { name: /Dark/ })).toHaveAttribute(
     "aria-checked",
     "false",
   );

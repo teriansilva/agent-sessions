@@ -639,8 +639,7 @@
     flex: 1 1 auto;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .file > summary > svg:first-child {
-    transition: none;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .file > summary > svg:first-child {
+  transition: none;
 }

@@ -294,8 +294,7 @@
     box-shadow: 0 0 0 5px color-mix(in srgb, var(--rec) 0%, transparent);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .micOn {
-    animation: none;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .micOn {
+  animation: none;
 }

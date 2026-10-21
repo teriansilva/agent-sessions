@@ -387,12 +387,11 @@
     transform: translateX(360%);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .refreshBlock {
-    animation: none;
-    width: 100%;
-    opacity: 0.5;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .refreshBlock {
+  animation: none;
+  width: 100%;
+  opacity: 0.5;
 }
 
 /* The title row: the heading and the New project entry (#1187). Wraps under the heading on a

@@ -6,13 +6,13 @@
 // no-flash cache (read synchronously at boot — see the inline script in index.html and
 // `bootAccent` below); server-side per-user persistence is layered on by AccentProvider.
 
-import { accentTextFor, coerceAccent, DEFAULT_ACCENT, onAccentFor } from "./accent";
+import { accentTextFor, coerceAccent, DEFAULT_ACCENT, hudLineFor, onAccentFor } from "./accent";
 import { prefersDark, readStoredTheme } from "./applyTheme";
 import { resolveTheme, type ThemeId } from "./themes";
 
 export const ACCENT_STORAGE_KEY = "tr-accent";
 
-/** Set the inline `--accent`, `--on-accent` and `--accent-text` overrides on <html>. The default
+/** Set the inline `--accent`, `--on-accent`, `--accent-text` and `--hud` overrides on <html>. The default
  *  accent is left to tokens.css (clear the inline props) so the unmodified app stays
  *  pixel-identical to the static stylesheet; a custom accent sets all three. `--accent-text` is
  *  mode-dependent (#1494), so `mode` is the RESOLVED mode in force. */
@@ -23,11 +23,15 @@ export function applyAccent(hex: string, mode: ThemeId = "dark"): void {
     root.style.removeProperty("--accent");
     root.style.removeProperty("--on-accent");
     root.style.removeProperty("--accent-text");
+    root.style.removeProperty("--hud");
     return;
   }
   root.style.setProperty("--accent", accent);
   root.style.setProperty("--on-accent", onAccentFor(accent));
   root.style.setProperty("--accent-text", accentTextFor(accent, mode));
+  // The chrome line colour (#1531): the accent where it reads on the mode's grounds, else mixed
+  // toward the text colour — a pale accent still draws a visible frame on light.
+  root.style.setProperty("--hud", hudLineFor(accent, mode));
 }
 
 /** The accent cached on this device, or the default. Never throws. */

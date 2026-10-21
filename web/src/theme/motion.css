@@ -1,0 +1,295 @@
+/* NIGHTJAR motion (#1531, docs/design.md v2 §8): the durations, easings, the shared keyframes,
+ * and the three mode rules. `data-motion` on <html> is set before first paint (index.html) and
+ * owned by MotionProvider; `data-motion-paused` (hidden tab, 10 idle minutes) stops ambient
+ * loops only.
+ *
+ * Budget: keyframes animate transform, opacity, filter and stroke-dashoffset only — never
+ * clip-path or box geometry (#211), pinned by cssGuard.test.ts. Nothing that holds text or
+ * controls is ever scaled ("no stretching content"); scale appears only in the keyframes marked
+ * DECORATIVE below, which are applied to text-free elements. */
+
+:root {
+  --t-fast: 120ms;
+  --t-base: 180ms;
+  --t-slow: 320ms;
+  --t-stream: 260ms;
+  --t-route: 160ms;
+  --t-arrive: 500ms;
+  --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-io: cubic-bezier(0.45, 0, 0.25, 1);
+  /* How far the one-shot scan and the rail pulse travel; set on the element when it differs. */
+  --nj-scan-travel: 400px;
+  --nj-rail-travel: 600px;
+}
+/* Reduced: every state/interaction duration that reads a token is at most 120 ms. */
+:root[data-motion="reduced"] {
+  --t-base: 120ms;
+  --t-slow: 120ms;
+  --t-stream: 0ms;
+  --t-route: 0ms;
+  --t-arrive: 0ms;
+}
+:root[data-motion="off"] {
+  --t-fast: 0ms;
+  --t-base: 0ms;
+  --t-slow: 0ms;
+  --t-stream: 0ms;
+  --t-route: 0ms;
+  --t-arrive: 0ms;
+}
+
+/* ---- Off: nothing moves. One rule; e2e/motion-modes.spec.ts proves getAnimations() is empty
+ * and every transition is 0s. (JS loops stop through theme/motion.ts.) ---- */
+:root[data-motion="off"] *,
+:root[data-motion="off"] *::before,
+:root[data-motion="off"] *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+
+/* ---- Reduced: no loops and no entrance choreography. An element that wants its state change
+ * to stay perceptible (a popup appearing, a row arriving) opts in with `.nj-fade-ok` and gets a
+ * single 120 ms fade instead. Transitions are left to their tokens (above), because forcing a
+ * duration onto every element would animate elements that never declared a transition. ---- */
+:root[data-motion="reduced"] *:not(.nj-fade-ok),
+:root[data-motion="reduced"] *::before,
+:root[data-motion="reduced"] *::after {
+  animation: none !important;
+}
+:root[data-motion="reduced"] .nj-fade-ok {
+  animation: nj-fade-in var(--t-fast) var(--ease-out) both !important;
+}
+
+/* ---- Paused (hidden tab / idle): ambient loops hold still; arrival and interaction motion is
+ * never paused, so nothing can freeze half-faded. ---- */
+:root[data-motion-paused] .nj-ambient,
+:root[data-motion-paused] .nj-ambient::before,
+:root[data-motion-paused] .nj-ambient::after,
+:root[data-motion-paused] .hud-led {
+  animation-play-state: paused !important;
+}
+
+/* ================================== keyframes ================================== */
+
+/* Entrances: fade + 6 px rise. Never scale (no stretching). */
+@keyframes nj-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes nj-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes nj-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes nj-arrive {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes nj-sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+@keyframes nj-sheet-down {
+  from {
+    transform: none;
+  }
+  to {
+    transform: translateY(100%);
+  }
+}
+@keyframes nj-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* A one-shot scan line passing over content that just powered on: applied to a ::after strip. */
+@keyframes nj-scan-once {
+  from {
+    opacity: 0.9;
+    transform: translateY(-100%);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(var(--nj-scan-travel));
+  }
+}
+/* A tint flash on arrival: applied to an overlay (::after), never to the content. */
+@keyframes nj-flash {
+  0% {
+    opacity: 0.55;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Ambient loops (Full only; mark the element `.nj-ambient` so the pause reaches it). */
+@keyframes nj-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+@keyframes nj-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0.35;
+  }
+}
+@keyframes nj-caret {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+/* A light packet running along a rail: applied to a short ::after segment inside the rail. */
+@keyframes nj-rail-pulse {
+  0% {
+    opacity: 0;
+    transform: translateX(-40px);
+  }
+  10% {
+    opacity: 1;
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(var(--nj-rail-travel));
+  }
+}
+@keyframes nj-sweep {
+  from {
+    transform: translateY(-20vh);
+  }
+  to {
+    transform: translateY(120vh);
+  }
+}
+@keyframes nj-scan-drift {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(3px);
+  }
+}
+@keyframes nj-acquire {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+@keyframes nj-step {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+@keyframes nj-skeleton {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+@keyframes nj-glitch-step {
+  0%,
+  100% {
+    filter: none;
+  }
+  30% {
+    filter: brightness(1.3) contrast(1.2);
+  }
+  60% {
+    filter: brightness(0.92);
+  }
+}
+
+/* DECORATIVE ONLY (text-free elements: LEDs, ping rings, the radar, waveform bars, fills). */
+@keyframes nj-led-flash {
+  0% {
+    transform: scale(1.8);
+    opacity: 0.4;
+  }
+  100% {
+    transform: none;
+    opacity: 1;
+  }
+}
+@keyframes nj-ping {
+  from {
+    transform: scale(0.6);
+    opacity: 0.8;
+  }
+  to {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+@keyframes nj-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes nj-wave {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}

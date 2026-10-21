@@ -52,7 +52,7 @@
  * **The wait is shown (#1171).** The server streams the turn's steps — the model reading, the read
  * tool it is calling, which catalog a search covers and how many transcripts it checks — and the
  * pending turn names the step it is on under a moving scan bar. Text is revealed progressively —
- * instantly under `prefers-reduced-motion`.
+ * instantly outside the Full motion mode (#1531).
  *
  * The composer box, the turn rows and the match rows are the console's own primitives
  * (`mission.module.css`) rather than a second copy of them — the same cross-directory import the

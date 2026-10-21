@@ -6,7 +6,7 @@
  *  — how many sessions the catalog holds, how many transcripts Stage 2 is reading — not a
  *  rotation of reassuring phrases. `role="status"` lets a screen reader hear a step change
  *  without the ticking seconds (they are `aria-hidden`), and all motion stops under
- *  `prefers-reduced-motion` (AskConsole.module.css).
+ *  the Reduced and Off motion modes (#1531, AskConsole.module.css).
  */
 import { useEffect, useState } from "react";
 

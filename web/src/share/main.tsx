@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "../index.css";
 import { ShareViewer } from "./ShareViewer";
+import { applyMotion, prefersReducedMotion, resolveMotion } from "../theme/motion";
 
 /** The public share viewer's entry (#1404 P4) — `share.html`, served at `/p/<token>` and `/p/`.
  *
@@ -25,6 +26,9 @@ function bootViewerTheme(): void {
 }
 
 bootViewerTheme();
+// The motion mode (#1531): a visitor's page has no stored setting; it follows the device. Every
+// reduced-motion rule in the shared stylesheets keys off this attribute.
+applyMotion(resolveMotion("system", prefersReducedMotion()));
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ShareViewer />

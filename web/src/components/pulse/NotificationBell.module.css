@@ -385,10 +385,9 @@
     transform: translateX(0);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .drawer {
-    animation: none;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .drawer {
+  animation: none;
 }
 
 /* Rows whose state could not be established (#852). Amber — "not current", never red, which is

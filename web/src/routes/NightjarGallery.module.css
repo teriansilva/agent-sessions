@@ -1,0 +1,63 @@
+/* The NIGHTJAR primitives gallery (#1531). Layout only; every visual comes from the primitives
+ * (components/hud/nightjar.css, actionButton.module.css). Tokens only. */
+.page {
+  position: relative;
+  z-index: var(--z-raised);
+  height: 100%;
+  overflow: auto;
+  padding: var(--sp-5);
+}
+.inner {
+  max-width: var(--page-max);
+  margin: 0 auto;
+  display: grid;
+  gap: var(--sp-4);
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+  gap: var(--sp-4);
+}
+.body {
+  padding: var(--sp-4) var(--sp-4) var(--sp-4);
+  display: grid;
+  gap: var(--sp-3);
+}
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.word {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-meta);
+  font-family: var(--font-mono);
+  color: var(--text-2);
+}
+.prose {
+  margin: 0;
+  max-width: var(--prose-max);
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  color: var(--text-2);
+}
+.feed {
+  display: grid;
+  gap: var(--sp-1);
+  min-height: 120px;
+}
+.feedRow {
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--hud);
+  background: var(--bg-2);
+  font-size: var(--fs-row);
+  color: var(--text-1);
+}
+@media (max-width: 800px) {
+  .page {
+    padding: var(--sp-3);
+  }
+}

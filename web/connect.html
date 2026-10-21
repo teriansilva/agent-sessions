@@ -19,6 +19,7 @@
         --text-3: #6f747d;
         --line: rgba(255, 255, 255, 0.08);
         --line-strong: rgba(255, 255, 255, 0.14);
+        --grid-line: rgba(150, 170, 210, 0.06);
         --accent: #ffb000;
         --on-accent: #120c00;
         --status-up: #3fbf6f;
@@ -45,7 +46,8 @@
         font: inherit;
       }
 
-      /* ---- Ambient backdrop (dataFlow.ts paints the grid + drifting trails) ------------- */
+      /* ---- Ambient backdrop (dataFlow.ts paints the drifting trails; #1531: the 48px grid is
+         this static background, behind the canvas, as in the app's App.css) ------------------ */
       .hud-canvas {
         position: fixed;
         inset: 0;
@@ -53,6 +55,10 @@
         width: 100%;
         height: 100%;
         pointer-events: none;
+        background-image:
+          linear-gradient(var(--grid-line) 1px, transparent 1px),
+          linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+        background-size: 48px 48px;
       }
       .connect-shell {
         position: relative;

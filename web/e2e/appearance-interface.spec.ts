@@ -69,7 +69,8 @@ test("Match device follows the OS live, and data-theme only ever says dark or li
   await page.goto(settingsPath("appearance"));
   await expect(html(page)).toHaveAttribute("data-theme", "dark"); // the default choice
 
-  await page.getByRole("radio", { name: /Match device/ }).click();
+  // Scoped to the Mode group: Motion (#1531) offers its own "Match device".
+  await page.getByRole("radiogroup", { name: "Mode" }).getByRole("radio", { name: /Match device/ }).click();
   await expect(html(page)).toHaveAttribute("data-theme", "light");
   expect(await page.evaluate(() => localStorage.getItem("tr-theme"))).toBe("system");
 

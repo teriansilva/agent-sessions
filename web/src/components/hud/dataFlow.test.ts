@@ -6,7 +6,15 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
   document.body.innerHTML = "";
+  const root = document.documentElement;
+  delete root.dataset.motion;
+  delete root.dataset.motionPaused;
+  delete root.dataset.theme;
+  localStorage.removeItem("tr-motion");
 });
+
+/** The MutationObserver that carries a live switch delivers on a microtask. */
+const flush = () => new Promise((r) => setTimeout(r, 0));
 
 function mockReducedMotion(reduce: boolean) {
   vi.stubGlobal(
@@ -29,6 +37,7 @@ function fakeCanvas(): HTMLCanvasElement {
     strokeStyle: "" as string | CanvasGradient,
     lineWidth: 0,
     fillRect: vi.fn(),
+    clearRect: vi.fn(),
     beginPath: vi.fn(),
     moveTo: vi.fn(),
     lineTo: vi.fn(),
@@ -41,17 +50,73 @@ function fakeCanvas(): HTMLCanvasElement {
   return canvas;
 }
 
-test("runDataFlow is a no-op under prefers-reduced-motion", () => {
+for (const mode of ["reduced", "off"]) {
+  test(`runDataFlow draws a still frame and starts no loop in the ${mode} mode (#1531)`, () => {
+    mockReducedMotion(false);
+    document.documentElement.dataset.motion = mode;
+    const raf = vi.fn();
+    vi.stubGlobal("requestAnimationFrame", raf);
+    const canvas = fakeCanvas();
+
+    const stop = runDataFlow(canvas);
+
+    expect(raf).not.toHaveBeenCalled();
+    const ctx = (canvas.getContext as unknown as ReturnType<typeof vi.fn>).mock.results[0].value;
+    expect(ctx.clearRect).toHaveBeenCalled(); // the still grid
+    expect(() => stop()).not.toThrow();
+  });
+}
+
+test("Match device on a reduce-motion device starts no loop (#1531)", () => {
   mockReducedMotion(true);
   const raf = vi.fn();
   vi.stubGlobal("requestAnimationFrame", raf);
-  const canvas = fakeCanvas();
-
-  const stop = runDataFlow(canvas);
-
+  runDataFlow(fakeCanvas())();
   expect(raf).not.toHaveBeenCalled();
-  expect(canvas.getContext).not.toHaveBeenCalled();
-  expect(() => stop()).not.toThrow();
+});
+
+test("a live switch Full → Off → Full stops the loop and starts it again (#1531)", async () => {
+  mockReducedMotion(false);
+  const root = document.documentElement;
+  root.dataset.motion = "full";
+  const raf = vi.fn().mockReturnValue(11);
+  const cancel = vi.fn();
+  vi.stubGlobal("requestAnimationFrame", raf);
+  vi.stubGlobal("cancelAnimationFrame", cancel);
+
+  const stop = runDataFlow(fakeCanvas());
+  expect(raf).toHaveBeenCalledTimes(1);
+
+  root.dataset.motion = "off";
+  await flush();
+  expect(cancel).toHaveBeenCalledWith(11);
+
+  raf.mockClear();
+  root.dataset.motion = "full";
+  await flush();
+  expect(raf).toHaveBeenCalledTimes(1);
+  stop();
+});
+
+test("a hidden-tab / idle pause and the light theme stop the loop (#1531)", async () => {
+  mockReducedMotion(false);
+  const root = document.documentElement;
+  root.dataset.motion = "full";
+  const raf = vi.fn().mockReturnValue(5);
+  const cancel = vi.fn();
+  vi.stubGlobal("requestAnimationFrame", raf);
+  vi.stubGlobal("cancelAnimationFrame", cancel);
+  const stop = runDataFlow(fakeCanvas());
+
+  root.dataset.motionPaused = "idle";
+  await flush();
+  expect(cancel).toHaveBeenCalledTimes(1);
+  delete root.dataset.motionPaused;
+  await flush();
+  root.dataset.theme = "light";
+  await flush();
+  expect(cancel).toHaveBeenCalledTimes(2);
+  stop();
 });
 
 test("runDataFlow bails without throwing when there is no 2d context", () => {
@@ -62,6 +127,7 @@ test("runDataFlow bails without throwing when there is no 2d context", () => {
 
 test("runDataFlow teardown cancels the frame loop and unbinds resize", () => {
   mockReducedMotion(false);
+  document.documentElement.dataset.motion = "full";
   vi.stubGlobal("requestAnimationFrame", vi.fn().mockReturnValue(7));
   const cancel = vi.fn();
   vi.stubGlobal("cancelAnimationFrame", cancel);
@@ -96,4 +162,26 @@ test("runButtonGlitch teardown stops the pending glitch", () => {
   } finally {
     rand.mockRestore();
   }
+});
+
+test("runButtonGlitch arms no timer outside Full, and a live switch arms / clears it (#1531)", async () => {
+  mockReducedMotion(false);
+  const root = document.documentElement;
+  root.dataset.motion = "off";
+  const set = vi.spyOn(globalThis, "setTimeout");
+  const stop = runButtonGlitch();
+  const armed = () => set.mock.calls.filter(([, ms]) => typeof ms === "number" && ms >= 7000).length;
+  expect(armed()).toBe(0);
+
+  root.dataset.motion = "full";
+  await flush();
+  expect(armed()).toBe(1);
+
+  const clear = vi.spyOn(globalThis, "clearTimeout");
+  root.dataset.motion = "reduced";
+  await flush();
+  expect(clear).toHaveBeenCalled();
+  stop();
+  set.mockRestore();
+  clear.mockRestore();
 });

@@ -40,10 +40,9 @@
     visibility: hidden;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .square {
-    animation: none;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .square {
+  animation: none;
 }
 
 .meta {

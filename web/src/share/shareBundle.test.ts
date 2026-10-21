@@ -18,6 +18,13 @@ const ENTRY = join(SRC, "share", "main.tsx");
 const ALLOWED_OUTSIDE = new Set([
   "index.css",
   "tokens.css",
+  // The NIGHTJAR design system (#1531), pulled in by index.css and the entry: fonts, the motion
+  // rules and the primitives' CSS, plus the framework-free motion mode (localStorage + matchMedia
+  // only, no network). None of them reaches the operator's API or the app shell.
+  "theme/fonts.css",
+  "theme/motion.css",
+  "theme/motion.ts",
+  "components/hud/nightjar.css",
   "lib/shareFormat.ts",
   "components/structured/Markdown.tsx",
   "components/structured/Markdown.module.css",

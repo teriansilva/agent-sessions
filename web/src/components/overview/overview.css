@@ -352,12 +352,11 @@
       color-mix(in srgb, var(--eng, var(--accent)) 12%, transparent);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .tr-ov-dot.working {
-    animation: none;
-    box-shadow: 0 0 0 4px
-      color-mix(in srgb, var(--eng, var(--accent)) 45%, transparent);
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .tr-ov-dot.working {
+  animation: none;
+  box-shadow: 0 0 0 4px
+    color-mix(in srgb, var(--eng, var(--accent)) 45%, transparent);
 }
 .tr-ov-meta {
   min-width: 0;

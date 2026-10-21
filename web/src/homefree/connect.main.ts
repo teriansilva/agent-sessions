@@ -7,6 +7,7 @@
 // for reaching a box through the relay.
 
 import { runButtonGlitch, runDataFlow } from "../components/hud/dataFlow";
+import { applyMotion, prefersReducedMotion, resolveMotion, startMotionPause } from "../theme/motion";
 import {
   type AltchaChallenge,
   type SocketLike,
@@ -91,13 +92,22 @@ function isPublicDeploy(): boolean {
   );
 }
 
+// The motion mode (#1531): this public page has no stored setting, so it follows the device's
+// prefers-reduced-motion. Set before the ambient pair starts and before the SPA streams in, whose
+// stylesheets key every reduced rule off `data-motion`.
+applyMotion(resolveMotion("system", prefersReducedMotion()));
+
 // The ambient HUD backdrop + button glitch, shared with the SPA (components/hud/dataFlow).
 // Both are torn down once the streamed app takes the screen — it mounts its own pair.
 let stopDataFlow: (() => void) | null = null;
 let stopGlitch: (() => void) | null = null;
+// This page owns the hidden-tab / idle pause (#1531) while its own ambient pair runs; once the
+// streamed app takes the screen, the app's MotionProvider owns it.
+let stopPause: (() => void) | null = null;
 
 function setAmbient(on: boolean): void {
   if (on && !stopDataFlow) {
+    stopPause = startMotionPause();
     stopDataFlow = runDataFlow(bgCanvas);
     stopGlitch = runButtonGlitch();
     return;
@@ -105,8 +115,10 @@ function setAmbient(on: boolean): void {
   if (!on) {
     stopDataFlow?.();
     stopGlitch?.();
+    stopPause?.();
     stopDataFlow = null;
     stopGlitch = null;
+    stopPause = null;
   }
 }
 

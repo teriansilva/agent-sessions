@@ -40,7 +40,10 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
+/* Reduced and Off (the motion mode, #1531): no glitch, not even on press. motion.css already
+ * removes every animation in those modes; this restates it for the connect shell, which loads this
+ * sheet without motion.css. */
+:root:not([data-motion="full"])
   :where(
     button,
     [role="button"],
@@ -51,9 +54,8 @@
     .gear,
     .section-nav a
   ) {
-    &.glitching,
-    &:active {
-      animation: none !important;
-    }
+  &.glitching,
+  &:active {
+    animation: none !important;
   }
 }

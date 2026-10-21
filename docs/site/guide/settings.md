@@ -44,6 +44,14 @@ How BattleLab itself looks: the frame, menus, buttons and panels.
 - **Mode**: **Dark**, **Light**, or **Match device**, which follows your operating system's
   light/dark setting and switches the moment it changes, open terminals included. Each card shows a
   miniature of the app in that mode.
+- **Motion**: how much the frame moves. **Match device** (the default) follows your device's
+  reduce-motion setting: Reduced when it asks, Full otherwise. **Full** runs the ambient scanlines
+  and pulses, the start-up sequence, arrivals, streamed answers and transitions. **Reduced** keeps
+  only short fades on state changes: no loops, no start-up sequence, no portrait video, steady
+  status lights. **Off** stops everything that moves; the look stays complete. Motion never touches
+  the terminal, the editor or the text you are typing, and never delays input. Saved on this
+  device. Ambient motion also pauses on its own while the tab is hidden and after ten minutes
+  without input.
 - **Accent**: the brand colour on buttons, highlights, selection and the terminal cursor. Amber
   (`#ffb000`) by default. Pick one of 16 presets, or a custom colour from the colour well or a hex
   value. **Reset** returns to amber.

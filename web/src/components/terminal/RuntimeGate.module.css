@@ -58,16 +58,15 @@
     opacity: 0.3;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .pips i {
-    animation: none;
-  }
-  .pips i:nth-child(2) {
-    opacity: 0.6;
-  }
-  .pips i:nth-child(3) {
-    opacity: 0.3;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .pips i {
+  animation: none;
+}
+:root:not([data-motion="full"]) .pips i:nth-child(2) {
+  opacity: 0.6;
+}
+:root:not([data-motion="full"]) .pips i:nth-child(3) {
+  opacity: 0.3;
 }
 
 /* An honest active failure: a status-down edge and LED, the message in the danger ink. */

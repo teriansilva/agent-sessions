@@ -42,6 +42,7 @@ import { TermSchemeProvider } from "../theme/TermSchemeProvider";
 import { ApiLookProvider } from "../theme/ApiLookProvider";
 import { TermSizeProvider } from "../theme/TermSizeProvider";
 import { ThemeProvider } from "../theme/ThemeProvider";
+import { MotionProvider } from "../theme/MotionProvider";
 import { useIsMobile } from "../lib/useIsMobile";
 import { SectionStateContext } from "./sectionState";
 import { api } from "../lib/api";
@@ -89,6 +90,7 @@ import {
   TEMPLATES_PATH,
   VARIABLES_PATH,
   MEMORY_PATH,
+  NIGHTJAR_GALLERY_PATH,
 } from "../lib/routes";
 import { SETTINGS_PATH } from "../routes/settingsTabs";
 import { OperatorMenu } from "../components/shell/OperatorMenu";
@@ -101,6 +103,7 @@ import {
 // Lazy so @xyflow/react stays out of the main bundle until the overview is opened (#139).
 // Wrapped in lazyWithReload so a stale chunk after a deploy self-heals (#160).
 const Overview = lazyWithReload(() => import("../routes/Overview"), "overview");
+const NightjarGallery = lazyWithReload(() => import("../routes/NightjarGallery"), "nightjar-gallery");
 // Pulse — the AI-curated recent-work overview (#441 Phase 5). Lazy like Overview so its
 // page code stays out of the main bundle until opened.
 const MissionControl = lazyWithReload(() => import("../routes/Pulse"), "pulse");
@@ -815,6 +818,7 @@ function Layout() {
                   <Route path="/templates/new" element={<TemplateEditor />} />
                   <Route path="/templates/:id" element={<TemplateEditor />} />
                   <Route path="/s/:engine/:id" element={<SessionView />} />
+                  <Route path={NIGHTJAR_GALLERY_PATH} element={<NightjarGallery />} />
                   <Route path="*" element={<Navigate to={DASHBOARD_PATH} replace />} />
                 </Routes>
               </MissionRailSlotProvider>
@@ -923,6 +927,8 @@ export default function App() {
           the router, so a navigation never refetches it. */}
       <EngineRosterProvider>
       <ThemeProvider>
+        {/* The motion mode (#1531): one answer for CSS (data-motion) and every JS loop. */}
+        <MotionProvider>
         <AccentProvider>
           <TermSizeProvider>
             <TermFontProvider>
@@ -954,6 +960,7 @@ export default function App() {
             </TermFontProvider>
           </TermSizeProvider>
         </AccentProvider>
+        </MotionProvider>
       </ThemeProvider>
       </EngineRosterProvider>
     </ConfigProvider>

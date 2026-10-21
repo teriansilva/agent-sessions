@@ -125,10 +125,9 @@
     transform: rotate(360deg);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .spin {
-    animation: none;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .spin {
+  animation: none;
 }
 
 /* A SENTENCE with an inline icon — not a row of boxes (#750). As a flex container each text

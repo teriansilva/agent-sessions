@@ -525,6 +525,12 @@
   height: 100%;
   z-index: 0;
   pointer-events: none;
+  /* The 48px grid is the canvas's CSS background (#1531): static, so it never costs a frame; the
+     canvas paints only the drifting trails over it, and its radial mask fades both at the edges. */
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 48px 48px;
 }
 :root[data-theme="light"] .hud-canvas {
   display: none;
@@ -604,23 +610,7 @@ body.hud-static-grid {
   border-color: var(--text-1);
 }
 
-/* Mono uppercase status tag + semantic LED dot. */
-.hud-tag {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--text-3);
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  white-space: nowrap;
-}
-.hud-tag .num {
-  font-variant-numeric: tabular-nums;
-  color: var(--text-2);
-  font-weight: 600;
-}
+/* `.hud-tag` and `.hud-led` moved to components/hud/nightjar.css, their one home (#1531). */
 /* Footer version surface (#661): the host + version cluster on the classbar's left, and the
  * update chip. The chip is a flat accent-bordered button in the same HUD voice as .hud-tag —
  * amber ACCENT (interactive affordance), deliberately not the green/red status colours. */
@@ -668,63 +658,14 @@ body.hud-static-grid {
   }
 }
 
-.hud-led {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 7px var(--accent);
-  animation: hud-blink 1.6s ease-in-out infinite;
-}
-.hud-led.up {
-  background: var(--status-up);
-  box-shadow: 0 0 7px var(--status-up);
-}
-.hud-led.down {
-  background: var(--status-down);
-  box-shadow: 0 0 7px var(--status-down);
-}
-.hud-led.idle {
-  background: var(--text-3);
-  box-shadow: none;
-  animation: none;
-}
-/* Unsent compose draft (#477): a calm, STEADY blue dot (passive state — it doesn't pulse). */
-.hud-led.draft {
-  background: var(--status-draft);
-  box-shadow: 0 0 7px var(--status-draft);
-  animation: none;
-}
-/* Needs intervention (#477): an orange dot that keeps the base blink — a glowing "look here"
-   that replaces the old amber "!" badge. Honors prefers-reduced-motion via the base rule below. */
-.hud-led.attention {
-  background: var(--status-degraded);
-  box-shadow: 0 0 9px var(--status-degraded);
-}
-@keyframes hud-blink {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.32;
-  }
-}
-
 /* Button feedback is shared with the connect shell in hud/buttonGlitch.css (#946). */
 /* Retire the gold reflection sweep that .shine used to paint (#211). */
 .shine::after {
   content: none !important;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .hud-canvas {
-    display: none;
-  }
-  .hud-led {
-    animation: none;
-  }
-}
+/* Reduced motion is the motion mode's job now (#1531, theme/motion.css + dataFlow.ts): the canvas
+ * draws its still grid instead of disappearing, and LEDs are steady. */
 
 /* The mobile drawer takes focus itself on open (#940) — the panel, not a control inside it, so a
  * screen reader announces the dialog's name. It shows no close button: the scrim, Escape and a

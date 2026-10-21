@@ -2,6 +2,9 @@
  * import the same palette the app ships; this file keeps everything that is not a token.
  * The @import must stay first — CSS requires it before any other rule. */
 @import "./tokens.css";
+@import "./theme/fonts.css";
+@import "./theme/motion.css";
+@import "./components/hud/nightjar.css";
 
 * {
   box-sizing: border-box;

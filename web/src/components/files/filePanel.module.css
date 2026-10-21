@@ -420,10 +420,9 @@
   margin: 8px 10px;
   background: var(--bg-2);
 }
-@media (prefers-reduced-motion: no-preference) {
-  .skeleton {
-    animation: filePulse 1.4s ease-in-out infinite;
-  }
+/* Full motion only (the motion mode, #1531). */
+:root[data-motion="full"] .skeleton {
+  animation: filePulse 1.4s ease-in-out infinite;
 }
 @keyframes filePulse {
   0%,

@@ -1,7 +1,14 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, test } from "vitest";
-import { ACCENT_PRESETS, ACCENT_TEXT_GROUNDS, accentTextFor, DEFAULT_ACCENT } from "./accent";
+import {
+  ACCENT_PRESETS,
+  ACCENT_TEXT_GROUNDS,
+  accentTextFor,
+  DEFAULT_ACCENT,
+  HUD_LINE_GROUNDS,
+  hudLineFor,
+} from "./accent";
 
 // Parses the SHIPPED palette (tokens.css) and enforces WCAG-AA contrast on each theme, so a
 // future palette tweak can't silently drop below readable. Dark is the bare `:root` default;
@@ -434,3 +441,47 @@ for (const mode of ["dark", "light"] as const)
         expect(ratio(c, g), `${p.label} on ${g}`).toBeGreaterThanOrEqual(4.5);
     }
   });
+
+// ---- NIGHTJAR (#1531, docs/design.md v2 §3) ----
+
+test("the grounds hudLineFor() measures against ARE tokens.css's", () => {
+  const bare = block(":root {");
+  const light = block(':root[data-theme="light"]');
+  expect(HUD_LINE_GROUNDS.dark.grounds).toEqual([token(bare, "bg-0"), token(bare, "bg-1"), token(bare, "ground")]);
+  expect(HUD_LINE_GROUNDS.light.grounds).toEqual([token(light, "bg-0"), token(light, "bg-1"), token(light, "ground")]);
+  expect(HUD_LINE_GROUNDS.dark.text).toBe(token(bare, "text-1"));
+  expect(HUD_LINE_GROUNDS.light.text).toBe(token(light, "text-1"));
+});
+
+test("tokens.css's light --hud is hudLineFor(the default amber)", () => {
+  expect(token(block(':root[data-theme="light"]'), "hud")).toBe(hudLineFor(DEFAULT_ACCENT, "light"));
+  // On dark the default amber already reads, so the token stays the accent itself.
+  expect(hudLineFor(DEFAULT_ACCENT, "dark")).toBe(DEFAULT_ACCENT);
+});
+
+for (const mode of ["dark", "light"] as const) {
+  test(`${mode}: the chrome line reads (>=3:1, WCAG 1.4.11) on every ground for all 16 presets`, () => {
+    for (const preset of ACCENT_PRESETS) {
+      const line = hudLineFor(preset.hex, mode);
+      for (const ground of HUD_LINE_GROUNDS[mode].grounds) {
+        expect(ratio(line, ground), `${preset.hex} → ${line} on ${ground}`).toBeGreaterThanOrEqual(3);
+      }
+    }
+  });
+}
+
+test("dark: --hud is the accent itself and --hud-text is --accent-text (AA via its own test)", () => {
+  const bare = block(":root {");
+  expect(bare).toMatch(/--hud:\s*var\(--accent\)/);
+  expect(bare).toMatch(/--hud-text:\s*var\(--accent-text\)/);
+});
+
+for (const [name, selector] of Object.entries(THEMES)) {
+  test(`${name}: --on-danger on a filled --status-down meets AA (a destructive confirm)`, () => {
+    const b = block(selector);
+    const bare = block(":root {");
+    const onDanger = (b.match(/--on-danger:\s*(#[0-9a-fA-F]{6})/) ?? bare.match(/--on-danger:\s*(#[0-9a-fA-F]{6})/))![1];
+    const down = (b.match(/--status-down:\s*(#[0-9a-fA-F]{6})/) ?? bare.match(/--status-down:\s*(#[0-9a-fA-F]{6})/))![1];
+    expect(ratio(onDanger, down)).toBeGreaterThanOrEqual(4.5);
+  });
+}

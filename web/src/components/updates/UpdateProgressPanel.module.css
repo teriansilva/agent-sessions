@@ -103,11 +103,10 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .fill {
-    transition: none;
-  }
-  .spin {
-    animation: none;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .fill {
+  transition: none;
+}
+:root:not([data-motion="full"]) .spin {
+  animation: none;
 }

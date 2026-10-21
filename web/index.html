@@ -72,6 +72,18 @@
             }
           }
         } catch (e) {}
+        // Motion mode (#1531, docs/design.md v2 §8), applied before first paint so nothing can
+        // animate ahead of the operator's choice. Mirrors web/src/theme/motion.ts resolveMotion:
+        // a stored full|reduced|off wins; otherwise ("system", absent, unknown) the device's
+        // prefers-reduced-motion picks reduced, else full.
+        var mo = "full";
+        try {
+          var ms = localStorage.getItem("tr-motion");
+          if (ms === "full" || ms === "reduced" || ms === "off") mo = ms;
+          else if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+            mo = "reduced";
+        } catch (e) {}
+        root.setAttribute("data-motion", mo);
       })();
     </script>
   </head>

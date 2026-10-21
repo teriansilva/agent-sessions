@@ -271,6 +271,9 @@ test("ordinary buttons and section links glitch without losing hit areas (#946)"
     await control.click({ trial: true });
   }
   await page.emulateMedia({ reducedMotion: "reduce" });
+  // The device setting reaches the page through the motion mode (#1531: Match device), which
+  // follows it live — wait for the mode, not for the media query.
+  await expect(page.locator("html")).toHaveAttribute("data-motion", "reduced");
   for (const control of controls) {
     expect(
       await control.evaluate((el) => {

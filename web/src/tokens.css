@@ -87,9 +87,14 @@
   --syn-type: #8fd3c7;
   --syn-property: #b9bec7;
   --syn-punct: #a7abb3;
+  /* "BattleLab Mono" is the bundled JetBrains Mono subset (theme/fonts.css, #1531), registered
+     under its own name so it never shadows a locally installed JetBrains Mono; the v1 stack
+     follows unchanged as the fallback. */
   --font-mono:
-    "JetBrains Mono", "Cascadia Mono", "Fira Code", "SF Mono", ui-monospace,
+    "BattleLab Mono", "JetBrains Mono", "Cascadia Mono", "Fira Code", "SF Mono", ui-monospace,
     "Roboto Mono", Menlo, Consolas, monospace;
+  /* Display face (#1531): headings, readouts, the wordmark and callsign titles. Never body text. */
+  --font-display: "BattleLab Display", "BattleLab Mono", ui-sans-serif, system-ui, sans-serif;
   /* Legacy app token names remapped onto the HUD palette so existing component CSS just works. */
   --bg: #0d0e10;
   --panel: #131418;
@@ -126,6 +131,79 @@
   --engine-lime: #c5e15a;
   --engine-magenta: #f472b6;
   --engine-slate: #8b98a5;
+
+  /* ---------------------------------------------------------------------------------------
+     NIGHTJAR // OPS (#1531, docs/design.md v2). Theme-shared unless restated below.
+     --------------------------------------------------------------------------------------- */
+  /* The atmosphere's ground: a shade under --bg-0 so panels (--bg-1) float on it. */
+  --ground: #090a0c;
+  /* Chrome lines (rails, notches, ticks, panel edges) follow the accent, so a custom accent
+     recolours the whole frame. As TEXT the chrome reads --hud-text, which is --accent-text and
+     therefore already held at AA for every preset by contrast.test.ts. */
+  --hud: var(--accent);
+  --hud-text: var(--accent-text);
+  --hud-dim: color-mix(in srgb, var(--hud) 45%, transparent);
+  --hud-faint: color-mix(in srgb, var(--hud) 16%, transparent);
+  --hud-tint: color-mix(in srgb, var(--hud) 10%, transparent);
+  /* Glow (v3 levels, "tune down the glow"): never on body text, numbers, pips or gauges, and
+     none at all on light. --glow-led is the halo radius an LED paints in its own status colour. */
+  --glow-led: 5px;
+  --glow-rail: 0 0 5px color-mix(in srgb, var(--hud) 22%, transparent);
+  --glow-panel: drop-shadow(0 0 5px color-mix(in srgb, var(--hud) 10%, transparent));
+  --glow-head: 0 0 10px color-mix(in srgb, var(--hud) 13%, transparent);
+  /* Type scale (fixed px, operator-confirmed 2026-10-21). Every font-size in a `done` file is one
+     of these. Weights 400/500/600; 700 only for the wordmark and the primary CTA label. */
+  --fs-micro: 10px;
+  --fs-label: 11px;
+  --fs-meta: 12px;
+  --fs-row: 13px;
+  --fs-body: 14px;
+  --fs-title: 15px;
+  --fs-h2: 18px;
+  --fs-h1: 24px;
+  --fs-readout-sm: 20px;
+  --fs-readout: 32px;
+  /* Spacing. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  /* Chamfer: the cut corners of panels and of controls. Static clip-path only, never animated. */
+  --cut: 14px;
+  --cut-sm: 8px;
+  /* No stretching content: the widest a page or a prose column grows. */
+  --page-max: 1400px;
+  --prose-max: 80ch;
+  /* Depth: ONE ordered scale. A `done` file names one of these, never a number. */
+  --z-base: 0;
+  --z-raised: 1;
+  --z-dock: 10;
+  --z-pane-overlay: 20;
+  --z-map: 30;
+  --z-shell: 50;
+  --z-shell-drawer: 100;
+  --z-menu: 150;
+  --z-dialog: 200;
+  --z-dialog-stack: 210;
+  --z-toast: 220;
+  --z-boot: 230;
+  /* Overlays. */
+  --scrim: color-mix(in srgb, var(--bg-0) 72%, transparent);
+  --shadow-menu: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-dialog: 0 18px 48px rgba(0, 0, 0, 0.55);
+  --shadow-drawer: 0 0 32px rgba(0, 0, 0, 0.5);
+  /* Recording red (dictation). A signal colour, not failure text. */
+  --rec: #ff5a5a;
+  /* Ink on a filled --status-down (a destructive dialog's confirm): white holds AA on it in both
+     modes (6.1:1), where --text-1 fails on light. Pinned by contrast.test.ts. */
+  --on-danger: #ffffff;
+  /* Atmosphere (dark only, under 10% contrast): the 48px grid, scanlines, the vignette, noise. */
+  --grid-line: rgba(150, 170, 210, 0.06);
+  --scanline: rgba(255, 255, 255, 0.022);
+  --vignette: rgba(0, 0, 0, 0.55);
+  --noise-opacity: 0.05;
 }
 
 /* Theme presets (#211). The bare :root above is the DARK default (no attribute needed); the
@@ -180,6 +258,18 @@
   --engine-lime: #c5e15a;
   --engine-magenta: #f472b6;
   --engine-slate: #8b98a5;
+  /* NIGHTJAR (#1531): the values light overrides, restated so an explicit dark choice beats an
+     inherited light one. */
+  --ground: #090a0c;
+  --hud: var(--accent);
+  --glow-led: 5px;
+  --glow-rail: 0 0 5px color-mix(in srgb, var(--hud) 22%, transparent);
+  --glow-panel: drop-shadow(0 0 5px color-mix(in srgb, var(--hud) 10%, transparent));
+  --glow-head: 0 0 10px color-mix(in srgb, var(--hud) 13%, transparent);
+  --shadow-menu: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-dialog: 0 18px 48px rgba(0, 0, 0, 0.55);
+  --shadow-drawer: 0 0 32px rgba(0, 0, 0, 0.5);
+  --rec: #ff5a5a;
 }
 :root[data-theme="light"] {
   color-scheme: light;
@@ -242,4 +332,18 @@
   --engine-lime: #5f7a00;
   --engine-magenta: #b3246f;
   --engine-slate: #5b6672;
+  /* NIGHTJAR "daylight ops" (#1531): darker chrome lines so they read on the light grounds
+     (>=3:1 for every accent preset, pinned by contrast.test.ts), no glow at all, lighter overlay
+     shadows. */
+  --ground: #e4e6e9;
+  --hud: #ad7a09; /* hudLineFor(#ffb000, light): the default amber as a line that reads (>=3:1) on
+                    every light ground; a custom accent gets its own inline (applyAccent). */
+  --glow-led: 0px;
+  --glow-rail: none;
+  --glow-panel: none;
+  --glow-head: none;
+  --shadow-menu: 0 8px 24px rgba(10, 12, 16, 0.16);
+  --shadow-dialog: 0 18px 48px rgba(10, 12, 16, 0.22);
+  --shadow-drawer: 0 0 32px rgba(10, 12, 16, 0.18);
+  --rec: #d62f2f;
 }

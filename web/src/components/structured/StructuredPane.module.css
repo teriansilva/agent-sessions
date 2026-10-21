@@ -282,10 +282,9 @@
     transform: translateX(340%);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .startingBar::after {
-    animation: none;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .startingBar::after {
+  animation: none;
 }
 /* The same state in a map window, where the pane's head is hidden (#1339). */
 .skipBanner {
@@ -714,7 +713,8 @@
   animation: historyLoadingLed 1.2s ease-in-out infinite;
 }
 @keyframes historyLoadingLed { 50% { opacity: 0.35; } }
-@media (prefers-reduced-motion: reduce) { .historyLoadingLed { animation: none; } }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+ :root:not([data-motion="full"]) .historyLoadingLed { animation: none; }
 .historyRetry {
   min-height: 44px;
   padding: 0 14px;

@@ -273,10 +273,9 @@
     transform: rotate(360deg);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .spin {
-    animation: none;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .spin {
+  animation: none;
 }
 
 /* Mobile (≤800px): a bottom sheet, actions stacked full-width. */

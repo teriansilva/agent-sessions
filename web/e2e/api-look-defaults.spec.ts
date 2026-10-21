@@ -1,7 +1,9 @@
 // The API-session look's "defaults change nothing" guarantee (#1494 P3), held in a real browser.
 // Every element of a default StructuredPane (codex-api) and a default ChatPane (apichat), in dark
 // and light, on desktop and mobile, must compute exactly the styles recorded from `main` BEFORE
-// the look existed — e2e/fixtures/api-look-baseline.json. Re-record only on purpose:
+// the look existed — e2e/fixtures/api-look-baseline.json. Re-recorded once on purpose for #1531:
+// NIGHTJAR prepends the bundled "BattleLab Mono" face to --font-mono, which changed 148 font-family
+// values and nothing else (verified by diffing the two files). Re-record only on purpose:
 //   API_LOOK_BASELINE_WRITE=1 npx playwright test e2e/api-look-defaults.spec.ts --workers=1
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";

@@ -2377,16 +2377,15 @@
     opacity: 0.3;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .planDots i {
-    animation: none;
-  }
-  .planDots i:nth-child(2) {
-    opacity: 0.6;
-  }
-  .planDots i:nth-child(3) {
-    opacity: 0.3;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .planDots i {
+  animation: none;
+}
+:root:not([data-motion="full"]) .planDots i:nth-child(2) {
+  opacity: 0.6;
+}
+:root:not([data-motion="full"]) .planDots i:nth-child(3) {
+  opacity: 0.3;
 }
 /* The unfolded plan (Review plan) and Plan manually's form: the same column of fields. */
 .planOpen,

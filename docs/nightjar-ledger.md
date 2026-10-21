@@ -1,0 +1,206 @@
+# NIGHTJAR coverage ledger (#1531)
+
+Every stylesheet, popup component, canvas and page BattleLab ships, with its NIGHTJAR status. It
+exists because a rework that relies on memory forgets areas; this one fails the build instead.
+The rules are `docs/design.md` v2; the enforcement is `web/src/theme/nightjarLedger.test.ts`.
+
+**Columns**
+
+- **Path:** relative to `web/src/` for `css` / `popup` / `canvas` rows; a repo path or a named
+  surface for `page` rows.
+- **Kind:** `css` (a stylesheet), `popup` (a component rendering `role="dialog|menu|listbox|alertdialog"`,
+  `aria-modal`, `<dialog` or `createPortal`), `canvas`, `page`.
+- **Phase:** the #1531 phase that reskins it.
+- **Status:** `todo` · `done` · `n/a: <reason>`.
+- **Captures:** for a `done` row, the sweep capture ids that show it in each of its states
+  (`gallery:<section>` for the primitives gallery, `route:<id>` / `popup:<id>` for the sweep).
+- **Motion:** for a `done` row, the catalog entries it uses, or `none (reason)`.
+
+**What the test enforces**
+
+1. Every `*.css` under `web/src` and every popup component has a row (a new file without one fails).
+   Every `css` / `popup` / `canvas` row names a file that exists.
+2. A `done` stylesheet has no literal colour (`#hex`, `rgb()`, `hsl()`), no non-zero
+   `border-radius` outside LED / radar / round rules, no `box-shadow` with a blur that is not a
+   `--shadow-*` / `--glow-*` token, no numeric `z-index`, and no `font-size` that is not a
+   `--fs-*` token. Comments are stripped first. Keyword colours (`black`, `white`) inside a
+   `color-mix()` are allowed: they are mixing anchors, not palette colours.
+3. A `done` row names its captures and its motion.
+4. **Reviewers add rows, never just tick them.** A state found in review that has no row gets a row.
+
+**Literal allowlist** (content palettes keep their published values; they are not chrome):
+`tokens.css` (the palette itself), `theme/termSchemes.ts`, `theme/apiLook.ts`, the `--syn-*`
+syntax colours (in `tokens.css`), and the Appearance previews of other schemes. The test reads
+the same list.
+
+| Path | Kind | Phase | Status | Captures | Motion |
+|---|---|---|---|---|---|
+| `app/App.css` | css | 4 | todo |  |  |
+| `components/agents/Roster.module.css` | css | 11 | todo |  |  |
+| `components/agents/SessionDefaults.module.css` | css | 11 | todo |  |  |
+| `components/ask/AskCards.module.css` | css | 4 | todo |  |  |
+| `components/ask/AskConsole.module.css` | css | 4 | todo |  |  |
+| `components/ask/AskHome.module.css` | css | 4 | todo |  |  |
+| `components/ask/AskSidebar.module.css` | css | 4 | todo |  |  |
+| `components/automations/automations.module.css` | css | 10 | todo |  |  |
+| `components/chat/ChatPane.module.css` | css | 6 | todo |  |  |
+| `components/chat/EditProposal.module.css` | css | 6 | todo |  |  |
+| `components/dashboard/Dashboard.module.css` | css | 5 | todo |  |  |
+| `components/EnableLoginDetails.module.css` | css | 11 | todo |  |  |
+| `components/files/filePanel.module.css` | css | 7 | todo |  |  |
+| `components/files/mediaPreview.module.css` | css | 7 | todo |  |  |
+| `components/FolderPickerModal.module.css` | css | 3 | todo |  |  |
+| `components/gallery/gallery.module.css` | css | 10 | todo |  |  |
+| `components/gallery/viewTabs.module.css` | css | 10 | todo |  |  |
+| `components/hq/HqContactGallery.module.css` | css | 11 | todo |  |  |
+| `components/hq/hq.module.css` | css | 4 | todo |  |  |
+| `components/hq/PrimaryContact.module.css` | css | 5 | todo |  |  |
+| `components/hud/buttonGlitch.css` | css | 2 | done | gallery:buttons | glitch: filter only |
+| `components/HudDialog.module.css` | css | 3 | todo |  |  |
+| `components/hud/nightjar.css` | css | 2 | done | gallery:all | atmosphere, power-on, rail pulse, LED breathe/blink/flash, pips, gauge pulse, readout flash, seg/tab marker, disclosure, loaders, arrival, stream |
+| `components/links/HandoffStub.module.css` | css | 4 | todo |  |  |
+| `components/links/OpenLinkDialog.module.css` | css | 3 | todo |  |  |
+| `components/memory/agentAccess.module.css` | css | 10 | todo |  |  |
+| `components/memory/importCard.module.css` | css | 10 | todo |  |  |
+| `components/memory/memoryGraph.module.css` | css | 10 | todo |  |  |
+| `components/newSession/NewSessionControls.module.css` | css | 6 | todo |  |  |
+| `components/overview/overview.css` | css | 9 | todo |  |  |
+| `components/overview/sessionWindow.module.css` | css | 9 | todo |  |  |
+| `components/overview/windowLayer.module.css` | css | 9 | todo |  |  |
+| `components/playbooks/playbookCanvas.module.css` | css | 10 | todo |  |  |
+| `components/playbooks/playbookEditor.module.css` | css | 10 | todo |  |  |
+| `components/playbooks/playbookPrompts.module.css` | css | 10 | todo |  |  |
+| `components/playbooks/playbooks.module.css` | css | 10 | todo |  |  |
+| `components/playbooks/ProjectPlaybook.module.css` | css | 10 | todo |  |  |
+| `components/plugins/PluginSetup.module.css` | css | 11 | todo |  |  |
+| `components/ProjectColorPicker.module.css` | css | 10 | todo |  |  |
+| `components/projects/ProjectSessionDefaults.module.css` | css | 10 | todo |  |  |
+| `components/pulse/direction.module.css` | css | 8 | todo |  |  |
+| `components/pulse/missionDrawer.module.css` | css | 8 | todo |  |  |
+| `components/pulse/mission.module.css` | css | 8 | todo |  |  |
+| `components/pulse/missionThread.module.css` | css | 8 | todo |  |  |
+| `components/pulse/NotificationBell.module.css` | css | 4 | todo |  |  |
+| `components/pulse/Orchestrator.module.css` | css | 8 | todo |  |  |
+| `components/sessions/AdoptToMissionModal.module.css` | css | 3 | todo |  |  |
+| `components/settings/AgentEndpointCard.module.css` | css | 11 | todo |  |  |
+| `components/settings/ResourceLimits.module.css` | css | 11 | todo |  |  |
+| `components/shares/Shares.module.css` | css | 11 | todo |  |  |
+| `components/shell/HelpMenu.module.css` | css | 4 | todo |  |  |
+| `components/shell/OperatorMenu.module.css` | css | 4 | todo |  |  |
+| `components/shell/SectionNav.module.css` | css | 4 | todo |  |  |
+| `components/sidebar/Filters.module.css` | css | 6 | todo |  |  |
+| `components/sidebar/RowMenu.module.css` | css | 3 | todo |  |  |
+| `components/sidebar/SessionList.module.css` | css | 6 | todo |  |  |
+| `components/slideshow/Slideshow.module.css` | css | 4 | todo |  |  |
+| `components/structured/BackgroundWork.module.css` | css | 6 | todo |  |  |
+| `components/structured/Markdown.module.css` | css | 6 | todo |  |  |
+| `components/structured/NotSent.module.css` | css | 6 | todo |  |  |
+| `components/structured/Outbox.module.css` | css | 6 | todo |  |  |
+| `components/structured/Questions.module.css` | css | 6 | todo |  |  |
+| `components/structured/StructuredPane.module.css` | css | 6 | todo |  |  |
+| `components/templates/ConfirmDialog.module.css` | css | 3 | todo |  |  |
+| `components/templates/SuggestionsPanel.module.css` | css | 10 | todo |  |  |
+| `components/templates/TemplatePickerModal.module.css` | css | 3 | todo |  |  |
+| `components/terminal/Compose.module.css` | css | 6 | todo |  |  |
+| `components/terminal/HandoffModal.module.css` | css | 3 | todo |  |  |
+| `components/terminal/RuntimeGate.module.css` | css | 6 | todo |  |  |
+| `components/terminal/SentMessagesModal.module.css` | css | 3 | todo |  |  |
+| `components/terminal/SessionRecapModal.module.css` | css | 3 | todo |  |  |
+| `components/terminal/Terminal.module.css` | css | 6 | todo |  |  |
+| `components/ui/actionButton.module.css` | css | 2 | done | gallery:buttons | press glitch (filter), hover |
+| `components/updates/UpdateProgressPanel.module.css` | css | 11 | todo |  |  |
+| `components/updates/UpdateWhatsNew.module.css` | css | 11 | todo |  |  |
+| `components/wizard/WizardShell.module.css` | css | 4 | todo |  |  |
+| `index.css` | css | 1 | todo |  |  |
+| `routes/AgentsSettings.module.css` | css | 11 | todo |  |  |
+| `routes/Appearance.module.css` | css | 11 | todo |  |  |
+| `routes/Ask.module.css` | css | 4 | todo |  |  |
+| `routes/Checklists.module.css` | css | 8 | todo |  |  |
+| `routes/Memory.module.css` | css | 10 | todo |  |  |
+| `routes/NewProject.module.css` | css | 10 | todo |  |  |
+| `routes/NewSessionLanding.module.css` | css | 6 | todo |  |  |
+| `routes/NightjarGallery.module.css` | css | 2 | done | gallery:all | none (layout) |
+| `routes/Onboarding.module.css` | css | 4 | todo |  |  |
+| `routes/ProjectsManager.module.css` | css | 11 | todo |  |  |
+| `routes/Pulse.module.css` | css | 8 | todo |  |  |
+| `routes/Settings.module.css` | css | 11 | todo |  |  |
+| `routes/Templates.module.css` | css | 10 | todo |  |  |
+| `routes/Variables.module.css` | css | 10 | todo |  |  |
+| `share/ShareViewer.module.css` | css | 12 | todo |  |  |
+| `theme/fonts.css` | css | 1 | done | gallery:all | none (font faces) |
+| `theme/motion.css` | css | 1 | done | gallery:all | the mode rules and keyframes themselves |
+| `tokens.css` | css | n/a | n/a: the palette itself (literal allowlist) | — | — |
+| `whatsnew/WhatsNewDialog.module.css` | css | 4 | todo |  |  |
+| `app/App.tsx` | popup | 4 | todo |  |  |
+| `components/ask/AskSidebar.tsx` | popup | 4 | todo |  |  |
+| `components/ask/AskSwitcher.tsx` | popup | 3 | todo |  |  |
+| `components/ask/NeedsYouDetailsDialog.tsx` | popup | 3 | todo |  |  |
+| `components/ask/RecentWork.tsx` | popup | 3 | todo |  |  |
+| `components/automations/ConsentDialog.tsx` | popup | 3 | todo |  |  |
+| `components/files/BranchMenu.tsx` | popup | 3 | todo |  |  |
+| `components/files/FilePanel.tsx` | popup | 7 | todo |  |  |
+| `components/files/FileViewerModal.tsx` | popup | 3 | todo |  |  |
+| `components/files/GitTab.tsx` | popup | 3 | todo |  |  |
+| `components/files/RowMenu.tsx` | popup | 3 | todo |  |  |
+| `components/files/UploadControl.tsx` | popup | 3 | todo |  |  |
+| `components/files/UploadQueue.tsx` | popup | 3 | todo |  |  |
+| `components/FolderPickerModal.tsx` | popup | 3 | todo |  |  |
+| `components/links/OpenLinkDialog.tsx` | popup | 3 | todo |  |  |
+| `components/newSession/NewSessionControls.tsx` | popup | 6 | todo |  |  |
+| `components/overview/SessionTextDialog.tsx` | popup | 3 | todo |  |  |
+| `components/playbooks/PlaybookDialog.tsx` | popup | 3 | todo |  |  |
+| `components/pulse/MissionConsole.tsx` | popup | 8 | todo |  |  |
+| `components/pulse/MissionOverflow.tsx` | popup | 3 | todo |  |  |
+| `components/pulse/MissionRail.tsx` | popup | 8 | todo |  |  |
+| `components/pulse/MissionTitle.tsx` | popup | 3 | todo |  |  |
+| `components/pulse/NotificationBell.tsx` | popup | 3 | todo |  |  |
+| `components/pulse/ObjectiveDirectionDialog.tsx` | popup | 3 | todo |  |  |
+| `components/sessions/AdoptToMissionModal.tsx` | popup | 3 | todo |  |  |
+| `components/shares/SharePubliclyModal.tsx` | popup | 3 | todo |  |  |
+| `components/sidebar/MoveToProjectModal.tsx` | popup | 3 | todo |  |  |
+| `components/sidebar/RowMenu.tsx` | popup | 3 | todo |  |  |
+| `components/structured/PermissionsDialog.tsx` | popup | 3 | todo |  |  |
+| `components/structured/StructuredPane.tsx` | popup | 6 | todo |  |  |
+| `components/templates/ConfirmDialog.tsx` | popup | 3 | todo |  |  |
+| `components/templates/SessionChooserModal.tsx` | popup | 3 | todo |  |  |
+| `components/templates/TemplatePickerModal.tsx` | popup | 3 | todo |  |  |
+| `components/terminal/Compose.tsx` | popup | 6 | todo |  |  |
+| `components/terminal/HandoffModal.tsx` | popup | 3 | todo |  |  |
+| `components/terminal/HeadActions.tsx` | popup | 3 | todo |  |  |
+| `components/terminal/KeyBar.tsx` | popup | 3 | todo |  |  |
+| `components/terminal/SentMessagesModal.tsx` | popup | 3 | todo |  |  |
+| `components/terminal/SessionRecapModal.tsx` | popup | 3 | todo |  |  |
+| `components/terminal/Terminal.tsx` | popup | 6 | todo |  |  |
+| `components/ui/AnchoredMenu.tsx` | popup | 3 | todo |  |  |
+| `routes/NewSessionLanding.tsx` | popup | 6 | todo |  |  |
+| `routes/Onboarding.tsx` | popup | 4 | todo |  |  |
+| `routes/RenameProjectModal.tsx` | popup | 3 | todo |  |  |
+| `whatsnew/WhatsNewDialog.tsx` | popup | 4 | todo |  |  |
+| `components/hud/DataFlowCanvas.tsx` | canvas | 1 | done | gallery:all | canvas trails (Full, dark), still grid otherwise |
+| `components/overview/OverviewCanvas.tsx (React Flow)` | canvas | 9 | todo |  |  |
+| `components/memory/MemoryGraph.tsx (React Flow)` | canvas | 9 | todo |  |  |
+| `components/playbooks/PlaybookFlowCanvas.tsx (React Flow)` | canvas | 9 | todo |  |  |
+| `web/index.html (SPA shell, pre-paint script)` | page | 1 | todo |  |  |
+| `src/agent_sessions/templates/login.html` | page | 12 | todo |  |  |
+| `src/agent_sessions/templates/login_totp.html` | page | 12 | todo |  |  |
+| `src/agent_sessions/templates/change_password.html` | page | 12 | todo |  |  |
+| `src/agent_sessions/templates/link_approve.html` | page | 12 | todo |  |  |
+| `web/share.html → share/ShareViewer.tsx` | page | 12 | todo |  |  |
+| `src/agent_sessions/routes/shares.py PLACEHOLDER_PAGE` | page | 12 | todo |  |  |
+| `web/connect.html (+ homefree/connectState.ts)` | page | 12 | todo |  |  |
+| `landing/index.html` | page | 12b | n/a: rebuilt in NIGHTJAR by #1544 (PR #1548); 12b checks conformance only | — | — |
+| `landing/legal.html` | page | 12b | todo |  |  |
+| `landing/privacy.html (+ landing/consent.js)` | page | 12b | todo |  |  |
+| `landing/dictation-probe.html` | page | 12b | todo |  |  |
+| `landing/404.html (new)` | page | 12b | todo |  |  |
+| `landing/og.svg` | page | 12b | todo |  |  |
+| `docs/site home (index.md)` | page | 12c | todo |  |  |
+| `docs/site pages (theme/hud.css)` | page | 12c | todo |  |  |
+| `docs/site local search` | page | 12c | todo |  |  |
+| `docs/site 404` | page | 12c | todo |  |  |
+| `battlelab-cloud relay/admin_page.py` | page | 12d | todo |  |  |
+| `battlelab-cloud catalog gallery.html` | page | 12d | todo |  |  |
+| `battlelab-cloud catalog admin.html` | page | 12d | todo |  |  |
+| `battlelab-cloud catalog edge 403` | page | 12d | todo |  |  |
+| `web/public/og-image.svg + og-image.png` | page | 13 | todo |  |  |
+| `web/public/onboarding/* (tour slides)` | page | 13 | todo |  |  |

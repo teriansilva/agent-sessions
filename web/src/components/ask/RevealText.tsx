@@ -3,7 +3,8 @@
  *  The server sends each answer whole (the model calls are JSON-mode, not token streams), so this
  *  is presentation: the text is revealed over `REVEAL_MS` of wall-clock time, and a new text — Stage 2's
  *  confirmed answer replacing Stage 1's — is revealed again from where the two stop agreeing.
- *  Under `prefers-reduced-motion`, or where `matchMedia` is missing, the whole text shows at once —
+ *  Outside the Full motion mode (#1531: Reduced, Off) the whole text shows at once — including
+ *  when the mode changes mid-reveal, which flushes what is left —
  *  and so does an `instant` one: an answer read back from a kept conversation (#1443) is history,
  *  and twelve of them writing themselves out at once would grow the thread under a scroll that had
  *  already landed on its newest entry.
@@ -17,14 +18,12 @@
  */
 import { type ReactNode, useEffect, useState } from "react";
 
+import { useMotion } from "../../theme/motionStore";
+
 /** How long a reveal takes, whatever the frame rate. Counting FRAMES instead froze a reveal
  *  mid-sentence on a loaded machine, where frames arrive seconds apart. */
 const REVEAL_MS = 600;
 
-function reducedMotion(): boolean {
-  if (typeof window === "undefined" || !window.matchMedia) return true;
-  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
 
 function commonPrefix(x: string, y: string): number {
   let i = 0;
@@ -45,7 +44,10 @@ export function RevealText({
   instant?: boolean;
   markup?: (text: string) => ReactNode;
 }) {
-  const reduce = instant || reducedMotion();
+  // The motion MODE (#1531), read live: a switch to Reduced or Off mid-reveal flushes the rest of
+  // the answer at once (below), so a stopped reveal can never leave it truncated.
+  const { mode } = useMotion();
+  const reduce = instant || mode !== "full";
   const [rev, setRev] = useState(() => ({
     text,
     n: reduce ? text.length : 0,
@@ -56,6 +58,8 @@ export function RevealText({
   if (rev.text !== text) {
     const from = commonPrefix(rev.text.slice(0, rev.n), text);
     setRev({ text, n: reduce ? text.length : from, from });
+  } else if (reduce && rev.n < text.length) {
+    setRev({ ...rev, n: text.length });
   }
   const shown = rev.text === text ? rev.n : 0;
   const from = rev.text === text ? rev.from : 0;

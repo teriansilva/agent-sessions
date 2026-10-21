@@ -357,17 +357,16 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .working,
-  .arrive,
-  .step::after {
-    animation: none;
-  }
-  .scanBlock {
-    animation: none;
-    width: 100%;
-    opacity: 0.5;
-  }
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .working,
+:root:not([data-motion="full"]) .arrive,
+:root:not([data-motion="full"]) .step::after {
+  animation: none;
+}
+:root:not([data-motion="full"]) .scanBlock {
+  animation: none;
+  width: 100%;
+  opacity: 0.5;
 }
 
 /* The composer's hint keeps to "Enter to send" on a phone, where the rest ran under Send. */
