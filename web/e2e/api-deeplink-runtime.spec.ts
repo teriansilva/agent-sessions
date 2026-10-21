@@ -347,8 +347,10 @@ test("a native-id alias that resolves after the give-up bound never flashes 'not
     { roster: "ok", rosterDelayMs: 0, wsClose: 4404 },
     { hints: { [PTY]: "pty", [API]: "api" } },
   );
+  // Resolves well past the 8 s bound: the chip must have a window wide enough to be seen on a
+  // loaded runner (9.5 s left 1.5 s and failed CI under load, #1512).
   await page.route(lookupPath(PTY, NATIVE), async (r) => {
-    await sleep(9_500);
+    await sleep(16_000);
     await fulfilSafely(r, { json: { ...row(API, ID), resolved_from: `${PTY}:${NATIVE}` } });
   });
   await page.goto(`/s/${PTY}/${NATIVE}`);
@@ -357,7 +359,7 @@ test("a native-id alias that resolves after the give-up bound never flashes 'not
   await expect(page.getByText("couldn’t check this session — retrying")).toBeVisible({
     timeout: 12_000,
   });
-  await expect(page).toHaveURL(new RegExp(`/s/${API}/${ID}$`), { timeout: 15_000 });
+  await expect(page).toHaveURL(new RegExp(`/s/${API}/${ID}$`), { timeout: 25_000 });
   await expect(page.getByTestId("structured-pane")).toBeVisible();
   expect(await seen(page)).toEqual([]);
 });
@@ -443,12 +445,15 @@ test("a truly missing id: the settled not-found result, once the lookup has answ
     { roster: "ok", rosterDelayMs: 0, wsClose: 4404 },
     { hints: { [PTY]: "pty", [API]: "api" } },
   );
+  // Slow enough that the terminal's 4404 reliably lands while the lookup is still pending — the
+  // window this test is about. At 1.5 s a loaded runner could settle the lookup first, so the
+  // interim "Opening…" was never needed and never drawn (#1512's CI).
   await page.route(lookupPath(PTY, NATIVE), async (r) => {
-    await sleep(1_500);
+    await sleep(5_000);
     await fulfilSafely(r, { status: 404, json: { detail: "no such session" } });
   });
   await page.goto(`/s/${PTY}/${NATIVE}`);
-  await expect(page.getByText("This session was not found.")).toBeVisible();
+  await expect(page.getByText("This session was not found.")).toBeVisible({ timeout: 15_000 });
   const back = page.getByRole("link", { name: /Back to Sessions/ });
   await expect(back).toBeVisible();
   expect((await back.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
