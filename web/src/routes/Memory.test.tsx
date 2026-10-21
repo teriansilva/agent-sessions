@@ -393,3 +393,44 @@ describe("Memory page — destructive actions and filters (#1453 review 2)", () 
     );
   });
 });
+
+describe("Memory page — Agent access (#1506 P2)", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { setRoster } = await import("../app/engineRoster");
+    const fixture = (await import("../test/roster.fixture.json")).default;
+    setRoster(fixture.engines as never);
+    vi.mocked(api.ingestMemory).mockResolvedValue({});
+  });
+
+  test("on: the card replaces the instructions card, and Copy puts the server's paragraph on the clipboard", async () => {
+    vi.mocked(api.memoryProjects).mockResolvedValue({
+      projects: [{ id: "p-1", name: "demo", color: "", enabled: true, notes: 0, pending: 0, quarantined: 0, last_write: null }],
+    });
+    vi.mocked(api.memory).mockResolvedValue({ ...view, enabled: true } as never);
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    renderPage();
+    const card = await screen.findByRole("region", { name: "Agent access" });
+    expect(screen.queryByRole("region", { name: "Agent instructions" })).toBeNull();
+    expect(within(card).getAllByText("Memory tool").length).toBeGreaterThan(0);
+    await userEvent.click(within(card).getByText("For agents without the tool"));
+    await userEvent.click(within(card).getByRole("button", { name: "Copy paragraph" }));
+    expect(writeText).toHaveBeenCalledWith(view.instructions);
+    expect(await screen.findByRole("status")).toHaveTextContent("Copied");
+  });
+
+  test("off: new sessions get nothing, running ones keep access; the main column describes the tool", async () => {
+    vi.mocked(api.memoryProjects).mockResolvedValue({
+      projects: [{ id: "p-1", name: "demo", color: "", enabled: false, notes: 0, pending: 0, quarantined: 0, last_write: null }],
+    });
+    vi.mocked(api.memory).mockResolvedValue(view as never);
+    renderPage();
+    const card = await screen.findByRole("region", { name: "Agent access" });
+    expect(card).toHaveTextContent(
+      "Memory is off — new sessions get nothing. Sessions already running keep access until they restart or stop.",
+    );
+    expect(within(card).queryByText("For agents without the tool")).toBeNull();
+    expect(screen.getByRole("region", { name: "Memory is off" })).toHaveTextContent("gets the BattleLab memory tool");
+  });
+});

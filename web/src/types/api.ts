@@ -1488,6 +1488,9 @@ export interface EngineInfo {
   model_select?: ModelSelect;
   /** Workspace-root instruction files the engine reads (#1189). */
   instructions?: { files: string[] };
+  /** How its CLI takes BattleLab's memory tool per launch (#1506), or null: the Memory page's
+   *  "Agent access" card says "memory tool" exactly when `mcp` is set. Absent on older servers. */
+  tools?: { mcp: string | null };
   usage: { source: "plan" | "tokens" | "manual" | "none" | string };
   terminal: { repaint: "none" | "wipe" | string };
   /** `retiring` (#1126 PR B): manifest gone, live sessions attach-only. Absent ⇒ active. */

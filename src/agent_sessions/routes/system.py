@@ -315,6 +315,9 @@ def register(
                 "model_select": _model_select(m, added.get(m.id, [])),
                 # Workspace-root instruction files the engine reads (#1189), bare names.
                 "instructions": {"files": list(m.instructions)},
+                # How its CLI takes BattleLab's memory tool for one launch (#1506), or None: the
+                # Memory page's "Agent access" card says "memory tool" exactly when this is set.
+                "tools": {"mcp": m.tools_mcp},
                 "usage": {"source": m.usage.source},
                 "terminal": {"repaint": m.terminal.repaint},
                 # Lifecycle (#853 P3), distinct from `present` (which is about the binary):
@@ -420,6 +423,7 @@ def register(
                     m, prefs.get_agent_defaults()["models"].get(m.id, [])
                 ),
                 "instructions": {"files": list(m.instructions)},
+                "tools": {"mcp": m.tools_mcp},
                 "maintenance": list(m.maintenance),
             }
 

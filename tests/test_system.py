@@ -69,6 +69,8 @@ def test_engines_lists_all_providers(auth_cfg, fake_jsonl, tmp_home, monkeypatch
             # #1189 — what a launch may choose, and the instruction files the engine reads.
             "model_select",
             "instructions",
+            # #1506 P2 — how the CLI takes BattleLab's memory tool ("Agent access" card).
+            "tools",
             "usage",
             "terminal",
             "status",
@@ -88,6 +90,7 @@ def test_engines_lists_all_providers(auth_cfg, fake_jsonl, tmp_home, monkeypatch
         assert e["session_id"] == {"mint": m.session_id.mint}
         assert e["usage"] == {"source": m.usage.source}
         assert e["terminal"] == {"repaint": m.terminal.repaint}
+        assert e["tools"] == {"mcp": m.tools_mcp}
         assert set(e["model_select"]) == {
             "supported",
             "on_resume",

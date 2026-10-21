@@ -5,7 +5,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { MEMORY_PATH } from "../src/lib/routes";
 import { CONFIG, commonMocks } from "./mission-directions";
-import { mockRoster } from "./roster";
+import { mockRoster, ROSTER } from "./roster";
 
 const PID = "p-1a2b3c4d";
 const NOW = Date.now() / 1000;
@@ -185,20 +185,111 @@ test("the switch turns memory off and the clear confirm explains what goes", asy
   await expect(page.getByText("Off by default. Turning it on reaches new sessions only.")).toBeVisible();
 });
 
-test("a new project, memory off: the paragraph to paste is on screen and copies, on a phone too", async ({ page, context }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+test("a new project, memory off: Agent access says new sessions get nothing and running ones keep access, on a phone too", async ({ page }) => {
   await mockMemory(page, { enabled: false, notes: [], pending: [], refused: [], quarantine: [] });
   await page.goto(MEMORY_PATH);
   await expect(page.getByRole("button", { name: "Turn memory on" })).toBeVisible();
-  const card = page.getByRole("region", { name: "Agent instructions" });
+  const card = page.getByRole("region", { name: "Agent access" });
   await card.scrollIntoViewIfNeeded();
   await expect(card).toBeVisible();
-  await expect(card).toContainText("BATTLELAB_MEMORY_INBOX");
+  // Off is not revocation (#1506 board v2): new sessions get nothing, running ones keep access.
+  await expect(card).toContainText("Memory is off — new sessions get nothing. Sessions already running keep access until they restart or stop.");
+  await expect(card.getByRole("list")).toHaveCount(0);
+  await expect(card.getByText("For agents without the tool")).toHaveCount(0);
   await expect(card.getByRole("link", { name: "Which agents can reach it" }))
     .toHaveAttribute("href", "https://docs.battlelabos.com/guide/memory#which-agents-can-reach-it");
-  await card.getByRole("button", { name: "Copy paragraph" }).click();
-  await expect(page.getByRole("status")).toContainText("Copied");
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toContain("$BATTLELAB_MEMORY_INBOX");
+  await expect(page.getByRole("region", { name: "Memory is off" })).toContainText("gets the BattleLab memory tool");
+});
+
+/** The agents the card lists and the tag each gets, from the SAME roster the mock serves — the
+ *  e2e side never names an engine either. */
+function expectedAccess(engines: Record<string, unknown>[]) {
+  return engines
+    .filter(e => e.kind === "agent" && e.runtime !== "chat" && (e.status ?? "active") === "active")
+    .sort((a, b) => (a.display as { order: number }).order - (b.display as { order: number }).order)
+    .map(e => ({ name: String(e.label), tag: (e.tools as { mcp: string | null } | undefined)?.mcp ? "Memory tool" : "Env vars + paragraph" }));
+}
+
+async function accessCard(page: Page, isMobile: boolean) {
+  await page.goto(MEMORY_PATH);
+  await expect(page.getByRole("heading", { level: 1, name: "Memory" })).toBeVisible();
+  if (isMobile) await page.getByRole("tab", { name: /Trays/ }).click();
+  const card = page.getByRole("region", { name: "Agent access" });
+  await card.scrollIntoViewIfNeeded();
+  await expect(card).toBeVisible();
+  return card;
+}
+
+async function accessRows(card: ReturnType<Page["getByRole"]>) {
+  return card.getByRole("list", { name: "How each agent reaches memory" }).getByRole("listitem").evaluateAll(lis =>
+    lis.map(li => ({ name: li.firstElementChild?.textContent ?? "", tag: li.lastElementChild?.textContent ?? "" })));
+}
+
+for (const theme of ["dark", "light"] as const) {
+  test(`${theme} theme: Agent access lists every agent's way to memory from the roster; the paragraph opens and copies`, async ({ page, context, isMobile }, testInfo) => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.addInitScript(t => localStorage.setItem("tr-theme", t), theme);
+    await mockMemory(page);
+    const card = await accessCard(page, isMobile);
+    await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+    await expect(card).toContainText("Agents get the BattleLab memory tool automatically when memory is on.");
+    await expect(card).toContainText("Sessions already running join after a restart.");
+    const want = expectedAccess(ROSTER.engines);
+    expect(want.some(r => r.tag === "Memory tool") && want.some(r => r.tag === "Env vars + paragraph")).toBe(true);
+    expect(await accessRows(card)).toEqual(want);
+    // The tags are mono, uppercase labels and never a status colour.
+    const tags = await card.getByRole("listitem").evaluateAll(lis => lis.map(li => {
+      const cs = getComputedStyle(li.lastElementChild!);
+      return { transform: cs.textTransform, font: cs.fontFamily, radius: cs.borderRadius, image: cs.backgroundImage };
+    }));
+    for (const t of tags) {
+      expect(t.transform).toBe("uppercase");
+      expect(t.font.toLowerCase()).toMatch(/mono/);
+      expect(t.radius).toBe("0px");
+      expect(t.image).toBe("none");
+    }
+    // Collapsed: the paragraph waits behind the disclosure.
+    const paragraph = card.locator("pre");
+    await expect(paragraph).toBeHidden();
+    const summary = card.getByText("For agents without the tool");
+    await summary.click();
+    await expect(paragraph).toBeVisible();
+    await expect(paragraph).toContainText("$BATTLELAB_MEMORY_INBOX");
+    // Every control in the card is a real touch target.
+    const small = await card.locator("summary, button, a").evaluateAll(els =>
+      els.map(el => ({ text: (el.textContent || "").trim(), h: el.getBoundingClientRect().height })).filter(r => r.h < 44));
+    expect(small, "Agent access controls under 44px").toEqual([]);
+    // Nothing spills sideways (the phone project is 412 px wide).
+    const spill = await card.evaluate(el => {
+      const box = el.getBoundingClientRect();
+      const out = [...el.querySelectorAll("*")].filter(c => {
+        const r = c.getBoundingClientRect();
+        return r.width > 0 && (r.left < box.left - 0.5 || r.right > box.right + 0.5);
+      }).map(c => (c.textContent || "").trim().slice(0, 30));
+      return { out, scroll: el.scrollWidth - el.clientWidth, page: document.documentElement.scrollWidth - document.documentElement.clientWidth };
+    });
+    expect(spill).toEqual({ out: [], scroll: 0, page: 0 });
+    const vp = isMobile ? "mobile" : "desktop";
+    const shot = testInfo.outputPath(`memory-agent-access-${theme}-${vp}.png`);
+    await card.screenshot({ path: shot });
+    await testInfo.attach(`memory-agent-access-${theme}-${vp}`, { path: shot, contentType: "image/png" });
+    expect(await contrastFailures(page)).toEqual([]);
+    await card.getByRole("button", { name: "Copy paragraph" }).click();
+    await expect(page.getByRole("status")).toContainText("Copied");
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toContain("$BATTLELAB_MEMORY_INBOX");
+  });
+}
+
+test("Agent access follows the served roster: without `tools.mcp` an agent needs the paragraph", async ({ page, isMobile }) => {
+  // The same roster, every engine's `tools.mcp` withdrawn (an older server, or a manifest that
+  // dropped its kind): nothing is guessed — every agent reads "Env vars + paragraph".
+  const overrides = Object.fromEntries(ROSTER.engines.map(e => [e.id, { tools: { mcp: null } }]));
+  await mockRoster(page, { overrides });
+  await mockMemory(page);
+  const card = await accessCard(page, isMobile);
+  const rows = await accessRows(card);
+  expect(rows.length).toBeGreaterThan(0);
+  expect(rows.map(r => r.tag)).toEqual(rows.map(() => "Env vars + paragraph"));
 });
 
 test("existing memory: choose, import, report — and what was held back is a list to fix at the source, not a tray", async ({ page, isMobile }) => {
@@ -415,13 +506,13 @@ test.describe("wide desktop layout", () => {
     const rail = (await page.getByRole("navigation", { name: "Projects" }).boundingBox())!;
     const g = (await graph.boundingBox())!;
     const card = (await page.getByRole("region", { name: "Existing memory" }).boundingBox())!;
-    const paragraph = (await page.getByRole("region", { name: "Agent instructions" }).boundingBox())!;
+    const paragraph = (await page.getByRole("region", { name: "Agent access" }).boundingBox())!;
     const sw = (await page.getByRole("switch", { name: "Shared memory for agent-sessions" }).boundingBox())!;
     // The rail's left edge to the right column's right edge covers most of the screen.
     expect(card.x + card.width - rail.x, "layout width").toBeGreaterThanOrEqual(2135 * 0.88);
     expect(g.height, "graph height").toBeGreaterThanOrEqual(620);
     expect(card.x, "existing memory beside the graph").toBeGreaterThanOrEqual(g.x + g.width);
-    expect(paragraph.x, "agent paragraph beside the graph").toBeGreaterThanOrEqual(g.x + g.width);
+    expect(paragraph.x, "agent access beside the graph").toBeGreaterThanOrEqual(g.x + g.width);
     expect(sw.x, "the switch belongs to the project bar, over the graph").toBeGreaterThanOrEqual(main.x);
     await expect(page.getByRole("navigation", { name: "Projects" }).getByRole("region")).toHaveCount(0);
     // The graph's legend never covers its zoom controls.
@@ -451,7 +542,7 @@ test("the page scrolls: the setup cards below the fold are reached with the whee
   const title = page.getByRole("heading", { level: 1, name: "Memory" });
   await expect(title).toBeVisible();
   if (isMobile) await page.getByRole("tab", { name: /Trays/ }).click();
-  const card = page.getByRole("region", { name: "Agent instructions" });
+  const card = page.getByRole("region", { name: "Agent access" });
   await expect(card).toBeAttached();
   // The card's last control, so the assertion holds even when the card is taller than the window.
   const last = card.getByRole("link", { name: "Which agents can reach it" });

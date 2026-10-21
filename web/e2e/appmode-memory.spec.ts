@@ -141,7 +141,11 @@ test("existing Claude Code memory is found, imported through the real store, and
   // The take-over (#1471 P3): the paragraph the page shows — and the one Copy puts on the
   // clipboard — is the server's, and it moves agents over to shared memory.
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  const paragraph = page.getByRole("region", { name: "Agent instructions" });
+  const paragraph = page.getByRole("region", { name: "Agent access" });
+  // The real roster (#1506 P2): agents whose manifest declares the tool say so; the paragraph
+  // for the others waits behind the disclosure.
+  await expect(paragraph.getByText("Memory tool").first()).toBeVisible();
+  await paragraph.getByText("For agents without the tool").click();
   await expect(paragraph.locator("pre")).toHaveText(view.instructions);
   expect(view.instructions).toContain("leave what you learn in the inbox rather than in your own memory");
   await paragraph.getByRole("button", { name: "Copy paragraph" }).click();

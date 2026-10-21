@@ -30,6 +30,7 @@ MANIFEST_FIELDS = (
     "models",
     "model_select",
     "instructions",
+    "tools",
     "usage",
     "terminal",
     "status",

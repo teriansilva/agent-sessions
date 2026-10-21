@@ -13,8 +13,10 @@ Memory is **per project** and **off by default**. A folder that isn't a project 
 1. Open **Library → Memory**, pick the project, and flip the switch to **ON**.
 2. Start (or restart) a session in the project.
 
-That's all for Claude Code, Codex and OpenCode. For the other agents (Gemini CLI, Kimi Code,
-Antigravity), also paste the **agent instructions** paragraph from that page into the project's own
+That's all for Claude Code, Codex and OpenCode. The **Agent access** card on that page lists every
+agent: the ones tagged **MEMORY TOOL** get the memory tool on their own, the ones tagged
+**ENV VARS + PARAGRAPH** need one more step. For those (Gemini CLI, Kimi Code, Antigravity), open
+**For agents without the tool** on the card and paste the paragraph into the project's own
 instruction file (`AGENTS.md` or `GEMINI.md`, whichever the agent reads). BattleLab never edits your
 files, so this step is yours:
 
@@ -99,6 +101,11 @@ Without frontmatter the first heading becomes the name. A note with the same nam
 - **Graph**: notes by type, links between them, and the sessions that wrote them. Only *wrote* edges
   are drawn: BattleLab can see who left a note, but a plain file says nothing about who read it.
 - **List**: search, filter by type or agent, and open notes (the default view on a phone).
+- **Agent access**: which agents get the memory tool and which need the paragraph, read from each
+  agent's definition, with the paragraph and **Copy paragraph** behind **For agents without the
+  tool**. Sessions already running join after a restart. With memory off it says *new sessions get
+  nothing; sessions already running keep access until they restart or stop* — turning memory off
+  is not revocation. On a phone it sits under the **Trays** tab (or under the off notice).
 - **Note panel**: who wrote it and when, links in and out, **Edit** and **Delete**.
 - **Trays**: *Pending* (not yet taken in), *Refused* (too large, not text, too many) and
   *Quarantine* (see below).

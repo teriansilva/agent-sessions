@@ -35,8 +35,6 @@
 .switchLabel { min-width: 28px; }
 .hint, .small, .muted { color: var(--text-2); font-size: 12px; line-height: 1.55; margin: 0; }
 .small { color: var(--text-2); }
-.guideLink { display: inline-flex; align-items: center; min-height: 44px; color: var(--text-2); font-size: 12px; text-decoration: underline; align-self: flex-start; }
-.instructions { position: relative; display: flex; flex-direction: column; gap: 8px; padding: 14px; background: var(--panel); border: 1px solid var(--border); }
 .paragraph, .masked, .body { margin: 0; padding: 8px; font: 11px/1.55 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-2); background: var(--surface-3); border: 1px solid var(--border); }
 .body { font: 13px/1.6 inherit; color: var(--text-1); background: transparent; border: 0; padding: 0; }
 .main { min-width: 0; display: flex; flex-direction: column; gap: 14px; }

@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { ArrowLeft, Copy, Download, Search } from "lucide-react";
+import { ArrowLeft, Download, Search } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import { engineName, useEngineRoster } from "../app/engineRoster";
 import { relTime, sessionPathFromKey } from "../lib/format";
@@ -8,9 +8,9 @@ import { useIsMobile } from "../lib/useIsMobile";
 import { useConfig } from "../app/config";
 import type { MemoryNote, MemoryProject, MemorySession, MemoryView, NoteEdit, NoteType } from "../types/memory";
 import { ConfirmDialog } from "../components/templates/ConfirmDialog";
+import { AgentAccessCard } from "../components/memory/AgentAccessCard";
 import { ImportCard } from "../components/memory/ImportCard";
 import { linkedFrom, TYPE_ORDER, TYPE_TAG } from "../components/memory/memoryGraph";
-import { MEMORY_GUIDE_URL } from "../lib/links";
 import buttons from "../components/ui/actionButton.module.css";
 import styles from "./Memory.module.css";
 
@@ -230,16 +230,9 @@ export default function Memory() {
     <ImportCard key={pid} pid={pid} projectName={view.project.name} disabled={busy} onImported={refresh} />
   );
 
-  const instructions = view && (
-    <section className={styles.instructions} aria-label="Agent instructions">
-      <h2 className={styles.eyebrow}>Agent instructions</h2>
-      <p className={styles.muted}>Agents whose CLI takes BattleLab's memory tool get it automatically in new sessions. For the others, paste this once into the project's <code>CLAUDE.md</code> / <code>AGENTS.md</code> / <code>GEMINI.md</code>. BattleLab never edits your files.</p>
-      <pre className={styles.paragraph}>{view.instructions}</pre>
-      <button type="button" className={buttons.ghost} onClick={copy}><Copy size={14} aria-hidden="true" /> Copy paragraph</button>
-      <p className={styles.small}>Reaches new agent processes only — reconnecting doesn't update a running agent, and turning memory off doesn't revoke access from processes already running.</p>
-      <a className={styles.guideLink} href={MEMORY_GUIDE_URL} target="_blank" rel="noopener noreferrer">Which agents can reach it</a>
-    </section>
-  );
+  // Agent access (#1506 P2): which agents get the memory tool and which need the paragraph, from
+  // the roster; the paragraph behind a disclosure. Same place as the old instructions card.
+  const access = view && <AgentAccessCard enabled={view.enabled} paragraph={view.instructions} onCopy={copy} />;
 
   const emptyText = query || typeFilter || agent ? "No notes match." : "No notes yet. Agents add them by writing into their inbox.";
   const list = (
@@ -344,7 +337,7 @@ export default function Memory() {
   const offState = view && !view.enabled && notes.length === 0 && (
     <section className={styles.off} aria-label="Memory is off">
       <h2>Shared memory is off for this project</h2>
-      <p className={styles.muted}>Turn it on and every new session in this project — terminal or API, any agent — gets two environment variables: <code>BATTLELAB_MEMORY</code> (the notes to read) and <code>BATTLELAB_MEMORY_INBOX</code> (where it leaves new ones). Agents whose CLI takes it also get the BattleLab memory tool to read notes and leave new ones; the others use the variables once your project's instruction file says so.</p>
+      <p className={styles.muted}>Turn it on and every new session in this project gets the BattleLab memory tool, or two environment variables (<code>BATTLELAB_MEMORY</code> to read notes, <code>BATTLELAB_MEMORY_INBOX</code> to leave new ones) where the agent can't load the tool.</p>
       <div className={styles.actions}><button type="button" className={buttons.primary} disabled={busy} onClick={toggle}>Turn memory on</button></div>
       <p className={styles.small}>Notes stay outside your repo, in BattleLab's config folder. Anything that looks like a credential is held back for you to review. Any agent in the project can read what another wrote — it's a shared notebook, so only turn it on where you want that.</p>
     </section>
@@ -391,10 +384,10 @@ export default function Memory() {
             {view && (offState ? (
               <>
                 {offState}
-                {/* The desktop side column carries the paragraph; on a phone the off state must, too —
-                    it's what the operator pastes before turning memory on. */}
+                {/* The desktop side column carries Agent access; on a phone the off state must, too —
+                    it says what turning memory off does and doesn't do. */}
                 {mobile && importCard}
-                {mobile && instructions}
+                {mobile && access}
                 {/* Turning memory off keeps what was held: it must stay inspectable and droppable. */}
                 {trays > 0 && traysView}
               </>
@@ -422,7 +415,7 @@ export default function Memory() {
                     {shown === "list" && list}
                     {(shown === "trays" || !mobile) && traysView}
                     {mobile && shown === "trays" && importCard}
-                    {mobile && shown === "trays" && instructions}
+                    {mobile && shown === "trays" && access}
                   </>
                 )}
               </>
@@ -432,7 +425,7 @@ export default function Memory() {
             <div className={styles.side}>
               {!offState && (inspector ?? <p className={styles.placeholder}>Select a note to see who wrote it and what it links to.</p>)}
               {importCard}
-              {instructions}
+              {access}
             </div>
           )}
         </div>

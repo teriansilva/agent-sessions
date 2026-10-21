@@ -124,6 +124,9 @@
           "CLAUDE.md"
         ]
       },
+      "tools": {
+        "mcp": "claude-mcp-config-flag"
+      },
       "usage": {
         "source": "plan"
       },
@@ -179,6 +182,9 @@
       "instructions": {
         "files": []
       },
+      "tools": {
+        "mcp": "claude-mcp-config-flag"
+      },
       "usage": {
         "source": "none"
       },
@@ -230,6 +236,9 @@
         "files": [
           "AGENTS.md"
         ]
+      },
+      "tools": {
+        "mcp": "opencode-config-content"
       },
       "usage": {
         "source": "tokens"
@@ -285,6 +294,9 @@
       },
       "instructions": {
         "files": []
+      },
+      "tools": {
+        "mcp": "opencode-config-content"
       },
       "usage": {
         "source": "none"
@@ -362,6 +374,9 @@
           "AGENTS.md"
         ]
       },
+      "tools": {
+        "mcp": "codex-config-override"
+      },
       "usage": {
         "source": "plan"
       },
@@ -416,6 +431,9 @@
       },
       "instructions": {
         "files": []
+      },
+      "tools": {
+        "mcp": "codex-config-override"
       },
       "usage": {
         "source": "none"
@@ -493,6 +511,9 @@
           "GEMINI.md"
         ]
       },
+      "tools": {
+        "mcp": null
+      },
       "usage": {
         "source": "manual"
       },
@@ -544,6 +565,9 @@
         "files": [
           "GEMINI.md"
         ]
+      },
+      "tools": {
+        "mcp": null
       },
       "usage": {
         "source": "plan"
@@ -597,6 +621,9 @@
           "AGENTS.md"
         ]
       },
+      "tools": {
+        "mcp": null
+      },
       "usage": {
         "source": "plan"
       },
@@ -647,6 +674,9 @@
       "instructions": {
         "files": []
       },
+      "tools": {
+        "mcp": null
+      },
       "usage": {
         "source": "tokens"
       },
@@ -696,6 +726,9 @@
       },
       "instructions": {
         "files": []
+      },
+      "tools": {
+        "mcp": null
       },
       "usage": {
         "source": "none"
