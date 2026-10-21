@@ -484,6 +484,37 @@ test.each([
   await waitFor(() => expect(screen.getByTestId("chat-empty")).toHaveTextContent(copy));
 });
 
+// #1502 (Hermes on #1522): a chat pane drawn from a CACHED runtime hint the roster has not
+// confirmed may be the wrong pane — the engine may be an API engine now, whose session the chat
+// route refuses. Until the roster confirms the runtime, a failed first read is "Opening…" (bounded
+// by Retry, owned by the gate), never "Couldn't load this conversation."
+test("an unconfirmed runtime makes a failed read provisional; a confirmed one shows the error (#1502)", async () => {
+  vi.mocked(api.chatGet).mockRejectedValue(new ApiError(409, "not a chat session"));
+  const view = render(
+    <MemoryRouter>
+      <ChatPane engine="apichat" id={SID} runtimeConfirmed={false} />
+    </MemoryRouter>,
+  );
+  expect(await screen.findByText("Opening this session…")).toBeInTheDocument();
+  expect(screen.queryByText("Couldn’t load this conversation.")).toBeNull();
+  view.rerender(
+    <MemoryRouter>
+      <ChatPane engine="apichat" id={SID} runtimeConfirmed />
+    </MemoryRouter>,
+  );
+  expect(await screen.findByText("Couldn’t load this conversation.")).toBeInTheDocument();
+});
+
+test("an unconfirmed runtime does not hide a conversation that loads (#1502)", async () => {
+  render(
+    <MemoryRouter>
+      <ChatPane engine="apichat" id={SID} runtimeConfirmed={false} />
+    </MemoryRouter>,
+  );
+  expect(await screen.findByTestId("chat-empty")).toBeInTheDocument();
+  expect(screen.queryByText("Opening this session…")).toBeNull();
+});
+
 // ---- busy conflicts (Hermes on #1514) -----------------------------------------------------------
 
 test("a fence 409 raised before the turn is appended is busy, not a refusal, even when the read shows nothing in flight", async () => {

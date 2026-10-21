@@ -44,13 +44,15 @@ import {
   forceSelectModifier,
 } from "../../lib/termSelect";
 import { useConfig } from "../../app/config";
-import { useSessionRow } from "../../app/useSessionRow";
+import { useSessionLookup } from "../../app/useSessionRow";
+import { reloadRoster } from "../../app/reloadRoster";
 import { useIsMobile } from "../../lib/useIsMobile";
 import {
   isNewSessionPlaceholder,
   useSessionsStore,
 } from "../../app/sessionsStore";
 import { AdoptToMissionModal } from "../sessions/AdoptToMissionModal";
+import { CLOSE_NOT_FOUND } from "../../lib/termCloseCodes";
 import {
   TermSocket,
   type TermGateHolder,
@@ -76,6 +78,8 @@ import { HandoffModal } from "./HandoffModal";
 import { HeadActions, type HeadAction } from "./HeadActions";
 import { HeadFacts } from "./HeadFacts";
 import { SessionRecapModal } from "./SessionRecapModal";
+import { NotFoundPanel, OPENING_GIVE_UP_MS, OpeningPanel } from "./SessionOpening";
+import { LOOKUP_FAILED_TEXT, termCover } from "./termCover";
 import styles from "./Terminal.module.css";
 import { missionLink } from "../../lib/missionLink";
 import { shareLink } from "../../lib/shareLink";
@@ -98,9 +102,11 @@ function statusText(s: TermStatus): string {
     case "rejected":
       return s.reason;
     case "connected":
+    case "wrong-runtime": // #1502: the Opening panel says it, not the corner chip
       return "";
   }
 }
+
 
 /** The live terminal: an xterm pane bridged to /ws/term/{engine}:{id} via TermSocket.
  *  Output is written verbatim; keystrokes and resize go back as JSON; reconnect +
@@ -285,7 +291,7 @@ export function Terminal({
   // lookup when it doesn't, so a deep-linked / archived / list-hidden session names itself
   // instead of showing a bare LED. Falls back to a short id while nothing has resolved yet.
   // Read-only: it never re-keys the socket.
-  const row = useSessionRow(`${engine}:${id}`, rowKey);
+  const { row, phase: lookupPhase } = useSessionLookup(`${engine}:${id}`, rowKey);
   // TWO identities, and conflating them is the #127 converge bug in its second form (#867
   // review round 3). `${engine}:${id}` is the TRANSPORT identity — frozen on the placeholder for
   // life so the socket, lock and ring keep pointing at the master we launched. `actionKey` is
@@ -1690,7 +1696,31 @@ export function Terminal({
     refitSoonRef.current();
   }, [theme, scheme, accent, termFontSize, termFontFamily]);
 
-  const text = statusText(status);
+  // The lookup answered with ANOTHER session's row, declared as an alias of the key asked for
+  // (#1405): the route replaces the URL next, so this 4404 is not a verdict either.
+  const askedKey = rowKey || `${engine}:${id}`;
+  const aliased = !!row && row.id !== askedKey && row.resolved_from === askedKey;
+  const rawCover = termCover(status, lookupPhase, aliased);
+  // A lookup that never answers (a hung request) must not hold "Opening…" for ever: after the
+  // same bound the roster wait has, it reads as the lookup failure it is.
+  const [lookupGaveUp, setLookupGaveUp] = useState(false);
+  useEffect(() => {
+    if (rawCover !== "opening") return;
+    const t = setTimeout(() => setLookupGaveUp(true), OPENING_GIVE_UP_MS);
+    return () => clearTimeout(t);
+  }, [rawCover]);
+  // The give-up applies to a PENDING lookup only. Once it has resolved to an owner (an alias the
+  // route is about to replace), the cover stays "Opening…" however long the lookup took — a
+  // latched give-up there flashed the 4404 text for the frame before the replace (Hermes, #1522).
+  const cover =
+    rawCover === "opening" && lookupPhase === "pending" && lookupGaveUp ? null : rawCover;
+  const text = cover
+    ? ""
+    : status.kind === "rejected" &&
+        status.code === CLOSE_NOT_FOUND &&
+        (lookupPhase === "failed" || (lookupPhase === "pending" && lookupGaveUp))
+      ? LOOKUP_FAILED_TEXT
+      : statusText(status);
   // #284: use the server-resolved display title only (manual rename → AI title → meaningful
   // first message, else ""). Never fall back to the RAW first message, or a stray "a" / "."
   // leaks into the panel header — drop straight to the short id.
@@ -2107,6 +2137,9 @@ export function Terminal({
           </div>
         )}
         <div ref={hostRef} className={styles.term} />
+        {cover === "reopening" && <OpeningPanel overlay reload={reloadRoster} reloadOnMount />}
+        {cover === "opening" && <OpeningPanel overlay />}
+        {cover === "missing" && <NotFoundPanel overlay />}
         {/* Auto copy-on-select confirmation (#554): keyed on the tick so each copy restarts the
             fade. role/aria-live announce it; the JS timer unmounts it after COPIED_TOAST_MS. */}
         {copied.tick !== 0 && (

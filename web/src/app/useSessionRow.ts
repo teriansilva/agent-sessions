@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { Session } from "../types/api";
-import { useSessionsStore } from "./sessionsStore";
+import { isNewSessionPlaceholder, type LookupPhase, useSessionsStore } from "./sessionsStore";
 
 /** The row for the session a pane has open (#867) — the ONE accessor `SessionView` and
  *  `Terminal` both read, so a pane resolves its own identity instead of hoping the sidebar
@@ -29,7 +29,19 @@ export function useSessionRow(
   key: string,
   fallbackKey?: string,
 ): Session | undefined {
-  const { sessions, looked, lookup, retryGen, remember, forget } =
+  return useSessionLookup(key, fallbackKey).row;
+}
+
+/** `useSessionRow` plus WHERE the lookup for this pane's exact key stands (#1502): `found` when
+ *  the list or a lookup has the row, `missing` once a 404 settled it, `failed` after a transient
+ *  error (it is re-asked), `pending` until the first answer. `null` for a `new-<uuid>`
+ *  placeholder, which is never looked up — there is nothing to wait for. A terminal masks its
+ *  4404 as "Opening…" only while this is `pending`. */
+export function useSessionLookup(
+  key: string,
+  fallbackKey?: string,
+): { row: Session | undefined; phase: LookupPhase | null } {
+  const { sessions, looked, phases, lookup, retryGen, remember, forget } =
     useSessionsStore();
   const listed =
     sessions.find((s) => s.id === key) ??
@@ -74,5 +86,9 @@ export function useSessionRow(
   // `looked[want]` is `null` once a 404 has settled the key — a permanent answer, not a
   // pending one, and read by key so a response that landed after a navigation cannot surface
   // on the pane that replaced it.
-  return listed ?? looked[want] ?? undefined;
+  const row = listed ?? looked[want] ?? undefined;
+  const phase: LookupPhase | null = listed
+    ? "found"
+    : (phases[want] ?? (isNewSessionPlaceholder(want) ? null : "pending"));
+  return { row, phase };
 }

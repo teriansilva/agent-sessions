@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { RUNTIME_HINTS_KEY, runtimeHintsValue } from "./e2e/roster";
 
 /** E2E + mobile harness (#64). The whole point: prove touch scroll, reconnect-
  *  without-blank, and responsive layout on a REAL emulated phone (hasTouch) — so
@@ -73,7 +74,13 @@ export default defineConfig({
       origins: [
         {
           origin: new URL(process.env.E2E_BASE_URL ?? PREVIEW_URL).origin,
-          localStorage: [{ name: "battlelab.linkOpenMode", value: "fullscreen" }],
+          // A returning browser (#1502): the runtime map the app writes from every loaded roster,
+          // so a session page draws its pane on the first render as it does for an operator.
+          // First-visit behaviour is pinned by e2e/api-deeplink-runtime.spec.ts, which clears it.
+          localStorage: [
+            { name: "battlelab.linkOpenMode", value: "fullscreen" },
+            { name: RUNTIME_HINTS_KEY, value: runtimeHintsValue() },
+          ],
         },
       ],
     },

@@ -89,6 +89,46 @@ def test_ws_rejects_unknown_session(fake_jsonl, auth_cfg):
     assert code == 4404
 
 
+# #1502: a refusal because the engine is not a terminal engine says so (4415), so the client
+# re-gates to the right pane instead of reporting "session not found". Everything that is really
+# not found (an id the engine cannot parse, an unknown engine) keeps 4404.
+_API_ID = "24c5e209-0000-4000-8000-000000000001"
+
+
+@pytest.mark.parametrize("engine", ["claude-api", "codex-api", "apichat"])
+def test_ws_refuses_a_non_terminal_engine_with_4415(auth_cfg, monkeypatch, engine):
+    async def forbidden(*_args, **_kwargs):
+        pytest.fail("a non-terminal engine reached terminal process creation")
+
+    monkeypatch.setattr(webterm.asyncio, "create_subprocess_exec", forbidden)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{engine}:{_API_ID}", headers) == 4415
+
+
+def test_ws_a_bad_id_for_a_non_terminal_engine_is_still_4404(auth_cfg):
+    # parse_key fails before the runtime is ever asked: that is "not found", not "wrong pane".
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, "/ws/term/claude-api:not-a-uuid", headers) == 4404
+    assert _close_code(c, f"/ws/term/no-such-engine:{_API_ID}", headers) == 4404
+
+
+def test_ws_a_pty_refusal_without_a_manifest_stays_4404(auth_cfg, monkeypatch):
+    # A provider with no manifest is an unknown engine: require_pty refuses it, but it is not a
+    # known engine of another runtime, so it is not told to re-gate.
+    from agent_sessions import engines
+
+    def refuse(_prov):
+        raise engines.EngineError("unknown engine")
+
+    monkeypatch.setattr(engines, "require_pty", refuse)
+    monkeypatch.setattr(engines, "manifest_of", lambda _ref: None)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4404
+
+
 def test_ws_resume_rejected_outside_roots(fake_jsonl, auth_cfg, monkeypatch):
     # Hard root scope (#465/#467): a scanned session whose cwd is OUTSIDE the configured roots is
     # NOT resumable via the ws either — otherwise the ws is a back door to scoped-out sessions.

@@ -8,6 +8,11 @@ export interface SessionCounts {
   live: number;
 }
 
+/** Where the single-row lookup for one EXACT key stands (#1502). Only `missing` is a verdict
+ *  ("no such session"); `pending` is the only phase that may mask a terminal's 4404 (a native-id
+ *  link still resolving to its owner); `failed` is a transient error that will be re-asked. */
+export type LookupPhase = "pending" | "found" | "missing" | "failed";
+
 /** Shared store of the sessions the sidebar has loaded, so the compact desktop/mobile
  *  header can resolve the *current* session's title (matched by engine+uuid from the URL)
  *  without re-fetching. The sidebar (the single owner of the list data) publishes its rows
@@ -34,6 +39,10 @@ export interface SessionsStore {
    *  a 404 is a permanent null for that key). Never consulted when the list already has
    *  the row: the list is the fresher source and a poll supersedes a fetched copy. */
   looked: Record<string, Session | null>;
+  /** The lookup phase per exact key (#1502). Absent = never asked. A key being RE-asked keeps its
+   *  previous answer until the new one lands, so a settled result does not flicker back to
+   *  pending every revalidation. */
+  phases: Record<string, LookupPhase>;
   /** Ask for `key`. Idempotent per key: a second caller joins the in-flight request rather
    *  than starting another, and a key that already resolved (row OR 404) is not re-asked until
    *  its revalidation window elapses. */
@@ -55,6 +64,7 @@ export const SessionsCtx = createContext<SessionsStore>({
   counts: null,
   setCounts: () => {},
   looked: {},
+  phases: {},
   lookup: () => {},
   retryGen: 0,
   remember: () => {},

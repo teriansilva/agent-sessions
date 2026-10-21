@@ -10,11 +10,16 @@
 // seq on a transcript attach and carries the exact turn boundary of the attach payload
 // for the scroll-up lazy-loader.
 
+import { CLOSE_NOT_A_TERMINAL, CLOSE_NOT_FOUND } from "./termCloseCodes";
+
 export type TermStatus =
   | { kind: "connecting" }
   | { kind: "connected" }
   | { kind: "reconnecting"; attempt: number }
-  | { kind: "rejected"; reason: string };
+  | { kind: "rejected"; reason: string; code?: number }
+  // #1502: the server refused this socket because the engine does not run in a terminal (4415).
+  // Not "not found": the page drew the wrong pane (a stale cached runtime) and must re-gate.
+  | { kind: "wrong-runtime" };
 
 export type TermRole = "owner" | "secondary";
 
@@ -58,7 +63,9 @@ export interface TermSocketHandlers {
 // Kept explicit, not a numeric range.
 // 4422 (#1189): the launch refused the requested model (no longer offered, or not changeable on a
 // resume) BEFORE anything started — terminal, and never silently retried on `default`.
-const NO_RETRY = new Set([4401, 4403, 4404, 4422, 4500]);
+// 4415 (#1502): "not a terminal session" — the engine runs as `api`/`chat`. Terminal for this
+// socket, and reported as `wrong-runtime`, never as a reason string.
+const NO_RETRY = new Set([4401, 4403, CLOSE_NOT_FOUND, CLOSE_NOT_A_TERMINAL, 4422, 4500]);
 const REJECT_REASON: Record<number, string> = {
   4401: "session expired — please sign in again",
   4403: "blocked (origin mismatch)",
@@ -284,10 +291,11 @@ export class TermSocket {
     if (this.stopped) return;
     if (NO_RETRY.has(code)) {
       this.rejected = true;
-      this.handlers.onStatus({
-        kind: "rejected",
-        reason: rejectReason(code, reason),
-      });
+      this.handlers.onStatus(
+        code === CLOSE_NOT_A_TERMINAL
+          ? { kind: "wrong-runtime" }
+          : { kind: "rejected", reason: rejectReason(code, reason), code },
+      );
       return;
     }
     // Transient drop (incl. 4409 busy) → reconnect with capped backoff, resuming from

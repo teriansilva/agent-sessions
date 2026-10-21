@@ -41,12 +41,14 @@ import { substituteFields, uploadStoredName } from "../../lib/templateMessage";
 import { shareLink } from "../../lib/shareLink";
 import type { TermStatus } from "../../lib/termSocket";
 import { useIsMobile } from "../../lib/useIsMobile";
+import { reloadRoster } from "../../app/reloadRoster";
 import { HandoffModal } from "../terminal/HandoffModal";
 import { HeadActions, type HeadAction } from "../terminal/HeadActions";
 import { HeadFacts } from "../terminal/HeadFacts";
 import { KeyBar, type KeyAction } from "../terminal/KeyBar";
 import type { PaneHost } from "../terminal/paneHost";
 import { SessionRecapModal } from "../terminal/SessionRecapModal";
+import { OpeningPanel } from "../terminal/SessionOpening";
 import { resolveApiModel } from "../../lib/apiModel";
 import { SharePubliclyModal } from "../shares/SharePubliclyModal";
 import { SentMessagesModal } from "../terminal/SentMessagesModal";
@@ -1181,11 +1183,17 @@ export function StructuredPane({
   engine,
   id,
   host = NO_HOST,
+  runtimeConfirmed = true,
 }: {
   engine: string;
   id: string;
   /** What the session's host hands a pane: Files, To map, a window's chrome slot (#1332). */
   host?: PaneHost;
+  /** False while this pane was chosen from a CACHED runtime hint the roster has not confirmed
+   *  yet (#1502). The hint can be stale (the engine is a terminal engine now), so until the roster
+   *  answers, a failed first read — "This conversation does not exist" above all — is provisional:
+   *  it renders as "Opening…" (bounded by Retry), never as a verdict. */
+  runtimeConfirmed?: boolean;
 }) {
   // The API-session look (#1494 P3), on the conversation log only: `{}` for the default look.
   const logLook = useApiLogProps();
@@ -2140,7 +2148,11 @@ export function StructuredPane({
 
   // A map window's chrome LED reads this pane's connection state (#1109), as it reads the
   // terminal's socket status: the journal read is this pane's connection.
-  const status: TermStatus = loadError
+  // #1502: nothing has been read yet and the runtime is only a cached hint — not an answer.
+  const provisional = !runtimeConfirmed && !snap && (loadError !== null || reconnecting);
+  const status: TermStatus = provisional
+    ? { kind: "connecting" }
+    : loadError
     ? { kind: "rejected", reason: loadError }
     : reconnecting
       ? { kind: "reconnecting", attempt: 1 }
@@ -2450,6 +2462,8 @@ export function StructuredPane({
       )}
     </>
   );
+
+  if (provisional) return <OpeningPanel reload={reloadRoster} />;
 
   if (loadError) {
     return (

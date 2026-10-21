@@ -26,3 +26,17 @@ export async function mockRoster(
     r.fulfill({ json: { engines, problems: [] } }),
   );
 }
+
+/** The runtime map a RETURNING browser holds (#1502): what `engineRoster.ts` writes to
+ *  `localStorage` from every loaded roster, derived here from the same fixture. The suite's
+ *  default storage state carries it (playwright.config.ts), so a spec opens a session page the way
+ *  an operator's browser does after its first visit — the right pane on the first render. A spec
+ *  about the FIRST visit starts without it (`e2e/api-deeplink-runtime.spec.ts`). */
+export const RUNTIME_HINTS_KEY = "battlelab.engineRuntimes.v1";
+export function runtimeHintsValue(
+  runtimes: Record<string, string> = Object.fromEntries(
+    ROSTER.engines.map((e) => [e.id, String(e.runtime)]),
+  ),
+): string {
+  return JSON.stringify({ v: 1, runtimes });
+}

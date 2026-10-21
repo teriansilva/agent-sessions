@@ -1348,6 +1348,35 @@ test("when attribution can't be read, no turn is labelled 'you' (#1404)", async 
   expect(within(row).queryByText("you")).toBeNull();
 });
 
+// #1502: a pane drawn from a CACHED runtime hint the roster has not confirmed may be the wrong pane
+// (the engine became a terminal engine). Its failed first read is not a verdict until the roster
+// confirms the runtime: "Opening…", never "This conversation does not exist".
+test("an unconfirmed runtime makes a 404 provisional; a confirmed one shows the verdict (#1502)", async () => {
+  vi.mocked(api.structuredSnapshot).mockRejectedValue(new ApiError(404, "no such structured session"));
+  const view = render(
+    <MemoryRouter>
+      <StructuredPane engine="codex-api" id={ID} runtimeConfirmed={false} />
+    </MemoryRouter>,
+  );
+  expect(await screen.findByText("Opening this session…")).toBeInTheDocument();
+  expect(screen.queryByText("This conversation does not exist.")).toBeNull();
+  view.rerender(
+    <MemoryRouter>
+      <StructuredPane engine="codex-api" id={ID} runtimeConfirmed />
+    </MemoryRouter>,
+  );
+  expect(await screen.findByText("This conversation does not exist.")).toBeInTheDocument();
+});
+
+test("an unconfirmed runtime does not hide a conversation that loads (#1502)", async () => {
+  render(
+    <MemoryRouter>
+      <StructuredPane engine="codex-api" id={ID} runtimeConfirmed={false} />
+    </MemoryRouter>,
+  );
+  expect(await screen.findByTestId("structured-worker")).toBeInTheDocument();
+  expect(screen.queryByText("Opening this session…")).toBeNull();
+});
 // ---- the composer's outbox (#1465) -------------------------------------------------------------
 
 /** A tiny server: `current` is the snapshot; `record` adds an operator turn the way submit does. */

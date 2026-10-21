@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { SessionsCtx } from "../../app/sessionsStore";
 import { api } from "../../lib/api";
+import { SESSIONS_PATH } from "../../lib/routes";
 import { ThemeCtx } from "../../theme/themeStore";
 import type { Session } from "../../types/api";
 import { Terminal } from "./Terminal";
@@ -25,6 +26,8 @@ vi.mock("../../lib/api", () => ({
         updated_at: null,
       }),
     saveDraft: vi.fn().mockResolvedValue({ id: "", has_draft: false }),
+    // #1502: a 4415 asks for the roster at once (`reloadRoster`). Never answers by default.
+    engines: vi.fn(() => new Promise(() => {})),
     // "Review now" in the session brief. Asserted by the #867 action-identity test below: it is
     // the cheapest place to observe WHICH session id an action actually targets.
     reviewNow: vi.fn().mockResolvedValue({
@@ -139,6 +142,8 @@ interface FakeSocket {
   send: ReturnType<typeof vi.fn>;
   // #184 hook: tests can fire the role frame as if the server sent one.
   emitRole?: (role: "owner" | "secondary") => void;
+  // #1502 hook: drive the socket status as the real TermSocket would on a close code.
+  emitStatus: (status: unknown) => void;
   // Grid size measured at the moment connect() fired — lets the connect-when-quiet test assert the
   // attach happened at the SETTLED size, not an in-flight one. Captured from the live xterm directly
   // (NOT via url(), which would consume the one-shot force flag the #184 takeover test depends on).
@@ -153,11 +158,15 @@ vi.mock("../../lib/termSocket", () => ({
     close = vi.fn();
     send = vi.fn(() => true);
     emitRole: (role: "owner" | "secondary") => void;
+    emitStatus: (status: unknown) => void;
     connectCols?: number;
     connectRows?: number;
     constructor(
       urlFor: (have: number) => string,
-      handlers: { onRole?: (role: "owner" | "secondary") => void },
+      handlers: {
+        onRole?: (role: "owner" | "secondary") => void;
+        onStatus?: (status: unknown) => void;
+      },
     ) {
       this.url = urlFor;
       this.connect = vi.fn(() => {
@@ -167,6 +176,7 @@ vi.mock("../../lib/termSocket", () => ({
         this.connectRows = term?.rows;
       });
       this.emitRole = (role) => handlers.onRole?.(role);
+      this.emitStatus = (status) => handlers.onStatus?.(status);
       sockets.push(this as unknown as FakeSocket);
     }
   },
@@ -514,6 +524,7 @@ function headerRow(over: Record<string, unknown> = {}): Session[] {
 function renderTerminal(
   sessions: Session[],
   props: { engine?: string; id?: string; rowKey?: string } = {},
+  phases: Record<string, "pending" | "found" | "missing" | "failed"> = {},
 ) {
   return render(
     <MemoryRouter>
@@ -524,6 +535,7 @@ function renderTerminal(
             setSessions: () => {},
             // The list already holds this row, so the pane never asks for it (#867).
             looked: {},
+            phases,
             lookup: () => {},
             retryGen: 0,
             remember: () => {},
@@ -666,5 +678,108 @@ test("a keystroke typed into the terminal inside a compose delivery's paste→En
     expect(frames().slice(2)).toEqual([KEYSEQ.enter, "k"]);
   } finally {
     setCoarsePointer(false);
+  }
+});
+
+// --- #1502: what covers the terminal on a refusal ------------------------------------------------
+
+const NOT_FOUND = { kind: "rejected", reason: "session not found or ended", code: 4404 };
+
+test("4415 (not a terminal session): 'Opening…' over the terminal and the roster is asked NOW (#1502)", () => {
+  renderTerminal([]);
+  vi.mocked(api.engines).mockClear();
+  act(() => sockets[0].emitStatus({ kind: "wrong-runtime" }));
+  expect(screen.getByText("Opening this session…")).toBeInTheDocument();
+  expect(screen.queryByText(/not found/)).toBeNull();
+  expect(api.engines).toHaveBeenCalledTimes(1);
+});
+
+test("a 4404 while the lookup is pending reads 'Opening…', never 'not found' (#1502)", () => {
+  renderTerminal([], {}, { "claude:abc": "pending" });
+  act(() => sockets[0].emitStatus(NOT_FOUND));
+  expect(screen.getByText("Opening this session…")).toBeInTheDocument();
+  expect(screen.queryByText(/not found/)).toBeNull();
+});
+
+test("a 4404 after the lookup settled missing is the real not-found result (#1502)", () => {
+  renderTerminal([], {}, { "claude:abc": "missing" });
+  act(() => sockets[0].emitStatus(NOT_FOUND));
+  expect(screen.getByText("This session was not found.")).toBeInTheDocument();
+  // `SESSIONS_PATH`, not a literal: `/` is the dashboard since #1525 and the sessions moved.
+  expect(screen.getByRole("link", { name: /Back to Sessions/ })).toHaveAttribute("href", SESSIONS_PATH);
+  expect(screen.queryByText("Opening this session…")).toBeNull();
+});
+
+test("a 4404 with a failed lookup says it could not check — not 'not found', not 'Opening…' (#1502)", () => {
+  renderTerminal([], {}, { "claude:abc": "failed" });
+  act(() => sockets[0].emitStatus(NOT_FOUND));
+  expect(screen.getByText("couldn’t check this session — retrying")).toBeInTheDocument();
+  expect(screen.queryByText(/not found/)).toBeNull();
+  expect(screen.queryByText("Opening this session…")).toBeNull();
+});
+
+test("a 4404 for a session whose row exists keeps the chip as before (#1502)", () => {
+  renderTerminal(headerRow());
+  act(() => sockets[0].emitStatus(NOT_FOUND));
+  expect(screen.getByText("session not found or ended")).toBeInTheDocument();
+});
+
+test("a lookup that never answers does not hold 'Opening…' for ever (#1502)", () => {
+  vi.useFakeTimers();
+  try {
+    renderTerminal([], {}, { "claude:abc": "pending" });
+    act(() => sockets[0].emitStatus(NOT_FOUND));
+    expect(screen.getByText("Opening this session…")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(8_000));
+    expect(screen.queryByText("Opening this session…")).toBeNull();
+    expect(screen.getByText("couldn’t check this session — retrying")).toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// Hermes on #1522: a native-id alias whose lookup takes longer than the give-up bound. Once it
+// resolves to its owner the route replaces the URL; the frame before that must still read
+// "Opening…", never the 4404 chip — the give-up latch is for a PENDING lookup only.
+test("an alias resolving after the give-up bound still reads 'Opening…', never 'not found' (#1502)", () => {
+  vi.useFakeTimers();
+  try {
+    const owner = {
+      ...headerRow()[0],
+      id: "claude-api:owner",
+      engine: "claude-api",
+      resolved_from: "claude:abc",
+    } as unknown as Session;
+    const tree = (phase: "pending" | "found", looked: Record<string, Session | null>) => (
+      <MemoryRouter>
+        <ThemeCtx.Provider value={{ theme: "dark", choice: "dark", setTheme: () => {} }}>
+          <SessionsCtx.Provider
+            value={{
+              sessions: [],
+              setSessions: () => {},
+              counts: null,
+              setCounts: () => {},
+              looked,
+              phases: { "claude:abc": phase },
+              lookup: () => {},
+              retryGen: 0,
+              remember: () => {},
+              forget: () => {},
+            }}
+          >
+            <Terminal engine="claude" id="abc" />
+          </SessionsCtx.Provider>
+        </ThemeCtx.Provider>
+      </MemoryRouter>
+    );
+    const view = render(tree("pending", {}));
+    act(() => sockets[0].emitStatus(NOT_FOUND));
+    act(() => vi.advanceTimersByTime(9_500));
+    expect(screen.getByText("couldn’t check this session — retrying")).toBeInTheDocument();
+    view.rerender(tree("found", { "claude:abc": owner }));
+    expect(screen.getByText("Opening this session…")).toBeInTheDocument();
+    expect(screen.queryByText(/not found/)).toBeNull();
+  } finally {
+    vi.useRealTimers();
   }
 });

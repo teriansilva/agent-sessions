@@ -5,11 +5,18 @@ import { ACTIVE, ID, QUEUED, clients, mockStructuredGuidance } from "./structure
 // phone, and the automatic Send now that follows the queue without a click.
 const LATER = "33333333-2222-4333-8444-555555555555";
 
-async function queue(page: Page, engine: string, mode: string, theme = "dark") {
+type Fixture = Awaited<ReturnType<typeof mockStructuredGuidance>>;
+
+/** `beforeLoad` installs a test's own routes BEFORE the page loads: an automatic Send now can fire
+ *  as soon as the first snapshot lands, so a route added after `goto` races it (#1502 made the
+ *  pane mount on the first render, which lost that race on CI). */
+async function queue(page: Page, engine: string, mode: string, theme = "dark",
+  beforeLoad?: (fixture: Fixture) => Promise<void>) {
   const fixture = await mockStructuredGuidance(page, engine, mode, theme);
   const queued = fixture.state.turns[1];
   fixture.state.turns.push({ ...queued, turn_id: LATER, operation_id: LATER,
     text: "Then summarise what you found.", ts: (queued.ts as number) + 60 });
+  await beforeLoad?.(fixture);
   await page.goto(`/s/${engine}/${ID}`);
   await expect(page.getByTestId("structured-pane")).toBeVisible();
   return fixture;
@@ -110,12 +117,13 @@ test("Always send now stays on across a reload, per device", async ({ page }) =>
 
 test("a refused automatic Send now is not retried until the conversation moves", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("agent-sessions.always-send-now", "1"));
-  const fixture = await queue(page, "claude-api", "interrupt");
-  // Another tab got there first (or the agent hasn't acknowledged its turn): the server refuses.
-  await page.route(/\/send-now$/, (r) => {
-    fixture.calls.push(r.request().postDataJSON());
-    return r.fulfill({ status: 409, json: { detail: "a message is already waiting for this response to stop" } });
-  });
+  // Another tab got there first (or the agent hasn't acknowledged its turn): the server refuses —
+  // from the very first automatic attempt, so the refusal is in place before the page loads.
+  const fixture = await queue(page, "claude-api", "interrupt", "dark", (f) =>
+    page.route(/\/send-now$/, (r) => {
+      f.calls.push(r.request().postDataJSON());
+      return r.fulfill({ status: 409, json: { detail: "a message is already waiting for this response to stop" } });
+    }));
   await expect.poll(() => fixture.calls.length).toBe(1);
   await page.waitForTimeout(2_500); // several poll cycles over an unchanged snapshot
   expect(fixture.calls).toHaveLength(1);

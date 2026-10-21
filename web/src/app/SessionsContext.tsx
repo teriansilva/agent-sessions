@@ -5,6 +5,7 @@ import { parseSessionKey } from "../lib/format";
 import type { Session } from "../types/api";
 import {
   isNewSessionPlaceholder,
+  type LookupPhase,
   type SessionCounts,
   SessionsCtx,
 } from "./sessionsStore";
@@ -49,6 +50,16 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
   // Nothing is ever read out of a "current session" slot, which is what stops a response that
   // lands after a navigation from painting one session's project (or error) onto another's pane.
   const [looked, setLooked] = useState<Record<string, Session | null>>({});
+  // Where each key's lookup stands (#1502), under the same per-key generation discipline as
+  // `looked`: a superseded completion writes no phase either.
+  const [phases, setPhases] = useState<Record<string, LookupPhase>>({});
+  const setPhase = useCallback((key: string, phase: LookupPhase, onlyIfUnset = false) => {
+    setPhases((prev) =>
+      prev[key] === phase || (onlyIfUnset && prev[key] !== undefined)
+        ? prev
+        : { ...prev, [key]: phase },
+    );
+  }, []);
   // Keys already asked for — in a ref, not state, so the guard is effective the moment
   // `lookup` runs rather than one render later (two consumers of the same pane call it in the
   // same commit, and a state-based guard would let both through).
@@ -105,8 +116,9 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       setLooked((prev) =>
         prev[key] === listedRow ? prev : { ...prev, [key]: listedRow },
       );
+      setPhase(key, "found");
     },
-    [bump],
+    [bump, setPhase],
   );
 
   const forget = useCallback((key: string) => {
@@ -125,6 +137,8 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     // the list" even though it exists solely because of an older request — so a mismatch
     // retried past a `remember()` could overwrite the fresher list row.
     const mine = attempt === 0 || inherited === undefined ? bump(key) : inherited;
+    // Pending only for a key with no answer yet: a revalidation keeps the last one on screen.
+    if (attempt === 0) setPhase(key, "pending", true);
     api
       .session(key)
       // A lookup must verify it got the row it ASKED for. Anything else — a list page from a
@@ -146,6 +160,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
         // Superseded while in flight — by a list write, or by a newer request for this key.
         if (gen.current.get(key) !== mine) return;
         setLooked((prev) => ({ ...prev, [key]: row }));
+        setPhase(key, "found");
       })
       .catch((e: unknown) => {
         // Superseded is superseded — including an identity mismatch. Exempting it (so its retry
@@ -157,6 +172,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
         // ask again.
         if (e instanceof ApiError && e.status === 404) {
           setLooked((prev) => ({ ...prev, [key]: null }));
+          setPhase(key, "missing");
           // Settled — but not forever. The server re-walks the scan before answering 404, so
           // this is authoritative *now*; a session can still be created under this id later
           // (and a deep link can land before its transcript exists at all). Allow one more ask
@@ -170,6 +186,9 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
         // Anything else — offline, a 5xx, a proxy hiccup — is a failed attempt, not a verdict.
         const delay = RETRY_MS[attempt];
         if (delay === undefined) {
+          // Out of the fast budget: an honest "could not ask" — never "not found" (#1502). The
+          // slow re-ask below still runs, and its answer replaces this.
+          setPhase(key, "failed");
           // Out of the fast budget. Releasing `asked` is NOT enough on its own: a ref write is
           // invisible to React, so a pane that stays mounted never re-runs its effect and sits
           // nameless until the user navigates away and back (#867 review round 4). Bump a
@@ -184,7 +203,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
         }
         later(() => run(key, attempt + 1, mine), delay);
       });
-  }, [later, bump]);
+  }, [later, bump, setPhase]);
 
   const value = useMemo(
     () => ({
@@ -193,12 +212,13 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       counts,
       setCounts,
       looked,
+      phases,
       lookup,
       retryGen,
       remember,
       forget,
     }),
-    [sessions, counts, looked, lookup, retryGen, remember, forget],
+    [sessions, counts, looked, phases, lookup, retryGen, remember, forget],
   );
   return <SessionsCtx.Provider value={value}>{children}</SessionsCtx.Provider>;
 }

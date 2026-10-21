@@ -49,6 +49,86 @@ function publish(next: RosterSnapshot): void {
   for (const fn of listeners) fn();
 }
 
+// --- the persisted runtime map (#1502) -------------------------------------------------------------
+//
+// Which PANE a session draws (terminal, structured, chat) depends on its engine's runtime, and the
+// roster that says so lands asynchronously. A cold page load (a notification click, a link from
+// another tab) used to mount a terminal for an API engine first and show its refusal as "session
+// not found". So every loaded roster also writes `{engineId: runtime}` to `localStorage`, and the
+// map is read back at module init: a returning browser picks the right pane on its FIRST render.
+//
+// This is APPEARANCE-class data — which pane to draw — never eligibility: nothing mints, launches
+// or hands off on it, and `rosterReady()` keeps its meaning. It is written only from a loaded
+// roster (never authored here, so the no-engine-literal ratchet holds), and the loaded roster
+// always wins over it, so a stale entry corrects itself the moment the roster lands.
+
+/** The storage key. Versioned: a future shape gets a new key and this one is simply ignored. */
+export const RUNTIME_HINTS_KEY = "battlelab.engineRuntimes.v1";
+/** Bounds on what is read back: a corrupt, hostile or oversized value is ignored as a whole. */
+const HINTS_MAX_BYTES = 8_192;
+const HINTS_MAX_ENGINES = 64;
+const HINT_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const HINT_RUNTIME_RE = /^[a-z]{1,16}$/;
+
+/** Parse a stored map, or `null` when it is anything but a well-formed, bounded v1 map. */
+export function parseRuntimeHints(raw: string | null): Map<string, string> | null {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > HINTS_MAX_BYTES) return null;
+  let doc: unknown;
+  try {
+    doc = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!doc || typeof doc !== "object" || (doc as { v?: unknown }).v !== 1) return null;
+  const runtimes = (doc as { runtimes?: unknown }).runtimes;
+  if (!runtimes || typeof runtimes !== "object" || Array.isArray(runtimes)) return null;
+  const entries = Object.entries(runtimes as Record<string, unknown>);
+  if (entries.length > HINTS_MAX_ENGINES) return null;
+  const out = new Map<string, string>();
+  for (const [id, runtime] of entries) {
+    if (!HINT_ID_RE.test(id) || typeof runtime !== "string" || !HINT_RUNTIME_RE.test(runtime))
+      return null;
+    out.set(id, runtime);
+  }
+  return out;
+}
+
+function readStoredHints(): Map<string, string> {
+  try {
+    return parseRuntimeHints(globalThis.localStorage?.getItem(RUNTIME_HINTS_KEY) ?? null) ?? new Map();
+  } catch {
+    return new Map(); // storage unavailable (private mode, a sandboxed frame): no hints
+  }
+}
+
+let hints: Map<string, string> = readStoredHints();
+
+/** Record the loaded roster's runtimes — the WHOLE map, so an engine that left the roster leaves
+ *  the map too. Best-effort: a full or unavailable storage only costs the next cold load a wait. */
+function writeHints(engines: readonly EngineInfo[]): void {
+  const runtimes: Record<string, string> = {};
+  let n = 0;
+  for (const e of engines) {
+    if (n >= HINTS_MAX_ENGINES) break;
+    if (!HINT_ID_RE.test(e.id) || !HINT_RUNTIME_RE.test(e.runtime) || e.runtime === "unknown")
+      continue;
+    runtimes[e.id] = e.runtime;
+    n += 1;
+  }
+  hints = new Map(Object.entries(runtimes));
+  try {
+    const raw = JSON.stringify({ v: 1, runtimes });
+    if (raw.length <= HINTS_MAX_BYTES) globalThis.localStorage?.setItem(RUNTIME_HINTS_KEY, raw);
+  } catch {
+    /* quota / private mode: degrade to the no-hint path */
+  }
+}
+
+/** Re-read the stored map, as module init does — the test seam for "a returning browser". */
+export function loadRuntimeHints(): void {
+  hints = readStoredHints();
+}
+
 const NO_CAPABILITIES: EngineInfo["capabilities"] = {
   resume: false,
   new: false,
@@ -100,6 +180,7 @@ export function setRoster(
     .sort(
     (a, b) => (a.display?.order ?? 500) - (b.display?.order ?? 500),
   );
+  writeHints(ordered);
   publish({ status: "ready", loaded: true, engines: ordered, problems });
 }
 
@@ -112,8 +193,10 @@ export function markRosterFailed(): void {
   publish({ ...snapshot, status: "failed" });
 }
 
-/** Back to "nothing loaded" — tests only. */
+/** Back to "nothing loaded" — tests only. The in-memory runtime hints go too (a never-visited
+ *  browser); `loadRuntimeHints()` re-reads whatever storage still holds. */
 export function resetRoster(): void {
+  hints = new Map();
   publish(EMPTY);
 }
 
@@ -223,6 +306,23 @@ export function idPrefix(id: string): string {
 /** `retiring` engines (#1126 PR B) are attach-only; a missing status is active. */
 export function isActive(e: EngineInfo): boolean {
   return (e.status ?? "active") === "active";
+}
+
+/** Which runtime to DRAW a session of `id` with (#1502): the loaded roster's answer when there
+ *  is one; before any roster has loaded, the runtime the last loaded roster recorded; otherwise
+ *  `undefined`. Appearance only — never consult it to launch, mint or hand off. Once a roster is
+ *  loaded it alone answers, so an id it does not list has no hint even if storage remembers one. */
+export function runtimeHint(id: string): string | undefined {
+  if (snapshot.loaded) {
+    const runtime = byId.get(id)?.runtime;
+    return runtime === undefined || runtime === "unknown" ? undefined : runtime;
+  }
+  return hints.get(id);
+}
+
+/** Has the loaded roster itself stated this engine's runtime (as opposed to a stored hint)? */
+export function runtimeConfirmed(id: string): boolean {
+  return snapshot.loaded && runtimeHint(id) !== undefined;
 }
 
 /** Does a session of this engine run in a terminal (#853 §7)? Unknown ⇒ undefined (loading). */

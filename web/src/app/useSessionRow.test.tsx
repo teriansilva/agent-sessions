@@ -5,7 +5,7 @@ import { api, ApiError } from "../lib/api";
 import type { Session } from "../types/api";
 import { SessionsProvider } from "./SessionsContext";
 import { isNewSessionPlaceholder, useSessionsStore } from "./sessionsStore";
-import { useSessionRow } from "./useSessionRow";
+import { useSessionLookup, useSessionRow } from "./useSessionRow";
 
 /** The pane's own row resolution (#867).
  *
@@ -670,4 +670,165 @@ test("a mismatch retried past a list write cannot overwrite it (#867 r8)", async
   } finally {
     vi.useRealTimers();
   }
+});
+
+// --- #1502: the lookup PHASE per exact key -------------------------------------------------------
+//
+// A terminal may mask its 4404 as "Opening…" only while the lookup for its key is pending (a
+// native-id link still resolving to its owner); only a settled 404 is "This session was not
+// found"; a transient error is "failed" and re-asked, never "not found".
+
+function PhaseProbe({ k }: { k: string }) {
+  const { row: r, phase } = useSessionLookup(k);
+  return (
+    <>
+      <span data-testid="phase">{String(phase)}</span>
+      <span data-testid="row">{r?.id ?? "—"}</span>
+    </>
+  );
+}
+
+test("phase: pending while asking, then found (#1502)", async () => {
+  let resolve: (s: Session) => void = () => {};
+  vi.spyOn(api, "session").mockImplementation(
+    () => new Promise<Session>((r) => (resolve = r)),
+  );
+  render(
+    <SessionsProvider>
+      <PhaseProbe k="claude:p1" />
+    </SessionsProvider>,
+  );
+  expect(screen.getByTestId("phase")).toHaveTextContent("pending");
+  await act(async () => resolve(row("claude:p1")));
+  expect(screen.getByTestId("phase")).toHaveTextContent("found");
+});
+
+test("phase: a declared alias is found — the owner's row, under the key asked for (#1502)", async () => {
+  vi.spyOn(api, "session").mockResolvedValue(
+    row("claude-api:owner", { resolved_from: "claude:native" } as Partial<Session>),
+  );
+  render(
+    <SessionsProvider>
+      <PhaseProbe k="claude:native" />
+    </SessionsProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("phase")).toHaveTextContent("found"));
+  expect(screen.getByTestId("row")).toHaveTextContent("claude-api:owner");
+});
+
+test("phase: a 404 settles as missing — and stays missing through its revalidation (#1502)", async () => {
+  vi.useFakeTimers();
+  try {
+    const spy = vi.spyOn(api, "session").mockRejectedValue(new ApiError(404, "gone"));
+    render(
+      <SessionsProvider>
+        <PhaseProbe k="claude:gone" />
+      </SessionsProvider>,
+    );
+    await vi.waitFor(() => expect(screen.getByTestId("phase")).toHaveTextContent("missing"));
+    // The slow re-ask runs, and the settled answer does not flicker back to pending meanwhile.
+    let resolveAgain: () => void = () => {};
+    spy.mockImplementation(
+      () =>
+        new Promise<Session>((_, reject) => {
+          resolveAgain = () => reject(new ApiError(404, "gone"));
+        }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16_000);
+    });
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("phase")).toHaveTextContent("missing");
+    await act(async () => resolveAgain());
+    expect(screen.getByTestId("phase")).toHaveTextContent("missing");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("phase: a 5xx stays pending through the fast retries, then failed — never missing (#1502)", async () => {
+  vi.useFakeTimers();
+  try {
+    const spy = vi.spyOn(api, "session").mockRejectedValue(new ApiError(503, "down"));
+    render(
+      <SessionsProvider>
+        <PhaseProbe k="claude:down" />
+      </SessionsProvider>,
+    );
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId("phase")).toHaveTextContent("pending");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4_000);
+    });
+    expect(screen.getByTestId("phase")).toHaveTextContent("failed");
+    // Re-asked later; a success replaces the failure.
+    spy.mockResolvedValue(row("claude:down"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16_000);
+    });
+    expect(screen.getByTestId("phase")).toHaveTextContent("found");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("phase: a network error is failed, not missing (#1502)", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.spyOn(api, "session").mockRejectedValue(new TypeError("Failed to fetch"));
+    render(
+      <SessionsProvider>
+        <PhaseProbe k="claude:offline" />
+      </SessionsProvider>,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4_000);
+    });
+    expect(screen.getByTestId("phase")).toHaveTextContent("failed");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("phase: a 2xx failing the identity guard is failed, not found (#1502)", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.spyOn(api, "session").mockResolvedValue(row("claude:someone-else"));
+    render(
+      <SessionsProvider>
+        <PhaseProbe k="claude:mine" />
+      </SessionsProvider>,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4_000);
+    });
+    expect(screen.getByTestId("phase")).toHaveTextContent("failed");
+    expect(screen.getByTestId("row")).toHaveTextContent("—");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("phase: a listed row is found with no request, and a placeholder has no phase (#1502)", async () => {
+  const spy = vi.spyOn(api, "session");
+  const listed = row("claude:listed");
+  const { rerender } = render(
+    <SessionsProvider>
+      <Seed rows={[listed]} />
+    </SessionsProvider>,
+  );
+  rerender(
+    <SessionsProvider>
+      <Seed rows={[listed]} />
+      <PhaseProbe k="claude:listed" />
+    </SessionsProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("phase")).toHaveTextContent("found"));
+  expect(spy).not.toHaveBeenCalled();
+  rerender(
+    <SessionsProvider>
+      <PhaseProbe k="opencode:new-11111111-1111-1111-1111-111111111111" />
+    </SessionsProvider>,
+  );
+  expect(screen.getByTestId("phase")).toHaveTextContent("null");
 });

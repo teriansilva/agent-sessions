@@ -301,8 +301,37 @@ test("a 4422 model refusal shows the server's reason, bounded; other codes keep 
   expect(statuses.at(-1)).toEqual({
     kind: "rejected",
     reason: "claude: model 'x' is not offered",
+    code: 4422,
   });
   expect(rejectReason(4422, "")).toBe("that model isn’t offered for this session");
   expect(rejectReason(4422, "y".repeat(500))).toHaveLength(160);
   expect(rejectReason(4404, "server text")).toBe("session not found or ended");
+});
+
+// #1502: "not a terminal session" is its own outcome, never the not-found text — the page drew a
+// terminal for an engine that is not one and must re-gate. Like 4404 it is never retried.
+test("4415 reports wrong-runtime, never 'not found', and is not retried (#1502)", () => {
+  vi.useFakeTimers();
+  try {
+    const { ts, statuses } = makeSocket();
+    ts.connect();
+    FakeWS.instances[0].drop(4415, "not a terminal session");
+    expect(statuses.at(-1)).toEqual({ kind: "wrong-runtime" });
+    expect(JSON.stringify(statuses)).not.toMatch(/not found/);
+    vi.advanceTimersByTime(60_000);
+    expect(FakeWS.instances).toHaveLength(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a 4404 carries its code, so the pane can tell it from other refusals (#1502)", () => {
+  const { ts, statuses } = makeSocket();
+  ts.connect();
+  FakeWS.instances[0].drop(4404, "");
+  expect(statuses.at(-1)).toEqual({
+    kind: "rejected",
+    reason: "session not found or ended",
+    code: 4404,
+  });
 });

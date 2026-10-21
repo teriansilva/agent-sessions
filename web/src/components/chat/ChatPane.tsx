@@ -4,7 +4,9 @@ import type { KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
 import { engineBadge, engineInfo, engineLabel, useEngineRoster } from "../../app/engineRoster";
 import { ApiError, api } from "../../lib/api";
+import { reloadRoster } from "../../app/reloadRoster";
 import { agentPath } from "../../routes/settingsTabs";
+import { OpeningPanel } from "../terminal/SessionOpening";
 import type { AgentEndpoint, ChatSession, ChatToolCall, ChatTurn } from "../../types/api";
 import { OutboxBlock } from "../structured/Outbox";
 import { useAlive, useLeaveGuard, useOutbox } from "../structured/useOutbox";
@@ -133,7 +135,18 @@ function tokens(n: number): string {
 
 /** A chat-runtime session (#853 P9a, #1209): BattleLab talks to the agent's endpoint and keeps the
  *  conversation. No terminal; tools require opt-in. Proposed file edits (#1230) each require a separate decision. */
-export function ChatPane({ engine, id }: { engine: string; id: string }) {
+export function ChatPane({
+  engine,
+  id,
+  runtimeConfirmed = true,
+}: {
+  engine: string;
+  id: string;
+  /** False while this pane was chosen from a CACHED runtime hint the roster has not confirmed
+   *  (#1502). Until it is, a failed first read is not a verdict about the conversation — the
+   *  engine may run as another runtime now — so it renders "Opening…" (bounded by Retry). */
+  runtimeConfirmed?: boolean;
+}) {
   useEngineRoster();
   // The API-session look (#1494 P3), on the conversation log only: `{}` for the default look.
   const logLook = useApiLogProps();
@@ -389,6 +402,8 @@ export function ChatPane({ engine, id }: { engine: string; id: string }) {
       </span>
     </div>
   );
+
+  if (!runtimeConfirmed && !session && loadError) return <OpeningPanel reload={reloadRoster} />;
 
   if (loadError) {
     return (

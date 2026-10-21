@@ -15,6 +15,7 @@ function headStatus(s: TermStatus): { label: string; led: string } {
     case "connected":
       return { label: "LIVE", led: "up" };
     case "connecting":
+    case "wrong-runtime": // #1502: re-gating to the right pane — still opening, not offline
       return { label: "CONNECTING", led: "" };
     case "reconnecting":
       return { label: "RECONNECTING", led: "" };

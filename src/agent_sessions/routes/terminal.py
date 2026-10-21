@@ -413,10 +413,19 @@ def register(
             # The opencode new-session placeholder (``new-<uuid>``) is a valid id ONLY on
             # the new=1 launch path (#127); resume/attach still requires the native shape.
             prov, native = engines.parse_key(sid, allow_new_placeholder=is_new)
+        except engines.EngineError:
+            return await reject(4404)
+        try:
             # Everything below is a dtach master and a PTY (#853 §7): an engine that does not
             # run in a terminal is refused here, never treated as one.
             engines.require_pty(prov)
         except engines.EngineError:
+            # #1502: a KNOWN engine of another runtime gets its own code, 4415, so the client
+            # re-gates to the right pane instead of reporting "not found". The runtime is public
+            # in `/api/engines`, so the code reveals nothing a 4404 hid. A provider with no
+            # manifest at all is an unknown engine, which stays 4404.
+            if engines.manifest_of(prov) is not None:
+                return await reject(4415, "not a terminal session")
             return await reject(4404)
 
         # Alias resolution (#127): for opencode new-session we launch under a placeholder
