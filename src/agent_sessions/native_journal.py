@@ -34,6 +34,24 @@ MAX_BYTES = 64 * 1024 * 1024
 MAX_RECORDS = 100_000
 MAX_LINE_BYTES = native_ipc.MAX_FRAME_BYTES
 HANDOFFS = frozenset({"queued", "uncertain", "sent", "not_sent"})
+#: Why a message was settled ``not_sent`` (#1538); a record without one reads as ``unexpected``.
+REASON_CODES = native_ipc.REASON_CODES
+#: Send again's operation ids (#1538) are derived, never minted: every tab, reload and click that
+#: resends one not-sent message submits the SAME id, so operation-id idempotency delivers it once.
+RETRY_NAMESPACE = uuid.UUID("6b0f7f3e-1538-5a3d-9c1e-5e4d2a7b9c10")
+
+
+def retry_id(operation_id: str) -> str:
+    """The one operation id Send again may use for ``operation_id`` (#1538)."""
+    return str(uuid.uuid5(RETRY_NAMESPACE, f"{_uuid(operation_id)}:send-again"))
+
+
+def _reason(handoff, code) -> bool:
+    """A reason is a closed code, on a ``not_sent`` only. The type first: a list or dict is
+    unhashable, and an unreadable record must be a `JournalError`, never a TypeError."""
+    return handoff == "not_sent" and type(code) is str and code in REASON_CODES
+
+
 MAX_QUEUED = 32
 MAX_QUEUE_BYTES = 4 * 1024 * 1024
 
@@ -119,13 +137,20 @@ class Operation:
     # the queue. `None` while queued, and forever for one settled `not_sent` from the queue. An
     # async question's answer is the first message dispatched after it (#1463).
     dispatched_revision: int | None = None
+    # Claimed as `native_queued` (#1378): an operator message that waited behind a busy turn.
+    queued: bool = False
+    # Why a `not_sent` was settled (#1538), from `REASON_CODES`; None while it is not `not_sent`.
+    reason_code: str | None = None
 
     def receipt(self):
-        return {
+        out = {
             "operation_id": self.operation_id,
             "recorded_revision": self.recorded_revision,
             "handoff": self.handoff,
         }
+        if self.handoff == "not_sent":
+            out["reason_code"] = self.reason_code or "unexpected"
+        return out
 
 
 @dataclass
@@ -319,11 +344,19 @@ def _fold_lines(journal: Journal, lines: list[bytes], first_cursor: int) -> None
                     handoff="queued" if kind == "native_queued" else "uncertain",
                     claimed_revision=cursor,
                     dispatched_revision=None if kind == "native_queued" else cursor,
+                    queued=kind == "native_queued",
                 )
             elif kind == "native_handoff":
+                handoff_fields = {"type", "operation_id", "handoff", "worker_id", "connection_id"}
                 _fields(
-                    record, {"type", "operation_id", "handoff", "worker_id", "connection_id", "ts"}
+                    record,
+                    {*handoff_fields, "ts", "reason_code"}
+                    if "reason_code" in record
+                    else {*handoff_fields, "ts"},
                 )
+                reason = record.get("reason_code")
+                if "reason_code" in record and not _reason(record["handoff"], reason):
+                    raise JournalError("unavailable", "invalid native handoff reason")
                 operation = journal.operations.get(_uuid(record["operation_id"]))
                 if operation is None or (operation.worker_id, operation.connection_id) != (
                     record["worker_id"],
@@ -336,6 +369,8 @@ def _fold_lines(journal: Journal, lines: list[bytes], first_cursor: int) -> None
                     "sent",
                 }:
                     operation.dispatched_revision = cursor
+                if record["handoff"] == "not_sent" and operation.handoff != "not_sent":
+                    operation.reason_code = record.get("reason_code")
                 operation.handoff = record["handoff"]
                 operation.ever_sent |= record["handoff"] == "sent"
                 operation.recorded_revision = cursor
@@ -565,9 +600,18 @@ def _preview(raw, records, session_id, root):
 
 
 def record_handoff(
-    root: Path, binding: native_ipc.Binding, operation_id: str, handoff: str
+    root: Path,
+    binding: native_ipc.Binding,
+    operation_id: str,
+    handoff: str,
+    *,
+    reason_code: str | None = None,
 ) -> dict:
+    """``reason_code`` (#1538): why a ``not_sent`` was settled, from `REASON_CODES`. A repeated
+    ``not_sent`` only observes the first, whatever reason it names."""
     _uuid(operation_id)
+    if reason_code is not None and not _reason(handoff, reason_code):
+        raise JournalError("invalid", "invalid native handoff reason")
     session_id = binding.session_key.partition(":")[2]
 
     def update(raw):
@@ -589,9 +633,43 @@ def record_handoff(
             "worker_id": binding.worker_id,
             "connection_id": binding.connection_id,
             "ts": time.time(),
+            **({"reason_code": reason_code} if reason_code is not None else {}),
         }
         after = _preview(raw, [record], session_id, root)
         return [record], after.operations[operation_id].receipt()
+
+    return _transaction(root, session_id, update)
+
+
+def settle_worker_ended(root: Path, session_key: str, operation_id: str, worker_id: str) -> bool:
+    """Record that a message still queued when its worker ended was never sent (#1538).
+
+    The caller saw that worker not live, under the session's lifecycle lock. Idempotent: it
+    writes only while the operation is still ``queued`` by that worker, with no handoff at all,
+    so a message that left the queue (sent, uncertain, refused) is never touched. The record is
+    a proof by itself: a worker fsyncs ``uncertain`` before stdin and ``not_sent`` is final, so
+    nothing can write the message after it. It carries the original claim's worker and
+    connection, as every handoff does. Returns whether it wrote."""
+    _uuid(operation_id)
+    session_id = session_key.partition(":")[2]
+
+    def update(raw):
+        journal = fold(raw, session_id, directory=root)
+        _target(journal, session_key)
+        operation = journal.operations.get(operation_id)
+        if operation is None or operation.handoff != "queued" or operation.worker_id != worker_id:
+            return [], False
+        record = {
+            "type": "native_handoff",
+            "operation_id": operation_id,
+            "handoff": "not_sent",
+            "worker_id": operation.worker_id,
+            "connection_id": operation.connection_id,
+            "ts": time.time(),
+            "reason_code": "worker_ended",
+        }
+        _preview(raw, [record], session_id, root)
+        return [record], True
 
     return _transaction(root, session_id, update)
 

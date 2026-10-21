@@ -50,6 +50,20 @@ ACTIONS = frozenset(
         "probe",
     }
 )
+#: Why a message was settled ``not_sent`` before it was handed to the agent (#1538). A closed set:
+#: the operator reads fixed text derived from the code, never exception text. A journal record
+#: without one (written before #1538, or a control's own refusal) reads back as ``unexpected``.
+REASON_CODES = frozenset(
+    {
+        "agent_removed",
+        "agent_changed",
+        "source_store_changed",
+        "generation_closed",
+        "question_replaced",
+        "worker_ended",
+        "unexpected",
+    }
+)
 EFFECT_ACTIONS = frozenset({"submit", "decide", "interrupt", "send_now", "withdraw", "stop"})
 _ENGINE = re.compile(r"[a-z][a-z0-9-]{1,23}\Z", re.ASCII)
 _NATIVE = re.compile(r"[A-Za-z0-9_.:-]{1,258}\Z", re.ASCII)
@@ -618,13 +632,19 @@ def _result(action, value):
         _object(
             value,
             {"operation_id", "recorded_revision", "handoff"},
-            {"containment"} if action == "stop" else (),
+            {"containment", "reason_code"} if action == "stop" else {"reason_code"},
         )
         out = {
             "operation_id": _uuid(value["operation_id"]),
             "recorded_revision": _integer(value["recorded_revision"], minimum=1),
             "handoff": _choice(value["handoff"], {"queued", "not_sent", "sent", "uncertain"}),
         }
+        if "reason_code" in value:
+            # Why a `not_sent` was settled (#1538): a closed code, never free text. Absent from
+            # workers before it.
+            if out["handoff"] != "not_sent":
+                raise IPCError("a reason belongs only to a message that was not sent")
+            out["reason_code"] = _choice(value["reason_code"], REASON_CODES)
         if "containment" in value:
             out["containment"] = _choice(value["containment"], {"live", "gone", "unknown"})
         return out

@@ -279,7 +279,16 @@ class PluginProvider:
         """The absolute, provenance-checked path the launcher will exec. Raises `EngineError`."""
         return self._entry_path()
 
+    def entrypoint_selection(self) -> provenance.Entrypoint:
+        """`entrypoint_path` with HOW it was selected (#1538): the same checks and refusals, one
+        resolution, returning the whole `Entrypoint` (`via`, `selector`, `state`, `path`).
+        Raises `EngineError`."""
+        return self._entry()
+
     def _entry_path(self) -> str:
+        return self._entry().path
+
+    def _entry(self) -> provenance.Entrypoint:
         if self.retiring:
             raise EngineError(f"{self.engine_id}: agent removed")
         if self.manifest.runtime != "pty":
@@ -293,7 +302,7 @@ class PluginProvider:
             raise EngineError(f"{self.engine_id}: refusing to launch — {e}") from None
         if ep is None:
             raise EngineError(f"{self.engine_id}: no binary found")
-        return ep.path
+        return ep
 
     # --- EngineProvider ------------------------------------------------------------------------
 

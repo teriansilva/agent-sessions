@@ -114,6 +114,11 @@ class Entrypoint:
     stat_key: tuple[int, int, int, int, int]
     sha256: str  # "" when never hashed (first-party adopted)
     note: str = ""  # e.g. why a managed plugin was flipped to adopted
+    #: The UNRESOLVED candidate that was chosen (#1538): the install entry, the confirmed path,
+    #: the env override's value, or the matched `search_paths` launcher (`~/.local/bin/claude`).
+    #: With `via` and `state` it says HOW the entrypoint was selected; `path` is where that
+    #: selection points now. A vendor self-update moves `path` and keeps the selector.
+    selector: str = ""
 
 
 def _stat_key(st: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -445,6 +450,7 @@ def resolve(
         stat_key=_stat_key(st),
         sha256=digest,
         note=note,
+        selector=cand,
     )
 
 
@@ -469,6 +475,6 @@ def reverify(ep: Entrypoint, record: Record | None, *, trust: str) -> Entrypoint
             raise ProvenanceError(
                 f"{ep.path} changed since it was checked and no longer matches its digest"
             )
-        return Entrypoint(ep.path, ep.state, ep.via, key, digest, ep.note)
+        return Entrypoint(ep.path, ep.state, ep.via, key, digest, ep.note, ep.selector)
     finally:
         os.close(fd)

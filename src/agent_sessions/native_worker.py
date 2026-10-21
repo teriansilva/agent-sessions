@@ -30,6 +30,8 @@ import argparse
 import asyncio
 import contextlib
 import json
+import logging
+import logging.handlers
 import os
 import secrets
 import signal
@@ -82,6 +84,101 @@ PROBE_LIMIT = 4 * 1024 * 1024
 
 class WorkerError(RuntimeError):
     pass
+
+
+class AdmissionRefused(WorkerError):
+    """An expected refusal of a queued message at delayed handoff (#1538), before anything was
+    written to the agent. ``code`` is one of `native_journal.REASON_CODES`; the operator sees
+    the fixed text the pane derives from it, never this exception's message."""
+
+    MESSAGES = {
+        "agent_removed": "the queued message's agent was removed",
+        "agent_changed": "the queued message's agent changed",
+        "source_store_changed": "the queued message's source store changed",
+        "generation_closed": "this worker generation is closed",
+        "question_replaced": "its question was answered or replaced",
+    }
+
+    def __init__(self, code: str):
+        if code not in self.MESSAGES:
+            raise ValueError(f"unknown queued refusal {code!r}")
+        super().__init__(self.MESSAGES[code])
+        self.code = code
+
+
+log = logging.getLogger(__name__)
+
+
+def log_queue_refusal(session_key: str, operation_id: str, code: str, exc: BaseException) -> None:
+    """One line per operator message settled ``not_sent`` before stdin (#1538): the session key,
+    the operation id, the reason code and the exception's TYPE NAME only. Never its message,
+    which can carry paths, CLI output or credentials."""
+    log.warning(
+        "queued message not sent: session=%s operation=%s reason=%s error=%s",
+        session_key,
+        operation_id,
+        code,
+        type(exc).__name__,
+    )
+
+
+def _log_to_journal() -> None:
+    """The contained worker's stdio is null (`native_containment.launch_argv`): its refusal lines
+    go to the user's journal through the local syslog socket instead, tagged
+    ``agent-sessions-native``. No socket (a container, a test) means no log, never a failure."""
+    if not os.path.exists("/dev/log") or log.handlers:
+        return
+    try:
+        handler = logging.handlers.SysLogHandler(address="/dev/log")
+    except OSError:
+        return
+    handler.ident = "agent-sessions-native: "
+    handler.setLevel(logging.WARNING)
+    log.addHandler(handler)
+    log.setLevel(logging.WARNING)
+
+
+def admit_queued(roster, session_key: str, adapter: str, config: dict) -> None:
+    """Is the agent a queued message was accepted for still the one this worker runs (#1538)?
+
+    Raises `AdmissionRefused` with the reason. Every launch gate holds again: the API client and
+    its source are in the fresh roster, the protocol and source engine are the launched ones, and
+    the source store has the same owner. The source's binary is resolved AGAIN, through
+    provenance, and must be selected the way it was at launch (`api_source.same_selection`). Its
+    resolved path may differ: a vendor self-update retargets the launcher, while the message goes
+    to the process that has been running since launch.
+    """
+    from . import native_ownership
+    from .engine_errors import EngineError
+    from .plugins import api_source
+
+    prov = roster.by_id.get(session_key.partition(":")[0])
+    api = getattr(getattr(prov, "manifest", None), "api", None)
+    if prov is None or api is None or getattr(prov, "retiring", False):
+        raise AdmissionRefused("agent_removed")
+    source = roster.by_id.get(api.source)
+    if source is None or getattr(source, "retiring", False):
+        raise AdmissionRefused("agent_removed")
+    try:
+        binding = api_source.resolve(prov, roster=roster)
+    except EngineError:
+        raise AdmissionRefused("agent_changed") from None
+    if api.kind != adapter or binding.source.engine_id != config["source_engine"]:
+        raise AdmissionRefused("agent_changed")
+    pinned = config.get("entrypoint")
+    try:
+        ep = binding.source.entrypoint_selection()
+    except EngineError:
+        raise AdmissionRefused("agent_changed") from None
+    if pinned is None:
+        # A configuration written before #1538 pinned only the path: keep its exact rule.
+        if ep.path != config["binary"]:
+            raise AdmissionRefused("agent_changed")
+    elif not api_source.same_selection(pinned, ep, binding.source.trust):
+        raise AdmissionRefused("agent_changed")
+    owner = native_ownership.lookup(session_key)
+    if owner is None or owner.source != native_ownership.source_identity(binding.source):
+        raise AdmissionRefused("source_store_changed")
 
 
 def _private_file(path: Path) -> dict:
@@ -577,30 +674,15 @@ class Worker:
 
     @contextlib.contextmanager
     def queued_admission(self):
-        """Recheck the current generation and source at delayed stdin handoff (#1378)."""
-        from . import native_ownership
+        """Recheck the current generation and source at delayed stdin handoff (#1378, #1538)."""
         from .engines import registry
-        from .plugins import api_source, storage
+        from .plugins import storage
 
         with native_state.session_lock(self.session_id, wait=0), storage.locked("launch", wait=0):
             if not self.gate_open() or self.terminated or self.closing:
-                raise WorkerError("this worker generation is closed")
+                raise AdmissionRefused("generation_closed")
             with registry.snapshot_scope(fresh=True, require_current=True) as roster:
-                prov = roster.by_id.get(self.session_key.partition(":")[0])
-                if prov is None:
-                    raise WorkerError("the queued message's agent was removed")
-                binding = api_source.resolve(prov, roster=roster)
-                if (
-                    prov.manifest.api.kind != self.adapter
-                    or binding.source.engine_id != self.config["source_engine"]
-                    or binding.source.entrypoint_path() != self.config["binary"]
-                ):
-                    raise WorkerError("the queued message's agent changed")
-                owner = native_ownership.lookup(self.session_key)
-                if owner is None or owner.source != native_ownership.source_identity(
-                    binding.source
-                ):
-                    raise WorkerError("the queued message's source store changed")
+                admit_queued(roster, self.session_key, self.adapter, self.config)
                 yield
 
     async def dispatch_queue(self) -> None:
@@ -624,7 +706,7 @@ class Worker:
                         admitted = False
                         try:
                             if not await self._answer_current(params):
-                                raise WorkerError("its question was answered or replaced")
+                                raise AdmissionRefused("question_replaced")
                             with self.queued_admission():
                                 admitted = True
                                 self.queued.pop(0)
@@ -638,10 +720,14 @@ class Worker:
                             # queued, then retry outside all locks so Stop stays responsive.
                             retry = True
                             break
-                        except Exception:
-                            # Admission failure proves non-send only BEFORE handoff.
+                        except Exception as exc:
+                            # Admission failure proves non-send only BEFORE handoff. Its reason
+                            # is a closed code (#1538); anything unforeseen is `unexpected`, and
+                            # only its type name is logged.
                             if admitted:
                                 raise
+                            code = exc.code if isinstance(exc, AdmissionRefused) else "unexpected"
+                            log_queue_refusal(self.session_key, params["operation_id"], code, exc)
                             self.queued.pop(0)
                             self.sent_now.discard(params["operation_id"])
                             await asyncio.to_thread(
@@ -650,6 +736,7 @@ class Worker:
                                 self.binding,
                                 params["operation_id"],
                                 "not_sent",
+                                reason_code=code,
                             )
                 if retry:
                     await asyncio.sleep(0.1)
@@ -1087,12 +1174,19 @@ class Worker:
                     else:
                         # Steering leaves the queue too: an answer whose question was replaced
                         # meanwhile is never read as the reply to the newer one (#1463).
+                        log_queue_refusal(
+                            self.session_key,
+                            queued["operation_id"],
+                            "question_replaced",
+                            AdmissionRefused("question_replaced"),
+                        )
                         await asyncio.to_thread(
                             native_journal.record_handoff,
                             self.journal_root,
                             self.binding,
                             queued["operation_id"],
                             "not_sent",
+                            reason_code="question_replaced",
                         )
                         handoff = "not_sent"
                     receipt = await asyncio.to_thread(
@@ -1168,12 +1262,19 @@ class Worker:
             delivered = await self.handoff("ahead", queued, queued=True)
         else:
             # Like a steer: an answer whose question was replaced meanwhile is never sent (#1463).
+            log_queue_refusal(
+                self.session_key,
+                queued["operation_id"],
+                "question_replaced",
+                AdmissionRefused("question_replaced"),
+            )
             delivered = await asyncio.to_thread(
                 native_journal.record_handoff,
                 self.journal_root,
                 self.binding,
                 queued["operation_id"],
                 "not_sent",
+                reason_code="question_replaced",
             )
         if delivered["handoff"] != "sent":
             return await asyncio.to_thread(
@@ -1292,17 +1393,31 @@ class Worker:
     async def handoff(
         self, action: str, params: dict, *, receipt=None, queued=False, now=False
     ) -> dict:
+        refusal: Exception | None = None
         try:
             frame = self.frame(action, params, now=now)
-        except native_protocol.ProtocolError:
-            frame = None
+        except native_protocol.ProtocolError as exc:
+            frame, refusal = None, exc
         if frame is None:
+            reason = {}
+            if queued or action == "submit":
+                # An operator message refused at its own handoff (an attachment that changed, a
+                # codec refusal), queued or direct, was never written: a proved non-send with a
+                # reason (#1538).
+                reason = {"reason_code": "unexpected"}
+                log_queue_refusal(
+                    self.session_key,
+                    params["operation_id"],
+                    "unexpected",
+                    refusal or native_protocol.ProtocolError(),
+                )
             receipt = await asyncio.to_thread(
                 native_journal.record_handoff,
                 self.journal_root,
                 self.binding,
                 params["operation_id"],
                 "not_sent",
+                **reason,
             )
             if action == "stop":
                 receipt = {**receipt, "containment": "unknown"}
@@ -1507,6 +1622,10 @@ class Worker:
                 # (#1438); absent on older workers, which the pane then offers no button for.
                 interrupt_own=self.codec.send_now_background == "interrupt",
                 files=True,
+                # Reads and writes a `not_sent` handoff's `reason_code` (#1538): the web process
+                # writes `worker_ended` for an earlier generation only while the live worker
+                # says so, since an older reader refuses the field.
+                handoff_reasons=True,
             )
             tasks.append(asyncio.create_task(self.idle_watch()))
             tasks.append(asyncio.create_task(self.dispatch_queue()))
@@ -1557,6 +1676,7 @@ def main(argv: list[str] | None = None) -> int:
         if config.get("worker_id") != args.worker_id:
             raise WorkerError("worker config belongs to another generation")
         _adopt_environment(config, state_dir)
+        _log_to_journal()
         worker = Worker(config, state_dir)
     except (OSError, ValueError, KeyError, WorkerError, native_state.StateError) as exc:
         print(f"native worker refused: {exc}", file=sys.stderr)

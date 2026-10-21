@@ -1,0 +1,95 @@
+/* The not-sent row (#1538): a queued message proven never sent says why in the DOWN status
+ * colour (an LED, a mono label, the fixed reason in danger text), then offers Send again (accent)
+ * and Discard (ghost), each ≥44px and full width on a phone. A missing picture is a question, so
+ * its prompt sits on a neutral rule. Once chosen, the row is history: muted, grey LED, no actions
+ * (design §3, §7; board #100973). */
+.notSent {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.line {
+  margin: 0;
+  padding-left: 14px;
+  font-size: calc(12px * var(--api-scale, 1));
+  line-height: 1.5;
+  color: var(--danger-text);
+  overflow-wrap: anywhere;
+}
+.history { color: var(--text-muted); }
+.led {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 8px;
+  vertical-align: middle;
+  border-radius: 50%; /* LEDs are the one round thing (design §3) */
+}
+.ledDown { background: var(--status-down); }
+.ledOff { background: var(--status-unknown); }
+.label {
+  font: 700 calc(11px * var(--api-scale, 1)) var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.after { font-family: var(--font-mono); }
+.hint {
+  margin: 0;
+  padding-left: 14px;
+  font: calc(11px * var(--api-scale, 1)) / 1.5 var(--font-mono);
+  color: var(--text-muted);
+}
+.prompt {
+  display: grid;
+  gap: 8px;
+  margin-left: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+}
+.promptText {
+  margin: 0;
+  font-size: calc(13px * var(--api-scale, 1));
+  color: var(--text);
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-left: 14px;
+}
+.prompt .actions { padding-left: 0; }
+.action,
+.primary {
+  min-height: 44px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font: 700 calc(12px * var(--api-scale, 1)) var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.action {
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  color: var(--text-muted);
+}
+.action:hover:not(:disabled) { color: var(--text); border-color: var(--text-muted); }
+.primary {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: var(--on-accent);
+}
+.primary:disabled,
+.action:disabled { opacity: 0.5; cursor: default; }
+.action:focus-visible,
+.primary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (max-width: 480px) {
+  .actions { display: grid; grid-template-columns: minmax(0, 1fr); padding-left: 0; }
+  .actions > button { width: 100%; min-width: 0; white-space: normal; }
+  .prompt { margin-left: 0; }
+}

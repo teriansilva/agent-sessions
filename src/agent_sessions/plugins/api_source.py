@@ -105,3 +105,28 @@ def admits(binding: SourceBinding) -> bool:
             return _stamp(source) == binding._source_stamp
     except (OSError, ValueError, EngineError, provenance.ProvenanceError):
         return False
+
+
+def selection(ep: provenance.Entrypoint, trust: str) -> dict:
+    """How a source's binary was selected (#1538), pinned beside the path a worker launched.
+
+    A queued message waits for the running turn; meanwhile a vendor CLI may update itself on disk
+    (Claude Code retargets `~/.local/bin/claude` to `versions/<new>`). The running process is
+    unchanged, so delivery compares HOW the binary is selected, never where it points now:
+    `via`, the unresolved `selector`, the provenance `state` and the manifest's `trust`.
+    """
+    return {"via": ep.via, "selector": ep.selector, "state": ep.state, "trust": trust}
+
+
+def same_selection(pinned: object, ep: provenance.Entrypoint, trust: str) -> bool:
+    """Does a fresh, provenance-PASSED resolution keep the selection a worker launched with?
+
+    The resolved path may differ: that is the self-update, and it is safe because provenance has
+    already re-run. A managed binary cannot retarget without failing its digest, a third-party
+    adopted one without failing the operator's confirmation of that exact file. Only a
+    first-party adopted launcher may point somewhere new, and that launcher is the operator's own
+    (owner-checked, regular file): the next generation would launch whatever it points at under
+    the same rules, while delivery writes only to the process already running. A changed
+    selector, `via`, state or trust is never the same selection.
+    """
+    return isinstance(pinned, dict) and pinned == selection(ep, trust)

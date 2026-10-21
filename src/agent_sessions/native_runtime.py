@@ -431,11 +431,16 @@ class Generation:
         )
 
 
-def _entrypoint(source) -> str:
+def _entrypoint(source) -> tuple[str, dict]:
+    """The provenance-checked binary a generation spawns, and how it was selected (#1538): a
+    queued message is admitted later against that selection, never against the path alone."""
+    from .plugins import api_source
+
     try:
-        return source.entrypoint_path()
+        ep = source.entrypoint_selection()
     except Exception as exc:  # noqa: BLE001 — EngineError/provenance refusal
         raise NativeError(409, str(exc)) from None
+    return ep.path, api_source.selection(ep, source.trust)
 
 
 def _server_env() -> dict[str, str]:
@@ -467,6 +472,7 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -
     state_dir = native_state.root()
     runtime = HOST.runtime_dir()
     adapter = record["adapter"]
+    binary, selection = _entrypoint(binding.source)
     config = {
         "version": 1,
         "worker_id": worker.worker_id,
@@ -475,7 +481,8 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -
         "session_key": record["session_key"],
         "adapter": adapter,
         "source_engine": record["source_engine"],
-        "binary": _entrypoint(binding.source),
+        "binary": binary,
+        "entrypoint": selection,
         "cwd": record["request"]["cwd"],
         "model": record["request"]["model"],
         # The requested level (#1407), read from the recorded request on EVERY generation, like
@@ -1854,6 +1861,7 @@ def project(
     *,
     max_turns: int | None = None,
     before: str | None = None,
+    ended_workers: frozenset[str] | set[str] = frozenset(),
 ) -> dict:
     """Project only displayed turn payloads; transcript consumers may request every turn.
 
@@ -1961,6 +1969,8 @@ def project(
                 "context": params.get("context") or {},
                 "tools": [],
                 "handoff": op.handoff,
+                "queued_claim": op.queued,
+                "reason_code": op.reason_code,
                 "worker_id": op.worker_id,
                 "completed": False,
             }
@@ -2138,18 +2148,22 @@ def project(
             _place_tools(turn, "partial")
     for turn in turns.values():
         if turn["handoff"] == "not_sent":
-            turn["status"], turn["reason"] = (
-                "failed",
-                "not sent: the agent did not accept this turn",
-            )
+            # An operator message proved never sent (#1538), queued OR direct (a Send again is
+            # usually direct): its reason, as a closed code, and its own derived retry id, so a
+            # chain of failed attempts stays recoverable at its newest link. Never a Send now
+            # control (not a turn) or an uncertain handoff. A direct refusal written before
+            # #1538 has no code and reads `unexpected`.
+            _not_sent(turn, turn["reason_code"] or "unexpected", journal)
         elif turn["handoff"] == "queued":
-            if turn["worker_id"] == live_worker:
-                turn["status"] = "queued"
+            if turn["worker_id"] != live_worker and turn["worker_id"] in ended_workers:
+                # Its worker ended, on AUTHORITATIVE evidence (`_exit_proved`), with the message
+                # still queued: the same proved non-send. The durable record is written by
+                # `_settle_stranded`; this derivation is the fallback when it could not be.
+                _not_sent(turn, "worker_ended", journal)
             else:
-                turn["status"] = "failed"
-                turn["reason"] = (
-                    "not sent: the native worker stopped before this queued message ran"
-                )
+                # Live, or not seen live by an observation that proves nothing (a `/proc` read
+                # can fail): still pending. Neither `not_sent` nor Send again (#1538).
+                turn["status"] = "queued"
         elif not turn["completed"] and turn["status"] == "pending":
             if turn["worker_id"] != live_worker:
                 turn["status"], turn["code"] = "failed", "uncertain"
@@ -2230,6 +2244,8 @@ def project(
             "partial",
             "partial_item",
             "handoff",
+            "queued_claim",
+            "reason_code",
             "worker_id",
             "completed",
             "delivery_operation_id",
@@ -2281,6 +2297,41 @@ def project(
             if background_turn is not None and background_turn[1] == live_worker
             else None,
         },
+    }
+
+
+#: What a `not_sent` reason code means (#1538), fixed text only: never CLI output, a path or an
+#: exception message. The pane holds the same table for its "Not sent: <reason>" line.
+NOT_SENT_REASONS = {
+    "agent_removed": "this session's agent was removed while the message waited",
+    "agent_changed": (
+        "this session's agent was switched to a different install while the message waited"
+    ),
+    "source_store_changed": "this session's history store changed owner while the message waited",
+    "generation_closed": "the session was stopped before this message could go out",
+    "question_replaced": "the question it answered was answered or replaced first",
+    "worker_ended": "the session ended while this message waited",
+    "unexpected": "BattleLab could not hand this message to the agent",
+}
+
+
+def _not_sent(turn: dict, code: str, journal: native_journal.Journal) -> None:
+    """``retry`` is the ONE operation id Send again submits for this message, derived from its own
+    (`native_journal.retry_id`). ``retry_recorded``: the journal holds that operation, whatever
+    became of it, so this message is history on every tab and device. ``retried``: it holds it and
+    it was NOT settled `not_sent` (delivered, pending or uncertain). A retry that failed before
+    stdin carries its own `not_sent` with its own derived id: the chain is recovered at its
+    newest link, and no id of a failed claim is ever submitted again."""
+    code = code if code in NOT_SENT_REASONS else "unexpected"
+    retry = native_journal.retry_id(turn["turn_id"])
+    attempt = journal.operations.get(retry)
+    turn["status"] = "failed"
+    turn["reason"] = f"not sent: {NOT_SENT_REASONS[code]} — nothing was delivered"
+    turn["not_sent"] = {
+        "code": code,
+        "retry": retry,
+        "retry_recorded": attempt is not None,
+        "retried": attempt is not None and attempt.handoff != "not_sent",
     }
 
 
@@ -2355,13 +2406,83 @@ def _live_worker(session_id: str) -> str | None:
     return gen.worker_id if HOST.worker_running(worker, life.get("pid")) else None
 
 
+def _exit_proved(session_id: str, worker_id: str) -> bool:
+    """Authoritative evidence that this generation can never hand a queued message off (#1538).
+
+    Its generation was closed or replaced (its own admission refuses then), its lifecycle says it
+    exited or was refused, or `_proved_gone` holds (the unit and cgroup evidence the lease sweep
+    trusts). `_live_worker` being None is NOT such evidence: it is a cheap `/proc` observation
+    that reads "not running" on any read error."""
+    record = native_state.read_session(session_id) or {}
+    if record.get("current_worker") != worker_id or record.get("closed") is True:
+        return True
+    if native_state.read_lifecycle(worker_id).get("phase") in {"exited", "refused"}:
+        return True
+    return _proved_gone(worker_id)
+
+
+def _stranded_workers(journal: native_journal.Journal, live: str | None) -> set[str]:
+    return {
+        op.worker_id
+        for op in journal.operations.values()
+        if op.request["action"] == "submit" and op.handoff == "queued" and op.worker_id != live
+    }
+
+
+def _settle_stranded(
+    prov, session_id: str, journal: native_journal.Journal, live: str | None
+) -> tuple[native_journal.Journal, set[str]]:
+    """Make "the worker ended with this message still queued" durable (#1538).
+
+    Returns the journal to project and the generations PROVED ended (`_exit_proved`), which is
+    the only ground on which `project` derives `worker_ended`. A generation merely not observed
+    live is inconclusive: nothing is written or derived, and its messages stay pending. For a
+    proved one, the first read writes the `native_handoff` `not_sent` record with `reason_code:
+    worker_ended`, under the session's lifecycle lock (re-reading the live worker and the evidence
+    under it), through `native_journal.settle_worker_ended`, which writes only while the message
+    is still `queued`. Not while a live worker older than #1538 runs: its journal reader refuses
+    the new field. Anything that prevents the write (the lock busy, a read-only journal) leaves
+    the derivation to show the same reason."""
+    candidates = _stranded_workers(journal, live)
+    try:
+        ended = {worker for worker in candidates if _exit_proved(session_id, worker)}
+    except (native_state.StateError, OSError):
+        return journal, set()
+    if not ended:
+        return journal, ended
+    wrote = False
+    try:
+        with native_state.session_lock(session_id, wait=0):
+            live = _live_worker(session_id)
+            if (
+                live is not None
+                and native_state.read_lifecycle(live).get("handoff_reasons") is not True
+            ):
+                return journal, ended
+            root, key = _journal_root(prov), journal.header["request"]["session_key"]
+            proved = {w for w in _stranded_workers(journal, live) if _exit_proved(session_id, w)}
+            for op in list(journal.operations.values()):
+                if (
+                    op.request["action"] == "submit"
+                    and op.handoff == "queued"
+                    and op.worker_id in proved
+                ):
+                    wrote |= native_journal.settle_worker_ended(
+                        root, key, op.operation_id, op.worker_id
+                    )
+    except (native_state.StateError, native_journal.JournalError, NativeError, OSError):
+        return journal, ended
+    return (_journal(prov, session_id) if wrote else journal), ended
+
+
 def _snapshot_sync(engine_id: str, session_id: str) -> dict:
     # A read: it reaches a retiring client's history too (#1311). New work never does.
     prov, record = _session(engine_id, session_id, retiring_ok=True)
     from .structured_runtime import SNAPSHOT_TURNS
 
     live = _live_worker(session_id)
-    view = project(_journal(prov, session_id), record, live, max_turns=SNAPSHOT_TURNS)
+    journal, ended = _settle_stranded(prov, session_id, _journal(prov, session_id), live)
+    view = project(journal, record, live, max_turns=SNAPSHOT_TURNS, ended_workers=ended)
     # The running worker advertises its own implementation. A web update cannot teach an
     # already-running, release-pinned worker a new effect (#1389).
     life = native_state.read_lifecycle(live) if live else {}
@@ -2421,9 +2542,9 @@ async def snapshot(engine_id: str, session_id: str) -> dict:
 def _history_sync(engine_id: str, session_id: str, before: str, limit: int) -> dict:
     # The snapshot's read (#1311): a retiring client's history is still readable.
     prov, record = _session(engine_id, session_id, retiring_ok=True)
-    view = project(
-        _journal(prov, session_id), record, _live_worker(session_id), max_turns=limit, before=before
-    )
+    live = _live_worker(session_id)
+    journal, ended = _settle_stranded(prov, session_id, _journal(prov, session_id), live)
+    view = project(journal, record, live, max_turns=limit, before=before, ended_workers=ended)
     return {"turns": view["turns"], "history_before": view["history_before"]}
 
 
@@ -2506,6 +2627,10 @@ async def submit(
     for _ in range(3):
         journal = await asyncio.to_thread(_journal, prov, session_id)
         receipt = _replay(journal, turn_id, immutable)
+        if receipt is not None and journal.operations[turn_id].queued:
+            # A queued message's replay observes how it ended, `not_sent` with its reason
+            # included (#1538): the turn shows it, and Send again is a new operation id.
+            return receipt
         if receipt is not None:
             break
         revision = journal.revision if expected_revision is None else expected_revision

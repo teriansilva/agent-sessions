@@ -587,7 +587,7 @@ def test_launch_site_inventory_requires_review_when_another_route_can_spawn():
             # not execute it — pinned for plugins/ below.
             continue
         tree = ast.parse(path.read_text())
-        watched = ("launch_argv", "new_launch_argv", "entrypoint_path")
+        watched = ("launch_argv", "new_launch_argv", "entrypoint_path", "entrypoint_selection")
         for call in ast.walk(tree):
             if not isinstance(call, ast.Call):
                 continue
@@ -615,12 +615,16 @@ def test_launch_site_inventory_requires_review_when_another_route_can_spawn():
         # `opencode acp` child is spawned by `native_worker` under the SAME shared admission a
         # console launch takes (`Worker.store_admission`, asserted below and in
         # test_native_opencode), held through process creation.
-        ("native_runtime.py", "entrypoint_path"): 2,
-        # #1378: delayed queue dispatch re-resolves the admitted source and COMPARES its binary
-        # path to this worker's pinned config. It executes nothing and cannot spawn a successor.
-        # The two process-creation sites below stay unchanged; provider revocation before queue
-        # dispatch is exercised for all three protocols in test_native_queue.
-        ("native_worker.py", "entrypoint_path"): 1,
+        # The launch pins the path WITH how it was selected (`entrypoint_selection`, #1538).
+        ("native_runtime.py", "entrypoint_path"): 1,
+        ("native_runtime.py", "entrypoint_selection"): 1,
+        # #1378: delayed queue dispatch re-resolves the admitted source and COMPARES how its
+        # binary is selected to this worker's pinned launch (#1538: `via`, selector, state,
+        # trust; the resolved path may be a vendor self-update). It executes nothing and cannot
+        # spawn a successor. The two process-creation sites below stay unchanged; provider
+        # revocation before queue dispatch is exercised for all three protocols in
+        # test_native_queue, the selection rules in test_native_queued_admission.
+        ("native_worker.py", "entrypoint_selection"): 1,
         # …and builds the fixed systemd worker command (`native_containment.launch_argv`),
         # which starts BattleLab's own worker, never a provider's console argv.
         ("native_runtime.py", "launch_argv"): 1,

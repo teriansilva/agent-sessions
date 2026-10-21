@@ -126,6 +126,13 @@ import {
   type OutboxEntry,
 } from "./outbox";
 import { OutboxBlock } from "./Outbox";
+import { NotSentRow } from "./NotSent";
+import {
+  type Attachment as NotSentAttachment,
+  discardNotSent,
+  notSentDiscarded,
+  notSentState,
+} from "./notSent";
 import { useAlive, useLeaveGuard, useOutbox } from "./useOutbox";
 
 /** While a turn runs, the event cursor is read this often; a change re-reads the snapshot. */
@@ -926,6 +933,7 @@ function TurnView({
   cutOff,
   waiting,
   question,
+  notSent,
 }: {
   folder?: string;
   turn: StructuredTurn;
@@ -960,6 +968,9 @@ function TurnView({
   waiting?: boolean;
   /** The question block when this turn's question is still open (#1463). */
   question?: ReactNode;
+  /** A queued message proven never sent (#1538): its reason and Send again, in place of the
+   *  generic failure line. */
+  notSent?: ReactNode;
 }) {
   const active = turn.state === "running" || turn.state === "awaiting_approval";
   const failed = ["failed", "interrupted", "uncertain", "unavailable"].includes(turn.state);
@@ -1160,6 +1171,8 @@ function TurnView({
         <p className={styles.cutNote} role="status" data-testid="structured-sendnow-cut">
           Interrupted by Send now — your next message is answered below.
         </p>
+      ) : notSent ? (
+        notSent
       ) : failed && (
         <div className={chat.failed}>
           <div className={chat.err} role="alert" data-testid="structured-failed">
@@ -1762,6 +1775,38 @@ export function StructuredPane({
     historyFor.current = null;
     setDraft(entry.request.draft);
     setSendError(null);
+    requestAnimationFrame(() => taRef.current?.focus());
+  };
+
+  /** Send again (#1538): a queued message proven never sent goes out again under the ONE
+   *  operation id the server derived for it (`not_sent.retry`), so a second tab, a reload or a
+   *  repeated click resends the same operation and the server delivers it at most once. It goes
+   *  through the outbox, so it shows pending at once behind anything already waiting; whether it
+   *  was sent again is read from the server (`not_sent.retried`), never remembered here. */
+  const [, setDiscardTick] = useState(0);
+  const discardNotSent_ = (turnId: string) => {
+    discardNotSent(key, turnId);
+    setDiscardTick((n) => n + 1);
+    requestAnimationFrame(() => taRef.current?.focus());
+  };
+  const sendAgain = (turn: StructuredTurn, files: NotSentAttachment[]) => {
+    const id = turn.not_sent?.retry;
+    if (readOnly || !id || turn.not_sent?.retried || turn.not_sent?.retry_recorded) return;
+    const text = turn.text ?? "";
+    if (!text.trim() && files.length === 0) return;
+    const held = outboxRef.current.find((e) => e.request.id === id);
+    if (held && held.phase !== "refused") return; // already on its way
+    setOutbox((list) => [
+      // A refused retry recorded nothing: the same id goes again, at the end of the queue.
+      ...list.filter((e) => e.request.id !== id),
+      outboxEntry({
+        id,
+        text,
+        draft: text,
+        attachments: files.map((a) => ({ name: a.name ?? attachmentName(a.stored), stored: a.stored })),
+        history: null,
+      }),
+    ]);
     requestAnimationFrame(() => taRef.current?.focus());
   };
 
@@ -2749,6 +2794,20 @@ export function StructuredPane({
       // would leave the question pending with its answer gone.
       canRemove={!!snap?.native?.withdraw && !pendingAnswerIds.has(t.turn_id)}
       question={questionFor(t)}
+      notSent={t.not_sent && (
+        <NotSentRow
+          turn={t}
+          choice={notSentState(
+            t,
+            outbox.find((e) => e.request.id === t.not_sent?.retry)?.phase ?? null,
+            notSentDiscarded(key, t.turn_id),
+          )}
+          readOnly={readOnly}
+          probe={(stored) => api.uploadBlob(stored)}
+          onSendAgain={(files) => sendAgain(t, files)}
+          onDiscard={() => discardNotSent_(t.turn_id)}
+        />
+      )}
     />
   );
   return (

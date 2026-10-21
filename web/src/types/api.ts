@@ -1578,6 +1578,19 @@ export interface StructuredTurn {
   text_truncated: boolean;
   reply_truncated: boolean;
   reason: string | null;
+  /** A queued message proved never sent, and why (#1538): a closed code, shown as fixed text.
+   *  Only on a queued operator message — never a Send now control or an uncertain handoff. */
+  not_sent?: {
+    code: string;
+    /** The ONE operation id Send again submits, derived by the server from this turn's id: every
+     *  tab, reload and click resends under it, so it is delivered at most once. */
+    retry?: string;
+    /** The journal holds that operation, whatever became of it: this message was sent again
+     *  (from any tab or device) and is history; a retry that failed offers its own Send again. */
+    retry_recorded?: boolean;
+    /** The journal holds it and it was not settled not sent: delivered, pending or uncertain. */
+    retried?: boolean;
+  };
   /** Input delivery is distinct from completing the agent's active response (#1389). */
   delivery?: "steering" | "steered" | "interrupting" | "interrupt_failed";
   delivery_turn_id?: string;

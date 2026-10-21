@@ -382,6 +382,9 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
         "attachments": [native_attachments.public(a) for a in turn.get("attachments") or ()],
         "reply_truncated": reply_cut or bool(turn.get("truncated")),
         "reason": turn.get("reason"),
+        # A queued message proved never sent, and why (#1538): a closed code the pane turns into
+        # fixed text and offers Send again on. Absent on every other turn.
+        **({"not_sent": dict(turn["not_sent"])} if turn.get("not_sent") else {}),
         **({"delivery": turn["delivery"]} if turn.get("delivery") else {}),
         **({"delivery_turn_id": turn["delivery_turn_id"]} if turn.get("delivery_turn_id") else {}),
         **({"delivery_reason": turn["delivery_reason"]} if turn.get("delivery_reason") else {}),
