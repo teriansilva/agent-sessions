@@ -1,0 +1,383 @@
+#!/usr/bin/env python3
+"""Measure the session-assessment input paths over the frozen #1020 corpus.
+
+    python3 scripts/assessment-baseline              # offline: sizes, retention, call counts
+    python3 scripts/assessment-baseline --live PREFS  # + wall-clock latency at an endpoint
+
+Offline mode makes NO network call. Every source reader is replaced with the corpus's synthetic
+content (`tests/fixtures/assessment/corpus.json`), and the stores point at a fresh temporary
+directory, so nothing reads or writes an operator's sessions, metadata or prefs. Call counts come
+from a mock transport that counts the requests the app's real code puts on the wire.
+
+``--live PREFS`` additionally sends the SAME synthetic inputs to the endpoint configured in the
+``ai_review`` block of the prefs file named (read in memory; the key is never printed or written
+anywhere) and records wall-clock time, wire attempts and output size per call. Prompts are the
+shipped defaults, not that file's custom text, so runs stay comparable.
+
+What this measures, per corpus case:
+
+* ``session-review`` — the input the standalone review assembles (tail review; recap below), its
+  size, and whether each case marker (the current state, an operative correction, a blocker)
+  survives into it.
+* ``session-recap`` — the whole-session recap input.
+* ``mission-supervisor`` — the supervisor's user message (instruction + checklist + the 6 000-char
+  session view), for cases with a mission.
+* ``standalone-digest`` — the per-session entry the standalone decision pass sends.
+
+It never measures model ACCURACY. Shape and retention are not quality.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import statistics
+import sys
+import tempfile
+import time
+from pathlib import Path
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parent.parent
+CORPUS = ROOT / "tests" / "fixtures" / "assessment" / "corpus.json"
+
+# Isolate every store BEFORE the package is imported: some paths are resolved per call, some at
+# first use, and none of them may reach the operator's real directories.
+_TMP = Path(tempfile.mkdtemp(prefix="assessment-baseline-"))
+for _var, _name in (
+    ("AGENT_SESSIONS_HOME", "home"),
+    ("AGENT_SESSIONS_PREFS", "prefs.json"),
+    ("AGENT_SESSIONS_METADATA", "metadata.json"),
+    ("AGENT_SESSIONS_PROJECTS", "projects.json"),
+    ("AGENT_SESSIONS_PULSE_CACHE", "pulse-cache.json"),
+    ("AGENT_SESSIONS_TEMPLATES", "templates.json"),
+    ("AGENT_SESSIONS_TEMPLATE_VARS", "template-variables.json"),
+    ("AGENT_SESSIONS_LOCK_DIR", "locks"),
+):
+    os.environ[_var] = str(_TMP / _name)
+sys.path.insert(0, str(ROOT / "src"))
+
+import httpx  # noqa: E402
+
+from agent_sessions import mission_supervisor, orchestrator, review, transcript  # noqa: E402
+
+KEYS = {
+    "claude": "claude:00000000-0000-4000-8000-0000000000{:02d}",
+    "codex": "codex:00000000-0000-4000-8000-0000000000{:02d}",
+    "opencode": "opencode:ses_00000000000000000000{:04d}",
+    "shell": "shell:00000000-0000-4000-8000-0000000000{:02d}",
+}
+
+
+def _turns(case: dict) -> list | None:
+    raw = case["sources"].get("turns")
+    if raw is None:
+        return None
+    filler = case["sources"].get("filler") or {}
+    out = []
+    for role, kind, text in raw:
+        if text in filler:
+            spec = filler[text]
+            text = "\n".join([spec["line"]] * int(spec["repeat"]))
+        out.append(transcript.Turn(role, text, kind, ts=1_800_000_000.0 + len(out)))
+    return out
+
+
+def _key(case: dict, i: int) -> str:
+    return KEYS[case["session"]["engine"]].format(i)
+
+
+class _Readers:
+    """Replace the review module's source readers with one case's synthetic content."""
+
+    def __init__(self, case: dict, key: str):
+        self.case, self.key = case, key
+        self.turns = _turns(case)
+        self.screen = case["sources"].get("screen") or ""
+
+    def __enter__(self):
+        turns, screen, engine = self.turns, self.screen, self.case["session"]["engine"]
+        self._patches = [
+            patch.object(review, "_physical", return_value=self.key),
+            patch.object(review, "_turns", side_effect=lambda *a, **k: list(turns or [])),
+            patch.object(
+                review.scrollback,
+                "live_tail_text",
+                side_effect=lambda _k, n: screen[-n:] if n > 0 else "",
+            ),
+            patch.object(review, "_pending_draft_section", return_value=""),
+            patch.object(review, "_session_context", return_value=""),
+            patch.object(review, "keeps_transcript", return_value=engine != "shell"),
+        ]
+        for p in self._patches:
+            p.start()
+        return self
+
+    def __exit__(self, *exc):
+        for p in reversed(self._patches):
+            p.stop()
+
+
+def _review_gather():
+    """The gatherer the review actually uses — measured whichever revision is checked out."""
+    return getattr(review, "gather_review_input", review.gather_input)
+
+
+def _checklist(case: dict) -> str:
+    rows = []
+    for o in (case.get("mission") or {}).get("objectives") or []:
+        line = f"- {o['key']}: {o['title']} — {o['state']}  [direction: none]"
+        if o.get("facts"):
+            line += "  [facts: " + ", ".join(f"{f['name']}={f['value']}" for f in o["facts"]) + "]"
+        rows.append(line)
+    return "\n".join(rows) or "(no objectives)"
+
+
+def _markers(text: str, markers: list[str]) -> dict[str, bool]:
+    flat = " ".join(text.lower().split())
+    return {m: " ".join(m.lower().split()) in flat for m in markers}
+
+
+def _source_chars(case: dict) -> int:
+    turns = _turns(case) or []
+    return sum(len(t.text) for t in turns) + len(case["sources"].get("screen") or "")
+
+
+def offline(case: dict, i: int) -> list[dict]:
+    key = _key(case, i)
+    rows = []
+    with _Readers(case, key):
+        for path, fn, budget in (
+            ("session-review", _review_gather(), 24_000),
+            (
+                "session-recap",
+                review.gather_recap_input,
+                review.recap_input_chars({"max_input_chars": 24_000}),
+            ),
+        ):
+            try:
+                text, _fp = fn(key, budget, {})
+            except review.ReviewError as e:
+                rows.append({"case_id": case["id"], "path": path, "skipped": str(e)})
+                continue
+            rows.append(
+                {
+                    "case_id": case["id"],
+                    "path": path,
+                    "source_chars": _source_chars(case),
+                    "input_budget": budget,
+                    "input_chars": len(text),
+                    "markers_in_input": _markers(text, case["markers"]),
+                }
+            )
+        if case.get("mission"):
+            try:
+                body, _fp = review.gather_input(key, mission_supervisor._INPUT_MAX, {})
+                msg = (
+                    f"Instruction:\n{case['mission']['instruction']}\n\n"
+                    f"Objectives:\n{_checklist(case)}\n\nSession:\n{body}"
+                )
+                rows.append(
+                    {
+                        "case_id": case["id"],
+                        "path": "mission-supervisor",
+                        "source_chars": _source_chars(case),
+                        "input_budget": mission_supervisor._INPUT_MAX,
+                        "input_chars": len(msg),
+                        "markers_in_input": _markers(msg, case["markers"]),
+                    }
+                )
+            except review.ReviewError as e:
+                rows.append(
+                    {"case_id": case["id"], "path": "mission-supervisor", "skipped": str(e)}
+                )
+    stored = case.get("stored") or {}
+    card = {
+        "id": key,
+        "engine": case["session"]["engine"],
+        "title": case["id"],
+        "project": {"name": "corpus"},
+        "state": "idle",
+        "intervention_required": False,
+        "ai_summary": stored.get("preview", ""),
+        "_ai_recap": stored.get("recap", ""),
+        "last_activity": 1_800_000_000.0,
+    }
+    entry = orchestrator._digest_entry(card, 1_800_000_000.0)
+    rows.append(
+        {
+            "case_id": case["id"],
+            "path": "standalone-digest",
+            "input_chars": len(json.dumps(entry)),
+            "fields": sorted(entry),
+        }
+    )
+    return rows
+
+
+def _reply(system: str) -> str:
+    if "chronological" in system.lower():
+        return json.dumps({"recap": "Did the work.\nNow waiting."})
+    return json.dumps(
+        {"summary": "Working", "title": "Work", "intervention_required": False, "reason": ""}
+    )
+
+
+def call_counts(case: dict, i: int) -> dict:
+    """How many requests one standalone review puts on the wire, with a cooperating endpoint."""
+    key = _key(case, i)
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        system = payload["messages"][0]["content"]
+        seen.append(system[:40])
+        return httpx.Response(200, json={"choices": [{"message": {"content": _reply(system)}}]})
+
+    cfg = {
+        "base_url": "https://mock.invalid/v1",
+        "api_key": "x",
+        "model": "m",
+        "max_input_chars": 24000,
+    }
+    with (
+        _Readers(case, key),
+        patch.object(review, "_TRANSPORT", httpx.MockTransport(handler)),
+        patch.object(review, "_require_config", return_value=cfg),
+        patch.object(review.prefs, "get_ai_review", return_value=cfg),
+    ):
+        try:
+            asyncio.run(review.run_review(key, {}))
+        except review.ReviewError as e:
+            return {"case_id": case["id"], "path": "session-review+recap", "skipped": str(e)}
+    return {"case_id": case["id"], "path": "session-review+recap", "wire_requests": len(seen)}
+
+
+async def _timed_live(case: dict, i: int, cfg: dict) -> list[dict]:
+    key = _key(case, i)
+    rows: list[dict] = []
+    real_post = review._post_chat
+
+    async def timed(c, body, **kw):
+        t0 = time.monotonic()
+        r = await real_post(c, body, **kw)
+        ms = round((time.monotonic() - t0) * 1000)
+        out_chars, usage = None, None
+        try:
+            js = r.json()
+            out_chars = len(js["choices"][0]["message"]["content"] or "")
+            usage = js.get("usage")
+        except Exception:  # noqa: BLE001, S110 — a failed call is recorded, not raised here
+            pass
+        system = body["messages"][0]["content"]
+        rows.append(
+            {
+                "case_id": case["id"],
+                "path": "session-recap"
+                if "chronological" in system.lower()
+                else (
+                    "mission-supervisor"
+                    if "supervisor of one mission" in system
+                    else "session-review"
+                ),
+                "status": r.status_code,
+                "execution_ms": ms,
+                "input_chars": sum(len(m.get("content") or "") for m in body["messages"]),
+                "output_chars": out_chars,
+                "usage": usage,
+            }
+        )
+        return r
+
+    with (
+        _Readers(case, key),
+        patch.object(review, "_post_chat", timed),
+        patch.object(review, "_require_config", return_value=cfg),
+        patch.object(review.prefs, "get_ai_review", return_value=cfg),
+    ):
+        try:
+            out = await review.run_review(key, {})
+            if "assessment" in out:  # the structured record, on a revision that writes one
+                rows.append(
+                    {"case_id": case["id"], "path": "assessment", "payload": out["assessment"]}
+                )
+        except review.ReviewError as e:
+            rows.append({"case_id": case["id"], "path": "session-review", "error": str(e)[:200]})
+        if case.get("mission"):
+            body, _ = review.gather_input(key, mission_supervisor._INPUT_MAX, {})
+            msg = (
+                f"Instruction:\n{case['mission']['instruction']}\n\n"
+                f"Objectives:\n{_checklist(case)}\n\nSession:\n{body}"
+            )
+            try:
+                await review.complete_json(
+                    [
+                        {
+                            "role": "system",
+                            "content": review.prompts.effective("mission_supervisor"),
+                        },
+                        {"role": "user", "content": msg},
+                    ]
+                )
+            except review.ReviewError as e:
+                rows.append(
+                    {"case_id": case["id"], "path": "mission-supervisor", "error": str(e)[:200]}
+                )
+    return rows
+
+
+def _summary(rows: list[dict]) -> dict:
+    out: dict[str, dict] = {}
+    for path in sorted({r["path"] for r in rows}):
+        ms = [r["execution_ms"] for r in rows if r["path"] == path and "execution_ms" in r]
+        oc = [r["output_chars"] for r in rows if r["path"] == path and r.get("output_chars")]
+        if ms:
+            out[path] = {
+                "calls": len(ms),
+                "median_ms": statistics.median(ms),
+                "max_ms": max(ms),
+                "median_output_chars": statistics.median(oc) if oc else None,
+            }
+    return out
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument(
+        "--live", metavar="PREFS", help="also time calls against this prefs file's endpoint"
+    )
+    ap.add_argument("--only", help="comma-separated case ids")
+    args = ap.parse_args()
+    corpus = json.loads(CORPUS.read_text())
+    cases = corpus["cases"]
+    if args.only:
+        wanted = set(args.only.split(","))
+        cases = [c for c in cases if c["id"] in wanted]
+    result: dict = {"corpus_cases": len(cases), "offline": [], "call_counts": []}
+    for i, case in enumerate(cases, 1):
+        result["offline"].extend(offline(case, i))
+        result["call_counts"].append(call_counts(case, i))
+    if args.live:
+        block = json.loads(Path(args.live).read_text()).get("ai_review") or {}
+        cfg = {
+            "base_url": block["base_url"],
+            "api_key": block["api_key"],
+            "model": block["model"],
+            "max_input_chars": 24000,
+            "request_timeout": block.get("request_timeout"),
+        }
+        # A fresh metadata store: the offline call count above persisted each case's recap
+        # fingerprint, and an unchanged recap input is (correctly) not sent again.
+        Path(os.environ["AGENT_SESSIONS_METADATA"]).unlink(missing_ok=True)
+        live: list[dict] = []
+        for i, case in enumerate(cases, 1):
+            live.extend(asyncio.run(_timed_live(case, i, cfg)))
+        result["live"] = {"model": cfg["model"], "calls": live, "summary": _summary(live)}
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

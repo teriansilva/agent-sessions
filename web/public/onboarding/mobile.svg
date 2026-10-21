@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-label="Mobile touch terminal">
+  <rect width="640" height="360" fill="#131418"/>
+  <rect x="250" y="36" width="140" height="270" rx="14" fill="#0d0e10" stroke="#25282e"/>
+  <rect x="264" y="58" width="112" height="180" fill="#131418"/>
+  <text x="272" y="80" fill="#3fbf6f" font-family="monospace" font-size="9">~/app on main</text>
+  <text x="272" y="98" fill="#a7abb3" font-family="monospace" font-size="9">● picking up where…</text>
+  <rect x="264" y="248" width="112" height="26" fill="#0d0e10" stroke="#ffb000"/>
+  <text x="272" y="265" fill="#6f747d" font-family="monospace" font-size="9">type a message…</text>
+  <g fill="#1a1c21" stroke="#25282e">
+    <rect x="264" y="280" width="24" height="18"/><rect x="292" y="280" width="24" height="18"/>
+    <rect x="320" y="280" width="24" height="18"/><rect x="348" y="280" width="28" height="18"/>
+  </g>
+  <text x="276" y="293" fill="#ffb000" font-family="monospace" font-size="9">^C</text>
+  <text x="303" y="293" fill="#ffb000" font-family="monospace" font-size="9">^D</text>
+  <text x="330" y="293" fill="#ffb000" font-family="monospace" font-size="9">⇥</text>
+  <text x="356" y="293" fill="#ffb000" font-family="monospace" font-size="9">📎</text>
+  <g stroke="#ffb000" stroke-width="2" fill="none"><path d="M8 20V8h12"/><path d="M620 8h12v12"/><path d="M8 340v12h12"/><path d="M632 340v12h-12"/></g>
+  <text x="320" y="336" fill="#6f747d" font-family="monospace" font-size="16" text-anchor="middle">TOUCH // compose · ctrl keys · paste</text>
+</svg>

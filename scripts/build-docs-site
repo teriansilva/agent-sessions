@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+# scripts/build-docs-site — build the BattleLab documentation site from the FILTERED PUBLIC
+# SNAPSHOT, and refuse to produce output that is not publishable (#828 / #829).
+#
+# This script is the contract, not the workflow. The deploy workflow and the mirror-publish path
+# both call it with an explicit ref rather than reimplementing any of it, so there is one
+# definition of "what the docs site is" and it is runnable locally:
+#
+#     scripts/build-docs-site                 # HEAD, output to ./dist-docs
+#     scripts/build-docs-site v0.12.3 --out /tmp/site
+#
+# The pipeline, and why each step is where it is:
+#
+#   1. STAMP FIRST. The snapshot is a `git archive` extraction with no `.git`, so `git describe`
+#      cannot run inside it. Provenance is resolved here, in the source checkout, and written into
+#      the snapshot as data.
+#   2. SNAPSHOT + INPUT GATE. `check-public-snapshot` applies the export-ignore filter and the
+#      denylist. Anything org-internal is physically ABSENT from what the build can see — the site
+#      cannot render a file that is not there, which is a stronger guarantee than a careful glob.
+#   3. BUILD inside the snapshot.
+#   4. STRUCTURAL GATES — BEFORE the output scan, and the order is load-bearing. No hardcoded hex
+#      in the theme (one palette, imported); every sidebar and nav link resolves to a real page
+#      (VitePress checks markdown links, not its own config). The link check IMPORTS
+#      .vitepress/config.ts, i.e. it executes PR-controlled code on the runner — so it has to run
+#      before the tree is certified, never after. An earlier revision had these two steps the
+#      other way round, and a config that wrote a file at import time was published unscanned
+#      while the run still printed OK.
+#   5. OUTPUT GATE, LAST. `check-public-snapshot scan-tree` over the GENERATED HTML — the exact
+#      bytes that get served, not just the markdown they came from. Same implementation as step 2.
+#      Nothing executes between this scan and the copy in step 6.
+#   6. PUBLISH into --out, which must be a path this script owns (see the guard below).
+set -euo pipefail
+
+REF="HEAD"
+OUT=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --out) OUT="${2:?--out needs a dir}"; shift 2;;
+    *) REF="$1"; shift;;
+  esac
+done
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+OUT="${OUT:-$ROOT/dist-docs}"
+
+# The output directory is REPLACED (`rm -rf`) at the end, so an unvalidated --out turns a typo
+# into data loss: `--out .`, `--out ..`, `--out /tmp` and `--out "$HOME"` are all things a caller
+# can plausibly type, and every one of them is a recursive delete of something that is not ours.
+# Confine it to a disposable subtree we own: resolve the path, refuse the obviously catastrophic
+# targets, and refuse any EXISTING directory this script did not create — ownership is proven by
+# a marker file we write, not by the path looking safe.
+OUT="$(realpath -m -- "$OUT")"
+MARKER=".build-docs-site-output"
+[ "$OUT" = "/" ] && { echo "build-docs-site: refusing --out /" >&2; exit 2; }
+if [ "$OUT" = "$HOME" ] || [ "$OUT" = "$ROOT" ]; then
+  echo "build-docs-site: refusing --out '$OUT' (home or repository root)" >&2; exit 2
+fi
+# An ancestor of the repository would take the checkout with it.
+case "$ROOT/" in
+  "$OUT"/*) echo "build-docs-site: refusing --out '$OUT' (it contains the repository)" >&2; exit 2;;
+esac
+if [ -e "$OUT" ]; then
+  [ -d "$OUT" ] || { echo "build-docs-site: --out '$OUT' exists and is not a directory" >&2; exit 2; }
+  if [ ! -e "$OUT/$MARKER" ] && [ -n "$(ls -A -- "$OUT" 2>/dev/null)" ]; then
+    echo "build-docs-site: --out '$OUT' is a non-empty directory this script did not create;" >&2
+    echo "  refusing to delete it. Use a fresh path, or remove it yourself first." >&2
+    exit 2
+  fi
+fi
+
+git rev-parse -q --verify "${REF}^{commit}" >/dev/null \
+  || { echo "build-docs-site: ref not found: $REF" >&2; exit 2; }
+BUILT_SHA="$(git rev-parse "${REF}^{commit}")"
+
+# --- 1) Provenance ------------------------------------------------------------------------
+# "N commits ahead of the last publish" is NOT derivable by diffing the two `main` branches: the
+# publish workflow writes a HISTORY-LESS flat commit to the mirror, so the two share no ancestry.
+# The only sound source is a full source sha the publish itself recorded, resolved here where the
+# history exists. Everything below fails CLOSED — an unknown state prints "unknown", never a
+# number, because a wrong count is worse than a missing one.
+describe="$(git describe --tags --always "$BUILT_SHA" 2>/dev/null || echo unknown)"
+ahead="ahead of last publish: unknown"
+
+published=""
+if command -v gh >/dev/null 2>&1; then
+  # The trailer is written by the publish path (slice B). Until that lands — and for every commit
+  # published before it — there is nothing to read, and "unknown" is the correct answer.
+  published="$(gh api "repos/${GH_REPO_SLUG:-teriansilva/agent-sessions}/commits/main" \
+                 -q '.commit.message' 2>/dev/null \
+               | sed -n 's/^Source-Commit:[[:space:]]*\([0-9a-f]\{40\}\).*/\1/p' | head -1 || true)"
+fi
+
+if [ -n "$published" ] && git cat-file -e "${published}^{commit}" 2>/dev/null; then
+  if git merge-base --is-ancestor "$published" "$BUILT_SHA" 2>/dev/null; then
+    n="$(git rev-list --count "${published}..${BUILT_SHA}")"
+    ahead="$n commits ahead of last publish"
+    [ "$n" = "0" ] && ahead="matches last publish"
+  elif git merge-base --is-ancestor "$BUILT_SHA" "$published" 2>/dev/null; then
+    ahead="behind last publish"
+  else
+    # Reachable but not an ancestor either way — e.g. a v* tag off a different line. A count here
+    # would read as 0-ahead for a build that is genuinely divergent.
+    ahead="not comparable with last publish"
+  fi
+fi
+
+# --- 2) Snapshot + input gate --------------------------------------------------------------
+SNAP="$(mktemp -d)"
+trap 'rm -rf "$SNAP"' EXIT
+rmdir "$SNAP"                                  # --keep wants an absent or empty dir
+scripts/check-public-snapshot "$REF" --keep "$SNAP" >/dev/null
+echo "build-docs-site: snapshot of $REF is publishable ($(find "$SNAP" -type f | wc -l | tr -d ' ') files)"
+
+SITE="$SNAP/docs/site"
+[ -d "$SITE" ] || { echo "build-docs-site: docs/site missing from the snapshot" >&2; exit 1; }
+
+python3 - "$SITE/.vitepress/stamp.json" "$BUILT_SHA" "$describe" "$ahead" <<'PY'
+import json, sys, datetime
+path, commit, describe, ahead = sys.argv[1:5]
+json.dump({
+    "commit": commit[:7],
+    "describe": describe,
+    "ahead": ahead,
+    "built": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
+}, open(path, "w"))
+PY
+
+# --- 3) Build ------------------------------------------------------------------------------
+( cd "$SITE" && npm ci --no-audit --no-fund >/dev/null && npx vitepress build >/dev/null )
+DIST="$SITE/.vitepress/dist"
+[ -d "$DIST" ] || { echo "build-docs-site: build produced no dist/" >&2; exit 1; }
+
+# --- 4) Structural gates — BEFORE the leak scan --------------------------------------------
+# Ordering here is load-bearing, not cosmetic. The sidebar check below imports
+# .vitepress/config.ts, which is PR-CONTROLLED CODE executing on the runner: anything it did to
+# the build output after a scan would be published unscanned, and the run would still print "OK".
+# So everything that executes or mutates runs FIRST, and the leak scan is the last step before
+# the copy — it certifies the exact bytes that get published, with nothing in between.
+
+python3 - "$SITE/.vitepress/theme" <<'PY' || exit 1
+import re, sys, pathlib
+
+root = pathlib.Path(sys.argv[1])
+bad = []
+for f in sorted(root.rglob("*")):
+    if f.suffix not in (".css", ".ts", ".js", ".vue") or not f.is_file():
+        continue
+    text = re.sub(r"/\*.*?\*/", "", f.read_text(), flags=re.S)
+    if f.suffix != ".css":
+        # Line comments, but never the `//` inside a URL scheme.
+        text = re.sub(r"(?<!:)//[^\n]*", "", text)
+    for i, line in enumerate(text.splitlines(), 1):
+        for m in re.finditer(r"#[0-9a-fA-F]{3,8}\b", line):
+            bad.append(f"{f.relative_to(root.parent.parent)}:{i}: {m.group(0)}")
+
+if bad:
+    print("build-docs-site: FAILED — hardcoded hex in the docs theme:", file=sys.stderr)
+    for b in bad:
+        print(f"  {b}", file=sys.stderr)
+    print("  The palette lives in web/src/tokens.css; reference it with var(--…).", file=sys.stderr)
+    sys.exit(1)
+print("build-docs-site: docs theme carries no hardcoded hex (one palette, imported)")
+PY
+
+# VitePress validates links inside markdown, but NOT the links in its own sidebar/nav config — a
+# typo there ships a 404 into permanent navigation. Check them against what was actually emitted.
+node - "$SITE" "$DIST" <<'JS'
+import { pathToFileURL } from "node:url";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+const [site, dist] = process.argv.slice(2);
+const cfg = (await import(pathToFileURL(join(site, ".vitepress/config.ts")).href)).default;
+const links = new Set();
+const walk = (x) => {
+  if (!x || typeof x !== "object") return;
+  if (Array.isArray(x)) return x.forEach(walk);
+  if (typeof x.link === "string" && x.link.startsWith("/")) links.add(x.link);
+  Object.values(x).forEach(walk);
+};
+walk(cfg.themeConfig?.sidebar);
+walk(cfg.themeConfig?.nav);
+const dead = [...links].filter((l) => {
+  const p = l.replace(/\/$/, "/index");
+  return !existsSync(join(dist, `${p}.html`)) && !existsSync(join(dist, p, "index.html"));
+});
+if (dead.length) {
+  console.error(`build-docs-site: FAILED — sidebar/nav links with no page: ${dead.join(", ")}`);
+  process.exit(1);
+}
+console.log(`build-docs-site: ${links.size} sidebar/nav links all resolve`);
+JS
+
+# --- 5) Output gate — the LAST check, over the exact bytes that get published ---------------
+scripts/check-public-snapshot scan-tree "$DIST"
+
+# --- 6) Publish the artefact ---------------------------------------------------------------
+# Nothing executes between the scan above and this copy.
+rm -rf -- "$OUT"
+mkdir -p -- "$OUT"
+: > "$OUT/$MARKER"
+cp -a "$DIST/." "$OUT/"
+echo "build-docs-site: OK — $REF ($describe, ${BUILT_SHA:0:7}; $ahead) → $OUT"

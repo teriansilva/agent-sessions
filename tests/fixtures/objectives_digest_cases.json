@@ -1,0 +1,112 @@
+{
+  "cases": [
+    {
+      "why": "the ordinary case",
+      "rows": [
+        {
+          "key": "pr",
+          "title": "A PR is open",
+          "gate": true
+        }
+      ],
+      "digest": "a1a639ceb1b4d04251e6a02c86762b9c"
+    },
+    {
+      "why": "a REORDER of the same set is the same approval",
+      "rows": [
+        {
+          "key": "zz",
+          "title": "Merged",
+          "gate": true
+        },
+        {
+          "key": "aa",
+          "title": "A PR is open",
+          "gate": false
+        }
+      ],
+      "digest": "04ce768db4e57cf8cb6c966bfc440568"
+    },
+    {
+      "why": "…and sorting by KEY makes that hold whichever order the client got them in",
+      "rows": [
+        {
+          "key": "aa",
+          "title": "A PR is open",
+          "gate": false
+        },
+        {
+          "key": "zz",
+          "title": "Merged",
+          "gate": true
+        }
+      ],
+      "digest": "04ce768db4e57cf8cb6c966bfc440568"
+    },
+    {
+      "why": "THE COLLISION (#904 review 10, finding 3): one row whose title spells the old field and row delimiters — under that encoding this hashed identically to the two-row set below",
+      "rows": [
+        {
+          "key": "a",
+          "title": "x\u001f1\u001ez\u001fz",
+          "gate": true
+        }
+      ],
+      "digest": "813582658fc4881121794612dc11395f"
+    },
+    {
+      "why": "…and the two-row set it used to serialize identically to",
+      "rows": [
+        {
+          "key": "a",
+          "title": "x",
+          "gate": true
+        },
+        {
+          "key": "z",
+          "title": "z",
+          "gate": true
+        }
+      ],
+      "digest": "e6010f6be2e7e7d88bb6d97703b33810"
+    },
+    {
+      "why": "ASTRAL characters, where a UTF-16 length and a code-point length disagree",
+      "rows": [
+        {
+          "key": "emoji",
+          "title": "ship 🚀 it",
+          "gate": true
+        }
+      ],
+      "digest": "8cb227df41ea46340d67ba5d36f7ce53"
+    },
+    {
+      "why": "…and a title that differs from it only past the BMP",
+      "rows": [
+        {
+          "key": "emoji",
+          "title": "ship 🚀🚀 it",
+          "gate": true
+        }
+      ],
+      "digest": "22b039d3272d84f133e0108908e8287d"
+    },
+    {
+      "why": "an EMPTY checklist is a value, not a missing one",
+      "rows": [],
+      "digest": "e3b0c44298fc1c149afbf4c8996fb924"
+    },
+    {
+      "why": "gate is part of the approval",
+      "rows": [
+        {
+          "key": "pr",
+          "title": "A PR is open",
+          "gate": false
+        }
+      ],
+      "digest": "f3978d3b16b45aad8c67af1b9cd1cf3f"
+    }
+  ]
+}

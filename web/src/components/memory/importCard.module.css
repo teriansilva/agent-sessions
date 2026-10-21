@@ -1,0 +1,20 @@
+/* Existing memory (#1471): the card sits with the agent instructions and uses the page's tokens. */
+.card { display: flex; flex-direction: column; gap: 8px; padding: 14px; background: var(--panel); border: 1px solid var(--border); }
+.eyebrow { margin: 0; color: var(--text-2); font: 11px var(--font-mono); letter-spacing: .08em; text-transform: uppercase; font-weight: 400; }
+.muted, .small, .result { color: var(--text-2); font-size: 12px; line-height: 1.55; margin: 0; }
+.muted { font-size: 13px; }
+.muted b { color: var(--text); }
+.result { color: var(--text); }
+.warn { color: var(--warn-text); font-size: 12px; }
+.danger { color: var(--danger-text); font-size: 12px; }
+.error { color: var(--danger-text); font-size: 13px; margin-top: 8px; }
+.held summary { display: flex; align-items: center; min-height: 44px; cursor: pointer; color: var(--text); font: 12px var(--font-mono); letter-spacing: .04em; }
+.held ul { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
+.held li { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; padding-top: 6px; border-top: 1px solid var(--border); font-size: 12px; }
+.held code, .path { font: 11px var(--font-mono); color: var(--text-2); overflow-wrap: anywhere; }
+.sources { border: 0; margin: 0 0 8px; padding: 0; min-width: 0; }
+.source { display: flex; gap: 10px; align-items: flex-start; min-height: 44px; padding: 10px 0; border-top: 1px solid var(--border); }
+.source input { flex: none; width: 18px; height: 18px; margin-top: 2px; accent-color: var(--accent); }
+.sourceText { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sourceName { color: var(--text); font-weight: 600; font-size: 13px; }
+.source[data-state="unavailable"] .sourceName { color: var(--text-2); }

@@ -1,0 +1,698 @@
+/* MISSIONS → CHECKLISTS (#1221): a list of checklists as cards, and one checklist as a numbered
+ * track of steps. The Templates gallery's vocabulary (square chrome, mono callsigns, hairline
+ * frames) so the two pages read as one system. The pips are accent and neutral, never a status
+ * colour — a probe KIND or a gate is not a state (docs/design.md §3). No radius, no gradients.
+ *
+ * `--cl-ink` is the accent as TEXT: amber on the light ground is too faint to read, so it is
+ * mixed toward the theme's own ink — a brighter amber on dark, a deeper one on light. */
+
+.panel {
+  --cl-ink: color-mix(in srgb, var(--accent) 62%, var(--text-1));
+  --cl-bar: 64px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  color: var(--text-1);
+  max-width: 1180px;
+}
+
+/* --- header -------------------------------------------------------------------------------- */
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+.headText {
+  min-width: 0;
+  flex: 1 1 420px;
+}
+.kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cl-ink);
+}
+.title {
+  margin: 6px 0 6px;
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+.lede {
+  margin: 0;
+  max-width: 72ch;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-top: 12px;
+  font-size: 0.78rem;
+  color: var(--text-2);
+}
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.legendItem b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+/* --- buttons ------------------------------------------------------------------------------- */
+.cta,
+.ghostBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 0;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cta {
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+  border: 1px solid transparent;
+}
+.cta:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.ghostBtn {
+  background: transparent;
+  color: var(--text-2);
+  border: 1px solid var(--line-strong);
+}
+.ghostBtn:hover {
+  color: var(--text-1);
+  background: var(--glass-strong);
+}
+.cta:focus-visible,
+.ghostBtn:focus-visible,
+.card:focus-visible,
+.cardNew:focus-visible,
+.back:focus-visible,
+.stepHead:focus-visible,
+.addStep:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --- default row --------------------------------------------------------------------------- */
+.defaultRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+}
+.defaultLabel {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-width: 0;
+}
+.defaultSelect {
+  min-width: 240px;
+  max-width: 100%;
+}
+.lab {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.hint {
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--text-3);
+}
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* --- the cards ----------------------------------------------------------------------------- */
+.grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  gap: 14px;
+}
+.cardItem {
+  display: flex;
+  min-width: 0;
+}
+.card,
+.cardNew {
+  flex: 1;
+  min-width: 0;
+  min-height: 232px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 16px 14px;
+  border-radius: 0;
+  font: inherit;
+  text-align: left;
+  color: var(--text-1);
+  cursor: pointer;
+}
+.card {
+  border: 1px solid var(--line-strong);
+  background: var(--bg-1);
+}
+.card:hover {
+  border-color: var(--accent-soft);
+}
+.cardDefault {
+  border-color: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.cardTop {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.cardNames {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.cardName {
+  font-size: 1.05rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.cardId {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border: 1px solid var(--accent-soft);
+  color: var(--cl-ink);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pip {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-3);
+  color: var(--text-2);
+}
+.pipGate {
+  border-color: var(--accent-soft);
+  background: var(--accent-glow);
+  color: var(--cl-ink);
+}
+.pipOpt {
+  border-style: dashed;
+}
+.pipSmall {
+  width: 14px;
+  height: 14px;
+}
+.preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: var(--text-2);
+}
+.previewRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.previewN {
+  width: 14px;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+.previewTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.more {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+.stats {
+  margin-top: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.stats b {
+  color: var(--text-1);
+}
+.openCue {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--cl-ink);
+  font-weight: 600;
+}
+.cardNew {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border: 1px dashed var(--line-strong);
+  background: transparent;
+  color: var(--text-2);
+}
+.cardNew:hover {
+  border-color: var(--accent-soft);
+  background: var(--glass-strong);
+}
+.cardNewPlus {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  color: var(--cl-ink);
+}
+
+/* --- one checklist ------------------------------------------------------------------------- */
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.back {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 10px 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.back:hover {
+  color: var(--text-1);
+}
+.detailHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.detailNames {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  flex: 1 1 320px;
+  min-width: 0;
+}
+.nameInput {
+  width: 100%;
+  max-width: 560px;
+  padding: 4px 0;
+  border: 0;
+  border-bottom: 1px dashed var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+.nameInput:focus-visible {
+  outline: none;
+  border-bottom: 1px solid var(--accent);
+}
+.idInput {
+  font-family: var(--font-mono);
+  width: 100%;
+  max-width: 360px;
+}
+.idChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px 2px 6px;
+  border: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.idChip code {
+  border: 0;
+  padding: 0;
+}
+.detailActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.toggle {
+  min-height: 40px;
+  font-size: 0.85rem;
+}
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.sbox {
+  flex: 0 1 128px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+}
+.sbox b {
+  font-size: 1.35rem;
+  font-weight: 700;
+}
+.sbox span {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* The steps: a numbered track. The rule between the numbers is the track itself. */
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.step {
+  position: relative;
+  display: flex;
+  gap: 14px;
+  min-width: 0;
+}
+.step:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 18px;
+  top: 36px;
+  bottom: -10px;
+  width: 1px;
+  background: var(--line-strong);
+}
+.num {
+  width: 36px;
+  height: 36px;
+  margin-top: 8px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--accent-soft);
+  background: var(--accent-glow);
+  color: var(--cl-ink);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+}
+.numOpt {
+  border: 1px dashed var(--line-strong);
+  background: var(--surface-3);
+  color: var(--text-2);
+}
+.stepBox {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-1);
+}
+.stepOpen {
+  border-color: var(--accent-soft);
+}
+.stepHead {
+  width: 100%;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.stepHead:hover {
+  background: var(--glass-strong);
+}
+.kindIcon {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-3);
+  color: var(--text-2);
+}
+.stepNames {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.stepTitle {
+  font-size: 0.92rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.stepKind {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.req {
+  flex: none;
+  padding: 3px 7px;
+  border: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.reqOpt {
+  border-style: dashed;
+  color: var(--text-3);
+}
+.stepBody {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
+  padding: 14px;
+  border-top: 1px solid var(--line);
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.field > input,
+.field > select {
+  width: 100%;
+  min-width: 0;
+}
+.full {
+  grid-column: 1 / -1;
+}
+.stepFoot {
+  display: flex;
+  justify-content: flex-end;
+}
+.addStep {
+  flex: 1;
+  min-height: 48px;
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+.addStep:hover {
+  color: var(--text-1);
+  border-color: var(--accent-soft);
+}
+
+/* --- the save bar -------------------------------------------------------------------------- */
+/* Sticky at the foot of the page's scroller, so Save is in reach from any step of a long
+   checklist. The panel's last content is never under it: the bar is in the flow, not over it. */
+.saveBar {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  min-height: var(--cl-bar);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  background: var(--bg-0);
+}
+.saveBarDirty {
+  border-top-color: var(--accent-soft);
+}
+.saveBar .cta {
+  margin-left: auto;
+}
+.dirty {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--cl-ink);
+}
+.dirtySq {
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+}
+
+@media (max-width: 640px) {
+  .stepBody {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .step {
+    gap: 8px;
+  }
+  .num {
+    width: 30px;
+    height: 30px;
+    margin-top: 11px;
+  }
+  .step:not(:last-child)::before {
+    left: 15px;
+    top: 41px;
+  }
+  .summary .sbox {
+    flex: 1 1 0;
+    padding: 8px 6px;
+  }
+  .sbox b {
+    font-size: 1.1rem;
+  }
+  .sbox span {
+    font-size: 8.5px;
+    letter-spacing: 0.06em;
+  }
+  .head .cta {
+    width: 100%;
+  }
+  .defaultSelect {
+    min-width: 0;
+    width: 100%;
+  }
+  .defaultLabel {
+    width: 100%;
+  }
+}
+
+@media (pointer: coarse) {
+  .cta,
+  .ghostBtn,
+  .back,
+  .toggle {
+    min-height: 44px;
+  }
+  .stepHead {
+    min-height: 56px;
+  }
+}

@@ -1,0 +1,1874 @@
+"""Contained native workers end to end, with scripted native agents (#1278).
+
+The real ``native_worker`` module runs as a separate process for every generation, speaking
+the real codecs to ``fake_native.py`` over stdio and the real private socket to this process.
+Only the service manager is substituted (``FakeHost``): it starts the exact command systemd
+would run and reports unit/cgroup evidence from the process's liveness. The real-systemd
+path is exercised by ``test_real_systemd_contains_and_stops_a_worker`` where available.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import uuid
+from pathlib import Path
+
+import httpx
+import pytest
+
+import test_ai_review_loop
+import test_manifest_api
+from agent_sessions import (
+    ai_review_loop,
+    chat_store,
+    metadata,
+    native_containment,
+    native_events,
+    native_journal,
+    native_ownership,
+    native_runtime,
+    native_state,
+    prefs,
+    review,
+)
+from agent_sessions import structured_runtime as runtime
+from agent_sessions.engines import registry
+from agent_sessions.plugins import kinds as plugin_kinds
+
+FAKE = Path(__file__).with_name("fake_native.py")
+ENGINES = {"codex": "codex-api", "claude": "claude-api", "opencode": "opencode-api"}
+KINDS = {"codex": "codex-app-server", "claude": "claude-stream-json", "opencode": "opencode-acp"}
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+class FakeHost(native_runtime.Host):
+    """Runs the exact contained command as a plain child; evidence follows its liveness."""
+
+    def __init__(self, runtime_dir: str):
+        self.runtime = runtime_dir
+        self.procs: dict[str, subprocess.Popen] = {}
+        self.invocations: dict[str, str] = {}
+        self.launches: list[list[str]] = []
+
+    def runtime_dir(self) -> str:
+        return self.runtime
+
+    def available(self) -> str | None:
+        return None
+
+    def launch(self, argv: list[str]) -> bool:
+        self.launches.append(argv)
+        assert argv[:2] == ["/usr/bin/systemd-run", "--user"]
+        assert "--property=KillMode=control-group" in argv
+        unit = next(a.split("=", 1)[1] for a in argv if a.startswith("--unit="))
+        assert unit not in self.procs, "a unit name was reused"
+        command = argv[argv.index("--") + 1 :]
+        assert command[:2] == ["/usr/bin/env", "-i"]
+        env, index = {}, 2
+        while "=" in command[index] and not command[index].startswith("/"):
+            key, value = command[index].split("=", 1)
+            env[key] = value
+            index += 1
+        cwd = next(a.split("=", 1)[1] for a in argv if a.startswith("--working-directory="))
+        self.procs[unit] = subprocess.Popen(command[index:], env=env, cwd=cwd)
+        self.invocations[unit] = uuid.uuid4().hex
+        return True
+
+    def _alive(self, unit: str) -> bool:
+        proc = self.procs.get(unit)
+        return proc is not None and proc.poll() is None
+
+    def show(self, worker):
+        unit = worker.unit
+        if not self._alive(unit):
+            return native_containment.UnitObservation(
+                unit, "not-found", "inactive", "dead", None, None, 0, ""
+            )
+        return native_containment.UnitObservation(
+            unit,
+            "loaded",
+            "active",
+            "running",
+            self.invocations[unit],
+            f"/user.slice/{unit}",
+            self.procs[unit].pid,
+            "success",
+        )
+
+    def cgroup(self, control_group: str):
+        unit = os.path.basename(control_group)
+        state = "populated" if self._alive(unit) else "absent"
+        return native_containment.CgroupObservation(control_group, state)
+
+    def stop(self, argv: list[str]) -> bool:
+        proc = self.procs.get(argv[-1])
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            proc.wait(10)
+        return True
+
+    def worker_running(self, worker, pid) -> bool:
+        proc = self.procs.get(worker.unit)
+        return proc is not None and proc.poll() is None and proc.pid == pid
+
+    def kill(self, worker_id: str) -> None:
+        proc = self.procs[native_containment.WorkerIdentity(worker_id).unit]
+        proc.kill()
+        proc.wait(10)
+
+    def close(self) -> None:
+        for proc in self.procs.values():
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(10)
+
+
+@pytest.fixture
+def host(tmp_home, tmp_path, monkeypatch):
+    bindir = tmp_path / "engine-bin"
+    bindir.mkdir()
+    bindir.chmod(0o755)
+    for name in ENGINES:
+        script = bindir / name
+        script.write_text(f"#!{sys.executable}\n" + FAKE.read_text())
+        script.chmod(0o755)
+    monkeypatch.setenv("AGENT_SESSIONS_CODEX_BIN", str(bindir / "codex"))
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", str(bindir / "claude"))
+    monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_BIN", str(bindir / "opencode"))
+    monkeypatch.delenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", raising=False)
+    monkeypatch.delenv("AGENT_SESSIONS_CLAUDE_PROJECTS_DIR", raising=False)
+    monkeypatch.setenv("AGENT_SESSIONS_PLUGIN_STATE_DIR", str(tmp_path / "plugin-state"))
+    # The in-tree clients (#1311) are replaced by fixtures whose store is this test's own.
+    providers = [p for p in registry._PROVIDERS if p.engine_id not in ENGINES.values()]
+    for source, name in ENGINES.items():
+        doc = test_manifest_api._api(name=name, source=source, kind=KINDS[source])
+        providers.append(test_manifest_api._provider(doc, tmp_path))
+    monkeypatch.setattr(registry, "_PROVIDERS", providers)
+    monkeypatch.setattr(registry, "_BY_ID", {p.engine_id: p for p in providers})
+    short = tempfile.mkdtemp(prefix="blnt-", dir="/tmp")  # AF_UNIX path budget, any TMPDIR
+    fake = FakeHost(short)
+    monkeypatch.setattr(native_runtime, "HOST", fake)
+    yield fake
+    fake.close()
+    shutil.rmtree(short, ignore_errors=True)
+
+
+@pytest.fixture
+def project(tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    return work
+
+
+def ident() -> str:
+    return str(uuid.uuid4())
+
+
+def frames(project: Path) -> list[dict]:
+    path = project / "native-frames.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+async def settle(key: str, turn_id: str, *, state=("completed", "failed", "interrupted")):
+    for _ in range(400):
+        snap = await runtime.snapshot(key)
+        turn = next((t for t in snap["turns"] if t["turn_id"] == turn_id), None)
+        if turn is not None and turn["state"] in state:
+            return snap, turn
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"turn never reached {state}: {snap}")
+
+
+async def pending(key: str):
+    for _ in range(400):
+        snap = await runtime.snapshot(key)
+        if snap["pending_requests"]:
+            return snap
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"no pending request: {snap}")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+async def test_create_submit_replay_and_reconnect_observe_one_native_write(host, project, source):
+    engine = ENGINES[source]
+    described = runtime.describe(engine)
+    assert described.ready, described.reason
+    assert described.operations == (
+        "create",
+        "start",  # the second phase of a skip-permissions creation (#1339)
+        "snapshot",
+        "submit",
+        "decide",
+        "events",
+        "history",  # older turns, scrolling up past the snapshot window (#1504)
+        "interrupt",
+        "send_now",
+        "withdraw",  # remove a still-queued message (#1447)
+        "stop",
+        "probe",
+    ) + (("enable_bypass",) if KINDS[source] in plugin_kinds.API_BYPASS_KINDS else ())
+    assert not described.mission_ready
+    create = ident()
+    created = await runtime.create_session(engine, str(project), operation_id=create)
+    key = created["session_key"]
+    assert key == f"{engine}:{create}"
+    assert created["state"] == "idle" and created["native"]["native_id"]
+    again = await runtime.create_session(engine, str(project), operation_id=create)
+    assert again["session_key"] == key and len(host.launches) == 1  # replay: no second worker
+    with pytest.raises(runtime.StructuredError) as conflict:
+        await runtime.create_session(engine, str(project / "elsewhere"), operation_id=create)
+    assert conflict.value.status == 409
+
+    turn = ident()
+    first = await runtime.submit_turn(key, operation_id=turn, text="hello")
+    assert first["operation_id"] == turn
+    snap, settled = await settle(key, turn)
+    assert settled["reply"] == "echo:hello" and settled["state"] == "completed"
+    # An exact repeat (a lost acknowledgement, a browser or web restart) observes the record.
+    repeat = await runtime.submit_turn(key, operation_id=turn, text="hello")
+    assert repeat["state"] == "completed"
+    users = [
+        f
+        for f in frames(project)
+        if f["frame"].get("method") in {"turn/start", "session/prompt"}
+        or f["frame"].get("type") == "user"
+    ]
+    assert len(users) == 1
+    with pytest.raises(runtime.StructuredError) as changed:
+        await runtime.submit_turn(key, operation_id=turn, text="different")
+    assert changed.value.status == 409
+    page = await runtime.events(key, after=0)
+    kinds = [event["kind"] for event in page["events"]]
+    assert "turn_completed" in kinds and "text" in kinds
+    assert all("capability" not in json.dumps(event) for event in page["events"])
+    later = await runtime.events(key, after=page["next_cursor"])
+    assert later["events"] == []
+
+
+@pytest.mark.anyio
+async def test_an_async_answer_is_admitted_once_and_only_while_its_question_is_open(host, project):
+    """#1463: the real worker carries `reply_to` into the journal claim, which admits one
+    answer while its question is open; a retry replays it and anything else is a 409."""
+    engine = ENGINES["codex"]
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    ask = ident()
+    await runtime.submit_turn(key, operation_id=ask, text="ASKASYNC")
+    _, asked = await settle(key, ask)
+    assert asked["questions"] == [{"title": "Which channel?", "options": ["main"]}]
+    question = asked["question_id"]
+    with pytest.raises(runtime.StructuredError, match="already answered") as unknown:
+        await runtime.submit_turn(key, operation_id=ident(), text="main", reply_to="call-other")
+    assert unknown.value.status == 409
+    answer = ident()
+    first = await runtime.submit_turn(key, operation_id=answer, text="main", reply_to=question)
+    replay = await runtime.submit_turn(key, operation_id=answer, text="main", reply_to=question)
+    assert replay["turn_id"] == first["turn_id"] == answer
+    with pytest.raises(runtime.StructuredError, match="already answered") as second:
+        await runtime.submit_turn(key, operation_id=ident(), text="main", reply_to=question)
+    assert second.value.status == 409
+    snap, _ = await settle(key, answer)
+    assert [t["turn_id"] for t in snap["turns"] if t.get("text") == "main"] == [answer]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("leave", ["dispatch", "send_now"])
+async def test_a_queued_answer_is_not_sent_once_a_newer_question_was_asked(host, project, leave):
+    """#1463: an answer waiting behind Codex's turn leaves the queue only for the question it was
+    admitted for; one asked meanwhile settles it not-sent instead of being answered by it."""
+    engine = ENGINES["codex"]
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    ask = ident()
+    await runtime.submit_turn(key, operation_id=ask, text="ASKTWICE")
+    for _ in range(400):
+        turn = next(t for t in (await runtime.snapshot(key))["turns"] if t["turn_id"] == ask)
+        if turn.get("question_id"):
+            break
+        await asyncio.sleep(0.05)
+    first = turn["question_id"]
+    answer = ident()
+    queued = await runtime.submit_turn(key, operation_id=answer, text="yes", reply_to=first)
+    assert queued["state"] == "queued"
+    (project / "ask-again").touch()
+    for _ in range(400):
+        turn = next(t for t in (await runtime.snapshot(key))["turns"] if t["turn_id"] == ask)
+        if turn.get("question_id") != first:
+            break
+        await asyncio.sleep(0.05)
+    second = turn["question_id"]
+    assert second and second != first
+    if leave == "send_now":
+        # Steering into the running turn is a way out of the queue too (independent review).
+        with pytest.raises(runtime.StructuredError, match="not applied"):
+            await runtime.send_now(key, operation_id=ident(), turn_id=ask, queued_turn_id=answer)
+    (project / "release-queued-turn").touch()
+    _, settled = await settle(key, answer)
+    assert settled["state"] == "failed" and "not sent" in settled["reason"]
+    texts = [
+        "".join(i.get("text", "") for i in f["frame"]["params"]["input"])
+        for f in frames(project)
+        if f["frame"].get("method") in {"turn/start", "turn/steer"}
+    ]
+    assert "yes" not in texts
+    # The newer question is still open: its own answer goes through.
+    again = ident()
+    await runtime.submit_turn(key, operation_id=again, text="yes", reply_to=second)
+    _, delivered = await settle(key, again)
+    assert delivered["state"] == "completed"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+async def test_native_crash_is_uncertain_never_resent_and_the_next_turn_resumes(
+    host, project, source
+):
+    engine = ENGINES[source]
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="hello")
+    await settle(key, first)
+    died = ident()
+    await runtime.submit_turn(key, operation_id=died, text="DIE")
+    snap, turn = await settle(key, died, state=("uncertain",))
+    assert turn["reason"]
+    native_before = snap["native"]["native_id"]
+    # The same operation id only observes; nothing is written to any native process again.
+    repeat = await runtime.submit_turn(key, operation_id=died, text="DIE")
+    assert repeat["state"] == "uncertain"
+    assert sum(1 for f in frames(project) if "DIE" in json.dumps(f["frame"])) == 1
+    # A new turn starts a NEW generation that resumes the same native history.
+    nxt = ident()
+    await runtime.submit_turn(key, operation_id=nxt, text="again")
+    snap, turn = await settle(key, nxt)
+    assert turn["reply"] == "echo:again"
+    assert snap["native"]["native_id"] == native_before
+    assert len(host.launches) == 2
+    argvs = {tuple(f["argv"]) for f in frames(project)}
+    if source == "claude":
+        assert any(f"--resume={native_before}" in argv for argv in argvs)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+async def test_interrupt_is_requested_and_stop_proves_containment_gone(host, project, source):
+    engine = ENGINES[source]
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="HANG")
+    await asyncio.sleep(0.3)
+    out = await runtime.interrupt(key, operation_id=ident(), turn_id=turn)
+    assert out["handoff"] == "sent"
+    snap, settled = await settle(key, turn, state=("interrupted",))
+    assert (await runtime.probe(key))["containment"] == "live"
+    stopped = await runtime.stop(key)
+    assert stopped["containment"] == "gone"
+    assert (await runtime.probe(key))["containment"] == "gone"
+    # The closed generation never starts again: a later stop observes "gone" too.
+    assert (await runtime.stop(key))["containment"] == "gone"
+
+
+@pytest.mark.anyio
+async def test_codex_history_is_bound_before_any_turn_and_hidden_from_the_console(host, project):
+    from agent_sessions import engines
+
+    key = (await runtime.create_session(ENGINES["codex"], str(project), operation_id=ident()))[
+        "session_key"
+    ]
+    snap = await runtime.snapshot(key)
+    native = snap["native"]["native_id"]
+    intent = native_ownership.lookup(key)
+    assert intent.state == "bound" and intent.native_id == native
+    source = engines.get("codex")
+    with pytest.raises(native_ownership.OwnershipError, match="belongs to an API session"):
+        native_ownership.check_console(source, native)
+
+
+@pytest.mark.anyio
+async def test_claude_history_is_bound_before_the_worker_exists(host, project, monkeypatch):
+    launched = []
+    real = host.launch
+
+    def launch(argv):
+        session = argv[argv.index("--worker-id") - 0]  # noqa: F841 — argv shape asserted above
+        launched.append(native_ownership.lookup(ENGINES["claude"] + ":" + created_id))
+        return real(argv)
+
+    created_id = ident()
+    monkeypatch.setattr(host, "launch", launch)
+    await runtime.create_session(ENGINES["claude"], str(project), operation_id=created_id)
+    assert launched and launched[0].state == "bound"
+
+
+@pytest.mark.anyio
+async def test_a_creation_that_never_starts_is_stopped_and_discharged(host, project, monkeypatch):
+    """A failed Codex creation must not leave the source's new-console launches blocked."""
+    from agent_sessions import engines
+
+    real = host.launch
+
+    def broken(argv):
+        argv = list(argv)
+        argv[argv.index("--worker-id") + 1] = ident()  # the worker finds no config: refuses
+        return real(argv)
+
+    monkeypatch.setattr(host, "launch", broken)
+    create = ident()
+    with pytest.raises(runtime.StructuredError) as failed:
+        await runtime.create_session(ENGINES["codex"], str(project), operation_id=create)
+    assert failed.value.status == 503
+    key = f"{ENGINES['codex']}:{create}"
+    assert native_ownership.lookup(key) is None  # discharged after containment proved gone
+    native_ownership.check_console(engines.get("codex"), f"new-{ident()}")
+
+
+@pytest.mark.anyio
+async def test_a_stale_generation_refuses_to_start_a_second_native_child(host, project):
+    key = (await runtime.create_session(ENGINES["codex"], str(project), operation_id=ident()))[
+        "session_key"
+    ]
+    session_id = key.partition(":")[2]
+    record = native_state.read_session(session_id)
+    old_worker = record["current_worker"]
+    old_argv = host.launches[0]
+    await runtime.stop(key)
+    starts = len([f for f in frames(project) if f["frame"].get("method") == "initialize"])
+    # Re-running the old generation's exact command (a late duplicate start) must refuse.
+    command = old_argv[old_argv.index("--") + 1 :]
+    env = {}
+    index = 2
+    while "=" in command[index] and not command[index].startswith("/"):
+        k, v = command[index].split("=", 1)
+        env[k] = v
+        index += 1
+    cwd = next(a.split("=", 1)[1] for a in old_argv if a.startswith("--working-directory="))
+    done = subprocess.run(command[index:], env=env, cwd=cwd, timeout=60)
+    assert done.returncode == 3
+    assert native_state.read_lifecycle(old_worker)["phase"] == "gone"
+    assert len([f for f in frames(project) if f["frame"].get("method") == "initialize"]) == starts
+
+
+@pytest.mark.anyio
+async def test_private_socket_refuses_a_wrong_capability(host, project):
+    from agent_sessions import native_ipc
+
+    key = (await runtime.create_session(ENGINES["codex"], str(project), operation_id=ident()))[
+        "session_key"
+    ]
+    gen = native_runtime._generation(key.partition(":")[2])
+    socket_path = Path(gen.config["socket"])
+    assert (socket_path.stat().st_mode & 0o777) == 0o600
+    assert (socket_path.parent.stat().st_mode & 0o777) == 0o700
+    reader, writer = await asyncio.open_unix_connection(str(socket_path))
+    writer.write(native_ipc.encode_handshake(gen.binding, native_ipc.Capability.create()).data)
+    await writer.drain()
+    assert await reader.readline() == b""  # closed without a welcome
+    writer.close()
+    # The real capability never appears in the journal, events or snapshot.
+    root = native_runtime._journal_root(native_runtime._api_provider(ENGINES["codex"]))
+    raw = (root / f"{key.partition(':')[2]}.jsonl").read_text()
+    assert gen.config["capability"] not in raw
+    assert gen.config["capability"] not in json.dumps(await runtime.snapshot(key))
+
+
+@pytest.mark.anyio
+async def test_native_refuses_an_execution_guard_and_console_clients_stay_unsupported(
+    host, project
+):
+    from agent_sessions.structured_types import ExecutionGuard
+
+    async def acquire():  # pragma: no cover — never reached
+        raise AssertionError
+
+    guard = ExecutionGuard("mission-grant", acquire)
+    with pytest.raises(runtime.StructuredError, match="caller authority"):
+        await runtime.create_session(
+            ENGINES["codex"], str(project), operation_id=ident(), execution_admission=guard
+        )
+    assert not host.launches
+    assert runtime.describe("codex").operations == ()
+
+
+def test_readiness_refuses_an_overridden_vendor_store(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", str(tmp_path / "elsewhere"))
+    ready, reason = native_runtime.readiness(registry._BY_ID[ENGINES["codex"]])
+    assert not ready and "overridden" in reason
+
+
+def test_readiness_refuses_an_old_cli(host, tmp_path, monkeypatch):
+    script = Path(os.environ["AGENT_SESSIONS_CLAUDE_BIN"])
+    script.write_text(f"#!{sys.executable}\nprint('2.1.200 (Claude Code)')\n")
+    ready, reason = native_runtime.readiness(registry._BY_ID[ENGINES["claude"]])
+    assert not ready and "2.1.287 or later" in reason
+
+
+def test_release_lease_is_taken_before_launch_and_installer_support_is_required(
+    host, tmp_path, monkeypatch
+):
+    prefix = tmp_path / "install"
+    release = prefix / "releases" / "20261006-000000-abc"
+    (release / "venv" / "bin").mkdir(parents=True)
+    (prefix / "current").symlink_to(release)
+    monkeypatch.setattr(native_runtime, "interpreter", lambda: (sys.executable, release))
+    ready, reason = native_runtime.readiness(registry._BY_ID[ENGINES["codex"]])
+    assert not ready and "retain a release" in reason
+    (release / "src").mkdir()
+    (release / "src" / "install.sh").write_text("# honours native-leases\n")
+    assert native_runtime.readiness(registry._BY_ID[ENGINES["codex"]])[0]
+    worker = ident()
+    native_runtime._lease(release, worker)
+    assert (release / "native-leases" / worker).exists()
+    native_runtime._lease(release, worker, remove=True)
+    assert not (release / "native-leases" / worker).exists()
+
+
+def test_journal_records_no_raw_native_frames(host, project):
+    """Only normalized allowlisted events are durable; a private 'send' frame cannot be."""
+    from agent_sessions import native_ipc
+
+    with pytest.raises(native_ipc.IPCError):
+        native_ipc.normalize_event({"kind": "send", "data": {"frame": {}}})
+    assert native_journal.MAX_BYTES > 0
+
+
+@pytest.mark.skipif(
+    not os.path.exists(f"/run/user/{os.getuid()}/systemd/private")
+    or not os.path.exists("/usr/bin/systemd-run")
+    or os.environ.get("CI") == "true",
+    reason="needs a real systemd user manager (not available in CI containers)",
+)
+@pytest.mark.anyio
+async def test_real_systemd_contains_and_stops_a_worker(tmp_home, tmp_path, project, monkeypatch):
+    """The production Host: a transient unit, a pinned invocation, cgroup-proved teardown."""
+    from agent_sessions import resource_limits, resource_usage
+
+    resource_limits.save({"api_tasks": 512, "library_threads": 3, "api_memory_gib": 2})
+    for name in resource_limits.THREAD_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(native_runtime, "HOST", native_runtime.Host())
+    bindir = tmp_path / "engine-bin"
+    bindir.mkdir()
+    bindir.chmod(0o755)
+    script = bindir / "codex"
+    # Inert children exercise the real native child's inherited finite group/env.
+    probe = """
+import json, os, pathlib, subprocess, sys
+if 'app-server' in sys.argv:
+    relative = pathlib.Path('/proc/self/cgroup').read_text().strip().split(':', 2)[2]
+    cg = pathlib.Path('/sys/fs/cgroup') / relative.lstrip('/')
+    before = (cg / 'pids.events').read_text()
+    command = [sys.executable, '-c', 'import time; time.sleep(0.25)']
+    peers = [subprocess.Popen(command) for _ in range(8)]
+    try:
+        loaded = int((cg / 'pids.current').read_text())
+        subprocess.run([sys.executable, '-c', 'pass'], check=True)
+    finally:
+        for peer in peers: peer.wait(timeout=5)
+    evidence = {'before': before, 'after': (cg / 'pids.events').read_text(),
+                'maximum': (cg / 'pids.max').read_text().strip(), 'loaded': loaded,
+                'memory_maximum': (cg / 'memory.max').read_text().strip(),
+                'threads': os.environ.get('RAYON_NUM_THREADS')}
+    pathlib.Path('resource-probe.json').write_text(json.dumps(evidence))
+"""
+    script.write_text(f"#!{sys.executable}\n" + probe + "\n" + FAKE.read_text())
+    script.chmod(0o755)
+    monkeypatch.setenv("AGENT_SESSIONS_CODEX_BIN", str(script))
+    monkeypatch.delenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", raising=False)
+    monkeypatch.setenv("AGENT_SESSIONS_PLUGIN_STATE_DIR", str(tmp_path / "plugin-state"))
+    providers = list(registry._PROVIDERS)
+    doc = test_manifest_api._api(name="codex-api", source="codex", kind="codex-app-server")
+    providers.append(test_manifest_api._provider(doc, tmp_path))
+    monkeypatch.setattr(registry, "_PROVIDERS", providers)
+    monkeypatch.setattr(registry, "_BY_ID", {p.engine_id: p for p in providers})
+    key = (await runtime.create_session("codex-api", str(project), operation_id=ident()))[
+        "session_key"
+    ]
+    try:
+        session_id = key.partition(":")[2]
+        worker = native_state.read_session(session_id)["current_worker"]
+        life = native_state.read_lifecycle(worker)
+        assert life["invocation_id"] and life["control_group"].endswith(".service")
+        observed = resource_usage.observe(
+            Path("/sys/fs/cgroup") / life["control_group"].lstrip("/")
+        )
+        assert observed["own"]["maximum"] == 512
+        evidence = json.loads((project / "resource-probe.json").read_text())
+        assert evidence["maximum"] == "512" and evidence["threads"] == "3"
+        assert evidence["memory_maximum"] == str(2 * 1024**3)
+        assert evidence["before"] == evidence["after"] and evidence["loaded"] >= 10
+        resource_limits.save({"api_tasks": 2048, "api_memory_gib": 16})
+        assert (
+            int(
+                (
+                    Path("/sys/fs/cgroup") / life["control_group"].lstrip("/") / "memory.max"
+                ).read_text()
+            )
+            == 2 * 1024**3
+        )
+        assert (
+            resource_usage.observe(Path("/sys/fs/cgroup") / life["control_group"].lstrip("/"))[
+                "own"
+            ]["maximum"]
+            == 512
+        )
+        turn = ident()
+        await runtime.submit_turn(key, operation_id=turn, text="hello")
+        await settle(key, turn)
+        assert (await runtime.probe(key))["containment"] == "live"
+    finally:
+        stopped = await runtime.stop(key)
+    assert stopped["containment"] == "gone"
+
+
+def _real_binary(name: str) -> str | None:
+    import pwd
+
+    home = pwd.getpwuid(os.getuid()).pw_dir
+    for candidate in (
+        shutil.which(name),
+        os.path.join(home, ".npm-global", "bin", name),
+        os.path.join(home, ".local", "bin", name),
+    ):
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return os.path.realpath(candidate) if name == "claude" else candidate
+    return None
+
+
+@pytest.mark.skipif(
+    os.environ.get("AGENT_SESSIONS_TEST_REAL_NATIVE") != "1",
+    reason="opt-in: AGENT_SESSIONS_TEST_REAL_NATIVE=1 runs the installed vendor CLIs",
+)
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", ["codex", "claude"])
+async def test_real_cli_handshake_binds_and_stops_without_inference(
+    tmp_home, tmp_path, project, monkeypatch, source
+):
+    """Installed CLI + real systemd, with an EMPTY home: no credentials, so no inference can run.
+
+    Proves the reviewed argv, initialize handshake, (Codex) thread/start → bind, the contained
+    unit and its proved teardown against the real vendor binary — not a scripted stand-in.
+    """
+    binary = _real_binary(source)
+    if binary is None:
+        pytest.skip(f"{source} is not installed")
+    monkeypatch.setattr(native_runtime, "HOST", native_runtime.Host())
+    monkeypatch.setenv(f"AGENT_SESSIONS_{source.upper()}_BIN", binary)
+    monkeypatch.delenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", raising=False)
+    monkeypatch.setenv("AGENT_SESSIONS_PLUGIN_STATE_DIR", str(tmp_path / "plugin-state"))
+    providers = list(registry._PROVIDERS)
+    kind = "codex-app-server" if source == "codex" else "claude-stream-json"
+    doc = test_manifest_api._api(name=ENGINES[source], source=source, kind=kind)
+    providers.append(test_manifest_api._provider(doc, tmp_path))
+    monkeypatch.setattr(registry, "_PROVIDERS", providers)
+    monkeypatch.setattr(registry, "_BY_ID", {p.engine_id: p for p in providers})
+    ready, reason = native_runtime.readiness(registry._BY_ID[ENGINES[source]])
+    assert ready, reason
+    key = (await runtime.create_session(ENGINES[source], str(project), operation_id=ident()))[
+        "session_key"
+    ]
+    try:
+        snap = await runtime.snapshot(key)
+        assert snap["native"]["native_id"]
+        assert native_ownership.lookup(key).state == "bound"
+        assert (await runtime.probe(key))["containment"] == "live"
+    finally:
+        stopped = await runtime.stop(key)
+    assert stopped["containment"] == "gone"
+
+
+def test_routes_require_login_and_csrf_and_drive_a_native_session(host, project, auth_cfg):
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from agent_sessions.main import create_app
+
+    with TestClient(create_app(auth_cfg), base_url="https://testserver") as c:
+        engine = ENGINES["codex"]
+        assert c.get(f"/api/structured/clients/{engine}").status_code == 401
+        body = {"engine": engine, "cwd": str(project), "operation_id": ident()}
+        assert c.post("/api/structured/sessions", json=body).status_code in (401, 403)
+        r = c.post(
+            "/login",
+            data={"username": "marcus", "password": "hunter2"},
+            follow_redirects=False,
+            headers={"Origin": auth_cfg.origin},
+        )
+        assert r.status_code in (302, 303)
+        # Logged in but no CSRF token: every mutation still refuses.
+        assert c.post("/api/structured/sessions", json=body).status_code == 403
+        assert not host.launches
+        csrf = c.get("/api/config").json()["csrf"]
+        c.headers.update({"X-CSRF-Token": csrf, "Origin": auth_cfg.origin})
+        client = c.get(f"/api/structured/clients/{engine}").json()
+        assert client["ready"] and client["authentication"] == "vendor_native"
+        assert client["mission_ready"] is False
+        for field, value in (("capability", "x"), ("fresh_create", True), ("native_id", ident())):
+            bad = c.post("/api/structured/sessions", json={**body, field: value})
+            assert bad.status_code == 422  # no internal binding selector or supplied native id
+        created = c.post("/api/structured/sessions", json=body)
+        assert created.status_code == 201, created.text
+        key = created.json()["session_key"]
+        turn = ident()
+        sent = c.post(
+            f"/api/structured/sessions/{key}/turns", json={"operation_id": turn, "text": "hi"}
+        )
+        assert sent.status_code in (200, 202), sent.text
+        for _ in range(200):
+            snap = c.get(f"/api/structured/sessions/{key}").json()
+            if snap["turns"] and snap["turns"][-1]["state"] == "completed":
+                break
+            time.sleep(0.05)
+        assert snap["turns"][-1]["reply"] == "echo:hi"
+        assert client["images"] is True and snap["images"] is True  # #1332 Phase 3
+        # A picture must be an upload: a path is refused before anything is recorded.
+        refused = c.post(
+            f"/api/structured/sessions/{key}/turns",
+            json={"operation_id": ident(), "text": "x", "attachments": ["/etc/hosts"]},
+        )
+        assert refused.status_code == 422, refused.text
+        events = c.get(f"/api/structured/sessions/{key}/events?after=0&limit=5").json()
+        assert len(events["events"]) <= 5 and events["next_cursor"] >= 1
+        assert c.get(f"/api/structured/sessions/{key}/containment").json() == {
+            "session_key": key,
+            "containment": "live",
+        }
+        # The private worker config holds no server secret (session key, password hash, …).
+        live = snap["native"]["worker"]
+        config_path = native_state.worker_dir(live) / "config.json"
+        config = config_path.read_text()
+        assert "x" * 64 not in config and "AGENT_SESSIONS_PASSWORD_HASH" not in config
+        assert config_path.stat().st_mode & 0o077 == 0
+        stopped = c.post(f"/api/structured/sessions/{key}/stop")
+        assert stopped.json()["containment"] == "gone"
+    # A proved-gone generation's capability does not linger on disk.
+    assert not config_path.exists()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", ["codex", "claude"])
+async def test_an_idle_worker_exits_and_the_next_turn_resumes_the_same_history(
+    host, project, monkeypatch, source
+):
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 0.5)
+    engine = ENGINES[source]
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="one")
+    snap, _ = await settle(key, first)
+    native, worker = snap["native"]["native_id"], snap["native"]["worker"]
+    # Counted from HERE (#1337): on a loaded runner the creation's own worker can idle out
+    # (0.5 s) before the first turn reaches it, and that turn then resumes in a fresh one —
+    # correct behaviour, but it shifts every count taken from the start of the test.
+    launched = len(host.launches)
+    for _ in range(200):
+        if native_state.read_lifecycle(worker).get("phase") == "exited":
+            break
+        await asyncio.sleep(0.05)
+    assert native_state.read_lifecycle(worker)["phase"] == "exited"
+    assert native_state.read_lifecycle(worker)["reason"] == ""
+    assert (await runtime.snapshot(key))["native"]["worker"] is None
+    # …and the successor gets a long window, so it cannot idle out before its turn arrives either.
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 60.0)
+    nxt = ident()
+    await runtime.submit_turn(key, operation_id=nxt, text="two")
+    snap, turn = await settle(key, nxt)
+    assert turn["reply"] == "echo:two" and snap["native"]["native_id"] == native
+    assert snap["native"]["worker"] != worker and len(host.launches) == launched + 1
+
+
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.anyio
+async def test_a_turn_sent_at_the_seen_revision_survives_its_own_worker_relaunch(
+    host, project, monkeypatch, source
+):
+    """The SPA sends an idle conversation's revision. A send after the worker idled out
+    relaunches it, and the successor journals its startup before the claim: that is no
+    activity the operator missed, so it must not refuse the turn."""
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 0.5)
+    engine = ENGINES[source]
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="one")
+    snap, _ = await settle(key, first)
+    worker = snap["native"]["worker"]
+    for _ in range(200):
+        if native_state.read_lifecycle(worker).get("phase") == "exited":
+            break
+        await asyncio.sleep(0.05)
+    seen = await runtime.snapshot(key)
+    assert seen["native"]["worker"] is None
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 60.0)
+    nxt = ident()
+    await runtime.submit_turn(key, operation_id=nxt, text="two", expected_revision=seen["revision"])
+    snap, turn = await settle(key, nxt)
+    assert turn["reply"] == "echo:two" and snap["native"]["worker"] != worker
+    # Not vacuous: the successor really did journal before the turn was claimed.
+    page = await runtime.events(key, after=seen["revision"])
+    assert page["events"] and not page["events"][0].get("operation_id")
+
+
+def test_only_a_successors_startup_records_keep_an_explicit_expectation(tmp_path):
+    def journal(*events):
+        j = native_journal.Journal({}, revision=10, events=native_events.Events(tmp_path))
+        for cursor, (worker, kind, *data) in enumerate(events, 11):
+            j.events.append(
+                {
+                    "cursor": cursor,
+                    "worker_id": worker,
+                    "connection_id": "c",
+                    "ts": 0.0,
+                    "event": {"kind": kind, "data": data[0] if data else {}},
+                }
+            )
+            j.revision = cursor
+        return j
+
+    ok = native_runtime._successor_startup_only
+    startup = journal(("new", "background"), ("new", "initialized"), ("new", "session"))
+    assert ok(startup, 10, None, "new")
+    assert ok(startup, 10, "old", "new")
+    # The worker that was live before the send: its observations are activity, startup or not.
+    assert not ok(startup, 10, "new", "new")
+    # Only the CURRENT generation's: the idled-out one's last background report (an unsolicited
+    # turn finishing) is activity the operator missed, even though nothing was live at the send.
+    assert not ok(journal(("old", "background"), ("new", "session")), 10, None, "new")
+    assert not ok(startup, 10, None, "other")
+    # Conversation content is never startup, whoever wrote it.
+    assert not ok(journal(("new", "text")), 10, None, "new")
+    assert not ok(journal(("new", "approval")), 10, None, "new")
+    # A worker diagnostic bound to no operation is startup noise: opencode's session/load
+    # replays history, and an oversized replay frame is journaled as a bare error. Without
+    # this, every send that relaunched such a session was refused with 409.
+    dropped = journal(("new", "initialized"), ("new", "error"), ("new", "session"))
+    assert ok(dropped, 10, None, "new")
+    # An error that names an operation or an action belongs to a turn: still activity.
+    assert not ok(journal(("new", "error", {"operation_id": "op"})), 10, None, "new")
+    assert not ok(journal(("new", "error", {"action": "turn/start"})), 10, None, "new")
+    assert not ok(journal(("old", "error")), 10, None, "new")
+    # A record that is no observation (a claim, a handoff) has no event: refused.
+    claimed = journal(("new", "session"))
+    claimed.revision += 1
+    assert not ok(claimed, 10, None, "new")
+
+
+@pytest.mark.anyio
+async def test_a_turn_sent_at_a_revision_before_unseen_activity_is_still_refused(
+    host, project, monkeypatch
+):
+    """The relaunch allowance covers only the successor's own startup: an operator who has
+    not seen the previous turn's reply is refused even when the send relaunches the worker."""
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 0.5)
+    key = await _codex(project)
+    before = (await runtime.snapshot(key))["revision"]
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="one")
+    snap, _ = await settle(key, first)
+    worker = snap["native"]["worker"]
+    for _ in range(200):
+        if native_state.read_lifecycle(worker).get("phase") == "exited":
+            break
+        await asyncio.sleep(0.05)
+    assert (await runtime.snapshot(key))["native"]["worker"] is None
+    with pytest.raises(runtime.StructuredError) as stale:
+        await runtime.submit_turn(key, operation_id=ident(), text="two", expected_revision=before)
+    assert stale.value.status == 409 and "revision changed" in stale.value.detail
+
+
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+def test_the_child_environment_names_the_battlelab_session_and_nothing_else(host, source):
+    """#1406: the agent's own id is the app session key, on every adapter, beside the sanitized
+    base and nothing else new. A key that is not the exact canonical shape refuses the spawn."""
+    from agent_sessions import native_worker
+
+    key = f"{ENGINES[source]}:{ident()}"
+    config = {"session_key": key, "adapter": KINDS[source], "home": "/h", "path": "/bin"}
+    extra = {}
+    if source == "opencode":
+        from agent_sessions.engines import opencode
+
+        extra = {"server_password": "p" * 32, "agent": opencode.mint_api_agent()}
+    env = native_worker.child_environment(config, **extra)
+    base = {"HOME", "PATH", "LANG", "TERM", "NO_COLOR", "BATTLELAB_SESSION"}
+    if source == "opencode":
+        base |= {"OPENCODE_SERVER_PASSWORD", "OPENCODE_CONFIG_CONTENT"}
+    assert set(env) == base
+    assert env["BATTLELAB_SESSION"] == key
+    # A later generation of the same session (another worker, a resumed native id) is told the
+    # same app key, never its native id.
+    later = {**config, "worker_id": ident(), "native_id": ident(), "mode": "resume"}
+    assert native_worker.child_environment(later, **extra)["BATTLELAB_SESSION"] == key
+    session = key.partition(":")[2]
+    for bad in (
+        None,
+        7,
+        session,  # bare: no engine
+        f"{ENGINES[source]}:{session.upper()}",
+        f"{ENGINES[source]}:{session}\n",
+        f"{ENGINES[source]}:{session}:x",
+        f"{ENGINES[source].upper()}:{session}",
+        f"{ENGINES[source]}:not-a-uuid",
+        f":{session}",
+    ):
+        with pytest.raises(native_worker.WorkerError, match="not canonical"):
+            native_worker.child_environment({**config, "session_key": bad}, **extra)
+
+
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+def test_the_child_environment_carries_only_validated_memory_paths(source):
+    """#1441: a generation given memory paths passes exactly those two to its agent; anything
+    else in the config refuses the spawn rather than reaching the child."""
+    from agent_sessions import native_worker
+
+    key = f"{ENGINES[source]}:{ident()}"
+    paths = {"BATTLELAB_MEMORY": "/m/notes", "BATTLELAB_MEMORY_INBOX": "/m/inbox/t"}
+    config = {"session_key": key, "adapter": KINDS[source], "home": "/h", "path": "/bin"}
+    extra = {}
+    if source == "opencode":
+        from agent_sessions.engines import opencode
+
+        extra = {"server_password": "p" * 32, "agent": opencode.mint_api_agent()}
+    env = native_worker.child_environment({**config, "memory_env": paths}, **extra)
+    assert {k: env[k] for k in paths} == paths
+    assert "BATTLELAB_MEMORY" not in native_worker.child_environment(
+        {**config, "memory_env": {}}, **extra
+    )
+    for bad in (
+        "/m/notes",
+        [],
+        {"BATTLELAB_MEMORY": "/m/notes"},
+        {**paths, "LD_PRELOAD": "/evil.so"},
+        {**paths, "BATTLELAB_MEMORY": "relative/notes"},
+        {**paths, "BATTLELAB_MEMORY_INBOX": "/m/inbox\nX=1"},
+    ):
+        with pytest.raises(native_worker.WorkerError):
+            native_worker.child_environment({**config, "memory_env": bad}, **extra)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+async def test_every_generation_tells_its_agent_the_battlelab_session(
+    host, project, monkeypatch, source
+):
+    """#1406: the creating generation and a successor that resumes after an idle exit both start
+    their native child with BATTLELAB_SESSION = the app key; Codex also gets it as the per-thread
+    shell-policy `set` on start and resume, so a restrictive operator policy cannot strip it."""
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 0.5)
+    engine = ENGINES[source]
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="one")
+    snap, _ = await settle(key, first)
+    native, worker = snap["native"]["native_id"], snap["native"]["worker"]
+    assert native != key.partition(":")[2]
+    for _ in range(200):
+        if native_state.read_lifecycle(worker).get("phase") == "exited":
+            break
+        await asyncio.sleep(0.05)
+    assert native_state.read_lifecycle(worker)["phase"] == "exited"
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 60.0)
+    nxt = ident()
+    await runtime.submit_turn(key, operation_id=nxt, text="two")
+    snap, turn = await settle(key, nxt)
+    assert turn["reply"] == "echo:two" and snap["native"]["native_id"] == native
+    assert snap["native"]["worker"] != worker
+    children = [f for f in frames(project) if "models" not in f["frame"]]
+    told = {(f["pid"], f["battlelab_session"]) for f in children}
+    assert len({pid for pid, _ in told}) >= 2  # two generations' native children
+    assert {value for _, value in told} == {key}
+    if source == "codex":
+        threads = [
+            f["frame"]
+            for f in children
+            if f["frame"].get("method") in {"thread/start", "thread/resume"}
+        ]
+        assert {t["method"] for t in threads} == {"thread/start", "thread/resume"}
+        for t in threads:
+            assert t["params"]["config"] == {"shell_environment_policy.set.BATTLELAB_SESSION": key}
+
+
+def test_lease_sweep_drops_only_gone_generations(host, tmp_path):
+    release = tmp_path / "install" / "releases" / "r1"
+    release.mkdir(parents=True)
+    alive = native_containment.WorkerIdentity.mint()
+    gone = native_containment.WorkerIdentity.mint()
+    for worker in (alive, gone):
+        native_runtime._lease(release, worker.worker_id)
+        native_state.update_lifecycle(
+            worker.worker_id,
+            invocation_id=uuid.uuid4().hex,
+            control_group=f"/user.slice/{worker.unit}",
+        )
+    unpinned = native_containment.WorkerIdentity.mint()  # being launched by another session
+    native_runtime._lease(release, unpinned.worker_id)
+    host.procs[alive.unit] = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    host.invocations[alive.unit] = uuid.uuid4().hex
+    try:
+        host.invocations[alive.unit] = native_state.read_lifecycle(alive.worker_id)["invocation_id"]
+        native_runtime._sweep_leases(release)
+        remaining = {p.name for p in (release / "native-leases").iterdir()}
+        assert remaining == {alive.worker_id, unpinned.worker_id}
+    finally:
+        host.close()
+
+
+async def _codex(project):
+    created = await runtime.create_session(ENGINES["codex"], str(project), operation_id=ident())
+    return created["session_key"]
+
+
+@pytest.mark.anyio
+async def test_interrupt_succeeds_while_output_keeps_moving_the_revision(host, project):
+    """Review of #1278: interrupt used a single revision read and 409'd while streaming."""
+    key = await _codex(project)
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="STREAM")
+    await asyncio.sleep(0.5)  # deltas are being journaled
+    out = await runtime.interrupt(key, operation_id=ident(), turn_id=turn)
+    assert out["handoff"] == "sent"
+    _, settled = await settle(key, turn, state=("interrupted",))
+    assert settled["reply"].startswith(".")
+
+
+@pytest.mark.anyio
+async def test_a_refused_turn_fails_definitively_and_frees_the_generation(host, project):
+    """Review of #1278: an errored turn/start left the codec "active" and wedged the worker."""
+    key = await _codex(project)
+    refused = ident()
+    await runtime.submit_turn(key, operation_id=refused, text="REFUSE")
+    _, turn = await settle(key, refused, state=("failed",))
+    assert "refused" in turn["reason"]
+    nxt = ident()
+    await runtime.submit_turn(key, operation_id=nxt, text="after")
+    _, turn = await settle(key, nxt)
+    assert turn["reply"] == "echo:after" and len(host.launches) == 1
+
+
+@pytest.mark.anyio
+async def test_an_oversized_native_frame_is_omitted_not_fatal(host, project):
+    """Review of #1278: one >1 MiB tool output ended the generation and the turn."""
+    key = await _codex(project)
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="BIG")
+    _, settled = await settle(key, turn)
+    assert settled["state"] == "completed" and settled["reply"] == "echo:BIG"
+    page = await runtime.events(key, after=0)
+    assert any(
+        e["kind"] == "error" and "size bound" in e["data"]["message"] for e in page["events"]
+    )
+    assert len(host.launches) == 1  # the same generation survived
+
+
+@pytest.mark.anyio
+async def test_codex_resume_never_asks_for_the_full_history(host, project, monkeypatch):
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 0.3)
+    key = await _codex(project)
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="one")
+    await settle(key, first)
+    await asyncio.sleep(1.5)  # idle exit
+    nxt = ident()
+    await runtime.submit_turn(key, operation_id=nxt, text="two")
+    await settle(key, nxt)
+    resumes = [f["frame"] for f in frames(project) if f["frame"].get("method") == "thread/resume"]
+    assert resumes and all(r["params"]["excludeTurns"] is True for r in resumes)
+
+
+@pytest.mark.anyio
+async def test_no_successor_launches_until_every_earlier_generation_is_proved_gone(
+    host, project, monkeypatch
+):
+    """Review of #1278: a second submit after an `unknown` generation launched a successor."""
+    key = await _codex(project)
+    snap = await runtime.snapshot(key)
+    worker = snap["native"]["worker"]
+    host.kill(worker)
+    real_show = host.show
+    monkeypatch.setattr(host, "show", lambda w: None)  # systemd cannot answer: `unknown`
+    for _ in range(2):
+        with pytest.raises(runtime.StructuredError) as refused:
+            await runtime.submit_turn(key, operation_id=ident(), text="x")
+        assert refused.value.status == 409 and "unknown" in refused.value.detail
+    assert len(host.launches) == 1
+    monkeypatch.setattr(host, "show", real_show)  # evidence returns: proved gone, resume
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="back")
+    _, settled = await settle(key, turn)
+    assert settled["reply"] == "echo:back" and len(host.launches) == 2
+
+
+@pytest.mark.anyio
+async def test_a_bound_history_missing_from_the_record_is_recovered_from_ownership(host, project):
+    """Review of #1278: bind committed, then the record write lost — never a dead session."""
+    key = await _codex(project)
+    session_id = key.partition(":")[2]
+    native = (await runtime.snapshot(key))["native"]["native_id"]
+    host.kill((await runtime.snapshot(key))["native"]["worker"])
+    with native_state.session_lock(session_id):
+        record = native_state.read_session(session_id)
+        record["native_id"] = None
+        native_state.write_session(session_id, record)
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="again")
+    snap, settled = await settle(key, turn)
+    assert settled["reply"] == "echo:again" and snap["native"]["native_id"] == native
+
+
+@pytest.mark.anyio
+async def test_a_not_current_generation_is_refused_by_the_startup_gate(host, project):
+    """Defence in depth: even with its config present, an old generation cannot start."""
+    key = await _codex(project)
+    session_id = key.partition(":")[2]
+    old = native_state.read_session(session_id)["current_worker"]
+    config = (native_state.worker_dir(old) / "config.json").read_text()
+    old_argv = host.launches[0]
+    host.kill(old)
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="successor")
+    await settle(key, turn)
+    (native_state.worker_dir(old) / "config.json").write_text(config)
+    (native_state.worker_dir(old) / "config.json").chmod(0o600)
+    starts = len([f for f in frames(project) if f["frame"].get("method") == "initialize"])
+    command = old_argv[old_argv.index("--") + 1 :]
+    env, index = {}, 2
+    while "=" in command[index] and not command[index].startswith("/"):
+        k, v = command[index].split("=", 1)
+        env[k] = v
+        index += 1
+    cwd = next(a.split("=", 1)[1] for a in old_argv if a.startswith("--working-directory="))
+    assert subprocess.run(command[index:], env=env, cwd=cwd, timeout=60).returncode == 3
+    assert native_state.read_lifecycle(old)["phase"] == "refused"
+    assert len([f for f in frames(project) if f["frame"].get("method") == "initialize"]) == starts
+
+
+@pytest.mark.anyio
+async def test_another_clients_engine_cannot_reach_a_session_by_its_uuid(host, project):
+    """Hermes on #1278: sessions were found by UUID alone, so client B's key could stop A."""
+    key = await _codex(project)
+    forged = f"{ENGINES['claude']}:{key.partition(':')[2]}"
+    for call in (
+        runtime.snapshot(forged),
+        runtime.probe(forged),
+        runtime.stop(forged),
+        runtime.events(forged, after=0),
+        runtime.submit_turn(forged, operation_id=ident(), text="x"),
+    ):
+        with pytest.raises(runtime.StructuredError) as refused:
+            await call
+        assert refused.value.status == 404
+    assert (await runtime.probe(key))["containment"] == "live"
+
+
+@pytest.mark.anyio
+async def test_probe_never_certifies_gone_for_a_creation_not_yet_launched(host, project):
+    session_id = ident()
+    key = f"{ENGINES['codex']}:{session_id}"
+    native_state.write_session(
+        session_id,
+        {
+            "version": 1,
+            "session_key": key,
+            "adapter": "codex-app-server",
+            "source_engine": "codex",
+            "request": {"cwd": str(project), "model": None, "adapter": "codex-app-server"},
+            "owner_token": ident(),
+            "native_id": None,
+            "current_worker": None,
+            "closed": False,
+            "workers": [],
+        },
+    )
+    assert (await runtime.probe(key))["containment"] == "unknown"
+
+
+@pytest.mark.anyio
+async def test_an_unfinished_final_frame_is_discarded_not_completed(host, project):
+    """Hermes on #1278: EOF synthesized a newline and completed a frame never finished."""
+    key = await _codex(project)
+    turn = ident()
+    try:
+        await runtime.submit_turn(key, operation_id=turn, text="PARTIAL")
+    except runtime.StructuredError as exc:
+        # The injected EOF can end the worker before it flushes the RPC acknowledgement.
+        # Either acknowledgement outcome must leave the durable turn uncertain below;
+        # never turn a transport race into a test of whether the partial frame completed.
+        assert exc.status == 503 and "invalid frame" in exc.detail
+    _, settled = await settle(key, turn, state=("uncertain",))
+    assert settled["state"] == "uncertain"
+    page = await runtime.events(key, after=0)
+    assert any("mid-frame" in e["data"].get("message", "") for e in page["events"])
+    assert not any(e["kind"] == "turn_completed" for e in page["events"])
+
+
+@pytest.mark.anyio
+async def test_a_turn_waits_for_a_dying_worker_then_resumes_in_a_successor(
+    host, project, monkeypatch
+):
+    """pr-validate on #1309: right after a native crash the old worker refuses connections but
+    is still exiting; three instant retries all hit it and the turn failed "unreachable"."""
+    import time as clock
+
+    key = await _codex(project)
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="hello")
+    await settle(key, first)
+    old = (await runtime.snapshot(key))["native"]["worker"]
+    dying_until = clock.monotonic() + 0.8
+    real_call, real_running = native_runtime._call, host.worker_running
+
+    async def refusing(gen, action, params, **kw):
+        if gen.worker_id == old and clock.monotonic() < dying_until:
+            raise native_runtime._Unreachable("connection refused")
+        return await real_call(gen, action, params, **kw)
+
+    def running(worker, pid):
+        if worker.worker_id == old and clock.monotonic() < dying_until:
+            return True  # still shutting down
+        return real_running(worker, pid)
+
+    monkeypatch.setattr(native_runtime, "_call", refusing)
+    monkeypatch.setattr(host, "worker_running", running)
+    host.kill(old)
+    nxt = ident()
+    await runtime.submit_turn(key, operation_id=nxt, text="after crash")
+    _, turn = await settle(key, nxt)
+    assert turn["reply"] == "echo:after crash" and len(host.launches) == 2
+
+
+@pytest.mark.anyio
+async def test_a_sub_agent_permission_prompt_is_refused_not_attributed_to_the_turn(host, project):
+    """Hermes on #1278: a background agent's callback was journaled against the human turn."""
+    key = (await runtime.create_session(ENGINES["claude"], str(project), operation_id=ident()))[
+        "session_key"
+    ]
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="SUBAGENT")
+    snap, settled = await settle(key, turn)
+    assert settled["reply"] == "subagent:error" and not snap["pending_requests"]
+    page = await runtime.events(key, after=0)
+    assert not [e for e in page["events"] if e["kind"] == "approval"]
+
+
+@pytest.mark.anyio
+async def test_a_creation_stopped_before_it_launched_is_terminal(host, project):
+    """Hermes on #1278: stop reported an unlaunched creation gone, then a replay of the same
+    operation id reserved ownership and launched it anyway."""
+    session_id = ident()
+    key = f"{ENGINES['codex']}:{session_id}"
+    native_state.write_session(
+        session_id,
+        {
+            "version": 1,
+            "session_key": key,
+            "adapter": "codex-app-server",
+            "source_engine": "codex",
+            "request": {"cwd": str(project), "model": None, "adapter": "codex-app-server"},
+            "owner_token": ident(),
+            "native_id": None,
+            "current_worker": None,
+            "closed": False,
+            "workers": [],
+        },
+    )
+    assert (await runtime.stop(key))["containment"] == "gone"
+    with pytest.raises(runtime.StructuredError, match="was stopped") as replay:
+        await runtime.create_session(ENGINES["codex"], str(project), operation_id=session_id)
+    assert replay.value.status == 409 and not host.launches
+    assert native_ownership.lookup(key) is None
+
+
+@pytest.mark.anyio
+async def test_a_retiring_clients_running_worker_can_still_be_probed_and_stopped(
+    host, project, monkeypatch
+):
+    """Hermes on #1278: retirement made the structured stop path 404 for a live worker."""
+    key = await _codex(project)
+    retiring = registry._BY_ID[ENGINES["codex"]]
+    remaining = [p for p in registry._PROVIDERS if p is not retiring]
+    monkeypatch.setattr(registry, "_PROVIDERS", remaining)
+    monkeypatch.setattr(registry, "_BY_ID", {p.engine_id: p for p in remaining})
+    monkeypatch.setattr(registry, "_RETIRING", {retiring.engine_id: retiring})
+    with pytest.raises(runtime.StructuredError):
+        await runtime.submit_turn(key, operation_id=ident(), text="new work")
+    assert (await runtime.probe(key))["containment"] == "live"
+    assert (await runtime.stop(key))["containment"] == "gone"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", ["codex", "claude"])
+async def test_a_complete_approval_is_decided_once_by_its_operator_then_stale(
+    host, project, source
+):
+    engine = ENGINES[source]
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="APPROVE")
+    snap = await pending(key)
+    request = snap["pending_requests"][0]
+    assert request["complete"] and request["choices"] == ["approve", "reject", "cancel"]
+    assert len(request["payload_digest"]) == 64 and snap["state"] == "awaiting_approval"
+    if source == "codex":  # the whole request, not a command excerpt
+        assert request["payload"]["networkApprovalContext"] == {"host": "example.invalid"}
+        assert request["payload"]["proposedNetworkPolicyAmendments"]
+    else:  # the whole permission prompt, not only its input
+        assert request["payload"]["blocked_path"] == "/etc/hosts"
+        assert request["payload"]["decision_reason"] == "outside the working directory"
+        assert request["payload"]["input"] == {"command": "ls -la"}
+    decision = ident()
+    args = dict(turn_id=turn, request_id=request["request_id"], decision="approve")
+    out = await runtime.decide(key, decision_id=decision, user="alice", **args)
+    assert out["handoff"] == "sent"
+    again = await runtime.decide(key, decision_id=decision, user="alice", **args)
+    assert again["handoff"] == "sent"  # exact replay observes
+    with pytest.raises(runtime.StructuredError) as other_actor:
+        await runtime.decide(key, decision_id=decision, user="mallory", **args)
+    assert other_actor.value.status == 409  # who decided is part of the decision
+    _, settled = await settle(key, turn)
+    assert settled["reply"] == ("approved:accept" if source == "codex" else "approved:allow")
+    replies = [
+        f
+        for f in frames(project)
+        if f["frame"].get("id") == 77 or f["frame"].get("type") == "control_response"
+    ]
+    assert len(replies) == 1
+    if source == "codex":
+        assert replies[0]["frame"]["result"] == {"decision": "accept"}  # never policy-wide
+    with pytest.raises(runtime.StructuredError):
+        await runtime.decide(key, decision_id=ident(), user="alice", **args)
+    # A callback lost with its worker is never offered again from the journal.
+    second = ident()
+    await runtime.submit_turn(key, operation_id=second, text="APPROVE")
+    request = (await pending(key))["pending_requests"][0]
+    host.kill((await runtime.snapshot(key))["native"]["worker"])
+    for _ in range(200):
+        snap = await runtime.snapshot(key)
+        if not snap["pending_requests"]:
+            break
+        await asyncio.sleep(0.05)
+    assert not snap["pending_requests"]
+    with pytest.raises(runtime.StructuredError):
+        await runtime.decide(
+            key,
+            decision_id=ident(),
+            turn_id=second,
+            request_id=request["request_id"],
+            decision="reject",
+            user="alice",
+        )
+
+
+@pytest.mark.anyio
+async def test_a_file_change_presents_its_patch_but_can_only_be_declined(host, project):
+    """Hermes on #1278: nothing binds the applied patch to the shown one, so no approve."""
+    key = await _codex(project)
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="EDIT")
+    request = (await pending(key))["pending_requests"][0]
+    assert request["kind"] == "file_change" and not request["complete"]
+    assert request["choices"] == ["reject", "cancel"]
+    assert request["payload"]["changes"] == [
+        {"path": "README.md", "kind": {"type": "update"}, "diff": "-old\n+new\n"}
+    ]
+    with pytest.raises(runtime.StructuredError, match="presented completely"):
+        await runtime.decide(
+            key,
+            decision_id=ident(),
+            turn_id=turn,
+            request_id=request["request_id"],
+            decision="approve",
+            user="alice",
+        )
+    await runtime.decide(
+        key,
+        decision_id=ident(),
+        turn_id=turn,
+        request_id=request["request_id"],
+        decision="reject",
+        user="alice",
+    )
+    _, settled = await settle(key, turn)
+    assert settled["reply"] == "edited:decline"
+
+
+@pytest.mark.anyio
+async def test_a_file_change_without_its_patch_can_only_be_declined(host, project):
+    key = await _codex(project)
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="EDIT_NOPATCH")
+    request = (await pending(key))["pending_requests"][0]
+    assert not request["complete"] and request["choices"] == ["reject", "cancel"]
+    with pytest.raises(runtime.StructuredError, match="presented completely") as refused:
+        await runtime.decide(
+            key,
+            decision_id=ident(),
+            turn_id=turn,
+            request_id=request["request_id"],
+            decision="approve",
+            user="alice",
+        )
+    assert refused.value.status == 409
+    assert not [f for f in frames(project) if f["frame"].get("id") == 88]
+    gen = native_runtime._generation(key.partition(":")[2])
+    journal = native_runtime._journal(
+        native_runtime._api_provider(ENGINES["codex"]), key.partition(":")[2]
+    )
+    # The worker refuses it too, even to a caller that bypasses the web gate.
+    with pytest.raises(native_runtime.NativeError, match="presented completely"):
+        await native_runtime._call(
+            gen,
+            "decide",
+            {
+                "operation_id": ident(),
+                "expected_revision": journal.revision,
+                "turn_id": turn,
+                "request_id": request["request_id"],
+                "item_id": request["item_id"],
+                "payload_digest": request["payload_digest"],
+                "decision": "approve",
+                "approval_worker_id": gen.worker_id,
+                "approval_connection_id": gen.config["connection_id"],
+                "actor": "alice",
+            },
+        )
+    await runtime.decide(
+        key,
+        decision_id=ident(),
+        turn_id=turn,
+        request_id=request["request_id"],
+        decision="reject",
+        user="alice",
+    )
+    _, settled = await settle(key, turn)
+    assert settled["reply"] == "edited:decline"
+
+
+@pytest.mark.anyio
+async def test_a_patch_that_changes_after_presentation_withdraws_the_approval(host, project):
+    """What was shown must be what is approved: a later patch declines the stale callback."""
+    key = await _codex(project)
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="EDIT_CHANGING")
+    _, settled = await settle(key, turn)
+    assert settled["reply"] == "edited:decline"
+    assert not (await runtime.snapshot(key))["pending_requests"]
+
+
+_PNG = b"\x89PNG\r\n\x1a\n" + bytes(range(64))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+async def test_documents_reach_all_native_agents_and_bind_replay_identity(
+    host, project, source, tmp_path
+):
+    uploads = tmp_path / ".agent-sessions" / "uploads"
+    uploads.mkdir(parents=True, mode=0o700, exist_ok=True)
+    stored = "20261010-010000-brief.pdf"
+    path = uploads / stored
+    path.write_bytes(b"%PDF-1.4 document body")
+    engine = ENGINES[source]
+    created = await runtime.create_session(engine, str(project), operation_id=ident())
+    assert created["files"] is True
+    key, operation = created["session_key"], ident()
+    await runtime.submit_turn(key, operation_id=operation, text="", attachments=[stored])
+    _, settled = await settle(key, operation)
+    assert settled["state"] == "completed"
+    assert str(path) in settled["reply"]
+    assert settled["text"] == ""  # reference belongs to delivery, not the user's journaled words
+    assert settled["attachments"] == [
+        {"stored": stored, "name": "brief.pdf", "mime": "application/octet-stream"}
+    ]
+    before = frames(project)
+    await runtime.submit_turn(key, operation_id=operation, text="", attachments=[stored])
+    assert frames(project) == before
+    path.write_bytes(b"%PDF-1.4 changed document")
+    with pytest.raises(runtime.StructuredError) as changed:
+        await runtime.submit_turn(key, operation_id=operation, text="", attachments=[stored])
+    assert changed.value.status == 409
+    assert frames(project) == before
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.parametrize("mixed", [False, True])
+async def test_document_text_budget_refuses_before_claim_and_accepts_exact_boundary(
+    host, project, source, tmp_path, mixed
+):
+    from agent_sessions import native_attachments, native_protocol
+
+    uploads = tmp_path / ".agent-sessions" / "uploads"
+    uploads.mkdir(parents=True, mode=0o700, exist_ok=True)
+    names = ["20261010-010000-brief.pdf"]
+    (uploads / names[0]).write_bytes(b"%PDF-1.4 document body")
+    if mixed:
+        names.append("20261010-010000-shot.png")
+        (uploads / names[-1]).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+    admitted = native_attachments.admit(
+        names, images=runtime.describe(ENGINES[source], check_ready=False).images
+    )
+    expanded, _ = native_attachments.prepare("x", admitted)
+    limit = native_protocol.MAX_INPUT_TEXT - len(expanded) + 1
+    created = await runtime.create_session(ENGINES[source], str(project), operation_id=ident())
+    key, operation = created["session_key"], ident()
+    before = await runtime.snapshot(key)
+    wire_before = frames(project)
+    for size in (native_protocol.MAX_INPUT_TEXT, limit + 1):
+        with pytest.raises(runtime.StructuredError) as rejected:
+            await runtime.submit_turn(
+                key, operation_id=operation, text="x" * size, attachments=names
+            )
+        assert rejected.value.status == 422
+        assert "size limit" in rejected.value.detail
+        assert (await runtime.snapshot(key))["turns"] == before["turns"]
+        assert frames(project) == wire_before
+    # The rejected operation was never claimed: its corrected payload can use the same id.
+    text, _ = native_attachments.prepare("x" * limit, admitted)
+    assert len(text) == native_protocol.MAX_INPUT_TEXT
+    await runtime.submit_turn(key, operation_id=operation, text="x" * limit, attachments=names)
+    _, settled = await settle(key, operation)
+    assert settled["state"] == "completed"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("ending", ["stop", "crash"])
+async def test_document_support_tracks_retained_worker_before_any_claim(
+    host, project, tmp_path, ending
+):
+    uploads = tmp_path / ".agent-sessions" / "uploads"
+    uploads.mkdir(parents=True, mode=0o700, exist_ok=True)
+    stored = "20261010-010000-brief.pdf"
+    (uploads / stored).write_bytes(b"%PDF-1.4 document")
+    key = (await runtime.create_session(ENGINES["codex"], str(project), operation_id=ident()))[
+        "session_key"
+    ]
+    snapshot = await runtime.snapshot(key)
+    native_state.update_lifecycle(snapshot["native"]["worker"], files=False)
+    assert not (await runtime.snapshot(key))["files"]
+    before = frames(project)
+    operation = ident()
+    with pytest.raises(runtime.StructuredError, match="stop and resume") as old:
+        await runtime.submit_turn(key, operation_id=operation, text="read", attachments=[stored])
+    assert old.value.status == 409
+    assert not (await runtime.snapshot(key))["turns"]
+    assert frames(project) == before
+    if ending == "stop":
+        await runtime.stop(key)
+    else:
+        host.kill(snapshot["native"]["worker"])
+    assert (await runtime.snapshot(key))["files"]
+    await runtime.submit_turn(key, operation_id=operation, text="read", attachments=[stored])
+    _, settled = await settle(key, operation)
+    assert settled["state"] == "completed"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", ["codex", "claude"])
+async def test_a_turn_carries_pictures_to_the_agent_but_never_into_the_journal(
+    host, project, source, tmp_path
+):
+    """#1332 Phase 3: the picture reaches the agent inline; the record keeps its name only."""
+    import base64
+
+    uploads = tmp_path / ".agent-sessions" / "uploads"
+    uploads.mkdir(parents=True, mode=0o700, exist_ok=True)
+    stored = "20261008-010000-shot.png"
+    (uploads / stored).write_bytes(_PNG)
+    engine = ENGINES[source]
+    assert runtime.describe(engine).images
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="look", attachments=[stored])
+    snap, settled = await settle(key, turn)
+    assert settled["reply"].startswith("echo:IMAGES:1:") and settled["reply"].endswith(":look")
+    assert "image/png" in settled["reply"]
+    assert settled["attachments"] == [{"stored": stored, "name": "shot.png", "mime": "image/png"}]
+    # The same id naming a different picture is a different request.
+    (uploads / "20261008-010001-other.png").write_bytes(_PNG + b"!")
+    with pytest.raises(runtime.StructuredError) as changed:
+        await runtime.submit_turn(
+            key, operation_id=turn, text="look", attachments=["20261008-010001-other.png"]
+        )
+    assert changed.value.status == 409
+    # Bytes went to the agent (its own frame log) and nowhere BattleLab keeps.
+    encoded = base64.b64encode(_PNG).decode("ascii").encode()
+    for path in tmp_path.rglob("*"):
+        if path.is_file() and project not in path.parents and uploads not in path.parents:
+            assert encoded not in path.read_bytes(), path
+    # A picture-only turn needs no words.
+    only = ident()
+    await runtime.submit_turn(key, operation_id=only, text="", attachments=[stored])
+    _, settled = await settle(key, only)
+    assert settled["reply"].startswith("echo:IMAGES:1:")
+
+
+@pytest.mark.anyio
+async def test_a_client_without_native_images_receives_uploaded_image_as_file(
+    host, project, tmp_path, monkeypatch
+):
+    from agent_sessions.plugins import kinds
+
+    uploads = tmp_path / ".agent-sessions" / "uploads"
+    uploads.mkdir(parents=True, mode=0o700, exist_ok=True)
+    (uploads / "20261008-010000-shot.png").write_bytes(_PNG)
+    engine = ENGINES["codex"]
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    monkeypatch.setitem(kinds.API_IMAGE_INPUT, "codex-app-server", False)
+    assert not runtime.describe(engine).images
+    operation = ident()
+    await runtime.submit_turn(
+        key, operation_id=operation, text="look", attachments=["20261008-010000-shot.png"]
+    )
+    _, settled = await settle(key, operation)
+    assert str(uploads / "20261008-010000-shot.png") in settled["reply"]
+    assert "IMAGES:" not in settled["reply"]
+    before = frames(project)
+    with pytest.raises(runtime.StructuredError) as bogus:
+        await runtime.submit_turn(key, operation_id=ident(), text="x", attachments=["../x.png"])
+    assert bogus.value.status == 422
+    assert frames(project) == before
+
+
+@pytest.mark.anyio
+async def test_resource_policy_is_frozen_per_generation(host, project, monkeypatch):
+    from agent_sessions import resource_limits
+
+    resource_limits.save({"api_tasks": 1024, "library_threads": 3, "api_memory_gib": 32})
+    for name in resource_limits.THREAD_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OPENBLAS_NUM_THREADS", "1")
+    created = await runtime.create_session("codex-api", str(project), operation_id=ident())
+    assert "--property=TasksMax=1024" in host.launches[-1]
+    assert "--property=MemoryMax=32G" in host.launches[-1]
+    key = created["session_key"]
+    record = native_state.read_session(key.split(":", 1)[1])
+    worker = record["current_worker"]
+    path = native_state.root() / "workers" / worker / "config.json"
+    config = json.loads(path.read_text())
+    assert config["thread_environment"]["RAYON_NUM_THREADS"] == "3"
+    assert config["thread_environment"]["OPENBLAS_NUM_THREADS"] == "1"
+    resource_limits.save({"api_tasks": 2048, "library_threads": 12, "api_memory_gib": 16})
+    await runtime.probe(key)
+    assert len(host.launches) == 1
+    assert json.loads(path.read_text()) == config
+    assert native_state.read_session(key.split(":", 1)[1])["current_worker"] == worker
+    host.kill(worker)
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="hello")
+    await settle(key, turn)
+    assert len(host.launches) == 2
+    assert "--property=MemoryMax=32G" in host.launches[0]
+    assert "--property=MemoryMax=16G" in host.launches[1]
+
+
+@pytest.mark.anyio
+async def test_project_memory_is_bound_per_generation_never_into_a_live_one(host, project):
+    """#1441: memory reaches the NEXT worker generation after it is turned on; the live one keeps
+    the environment it started with, and every generation gets its own inbox."""
+    from agent_sessions import memory, projects
+
+    pid = projects.create("demo", folders=[str(project)]).id
+    created = await runtime.create_session("codex-api", str(project), operation_id=ident())
+    key = created["session_key"]
+
+    def config(worker):
+        return json.loads((native_state.root() / "workers" / worker / "config.json").read_text())
+
+    first = native_state.read_session(key.split(":", 1)[1])["current_worker"]
+    assert config(first)["memory_env"] == {}
+    memory.set_enabled(pid, True)
+    await runtime.probe(key)
+    assert config(first)["memory_env"] == {}  # the live generation is not touched
+    host.kill(first)
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="hello")
+    await settle(key, turn)
+    second = native_state.read_session(key.split(":", 1)[1])["current_worker"]
+    assert second != first
+    paths = config(second)["memory_env"]
+    assert Path(paths[memory.ENV_READ]).parent.name == pid
+    assert Path(paths[memory.ENV_INBOX]).is_dir()
+    [launch] = [n for n in _launches(pid) if n["kind"] == "api"]
+    assert launch["session_key"] == key
+
+
+def _launches(pid):
+    import sqlite3
+
+    from agent_sessions import memory
+
+    conn = sqlite3.connect(memory.root() / pid / "state.db")
+    conn.row_factory = sqlite3.Row
+    try:
+        return [dict(r) for r in conn.execute("SELECT * FROM launches")]
+    finally:
+        conn.close()
+
+
+class _NoTerminals:
+    """The live-terminal registry with nothing in it: an API session has no dtach master."""
+
+    def snapshot(self):
+        return []
+
+
+async def _reviewable_api_session(monkeypatch, tmp_home, project, source, calls, **transport):
+    """One API session with a settled turn, AI review configured against a mock endpoint."""
+    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_home / "prefs.json"))
+    prefs.set_ai_review(
+        {"enabled": True, "base_url": "https://ai.test/v1", "api_key": "sk-t", "model": "m"}
+    )
+    monkeypatch.setattr(
+        review, "_TRANSPORT", test_ai_review_loop._chat_transport(calls, **transport)
+    )
+    engine = ENGINES[source]
+    # What the registry attaches to an API client's store. Only this client's: the fixture
+    # clients share one root, and each would otherwise list the other's conversation…
+    prov = registry.get(engine)
+    if prov.kind is None:
+        prov.attach_kind(chat_store.ChatStoreKind())
+    # …and the only API client: the others (the chat agent included) read the same root here.
+    providers = [p for p in registry._PROVIDERS if registry.is_pty(p) or p is prov]
+    monkeypatch.setattr(registry, "_PROVIDERS", providers)
+    monkeypatch.setattr(registry, "_BY_ID", {p.engine_id: p for p in providers})
+    # The fixture client journals under its own root; the transcript reader resolves the store
+    # through the environment, which conftest pins elsewhere. Point both at the same place.
+    monkeypatch.setenv("AGENT_SESSIONS_CHAT_DIR", str(prov.store_root()))
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="one")
+    await settle(key, turn)
+    return key
+
+
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.anyio
+async def test_the_ai_review_loop_reviews_an_api_session_once_per_change(
+    host, project, monkeypatch, tmp_home, source
+):
+    """An API session is no terminal, so the live-terminal registry never lists it: the sweep
+    must still reach it, then leave it alone until it changes again."""
+    calls: list = []
+    key = await _reviewable_api_session(monkeypatch, tmp_home, project, source, calls)
+
+    reviewed, failures = await ai_review_loop.sweep(_NoTerminals())
+    assert (reviewed, failures) == ([key], 0)
+    meta = metadata.get(metadata.resolve_key(key))
+    assert meta.ai_summary == "Editing tests" and meta.reviewed_at is not None
+    assert len(calls) == 2  # the summary and the recap
+
+    # Nothing new happened: not reviewed again, and not even read.
+    gathered = []
+    real = review.gather_review_input
+    monkeypatch.setattr(
+        review, "gather_review_input", lambda k, *a, **kw: gathered.append(k) or real(k, *a, **kw)
+    )
+    assert await ai_review_loop.sweep(_NoTerminals()) == ([], 0)
+    assert gathered == [] and len(calls) == 2
+
+    # A new turn is new work: reviewed again.
+    nxt = ident()
+    await runtime.submit_turn(key, operation_id=nxt, text="two")
+    await settle(key, nxt)
+    assert (await ai_review_loop.sweep(_NoTerminals()))[0] == [key]
+
+
+@pytest.mark.anyio
+async def test_a_failed_api_recap_is_retried_without_new_activity(
+    host, project, monkeypatch, tmp_home
+):
+    """The summary is written before the recap, so `reviewed_at` moves even when the recap call
+    fails: the session must stay a candidate until its recap lands (Hermes on #1425)."""
+    calls: list = []
+    key = await _reviewable_api_session(
+        monkeypatch, tmp_home, project, "codex", calls, recap_ok=False
+    )
+    assert (await ai_review_loop.sweep(_NoTerminals()))[0] == [key]
+    meta = metadata.get(metadata.resolve_key(key))
+    assert meta.reviewed_at is not None and meta.ai_recap == "" and meta.recap_failed_at
+    # The endpoint recovers; the conversation does not change.
+    monkeypatch.setattr(review, "_TRANSPORT", test_ai_review_loop._chat_transport(calls))
+    assert (await ai_review_loop.sweep(_NoTerminals()))[0] == [key]
+    meta = metadata.get(metadata.resolve_key(key))
+    assert meta.ai_recap == "Cloned repo.\nFixed tests." and meta.recap_failed_at is None
+    # Settled: nothing further to do until the session changes.
+    assert await ai_review_loop.sweep(_NoTerminals()) == ([], 0)
+
+
+@pytest.mark.anyio
+async def test_an_api_recap_whose_input_failed_to_read_is_retried_without_new_activity(
+    host, project, monkeypatch, tmp_home
+):
+    """Hermes on #1425 (review 6166): a recap whose INPUT could not be gathered owes a retry too."""
+    calls: list = []
+    key = await _reviewable_api_session(monkeypatch, tmp_home, project, "codex", calls)
+    real = review.gather_recap_input
+    failing = {"on": True}
+
+    def flaky(k, *a, **kw):
+        if failing["on"]:
+            raise review.ReviewError("the transcript could not be read")
+        return real(k, *a, **kw)
+
+    monkeypatch.setattr(review, "gather_recap_input", flaky)
+    assert (await ai_review_loop.sweep(_NoTerminals()))[0] == [key]
+    meta = metadata.get(metadata.resolve_key(key))
+    assert meta.ai_summary and meta.ai_recap == "" and meta.recap_failed_at
+    failing["on"] = False  # the reader recovers; the conversation does not change
+    assert (await ai_review_loop.sweep(_NoTerminals()))[0] == [key]
+    meta = metadata.get(metadata.resolve_key(key))
+    assert meta.ai_recap == "Cloned repo.\nFixed tests." and meta.recap_failed_at is None
+    assert await ai_review_loop.sweep(_NoTerminals()) == ([], 0)
+
+
+@pytest.mark.anyio
+async def test_a_reviewed_api_session_without_a_recap_gets_one_and_no_work_is_asked_once(
+    host, project, monkeypatch, tmp_home
+):
+    """A summary with no recap ever evaluated (an earlier review) is admitted until one is. A
+    model answer of "no work to recap yet" counts as evaluated: the unchanged session is not
+    asked again, so it cannot spend a call every sweep."""
+    calls: list = []
+    key = await _reviewable_api_session(monkeypatch, tmp_home, project, "codex", calls)
+    assert (await ai_review_loop.sweep(_NoTerminals()))[0] == [key]
+    rk = metadata.resolve_key(key)
+    metadata.patch(rk, ai_recap="", recap_fingerprint="")  # as an earlier review left it
+    assert (await ai_review_loop.sweep(_NoTerminals()))[0] == [key]
+    assert metadata.get(rk).ai_recap == "Cloned repo.\nFixed tests."
+
+    # The model now finds nothing to recap for a never-evaluated recap: recorded once, then quiet.
+    metadata.patch(rk, ai_recap="", recap_fingerprint="")
+
+    def insufficient(request):
+        calls.append(request)
+        payload = json.loads(request.content)
+        is_recap = "returning to a coding-agent session" in payload["messages"][0]["content"]
+        body = (
+            {"insufficient": True}
+            if is_recap
+            else {
+                "summary": "Editing tests",
+                "title": "Fix the tests",
+                "intervention_required": False,
+                "reason": "",
+            }
+        )
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(body)}}]})
+
+    monkeypatch.setattr(review, "_TRANSPORT", httpx.MockTransport(insufficient))
+    assert (await ai_review_loop.sweep(_NoTerminals()))[0] == [key]
+    meta = metadata.get(rk)
+    assert meta.recap_fingerprint and meta.ai_recap == "" and meta.recap_failed_at is None
+    before = len(calls)
+    assert await ai_review_loop.sweep(_NoTerminals()) == ([], 0)
+    assert len(calls) == before

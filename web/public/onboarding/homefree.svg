@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-label="Home Free — stream through the blind relay">
+  <rect width="640" height="360" fill="#131418"/>
+  <!-- your box -->
+  <rect x="40" y="120" width="150" height="100" fill="#0d0e10" stroke="#25282e"/>
+  <rect x="56" y="140" width="118" height="12" fill="#1a1c21"/>
+  <rect x="56" y="160" width="118" height="12" fill="#1a1c21"/>
+  <rect x="56" y="180" width="80" height="12" fill="#1a1c21"/>
+  <circle cx="62" cy="205" r="4" fill="#3fbf6f"/>
+  <text x="115" y="112" fill="#6f747d" font-family="monospace" font-size="14" text-anchor="middle">YOUR BOX</text>
+  <!-- blind relay -->
+  <rect x="270" y="145" width="100" height="50" fill="#0d0e10" stroke="#25282e"/>
+  <text x="320" y="175" fill="#6f747d" font-family="monospace" font-size="13" text-anchor="middle">RELAY</text>
+  <text x="320" y="222" fill="#6f747d" font-family="monospace" font-size="12" text-anchor="middle">sees only ciphertext</text>
+  <!-- browser -->
+  <rect x="450" y="110" width="150" height="120" fill="#0d0e10" stroke="#25282e"/>
+  <rect x="450" y="110" width="150" height="22" fill="#1a1c21" stroke="#25282e"/>
+  <circle cx="462" cy="121" r="3" fill="#6f747d"/><circle cx="474" cy="121" r="3" fill="#6f747d"/>
+  <rect x="466" y="150" width="118" height="12" fill="#1a1c21"/>
+  <rect x="466" y="170" width="118" height="12" fill="#1a1c21"/>
+  <rect x="466" y="190" width="80" height="12" fill="#1a1c21"/>
+  <text x="525" y="102" fill="#6f747d" font-family="monospace" font-size="14" text-anchor="middle">ANY BROWSER</text>
+  <!-- encrypted links -->
+  <g stroke="#ffb000" stroke-width="2" stroke-dasharray="6 5" fill="none">
+    <path d="M190 170 H270"/>
+    <path d="M370 170 H450"/>
+  </g>
+  <!-- lock -->
+  <rect x="222" y="158" width="16" height="12" fill="#ffb000"/>
+  <path d="M225 158v-5a5 5 0 0 1 10 0v5" stroke="#ffb000" stroke-width="2.5" fill="none"/>
+  <rect x="402" y="158" width="16" height="12" fill="#ffb000"/>
+  <path d="M405 158v-5a5 5 0 0 1 10 0v5" stroke="#ffb000" stroke-width="2.5" fill="none"/>
+  <g stroke="#ffb000" stroke-width="2" fill="none"><path d="M8 20V8h12"/><path d="M620 8h12v12"/><path d="M8 340v12h12"/><path d="M632 340v12h-12"/></g>
+  <text x="320" y="290" fill="#6f747d" font-family="monospace" font-size="18" text-anchor="middle">HOME FREE // e2e encrypted · 4h sessions</text>
+</svg>

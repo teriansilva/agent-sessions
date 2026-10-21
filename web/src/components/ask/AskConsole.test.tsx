@@ -1,0 +1,1901 @@
+/** ASK (#878; a page since #1058, the right-hand sidebar since #1294, durable since #1443) — the
+ *  box's behaviour and the conversation's lifecycle.
+ *
+ *  Since #1443 the conversation is the server's (`/api/ask/*`): the console reopens the latest one,
+ *  creates a conversation on its first question, streams a turn the server owns, and — when a
+ *  stream ends early — reads the conversation again instead of declaring the turn lost. These tests
+ *  drive that against a faked API: answers render with their matches, a refusal shows the server's
+ *  detail, the head is the switcher + New conversation + Close, the switcher opens another
+ *  conversation, a pending turn is read again until it settles, and late results never land in a
+ *  conversation the operator has left.
+ *
+ *  The StrictMode case is the one that is red without `live.current = true` in the effect BODY:
+ *  StrictMode cleans an effect up and re-runs it on the same fiber, and `useRef(true)` initialises
+ *  once — so a cleanup-only liveness flag drops every answer in development.
+ */
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { StrictMode, useState } from "react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+
+import {
+  WorkspaceCommandsCtx,
+  type WorkspaceCommands,
+} from "../../app/workspaceWindows";
+import { beforeEach, expect, test, vi } from "vitest";
+
+import { api, ApiError } from "../../lib/api";
+import type {
+  AppConfig,
+  AskConversation,
+  AskConversationTurn,
+  AskNudgeCard,
+  AskSessionCard,
+  AskUpdate,
+  AskStoredMatch,
+  AskStoredMissionMatch,
+  AskTurnEvent,
+} from "../../types/api";
+
+import { ConfigCtx } from "../../app/config";
+import { AskConsole } from "./AskConsole";
+import { ASK_SEEN_EVENT, placeUpdates } from "./askUpdates";
+import { mapBatch } from "./askMatches";
+
+vi.mock("../../lib/api", async () => {
+  const actual =
+    await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
+  return {
+    ...actual,
+    api: {
+      askConversations: vi.fn(),
+      askConversation: vi.fn(),
+      askNewConversation: vi.fn(),
+      askMessageStream: vi.fn(),
+      approveAction: vi.fn(),
+      rejectAction: vi.fn(),
+      decideAskProposal: vi.fn(),
+      askSeen: vi.fn(),
+      askUnfollow: vi.fn(),
+    },
+  };
+});
+
+const CID = "ask_" + "1".repeat(32);
+const OTHER = "ask_" + "2".repeat(32);
+
+/** The console needs a router: a match row renders a `<Link>` into the session. */
+function mount(ui: React.ReactNode) {
+  return render(<MemoryRouter>{ui}</MemoryRouter>);
+}
+
+/** The console's own mount/unmount, driven from a control. */
+function Host() {
+  const [open, setOpen] = useState(true);
+  return (
+    <MemoryRouter>
+      <button type="button" onClick={() => setOpen(false)}>
+        leave
+      </button>
+      <button type="button" onClick={() => setOpen(true)}>
+        return
+      </button>
+      {open ? <AskConsole configured /> : <div data-testid="gone" />}
+    </MemoryRouter>
+  );
+}
+
+interface Result {
+  answer: string;
+  matches?: AskStoredMatch[];
+  mission_matches?: AskStoredMissionMatch[];
+  status?: AskConversationTurn["status"];
+  detail?: string;
+}
+
+function turnOf(question: string, turnId: string, r: Result): AskConversationTurn {
+  const status = r.status ?? "done";
+  return {
+    turn_id: turnId,
+    question,
+    asked_at: 1,
+    status,
+    answer: status === "done" ? r.answer : null,
+    detail: r.detail ?? null,
+    code: null,
+    matches: r.matches ?? [],
+    mission_matches: r.mission_matches ?? [],
+    tools: [],
+  };
+}
+
+function conversation(id: string, turns: AskConversationTurn[] = []): AskConversation {
+  return { id, title: turns[0]?.question ?? "", turns, running: false };
+}
+
+/** The server settles every question with `result`. */
+function answerWith(result: Result) {
+  vi.mocked(api.askMessageStream).mockImplementation(async (_id, body) => ({
+    ...turnOf(body.text, body.turnId, result),
+    answers: body.answers ?? null,
+  }));
+}
+
+function twoConversations() {
+  vi.mocked(api.askConversations).mockResolvedValue({
+    conversations: [
+      { id: CID, title: "the latest", created_at: 1, updated_at: 3 },
+      { id: OTHER, title: "older", created_at: 1, updated_at: 2 },
+    ],
+    configured: true,
+  });
+  vi.mocked(api.askConversation).mockImplementation(async (id) =>
+    conversation(id, [
+      turnOf(id === CID ? "the latest" : "older", "t1", { answer: `answer for ${id}` }),
+    ]),
+  );
+}
+
+beforeEach(() => {
+  vi.mocked(api.askMessageStream).mockReset();
+  vi.mocked(api.askConversations).mockReset();
+  vi.mocked(api.askConversation).mockReset();
+  vi.mocked(api.askNewConversation).mockReset();
+  vi.mocked(api.approveAction).mockReset();
+  vi.mocked(api.rejectAction).mockReset();
+  vi.mocked(api.askConversations).mockResolvedValue({ conversations: [], configured: true });
+  vi.mocked(api.askNewConversation).mockResolvedValue(conversation(CID));
+  vi.mocked(api.askConversation).mockResolvedValue(conversation(CID));
+  vi.mocked(api.askSeen).mockReset();
+  vi.mocked(api.askUnfollow).mockReset();
+  vi.mocked(api.askSeen).mockResolvedValue({ unread: false });
+  vi.mocked(api.askUnfollow).mockResolvedValue({ following: false });
+});
+
+test("a question renders its answer in the thread (#522)", async () => {
+  answerWith({ answer: "You merged it on Tuesday." });
+  mount(<AskConsole configured />);
+  await userEvent.type(screen.getByTestId("composer-input"), "when did I merge it");
+  await userEvent.click(screen.getByTestId("composer-send"));
+  const turns = await screen.findByTestId("ask-turns");
+  expect(await within(turns).findByText("You merged it on Tuesday.")).toBeInTheDocument();
+});
+
+test("a matched session is named, explained and reachable (#522)", async () => {
+  // An answer that names a session the operator cannot open is half an answer — the match row
+  // carries the reason it matched AND the way in.
+  answerWith({
+    answer: "Two sessions touched it.",
+    matches: [{ id: "claude:abc-123", title: "fix flaky upload retry", why: "uploads.py" }],
+  });
+  mount(<AskConsole configured />);
+  await userEvent.type(screen.getByTestId("composer-input"), "upload retry");
+  await userEvent.click(screen.getByTestId("composer-send"));
+  const row = await screen.findByTestId("ask-match");
+  expect(within(row).getByText("uploads.py")).toBeInTheDocument();
+  expect(
+    within(row).getByRole("link", { name: "Open fix flaky upload retry" }),
+  ).toHaveAttribute("href", "/s/claude/abc-123");
+});
+
+test("a matched mission is named, explained and opens the mission (#1069)", async () => {
+  const mid = "msn_" + "a".repeat(32);
+  answerWith({
+    answer: "The reconnect mission ran it.",
+    matches: [{ id: "claude:abc-123", title: "ws backoff", why: "did the work" }],
+    mission_matches: [
+      {
+        id: mid,
+        title: "Stabilise terminal reconnects",
+        state: "done",
+        why: "the instruction names it",
+      },
+    ],
+  });
+  mount(<AskConsole configured />);
+  await userEvent.type(screen.getByTestId("composer-input"), "reconnect");
+  await userEvent.click(screen.getByTestId("composer-send"));
+  const row = await screen.findByTestId("ask-mission-match");
+  expect(within(row).getByText("the instruction names it")).toBeInTheDocument();
+  expect(
+    within(row).getByRole("link", { name: "Open mission Stabilise terminal reconnects" }),
+  ).toHaveAttribute("href", `/mission?m=${mid}`);
+  // Both groups are labelled, missions first, and the session keeps its own way in.
+  const turn = screen.getByTestId("ask-turn");
+  const heads = Array.from(turn.querySelectorAll("div"))
+    .map((d) => d.textContent)
+    .filter((t) => t === "Missions" || t === "Sessions");
+  expect(heads).toEqual(["Missions", "Sessions"]);
+  expect(within(turn).getByRole("link", { name: "Open ws backoff" })).toHaveAttribute(
+    "href",
+    "/s/claude/abc-123",
+  );
+});
+
+test("a sessions-only answer has no group labels, as before #1069", async () => {
+  answerWith({ answer: "One session.", matches: [{ id: "claude:abc-123", title: "t", why: "w" }] });
+  mount(<AskConsole configured />);
+  await userEvent.type(screen.getByTestId("composer-input"), "q");
+  await userEvent.click(screen.getByTestId("composer-send"));
+  await screen.findByTestId("ask-match");
+  expect(screen.queryByText("Missions")).toBeNull();
+  expect(screen.queryByText("Sessions")).toBeNull();
+});
+
+test("a busy 409 surfaces the server's detail, not a generic error (#522)", async () => {
+  // The detail IS the answer here — "a question is already running" tells the operator to wait,
+  // where "that didn't work" tells them to retry, which is the wrong move.
+  vi.mocked(api.askMessageStream).mockRejectedValue(
+    new ApiError(409, "a question is already running in this conversation"),
+  );
+  mount(<AskConsole configured />);
+  await userEvent.type(screen.getByTestId("composer-input"), "hello");
+  await userEvent.click(screen.getByTestId("composer-send"));
+  expect(await screen.findByTestId("ask-error")).toHaveTextContent(
+    /a question is already running/i,
+  );
+});
+
+test("a follow-up goes to the same conversation, created by the first question (#1443)", async () => {
+  // History is the server's now: it replays the conversation's settled turns itself, so the
+  // client sends the question alone — to the conversation it created on the first one.
+  answerWith({ answer: "First answer." });
+  mount(<AskConsole configured />);
+  await userEvent.type(screen.getByTestId("composer-input"), "one");
+  await userEvent.click(screen.getByTestId("composer-send"));
+  await screen.findByText("First answer.");
+  answerWith({ answer: "Second answer." });
+  await userEvent.type(screen.getByTestId("composer-input"), "two");
+  await userEvent.click(screen.getByTestId("composer-send"));
+  await screen.findByText("Second answer.");
+  expect(api.askNewConversation).toHaveBeenCalledTimes(1);
+  const calls = vi.mocked(api.askMessageStream).mock.calls;
+  expect(calls.map((c) => [c[0], c[1].text])).toEqual([
+    [CID, "one"],
+    [CID, "two"],
+  ]);
+  expect(calls[0][1].turnId).not.toBe(calls[1][1].turnId);
+});
+
+test("an unconfigured endpoint disables the control and makes no call (#522)", async () => {
+  mount(<AskConsole configured={false} />);
+  expect(screen.getByTestId("composer-input")).toBeDisabled();
+  expect(screen.getByTestId("composer-send")).toBeDisabled();
+  await userEvent.click(screen.getByTestId("composer-send"));
+  expect(api.askMessageStream).not.toHaveBeenCalled();
+  expect(api.askNewConversation).not.toHaveBeenCalled();
+});
+
+test('the thread carries no "answers are not kept" notice (operator request)', async () => {
+  answerWith({ answer: "ok" });
+  mount(<AskConsole configured />);
+  await userEvent.type(screen.getByTestId("composer-input"), "x");
+  await userEvent.click(screen.getByTestId("composer-send"));
+  await screen.findByTestId("ask-answer");
+  expect(screen.queryByTestId("ask-transient")).toBeNull();
+  expect(screen.queryByText(/not kept/i)).toBeNull();
+});
+
+test("leaving never cancels the turn: coming back reopens the latest conversation, settled (#1443)", async () => {
+  let settle: ((t: AskConversationTurn) => void) | undefined;
+  let watching: AbortSignal | undefined;
+  vi.mocked(api.askMessageStream).mockImplementation(
+    (_id, _body, _on, signal) =>
+      new Promise<AskConversationTurn>((res) => {
+        watching = signal;
+        settle = res;
+      }),
+  );
+  render(<Host />);
+  await userEvent.type(screen.getByTestId("composer-input"), "for this visit");
+  await userEvent.click(screen.getByTestId("composer-send"));
+  expect(screen.getAllByTestId("ask-turn")).toHaveLength(1);
+  await waitFor(() => expect(api.askMessageStream).toHaveBeenCalled());
+
+  // The operator leaves: the page stops WATCHING — the server's turn goes on.
+  await userEvent.click(screen.getByRole("button", { name: "leave" }));
+  await waitFor(() => expect(watching?.aborted).toBe(true));
+  const [, body] = vi.mocked(api.askMessageStream).mock.calls[0];
+  const done = turnOf(body.text, body.turnId, { answer: "It settled while you were away." });
+  settle?.(done);
+
+  // Coming back reads the server: the latest conversation, with the settled answer.
+  vi.mocked(api.askConversations).mockResolvedValue({
+    conversations: [{ id: CID, title: "for this visit", created_at: 1, updated_at: 2 }],
+    configured: true,
+  });
+  vi.mocked(api.askConversation).mockResolvedValue(conversation(CID, [done]));
+  await userEvent.click(screen.getByRole("button", { name: "return" }));
+  expect(await screen.findByText("It settled while you were away.")).toBeInTheDocument();
+  expect(screen.getAllByTestId("ask-turn")).toHaveLength(1);
+});
+
+test("StrictMode's effect re-run does not make the page drop every answer", async () => {
+  // RED without `live.current = true` in the effect BODY (module note).
+  answerWith({ answer: "It still answers." });
+  render(
+    <StrictMode>
+      <MemoryRouter>
+        <AskConsole configured />
+      </MemoryRouter>
+    </StrictMode>,
+  );
+  await userEvent.type(screen.getByTestId("composer-input"), "anything");
+  await userEvent.click(screen.getByTestId("composer-send"));
+  expect(
+    await within(await screen.findByTestId("ask-turns")).findByText("It still answers."),
+  ).toBeInTheDocument();
+});
+
+// ---- #1171: Enter sends, the wait is shown ----------------------------------------------------
+
+test("Enter sends; Shift+Enter is a new line; an IME Enter is the composition's", async () => {
+  answerWith({ answer: "ok" });
+  mount(<AskConsole configured />);
+  const input = screen.getByTestId("composer-input");
+  await userEvent.type(input, "line one{Shift>}{Enter}{/Shift}line two");
+  expect(api.askMessageStream).not.toHaveBeenCalled();
+  expect(input).toHaveValue("line one\nline two");
+  // Confirming an IME composition fires Enter with isComposing — never a send.
+  fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+  fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+  expect(api.askNewConversation).not.toHaveBeenCalled();
+  await userEvent.type(input, "{Enter}");
+  await waitFor(() => expect(api.askMessageStream).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(api.askMessageStream).mock.calls[0][1].text).toBe("line one\nline two");
+  expect(input).toHaveValue("");
+});
+
+test("the wait names its step: the model, the tool it calls, the catalog, the transcripts", async () => {
+  let emit: ((ev: AskTurnEvent) => void) | undefined;
+  let finish: ((t: AskConversationTurn) => void) | undefined;
+  vi.mocked(api.askMessageStream).mockImplementation(
+    (_id, _body, onEvent) =>
+      new Promise<AskConversationTurn>((res) => {
+        emit = onEvent;
+        finish = res;
+      }),
+  );
+  mount(<AskConsole configured />);
+  await userEvent.type(screen.getByTestId("composer-input"), "reconnect{Enter}");
+  expect(screen.getByTestId("ask-working")).toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveTextContent(/reading your question/i);
+  await waitFor(() => expect(emit).toBeDefined());
+
+  act(() => emit!({ type: "progress", step: "tool", tool: "find_sessions" }));
+  expect(screen.getByRole("status")).toHaveTextContent("Searching your sessions and missions…");
+  act(() => emit!({ type: "progress", step: "catalog", sessions: 42, missions: 1 }));
+  expect(screen.getByRole("status")).toHaveTextContent("Searching 42 sessions and 1 mission…");
+  act(() => emit!({ type: "progress", step: "content", candidates: 3 }));
+  expect(screen.getByRole("status")).toHaveTextContent("Checking against 3 transcripts…");
+  act(() => emit!({ type: "progress", step: "tool", tool: "session_status" }));
+  expect(screen.getByRole("status")).toHaveTextContent("Reading a session's status…");
+  act(() => emit!({ type: "progress", step: "thinking", round: 2 }));
+  expect(screen.getByRole("status")).toHaveTextContent("Putting the answer together…");
+
+  const [, body] = vi.mocked(api.askMessageStream).mock.calls[0];
+  await act(async () =>
+    finish!(
+      turnOf(body.text, body.turnId, {
+        answer: "It was the ws session.",
+        matches: [{ id: "claude:abc", title: "ws", why: "transcript" }],
+      }),
+    ),
+  );
+  expect(await screen.findByText("It was the ws session.")).toBeInTheDocument();
+  expect(screen.getByTestId("ask-match")).toBeInTheDocument();
+  expect(screen.queryByTestId("ask-working")).toBeNull();
+});
+
+test("a turn the server failed shows its detail", async () => {
+  answerWith({
+    answer: "",
+    status: "failed",
+    detail: "the endpoint refused the request (HTTP 401)",
+  });
+  mount(<AskConsole configured />);
+  await userEvent.type(screen.getByTestId("composer-input"), "q{Enter}");
+  expect(await screen.findByTestId("ask-error")).toHaveTextContent("HTTP 401");
+  expect(screen.queryByTestId("ask-working")).toBeNull();
+});
+
+test("a stream cut mid-turn reads the conversation again and waits for the turn to settle (#1443)", async () => {
+  vi.mocked(api.askMessageStream).mockRejectedValue(
+    new ApiError(502, "The connection dropped before the answer finished."),
+  );
+  let reads = 0;
+  vi.mocked(api.askConversation).mockImplementation(async () => {
+    const [, body] = vi.mocked(api.askMessageStream).mock.calls[0];
+    reads += 1;
+    const t =
+      reads === 1
+        ? turnOf(body.text, body.turnId, { answer: "", status: "pending" })
+        : turnOf(body.text, body.turnId, { answer: "Settled after the cut." });
+    return conversation(CID, [t]);
+  });
+  mount(<AskConsole configured />);
+  await userEvent.type(screen.getByTestId("composer-input"), "where?{Enter}");
+  // Still the server's turn: working, not an error, and the box waits for it.
+  await waitFor(() => expect(reads).toBe(1));
+  expect(screen.getByTestId("ask-working")).toBeInTheDocument();
+  expect(screen.queryByTestId("ask-error")).toBeNull();
+  expect(screen.getByTestId("composer-send")).toBeDisabled();
+  // …then it is read again until it settles.
+  expect(
+    await screen.findByText("Settled after the cut.", {}, { timeout: 4000 }),
+  ).toBeInTheDocument();
+  expect(screen.queryByTestId("ask-working")).toBeNull();
+  expect(screen.getAllByTestId("ask-turn")).toHaveLength(1);
+});
+
+test("the head is HQ, the switcher, New conversation and the sidebar's Close — nothing else (#1294, #1443, #1525)", async () => {
+  answerWith({ answer: "ok" });
+  const onClose = vi.fn();
+  mount(<AskConsole configured onClose={onClose} />);
+  const head = screen.getByTestId("ask-head");
+  expect(within(head).getByRole("heading", { level: 2 })).toHaveTextContent("HQ");
+  const switcher = within(head).getByTestId("ask-switcher");
+  const fresh = within(head).getByRole("button", { name: "New conversation" });
+  const close = within(head).getByRole("button", { name: "Close HQ" });
+  expect(within(head).getAllByRole("button")).toEqual([switcher, fresh, close]);
+  // No way "back": Ask is not a page any more.
+  expect(within(head).queryAllByRole("link")).toHaveLength(0);
+  await userEvent.click(close);
+  expect(onClose).toHaveBeenCalledTimes(1);
+  // Nothing to start over from yet.
+  expect(fresh).toBeDisabled();
+
+  await userEvent.type(screen.getByTestId("composer-input"), "x{Enter}");
+  await screen.findByTestId("ask-answer");
+  await userEvent.click(fresh);
+  expect(screen.queryByTestId("ask-turns")).toBeNull();
+  expect(screen.getByTestId("composer-input")).toHaveFocus();
+});
+
+test("New conversation stops watching: the old turn's late progress never reaches the new thread", async () => {
+  let emit: ((ev: AskTurnEvent) => void) | undefined;
+  let signal: AbortSignal | undefined;
+  vi.mocked(api.askMessageStream).mockImplementationOnce(
+    (_id, _body, onEvent, s) =>
+      new Promise<AskConversationTurn>((_res, rej) => {
+        emit = onEvent;
+        signal = s;
+        s?.addEventListener("abort", () => rej(new DOMException("aborted", "AbortError")));
+      }),
+  );
+  mount(<AskConsole configured />);
+  await userEvent.type(screen.getByTestId("composer-input"), "old question{Enter}");
+  await waitFor(() => expect(emit).toBeDefined());
+
+  await userEvent.click(screen.getByRole("button", { name: "New conversation" }));
+  expect(signal?.aborted).toBe(true);
+  // The new thread's first question creates a NEW conversation.
+  vi.mocked(api.askNewConversation).mockResolvedValue(conversation(OTHER));
+  answerWith({ answer: "new answer" });
+  await userEvent.type(screen.getByTestId("composer-input"), "new question");
+  expect(screen.getByTestId("composer-send")).toBeEnabled();
+  await userEvent.type(screen.getByTestId("composer-input"), "{Enter}");
+  expect(await screen.findByText("new answer")).toBeInTheDocument();
+  expect(vi.mocked(api.askMessageStream).mock.calls[1][0]).toBe(OTHER);
+
+  // A straggler from the old stream lands nowhere.
+  act(() => emit!({ type: "progress", step: "tool", tool: "find_sessions" }));
+  expect(screen.queryByText("old question")).toBeNull();
+  expect(screen.getAllByTestId("ask-turn")).toHaveLength(1);
+  expect(screen.queryByTestId("ask-working")).toBeNull();
+  expect(screen.queryByTestId("ask-error")).toBeNull();
+});
+
+test("leaving the page stops watching the turn in flight", async () => {
+  let signal: AbortSignal | undefined;
+  vi.mocked(api.askMessageStream).mockImplementation(
+    (_id, _body, _on, s) =>
+      new Promise<AskConversationTurn>(() => {
+        signal = s;
+      }),
+  );
+  render(<Host />);
+  await userEvent.type(screen.getByTestId("composer-input"), "q{Enter}");
+  await waitFor(() => expect(signal).toBeDefined());
+  expect(signal?.aborted).toBe(false);
+  await userEvent.click(screen.getByRole("button", { name: "leave" }));
+  await waitFor(() => expect(signal?.aborted).toBe(true));
+});
+
+test("a watch that settles LATE does not unlock the box under the next question", async () => {
+  // The old stream ignores its abort and settles only after the next question has started — the
+  // order a slow transport can produce. Only the CURRENT watch may clear `busy`.
+  let settleOld: ((t: AskConversationTurn) => void) | undefined;
+  vi.mocked(api.askMessageStream)
+    .mockImplementationOnce(
+      () =>
+        new Promise<AskConversationTurn>((res) => {
+          settleOld = res;
+        }),
+    )
+    .mockImplementationOnce(() => new Promise<AskConversationTurn>(() => {})); // in flight
+  mount(<AskConsole configured />);
+  await userEvent.type(screen.getByTestId("composer-input"), "old{Enter}");
+  await waitFor(() => expect(settleOld).toBeDefined());
+  await userEvent.click(screen.getByRole("button", { name: "New conversation" }));
+  await userEvent.type(screen.getByTestId("composer-input"), "new{Enter}");
+  expect(screen.getByTestId("ask-working")).toBeInTheDocument();
+
+  await act(async () => settleOld!(turnOf("old", "t-old", { answer: "late" })));
+  await userEvent.type(screen.getByTestId("composer-input"), "third");
+  // Still busy with "new": the late settle of "old" must not have re-enabled Send.
+  expect(screen.getByTestId("composer-send")).toBeDisabled();
+  expect(screen.getByTestId("ask-working")).toBeInTheDocument();
+  expect(screen.queryByText("late")).toBeNull();
+});
+
+// --- the durable conversation (#1443) ---------------------------------------------------------
+
+test("opening Ask reopens the latest conversation", async () => {
+  twoConversations();
+  mount(<AskConsole configured />);
+  expect(await screen.findByText(`answer for ${CID}`)).toBeInTheDocument();
+  expect(api.askConversation).toHaveBeenCalledWith(CID);
+  expect(screen.getByTestId("ask-switcher")).toHaveTextContent("the latest");
+});
+
+test("the switcher lists latest first and opens the one picked — by keyboard", async () => {
+  twoConversations();
+  mount(<AskConsole configured />);
+  await screen.findByText(`answer for ${CID}`);
+  const trigger = screen.getByTestId("ask-switcher");
+  await userEvent.click(trigger);
+  const items = screen.getAllByTestId("ask-switcher-item");
+  expect(items.map((i) => i.textContent)).toEqual([
+    expect.stringContaining("the latest"),
+    expect.stringContaining("older"),
+  ]);
+  // Focus moved INTO the list, onto the conversation on screen.
+  expect(items[0]).toHaveFocus();
+  expect(items[0]).toHaveAttribute("aria-selected", "true");
+  await userEvent.keyboard("{ArrowDown}");
+  expect(items[1]).toHaveFocus();
+  await userEvent.keyboard("{Enter}");
+  expect(await screen.findByText(`answer for ${OTHER}`)).toBeInTheDocument();
+  expect(screen.queryByText(`answer for ${CID}`)).toBeNull();
+  expect(trigger).toHaveFocus();
+});
+
+test("Escape closes the switcher, hands focus back, and goes no further", async () => {
+  twoConversations();
+  const outer = vi.fn();
+  render(
+    <MemoryRouter>
+      <div onKeyDown={outer}>
+        <AskConsole configured />
+      </div>
+    </MemoryRouter>,
+  );
+  await screen.findByText(`answer for ${CID}`);
+  const trigger = screen.getByTestId("ask-switcher");
+  await userEvent.click(trigger);
+  expect(screen.getByTestId("ask-switcher-menu")).toBeInTheDocument();
+  await userEvent.keyboard("{Escape}");
+  expect(screen.queryByTestId("ask-switcher-menu")).toBeNull();
+  expect(trigger).toHaveFocus();
+  // The sidebar's own Escape (it closes Ask on a desktop) never heard it.
+  expect(outer.mock.calls.filter(([e]) => e.key === "Escape")).toHaveLength(0);
+});
+
+test("a late answer for a conversation the operator switched away from lands nowhere", async () => {
+  vi.mocked(api.askConversations).mockResolvedValue({
+    conversations: [
+      { id: CID, title: "first", created_at: 1, updated_at: 3 },
+      { id: OTHER, title: "second", created_at: 1, updated_at: 2 },
+    ],
+    configured: true,
+  });
+  vi.mocked(api.askConversation).mockImplementation(async (id) => conversation(id, []));
+  let finish: ((t: AskConversationTurn) => void) | undefined;
+  vi.mocked(api.askMessageStream).mockImplementation(
+    () =>
+      new Promise<AskConversationTurn>((res) => {
+        finish = res;
+      }),
+  );
+  mount(<AskConsole configured />);
+  await waitFor(() => expect(api.askConversation).toHaveBeenCalledWith(CID));
+  await userEvent.type(screen.getByTestId("composer-input"), "in the first{Enter}");
+  await waitFor(() => expect(finish).toBeDefined());
+  await userEvent.click(screen.getByTestId("ask-switcher"));
+  await userEvent.click(screen.getAllByTestId("ask-switcher-item")[1]);
+  await waitFor(() => expect(api.askConversation).toHaveBeenCalledWith(OTHER));
+  const [, body] = vi.mocked(api.askMessageStream).mock.calls[0];
+  await act(async () =>
+    finish!(turnOf(body.text, body.turnId, { answer: "belongs to the first" })),
+  );
+  expect(screen.queryByText("belongs to the first")).toBeNull();
+  expect(screen.queryByText("in the first")).toBeNull();
+});
+
+// --- Open / Open in map (operator request, 2026-10) ------------------------------------------
+
+const M = (id: string, title = id) => ({ id, title, why: "" });
+
+test("mapBatch: open windows always ride along; new ones only as far as the cap's room", () => {
+  const ms = [M("claude:a"), M("claude:b"), M("claude:c"), M("claude:d")];
+  const r = mapBatch(ms, new Set(["claude:c"]), 2);
+  expect(r.take.map((m) => m.id)).toEqual(["claude:a", "claude:b", "claude:c"]);
+  expect(r.left).toBe(1);
+  expect(mapBatch(ms, new Set(), 0)).toEqual({ take: [], left: 4 });
+  expect(mapBatch(ms, new Set(), 9).left).toBe(0);
+});
+
+function commands(over: Partial<WorkspaceCommands> = {}): WorkspaceCommands {
+  return {
+    mapReady: false,
+    hostable: true,
+    hasRoom: true,
+    room: 8,
+    openKeys: new Set(),
+    requestOpen: vi.fn(),
+    openInMap: vi.fn(() => false),
+    ...over,
+  };
+}
+
+function mountWithMap(cmds: WorkspaceCommands) {
+  return render(
+    <MemoryRouter initialEntries={["/dashboard"]}>
+      <WorkspaceCommandsCtx.Provider value={cmds}>
+        <Routes>
+          <Route path="/overview" element={<div data-testid="on-map" />} />
+          <Route path="*" element={<AskConsole configured />} />
+        </Routes>
+      </WorkspaceCommandsCtx.Provider>
+    </MemoryRouter>,
+  );
+}
+
+async function askTwo() {
+  answerWith({
+    answer: "Two sessions.",
+    matches: [
+      { id: "claude:abc", title: "upload retry", why: "" },
+      { id: "codex:def", title: "ws backoff", why: "" },
+    ],
+  });
+  await userEvent.type(screen.getByTestId("composer-input"), "q");
+  await userEvent.click(screen.getByTestId("composer-send"));
+  await screen.findAllByTestId("ask-match");
+}
+
+test("a match offers Open AND Open in map; Open in map queues a window and goes to the map", async () => {
+  const cmds = commands();
+  mountWithMap(cmds);
+  await askTwo();
+  const row = screen.getAllByTestId("ask-match")[1];
+  expect(within(row).getByRole("link", { name: "Open ws backoff" })).toHaveAttribute(
+    "href",
+    "/s/codex/def",
+  );
+  await userEvent.click(within(row).getByRole("button", { name: "Open ws backoff in map" }));
+  expect(cmds.requestOpen).toHaveBeenCalledTimes(1);
+  expect(cmds.requestOpen).toHaveBeenCalledWith({
+    key: "codex:def",
+    engine: "codex",
+    id: "def",
+    title: "ws backoff",
+  });
+  expect(await screen.findByTestId("on-map")).toBeInTheDocument();
+});
+
+test("several matches offer Open all in map, which queues every one", async () => {
+  const cmds = commands();
+  mountWithMap(cmds);
+  await askTwo();
+  await userEvent.click(screen.getByTestId("ask-match-map-all"));
+  expect(vi.mocked(cmds.requestOpen).mock.calls.map((c) => c[0].key)).toEqual([
+    "claude:abc",
+    "codex:def",
+  ]);
+});
+
+test("Open all says how many fit when the cap is nearly full, and asks for no more", async () => {
+  const cmds = commands({ room: 1 });
+  mountWithMap(cmds);
+  await askTwo();
+  const all = screen.getByTestId("ask-match-map-all");
+  expect(all).toHaveTextContent("Open 1 of 2 in map");
+  await userEvent.click(all);
+  expect(vi.mocked(cmds.requestOpen).mock.calls.map((c) => c[0].key)).toEqual(["claude:abc"]);
+});
+
+test("no window mode where the map cannot host one — Open stays", async () => {
+  mountWithMap(commands({ hostable: false }));
+  await askTwo();
+  expect(screen.queryByTestId("ask-match-map")).toBeNull();
+  expect(screen.queryByTestId("ask-match-map-all")).toBeNull();
+  expect(screen.getAllByTestId("ask-match-open")).toHaveLength(2);
+});
+
+test("Open all is offered only once a map measurement said it can host — one window's refusal has a home, a batch's tail does not (Hermes on #1320)", async () => {
+  mountWithMap(commands({ hostable: null }));
+  await askTwo();
+  expect(screen.getAllByTestId("ask-match-map")).toHaveLength(2);
+  expect(screen.queryByTestId("ask-match-map-all")).toBeNull();
+});
+
+test("an answer read back from the server shows at once; only one that arrives live writes itself out", async () => {
+  vi.stubGlobal(
+    "matchMedia",
+    (q: string) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList,
+  );
+  try {
+    twoConversations();
+    answerWith({ answer: "a fresh answer that writes itself out" });
+    mount(<AskConsole configured />);
+    const stored = await screen.findByTestId("ask-answer");
+    expect(stored).not.toHaveAttribute("data-revealing");
+    await userEvent.type(screen.getByTestId("composer-input"), "and now?{Enter}");
+    await waitFor(() => expect(screen.getAllByTestId("ask-answer")).toHaveLength(2));
+    expect(screen.getAllByTestId("ask-answer")[1]).toHaveAttribute("data-revealing", "true");
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+// --- Hermes on #1485: ordering ------------------------------------------------------------------
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+}
+
+test("a question asked before the first selection settles waits for it and is never swept away", async () => {
+  const list = deferred<{
+    conversations: { id: string; title: string; created_at: number; updated_at: number }[];
+    configured: boolean;
+  }>();
+  vi.mocked(api.askConversations).mockReturnValueOnce(list.promise as never);
+  const earlier = turnOf("earlier", "t0", { answer: "the earlier answer" });
+  vi.mocked(api.askConversation).mockResolvedValue(conversation(CID, [earlier]));
+  answerWith({ answer: "kept" });
+  mount(<AskConsole configured />);
+  await userEvent.type(screen.getByTestId("composer-input"), "first question{Enter}");
+  // Shown at once, waiting — nothing sent before the selection is known.
+  expect(within(screen.getByTestId("ask-turns")).getByText("first question")).toBeInTheDocument();
+  expect(api.askMessageStream).not.toHaveBeenCalled();
+  await act(async () =>
+    list.resolve({
+      conversations: [{ id: CID, title: "earlier", created_at: 1, updated_at: 2 }],
+      configured: true,
+    }),
+  );
+  // …then it goes to the conversation that opened, beside that conversation's earlier turns.
+  expect(await screen.findByText("kept")).toBeInTheDocument();
+  expect(screen.getByText("the earlier answer")).toBeInTheDocument();
+  expect(vi.mocked(api.askMessageStream).mock.calls[0][0]).toBe(CID);
+  expect(api.askNewConversation).not.toHaveBeenCalled();
+  expect(screen.getAllByTestId("ask-turn")).toHaveLength(2);
+});
+
+test("a slow read never lands over a newer one: A → B → A keeps the second A", async () => {
+  vi.mocked(api.askConversations).mockResolvedValue({
+    conversations: [
+      { id: CID, title: "a", created_at: 1, updated_at: 3 },
+      { id: OTHER, title: "b", created_at: 1, updated_at: 2 },
+    ],
+    configured: true,
+  });
+  const firstA = deferred<AskConversation>();
+  vi.mocked(api.askConversation)
+    .mockReturnValueOnce(firstA.promise) // the initial open of A — slow
+    .mockResolvedValueOnce(conversation(OTHER, [turnOf("b", "tb", { answer: "B answer" })]))
+    .mockResolvedValueOnce(conversation(CID, [turnOf("a", "ta", { answer: "A, fresh" })]));
+  mount(<AskConsole configured />);
+  await waitFor(() => expect(api.askConversation).toHaveBeenCalledTimes(1));
+  await userEvent.click(screen.getByTestId("ask-switcher"));
+  await userEvent.click(screen.getAllByTestId("ask-switcher-item")[1]);
+  expect(await screen.findByText("B answer")).toBeInTheDocument();
+  await userEvent.click(screen.getByTestId("ask-switcher"));
+  await userEvent.click(screen.getAllByTestId("ask-switcher-item")[0]);
+  expect(await screen.findByText("A, fresh")).toBeInTheDocument();
+  await act(async () => firstA.resolve(conversation(CID, [turnOf("a", "ta", { answer: "A, stale" })])));
+  expect(screen.queryByText("A, stale")).toBeNull();
+  expect(screen.getByText("A, fresh")).toBeInTheDocument();
+});
+
+test("a question sent while the conversation's read is still out keeps its answer and shows the rest", async () => {
+  vi.mocked(api.askConversations).mockResolvedValue({
+    conversations: [
+      { id: CID, title: "a", created_at: 1, updated_at: 3 },
+      { id: OTHER, title: "b", created_at: 1, updated_at: 2 },
+    ],
+    configured: true,
+  });
+  const slowB = deferred<AskConversation>();
+  const earlier = turnOf("earlier in b", "tb0", { answer: "an earlier answer" });
+  vi.mocked(api.askConversation)
+    .mockResolvedValueOnce(conversation(CID, []))
+    .mockReturnValueOnce(slowB.promise) // selecting B: slow
+    .mockImplementation(async () => {
+      const [, body] = vi.mocked(api.askMessageStream).mock.calls[0];
+      return conversation(OTHER, [earlier, turnOf(body.text, body.turnId, { answer: "new answer" })]);
+    });
+  answerWith({ answer: "new answer" });
+  mount(<AskConsole configured />);
+  await waitFor(() => expect(api.askConversation).toHaveBeenCalledWith(CID));
+  await userEvent.click(screen.getByTestId("ask-switcher"));
+  await userEvent.click(screen.getAllByTestId("ask-switcher-item")[1]);
+  await userEvent.type(screen.getByTestId("composer-input"), "into b{Enter}");
+  expect(await screen.findByText("new answer")).toBeInTheDocument();
+  // The read started before the send lands now, with B as it was before: it must not wipe the
+  // new answer…
+  await act(async () => slowB.resolve(conversation(OTHER, [earlier])));
+  expect(screen.getByText("new answer")).toBeInTheDocument();
+  // …and B's earlier turns are shown all the same (re-read after the send settled).
+  expect(await screen.findByText("an earlier answer")).toBeInTheDocument();
+  expect(vi.mocked(api.askMessageStream).mock.calls[0][0]).toBe(OTHER);
+});
+
+test("a refresh that reorders the open switcher: Enter opens the focused conversation", async () => {
+  vi.mocked(api.askConversations)
+    .mockResolvedValueOnce({
+      conversations: [
+        { id: CID, title: "a", created_at: 1, updated_at: 3 },
+        { id: OTHER, title: "b", created_at: 1, updated_at: 2 },
+      ],
+      configured: true,
+    })
+    .mockResolvedValue({
+      conversations: [
+        { id: OTHER, title: "b", created_at: 1, updated_at: 9 },
+        { id: CID, title: "a", created_at: 1, updated_at: 3 },
+      ],
+      configured: true,
+    });
+  vi.mocked(api.askConversation).mockImplementation(async (id) => conversation(id, []));
+  mount(<AskConsole configured />);
+  await waitFor(() => expect(api.askConversation).toHaveBeenCalledWith(CID));
+  await userEvent.click(screen.getByTestId("ask-switcher"));
+  // The refresh opening triggered lands with B first; focus is on A's row, wherever it moved.
+  await waitFor(() =>
+    expect(screen.getAllByTestId("ask-switcher-item")[0]).toHaveTextContent("b"),
+  );
+  await waitFor(() =>
+    expect(screen.getAllByTestId("ask-switcher-item")[1]).toHaveFocus(),
+  );
+  await userEvent.keyboard("{Enter}");
+  expect(api.askConversation).not.toHaveBeenCalledWith(OTHER);
+});
+
+// --- #1443 Phase 2: asking back and nudges ---------------------------------------------------
+
+const QID = "5e5e5e5e-0000-4000-8000-000000000001";
+const AID = "a".repeat(32);
+
+function askedTurn(answered = false, allowText = true): AskConversationTurn {
+  return {
+    ...turnOf("start something", "t-ask", { answer: "Which project?" }),
+    ask: {
+      question_id: QID,
+      question: "Which project?",
+      options: ["api", "web"],
+      allow_text: allowText,
+      answered,
+    },
+  };
+}
+
+function nudge(over: Partial<AskNudgeCard> = {}): AskNudgeCard {
+  return {
+    action_id: AID,
+    kind: "nudge",
+    key: "claude:abc",
+    title: "api rebase",
+    text: "Rebase onto main, then run the tests.",
+    state: "proposed",
+    projection: "actionable",
+    can_approve: true,
+    can_reject: true,
+    detail: "",
+    ...over,
+  };
+}
+
+function withConversation(turns: AskConversationTurn[]) {
+  vi.mocked(api.askConversations).mockResolvedValue({
+    conversations: [{ id: CID, title: "x", created_at: 1, updated_at: 2 }],
+    configured: true,
+  });
+  vi.mocked(api.askConversation).mockResolvedValue(conversation(CID, turns));
+}
+
+test("a question card answers by OPTION INDEX — the server sends the reply it stored", async () => {
+  withConversation([askedTurn()]);
+  answerWith({ answer: "ok, web" });
+  mount(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-question");
+  expect(within(card).getByText("Which project?", { selector: "p" })).toBeInTheDocument();
+  await userEvent.click(within(card).getByRole("button", { name: "web" }));
+  await screen.findByText("ok, web");
+  const [id, body] = vi.mocked(api.askMessageStream).mock.calls[0];
+  expect(id).toBe(CID);
+  expect(body).toMatchObject({ text: "", answers: QID, option: 1 });
+  // The settled answer names the question, so its card reads Answered without a reload.
+  expect(within(card).getByText("Answered")).toBeInTheDocument();
+  for (const b of within(card).getAllByTestId("ask-question-option")) expect(b).toBeDisabled();
+});
+
+test("free text answers when the question allows it", async () => {
+  withConversation([askedTurn()]);
+  answerWith({ answer: "noted" });
+  mount(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-question");
+  await userEvent.type(within(card).getByTestId("ask-question-text"), "the docs one");
+  await userEvent.click(within(card).getByRole("button", { name: "Answer" }));
+  await screen.findByText("noted");
+  expect(vi.mocked(api.askMessageStream).mock.calls[0][1]).toMatchObject({
+    text: "the docs one",
+    answers: QID,
+  });
+  expect(vi.mocked(api.askMessageStream).mock.calls[0][1]).not.toHaveProperty("option");
+});
+
+test("an answered question offers nothing more, and a question without free text has no box", async () => {
+  withConversation([askedTurn(true, false)]);
+  mount(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-question");
+  expect(within(card).getByText("Answered")).toBeInTheDocument();
+  for (const b of within(card).getAllByTestId("ask-question-option")) expect(b).toBeDisabled();
+  expect(within(card).queryByTestId("ask-question-text")).toBeNull();
+});
+
+test("a nudge card shows the exact text; Send posts the approve route and the card reads the outcome back", async () => {
+  const turn = { ...turnOf("tell it to rebase", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
+  withConversation([turn]);
+  mount(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-nudge");
+  expect(within(card).getByTestId("ask-nudge-text")).toHaveTextContent(
+    "Rebase onto main, then run the tests.",
+  );
+  vi.mocked(api.approveAction).mockResolvedValue({} as never);
+  vi.mocked(api.askConversation).mockResolvedValue(
+    conversation(CID, [
+      { ...turn, proposals: [nudge({ state: "delivered", projection: "settled", can_approve: false, can_reject: false })] },
+    ]),
+  );
+  await userEvent.click(within(card).getByRole("button", { name: "Send to api rebase" }));
+  expect(api.approveAction).toHaveBeenCalledWith(AID);
+  const outcome = await screen.findByTestId("ask-nudge-outcome");
+  expect(outcome).toHaveTextContent("Delivered");
+  expect(outcome).toHaveTextContent("That is not the agent having done it.");
+  expect(screen.queryByTestId("ask-nudge-send")).toBeNull();
+});
+
+test("a refused approve (409 out of date) is an outcome the card reads back, not an error", async () => {
+  const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
+  withConversation([turn]);
+  mount(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-nudge");
+  vi.mocked(api.approveAction).mockRejectedValue(new ApiError(409, "the screen moved"));
+  vi.mocked(api.askConversation).mockResolvedValue(
+    conversation(CID, [
+      { ...turn, proposals: [nudge({ state: "stale", projection: "settled", can_approve: false, can_reject: false })] },
+    ]),
+  );
+  await userEvent.click(within(card).getByTestId("ask-nudge-send"));
+  expect(await screen.findByTestId("ask-nudge-outcome")).toHaveTextContent(
+    "Out of date",
+  );
+  expect(screen.getByTestId("ask-nudge-outcome")).toHaveTextContent("nothing was sent");
+});
+
+test("Dismiss posts the reject route", async () => {
+  const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
+  withConversation([turn]);
+  vi.mocked(api.rejectAction).mockResolvedValue({} as never);
+  mount(<AskConsole configured />);
+  await userEvent.click(await screen.findByTestId("ask-nudge-dismiss"));
+  expect(api.rejectAction).toHaveBeenCalledWith(AID);
+  expect(api.approveAction).not.toHaveBeenCalled();
+});
+
+test("a card whose ledger could not be read offers no control and says why", async () => {
+  const turn = {
+    ...turnOf("tell it", "t-n", { answer: "Proposed." }),
+    proposals: [nudge({ state: null, projection: "unknown", can_approve: false, can_reject: false })],
+  };
+  withConversation([turn]);
+  mount(<AskConsole configured />);
+  expect(await screen.findByTestId("ask-nudge-outcome")).toHaveTextContent("Status unavailable");
+  expect(screen.queryByTestId("ask-nudge-send")).toBeNull();
+});
+
+// --- Hermes round 1 on #1489 -------------------------------------------------------------------
+
+test("an open card follows a decision taken elsewhere (the app's action-resolved event)", async () => {
+  const { ACTION_RESOLVED_EVENT } = await import("../../lib/actionEvents");
+  const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
+  withConversation([turn]);
+  mount(<AskConsole configured />);
+  await screen.findByTestId("ask-nudge-send");
+  vi.mocked(api.askConversation).mockResolvedValue(
+    conversation(CID, [
+      { ...turn, proposals: [nudge({ state: "rejected", projection: "settled", can_approve: false, can_reject: false })] },
+    ]),
+  );
+  // Fired until it is heard (the listener is attached by a passive effect).
+  await waitFor(() => {
+    act(() => {
+      window.dispatchEvent(new CustomEvent(ACTION_RESOLVED_EVENT));
+    });
+    expect(screen.getByTestId("ask-nudge-outcome")).toHaveTextContent("Dismissed");
+  });
+  expect(screen.queryByTestId("ask-nudge-send")).toBeNull();
+});
+
+test("an open card is re-read on a timer, so an expiry reaches it", async () => {
+  // A short REAL interval rather than fake timers: Testing Library's own polling runs on the
+  // faked clock too, which made this flaky on a loaded CI runner (#1489).
+  const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
+  withConversation([turn]);
+  mount(<AskConsole configured cardPollMs={40} />);
+  await screen.findByTestId("ask-nudge-send");
+  vi.mocked(api.askConversation).mockResolvedValue(
+    conversation(CID, [
+      { ...turn, proposals: [nudge({ state: "expired", projection: "settled", can_approve: false, can_reject: false })] },
+    ]),
+  );
+  expect(
+    await screen.findByTestId("ask-nudge-outcome", {}, { timeout: 5000 }),
+  ).toHaveTextContent("Expired");
+});
+
+test.each(["dismissed", "expired"])("a decided card that earns no follow (%s) stops re-reading", async (state) => {
+  const turn = {
+    ...turnOf("tell it", "t-n", { answer: "Proposed." }),
+    proposals: [nudge({ state, projection: "settled", can_approve: false, can_reject: false })],
+  };
+  withConversation([turn]);
+  mount(<AskConsole configured cardPollMs={20} />);
+  await screen.findByTestId("ask-nudge-outcome");
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  await new Promise((r) => setTimeout(r, 200)); // ten intervals' worth
+  expect(vi.mocked(api.askConversation).mock.calls.length).toBe(reads);
+});
+
+test("a delivered card reads only for the bounded window its follow may take (#1517)", async () => {
+  const turn = {
+    ...turnOf("tell it", "t-n", { answer: "Proposed." }),
+    proposals: [nudge({ state: "delivered", projection: "settled", can_approve: false, can_reject: false })],
+  };
+  withConversation([turn]);
+  mount(<AskConsole configured cardPollMs={20} reconcileMs={120} />);
+  await screen.findByTestId("ask-nudge-outcome");
+  await new Promise((r) => setTimeout(r, 300)); // past the window
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  await new Promise((r) => setTimeout(r, 200));
+  expect(vi.mocked(api.askConversation).mock.calls.length).toBe(reads);
+});
+
+test("an answer that failed leaves its question open to answer again", async () => {
+  withConversation([askedTurn()]);
+  answerWith({ answer: "", status: "failed", detail: "rate limited" });
+  mount(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-question");
+  await userEvent.click(within(card).getByRole("button", { name: "web" }));
+  await screen.findByTestId("ask-error");
+  expect(within(card).getByText("Waiting for you")).toBeInTheDocument();
+  expect(within(card).getAllByTestId("ask-question-option")[0]).toBeEnabled();
+});
+
+// --- Hermes round 2 on #1489 -------------------------------------------------------------------
+
+test("a decision that settles after a switch never blanks the conversation now on screen", async () => {
+  vi.mocked(api.askConversations).mockResolvedValue({
+    conversations: [
+      { id: CID, title: "a", created_at: 1, updated_at: 3 },
+      { id: OTHER, title: "b", created_at: 1, updated_at: 2 },
+    ],
+    configured: true,
+  });
+  const aTurn = { ...turnOf("tell it", "t-a", { answer: "Proposed." }), proposals: [nudge()] };
+  const approve = deferred<never>();
+  const bRead = deferred<AskConversation>();
+  vi.mocked(api.askConversation).mockImplementation(async (id) =>
+    id === CID ? conversation(CID, [aTurn]) : bRead.promise,
+  );
+  vi.mocked(api.approveAction).mockReturnValue(approve.promise);
+  mount(<AskConsole configured />);
+  await userEvent.click(await screen.findByTestId("ask-nudge-send"));
+  await userEvent.click(screen.getByTestId("ask-switcher"));
+  await userEvent.click(screen.getAllByTestId("ask-switcher-item")[1]);
+  await waitFor(() => expect(api.askConversation).toHaveBeenCalledWith(OTHER));
+  // A's decision settles while B's read is still out…
+  await act(async () => approve.resolve({} as never));
+  // …and B's read still lands.
+  await act(async () =>
+    bRead.resolve(conversation(OTHER, [turnOf("b q", "t-b", { answer: "B's answer" })])),
+  );
+  expect(await screen.findByText("B's answer")).toBeInTheDocument();
+  expect(vi.mocked(api.askConversation).mock.calls.filter(([id]) => id === CID)).toHaveLength(1);
+});
+
+test("a card whose ledger could not be read keeps re-reading until it can", async () => {
+  const turn = {
+    ...turnOf("tell it", "t-n", { answer: "Proposed." }),
+    proposals: [nudge({ state: null, projection: "unknown", can_approve: false, can_reject: false })],
+  };
+  withConversation([turn]);
+  mount(<AskConsole configured cardPollMs={40} />);
+  expect(await screen.findByTestId("ask-nudge-outcome")).toHaveTextContent("Status unavailable");
+  vi.mocked(api.askConversation).mockResolvedValue(
+    conversation(CID, [{ ...turn, proposals: [nudge()] }]),
+  );
+  expect(await screen.findByTestId("ask-nudge-send", {}, { timeout: 5000 })).toBeEnabled();
+});
+
+test("an approved-but-not-yet-sent message can still be dismissed", async () => {
+  const turn = {
+    ...turnOf("tell it", "t-n", { answer: "Proposed." }),
+    proposals: [nudge({ state: "approved", projection: "in_flight_revocable", can_approve: false, can_reject: true })],
+  };
+  withConversation([turn]);
+  vi.mocked(api.rejectAction).mockResolvedValue({} as never);
+  mount(<AskConsole configured />);
+  expect(await screen.findByTestId("ask-nudge-outcome")).toHaveTextContent("Queued");
+  expect(screen.queryByTestId("ask-nudge-send")).toBeNull();
+  await userEvent.click(screen.getByTestId("ask-nudge-dismiss"));
+  expect(api.rejectAction).toHaveBeenCalledWith(AID);
+});
+
+test("a message being typed (claimed) offers nothing", async () => {
+  const turn = {
+    ...turnOf("tell it", "t-n", { answer: "Proposed." }),
+    proposals: [nudge({ state: "claimed", projection: "in_flight_locked", can_approve: false, can_reject: false })],
+  };
+  withConversation([turn]);
+  mount(<AskConsole configured />);
+  expect(await screen.findByTestId("ask-nudge-outcome")).toHaveTextContent("Sending");
+  expect(screen.queryByTestId("ask-nudge-dismiss")).toBeNull();
+});
+
+// --- Hermes round 3 on #1489 -------------------------------------------------------------------
+
+test("a turn that staged a proposal and then failed still shows the live card", async () => {
+  const turn = {
+    ...turnOf("tell it", "t-n", { answer: "", status: "failed", detail: "the endpoint refused" }),
+    proposals: [nudge()],
+  };
+  withConversation([turn]);
+  mount(<AskConsole configured />);
+  expect(await screen.findByTestId("ask-error")).toHaveTextContent("the endpoint refused");
+  expect(screen.getByTestId("ask-nudge-send")).toBeEnabled();
+});
+
+test("a free-text answer that failed keeps its draft to retry", async () => {
+  withConversation([askedTurn()]);
+  answerWith({ answer: "", status: "failed", detail: "rate limited" });
+  mount(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-question");
+  await userEvent.type(within(card).getByTestId("ask-question-text"), "the docs one");
+  await userEvent.click(within(card).getByRole("button", { name: "Answer" }));
+  await screen.findByTestId("ask-error");
+  expect(within(card).getByTestId("ask-question-text")).toHaveValue("the docs one");
+});
+
+function geometry(el: HTMLElement, scrollHeight: number, clientHeight: number) {
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: scrollHeight });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: clientHeight });
+}
+
+test("a background re-read never pulls someone reading earlier turns to the bottom", async () => {
+  const { ACTION_RESOLVED_EVENT } = await import("../../lib/actionEvents");
+  const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
+  withConversation([turn]);
+  mount(<AskConsole configured />);
+  await screen.findByTestId("ask-nudge-send");
+  const pane = screen.getByTestId("ask-pane");
+  geometry(pane, 1000, 200);
+  pane.scrollTop = 100; // reading earlier turns
+  fireEvent.scroll(pane);
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  // Fired until it is heard: the listener is attached by a passive effect, which a loaded runner
+  // can run after the card is already on screen.
+  await waitFor(() => {
+    act(() => {
+      window.dispatchEvent(new CustomEvent(ACTION_RESOLVED_EVENT));
+    });
+    expect(vi.mocked(api.askConversation).mock.calls.length).toBeGreaterThan(reads);
+  });
+  await act(async () => {});
+  expect(pane.scrollTop).toBe(100);
+});
+
+test("…while someone already at the bottom keeps following it", async () => {
+  const { ACTION_RESOLVED_EVENT } = await import("../../lib/actionEvents");
+  const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
+  withConversation([turn]);
+  mount(<AskConsole configured />);
+  await screen.findByTestId("ask-nudge-send");
+  const pane = screen.getByTestId("ask-pane");
+  geometry(pane, 1000, 200);
+  pane.scrollTop = 800; // at the bottom
+  fireEvent.scroll(pane);
+  geometry(pane, 1300, 200); // the re-read grows the thread
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  // Fired until it is heard: the listener is attached by a passive effect, which a loaded runner
+  // can run after the card is already on screen.
+  await waitFor(() => {
+    act(() => {
+      window.dispatchEvent(new CustomEvent(ACTION_RESOLVED_EVENT));
+    });
+    expect(vi.mocked(api.askConversation).mock.calls.length).toBeGreaterThan(reads);
+  });
+  await waitFor(() => expect(pane.scrollTop).toBe(1300));
+});
+
+// --- #1443 Phase 3a: a session to start ---------------------------------------------------------
+
+const PID = "b".repeat(32);
+const BRIEF = "Rebase the api branch onto main and run the test suite.";
+
+function sessionCard(over: Partial<AskSessionCard> = {}): AskSessionCard {
+  return {
+    action_id: PID,
+    kind: "session",
+    title: "api",
+    agent: "Claude Code",
+    text: BRIEF,
+    state: "pending",
+    engine: "claude",
+    bypass_default: false,
+    bypass: null,
+    session_key: "",
+    reason: "",
+    notice: "",
+    can_start: true,
+    can_dismiss: true,
+    ...over,
+  };
+}
+
+function sessionTurn(card: AskSessionCard): AskConversationTurn {
+  return { ...turnOf("start a session on api", "t-s", { answer: "Proposed." }), proposals: [card] };
+}
+
+const settled = (over: Partial<AskSessionCard>) =>
+  sessionCard({ can_start: false, can_dismiss: false, ...over });
+
+test("a session card shows the project, agent and exact brief, and the bypass starts at the default", async () => {
+  withConversation([sessionTurn(sessionCard({ bypass_default: true }))]);
+  mount(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-session");
+  expect(card).toHaveTextContent("api");
+  expect(card).toHaveTextContent("Claude Code");
+  expect(within(card).getByTestId("ask-session-brief")).toHaveTextContent(BRIEF);
+  const toggle = within(card).getByRole("switch");
+  expect(toggle).toBeChecked();
+  expect(within(card).getByTestId("ask-session-bypass")).toHaveTextContent(
+    "Permission bypass · On",
+  );
+  expect(within(card).getByTestId("ask-session-bypass")).toHaveTextContent(
+    "without asking you first",
+  );
+});
+
+test("Start sends the decision and the bypass value the card shows — and nothing it starts", async () => {
+  withConversation([sessionTurn(sessionCard())]);
+  vi.mocked(api.decideAskProposal).mockResolvedValue({
+    proposal: settled({ state: "deciding" }),
+  });
+  mount(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-session");
+  await userEvent.click(within(card).getByRole("switch"));
+  vi.mocked(api.askConversation).mockResolvedValue(
+    conversation(CID, [
+      sessionTurn(settled({ state: "started", bypass: true, session_key: "claude:abc-1" })),
+    ]),
+  );
+  await userEvent.click(within(card).getByRole("button", { name: "Start session in api" }));
+  expect(api.decideAskProposal).toHaveBeenCalledWith(PID, "start", true);
+  const outcome = await screen.findByTestId("ask-session-outcome");
+  expect(outcome).toHaveTextContent("Started");
+  expect(outcome).toHaveTextContent("That is not the work done.");
+  expect(within(outcome).getByTestId("ask-session-open")).toHaveAttribute("href", "/s/claude/abc-1");
+  expect(screen.getByTestId("ask-session-bypass-used")).toHaveTextContent("On");
+  expect(screen.queryByTestId("ask-session-start")).toBeNull();
+});
+
+test("an untouched switch starts with the default it shows", async () => {
+  withConversation([sessionTurn(sessionCard())]);
+  vi.mocked(api.decideAskProposal).mockResolvedValue({ proposal: settled({ state: "deciding" }) });
+  mount(<AskConsole configured />);
+  await userEvent.click(await screen.findByTestId("ask-session-start"));
+  expect(api.decideAskProposal).toHaveBeenCalledWith(PID, "start", false);
+});
+
+test("a changed default asks again: the card shows the new starting value and a notice", async () => {
+  withConversation([sessionTurn(sessionCard())]);
+  const fresh = sessionCard({ bypass_default: true, notice: "default_changed" });
+  vi.mocked(api.decideAskProposal).mockRejectedValue(
+    new ApiError(409, "your default for permission bypass changed", { proposal: fresh }),
+  );
+  mount(<AskConsole configured />);
+  const before = await screen.findByTestId("ask-session");
+  expect(within(before).getByRole("switch")).not.toBeChecked();
+  vi.mocked(api.askConversation).mockResolvedValue(conversation(CID, [sessionTurn(fresh)]));
+  await userEvent.click(within(before).getByTestId("ask-session-start"));
+  expect(await screen.findByTestId("ask-session-notice")).toHaveTextContent(
+    "changed since this was proposed",
+  );
+  expect(screen.getByRole("switch")).toBeChecked();
+  expect(screen.queryByTestId("ask-session-error")).toBeNull();
+  expect(screen.getByTestId("ask-session-start")).toBeEnabled();
+});
+
+test("a refusal that did not change the card is said under it", async () => {
+  withConversation([sessionTurn(sessionCard())]);
+  vi.mocked(api.decideAskProposal).mockRejectedValue(
+    new ApiError(409, "another session from this conversation is still starting"),
+  );
+  mount(<AskConsole configured />);
+  await userEvent.click(await screen.findByTestId("ask-session-start"));
+  expect(await screen.findByTestId("ask-session-error")).toHaveTextContent(
+    "still starting",
+  );
+  expect(screen.getByTestId("ask-session-start")).toBeEnabled();
+});
+
+test("Dismiss sends dismiss", async () => {
+  withConversation([sessionTurn(sessionCard())]);
+  vi.mocked(api.decideAskProposal).mockResolvedValue({ proposal: settled({ state: "dismissed" }) });
+  mount(<AskConsole configured />);
+  await userEvent.click(await screen.findByTestId("ask-session-dismiss"));
+  expect(api.decideAskProposal).toHaveBeenCalledWith(PID, "dismiss", false);
+});
+
+test.each([
+  ["unconfirmed", "Not confirmed", "it may be running; check your sessions"],
+  ["failed", "Failed", "nothing was started"],
+  ["stale", "Out of date", "Nothing was started."],
+  ["interrupted", "Interrupted", "It is not retried."],
+  ["unknown", "Status unavailable", "updates on its own"],
+  ["gone", "No longer tracked", "nothing will start"],
+  ["dismissed", "Dismissed", "Nothing was started."],
+] as const)("a %s session card says %s and offers no Start", async (state, word, detail) => {
+  const reason =
+    state === "unconfirmed"
+      ? "no start evidence — it may be running; check your sessions. It is not retried."
+      : state === "failed"
+        ? "dtach exited 1 — nothing was started"
+        : state === "stale"
+          ? "the chosen project no longer exists"
+          : state === "interrupted"
+            ? "the server stopped while this was starting. It is not retried."
+            : "";
+  // An unconfirmed launch names the session it may have become, and still offers no way in as if
+  // it had started.
+  const session_key = state === "unconfirmed" ? "claude:abc-9" : "";
+  withConversation([sessionTurn(settled({ state, reason, session_key }))]);
+  mount(<AskConsole configured />);
+  const outcome = await screen.findByTestId("ask-session-outcome");
+  expect(outcome).toHaveTextContent(word);
+  expect(outcome).toHaveTextContent(detail);
+  expect(screen.queryByTestId("ask-session-start")).toBeNull();
+  expect(screen.queryByTestId("ask-session-open")).toBeNull();
+});
+
+test("a launch in flight is followed at the turn poll's pace, not the card timer's", async () => {
+  withConversation([sessionTurn(settled({ state: "deciding", bypass: false }))]);
+  mount(<AskConsole configured cardPollMs={60_000} />);
+  expect(await screen.findByTestId("ask-session-outcome")).toHaveTextContent("Starting");
+  vi.mocked(api.askConversation).mockResolvedValue(
+    conversation(CID, [sessionTurn(settled({ state: "started", session_key: "claude:abc-1" }))]),
+  );
+  await waitFor(
+    () => expect(screen.getByTestId("ask-session-outcome")).toHaveTextContent("Started"),
+    { timeout: 5000 },
+  );
+});
+
+test("a settled session card stops re-reading", async () => {
+  withConversation([sessionTurn(settled({ state: "dismissed" }))]);
+  mount(<AskConsole configured cardPollMs={20} />);
+  await screen.findByTestId("ask-session-outcome");
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  await new Promise((r) => setTimeout(r, 200));
+  expect(vi.mocked(api.askConversation).mock.calls.length).toBe(reads);
+});
+
+
+test("a session card that could not be read keeps re-reading until it can", async () => {
+  withConversation([sessionTurn(settled({ state: "unknown" }))]);
+  mount(<AskConsole configured cardPollMs={40} />);
+  expect(await screen.findByTestId("ask-session-outcome")).toHaveTextContent("Status unavailable");
+  vi.mocked(api.askConversation).mockResolvedValue(conversation(CID, [sessionTurn(sessionCard())]));
+  expect(await screen.findByTestId("ask-session-start", {}, { timeout: 5000 })).toBeEnabled();
+});
+
+// Hermes on #1491, 5: the decision's own answer is applied to its card, whatever the re-read does.
+
+test("an accepted Start shows Starting at once, even when the re-read fails", async () => {
+  withConversation([sessionTurn(sessionCard())]);
+  mount(<AskConsole configured cardPollMs={60_000} />);
+  const card = await screen.findByTestId("ask-session");
+  vi.mocked(api.decideAskProposal).mockResolvedValue({
+    proposal: settled({ state: "deciding", bypass: false }),
+  });
+  vi.mocked(api.askConversation).mockRejectedValue(new ApiError(503, "unavailable"));
+  await userEvent.click(within(card).getByTestId("ask-session-start"));
+  expect(await screen.findByTestId("ask-session-outcome")).toHaveTextContent("Starting");
+  expect(screen.queryByTestId("ask-session-start")).toBeNull();
+});
+
+test("a changed default shows its notice and new value at once, even when the re-read fails", async () => {
+  withConversation([sessionTurn(sessionCard())]);
+  mount(<AskConsole configured cardPollMs={60_000} />);
+  const card = await screen.findByTestId("ask-session");
+  vi.mocked(api.decideAskProposal).mockRejectedValue(
+    new ApiError(409, "your default for permission bypass changed", {
+      proposal: { ...sessionCard({ bypass_default: true, notice: "default_changed" }) },
+    }),
+  );
+  vi.mocked(api.askConversation).mockRejectedValue(new ApiError(503, "unavailable"));
+  await userEvent.click(within(card).getByTestId("ask-session-start"));
+  expect(await screen.findByTestId("ask-session-notice")).toHaveTextContent(
+    "changed since this was proposed",
+  );
+  expect(screen.getByRole("switch")).toBeChecked();
+  expect(screen.queryByTestId("ask-session-error")).toBeNull();
+});
+
+test("a start refused because the project was being changed says so and can be tapped again", async () => {
+  withConversation([sessionTurn(sessionCard({ notice: "busy" }))]);
+  mount(<AskConsole configured />);
+  expect(await screen.findByTestId("ask-session-notice")).toHaveTextContent(
+    "nothing started. Start it again.",
+  );
+  expect(screen.getByTestId("ask-session-start")).toBeEnabled();
+});
+
+// --- #1443 Phase 4: followed sessions' updates -------------------------------------------------
+
+const FOLLOWED = "claude:abc-1";
+
+function at(t: AskConversationTurn, asked: number): AskConversationTurn {
+  return { ...t, asked_at: asked };
+}
+
+function update(over: Partial<AskUpdate> = {}): AskUpdate {
+  return { key: FOLLOWED, kind: "finished", title: "api rebase", ts: 15, following: true, ...over };
+}
+
+function withUpdates(over: Partial<AskConversation>) {
+  const turns = [
+    at(turnOf("first", "t-1", { answer: "one" }), 10),
+    at(turnOf("second", "t-2", { answer: "two" }), 20),
+  ];
+  vi.mocked(api.askConversations).mockResolvedValue({
+    conversations: [{ id: CID, title: "first", created_at: 1, updated_at: 2 }],
+    configured: true,
+  });
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, turns),
+    updates: [],
+    following: [FOLLOWED],
+    unread: false,
+    ...over,
+  });
+}
+
+test("an update sits between the turns asked before and after it, in authored words", async () => {
+  withUpdates({
+    updates: [
+      update({ ts: 5, kind: "needs_you" }),
+      update({ ts: 15, kind: "finished" }),
+      update({ ts: 25, kind: "ended", following: false }),
+    ],
+  });
+  mount(<AskConsole configured />);
+  await screen.findAllByTestId("ask-update");
+  const turns = screen.getAllByTestId("ask-turn");
+  const rows = screen.getAllByTestId("ask-update");
+  expect(rows.map((r) => r.getAttribute("data-kind"))).toEqual(["needs_you", "finished", "ended"]);
+  // needs_you is before the first turn; finished is inside the first; ended after the second.
+  expect(turns[0].contains(rows[1])).toBe(true);
+  expect(turns[1].contains(rows[2])).toBe(true);
+  expect(turns.some((t) => t.contains(rows[0]))).toBe(false);
+  expect(rows[0]).toHaveTextContent("Needs you");
+  expect(rows[1]).toHaveTextContent("Finished its turn");
+  expect(rows[2]).toHaveTextContent("No longer followed");
+  // A way in while it can still be opened; none once the follow has ended.
+  expect(within(rows[1]).getByTestId("ask-update-open")).toHaveAttribute("href", "/s/claude/abc-1");
+  expect(within(rows[2]).queryByTestId("ask-update-open")).toBeNull();
+  expect(within(rows[2]).queryByTestId("ask-update-unfollow")).toBeNull();
+});
+
+test("Unfollow stops following and the row stops offering it", async () => {
+  withUpdates({ updates: [update()] });
+  mount(<AskConsole configured />);
+  const row = await screen.findByTestId("ask-update");
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [update({ following: false })],
+    following: [],
+    unread: false,
+  });
+  await userEvent.click(within(row).getByRole("button", { name: "Unfollow api rebase" }));
+  expect(api.askUnfollow).toHaveBeenCalledWith(CID, FOLLOWED);
+  await waitFor(() => expect(screen.queryByTestId("ask-update-unfollow")).toBeNull());
+});
+
+test("an unreadable follow state keeps the last verified follows and keeps reading until it recovers", async () => {
+  // Hermes on #1500: unknown is not "following nothing".
+  withUpdates({ updates: [], follows: [{ key: FOLLOWED, title: "api rebase" }] });
+  mount(<AskConsole configured cardPollMs={20} />);
+  await screen.findByTestId("ask-following-row");
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [],
+    following: [],
+    follows: [],
+    unread: false,
+    follows_incomplete: true,
+  });
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  await waitFor(() =>
+    expect(vi.mocked(api.askConversation).mock.calls.length).toBeGreaterThan(reads + 2),
+  );
+  expect(screen.getByTestId("ask-following-row")).toHaveTextContent("api rebase");
+  // The read recovers and carries the update that landed meanwhile.
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [update({ ts: 15 })],
+    following: [FOLLOWED],
+    follows: [{ key: FOLLOWED, title: "api rebase" }],
+    unread: true,
+  });
+  expect(await screen.findByTestId("ask-update", {}, { timeout: 5000 })).toHaveTextContent(
+    "Finished its turn",
+  );
+});
+
+test("an update still being delivered keeps the open screen reading until it lands", async () => {
+  // Hermes on #1500: stored but not appended yet, with nothing followed and no live card.
+  withUpdates({ updates: [], following: [], follows: [], unread: true, updates_pending: true });
+  mount(<AskConsole configured cardPollMs={20} />);
+  await waitFor(() => expect(api.askConversation).toHaveBeenCalled());
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [update({ ts: 15, following: false, kind: "ended" })],
+    following: [],
+    follows: [],
+    unread: true,
+    updates_pending: false,
+  });
+  expect(await screen.findByTestId("ask-update", {}, { timeout: 5000 })).toHaveTextContent(
+    "No longer followed",
+  );
+});
+
+test("a nudge Ask could not follow reads as Not following, with Open and no Unfollow (#1517)", async () => {
+  withUpdates({
+    updates: [update({ ts: 15, kind: "not_followed", title: "docs pass", following: true })],
+  });
+  mount(<AskConsole configured />);
+  const row = await screen.findByTestId("ask-update");
+  expect(row).toHaveAttribute("data-kind", "not_followed");
+  expect(row).toHaveTextContent("Not following");
+  expect(row).toHaveTextContent("docs pass");
+  expect(row).toHaveTextContent("already following 10 sessions");
+  expect(within(row).queryByRole("button", { name: /Unfollow/ })).toBeNull();
+  expect(within(row).getByTestId("ask-update-open")).toBeInTheDocument();
+});
+
+test("a conversation whose update budget is spent says it no longer follows sessions (#1517)", async () => {
+  withUpdates({ updates: [update({ ts: 15 })], follows_exhausted: true });
+  mount(<AskConsole configured />);
+  expect(await screen.findByTestId("ask-follow-exhausted")).toHaveTextContent(
+    "This conversation no longer follows sessions. Start a new conversation to follow more.",
+  );
+});
+
+test("a followed session with no update yet can be unfollowed (Hermes on #1500)", async () => {
+  withUpdates({ updates: [], follows: [{ key: FOLLOWED, title: "api rebase" }] });
+  mount(<AskConsole configured />);
+  const row = await screen.findByTestId("ask-following-row");
+  expect(row).toHaveTextContent("Following");
+  expect(row).toHaveTextContent("api rebase");
+  expect(screen.queryByTestId("ask-update")).toBeNull();
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [],
+    following: [],
+    follows: [],
+    unread: false,
+  });
+  await userEvent.click(within(row).getByRole("button", { name: "Unfollow api rebase" }));
+  expect(api.askUnfollow).toHaveBeenCalledWith(CID, FOLLOWED);
+  await waitFor(() => expect(screen.queryByTestId("ask-following")).toBeNull());
+});
+
+test("an unseen update is marked seen while the console is on screen, and says so to the icon", async () => {
+  withUpdates({ updates: [update()], unread: true });
+  const heard = vi.fn();
+  window.addEventListener(ASK_SEEN_EVENT, heard);
+  try {
+    mount(<AskConsole configured />);
+    // Through the newest update it has SHOWN — never "now".
+    await waitFor(() => expect(api.askSeen).toHaveBeenCalledWith(CID, 15));
+    await waitFor(() => expect(heard).toHaveBeenCalled());
+  } finally {
+    window.removeEventListener(ASK_SEEN_EVENT, heard);
+  }
+});
+
+test("…but not while the sidebar is closed", async () => {
+  withUpdates({ updates: [update()], unread: true });
+  mount(<AskConsole configured visible={false} />);
+  await screen.findByTestId("ask-update");
+  await new Promise((r) => setTimeout(r, 100));
+  expect(api.askSeen).not.toHaveBeenCalled();
+});
+
+test("a conversation that follows sessions keeps reading, so new updates arrive", async () => {
+  withUpdates({ updates: [] });
+  mount(<AskConsole configured cardPollMs={40} />);
+  await screen.findAllByTestId("ask-turn");
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [update({ kind: "needs_you" })],
+    following: [FOLLOWED],
+    unread: false,
+  });
+  expect(await screen.findByTestId("ask-update", {}, { timeout: 5000 })).toHaveTextContent(
+    "Needs you",
+  );
+});
+
+test("a conversation that follows nothing and has nothing live stops reading", async () => {
+  withUpdates({ updates: [], following: [] });
+  mount(<AskConsole configured cardPollMs={20} />);
+  await screen.findAllByTestId("ask-turn");
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  await new Promise((r) => setTimeout(r, 200));
+  expect(vi.mocked(api.askConversation).mock.calls.length).toBe(reads);
+});
+
+test("placeUpdates: before the first turn, between turns, and a turn still being sent sorts last", () => {
+  const u = (ts: number) => update({ ts });
+  const out = placeUpdates(
+    [
+      { id: "a", at: 10 },
+      { id: "b", at: 20 },
+      { id: "c", at: null },
+    ],
+    [u(25), u(5), u(10), u(19)],
+  );
+  expect(out.before.map((x) => x.ts)).toEqual([5]);
+  expect(out.after.get("a")?.map((x) => x.ts)).toEqual([10, 19]);
+  expect(out.after.get("b")?.map((x) => x.ts)).toEqual([25]);
+  expect(out.after.get("c")).toBeUndefined();
+});
+
+
+test("the switcher marks a conversation with an unseen update, in words as well as the dot", async () => {
+  withUpdates({});
+  vi.mocked(api.askConversations).mockResolvedValue({
+    conversations: [
+      { id: CID, title: "first", created_at: 1, updated_at: 3 },
+      { id: OTHER, title: "other", created_at: 1, updated_at: 2, unread: true },
+    ],
+    configured: true,
+  });
+  mount(<AskConsole configured />);
+  await screen.findAllByTestId("ask-turn");
+  await userEvent.click(screen.getByTestId("ask-switcher"));
+  const items = await screen.findAllByTestId("ask-switcher-item");
+  expect(within(items[0]).queryByTestId("ask-switcher-unread")).toBeNull();
+  expect(within(items[1]).getByTestId("ask-switcher-unread")).toHaveTextContent("New updates");
+});
+
+// --- Hermes round 2 on #1500 ----------------------------------------------------------------------
+
+test("a session started elsewhere is read until the follow it earns arrives", async () => {
+  // Another tab started it: this console's read shows it Started, not followed YET (the
+  // follower's next pass is up to a minute away), and nothing else is live — it keeps reading.
+  const turn = sessionTurn(sessionCard());
+  withConversation([turn]);
+  mount(<AskConsole configured cardPollMs={40} />);
+  await screen.findByTestId("ask-session-start");
+  const started = {
+    ...conversation(CID, [sessionTurn(settled({ state: "started", session_key: FOLLOWED }))]),
+    updates: [],
+    following: [],
+    unread: false,
+  };
+  vi.mocked(api.askConversation).mockResolvedValue(started);
+  expect(await screen.findByTestId("ask-session-outcome", {}, { timeout: 5000 })).toHaveTextContent(
+    "Started",
+  );
+  await new Promise((r) => setTimeout(r, 150)); // several empty reads
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...started,
+    updates: [update({ ts: 50, kind: "finished" })],
+    following: [FOLLOWED],
+  });
+  expect(await screen.findByTestId("ask-update", {}, { timeout: 5000 })).toHaveTextContent(
+    "Finished its turn",
+  );
+});
+
+test.each(["delivered", "indeterminate"])(
+  "a nudge %s elsewhere is read until the follow it earns arrives (Hermes on #1517)",
+  async (outcome) => {
+    // The nudge was approved on another surface (Needs you, the bell): this console's read shows
+    // it settled, not followed YET — the follower admits it at its next pass, up to a minute away —
+    // and nothing else is live. It keeps reading, so the follow and its update reach this screen.
+    const nudgeTurn = (card: AskNudgeCard) => ({
+      ...turnOf("tell it to rebase", "t-n", { answer: "Proposed." }),
+      proposals: [card],
+    });
+    withConversation([nudgeTurn(nudge())]);
+    mount(<AskConsole configured cardPollMs={40} />);
+    await screen.findByTestId("ask-nudge-send");
+    const settledRead = {
+      ...conversation(CID, [
+        nudgeTurn(
+          nudge({
+            state: outcome,
+            projection: "settled",
+            can_approve: false,
+            can_reject: false,
+            key: FOLLOWED,
+          }),
+        ),
+      ]),
+      updates: [],
+      following: [],
+      unread: false,
+    };
+    vi.mocked(api.askConversation).mockResolvedValue(settledRead);
+    await waitFor(() => expect(screen.queryByTestId("ask-nudge-send")).toBeNull(), {
+      timeout: 5000,
+    });
+    await new Promise((r) => setTimeout(r, 150)); // several reads before the follower's pass
+    vi.mocked(api.askConversation).mockResolvedValue({
+      ...settledRead,
+      updates: [update({ ts: 50, kind: "finished" })],
+      following: [FOLLOWED],
+    });
+    expect(await screen.findByTestId("ask-update", {}, { timeout: 5000 })).toHaveTextContent(
+      "Finished its turn",
+    );
+  },
+);
+
+test("the read after a start is bounded: it stops once the window ends", async () => {
+  withConversation([sessionTurn(settled({ state: "started", session_key: FOLLOWED }))]);
+  mount(<AskConsole configured cardPollMs={20} reconcileMs={120} />);
+  await screen.findByTestId("ask-session-outcome");
+  await new Promise((r) => setTimeout(r, 300)); // past the window
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  await new Promise((r) => setTimeout(r, 200));
+  expect(vi.mocked(api.askConversation).mock.calls.length).toBe(reads);
+});
+
+test("an older seen answer arriving late never brings 'unread' back", async () => {
+  withUpdates({ updates: [update({ ts: 15 })], unread: true });
+  const first = deferred<{ unread: boolean }>();
+  vi.mocked(api.askSeen)
+    .mockReturnValueOnce(first.promise)
+    .mockResolvedValue({ unread: false });
+  mount(<AskConsole configured cardPollMs={40} />);
+  await waitFor(() => expect(api.askSeen).toHaveBeenCalledTimes(1));
+  // A newer update arrives and is shown; its mark answers first…
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [update({ ts: 15 }), update({ ts: 25, kind: "needs_you" })],
+    following: [FOLLOWED],
+    unread: true,
+  });
+  await waitFor(() => expect(api.askSeen).toHaveBeenCalledWith(CID, 25));
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [update({ ts: 15 }), update({ ts: 25, kind: "needs_you" })],
+    following: [FOLLOWED],
+    unread: false,
+  });
+  // A poll already in flight may still answer "unread" and rightly mark it seen again. Let two
+  // reads land after the swap before taking the baseline, so only the stale answer is measured.
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  await waitFor(() =>
+    expect(vi.mocked(api.askConversation).mock.calls.length).toBeGreaterThan(reads + 1),
+  );
+  await act(async () => {});
+  const calls = vi.mocked(api.askSeen).mock.calls.length;
+  // …then the OLD mark's stale "still unread" lands. It must change nothing.
+  await act(async () => first.resolve({ unread: true }));
+  await new Promise((r) => setTimeout(r, 150));
+  expect(vi.mocked(api.askSeen).mock.calls.length).toBe(calls);
+});
+
+// ---- HQ contacts (#1525) -------------------------------------------------------------------------
+
+function withContact(choice: string, ui: React.ReactNode) {
+  return (
+    <ConfigCtx.Provider value={{ hq_contact: choice } as AppConfig}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </ConfigCtx.Provider>
+  );
+}
+
+function answerEchoingContact() {
+  vi.mocked(api.askMessageStream).mockImplementation(async (_id, body) => ({
+    ...turnOf(body.text, body.turnId, { answer: `answer to ${body.text}` }),
+    contact: body.contact ?? "off",
+  }));
+}
+
+test("the head shows the selected contact: portrait, HQ and the name over the picker, + and ×", () => {
+  render(withContact("southamerica-woman", <AskConsole configured onClose={() => undefined} />));
+  const head = screen.getByTestId("ask-head");
+  expect(head).toHaveAttribute("data-contact", "southamerica-woman");
+  expect(within(head).getByTestId("hq-head-portrait")).toHaveAttribute("aria-hidden", "true");
+  expect(within(head).getByTestId("hq-head-name")).toHaveTextContent("General Valentina Cruz");
+  expect(within(head).getAllByRole("button")).toEqual([
+    within(head).getByTestId("ask-switcher"),
+    within(head).getByRole("button", { name: "New conversation" }),
+    within(head).getByRole("button", { name: "Close HQ" }),
+  ]);
+});
+
+test("Off: the head is one row, with no portrait and no media at all", () => {
+  const { container } = render(withContact("off", <AskConsole configured onClose={() => undefined} />));
+  const head = screen.getByTestId("ask-head");
+  expect(head).toHaveAttribute("data-contact", "off");
+  expect(within(head).queryByTestId("hq-head-portrait")).toBeNull();
+  expect(within(head).queryByTestId("hq-head-name")).toBeNull();
+  expect(container.querySelector("video, img")).toBeNull();
+});
+
+test("each answer is labelled by ITS turn's contact; switching relabels new answers only", async () => {
+  answerEchoingContact();
+  vi.mocked(api.askNewConversation).mockResolvedValue(conversation(CID, []));
+  const ui = (choice: string) => withContact(choice, <AskConsole configured />);
+  const { rerender } = render(ui("southamerica-woman"));
+  await userEvent.type(screen.getByRole("textbox"), "status?{Enter}");
+  expect(await screen.findByRole("article", { name: "Answer from General Valentina Cruz" })).toBeInTheDocument();
+  expect(vi.mocked(api.askMessageStream).mock.calls[0][1]).toMatchObject({ contact: "southamerica-woman" });
+
+  rerender(ui("romania-woman"));
+  await userEvent.type(screen.getByRole("textbox"), "and now?{Enter}");
+  expect(await screen.findByRole("article", { name: "Answer from General Ileana Lupu" })).toBeInTheDocument();
+  expect(vi.mocked(api.askMessageStream).mock.calls[1][1]).toMatchObject({ contact: "romania-woman" });
+  // The first answer keeps its speaker.
+  expect(screen.getByRole("article", { name: "Answer from General Valentina Cruz" })).toBeInTheDocument();
+  expect(screen.getAllByTestId("ask-speaker").map((h) => h.textContent)).toEqual([
+    "General Valentina Cruz",
+    "General Ileana Lupu",
+  ]);
+});
+
+test("Off, an unknown contact and a turn from before HQ all answer as plain HQ", async () => {
+  twoConversations();
+  vi.mocked(api.askConversation).mockResolvedValue(
+    conversation(CID, [
+      turnOf("old", "t1", { answer: "before HQ" }),
+      { ...turnOf("gone", "t2", { answer: "removed contact" }), contact: "general-nobody" },
+      { ...turnOf("off", "t3", { answer: "off" }), contact: "off" },
+    ]),
+  );
+  render(withContact("us-man", <AskConsole configured />));
+  await screen.findByText("removed contact");
+  expect(screen.getAllByRole("article", { name: "Answer from HQ" })).toHaveLength(3);
+});

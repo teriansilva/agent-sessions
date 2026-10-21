@@ -1,0 +1,317 @@
+/* BattleLab docs — the tactical-HUD skin (#829).
+ *
+ * There is ONE palette in this repository and this file does not own a copy of it: it imports
+ * web/src/tokens.css (the same file the app ships) and then maps VitePress's own `--vp-*`
+ * variables onto those tokens. A second set of hex values here is exactly the drift #828 set out
+ * to remove, so a build gate in scripts/build-docs-site fails if a hex literal appears in this
+ * directory. Everything below is either a var() reference or geometry.
+ *
+ * Theme bridging: VitePress toggles `html.dark`; tokens.css keys off the bare :root (dark default)
+ * and :root[data-theme="light"]. theme/index.ts mirrors VitePress's state onto `data-theme`, so
+ * the palette applies unchanged rather than being restated in a `.dark` block here.
+ */
+@import "../../../../web/src/tokens.css";
+
+:root {
+  /* Grounds and surfaces */
+  --vp-c-bg: var(--bg-0);
+  --vp-c-bg-alt: var(--bg-1);
+  --vp-c-bg-elv: var(--bg-1);
+  --vp-c-bg-soft: var(--bg-1);
+
+  /* Text */
+  --vp-c-text-1: var(--text-1);
+  --vp-c-text-2: var(--text-2);
+  --vp-c-text-3: var(--text-3);
+
+  /* Hairlines — the HUD frames with 1px lines, never shadows */
+  --vp-c-divider: var(--line);
+  --vp-c-border: var(--line);
+  --vp-c-gutter: var(--line);
+
+  /* Brand. --brand is the amber that must clear AA as TEXT (it darkens on the light ground);
+     --accent is the raw fill used for edges, bars and the solid CTA. Keeping them distinct is
+     what stops #ffb000 body links from being unreadable in light mode. */
+  --vp-c-brand-1: var(--brand);
+  --vp-c-brand-2: var(--brand);
+  --vp-c-brand-3: var(--accent);
+  --vp-c-brand-soft: var(--amber-tint);
+
+  /* Solid buttons: dark ink on amber, never white (design.md §9) */
+  --vp-button-brand-bg: var(--accent);
+  --vp-button-brand-text: var(--on-accent);
+  --vp-button-brand-border: var(--accent);
+  --vp-button-brand-hover-bg: var(--accent);
+  --vp-button-brand-hover-text: var(--on-accent);
+  --vp-button-brand-hover-border: var(--accent);
+  --vp-button-alt-bg: transparent;
+  --vp-button-alt-text: var(--brand);
+  --vp-button-alt-border: var(--accent-soft);
+
+  /* Typography (design.md §4): system sans for prose, mono for HUD chrome and code. */
+  --vp-font-family-base: var(--font-sans);
+  --vp-font-family-mono: var(--font-mono);
+
+  /* Code surfaces */
+  --vp-code-block-bg: var(--bg-1);
+  --vp-code-bg: var(--amber-tint);
+  --vp-code-color: var(--brand);
+  --vp-custom-block-tip-border: var(--accent);
+  --vp-custom-block-info-border: var(--line-strong);
+
+  /* Layout: the docs shell is wider than VitePress's default so a 68ch measure still leaves
+     room for the outline rail. */
+  --vp-layout-max-width: 1400px;
+  --vp-sidebar-width: 260px;
+
+  /* Tokens this skin adds. --amber-tint / --amber-edge are declared in the two blocks below
+     because tokens.css is the APP's palette and has no need for them. */
+  --hud-nav-bg: var(--bg-0);
+}
+
+/* The two amber derivations the docs chrome needs, per theme, expressed as color-mix over the
+   existing accent so they follow a custom accent instead of pinning a second amber. */
+:root {
+  --amber-tint: color-mix(in srgb, var(--accent) 7%, transparent);
+  --amber-edge: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+:root[data-theme="light"] {
+  --amber-tint: color-mix(in srgb, var(--brand) 8%, transparent);
+  --amber-edge: color-mix(in srgb, var(--brand) 24%, transparent);
+}
+
+/* ---------------------------------------------------------------- HUD chrome ---- */
+
+/* No radius anywhere (design.md §9) — only LEDs and dots are round, and this site has none. */
+.VPDoc,
+.vp-doc div[class*="language-"],
+.vp-doc table,
+.custom-block,
+.VPButton,
+.DocSearch-Button,
+.VPNavBarSearch input,
+.VPFeature {
+  border-radius: 0 !important;
+}
+
+/* Nav: opaque ground + a hairline, matching the landing page's sticky bar. */
+.VPNavBar {
+  background-color: var(--hud-nav-bg);
+  border-bottom: 1px solid var(--line);
+}
+.VPNavBar .title,
+.VPNavBarTitle .title {
+  font-family: var(--font-mono);
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-size: 14px;
+}
+
+/* Sidebar + outline are chrome, so they are mono and uppercase-labelled. */
+.VPSidebarItem .text,
+.VPDocOutlineItem a,
+.VPDocAsideOutline .outline-title {
+  font-family: var(--font-mono);
+}
+.VPSidebarItem.level-0 > .item > .text {
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.VPSidebarItem.is-active > .item .link .text {
+  color: var(--brand);
+}
+.VPDocAsideOutline .outline-title {
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+/* Headings are HUD chrome: mono, uppercase, with the dashed rule the landing page uses. */
+.vp-doc h2 {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  border-top: 0;
+  border-bottom: 1px dashed var(--line-strong);
+  padding-bottom: 10px;
+  margin-top: 40px;
+}
+.vp-doc h1 {
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+}
+.vp-doc h3 {
+  font-family: var(--font-mono);
+  letter-spacing: 0.12em;
+}
+
+/* Prose measure — long lines are the single biggest readability cost on a docs site. */
+.vp-doc p,
+.vp-doc li {
+  max-width: 72ch;
+  line-height: 1.7;
+}
+
+/* Tables: small-caps hairline heads, tabular numerics (design.md §4). */
+.vp-doc th {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line-strong);
+}
+.vp-doc td {
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  font-variant-numeric: tabular-nums;
+}
+.vp-doc tr {
+  background: transparent;
+  border: 0;
+}
+
+/* Callouts read as HUD panels with an amber left edge, not coloured boxes. */
+.custom-block {
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent);
+  background: var(--glass);
+}
+.custom-block .custom-block-title {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--brand);
+}
+
+/* Focus is a 2px accent reticle, never the UA ring (design.md §8). */
+:where(a, button, input, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Touch targets >=44px (design.md §8), enforced by e2e/geometry.spec.ts. Applied at the
+   breakpoint VitePress collapses the rails at, which is also BattleLab's single 800px (§5). */
+@media (max-width: 800px) {
+  .VPNavBarMenuLink,
+  .VPSidebarItem .link,
+  .vp-doc a:not(.header-anchor),
+  .VPButton,
+  .VPNavBarHamburger,
+  .VPLocalNavOutlineDropdown button,
+  /* The doc footer sits OUTSIDE .vp-doc, so the content rule above misses its links — and
+     "Edit this page" plus prev/next are exactly the controls a phone reader reaches for. */
+  .VPDocFooter .edit-link-button,
+  .VPDocFooter .pager-link {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+  /* Collapsible sidebar SECTION headers are not links, so the rule above misses them — but they
+     are the control you tap to open a section, and VitePress ships them at 32px. The caret is
+     part of the same target. */
+  .VPSidebarItem > .item,
+  .VPSidebarItem > .item > .caret {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+  /* Anchor links inside a paragraph must not become block-level rows — that would break the
+     sentence — so the hit area comes from padding. 14px, not 12: at the 16px line box a 12px
+     pad measures 43px, one pixel short, which the geometry test correctly refused. */
+  .vp-doc p a:not(.header-anchor),
+  .vp-doc li a:not(.header-anchor),
+  .vp-doc td a:not(.header-anchor) {
+    display: inline;
+    padding-block: 14px;
+  }
+}
+
+/* The home hero: corner brackets, the landing page's signature frame. */
+.VPHero .container {
+  position: relative;
+  padding: 30px;
+  border: 1px solid var(--line);
+  background: var(--glass);
+}
+.VPHero .container::before,
+.VPHero .container::after {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 0 solid var(--accent);
+  pointer-events: none;
+}
+.VPHero .container::before {
+  top: -1px;
+  left: -1px;
+  border-top-width: 1.5px;
+  border-left-width: 1.5px;
+}
+.VPHero .container::after {
+  bottom: -1px;
+  right: -1px;
+  border-bottom-width: 1.5px;
+  border-right-width: 1.5px;
+}
+/* The wordmark is chrome — mono, tracked, uppercase. The line under it is a SENTENCE, and
+   uppercasing a sentence at hero scale turns the fold into a shout and costs three extra lines
+   of height on a phone. It stays sentence-case at a readable size. */
+.VPHero .name {
+  font-family: var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.VPHero .text {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  line-height: 1.35;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+  max-width: 22ch;
+}
+@media (min-width: 960px) {
+  .VPHero .text {
+    font-size: 26px;
+  }
+}
+.VPFeature {
+  border: 1px solid var(--line);
+  background: var(--glass);
+}
+.VPFeature .title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.17em;
+  text-transform: uppercase;
+}
+
+/* Footer stamp — the build provenance line (#828). Mono, tabular, quiet. */
+.VPDocFooter .stamp,
+.vp-doc .build-stamp {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* A reference the public mirror does not carry (an export-ignored path inside a transcluded
+   file). Rendered as text rather than a link, because a rewritten URL to a file the mirror
+   strips is a confidently-wrong 404 — worse than no link, since it looks authoritative. */
+.vp-doc .internal-ref {
+  font-family: var(--font-mono);
+  color: var(--text-3);
+  border-bottom: 1px dotted var(--line-strong);
+  cursor: help;
+}

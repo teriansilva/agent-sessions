@@ -1,0 +1,122 @@
+{
+  "manifest": {
+    "binary": {
+      "env_var": "AGENT_SESSIONS_CODEX_BIN",
+      "name": "codex",
+      "search_npm_global": true,
+      "search_paths": [
+        "~/.codex/bin",
+        "~/.local/bin"
+      ],
+      "version_flag": "--version"
+    },
+    "capabilities": {
+      "archive": true,
+      "handoff_target": true,
+      "new": true,
+      "orchestrator_input": true,
+      "raw_tty": true,
+      "resume": true,
+      "seed_start": true
+    },
+    "contract": 1,
+    "display": {
+      "accent": "green",
+      "badge": "cx",
+      "name": "codex",
+      "order": 30
+    },
+    "identity": {
+      "id": "codex",
+      "label": "Codex",
+      "publisher": "battlelab",
+      "version": "0.159.3"
+    },
+    "install": {
+      "authority": "registry.npmjs.org",
+      "digest": "sha256:0719027cfe326e248971a2dff0a391c3532a3d838b4e3cc660bf93b2a606d2ce",
+      "entrypoint": "node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+      "kind": "npm-prefix",
+      "package": "@openai/codex",
+      "platform": "linux-x64",
+      "version": "0.159.3-linux-x64"
+    },
+    "instructions": {
+      "files": [
+        "AGENTS.md"
+      ]
+    },
+    "launch": {
+      "bypass": [
+        "--dangerously-bypass-approvals-and-sandbox"
+      ],
+      "bypass_on": "new",
+      "model": {
+        "flag": "--model",
+        "kind": "flag"
+      },
+      "new": {
+        "flag": "--cd",
+        "kind": "cwd-flag"
+      },
+      "resume": {
+        "kind": "subcommand",
+        "subcommand": "resume"
+      }
+    },
+    "models": {
+      "list": [
+        {
+          "id": "gpt-5-codex"
+        },
+        {
+          "id": "gpt-5"
+        }
+      ]
+    },
+    "probe": {
+      "kind": "exec-readonly"
+    },
+    "session_id": {
+      "mint": "adopt",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "signin": {
+      "kind": "cli-subcommand",
+      "subcommand": "login"
+    },
+    "store": {
+      "env_override": "AGENT_SESSIONS_CODEX_SESSIONS_DIR",
+      "layout": "codex-rollouts",
+      "root": "~/.codex/sessions"
+    },
+    "terminal": {
+      "repaint": "wipe"
+    },
+    "transcript": {
+      "kind": "codex-rollout"
+    },
+    "usage": {
+      "kind": "codex-app-server-probe",
+      "source": "plan"
+    },
+    "verify": [
+      "binary",
+      "version",
+      "store",
+      "new",
+      "resume",
+      "transcript",
+      "usage"
+    ]
+  },
+  "recipe": {
+    "artifacts": [
+      {
+        "destination": "node_modules/@openai/codex",
+        "sha256": "0719027cfe326e248971a2dff0a391c3532a3d838b4e3cc660bf93b2a606d2ce",
+        "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.159.3-linux-x64.tgz"
+      }
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "sha256": {
+    "index.json": "a3f49455ff00aeca5fe4b545a0601e212d8656ff12d8792735f1212c0f081c5a",
+    "playbook.json": "50cf16bb0ca0e7a23aa92cea1ef9d27ad98e78a8e91ff3594e73124bcb3533e8",
+    "skill.json": "24a3b775dfb7d2af3114823380db8a6eee87413af472425a726f854b83ef512a",
+    "refusals.json": "808df6d43cc2e16624861b4d167442e2be81ff47c2cfef580e0ff7b745876632"
+  },
+  "validator_sha256": "2711cac654ec542ef60bb0e053119923005003c5b79b90cd1e9007c49c43bae0"
+}

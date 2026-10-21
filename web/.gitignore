@@ -1,0 +1,36 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# One lockfile: npm's package-lock.json (CI, deploy and install.sh all run `npm ci`). A second
+# manager's lockfile is never consumed, so it drifts silently — it is not committed.
+pnpm-lock.yaml
+yarn.lock
+
+node_modules
+dist
+dist-connect
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/

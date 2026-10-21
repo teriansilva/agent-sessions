@@ -1,0 +1,329 @@
+{
+  "_comment": [
+    "Shared normalization fixture for the terminal font FAMILY (#866). Read by BOTH",
+    "tests/test_prefs.py and web/src/theme/termFont.test.ts so the Python and TypeScript",
+    "implementations cannot drift — and by web/e2e/terminal-font.spec.ts, which checks the",
+    "rows against a REAL CSS parser.",
+    "Three classes of rejection, each a defect that shipped in an earlier draft:",
+    "  charset   — ';' '{}' '()' '<>' '\\\\' and newlines: the injection boundary.",
+    "  structure — 'Menlo,,monospace', '\"Fira Code', whitespace only: all-legal characters,",
+    "              renders as nothing.",
+    "  grammar   — '123, monospace', 'Font.Name', 'inherit': all-legal characters AND valid",
+    "              structure, but the browser discards the whole declaration, so the stored",
+    "              value and the live terminal disagree about which face is active.",
+    "The contract with the browser is ONE-directional: every write_accepted row must be",
+    "accepted by Chromium (asserted in the e2e), but not the converse — Chromium accepts",
+    "'\"Fira Code' by auto-closing the string and accepts '--weird'; both are typos here.",
+    "browser_rejects holds the rows where BOTH must refuse, which is what pins the grammar."
+  ],
+  "default": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+  "max_len": 120,
+  "read": [
+    {
+      "in": "Menlo, monospace",
+      "out": "Menlo, monospace",
+      "why": "ordinary two-family stack"
+    },
+    {
+      "in": "monospace",
+      "out": "monospace",
+      "why": "the generic alone is legal"
+    },
+    {
+      "in": "\"Fira Code\", monospace",
+      "out": "\"Fira Code\", monospace",
+      "why": "a quoted family with a space"
+    },
+    {
+      "in": "'Fira Code', monospace",
+      "out": "'Fira Code', monospace",
+      "why": "single quotes are equally legal"
+    },
+    {
+      "in": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "the default round-trips unchanged"
+    },
+    {
+      "in": "JetBrains Mono, monospace",
+      "out": "JetBrains Mono, monospace",
+      "why": "an unquoted multi-word family is legal CSS"
+    },
+    {
+      "in": "  Menlo, monospace  ",
+      "out": "Menlo, monospace",
+      "why": "TRIMMED, and nothing else is rewritten"
+    },
+    {
+      "in": "Menlo ,  monospace",
+      "out": "Menlo ,  monospace",
+      "why": "interior spacing is preserved VERBATIM — rewriting it would show a preset as Custom on the next device"
+    },
+    {
+      "in": "\"Fira Code",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "UNBALANCED QUOTE: all-allowed characters, still dead"
+    },
+    {
+      "in": "Fira Code\", monospace",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "a quote inside an unquoted family is unbalanced"
+    },
+    {
+      "in": "Menlo,,monospace",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "EMPTY SEGMENT: all-allowed characters, still dead"
+    },
+    {
+      "in": ",monospace",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "leading empty segment"
+    },
+    {
+      "in": "monospace,",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "trailing empty segment"
+    },
+    {
+      "in": "   ",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "WHITESPACE ONLY: trims to empty"
+    },
+    {
+      "in": "",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "empty string"
+    },
+    {
+      "in": "\"\"",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "an empty quoted family names nothing"
+    },
+    {
+      "in": "Menlo; color: red",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "SECURITY: ';' would close the declaration"
+    },
+    {
+      "in": "url(evil.woff2)",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "SECURITY: parentheses are not in the allowlist"
+    },
+    {
+      "in": "Menlo}\n#x{color:red",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "SECURITY: braces + newline"
+    },
+    {
+      "in": "</style><script>",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "SECURITY: angle brackets"
+    },
+    {
+      "in": "Menlo\\\\3b color:red",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "SECURITY: a backslash CSS escape"
+    },
+    {
+      "in": null,
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "null: default"
+    },
+    {
+      "in": 13,
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "a number is not a stack"
+    },
+    {
+      "in": true,
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "a boolean is not a stack"
+    },
+    {
+      "in": [],
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "wrong container type"
+    },
+    {
+      "in": {},
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "wrong container type"
+    },
+    {
+      "in": "Segoe UI Mono, monospace",
+      "out": "Segoe UI Mono, monospace",
+      "why": "GRAMMAR: an unquoted family may be several identifiers separated by spaces"
+    },
+    {
+      "in": "-apple-system, monospace",
+      "out": "-apple-system, monospace",
+      "why": "GRAMMAR: a single leading hyphen is legal"
+    },
+    {
+      "in": "A1, monospace",
+      "out": "A1, monospace",
+      "why": "GRAMMAR: digits are fine after the first character"
+    },
+    {
+      "in": "_private, monospace",
+      "out": "_private, monospace",
+      "why": "GRAMMAR: an identifier may start with an underscore"
+    },
+    {
+      "in": "\"123\", monospace",
+      "out": "\"123\", monospace",
+      "why": "GRAMMAR: digits are fine inside QUOTES"
+    },
+    {
+      "in": "\"Font.Name\", monospace",
+      "out": "\"Font.Name\", monospace",
+      "why": "GRAMMAR: a period is fine inside quotes"
+    },
+    {
+      "in": "123, monospace",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "GRAMMAR: an identifier cannot start with a digit — Chromium discards the WHOLE declaration, so this is the case where the UI claims a face the terminal never applied"
+    },
+    {
+      "in": "1Password Mono, monospace",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "GRAMMAR: same, with a plausible-looking name"
+    },
+    {
+      "in": "Menlo Mono 2, monospace",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "GRAMMAR: '2' is not an identifier either"
+    },
+    {
+      "in": "-2cool, monospace",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "GRAMMAR: hyphen-then-digit is not an identifier"
+    },
+    {
+      "in": "Font.Name, monospace",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "GRAMMAR: a period is invalid UNQUOTED"
+    },
+    {
+      "in": "inherit, monospace",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "GRAMMAR: a CSS-wide keyword is not a family name"
+    },
+    {
+      "in": "INHERIT, monospace",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "GRAMMAR: the keyword check is case-insensitive"
+    },
+    {
+      "in": "default, monospace",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "GRAMMAR: 'default' is reserved too"
+    },
+    {
+      "in": "--weird, monospace",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "STRICTER THAN THE BROWSER, deliberately: Chromium accepts '--weird' as a family; it is a typo here"
+    },
+    {
+      "in": "PT Serif, monospace",
+      "out": "PT Serif, monospace",
+      "why": "GRAMMAR: a generic in a LATER position is a real font name — 'PT Serif', 'Noto Sans Mono'"
+    },
+    {
+      "in": "Foo Monospace, monospace",
+      "out": "Foo Monospace, monospace",
+      "why": "GRAMMAR: same, case-insensitively, and it must NOT be refused"
+    },
+    {
+      "in": "serif foo, monospace",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "GRAMMAR: a generic cannot START a multi-token family — Chromium discards the whole declaration (the #868 round-2 finding)"
+    },
+    {
+      "in": "Serif A1, monospace",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "GRAMMAR: the leading-generic rule is case-insensitive"
+    },
+    {
+      "in": "monospace foo, monospace",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "GRAMMAR: every classic generic behaves this way"
+    },
+    {
+      "in": "system-ui Menlo, monospace",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "GRAMMAR: system-ui too"
+    },
+    {
+      "in": "ui-monospace foo, monospace",
+      "out": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "why": "STRICTER THAN TODAY'S CHROMIUM, on purpose: it has not shipped ui-* as generics, so it accepts this; a browser that ships them would reject it, and we must not accept what a future browser refuses"
+    }
+  ],
+  "write_accepted": [
+    "Menlo, monospace",
+    "monospace",
+    "\"Fira Code\", monospace",
+    "'Fira Code', ui-monospace, monospace",
+    "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+    "  Menlo, monospace  ",
+    "Segoe UI Mono, monospace",
+    "-apple-system, monospace",
+    "A1, monospace",
+    "_private, monospace",
+    "\"123\", monospace",
+    "PT Serif, monospace",
+    "Foo Monospace, monospace"
+  ],
+  "write_rejected": [
+    "\"Fira Code",
+    "Menlo,,monospace",
+    ",monospace",
+    "monospace,",
+    "   ",
+    "",
+    "\"\"",
+    "Menlo; color: red",
+    "url(evil.woff2)",
+    "</style><script>",
+    "Menlo\\\\3b color:red",
+    null,
+    13,
+    true,
+    false,
+    [],
+    {},
+    "123, monospace",
+    "1Password Mono, monospace",
+    "Menlo Mono 2, monospace",
+    "-2cool, monospace",
+    "Font.Name, monospace",
+    "inherit, monospace",
+    "INHERIT, monospace",
+    "default, monospace",
+    "--weird, monospace",
+    "serif foo, monospace",
+    "Serif A1, monospace",
+    "monospace foo, monospace",
+    "system-ui Menlo, monospace",
+    "math x, monospace",
+    "ui-monospace foo, monospace"
+  ],
+  "browser_rejects": [
+    "123, monospace",
+    "1Password Mono, monospace",
+    "Menlo Mono 2, monospace",
+    "-2cool, monospace",
+    "Font.Name, monospace",
+    "inherit, monospace",
+    "default, monospace",
+    "Menlo,,monospace",
+    ",monospace",
+    "monospace,",
+    "serif foo, monospace",
+    "Serif A1, monospace",
+    "monospace foo, monospace",
+    "system-ui Menlo, monospace",
+    "math x, monospace"
+  ]
+}

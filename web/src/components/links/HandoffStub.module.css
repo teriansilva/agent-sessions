@@ -1,0 +1,46 @@
+/* "Opened in your other BattleLab tab" (#1232): the whole page of a tab that handed its link
+ * over. Rendered instead of the app, so it carries its own full-viewport ground. */
+.page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: var(--bg-0);
+  color: var(--text-1);
+}
+.card {
+  width: min(520px, 100%);
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  padding: 22px;
+}
+.title {
+  margin: 0 0 8px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.text {
+  margin: 0 0 16px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.close {
+  composes: primary from "../ui/actionButton.module.css";
+}
+.here {
+  composes: ghost from "../ui/actionButton.module.css";
+}
+.note {
+  margin: 12px 0 0;
+  color: var(--text-3);
+  font-size: 12px;
+}

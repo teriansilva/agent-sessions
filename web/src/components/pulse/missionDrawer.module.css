@@ -1,0 +1,69 @@
+/* The rail drawer, below 1100px (#878). Portalled to <body>, so it is outside #root and can
+ * survive the background being made `inert`. */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 60;
+}
+
+.panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  /* Never wider than the viewport: a drawer that overflows is a horizontal scroll bar. */
+  width: min(320px, 88vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-right: 1px solid var(--line-strong);
+  z-index: 61;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  min-height: 52px;
+}
+
+.headLabel {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.close {
+  min-height: 44px;
+  min-width: 64px;
+  padding: 4px 12px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+}
+.close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* The rail renders inside the drawer, where its own `display:none` guard must not apply. */
+.body > nav {
+  display: flex !important;
+  border-right: 0;
+}

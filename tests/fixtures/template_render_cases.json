@@ -1,0 +1,58 @@
+[
+  {
+    "name": "declared fields are replaced literally",
+    "body": "Review {{pr}} for {{issue}}.",
+    "fields": ["pr", "issue"],
+    "values": {"pr": "https://x/1", "issue": "ACME-7"},
+    "paths": [],
+    "expected": "Review https://x/1 for ACME-7."
+  },
+  {
+    "name": "an undeclared token is left as written",
+    "body": "Hi {{who}} and {{ghost}}",
+    "fields": ["who"],
+    "values": {"who": "you"},
+    "paths": [],
+    "expected": "Hi you and {{ghost}}"
+  },
+  {
+    "name": "a declared field with no value keeps its token",
+    "body": "Hi {{who}}",
+    "fields": ["who"],
+    "values": {},
+    "paths": [],
+    "expected": "Hi {{who}}"
+  },
+  {
+    "name": "values are never re-substituted (no expression language)",
+    "body": "{{a}} {{b}}",
+    "fields": ["a", "b"],
+    "values": {"a": "{{b}}", "b": "B"},
+    "paths": [],
+    "expected": "{{b}} B"
+  },
+  {
+    "name": "substitute first, trim after, then paths space-joined",
+    "body": "  {{x}}  ",
+    "fields": ["x"],
+    "values": {"x": " padded "},
+    "paths": ["/u/a.png", "/u/b.png"],
+    "expected": "padded /u/a.png /u/b.png"
+  },
+  {
+    "name": "an empty text still carries its paths",
+    "body": "{{x}}",
+    "fields": ["x"],
+    "values": {"x": "   "},
+    "paths": ["/u/a.png"],
+    "expected": "/u/a.png"
+  },
+  {
+    "name": "multi-line values keep their lines",
+    "body": "Run:\n{{cmd}}",
+    "fields": ["cmd"],
+    "values": {"cmd": "cd repo\nnpm test"},
+    "paths": [],
+    "expected": "Run:\ncd repo\nnpm test"
+  }
+]

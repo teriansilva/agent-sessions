@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- BattleLab standard PWA icon (#211): rounded near-black HUD tile with the phosphor-amber
+       command-prompt (>_) mark, rasterized to icon-192.png / icon-512.png. Larger than the
+       maskable variant since standard icons aren't mask-clipped. -->
+  <rect width="512" height="512" rx="112" fill="#0d0e10"/>
+  <g fill="none" stroke="#ffb000" stroke-width="48" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M144 152 L248 256 L144 360"/>
+  </g>
+  <rect x="272" y="316" width="96" height="44" rx="22" fill="#ffb000"/>
+</svg>

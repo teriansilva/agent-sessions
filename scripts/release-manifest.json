@@ -1,0 +1,378 @@
+{
+  "_comment": "Trust root for stable-channel updates (#612). Regenerate with scripts/gen-release-manifest after cutting a release. Entries are keyed by REMOTE because a release has one identity per remote that publishes it \u2014 the public mirror is a snapshot publish, so its tag for a given version is a different object from the forge's. A tag with no entry for the remote in use is simply unverified; it is never treated as moved.",
+  "version": 2,
+  "releases": {
+    "v0.1.1": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "cc09b8b0ad7c328e9ad91bf555f6c50c630399c7",
+        "commit": "cc09b8b0ad7c328e9ad91bf555f6c50c630399c7"
+      }
+    },
+    "v0.1.2": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "b036b55bb3e6d1eda8112fb8d74a03fc9610ed88",
+        "commit": "b036b55bb3e6d1eda8112fb8d74a03fc9610ed88"
+      }
+    },
+    "v0.10.0": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "8d2265eebdb9dd5883c52fea0452fdbaa47444be",
+        "commit": "8d2265eebdb9dd5883c52fea0452fdbaa47444be"
+      }
+    },
+    "v0.10.1": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "45d338746793f19a83eeb03164562c9f5f891f62",
+        "commit": "45d338746793f19a83eeb03164562c9f5f891f62"
+      }
+    },
+    "v0.10.10": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "723857fb23840e7742c3f8ea45898cd3863990cc",
+        "commit": "723857fb23840e7742c3f8ea45898cd3863990cc"
+      }
+    },
+    "v0.10.2": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "046a2e51002802681a3190546ad4ebe628d18101",
+        "commit": "046a2e51002802681a3190546ad4ebe628d18101"
+      }
+    },
+    "v0.10.3": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "4146a0b9a0cf5c1c53e35c1e3edc4f8c7f5fe97a",
+        "commit": "4146a0b9a0cf5c1c53e35c1e3edc4f8c7f5fe97a"
+      }
+    },
+    "v0.10.4": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "f45a50dddf09f2a01aab9927fa5c7c479fd7d36c",
+        "commit": "f45a50dddf09f2a01aab9927fa5c7c479fd7d36c"
+      }
+    },
+    "v0.10.5": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "101a4e0f009f7ee72cb788db6fd6b49f7dfdc5c7",
+        "commit": "101a4e0f009f7ee72cb788db6fd6b49f7dfdc5c7"
+      }
+    },
+    "v0.10.6": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "5ed7c3b735dd3577570810ce02b7baacb0848300",
+        "commit": "5ed7c3b735dd3577570810ce02b7baacb0848300"
+      }
+    },
+    "v0.10.7": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "a041c0ed7d3240328e7c74fe024956a27126ee84",
+        "commit": "a041c0ed7d3240328e7c74fe024956a27126ee84"
+      }
+    },
+    "v0.10.8": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "ee54b5b742a71de30aa577eb536e70aef51cab6f",
+        "commit": "ee54b5b742a71de30aa577eb536e70aef51cab6f"
+      }
+    },
+    "v0.10.9": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "d6a8926bc09cc1ca4d73f5d6b6dca8f85109db35",
+        "commit": "d6a8926bc09cc1ca4d73f5d6b6dca8f85109db35"
+      }
+    },
+    "v0.11.0": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "c641dccca440d7fc6b531104beff76c2644c0734",
+        "commit": "c641dccca440d7fc6b531104beff76c2644c0734"
+      }
+    },
+    "v0.12.0": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "48552f7bf0ad76a907fd003b07924e4e105cba19",
+        "commit": "48552f7bf0ad76a907fd003b07924e4e105cba19"
+      }
+    },
+    "v0.12.1": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "67ee35e4715edfa1a06d1c2dad654a967892143d",
+        "commit": "67ee35e4715edfa1a06d1c2dad654a967892143d"
+      }
+    },
+    "v0.12.2": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "481bfd35c66cfff57129950094c71aa1b624d307",
+        "commit": "481bfd35c66cfff57129950094c71aa1b624d307"
+      }
+    },
+    "v0.12.3": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "635f0273adfef7d084481219461e30ef7c5138d3",
+        "commit": "635f0273adfef7d084481219461e30ef7c5138d3"
+      }
+    },
+    "v0.13.0": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "cac05d33c3f7a4df11002783fda03afb3f881234",
+        "commit": "cac05d33c3f7a4df11002783fda03afb3f881234"
+      }
+    },
+    "v0.13.1": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "c21881634885e93a1b4c14ccf7228fb6a07ed6c9",
+        "commit": "c21881634885e93a1b4c14ccf7228fb6a07ed6c9"
+      }
+    },
+    "v0.14.0": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "fa1cad87f04e0811b47ae46780fec5fc07bcfb13",
+        "commit": "fa1cad87f04e0811b47ae46780fec5fc07bcfb13"
+      }
+    },
+    "v0.15.0": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "1907568401f934a0ac11903b450e80a204d73808",
+        "commit": "1907568401f934a0ac11903b450e80a204d73808"
+      }
+    },
+    "v0.16.0": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "8ae543dfca607c707b5c419fabd61aae4a768a38",
+        "commit": "8ae543dfca607c707b5c419fabd61aae4a768a38"
+      }
+    },
+    "v0.17.0": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "b6da5b38d2fdce90bd392ad70699554dad83b654",
+        "commit": "b6da5b38d2fdce90bd392ad70699554dad83b654"
+      }
+    },
+    "v0.17.1": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "9c34edad39bfe415ad19004f5dece37dc7f09fdc",
+        "commit": "9c34edad39bfe415ad19004f5dece37dc7f09fdc"
+      }
+    },
+    "v0.17.2": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "a2e0705537c4f50905cc681ee3a463c74021c307",
+        "commit": "a2e0705537c4f50905cc681ee3a463c74021c307"
+      }
+    },
+    "v0.17.3": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "d0f1a465f26d7ce95460010acdae555040f5defb",
+        "commit": "d0f1a465f26d7ce95460010acdae555040f5defb"
+      }
+    },
+    "v0.17.4": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "3e528850206621dc2c54d9621a702a848a5e8cde",
+        "commit": "3e528850206621dc2c54d9621a702a848a5e8cde"
+      }
+    },
+    "v0.17.5": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "d2d71eaea14e748f3da9ad4ca3f934a8f99991d8",
+        "commit": "d2d71eaea14e748f3da9ad4ca3f934a8f99991d8"
+      }
+    },
+    "v0.17.6": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "9f9a2443290b96a902f86960028714503af194e4",
+        "commit": "9f9a2443290b96a902f86960028714503af194e4"
+      }
+    },
+    "v0.17.7": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "50d08ec2fcd35353813c519d87ebe63e410fe546",
+        "commit": "50d08ec2fcd35353813c519d87ebe63e410fe546"
+      }
+    },
+    "v0.17.8": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "6ea1fc429d4ac16ed24146985a941099f420f314",
+        "commit": "6ea1fc429d4ac16ed24146985a941099f420f314"
+      }
+    },
+    "v0.18.0": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "9a0b6d738192265401c7fc1f629c713bc5017b9b",
+        "commit": "9a0b6d738192265401c7fc1f629c713bc5017b9b"
+      }
+    },
+    "v0.19.0": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "77fa8ef0ac8bd40248c191038617b62048531b90",
+        "commit": "77fa8ef0ac8bd40248c191038617b62048531b90"
+      }
+    },
+    "v0.19.1": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "c01f2d1879d98921b64162bd7a2d1bbea90f5bf7",
+        "commit": "c01f2d1879d98921b64162bd7a2d1bbea90f5bf7"
+      }
+    },
+    "v0.19.2": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "7bc8bf88fc3d3d7c012346b2121e79048e65b79d",
+        "commit": "7bc8bf88fc3d3d7c012346b2121e79048e65b79d"
+      }
+    },
+    "v0.2.0": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "34ff070ef7c11e163f46d29ae14b63dc1cbb4cc9",
+        "commit": "34ff070ef7c11e163f46d29ae14b63dc1cbb4cc9"
+      }
+    },
+    "v0.2.1": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "2b8ed16e3302c80b9b132992794be8b50931f1b8",
+        "commit": "2b8ed16e3302c80b9b132992794be8b50931f1b8"
+      }
+    },
+    "v0.2.2": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "60e6287c2b3cbf81af7c7c2593c0219613719a84",
+        "commit": "60e6287c2b3cbf81af7c7c2593c0219613719a84"
+      }
+    },
+    "v0.2.3": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "14a7956dbf9744895e58bb6ea1bdfd139f57a1c3",
+        "commit": "14a7956dbf9744895e58bb6ea1bdfd139f57a1c3"
+      }
+    },
+    "v0.2.4": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "5b3f7f98b31d29d0dce676c6c26557415268b9b2",
+        "commit": "5b3f7f98b31d29d0dce676c6c26557415268b9b2"
+      }
+    },
+    "v0.2.5": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "80fb11c23ef5b56b4969c1fb821bbee4e7628e0a",
+        "commit": "80fb11c23ef5b56b4969c1fb821bbee4e7628e0a"
+      }
+    },
+    "v0.2.6": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "07b69335172b07e12f97fe28447af553489842d7",
+        "commit": "07b69335172b07e12f97fe28447af553489842d7"
+      }
+    },
+    "v0.2.7": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "bbb79102ef9c22b4703e05b4d0077460dc54141a",
+        "commit": "bbb79102ef9c22b4703e05b4d0077460dc54141a"
+      }
+    },
+    "v0.2.8": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "e8f0380348a030a43f852a8f9f8789ee91a5c8ac",
+        "commit": "e8f0380348a030a43f852a8f9f8789ee91a5c8ac"
+      }
+    },
+    "v0.2.9": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "f000be7a567fc15814f3aea14acc1063079addb4",
+        "commit": "f000be7a567fc15814f3aea14acc1063079addb4"
+      }
+    },
+    "v0.3.0": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "599bfc53febf3172d8060a9ad39e9e0f23b9e590",
+        "commit": "599bfc53febf3172d8060a9ad39e9e0f23b9e590"
+      }
+    },
+    "v0.4.0": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "ec0304d5c34808205196a04289ddaccc76859fc6",
+        "commit": "ec0304d5c34808205196a04289ddaccc76859fc6"
+      }
+    },
+    "v0.5.0": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "bb5c63d0174bb22d3e8499f94e623641b29b68e6",
+        "commit": "bb5c63d0174bb22d3e8499f94e623641b29b68e6"
+      }
+    },
+    "v0.5.1": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "ed783f8924e6c5b712d8b5280f3e0762c9315c98",
+        "commit": "ed783f8924e6c5b712d8b5280f3e0762c9315c98"
+      }
+    },
+    "v0.5.2": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "86fc494fbb48614af7637e739477418e35a8a345",
+        "commit": "86fc494fbb48614af7637e739477418e35a8a345"
+      }
+    },
+    "v0.5.3": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "626c2fe2a2c8fbc46e13734dd6e79c6ea5dc39ff",
+        "commit": "626c2fe2a2c8fbc46e13734dd6e79c6ea5dc39ff"
+      }
+    },
+    "v0.5.4": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "59be4b21a9e94e435c7d137dd5d0be90feb1f39e",
+        "commit": "59be4b21a9e94e435c7d137dd5d0be90feb1f39e"
+      }
+    },
+    "v0.6.0": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "6f1edfa5619352944e11147a0ec8b165d1e423d9",
+        "commit": "6f1edfa5619352944e11147a0ec8b165d1e423d9"
+      }
+    },
+    "v0.7.0": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "bedc1106171fc3a6f559672c0f1093c3255f2799",
+        "commit": "bedc1106171fc3a6f559672c0f1093c3255f2799"
+      }
+    },
+    "v0.8.10": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "4f3bc450780a4a59be06a0cfa8af8ac301f77f1d",
+        "commit": "4f3bc450780a4a59be06a0cfa8af8ac301f77f1d"
+      }
+    },
+    "v0.8.5": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "999061740ef01bb24af53e65b74e53cc5be21595",
+        "commit": "999061740ef01bb24af53e65b74e53cc5be21595"
+      }
+    },
+    "v0.8.6": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "b65222785ceb5b2c35fae5185de91d1cef12d5bc",
+        "commit": "b65222785ceb5b2c35fae5185de91d1cef12d5bc"
+      }
+    },
+    "v0.8.7": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "867daf2c40d78ca6212d431656987657c98a90d1",
+        "commit": "867daf2c40d78ca6212d431656987657c98a90d1"
+      }
+    },
+    "v0.8.8": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "250698e15d5d85518f84d44017a616e32d17aebd",
+        "commit": "250698e15d5d85518f84d44017a616e32d17aebd"
+      }
+    },
+    "v0.8.9": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "3b8a3118f561b8f65665eb7fc776b87363806a70",
+        "commit": "3b8a3118f561b8f65665eb7fc776b87363806a70"
+      }
+    },
+    "v0.9.0": {
+      "github.com/teriansilva/agent-sessions": {
+        "object": "64eefb3d0a9239b271f3877dbca7f34e0a3ef0f8",
+        "commit": "64eefb3d0a9239b271f3877dbca7f34e0a3ef0f8"
+      }
+    }
+  }
+}

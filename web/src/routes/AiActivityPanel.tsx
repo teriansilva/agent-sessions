@@ -1,0 +1,118 @@
+import { useEffect, useState } from "react";
+import { api } from "../lib/api";
+import type { AiActivity } from "../types/api";
+import styles from "./Settings.module.css";
+
+// The AI task kinds the platform registers (#441). Listed in a fixed order so the panel is
+// stable; an unknown kind that turns up running is appended so nothing is hidden.
+//
+// Every kind the server tracks with `aitasks.track` / `aitasks.single_flight` belongs here. The
+// list used to stop at the first three, so the orchestrator and every mission task showed only
+// while running, under their raw id, and their last run was never shown at all (#956).
+const KINDS: { kind: string; label: string }[] = [
+  // The KIND is the server-owned task id and stays `pulse-scan`; only the label an
+  // operator reads is renamed (#935).
+  { kind: "pulse-scan", label: "Mission control scan" },
+  { kind: "ai-review", label: "AI review" },
+  { kind: "auto-sort", label: "Auto-sort" },
+  { kind: "orchestrator", label: "Orchestrator pass" },
+  { kind: "mission-supervisor", label: "Mission supervisor" },
+  { kind: "mission-objectives", label: "Objective checks" },
+  // #967 P2: a new mission plans itself, and Plan again runs under the same kind. A plan skipped for
+  // want of an AI endpoint settles without raising, so it lists as a run, not a failure.
+  { kind: "mission-plan", label: "Mission planning" },
+  { kind: "mission-question", label: "Mission questions" },
+  // `pulse-chat` is the single-flight kind shared by mission chat turns and Ask.
+  { kind: "pulse-chat", label: "Mission chat" },
+  // #1086: the Recent work summary above Ask.
+  { kind: "work-recap", label: "Recent work summary" },
+];
+
+const POLL_MS = 3000;
+
+function elapsed(since: number): string {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - since));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  return `${Math.floor(s / 3600)}h`;
+}
+
+function ago(at: number): string {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - at));
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+/** Shared AI-activity panel (#441 Phase 6): what AI work is running right now (mission-control
+ *  scans, AI-review / auto-sort sweeps, orchestrator passes and mission tasks, plus their
+ *  on-demand runs) and the last run per kind. Polls
+ *  /api/ai/activity while mounted — the first home for the platform's growing set of AI
+ *  features, and how the "two scans never overlap" guarantee becomes observable. */
+export function AiActivityPanel() {
+  const [activity, setActivity] = useState<AiActivity | null>(null);
+  // A 1s ticker so a running task's elapsed time advances between the slower polls.
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    const poll = () =>
+      api
+        .aiActivity()
+        .then((a) => live && setActivity(a))
+        .catch(() => {});
+    void poll();
+    const pid = setInterval(() => void poll(), POLL_MS);
+    const tid = setInterval(() => live && setTick((t) => t + 1), 1000);
+    return () => {
+      live = false;
+      clearInterval(pid);
+      clearInterval(tid);
+    };
+  }, []);
+
+  const running = activity?.running ?? [];
+  const last = activity?.last ?? {};
+  // Known kinds first, then any running kind we didn't anticipate.
+  const extraRunning = running
+    .map((r) => r.kind)
+    .filter((k) => !KINDS.some((x) => x.kind === k));
+  const rows = [
+    ...KINDS,
+    ...[...new Set(extraRunning)].map((k) => ({ kind: k, label: k })),
+  ];
+
+  return (
+    <section className={styles.section} aria-labelledby="ai-activity-h">
+      <h2 id="ai-activity-h">AI activity</h2>
+      <p className={styles.hint}>
+        What AI work is running right now across the platform, plus the last run
+        of each. Scans of the same kind never overlap — a second one waits for
+        the first.
+      </p>
+      <ul className={styles.activityList} aria-live="polite">
+        {rows.map(({ kind, label }) => {
+          const run = running.find((r) => r.kind === kind);
+          const seen = last[kind];
+          return (
+            <li key={kind} className={styles.activityRow}>
+              <span
+                className={`hud-led ${run ? "up" : "idle"}`}
+                aria-hidden="true"
+              />
+              <span className={styles.activityName}>{label}</span>
+              <span className={styles.activityState}>
+                {run
+                  ? `running ${elapsed(run.started_at)}${run.detail ? ` · ${run.detail}` : ""}`
+                  : seen
+                    ? `${seen.ok ? "ran" : "failed"} ${ago(seen.finished_at)}`
+                    : "idle"}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}

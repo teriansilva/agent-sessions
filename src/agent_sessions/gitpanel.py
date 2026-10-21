@@ -1,0 +1,1794 @@
+"""Read-only git state for the session file panel (#784).
+
+A **security boundary**, like :mod:`agent_sessions.files`, and for a sharper reason: this module
+runs a subprocess against a repository the agent is actively writing to. "The repo's config is
+trusted" is not an assumption available here. Each claim below was measured on git 2.43.0.
+
+**Being shell-free does not stop repository-controlled code from running.** A read-only subcommand
+happily executes programs the repository's own config names:
+
+====================================  ===========================  ==========================
+config the repo controls              runs during                  stopped by
+====================================  ===========================  ==========================
+``diff.<drv>.textconv``               ``git diff``                 ``--no-textconv``
+external diff driver                  ``git diff``                 ``--no-ext-diff``
+``core.fsmonitor`` hook               ``status`` **and** ``diff``  ``-c core.fsmonitor=false``
+``filter.<drv>.clean`` /``.process``  ``status`` **and** ``diff``  nothing — see below
+====================================  ===========================  ==========================
+
+That last row drove the design, through two wrong answers.
+
+The first was to redirect *attributes*: ``--attr-source=<empty tree>`` so no ``.gitattributes``
+can bind a path to a driver. It does not cover ``$GIT_DIR/info/attributes`` or
+``core.attributesFile``, and with either of those in play the filter still ran.
+
+The second was to disable the *drivers*: enumerate every ``filter.*`` the config defines and pass
+``-c filter.<drv>.clean=`` for each. That does stop execution, but it has to read the repository's
+config to know the names — which leaves an enumerate-then-use gap (a driver written between the
+two commands is not in the flags) and an unbounded preflight (a config naming 120_000 filters
+expands into an argv that never finishes building).
+
+Both failures are properties of *consulting* repository-controlled metadata at all. So it is not
+consulted. :func:`sanitized_gitdir` assembles a private git directory holding only what reading
+requires — the object store by symlink, copies of ``index``/``HEAD``/refs, an **empty** ``info/``,
+and a ``config`` written here — and every command runs against that. A driver the repository
+defines is not disabled; it is never read, so there is nothing to race. It also makes "never
+writes to the repository" structural: a status refresh writes to the copy.
+
+**``git diff`` is not invoked at all.** A unified diff is assembled here instead, from
+``cat-file`` blobs (objects as stored, no conversion) and the descriptor-verified worktree bytes
+phase 1 already provides. Git is used for exactly four subcommands: ``rev-parse``, ``status``,
+``cat-file``, and ``diff-tree --raw`` (#950) — which lists the last commit's changed paths as modes
+and object ids only, produces no content diff, and so gives no driver anything to run.
+
+**The ceiling is not the metadata boundary.** ``GIT_CEILING_DIRECTORIES`` bounds how far git walks
+*upward*; it says nothing about where a ``.git`` file it finds *points*. A worktree under the root
+whose ``.git`` reads ``gitdir: <outside>`` returned a contained ``--show-toplevel`` while
+``--absolute-git-dir`` sat outside and ``status`` happily read config, index, refs and objects
+there. So discovery is walked **here, before git runs at all**, and ``include.path`` /
+``includeIf`` / ``objects/info/alternates`` are validated too — each reaches outside the root
+independently.
+
+**A contained gitdir does not mean contained children.** ``.git/objects`` can simply *be* a
+symlink to an external store: the gitdir passes every check above, the snapshot links through, and
+``cat-file`` returns blobs from outside the root — a working diff over files the browser is not
+allowed to see. So each metadata child is resolved and contained before use, and the resolved path
+is what gets consumed. Files are taken with ``O_NOFOLLOW`` rather than checked-then-opened, since
+the name can be swapped between the two.
+
+No shell, ever. No writes to the repository, ever.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import select
+import shutil
+import stat
+import subprocess
+import tempfile
+import threading
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+
+from .files import FsError, contained_path, executor
+from .fsbrowse import home_root
+
+# The well-known empty tree. `--attr-source` points attribute lookup at it instead of the working
+# copy, so an in-tree `.gitattributes` binds nothing. Defence in depth now rather than the
+# mechanism: with a sanitized gitdir there is no driver for an attribute to bind to.
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+GIT_MAX_ENTRIES = 5000
+GIT_TIMEOUT_S = 10.0
+GIT_MAX_STDOUT = 4 * 1024 * 1024  # hard byte budget, enforced WHILE reading
+_READ_CHUNK = 64 * 1024
+_STATUS_TTL_S = 1.0
+
+# Diff bounds, enforced on each side BEFORE comparison — a response cap applied after difflib has
+# already run bounds nothing.
+DIFF_SOURCE_MAX_BYTES = 2 * 1024 * 1024
+DIFF_SOURCE_MAX_LINES = 50_000
+DIFF_MAX_LINES = 20_000
+DIFF_MAX_BYTES = 512 * 1024
+# An ENFORCEABLE bound, not a stopwatch. `difflib` does its expensive matching before it yields
+# the first line, so checking elapsed time inside the loop can only *label* a slow comparison —
+# it cannot interrupt one, and the work happens on a bounded file-panel worker. Instead the
+# comparison is refused up front when it would be too large: trim the common prefix/suffix (which
+# is O(n) and removes essentially all of a normal edit), then compare only if the remaining
+# rectangle is under budget. Real edits sit far below it; a pathological pair is answered with a
+# coarse whole-block replacement, which is O(n) and honest about what it is.
+DIFF_MAX_CELLS = 2_000_000
+
+#: git's own wording, emitted after a line whose side has no final newline.
+NO_NEWLINE_MARKER = "\\ No newline at end of file"
+
+_GIT_BIN: str | None = None
+_GIT_BIN_RESOLVED = False
+
+
+def git_bin() -> str | None:
+    """Resolved once. ``None`` ⇒ the tab renders "git is not installed", never a 500."""
+    global _GIT_BIN, _GIT_BIN_RESOLVED
+    if not _GIT_BIN_RESOLVED:
+        _GIT_BIN = shutil.which("git")
+        _GIT_BIN_RESOLVED = True
+    return _GIT_BIN
+
+
+def reset_git_bin_for_test() -> None:
+    global _GIT_BIN_RESOLVED
+    _GIT_BIN_RESOLVED = False
+
+
+def _child_env(root: str) -> dict[str, str]:
+    """An **allowlist**, not a scrubbed copy of the parent.
+
+    A denylist only removes what this module thought to name; anything it forgot — and git has a
+    lot of redirect variables — would be inherited. Building the environment from nothing means a
+    variable has to be added deliberately to have any effect.
+    """
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", root),
+        "LANG": "C",
+        "LC_ALL": "C",
+        # Never block on credentials, never take optional locks (the panel polls; the agent may be
+        # mid-commit), never page.
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_PAGER": "cat",
+        "GIT_CEILING_DIRECTORIES": root,
+    }
+
+
+class GitError(FsError):
+    """A git request failed in a way the UI should state honestly."""
+
+
+#: `--attr-source` landed in git 2.40. It is defence in depth here rather than the mechanism (the
+#: sanitized gitdir defines no driver for an attribute to bind to), so an older git is *supported*
+#: rather than refused — the flag is dropped after the first refusal and not offered again.
+_ATTR_SOURCE = True
+
+
+def _run_git(root: str, args: list[str], *, cwd: str, gitdir: str | None = None) -> bytes:
+    """Run one read-only git command; exit 0 and 1 are both answers, anything else a refusal."""
+    rc, out, _err = _run_git_rc(root, args, cwd=cwd, gitdir=gitdir)
+    if rc not in (0, 1):
+        raise GitError("git could not read this repository", status=400)
+    return out
+
+
+def _run_git_rc(
+    root: str, args: list[str], *, cwd: str, gitdir: str | None = None
+) -> tuple[int, bytes, bytes]:
+    """Run one read-only git command with a **literal argv list** and bounded output.
+
+    Returns ``(returncode, stdout, stderr-prefix)`` for the one caller that has to tell exit 0
+    from exit 1 — `merge-tree`, where 1 means a conflict (#950).
+
+    ``subprocess.run(capture_output=True)`` is deliberately not used: it buffers the entire output
+    before any code could truncate it, so an enormous status or object is fully resident before the
+    advertised cap could apply. stdout is read incrementally against a hard budget and the child is
+    killed *and reaped* on breach or timeout — never left to finish in the background.
+    """
+    exe = git_bin()
+    if not exe:
+        raise GitError("git is not installed on this host", status=501)
+    argv = [
+        exe,
+        "-c",
+        "core.fsmonitor=false",
+        *(
+            # Attributes from an EMPTY tree, so the WORK TREE's own `.gitattributes` binds
+            # nothing. The gitdir's `info/attributes` is handled structurally instead — see
+            # `sanitized_gitdir`, which gives git an `info/` that is simply empty.
+            [f"--attr-source={EMPTY_TREE}"] if _ATTR_SOURCE else []
+        ),
+        "--no-optional-locks",
+    ]
+    if gitdir is not None:
+        argv += [f"--git-dir={gitdir}", f"--work-tree={cwd}"]
+    argv += ["-C", cwd, *args]
+    proc = subprocess.Popen(  # noqa: S603 - literal argv, no shell, allowlisted subcommands
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_child_env(root),
+        cwd=cwd,
+    )
+    out = bytearray()
+    err = bytearray()
+    deadline = time.monotonic() + GIT_TIMEOUT_S
+    # `proc.stdout.read()` BLOCKS, so a deadline checked around it never fires for a silent or
+    # stalled child — measured: a child sleeping 1s returned successfully under a 50ms budget.
+    # And draining stdout to EOF before touching stderr deadlocks a child that fills the stderr
+    # pipe. Both are fixed by selecting over BOTH pipes with the remaining time as the timeout.
+    streams = [p for p in (proc.stdout, proc.stderr) if p is not None]
+    for p in streams:
+        os.set_blocking(p.fileno(), False)
+    try:
+        while streams:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise GitError("git took too long and was stopped", status=504)
+            ready, _, _ = select.select(streams, [], [], min(remaining, 0.25))
+            for p in ready:
+                try:
+                    # `os.read`, not `p.read`: a non-blocking BufferedReader returns **None** on
+                    # EAGAIN, which is falsy — indistinguishable from the b"" that means EOF, so
+                    # a spurious wakeup would drop a live stream. `os.read` raises instead.
+                    chunk = os.read(p.fileno(), _READ_CHUNK)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    streams.remove(p)
+                    continue
+                if p is proc.stdout:
+                    out += chunk
+                    if len(out) > GIT_MAX_STDOUT:
+                        raise GitError(
+                            "git produced more output than the panel will read", status=413
+                        )
+                elif len(err) < 8192:
+                    err += chunk
+        proc.wait(timeout=max(0.05, deadline - time.monotonic()))
+    except GitError:
+        proc.kill()
+        proc.wait()
+        raise
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise GitError("git took too long and was stopped", status=504) from None
+    finally:
+        for p in (proc.stdout, proc.stderr):
+            if p is not None:
+                p.close()
+    if proc.returncode not in (0, 1) and _ATTR_SOURCE and b"attr-source" in bytes(err[:4096]):
+        # An earlier version failed CLOSED here, because safety depended on the flag. It no
+        # longer does — the sanitized gitdir defines no driver — so refusing to run on git
+        # 2.39 would be a hard error for no security gain. Drop it once and retry.
+        _disable_attr_source()
+        return _run_git_rc(root, args, cwd=cwd, gitdir=gitdir)
+    return proc.returncode, bytes(out), bytes(err)
+
+
+def _disable_attr_source() -> None:
+    global _ATTR_SOURCE
+    _ATTR_SOURCE = False
+
+
+def reset_attr_source_for_test() -> None:
+    global _ATTR_SOURCE
+    _ATTR_SOURCE = True
+
+
+# --------------------------------------------------------------------------- discovery
+
+
+def _contained(path: str) -> bool:
+    root = home_root()
+    real = os.path.realpath(path)
+    return real == root or real.startswith(root + os.sep)
+
+
+def _resolve_gitdir_file(gitfile: str) -> str | None:
+    """Parse a ``.git`` FILE and return the gitdir it names, or None if unparseable."""
+    try:
+        with open(gitfile, encoding="utf-8", errors="replace") as fh:
+            head = fh.read(4096)
+    except OSError:
+        return None
+    for line in head.splitlines():
+        if line.startswith("gitdir:"):
+            target = line.split(":", 1)[1].strip()
+            if not target:
+                return None
+            if os.path.isabs(target):
+                return target
+            return os.path.join(os.path.dirname(gitfile), target)
+    return None
+
+
+def _config_includes_are_contained(gitdir: str) -> bool:
+    """Refuse a repo whose own config pulls in a file outside the root.
+
+    A contained ``.git/config`` can carry ``include.path`` / ``includeIf.*.path`` pointing anywhere,
+    and git reads and honours it — measured: an outside file set ``user.name`` and
+    ``git config --get`` returned it from inside the contained repo. The distinction being drawn is
+    deliberate and narrow: *repository*-controlled config must not reach outside the root, while the
+    operator's own system/global config is trusted and still honoured.
+    """
+    seen: set[str] = set()
+    todo = [os.path.join(gitdir, "config"), os.path.join(gitdir, "config.worktree")]
+    while todo:
+        cfg = todo.pop()
+        real = os.path.realpath(cfg)
+        if real in seen:
+            continue
+        seen.add(real)
+        if len(seen) > 32:  # a pathological include chain is itself a refusal
+            return False
+        text = _read_capped(cfg, 256 * 1024)
+        if text is None:
+            continue
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line.lower().startswith("path"):
+                continue
+            if "=" not in line:
+                continue
+            target = line.split("=", 1)[1].strip()
+            if not target:
+                continue
+            target = os.path.expanduser(target)
+            if not os.path.isabs(target):
+                target = os.path.join(os.path.dirname(cfg), target)
+            if not _contained(target):
+                return False
+            todo.append(target)
+    return True
+
+
+def _alternates_are_contained(gitdir: str) -> bool:
+    """``objects/info/alternates`` reaches an object store directly — gitdir being in-root is not
+    enough on its own."""
+    alt = os.path.join(gitdir, "objects", "info", "alternates")
+    text = _read_capped(alt, 64 * 1024)
+    if text is None:
+        return True  # absent is fine
+    lines = text.splitlines()
+    for line in lines:
+        entry = line.strip()
+        if not entry or entry.startswith("#"):
+            continue
+        if not os.path.isabs(entry):
+            entry = os.path.join(gitdir, "objects", entry)
+        if not _contained(entry):
+            return False
+    return True
+
+
+def _common_dir(gitdir: str) -> str:
+    """Resolve `<gitdir>/commondir` — present only for a linked worktree."""
+    target = (_read_capped(os.path.join(gitdir, "commondir"), 4096) or "").strip()
+    if not target:
+        return gitdir
+    if not os.path.isabs(target):
+        target = os.path.join(gitdir, target)
+    return os.path.realpath(target)
+
+
+@dataclass
+class Repo:
+    toplevel: str
+    gitdir: str
+    #: For a linked worktree, `<gitdir>/commondir` points at the shared store — objects and refs
+    #: live there while HEAD and the index stay per-worktree.
+    commondir: str = ""
+
+    def common(self) -> str:
+        return self.commondir or self.gitdir
+
+
+def discover_repo(start: str) -> Repo | None:
+    """Walk to the repository **server-side, before git is invoked at all.**
+
+    Every step is validated here because git's own answers arrive too late: by the time
+    ``--show-toplevel`` reports a contained worktree, git has already opened whatever metadata the
+    ``.git`` file pointed at. Returns ``None`` for "not a repository", which is a state rather than
+    an error; raises only when something is found and refused.
+    """
+    root = home_root()
+    cur = os.path.realpath(start)
+    while True:
+        dot = os.path.join(cur, ".git")
+        if os.path.isdir(dot):
+            gitdir = dot
+        elif os.path.isfile(dot):
+            target = _resolve_gitdir_file(dot)
+            if target is None:
+                return None
+            if not _contained(target):
+                raise GitError(
+                    "this repository's git directory is outside the browsable root", status=403
+                )
+            gitdir = os.path.realpath(target)
+        else:
+            if cur == root or not cur.startswith(root + os.sep):
+                return None
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                return None
+            cur = parent
+            continue
+
+        if not _contained(gitdir):
+            raise GitError("the git directory is outside the browsable root", status=403)
+        common = _common_dir(gitdir)
+        if not _contained(common):
+            raise GitError("the shared git directory is outside the browsable root", status=403)
+        # Checked on BOTH: a linked worktree's own gitdir holds HEAD, the index and
+        # `config.worktree`, while `config`, `objects` and `refs` live in the commondir. Checking
+        # only the gitdir passed vacuously for every linked worktree — the files being validated
+        # were not there to read.
+        for d in {gitdir, common}:
+            for child in ("objects", "refs", "reftable", "logs"):
+                _verified_metadata_dir(d, child)  # raises 403 if it resolves outside
+            if not _config_includes_are_contained(d):
+                raise GitError(
+                    "this repository's config includes a file outside the root", status=403
+                )
+            if not _alternates_are_contained(d):
+                raise GitError("this repository uses an object store outside the root", status=403)
+        return Repo(toplevel=cur, gitdir=gitdir, commondir=common)
+
+
+# --------------------------------------------------------------------------- sanitized metadata
+
+GIT_MAX_REFS = 20_000
+GIT_MAX_REFS_BYTES = 8 * 1024 * 1024
+GIT_MAX_INDEX_BYTES = 256 * 1024 * 1024
+_REF_VALUE = re.compile(r"\A[A-Za-z0-9._/+-]{1,255}\Z")
+
+
+def _open_nofollow(path: str) -> int | None:
+    """Open exactly the named entry, never what a symlink at that name points to.
+
+    Checking a path and then opening it are two different operations on two different objects: the
+    name can be replaced in between. `O_NOFOLLOW` closes that gap by refusing at the syscall — the
+    open fails outright if the final component is a symlink, so there is no window to lose. The
+    `fstat` is on the descriptor already held, so it describes the file that was actually opened.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            return None
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _read_capped(path: str, limit: int) -> str | None:
+    fd = _open_nofollow(path)
+    if fd is None:
+        return None
+    try:
+        chunks: list[bytes] = []
+        got = 0
+        while got < limit:
+            chunk = os.read(fd, min(_READ_CHUNK, limit - got))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            got += len(chunk)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def _copy_nofollow(src: str, dst: str, limit: int, *, keep_mtime: bool = False) -> bool:
+    """Copy a metadata file through a verified descriptor. False ⇒ absent, a symlink, or too big.
+
+    `shutil.copyfile` follows symlinks and stats the name rather than the handle, so a metadata
+    file swapped for a link between the check and the copy would be read from wherever it pointed.
+
+    ``keep_mtime`` carries the SOURCE's timestamps onto the copy. That is load-bearing for the
+    index — see ``sanitized_gitdir`` — and harmless for everything else, so it is opt-in rather
+    than the default.
+    """
+    fd = _open_nofollow(src)
+    if fd is None:
+        return False
+    try:
+        st = os.fstat(fd)
+        if st.st_size > limit:
+            return False
+        with open(dst, "wb") as out:
+            while True:
+                chunk = os.read(fd, _READ_CHUNK)
+                if not chunk:
+                    break
+                out.write(chunk)
+        if keep_mtime:
+            os.utime(dst, ns=(st.st_atime_ns, st.st_mtime_ns))
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    return True
+
+
+def _verified_metadata_dir(parent: str, name: str) -> str | None:
+    """Resolve a metadata directory and refuse it if it lands outside the root.
+
+    The gitdir being contained says nothing about its *children*: `.git/objects` can be a symlink
+    to an external object store, and the snapshot would link straight through to it — measured, a
+    repository whose objects lived in `/tmp` returned real blobs through the DIFF API. Same class
+    of escape as `objects/info/alternates`, which was already refused; this is the same door with
+    a different handle.
+
+    The resolved path is what the caller uses, so what was verified is what gets consumed.
+    """
+    target = os.path.join(parent, name)
+    if not os.path.exists(target):
+        return None
+    real = os.path.realpath(target)
+    if not _contained(real):
+        raise GitError(
+            "this repository keeps its git metadata outside the browsable root", status=403
+        )
+    return real if os.path.isdir(real) else None
+
+
+def _head_branch(gitdir: str) -> str | None:
+    text = _read_capped(os.path.join(gitdir, "HEAD"), 4096) or ""
+    line = text.strip()
+    if line.startswith("ref: refs/heads/"):
+        return line[len("ref: refs/heads/") :] or None
+    return None
+
+
+def _upstream_config(commondir: str, branch: str | None) -> str:
+    """The two keys needed for ahead/behind, read WITHOUT git and WITHOUT following includes.
+
+    These are ref *names*, never commands, and they are re-emitted into a config this module
+    writes — so the repository contributes data to a file it does not control. Anything that does
+    not look like a ref name is dropped rather than passed on.
+    """
+    if not branch:
+        return ""
+    text = _read_capped(os.path.join(commondir, "config"), 256 * 1024)
+    if text is None:
+        return ""
+    want = f'[branch "{branch}"]'
+    section = False
+    remote = merge = ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("["):
+            section = line == want
+            continue
+        if not section or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip().lower(), value.strip().strip('"')
+        if key == "remote" and _REF_VALUE.match(value):
+            remote = value
+        elif key == "merge" and _REF_VALUE.match(value):
+            merge = value
+    if not (remote and merge):
+        return ""
+    return (
+        f'[branch "{branch}"]\n\tremote = {remote}\n\tmerge = {merge}\n'
+        f'[remote "{remote}"]\n\tfetch = +refs/heads/*:refs/remotes/{remote}/*\n'
+    )
+
+
+def head_sha(path: str | None, branch: str | None = None) -> str | None:
+    """The commit a branch (or HEAD) points at, read straight from the refs (#891/#897).
+
+    A READ, on the same terms as `remote_url` beside it: bounded file reads, no subprocess, no
+    include expansion. The mission probes need it to tell one incarnation of a reused branch name
+    from another — `devopsagent/<slug>` is reused constantly here, so the NAME is not identity and
+    a closed PR found by name alone can belong to entirely different work.
+    """
+    base = contained_path(path or "")
+    repo = discover_repo(base)
+    if repo is None:
+        return None
+    branch = branch or _head_branch(repo.gitdir)
+    sha = _resolve_head_sha(repo, branch)
+    if sha and sha.startswith("ref:"):
+        return None
+    return sha
+
+
+def remote_url(path: str | None, name: str = "origin") -> str | None:
+    """The configured URL of one remote, read WITHOUT git and WITHOUT following includes (#891).
+
+    A READ, and deliberately the same shape as `_upstream_config` above rather than a second way
+    of getting at the config: bounded `_read_capped`, no `include.path` expansion, no subprocess.
+    The repository being inspected is one an agent is actively writing to, so "just run
+    `git remote get-url`" would let that repository's own config decide what the command does —
+    the class of problem #825 / #842 exist for.
+
+    The value is returned VERBATIM and is treated as untrusted by every caller: the mission probe
+    only ever parses an `owner/name` pair out of it, and never hands it to a subprocess.
+    """
+    base = contained_path(path or "")
+    repo = discover_repo(base)
+    if repo is None:
+        return None
+    text = _read_capped(os.path.join(_common_dir(repo.gitdir), "config"), 256 * 1024)
+    if text is None:
+        return None
+    want = f'[remote "{name}"]'
+    section = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("["):
+            section = line == want
+            continue
+        if not section or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if key.strip().lower() == "url":
+            v = value.strip().strip('"')
+            return v or None
+    return None
+
+
+def _copy_refs(src: str, dst: str) -> bool:
+    """Copy the ref tree, bounded. False ⇒ too big; the caller degrades to a detached HEAD."""
+    count = 0
+    total = 0
+    for cur, _dirs, names in os.walk(src):
+        # Directories count too. Bounding only files let a tree of a million empty directories
+        # walk unbounded — the same shape of hole as the config preflight, one level down.
+        count += 1
+        if count > GIT_MAX_REFS:
+            return False
+        rel = os.path.relpath(cur, src)
+        os.makedirs(os.path.join(dst, rel), exist_ok=True)
+        for name in names:
+            count += 1
+            if count > GIT_MAX_REFS:
+                return False
+            srcf = os.path.join(cur, name)
+            try:
+                total += os.lstat(srcf).st_size
+            except OSError:
+                continue
+            if total > GIT_MAX_REFS_BYTES:
+                return False
+            # A symlinked ref could point anywhere, so it is skipped rather than followed —
+            # and skipping is decided by the OPEN, not by a preceding stat that a swap can outrun.
+            _copy_nofollow(srcf, os.path.join(dst, rel, name), GIT_MAX_REFS_BYTES)
+    return True
+
+
+@contextmanager
+def sanitized_gitdir(repo: Repo):
+    """A private git directory holding only what reading requires — and no config the repo wrote.
+
+    This replaces an earlier approach that enumerated the repository's conversion drivers and
+    disabled each by name. That worked, but it had an enumerate-then-use gap: a concurrent write
+    between the enumeration and the command could introduce a driver the generated flags did not
+    cover, and (review's second point) the enumeration itself was unbounded — a config naming
+    120_000 filters expanded into an argv that never finished building.
+
+    Both problems are properties of *consulting* repository config at all. So none is consulted:
+    git runs against a directory this module assembles, containing
+
+    * ``objects`` — a symlink to the real store (read-only use; alternates already validated),
+    * ``index`` and ``HEAD`` — copied, so a refresh writes to the copy and never the repository,
+    * ``refs`` / ``packed-refs`` — copied within a bound,
+    * ``config`` — **written here**, carrying only ``core.*`` plus the upstream ref names,
+    * ``info/`` — empty, so ``info/attributes`` cannot bind a path to a driver.
+
+    A driver the repository defines is therefore not disabled — it is never read, so there is
+    nothing to race. It also makes "never writes to the repository" structural rather than a
+    property of the flags passed.
+
+    The copy is per call and bounded; on this repo the index is 57 KB.
+    """
+    tmp = tempfile.mkdtemp(prefix="agent-sessions-git-")
+    try:
+        common = repo.common()
+        # The RESOLVED object store, verified contained — not the name, which can be a symlink out
+        # of the root. Linking to the resolved path also means what was checked is what is used.
+        objects = _verified_metadata_dir(common, "objects")
+        if objects is None:
+            raise GitError("this repository has no readable object store", status=400)
+        os.symlink(objects, os.path.join(tmp, "objects"))
+        os.makedirs(os.path.join(tmp, "info"), exist_ok=True)
+        os.makedirs(os.path.join(tmp, "refs"), exist_ok=True)
+
+        # A repo with no index yet is legal; status then reports everything as untracked. An index
+        # that EXISTS but cannot be taken is a different thing and must not be silently skipped:
+        # git would compare the worktree against an empty index and report a plausible, wrong set
+        # of changes (measured: one path listed twice, as both a staged delete and an addition).
+        index = os.path.join(repo.gitdir, "index")
+        # `keep_mtime` is CORRECTNESS here, not tidiness (#797).
+        #
+        # git can usually decide a file is unchanged from `stat` alone, by comparing it against
+        # the stat cached in the index. That shortcut is unsound for an edit made in the same
+        # timestamp granule as the index write — same size, same mtime, different content — so
+        # git guards it: any entry whose mtime is >= the INDEX FILE's own mtime is "racily
+        # clean" and gets re-hashed instead of trusted.
+        #
+        # A fresh copy has a fresh mtime, which makes every entry look comfortably older than
+        # the index and switches that guard off. The result is git reporting **no change for a
+        # file that changed** — measured: a same-size edit made in the same second as the commit
+        # is reported as modified when the panel runs within that second, and as clean once a
+        # second has passed (6/6 reproducible). That is the panel's worst possible failure, and
+        # it reached the Git tab as an intermittent "this file has no recorded change" 404.
+        #
+        # Carrying the source's timestamps over makes the snapshot's racy-clean arithmetic
+        # identical to the real gitdir's, which is the whole intent of the copy.
+        if os.path.lexists(index) and not _copy_nofollow(
+            index, os.path.join(tmp, "index"), GIT_MAX_INDEX_BYTES, keep_mtime=True
+        ):
+            raise GitError("this repository's index could not be read safely", status=400)
+
+        branch = _head_branch(repo.gitdir)
+        refs_src = _verified_metadata_dir(common, "refs")
+        refs_ok = refs_src is None or _copy_refs(refs_src, os.path.join(tmp, "refs"))
+        reftable_src = _verified_metadata_dir(common, "reftable")
+        if refs_ok and reftable_src is not None:
+            # git 2.45+ can store refs in `reftable/` with no `refs/` tree at all; without this the
+            # snapshot would have no refs to resolve HEAD against.
+            refs_ok = _copy_refs(os.path.join(common, "reftable"), os.path.join(tmp, "reftable"))
+        packed = os.path.join(common, "packed-refs")
+        if refs_ok and os.path.lexists(packed):
+            refs_ok = _copy_nofollow(packed, os.path.join(tmp, "packed-refs"), GIT_MAX_REFS_BYTES)
+
+        head_src = _read_capped(os.path.join(repo.gitdir, "HEAD"), 4096) or ""
+        if refs_ok and head_src.strip():
+            head = head_src
+        else:
+            # Too many refs to snapshot: fall back to a detached HEAD at the resolved commit.
+            # Everything still works except upstream divergence, which the UI already renders as
+            # "NO DIVERGENCE DATA" rather than inventing a zero.
+            head = _resolve_head_sha(repo, branch) or ""
+            branch = branch if head else None
+            refs_ok = False
+        if not head.strip():
+            # Better a named refusal than a directory git will reject as "not a git repository".
+            raise GitError("git could not read this repository's HEAD", status=400)
+        with open(os.path.join(tmp, "HEAD"), "w", encoding="utf-8") as fh:
+            fh.write(head if head.endswith("\n") else head + "\n")
+
+        cfg = "[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tlogallrefupdates = false\n"
+        if refs_ok:
+            cfg += _upstream_config(common, branch)
+        with open(os.path.join(tmp, "config"), "w", encoding="utf-8") as fh:
+            fh.write(cfg)
+        yield tmp, branch
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _resolve_head_sha(repo: Repo, branch: str | None) -> str | None:
+    """Resolve HEAD to a raw sha by reading refs directly — no git, no ref enumeration."""
+    common = repo.common()
+    if branch:
+        direct = (_read_capped(os.path.join(common, "refs", "heads", branch), 128) or "").strip()
+        if direct:
+            return direct
+        packed = _read_capped(os.path.join(common, "packed-refs"), 8 * 1024 * 1024) or ""
+        for line in packed.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1] == f"refs/heads/{branch}":
+                return parts[0]
+        return None
+    head = (_read_capped(os.path.join(repo.gitdir, "HEAD"), 128) or "").strip()
+    return head or None
+
+
+def _verify_with_git(repo: Repo, gitdir: str) -> None:
+    """Re-ask git where the WORK TREE is and re-contain the answer.
+
+    Only the work tree is checked now. The git directory is this module's own temporary copy, so
+    asking git about it would just confirm a path we wrote ourselves — and that path is outside
+    the browsable root by construction, which the old check would have refused.
+    """
+    out = _run_git(
+        home_root(),
+        ["rev-parse", "--show-toplevel", "--path-format=absolute"],
+        cwd=repo.toplevel,
+        gitdir=gitdir,
+    ).decode("utf-8", errors="replace")
+    for line in out.splitlines():
+        p = line.strip()
+        if p and not _contained(p):
+            raise GitError("this repository reaches outside the browsable root", status=403)
+
+
+# --------------------------------------------------------------------------- status
+
+
+def _parse_porcelain_v2(blob: bytes, root: str = "") -> dict:
+    """NUL-delimited porcelain v2.
+
+    ``-z`` matters: v1 and non-``-z`` output *quote-escape* paths containing spaces, quotes,
+    newlines or non-ASCII bytes, so a parser built on that is wrong for real repositories. Records
+    are length-delimited here instead, and a rename's two paths arrive as two NUL-separated fields.
+    """
+    branch: str | None = None
+    head_oid: str | None = None
+    upstream: str | None = None
+    ahead: int | None = None
+    behind: int | None = None
+    entries: list[dict] = []
+    truncated = False
+
+    fields = blob.split(b"\x00")
+    i = 0
+    while i < len(fields):
+        rec = fields[i]
+        i += 1
+        if not rec:
+            continue
+        # A path is bytes to git. Decoding with `replace` is right for DISPLAY and wrong for
+        # IDENTITY: `bad\xff` and a real file named `bad\ufffd` then read as the same row, and a
+        # write aimed at one lands on the other (Hermes on #964, review 4833). Such a row is marked
+        # `undecodable`, and `gitwrite.validate_paths` refuses to act on its name.
+        try:
+            text = rec.decode("utf-8")
+            lossy = False
+        except UnicodeDecodeError:
+            text = rec.decode("utf-8", errors="replace")
+            lossy = True
+        if text.startswith("# branch.head "):
+            head = text[len("# branch.head ") :]
+            branch = None if head == "(detached)" else head
+            continue
+        if text.startswith("# branch.oid "):
+            # The commit HEAD is on — what a write that must act on "the commit the operator was
+            # shown" binds to (#950). `(initial)` is a branch with no commit yet.
+            oid = text[len("# branch.oid ") :].strip()
+            head_oid = None if oid == "(initial)" else oid
+            continue
+        if text.startswith("# branch.upstream "):
+            upstream = text[len("# branch.upstream ") :]
+            continue
+        if text.startswith("# branch.ab "):
+            parts = text[len("# branch.ab ") :].split()
+            for p in parts:
+                if p.startswith("+"):
+                    ahead = int(p[1:])
+                elif p.startswith("-"):
+                    behind = int(p[1:])
+            continue
+        if text.startswith("#"):
+            continue
+        if len(entries) >= GIT_MAX_ENTRIES:
+            truncated = True
+            continue
+
+        start = len(entries)
+        kind = text[0]
+        if kind == "?":
+            entries.append(
+                {"path": text[2:], "index": "?", "worktree": "?", "kind": "untracked", "oid": None}
+            )
+        elif kind == "1":
+            # 1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>
+            parts = text.split(" ", 8)
+            if len(parts) < 9:
+                continue
+            xy, oid_head, oid_index, path = parts[1], parts[6], parts[7], parts[8]
+            entries.extend(_split_xy(path, xy, oid_head, oid_index, parts[3], parts[4]))
+        elif kind == "2":
+            # 2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <score> <path>\0<orig>
+            parts = text.split(" ", 9)
+            if len(parts) < 10:
+                continue
+            xy, oid_head, oid_index, path = parts[1], parts[6], parts[7], parts[9]
+            orig_raw = fields[i] if i < len(fields) else b""
+            try:
+                orig = orig_raw.decode("utf-8")
+            except UnicodeDecodeError:
+                orig = orig_raw.decode("utf-8", errors="replace")
+                lossy = True
+            i += 1
+            for e in _split_xy(path, xy, oid_head, oid_index, parts[3], parts[4]):
+                e["orig_path"] = orig
+                entries.append(e)
+        elif kind == "u":
+            # u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>
+            parts = text.split(" ", 10)
+            if len(parts) < 11:
+                continue
+            # h1/h2/h3 = base / ours / theirs. Dropping them left the conflict DIFF comparing
+            # two empty blobs against the marker-laden worktree file, which is the one view of a
+            # conflict that tells you nothing. Ours-vs-theirs is the comparison a conflict is about.
+            entries.append(
+                {
+                    "path": parts[10],
+                    "index": parts[1][0],
+                    "worktree": parts[1][1],
+                    "kind": "unmerged",
+                    "oid": None,
+                    "oid_base": parts[7],
+                    "oid_ours": parts[8],
+                    "oid_theirs": parts[9],
+                }
+            )
+        if lossy:
+            for e in entries[start:]:
+                e["undecodable"] = True
+    for e in entries:
+        # The root travels with the entry only long enough to fingerprint it; it is not part of
+        # the payload the client sees.
+        e["_root"] = root
+        e["fp"] = entry_fingerprint(e)
+        e.pop("_root", None)
+    return {
+        "branch": branch,
+        "head": head_oid,
+        "upstream": upstream,
+        "ahead": ahead,
+        "behind": behind,
+        "entries": entries,
+        "truncated": truncated,
+        # What the STAGED set looked like when this was read. A commit records the whole index,
+        # not the rows the operator ticked, so binding a commit to individual paths would still
+        # let a file staged in the meantime ride along unseen.
+        "staged_fp": staged_fingerprint(entries),
+        # And whether the tree was clean, for the operations whose precondition is exactly that.
+        "dirty_fp": dirty_fingerprint(entries),
+    }
+
+
+def entry_fingerprint(e: dict) -> str:
+    """What this row IS, not what it is called.
+
+    Every write in the panel was bound to a pathname, so "discard a.txt" meant "discard whatever
+    a.txt contains when the command runs" — not the bytes the operator looked at and confirmed.
+    The session agent shares the worktree and does not take the panel's lock, so the gap is
+    reachable without any concurrent panel use at all.
+
+    The fingerprint covers the identity of the content on both sides of the index, so a row that
+    changed in any way the panel would have re-rendered no longer matches the one confirmed.
+    """
+    material = "\x00".join(
+        str(e.get(k) or "")
+        for k in ("path", "kind", "index", "worktree", "oid", "oid_ours", "oid_theirs")
+    )
+    # …plus the WORKTREE side, which none of the above carries. `oid` is the INDEX blob, and it
+    # does not move when the agent edits the working file — so a fingerprint built from porcelain
+    # alone matched happily across exactly the edit this exists to catch (measured: the discard
+    # regression did not raise). git never hashes worktree files during `status`, so identity here
+    # is `(size, mtime_ns)` rather than content.
+    #
+    # Residual, stated: a rewrite that keeps both the size AND the mtime is not distinguished.
+    # That takes deliberately restoring the timestamp; an agent editing a file does neither.
+    material += "\x00" + _worktree_stat(e.get("_root") or "", e.get("path") or "")
+    return hashlib.sha256(material.encode("utf-8", "surrogateescape")).hexdigest()[:16]
+
+
+def _worktree_stat(root: str, path: str) -> str:
+    """`size:mtime_ns` for a tracked path, or `-` when it is absent (a deletion is a state too)."""
+    if not root or not path:
+        return "-"
+    try:
+        st = os.stat(os.path.join(root, path))
+    except OSError:
+        return "-"
+    return f"{st.st_size}:{st.st_mtime_ns}"
+
+
+def staged_fingerprint(entries: list[dict]) -> str:
+    """The reviewed index delta, including blob and mode identities, independent of worktree."""
+    # A staged row's legacy `oid` names HEAD, not the index. Re-hashing entry_fingerprint
+    # therefore missed a same-path restage once `_root` was removed (#979). Bind the actual
+    # index blob/mode and rename source explicitly; unstaged worktree edits are not committed.
+    fields = (
+        "path",
+        "orig_path",
+        "index",
+        "oid_head",
+        "oid_index",
+        "mode_head",
+        "mode_index",
+        "oid_base",
+        "oid_ours",
+        "oid_theirs",
+    )
+    staged = sorted(
+        "\x00".join(str(e.get(k) or "") for k in fields)
+        for e in entries
+        if e.get("index") not in (".", "?", None, "")
+    )
+    return hashlib.sha256("\x00".join(staged).encode("utf-8", "surrogateescape")).hexdigest()[:16]
+
+
+def dirty_fingerprint(entries: list[dict]) -> str:
+    """The set of paths making the tree dirty — what `switch` and `pull` refuse on."""
+    dirty = sorted(e.get("path", "") for e in entries if e.get("kind") != "untracked")
+    return hashlib.sha256("\x00".join(dirty).encode()).hexdigest()[:16]
+
+
+def _split_xy(
+    path: str,
+    xy: str,
+    oid_head: str,
+    oid_index: str,
+    mode_head: str = "",
+    mode_index: str = "",
+) -> list[dict]:
+    """One porcelain record can mean two rows.
+
+    ``MM`` is a staged edit *and* a later unstaged one. That is real git state, so it renders in
+    both groups, and each row carries the oids its own diff needs rather than sharing one.
+    """
+    out: list[dict] = []
+    x, y = xy[0], xy[1]
+    # BOTH oids ride BOTH rows. Carrying only one made every staged diff compare HEAD with itself
+    # — the index side was read from a key nothing ever wrote — so staged rows came back empty
+    # while `git diff --cached` showed real changes. The modes ride too (#950): whether an index
+    # entry still holds the last commit's PARENT version is a `(mode, oid)` question.
+    oids = {
+        "oid_head": oid_head,
+        "oid_index": oid_index,
+        "mode_head": mode_head,
+        "mode_index": mode_index,
+    }
+    if x != ".":
+        out.append(
+            {"path": path, "index": x, "worktree": ".", "kind": "staged", "oid": oid_head, **oids}
+        )
+    if y != ".":
+        out.append(
+            {"path": path, "index": ".", "worktree": y, "kind": "changed", "oid": oid_index, **oids}
+        )
+    return out
+
+
+# --------------------------------------------------------------------------- single flight
+
+
+@dataclass
+class _Flight:
+    event: threading.Event = field(default_factory=threading.Event)
+    value: dict | None = None
+    error: BaseException | None = None
+    at: float = 0.0
+    #: The epoch this flight STARTED in. A caller that has just mutated the repository asks for a
+    #: value produced at or after its own epoch, so an in-flight read that began before the write
+    #: can never be handed back as the post-write answer (#806, found in review).
+    epoch: int = 0
+
+
+_flights_lock = threading.Lock()
+_flights: dict[str, _Flight] = {}
+_epochs: dict[str, int] = {}
+
+
+def bump_epoch(key: str) -> int:
+    """Mark everything known about ``key`` as belonging to the past. Returns the new epoch."""
+    with _flights_lock:
+        nxt = _epochs.get(key, 0) + 1
+        _epochs[key] = nxt
+        fl = _flights.get(key)
+        # A SETTLED entry is dropped outright; an unsettled one is left for the followers already
+        # waiting on it (orphaning them is the bug this cache exists to prevent) — it simply
+        # cannot satisfy anyone asking for the new epoch.
+        if fl is not None and fl.event.is_set():
+            _flights.pop(key, None)
+        return nxt
+
+
+def _single_flight(
+    key: str, produce, min_epoch: int | None = None, *, epoch_key: str | None = None
+):
+    """One run per repo at a time, with a 1s reuse window.
+
+    A TTL cache alone does not coalesce simultaneous *cold* misses: N pollers arriving together
+    each miss, each spawn git, and each then populate the cache. The leader/follower split is what
+    actually makes "N pollers, one subprocess" true.
+
+    ``min_epoch`` is the write path's guard. Dropping a settled entry is not enough on its own:
+    a read already IN FLIGHT when the write landed would be rejoined and its pre-write value
+    returned as the result of the write (measured — a fetch reported ``behind: 0`` while a fresh
+    read straight after reported ``behind: 1``). A flight older than ``min_epoch`` is therefore
+    neither reused nor joined; a new one starts.
+    """
+    now = time.monotonic()
+    with _flights_lock:
+        cur = _epochs.get(epoch_key or key, 0)
+        fl = _flights.get(key)
+        required = max(min_epoch or 0, cur if epoch_key is not None else 0)
+        current_enough = fl is not None and fl.epoch >= required
+        if fl is not None and current_enough and fl.event.is_set() and now - fl.at < _STATUS_TTL_S:
+            if fl.error:
+                raise fl.error
+            return fl.value
+        if fl is not None and current_enough and not fl.event.is_set():
+            leader = False
+        else:
+            fl = _Flight(epoch=cur)
+            _flights[key] = fl
+            leader = True
+    if not leader:
+        fl.event.wait(GIT_TIMEOUT_S + 2)
+        if fl.error:
+            raise fl.error
+        return fl.value
+    try:
+        fl.value = produce()
+    except BaseException as e:  # noqa: BLE001 - recorded and re-raised to every follower
+        fl.error = e
+        fl.at = time.monotonic()
+        fl.event.set()
+        raise
+    fl.at = time.monotonic()
+    fl.event.set()
+    return fl.value
+
+
+def reset_flights_for_test() -> None:
+    with _flights_lock:
+        _flights.clear()
+        _epochs.clear()
+
+
+def invalidate_status(key: str) -> None:
+    """Mark the cached status for one repo stale — called after a WRITE (#806).
+
+    Without this, a completed fetch/switch/commit could be followed by up to a second of the
+    pre-write status, so the panel would show the operator a state their own action had already
+    replaced. A finished write is exactly the moment the cached answer is known to be wrong.
+
+    Implemented as an epoch bump rather than only a cache drop, because a drop alone leaves the
+    *in-flight* case open — see :func:`_single_flight`.
+    """
+    bump_epoch(key)
+
+
+def git_status(path: str | None, min_epoch: int | None = None) -> dict:
+    """Repository state for ``path``. ``repo: None`` is a normal 200 — "not a repo" is a state.
+
+    ``min_epoch`` is for the write path: it demands a value produced at or after that epoch, so
+    a read that began before the mutation cannot be handed back as its result.
+    """
+    base = contained_path(path or "")
+    repo = discover_repo(base)
+    if repo is None:
+        return {
+            "repo": None,
+            "branch": None,
+            "upstream": None,
+            "ahead": None,
+            "behind": None,
+            "entries": [],
+            "truncated": False,
+            "head": None,
+            "unsettled": [],
+            "unsettled_worktree": [],
+        }
+
+    def produce() -> dict:
+        with sanitized_gitdir(repo) as (gitdir, branch):
+            _verify_with_git(repo, gitdir)
+            blob = _run_git(
+                home_root(),
+                ["status", "--porcelain=v2", "--branch", "--untracked-files=all", "-z"],
+                cwd=repo.toplevel,
+                gitdir=gitdir,
+            )
+            parsed = _parse_porcelain_v2(blob, repo.toplevel)
+            # git reports `(detached)` when the ref snapshot was too large to copy, but the branch
+            # name was read straight from HEAD and is still known.
+            parsed["branch"] = parsed["branch"] or branch
+            parsed["repo"] = repo.toplevel
+            # HEAD's changes are read ONCE per status and asked two questions of: does the index
+            # still hold the parent's entry, and does the worktree still hold the parent's bytes.
+            changes = _head_changes(repo, gitdir, parsed.get("head"))
+            parsed["unsettled"] = _unsettled_from(changes, parsed["entries"])
+            parsed["unsettled_worktree"] = _unsettled_worktree(
+                repo, gitdir, changes, parsed["entries"]
+            )
+            return parsed
+
+    return _single_flight(repo.toplevel, produce, min_epoch=min_epoch)
+
+
+#: How many worktree files `unsettled_worktree` hashes on one status read, and how large each
+#: may be. Past either bound the answer is ``None`` — "could not be determined" — never a guess.
+UNSETTLED_WORKTREE_MAX = 50
+UNSETTLED_WORKTREE_BYTES = 8 * 1024 * 1024
+
+_Changes = dict[str, tuple[tuple[str, str] | None, tuple[str, str] | None]]
+
+
+def _head_changes(repo: Repo, gitdir: str, head: str | None) -> _Changes | None:
+    """The paths HEAD changed against its parent, as ``{path: (before, after)}``.
+
+    Read on the sanitized gitdir like everything else on this path. `cat-file` reads the commit's
+    parent lines; `diff-tree --raw` lists changed paths as modes and object ids only — it produces
+    no content diff, so no textconv, external diff or filter driver has anything to run, and the
+    sanitized gitdir defines none anyway. A merge at HEAD (the panel never makes one) and a missing
+    HEAD give ``{}``; a root commit compares against the empty tree. ``None`` means "could not be
+    determined" (for example a commit too large for the output budget), never "nothing changed".
+    """
+    if not head:
+        return {}
+    try:
+        raw_commit = _run_git(
+            home_root(), ["cat-file", "commit", head], cwd=repo.toplevel, gitdir=gitdir
+        )
+    except GitError:
+        return None
+    header = raw_commit.decode("utf-8", "replace").split("\n\n", 1)[0]
+    parents = [
+        ln[len("parent ") :].strip() for ln in header.splitlines() if ln.startswith("parent ")
+    ]
+    if len(parents) > 1:
+        return {}
+    base = parents[0] if parents else EMPTY_TREE
+    try:
+        blob = _run_git(
+            home_root(),
+            ["diff-tree", "-r", "-z", "--no-renames", "--raw", base, head, "--"],
+            cwd=repo.toplevel,
+            gitdir=gitdir,
+        )
+    except GitError:
+        return None
+    return _parse_raw(blob)
+
+
+def _index_differs(entries: list[dict]) -> dict[str, tuple[str, str] | None]:
+    """What the index holds for every path it differs from HEAD on. Absent = at HEAD's entry."""
+    index_of: dict[str, tuple[str, str] | None] = {}
+    for e in entries:
+        if e.get("kind") != "staged":
+            continue
+        if e.get("orig_path"):
+            index_of[e["orig_path"]] = None  # a staged rename: the old name left the index
+        if e.get("index") == "D" or e.get("mode_index") in ("", "000000"):
+            index_of[e["path"]] = None
+        else:
+            index_of[e["path"]] = (e.get("mode_index") or "", e.get("oid_index") or "")
+    return index_of
+
+
+def _unsettled_from(changes: _Changes | None, entries: list[dict]) -> list[str] | None:
+    """Paths the last commit changed whose index entry still holds the commit's PARENT version.
+
+    Such a path reads as a staged change that would REVERT the last commit — which is what a
+    commit whose index settlement is still pending looks like (#950), and also what a reversal
+    staged on purpose looks like. The two cannot be told apart from repository state, which is why
+    the panel reports this rather than acting on it.
+    """
+    if changes is None:
+        return None
+    index_of = _index_differs(entries)
+    return sorted(
+        p for p, (before, _after) in changes.items() if p in index_of and index_of[p] == before
+    )
+
+
+def _unsettled(repo: Repo, gitdir: str, head: str | None, entries: list[dict]) -> list[str] | None:
+    """`_unsettled_from` for callers that have not read HEAD's changes yet."""
+    return _unsettled_from(_head_changes(repo, gitdir, head), entries)
+
+
+def _unsettled_worktree(
+    repo: Repo, gitdir: str, changes: _Changes | None, entries: list[dict]
+) -> list[str] | None:
+    """Paths the last commit changed whose index is AT the commit but whose worktree file still
+    holds the PARENT's version (#950).
+
+    A revert that could not write one of its files leaves exactly this: committed, indexed, and the
+    file on disk still the pre-revert content — an unstaged change that would undo the revert. Like
+    `unsettled` it is derived from state, so it survives a reload, and like `unsettled` it is only
+    reported: SETTLE is the operator's click. A staged path is `unsettled`'s question, not this one.
+
+    Hashed with `hash-object --no-filters` on the sanitized gitdir: no `-w`, so nothing is written,
+    and no clean filter runs. Regular files only, and bounded — past `UNSETTLED_WORKTREE_MAX`
+    candidates or a file over `UNSETTLED_WORKTREE_BYTES` the answer is ``None``.
+    """
+    if changes is None:
+        return None
+    if not changes:
+        return []
+    index_of = _index_differs(entries)
+    worktree = {e["path"]: e for e in entries if e.get("kind") in ("changed", "untracked")}
+    out: list[str] = []
+    to_hash: list[tuple[str, tuple[str, str]]] = []
+    for p, (before, _after) in changes.items():
+        if p in index_of or p not in worktree:
+            continue  # staged (the index question), or the worktree is already at HEAD
+        e = worktree[p]
+        if before is None:
+            # HEAD added it and the parent had no such file: unsettled iff the worktree lacks it.
+            if e.get("kind") == "changed" and e.get("worktree") == "D":
+                out.append(p)
+            continue
+        if before[0] in ("100644", "100755"):
+            to_hash.append((p, before))
+    if len(to_hash) + len(out) > UNSETTLED_WORKTREE_MAX:
+        return None
+    regular: list[tuple[str, tuple[str, str], bool]] = []
+    for p, before in to_hash:
+        try:
+            st = os.lstat(os.path.join(repo.toplevel, p))
+        except OSError:
+            continue
+        if (st.st_mode & 0o170000) != 0o100000:
+            continue  # not a regular file: not the parent's version of one
+        if st.st_size > UNSETTLED_WORKTREE_BYTES:
+            return None
+        regular.append((p, before, bool(st.st_mode & 0o111)))
+    if regular:
+        try:
+            blob = _run_git(
+                home_root(),
+                ["hash-object", "--no-filters", "--", *(p for p, _b, _x in regular)],
+                cwd=repo.toplevel,
+                gitdir=gitdir,
+            )
+        except GitError:
+            return None
+        oids = blob.decode("ascii", "replace").split()
+        if len(oids) != len(regular):
+            return None
+        for (p, before, executable), oid in zip(regular, oids, strict=True):
+            if oid == before[1] and (before[0] == "100755") == executable:
+                out.append(p)
+    return sorted(out)
+
+
+def _parse_raw(blob: bytes) -> dict[str, tuple[tuple[str, str] | None, tuple[str, str] | None]]:
+    """`diff-tree -r -z --raw --no-renames` as `{path: (before, after)}` — mirrored in gitwrite."""
+    fields = blob.split(b"\x00")
+    out: dict[str, tuple[tuple[str, str] | None, tuple[str, str] | None]] = {}
+    i = 0
+    while i < len(fields):
+        meta = fields[i]
+        i += 1
+        if not meta.startswith(b":") or i >= len(fields):
+            continue
+        path = fields[i].decode("utf-8", "replace")
+        i += 1
+        bits = meta[1:].decode("ascii", "replace").split()
+        if len(bits) < 5:
+            continue
+        out[path] = (
+            None if bits[0] == "000000" else (bits[0], bits[2]),
+            None if bits[1] == "000000" else (bits[1], bits[3]),
+        )
+    return out
+
+
+def git_branches(path: str | None) -> dict:
+    """Local + remote-tracking branches for the panel's branch menu (#806).
+
+    A **read**, so it stays on the read path and runs against the sanitized gitdir like every other
+    read — the write side never grows its own listing. `for-each-ref` rather than `branch`: it is
+    plumbing with a stable, parseable format and no colour/pager/column behaviour to suppress.
+    """
+    base = contained_path(path or "")
+    repo = discover_repo(base)
+    if repo is None:
+        return {"repo": None, "current": None, "local": [], "remote": []}
+
+    def produce() -> dict:
+        with sanitized_gitdir(repo) as (gitdir, branch):
+            blob = _run_git(
+                home_root(),
+                [
+                    "for-each-ref",
+                    "--format=%(refname:short)%00%(refname)",
+                    "--count",
+                    str(GIT_MAX_REFS),
+                    "refs/heads",
+                    "refs/remotes",
+                ],
+                cwd=repo.toplevel,
+                gitdir=gitdir,
+            )
+            local: list[str] = []
+            remote: list[str] = []
+            for line in blob.decode("utf-8", "replace").splitlines():
+                short, _, full = line.partition("\x00")
+                if not short:
+                    continue
+                if full.startswith("refs/heads/"):
+                    local.append(short)
+                elif full.startswith("refs/remotes/") and not short.endswith("/HEAD"):
+                    remote.append(short)
+            return {
+                "repo": repo.toplevel,
+                "current": branch,
+                "local": sorted(local),
+                "remote": sorted(remote),
+            }
+
+    return _single_flight(f"branches:{repo.toplevel}", produce)
+
+
+#: RECENT COMMITS (#950 Phase 2b): how many first-parent commits the panel lists — and so the only
+#: commits a revert may name.
+LOG_LIMIT = 30
+#: Subjects and author names are display text: cut at this length, never refused.
+LOG_TEXT_MAX = 200
+_OID = re.compile(r"\A[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
+
+
+def git_log(path: str | None, limit: object = None) -> dict:
+    """RECENT COMMITS (#950): the current branch's first-parent history, newest first.
+
+    A read on the sanitized gitdir. `log` with no `-p`, no `--stat` and no pathspec produces no
+    diff, so no textconv or external diff has anything to run; `%an` is the raw author name and
+    reads no `.mailmap`. ``pushed`` is present only when the branch has an upstream the snapshot
+    could resolve — an absent key means "not known", never "not pushed". `rev-list --first-parent
+    HEAD ^upstream` capped at the same limit is exact for the listed window: excluding commits can
+    only remove from HEAD's first-parent chain, so every listed unpushed commit is inside the cap.
+    """
+    n = LOG_LIMIT
+    if isinstance(limit, str) and limit.isdigit():
+        n = max(1, min(LOG_LIMIT, int(limit)))
+    elif isinstance(limit, int) and not isinstance(limit, bool):
+        n = max(1, min(LOG_LIMIT, limit))
+    base = contained_path(path or "")
+    repo = discover_repo(base)
+    if repo is None:
+        return {"repo": None, "branch": None, "head": None, "commits": []}
+
+    def produce() -> dict:
+        with sanitized_gitdir(repo) as (gitdir, branch):
+
+            def run(args: list[str]) -> bytes:
+                return _run_git(home_root(), args, cwd=repo.toplevel, gitdir=gitdir)
+
+            head = run(["rev-parse", "--verify", "--quiet", "HEAD"]).decode("ascii", "replace")
+            head = head.strip()
+            if not _OID.match(head):
+                return {"repo": repo.toplevel, "branch": branch, "head": None, "commits": []}
+            blob = run(
+                [
+                    "log",
+                    "--first-parent",
+                    "--no-color",
+                    "--no-decorate",
+                    "--no-show-signature",
+                    f"--max-count={n}",
+                    "--format=%H%x00%h%x00%P%x00%an%x00%at%x00%s%x1e",
+                    head,
+                    "--",
+                ]
+            )
+            unpushed: set[str] | None = None
+            if branch:
+                try:
+                    up = run(["rev-parse", "--verify", "--quiet", "@{upstream}"]).decode(
+                        "ascii", "replace"
+                    )
+                except GitError:
+                    up = ""
+                up = up.strip()
+                if _OID.match(up):
+                    out = run(
+                        ["rev-list", "--first-parent", f"--max-count={n}", head, f"^{up}", "--"]
+                    )
+                    unpushed = set(out.decode("ascii", "replace").split())
+            commits: list[dict] = []
+            for rec in blob.decode("utf-8", "replace").split("\x1e"):
+                parts = rec.strip("\n").split("\x00")
+                if len(parts) != 6 or not _OID.match(parts[0]):
+                    continue  # a subject carrying the separators is display text; skip, never guess
+                sha, short, parents, author, when, subject = parts
+                entry: dict = {
+                    "sha": sha,
+                    "short": short,
+                    "subject": subject[:LOG_TEXT_MAX],
+                    "author": author[:LOG_TEXT_MAX],
+                    "time": int(when) if when.isdigit() else None,
+                    "parents": len(parents.split()),
+                }
+                if unpushed is not None:
+                    entry["pushed"] = sha not in unpushed
+                commits.append(entry)
+            return {"repo": repo.toplevel, "branch": branch, "head": head, "commits": commits}
+
+    # Share the write epoch with status while keeping separate values and single flights. A
+    # mutation invalidates every history limit, including reads still using an older snapshot.
+    return _single_flight(f"log:{n}:{repo.toplevel}", produce, epoch_key=repo.toplevel)
+
+
+def revert_tree(repo: Repo, commit: str, head: str) -> tuple[str | None, list[str]]:
+    """The tree `head` would have with `commit` reverted — computed where no repository code runs.
+
+    `merge-tree --write-tree --merge-base=<commit> <head> <commit>^` is the three-way merge a
+    revert is, and it writes no ref, no index and no worktree file: only objects, into the real
+    store (the snapshot's `objects` links to it), where they stay unreferenced unless a commit is
+    published. It runs in the SANITIZED gitdir because a merge is the one read that can execute
+    repository code: measured on git 2.43.0, a `merge.<name>.driver` bound through
+    `info/attributes` RAN under `merge-tree` in the real gitdir — and turned a conflict into a
+    "clean" merge — while in the config-less gitdir no driver exists for an attribute to bind to.
+
+    Returns ``(tree, [])`` for a clean revert and ``(None, conflicted_paths)`` for a conflict.
+    """
+    with sanitized_gitdir(repo) as (gitdir, _branch):
+        rc, out, err = _run_git_rc(
+            home_root(),
+            [
+                "merge-tree",
+                "--write-tree",
+                "-z",
+                "--name-only",
+                "--no-messages",
+                f"--merge-base={commit}",
+                head,
+                f"{commit}^",
+            ],
+            cwd=repo.toplevel,
+            gitdir=gitdir,
+        )
+    if rc not in (0, 1):
+        if b"merge-base" in err or b"write-tree" in err:
+            raise GitError(
+                "reverting from the panel needs git 2.40 or newer on this host", status=501
+            )
+        raise GitError("git could not compute the revert", status=400)
+    fields = out.split(b"\x00")
+    tree = fields[0].decode("ascii", "replace").strip() if fields else ""
+    if rc == 0:
+        if not _OID.match(tree):
+            raise GitError("git did not return the reverted tree", status=500)
+        return tree, []
+    return None, sorted({f.decode("utf-8", "replace") for f in fields[1:] if f})
+
+
+def git_diff_kw(path: str, staged: bool) -> dict:
+    """Positional adapter for the route dispatcher, which passes args positionally."""
+    return git_diff(path, staged=staged)
+
+
+__all__ = [
+    "DIFF_MAX_BYTES",
+    "DIFF_MAX_LINES",
+    "DIFF_SOURCE_MAX_BYTES",
+    "DIFF_SOURCE_MAX_LINES",
+    "GIT_MAX_ENTRIES",
+    "GitError",
+    "Repo",
+    "discover_repo",
+    "executor",
+    "git_bin",
+    "git_diff",
+    "git_diff_kw",
+    "git_branches",
+    "git_status",
+    "invalidate_status",
+    "reset_flights_for_test",
+    "reset_git_bin_for_test",
+]
+
+
+# --------------------------------------------------------------------------- diff
+
+
+def _cat_blob(repo: Repo, oid: str, gitdir: str) -> bytes:
+    """Object bytes **as stored**. `cat-file` runs no conversion filters, which is the whole
+    reason the diff is assembled here instead of asked of `git diff`."""
+    if not oid or set(oid) == {"0"}:
+        return b""  # the empty side of an add/delete
+    return _run_git(home_root(), ["cat-file", "blob", oid], cwd=repo.toplevel, gitdir=gitdir)
+
+
+def _decodable(data: bytes) -> list[str] | None:
+    """Strict decode, deliberately.
+
+    ``errors="replace"`` would silently produce a diff of mangled text, and a wrong diff is worse
+    than an honest refusal. CONTENT keeps the lenient decode because it is a display surface rather
+    than a comparison. A NUL in the sniff window means binary before decoding is even attempted.
+    """
+    if b"\x00" in data[:8192]:
+        return None
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    # Lines keep their terminator. `split("\n")` loses it, and the loss is not cosmetic: `b"a\n"`
+    # and `b"a"` both become `["a"]`-ish, so removing a file's final newline either compared equal
+    # (no diff at all) or surfaced as a phantom blank line — measured `@@ -1,2 +1 @@` with a blank
+    # deletion where git reports `-a` / `+a` / `\ No newline at end of file`.
+    #
+    # `str.splitlines(keepends=True)` is not usable here: it also breaks on \v, \f, \x1c and
+    # U+2028, none of which git treats as a line ending, so a file containing one would diff
+    # against itself. Split on "\n" only. \r is kept, so a CRLF file does not read as every line
+    # changed.
+    parts = text.split("\n")
+    lines = [p + "\n" for p in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])  # trailing fragment: the file does not end with a newline
+    return lines
+
+
+def git_diff(path: str, *, staged: bool) -> dict:
+    """A unified diff assembled from blobs, never from ``git diff``.
+
+    No flag combination makes ``git diff`` helper-proof — ``filter.*`` clean/process drivers run
+    regardless of ``--no-textconv --no-ext-diff`` (measured) — so the two sides are fetched
+    separately and compared here.
+    """
+    import difflib
+
+    target = contained_path(path)
+    repo = discover_repo(os.path.dirname(target))
+    if repo is None:
+        raise GitError("this file is not inside a git repository", status=404)
+
+    status = git_status(repo.toplevel)
+    rel = os.path.relpath(target, repo.toplevel)
+    rows = [e for e in status["entries"] if e["path"] == rel]
+    row = next((e for e in rows if (e["kind"] == "staged") == staged), rows[0] if rows else None)
+    if row is None:
+        raise GitError("this file has no recorded change", status=404)
+    if row["kind"] == "untracked":
+        return {
+            "path": rel,
+            "repo": repo.toplevel,
+            "diff": "",
+            "added": 0,
+            "removed": 0,
+            "truncated": False,
+            "binary": False,
+            "too_large": False,
+            "conflict": False,
+        }
+
+    from . import files as _files
+
+    conflict = row["kind"] == "unmerged"
+    with sanitized_gitdir(repo) as (gitdir, _branch):
+        if conflict:
+            # A conflicted file's worktree copy is ours+theirs+markers interleaved; diffing it
+            # against anything describes the markers, not the disagreement. Compare the two sides.
+            old_bytes = _cat_blob(repo, row.get("oid_ours") or "", gitdir)
+            new_bytes = _cat_blob(repo, row.get("oid_theirs") or "", gitdir)
+        elif staged:
+            # Staged means index vs HEAD: two blobs, no worktree involved.
+            old_bytes = _cat_blob(repo, row.get("oid_head") or "", gitdir)
+            new_bytes = _cat_blob(repo, row.get("oid_index") or "", gitdir)
+        else:
+            old_bytes = _cat_blob(repo, row.get("oid_index") or row.get("oid") or "", gitdir)
+    if not conflict and not staged:
+        try:
+            # RAW bytes, not `read_file`'s display string: that decodes with `errors="replace"`,
+            # and re-encoding the result yields valid UTF-8 whatever went in — so `_decodable`
+            # below could never refuse a mangled file. Read one byte past the source budget so an
+            # oversized file trips the `too_large` branch instead of being silently truncated.
+            _v, new_bytes, _size, _trunc = _files.read_file_bytes(
+                target, limit=DIFF_SOURCE_MAX_BYTES + 1
+            )
+        except FsError:
+            new_bytes = b""  # deleted in the worktree
+
+    # Source-side budgets, BEFORE comparison. A response cap applied after difflib has run bounds
+    # nothing: large or adversarially repetitive inputs burn memory and CPU first.
+    if len(old_bytes) > DIFF_SOURCE_MAX_BYTES or len(new_bytes) > DIFF_SOURCE_MAX_BYTES:
+        return {
+            "path": rel,
+            "repo": repo.toplevel,
+            "diff": "",
+            "added": None,
+            "removed": None,
+            "truncated": True,
+            "binary": False,
+            "too_large": True,
+            "conflict": conflict,
+        }
+
+    old_lines = _decodable(old_bytes)
+    new_lines = _decodable(new_bytes)
+    if old_lines is None or new_lines is None:
+        return {
+            "path": rel,
+            "repo": repo.toplevel,
+            "diff": "",
+            "added": None,
+            "removed": None,
+            "truncated": False,
+            "binary": True,
+            "too_large": False,
+            "conflict": conflict,
+        }
+    if len(old_lines) > DIFF_SOURCE_MAX_LINES or len(new_lines) > DIFF_SOURCE_MAX_LINES:
+        return {
+            "path": rel,
+            "repo": repo.toplevel,
+            "diff": "",
+            "added": None,
+            "removed": None,
+            "truncated": True,
+            "binary": False,
+            "too_large": True,
+            "conflict": conflict,
+        }
+
+    # Trim the common prefix/suffix first: O(n), and for a normal edit it leaves a handful of
+    # lines, so the budget below is never reached in practice.
+    pre = 0
+    while pre < len(old_lines) and pre < len(new_lines) and old_lines[pre] == new_lines[pre]:
+        pre += 1
+    suf = 0
+    while (
+        suf < len(old_lines) - pre
+        and suf < len(new_lines) - pre
+        and old_lines[len(old_lines) - 1 - suf] == new_lines[len(new_lines) - 1 - suf]
+    ):
+        suf += 1
+    a_mid = old_lines[pre : len(old_lines) - suf]
+    b_mid = new_lines[pre : len(new_lines) - suf]
+
+    out: list[str] = []
+    added = removed = 0
+    over = False
+    coarse = False
+
+    def _emit(entry: str) -> list[str]:
+        """Strip the terminator for display, and say so when a side has none.
+
+        The marker is git's own wording, and the frontend already renders it — what was missing
+        was the server ever producing it.
+        """
+        if entry.endswith("\n"):
+            return [entry[:-1]]
+        return [entry, NO_NEWLINE_MARKER]
+
+    if len(a_mid) * len(b_mid) > DIFF_MAX_CELLS:
+        # Refused BEFORE the expensive matching starts, which is the only point at which it can
+        # actually be refused. A coarse replacement is still useful and is labelled as such.
+        coarse = True
+        out.append(f"@@ -{pre + 1},{len(a_mid)} +{pre + 1},{len(b_mid)} @@")
+        for line in a_mid:
+            out.extend(_emit(f"-{line}"))
+            removed += 1
+            if len(out) >= DIFF_MAX_LINES:
+                over = True
+                break
+        if not over:
+            for line in b_mid:
+                out.extend(_emit(f"+{line}"))
+                added += 1
+                if len(out) >= DIFF_MAX_LINES:
+                    over = True
+                    break
+    else:
+        for line in difflib.unified_diff(old_lines, new_lines, lineterm="", n=3):
+            if len(out) >= DIFF_MAX_LINES:
+                over = True
+                break
+            if line.startswith(("---", "+++", "@@")):
+                out.append(line)
+                continue
+            out.extend(_emit(line))
+            if line.startswith("+"):
+                added += 1
+            elif line.startswith("-"):
+                removed += 1
+    text = "\n".join(out)
+    if len(text) > DIFF_MAX_BYTES:
+        # On a LINE boundary. A blind slice cuts a `+` line in half, and half a line of content
+        # renders as if it were the whole line — a truncation the reader cannot see.
+        text = text[:DIFF_MAX_BYTES].rsplit("\n", 1)[0]
+        over = True
+    return {
+        "path": rel,
+        "repo": repo.toplevel,
+        "diff": text,
+        # Counts from a truncated prefix are not totals, so they are withheld rather than shown as
+        # if they were: "+18 -4" when the honest value is "+18 -4 so far" is a lie the UI would
+        # have no way to detect.
+        "added": None if over else added,
+        "removed": None if over else removed,
+        "truncated": over,
+        "binary": False,
+        "too_large": False,
+        # Ours-vs-theirs, not worktree-vs-anything (see the `u` record parse), so the viewer can
+        # label the two sides correctly instead of implying one of them is "the file".
+        "conflict": conflict,
+        # The pair exceeded the comparison budget, so this is a whole-block replacement rather
+        # than a line-by-line diff. Said out loud instead of passed off as a real diff.
+        "coarse": coarse,
+    }

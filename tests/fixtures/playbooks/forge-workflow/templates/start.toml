@@ -1,0 +1,4 @@
+name = "Start the next issue"
+description = "Pick up the next planned issue."
+tags = ["dev"]
+body = "Implement the next planned issue in {{repo}} and run {{test_cmd}} before pushing."

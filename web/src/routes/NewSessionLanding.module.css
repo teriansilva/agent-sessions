@@ -1,0 +1,323 @@
+.landing {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+.form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.scroll {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  padding: 24px;
+  overflow-y: auto;
+  /* The two-column switch follows the PANE's width, not the window's: the sidebar and the map
+   * window both make the pane narrower than the viewport (#1473). */
+  container: new-session / inline-size;
+}
+.card {
+  /* Plain centered content — NOT a second framed box. The frosted-glass window is the pane
+   * itself (.terminal-pane); the card is just the centered new-session content inside it
+   * (#211 review: no box-in-a-box). margin:auto keeps the top reachable when it's tall. */
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  max-width: 560px;
+}
+.brandHero {
+  margin-bottom: 6px;
+}
+.wordmark {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  color: var(--brand-soft);
+}
+.wordmark b {
+  color: var(--brand);
+}
+.tagline {
+  margin: 2px 0 0;
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-muted);
+}
+.card h1 {
+  font-size: 18px;
+  margin: 0 0 2px;
+  color: var(--text);
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.field select {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 8px 10px;
+  font: inherit;
+  /* Inherit the theme's color-scheme so the native option popup is dark in
+   * royal/dark and light in light. */
+  color-scheme: inherit;
+  cursor: pointer;
+}
+.field select:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.field select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.field select:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* A background refresh of the model list (#1503): quiet, beside the label, never moving it. */
+.fieldStatus {
+  margin-left: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+}
+/* The list could not be refreshed and the last one is shown (#1503): a degraded state, not an
+   error — one line, left-aligned under the select it describes, with a status LED. */
+.degraded {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+  opacity: 1;
+}
+.led {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--status-degraded);
+}
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+/* Tint the native checkbox to the theme accent so it isn't a stock blue/white box. */
+.checkbox input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+.checkbox input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.start {
+  margin-top: 4px;
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+  border: none;
+  border-radius: 0;
+  padding: 10px 0;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.start:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 84%, #fff);
+}
+.start:active:not(:disabled) {
+  background: var(--cta-bg-2);
+}
+.start:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  opacity: 0.8;
+  margin: 0;
+  text-align: center;
+}
+.error {
+  color: #f3b0b0;
+  font-size: 12px;
+  margin: 0;
+}
+
+/* A previous API attempt, scoped to that client; quiet actions with full touch targets. */
+.recovery {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.recovery p {
+  margin: 0;
+}
+.recoveryActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.recoveryActions a,
+.recoveryActions button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--accent-text);
+  font: inherit;
+  cursor: pointer;
+}
+.recoveryActions a {
+  text-decoration: underline;
+}
+.recoveryActions button {
+  color: var(--text-muted);
+}
+.recoveryActions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.recoveryActions a:focus-visible,
+.recoveryActions button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* The new-session defaults note (#1407): its Reset / Edit action is a real 44px target (§8). */
+.defaultsHint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0 8px;
+}
+.defaultsHint a,
+.linkButton {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.linkButton {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+.linkButton:focus-visible,
+.defaultsHint a:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The form's three sections (#1436): a small caps head over its picker. */
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sectionHead {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* A full-width footer OUTSIDE the form's scroll area (#1478). No outer margin: the bar meets
+ * the pane's left, right and bottom edges even when the centered form is shorter than the pane.
+ * Its height is reserved, so scrolling the last field into view never puts it behind Start. */
+.startBar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 12px 24px calc(16px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+.summary {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.summary b {
+  color: var(--text);
+  font-weight: 600;
+}
+.summary code {
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+.startBar .start {
+  margin: 0;
+  flex: none;
+  min-height: 44px;
+  padding: 0 22px;
+}
+
+/* Two columns on a wide pane (#1473): agent on the left, project + where it starts on
+ * the right. The separate Start footer spans the pane below the scrolling form. */
+.columns {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+@container new-session (min-width: 880px) {
+  .card {
+    max-width: 1120px;
+  }
+  .columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 32px;
+    align-items: start;
+  }
+}
+
+/* A field the selected project's session defaults filled (#1508): the agent tiles' badge, inline. */
+.projectBadge {
+  margin-left: 8px;
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--badge-fg);
+  background: var(--badge-bg);
+}

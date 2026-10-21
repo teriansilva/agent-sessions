@@ -1,0 +1,287 @@
+"""Structured client routes (#1278). All `logged_in`; every mutation also `csrf_guard`.
+
+These expose the transport-neutral facade (``structured_runtime``) for any client whose adapter
+implements the operation — HTTP chat or a contained native worker. Request bodies carry only
+operator input and caller-chosen UUIDs: no execution authority, worker capability, argv or
+mission correlation is ever read from a browser (mission callers use the facade server-side).
+
+* ``GET  /api/structured/clients/{engine}`` — implemented operations and live readiness.
+* ``GET  /api/structured/clients/{engine}/models`` — the models the client's CLI reports (#1313).
+* ``POST /api/structured/sessions {engine, cwd, operation_id, model?, bypass?}`` — create; an
+  exact repeat of ``operation_id`` returns the same session (a ``bypass`` one waits for ``start``).
+* ``POST /api/structured/sessions/{key}/start`` — launch a skip-permissions creation (#1339);
+  its create reserved and launched nothing. Idempotent.
+* ``GET  /api/structured/sessions/{key}`` — bounded snapshot (turns, exact pending requests).
+* ``GET  /api/structured/sessions/{key}/events?after=&limit=`` — durable journal cursor page.
+* ``GET  /api/structured/sessions/{key}/history?before=&limit=`` — the turns just older than one
+  turn, for scrolling up past the snapshot's window (#1504); native clients only.
+* ``POST /api/structured/sessions/{key}/turns {operation_id, text, expected_revision?,
+  reply_to?}`` — ``reply_to``: the async question this message answers (#1463), admitted only
+  while that question is still open.
+* ``POST /api/structured/sessions/{key}/decisions {decision_id, turn_id, request_id, decision,
+  grant?, expected_revision?}`` — one exact pending request: approve / reject / cancel, or
+  ``always`` with the id of one proposed standing grant the snapshot offers (#1339).
+* ``POST /api/structured/sessions/{key}/interrupt {operation_id, turn_id}``
+* ``POST /api/structured/sessions/{key}/send-now {operation_id, turn_id, queued_turn_id}`` —
+  steer or explicitly cancel the observed response and send the selected queued input next.
+* ``POST /api/structured/sessions/{key}/withdraw {operation_id, queued_turn_id}`` — remove one
+  still-queued message before it is sent (#1447).
+* ``POST /api/structured/sessions/{key}/stop`` — close the worker; reports proved containment.
+* ``GET  /api/structured/sessions/{key}/containment`` — live / gone / unknown.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+
+from .. import share_api, shares, structured_runtime
+
+log = logging.getLogger("agent_sessions.routes.structured")
+
+
+async def _json(request: Request, allowed: set[str], required: set[str]) -> dict:
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="invalid JSON body") from None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="body must be an object")
+    unknown = sorted(set(body) - allowed)
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"unknown fields: {unknown}")
+    missing = sorted(required - set(body))
+    if missing:
+        raise HTTPException(status_code=422, detail=f"missing fields: {missing}")
+    return body
+
+
+def _revision(value: object) -> int | None:
+    if value is None:
+        return None
+    if type(value) is not int or value < 0:
+        raise HTTPException(status_code=422, detail="expected_revision must be an integer")
+    return value
+
+
+async def _run(coroutine):
+    try:
+        return await coroutine
+    except structured_runtime.StructuredError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from None
+
+
+def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
+    @app.get("/api/structured/clients/{engine}")
+    async def structured_client(engine: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        import asyncio
+
+        descriptor = await asyncio.to_thread(structured_runtime.describe, engine)
+        return JSONResponse(descriptor.as_dict())
+
+    @app.get("/api/structured/clients/{engine}/models")
+    async def structured_models(engine: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        # What the client's own CLI says it can run (#1313); `unavailable` offers `default` only.
+        import asyncio
+
+        from .. import engines, native_models
+
+        prov = engines.get(engine)
+        if prov is None or getattr(prov.manifest, "runtime", None) != "api":
+            raise HTTPException(status_code=404, detail="no such API client")
+        listing = await asyncio.to_thread(native_models.models, prov)
+        return JSONResponse(listing.as_dict())
+
+    @app.post("/api/structured/sessions")
+    async def structured_create(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        body = await _json(
+            request,
+            {"engine", "cwd", "operation_id", "model", "effort", "bypass"},
+            {"engine", "cwd", "operation_id"},
+        )
+        if not isinstance(body["engine"], str):
+            raise HTTPException(status_code=422, detail="engine must be a string")
+        if not isinstance(body.get("bypass", False), bool):
+            raise HTTPException(status_code=422, detail="bypass must be a boolean")
+        if body.get("effort") is not None and not isinstance(body["effort"], str):
+            raise HTTPException(status_code=422, detail="effort must be a string")
+        out = await _run(
+            structured_runtime.create_session(
+                body["engine"],
+                body["cwd"],
+                operation_id=body["operation_id"],
+                model=body.get("model"),
+                effort=body.get("effort"),
+                bypass=body.get("bypass", False),
+            )
+        )
+        return JSONResponse(out, status_code=201)
+
+    @app.post("/api/structured/sessions/{key}/start")
+    async def structured_start(
+        key: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        # The second phase of a skip-permissions creation (#1339): the SPA calls it only after it
+        # has received the create response, so a lost response can never launch unobserved.
+        return JSONResponse(await _run(structured_runtime.start_session(key)))
+
+    async def _attributed(view: dict, key: str) -> dict:
+        # A visitor's turns (#1404 P2) carry their self-chosen name in the operator's view too.
+        try:
+            authors = await asyncio.to_thread(
+                shares.store().authors, view.get("session_key") or key
+            )
+        except Exception:  # the share store must never take the operator's own view down…
+            log.warning("structured view: visitor attribution unavailable", exc_info=True)
+            authors = None  # …but then every turn is UNKNOWN, never labelled the operator's
+        return share_api.overlay_authors(view, authors)
+
+    @app.get("/api/structured/sessions/{key}")
+    async def structured_snapshot(key: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        snap = await _run(structured_runtime.snapshot(key))
+        return JSONResponse(await _attributed(snap, key))
+
+    @app.get("/api/structured/sessions/{key}/history")
+    async def structured_history(
+        key: str, before: str, limit: int = 50, _user: str = Depends(logged_in)
+    ) -> JSONResponse:
+        # Older turns get the snapshot's attribution, failing closed the same way (#1504).
+        page = await _run(structured_runtime.history(key, before=before, limit=limit))
+        return JSONResponse(await _attributed(page, key))
+
+    @app.post("/api/structured/sessions/{key}/skip-permissions")
+    async def structured_enable_bypass(
+        key: str,
+        request: Request,
+        user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        body = await _json(request, {"operation_id"}, {"operation_id"})
+        return JSONResponse(
+            await _run(
+                structured_runtime.enable_bypass(key, operation_id=body["operation_id"], user=user)
+            )
+        )
+
+    @app.get("/api/structured/sessions/{key}/events")
+    async def structured_events(
+        key: str, after: int = 0, limit: int = 100, _user: str = Depends(logged_in)
+    ) -> JSONResponse:
+        return JSONResponse(await _run(structured_runtime.events(key, after=after, limit=limit)))
+
+    @app.get("/api/structured/sessions/{key}/containment")
+    async def structured_probe(key: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        return JSONResponse(await _run(structured_runtime.probe(key)))
+
+    @app.post("/api/structured/sessions/{key}/turns")
+    async def structured_submit(
+        key: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        body = await _json(
+            request,
+            {"operation_id", "text", "expected_revision", "attachments", "reply_to"},
+            {"operation_id", "text"},
+        )
+        out = await _run(
+            structured_runtime.submit_turn(
+                key,
+                operation_id=body["operation_id"],
+                text=body["text"],
+                expected_revision=_revision(body.get("expected_revision")),
+                # Upload names (#1332 Phase 3); the facade admits each before anything durable.
+                attachments=body.get("attachments"),
+                reply_to=body.get("reply_to"),
+            )
+        )
+        return JSONResponse(out, status_code=202 if out.get("state") == "running" else 200)
+
+    @app.post("/api/structured/sessions/{key}/decisions")
+    async def structured_decide(
+        key: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        fields = {"decision_id", "turn_id", "request_id", "decision"}
+        body = await _json(request, fields | {"expected_revision", "grant", "answers"}, fields)
+        for name in ("turn_id", "request_id", "decision"):
+            if not isinstance(body[name], str):
+                raise HTTPException(status_code=422, detail=f"{name} must be a string")
+        if "grant" in body and not isinstance(body["grant"], str):
+            raise HTTPException(status_code=422, detail="grant must be a string")
+        # An agent question's answer (#1463): only with `answer`; its shape and the offered
+        # options are checked by the runtime and again by the worker.
+        if ("answers" in body) != (body["decision"] == "answer"):
+            raise HTTPException(
+                status_code=422, detail="answers go with an answer decision, and only with one"
+            )
+        if "answers" in body and not isinstance(body["answers"], list):
+            raise HTTPException(status_code=422, detail="answers must be a list")
+        return JSONResponse(
+            await _run(
+                structured_runtime.decide(
+                    key,
+                    turn_id=body["turn_id"],
+                    request_id=body["request_id"],
+                    decision_id=body["decision_id"],
+                    decision=body["decision"],
+                    user=_user,
+                    expected_revision=_revision(body.get("expected_revision")),
+                    grant=body.get("grant"),
+                    answers=body.get("answers"),
+                )
+            )
+        )
+
+    @app.post("/api/structured/sessions/{key}/send-now")
+    async def structured_send_now(
+        key: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        fields = {"operation_id", "turn_id", "queued_turn_id"}
+        body = await _json(request, fields, fields)
+        return JSONResponse(await _run(structured_runtime.send_now(key, **body)), status_code=202)
+
+    @app.post("/api/structured/sessions/{key}/withdraw")
+    async def structured_withdraw(
+        key: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        fields = {"operation_id", "queued_turn_id"}
+        body = await _json(request, fields, fields)
+        return JSONResponse(await _run(structured_runtime.withdraw(key, **body)), status_code=202)
+
+    @app.post("/api/structured/sessions/{key}/interrupt")
+    async def structured_interrupt(
+        key: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        body = await _json(request, {"operation_id", "turn_id"}, {"operation_id", "turn_id"})
+        return JSONResponse(
+            await _run(
+                structured_runtime.interrupt(
+                    key, operation_id=body["operation_id"], turn_id=body["turn_id"]
+                )
+            ),
+            status_code=202,
+        )
+
+    @app.post("/api/structured/sessions/{key}/stop")
+    async def structured_stop(
+        key: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        return JSONResponse(await _run(structured_runtime.stop(key)))

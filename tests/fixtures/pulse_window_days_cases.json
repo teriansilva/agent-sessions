@@ -1,0 +1,33 @@
+{
+  "_comment": [
+    "Shared normalization fixture for the Pulse / Ask recent-work window (#1086). Read by BOTH",
+    "tests/test_pulse_window.py and web/src/lib/recentWindow.test.ts so the Python and TypeScript",
+    "rules cannot drift. READ is lenient and CLAMPS (a stored 7 reads as 3 — a deliberate change",
+    "from the old fall-back-to-default read); WRITE is strict (422, never coerce). Booleans are",
+    "rejected on TYPE, since isinstance(True, int) is True in Python.",
+    "JSON cannot express NaN / Infinity; each suite adds those in its own language."
+  ],
+  "min": 1,
+  "max": 3,
+  "default": 1,
+  "read": [
+    { "in": 1,      "out": 1, "why": "lower bound" },
+    { "in": 2,      "out": 2, "why": "in range" },
+    { "in": 3,      "out": 3, "why": "upper bound" },
+    { "in": 7,      "out": 3, "why": "an old 1–30 value CLAMPS to the new max, it does not reset" },
+    { "in": 30,     "out": 3, "why": "the old max clamps" },
+    { "in": 0,      "out": 1, "why": "below range clamps up" },
+    { "in": -4,     "out": 1, "why": "negative clamps up" },
+    { "in": 2.5,    "out": 3, "why": "half rounds away from zero: floor(x + 0.5)" },
+    { "in": 1.4,    "out": 1, "why": "rounds down below the half" },
+    { "in": true,   "out": 1, "why": "a boolean is not a number of days" },
+    { "in": false,  "out": 1, "why": "a boolean is not a number of days" },
+    { "in": "2",    "out": 1, "why": "a string is not a number" },
+    { "in": null,   "out": 1, "why": "missing" },
+    { "in": [2],    "out": 1, "why": "wrong type" },
+    { "in": 1e400,  "out": 1, "why": "past float range: JS reads Infinity, Python reads inf" },
+    { "in": 1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000, "out": 1, "why": "a 400-digit INTEGER: JS reads Infinity; Python must not raise converting it (review 5044)" }
+  ],
+  "write_accepted": [1, 2, 3],
+  "write_rejected": [0, 4, 7, 30, -1, 2.5, true, false, "2", null, [2], {}, 1e400, 1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000]
+}

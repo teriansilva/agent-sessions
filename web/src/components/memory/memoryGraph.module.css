@@ -1,0 +1,24 @@
+/* The Memory graph (#1441). Flat HUD cards: no radius, no gradient, tokens only. A note's TYPE is a
+ * mono tag, never a status colour (docs/design.md §3: status hues mean state). */
+.canvas { position: relative; width: 100%; height: 100%; min-height: 420px; }
+.canvas :global(.react-flow__node) { border-radius: 0; }
+.canvas :global(.react-flow__controls-button) { width: 44px; height: 44px; box-sizing: border-box; background: var(--panel); border-color: var(--border); color: var(--text-2); fill: currentColor; }
+.note { width: 200px; padding: 8px 10px; display: flex; flex-direction: column; gap: 5px; background: var(--panel); border: 1px solid var(--border); color: var(--text-1); cursor: pointer; }
+.note[data-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 18px var(--accent-glow); }
+.tag { align-self: flex-start; padding: 1px 5px; font: 9.5px var(--font-mono); letter-spacing: .12em; color: var(--text-2); border: 1px solid var(--border); }
+.tag[data-type="decision"] { color: var(--badge-fg); background: var(--badge-bg); border-color: transparent; }
+.title { font-size: 12.5px; font-weight: 500; line-height: 1.3; overflow-wrap: anywhere; }
+.meta { font: 10px var(--font-mono); color: var(--text-2); }
+.session { padding: 6px 9px; display: flex; flex-direction: column; gap: 3px; background: var(--surface-2); border: 1px solid var(--border); cursor: pointer; }
+.engine { font: 11px var(--font-mono); display: inline-flex; align-items: center; gap: 6px; }
+.engine::before { content: ""; width: 8px; height: 8px; background: currentColor; flex-shrink: 0; }
+.kind { font: 9px var(--font-mono); letter-spacing: .14em; color: var(--text-2); }
+/* Bottom-left, with the zoom controls bottom-right: the two never meet, however narrow the canvas. */
+.legend { position: absolute; left: 12px; bottom: 12px; max-width: calc(100% - 96px); box-sizing: border-box; z-index: 5; display: flex; flex-wrap: wrap; gap: 14px; align-items: center; padding: 6px 10px; font-size: 11px; color: var(--text-2); background: var(--panel); border: 1px solid var(--border); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.solid, .dashed { display: inline-block; width: 24px; border-top: 1.5px solid var(--text-2); }
+.dashed { border-top-style: dashed; }
+.dim { color: var(--text-2); }
+@media (max-width: 800px) {
+  .canvas { min-height: 360px; }
+}

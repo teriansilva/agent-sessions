@@ -1,0 +1,19 @@
+{
+  "name": "battlelab-docs",
+  "private": true,
+  "type": "module",
+  "description": "The BattleLab documentation site. Built from the filtered public snapshot (see scripts/build-docs-site) \u2014 its own project so the app bundle, web/'s toolchain and web-ci are untouched.",
+  "scripts": {
+    "dev": "vitepress dev --host 127.0.0.1",
+    "build": "vitepress build",
+    "preview": "vitepress preview --host 127.0.0.1",
+    "test:geometry": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "vitepress": "^1.6.4"
+  },
+  "overrides": {
+    "esbuild": "^0.25.0"
+  }
+}

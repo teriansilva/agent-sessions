@@ -1,0 +1,505 @@
+/* ASK's chat column (#1069): only what the mission thread's primitives (`mission.module.css`
+ * `.threadCol` / `.pane` / `.event` / `.composerDock`) do not already say. */
+
+/* The page is the column: it fills the route's height so the dock sits on the bottom edge. */
+.col {
+  height: 100%;
+}
+
+/* One centred measure for the thread and the composer, so they line up — a chat's column. */
+.measure {
+  width: 100%;
+  max-width: 760px;
+  margin-inline: auto;
+}
+
+/* The dashboard intro (#1123): the page's width, from the top — tiles, not a centred greeting. */
+.dashboard {
+  width: 100%;
+  max-width: 1320px;
+  margin-inline: auto;
+  padding-block: 16px;
+}
+
+/* Before the first question the greeting sits in the middle of the empty thread. */
+.intro {
+  margin-block: auto;
+  padding-block: 24px;
+}
+
+/* The operator's own turn is set apart by the brand rule, the thread's one non-status accent. */
+.you {
+  border-left: 3px solid var(--accent);
+}
+
+.group {
+  margin-top: 10px;
+}
+
+/* The thread's type, a step up from the mission thread's dense primitives: Ask is read in a narrow
+ * sidebar, often at arm's length (operator, 2026-10). Doubled selectors so they win over
+ * `mission.module.css` whatever order the two sheets load in. */
+.text.text {
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+.reason.reason {
+  margin-top: 2px;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.label.label {
+  font-size: 0.7rem;
+}
+/* #1525: an answer's head names its speaker, in --text-2: the --text-3 label measures only 3.7:1
+ * dark and 4.0:1 light; --text-2 gives 7.55:1 and 8.22:1. The poster is decoration. */
+.speaker.speaker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+}
+.speakerPoster {
+  width: 24px;
+  height: 32px;
+  flex: none;
+  object-fit: cover;
+  border: 1px solid var(--line-strong);
+}
+
+/* An answer's markdown, through `blockMarkup` — the enumerated subset, no html sink. Quiet
+ * structure at the answer's own size: blocks spaced like paragraphs, lists indented, code in mono. */
+.md p,
+.md ul,
+.md ol,
+.md pre {
+  margin: 0 0 8px;
+}
+.md :is(p, ul, ol, pre):last-child {
+  margin-bottom: 0;
+}
+.md ul,
+.md ol {
+  padding-left: 20px;
+}
+.md li + li {
+  margin-top: 2px;
+}
+.md code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+.md pre {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-0);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* A session row carries two ways in, so its title gives up some basis to keep both on the line in
+ * the 440px sidebar; it still wraps them under the title on a phone. */
+.matchBody.matchBody {
+  flex-basis: 140px;
+}
+
+/* A matched session's two ways in, kept together on the row's right edge. */
+.opens {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+.opens.opens > * {
+  margin-left: 0;
+}
+.mapBtn.mapBtn {
+  font-family: inherit;
+  cursor: pointer;
+}
+.mapBtn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.mapBtn.mapBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* "Open all in map", under the session rows it acts on. */
+.batch {
+  display: flex;
+  justify-content: flex-end;
+  margin: 10px 0 0 10px;
+}
+
+/* #1086: an answer row for a session on the NEEDS YOU list. The dot is STATE (`--status-degraded`,
+ * the same needs-you colour the list uses), never decoration. */
+.needsTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--warn-text, var(--status-degraded));
+}
+.needsDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--status-degraded);
+}
+.detailsBtn {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+/* #1171: the conversation's only chrome — back to the dashboard, the page's name, New
+ * conversation. The back link is Settings' (`Settings.module.css .back`), at the 44px touch
+ * target (design §8). */
+.head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+}
+/* #1525: Off is one row (HQ, picker, +, ×); with a contact the 60×80 portrait spans two rows —
+ * "HQ" over the name, then the picker, + and × — so the picker keeps its width at 390px. */
+.headMain {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+.headContact {
+  align-items: stretch;
+}
+.headContact .headMain {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.headPortrait {
+  width: 60px;
+  height: 80px;
+}
+.who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.whoName {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.headTools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  flex: none;
+  color: var(--text);
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+.back:hover,
+.back:focus-visible {
+  border-color: var(--accent);
+}
+.title {
+  margin: 0;
+  font-size: 1rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}
+.sp {
+  flex: 1;
+}
+.newBtn {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-1);
+  cursor: pointer;
+}
+.newBtn:focus-visible,
+.back:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.newBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.newBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.greeting {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.needsEndpoint {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.needsEndpoint a {
+  color: var(--accent-text);
+}
+
+/* #1171: the pending answer. A scan block sweeps a hairline track — brand accent, not a status
+ * colour: it says "working", not "healthy". Only `transform` and `opacity` move (never geometry or
+ * `clip-path`, design §5), and all of it stops under reduced motion. */
+.working {
+  margin-top: 6px;
+  animation: askArrive 180ms ease-out both;
+}
+.scan {
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+  background: var(--line);
+}
+.scanBlock {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 28%;
+  background: var(--accent);
+  animation: askScan 1.3s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+.workingRow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+}
+.step {
+  flex: 1;
+  min-width: 0;
+}
+.step::after {
+  content: "▍";
+  margin-left: 4px;
+  color: var(--accent-text);
+  animation: askBlink 1s steps(1) infinite;
+}
+.elapsed {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+/* A match row that has just arrived settles in rather than popping. */
+.arrive {
+  animation: askArrive 220ms ease-out both;
+}
+
+@keyframes askScan {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(360%);
+  }
+}
+@keyframes askBlink {
+  50% {
+    opacity: 0;
+  }
+}
+@keyframes askArrive {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .working,
+  .arrive,
+  .step::after {
+    animation: none;
+  }
+  .scanBlock {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+}
+
+/* The composer's hint keeps to "Enter to send" on a phone, where the rest ran under Send. */
+@media (max-width: 800px) {
+  .hintMore {
+    display: none;
+  }
+}
+
+/* THE CONVERSATION SWITCHER (#1443, the mockup's `.switch` / `.menu`). It takes the head's spare
+ * room (it replaced `.sp`) and shows the current conversation's title, truncated. */
+.switchWrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.switch {
+  width: 100%;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-2);
+  text-align: left;
+  cursor: pointer;
+}
+.switch:hover,
+.switchOpen {
+  border-color: var(--accent);
+}
+.switch:focus-visible,
+.menuItem:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.switchTitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8rem;
+  color: var(--text-1);
+}
+.menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 5;
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+.menuItem {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 52px;
+  padding: 6px 12px;
+  border-left: 3px solid transparent;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+.menuItem:hover {
+  background: var(--row-hover);
+}
+/* The conversation on screen: the brand rule, as the operator's own turns carry it. */
+.menuCur {
+  border-left-color: var(--accent);
+  background: var(--row-hover);
+}
+.menuTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+  color: var(--text-1);
+}
+/* A conversation with an unseen update (#1443 Phase 4): the accent marker plus words for a screen
+ * reader — never the colour alone. */
+.menuUnread {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.menuUnreadDot {
+  width: 7px;
+  height: 7px;
+  background: var(--accent);
+}
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.menuMeta {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.menuEmpty,
+.menuFoot {
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+/* Every session the conversation follows, at the thread's end: Unfollow never waits for an update. */
+.following {
+  margin-top: 6px;
+}
+/* The update budget is spent (#1517): a notice in the notice voice, never a status colour. */
+.followNotice {
+  margin: 12px 0;
+  padding: 6px 10px;
+  border-left: 2px solid var(--line-strong);
+  font: 12px/1.5 var(--font-mono);
+  color: var(--text-muted);
+}

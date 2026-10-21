@@ -1,0 +1,128 @@
+.panel {
+  margin: 24px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--text-1);
+  max-width: 640px;
+}
+.tag {
+  margin: 0 0 8px;
+  font: 600 11px var(--font-mono);
+  letter-spacing: 0.12em;
+  color: var(--text-3);
+}
+
+/* #1502: the waiting, unavailable and not-found states of a session pane, drawn from the panel
+ * above. Tokens only, no radius, no gradient; every control holds the 44px floor (§8). */
+
+/* Over a mounted terminal (the 4415 / pending-lookup cases): the panel covers the term area so
+ * nothing of a refused socket shows through. */
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  background: var(--bg-0);
+  overflow: auto;
+}
+
+/* Three square pips stepping in opacity: square because only LEDs and dots round; opacity only,
+ * never geometry; still under reduced motion. The words carry the state, the pips are aria-hidden. */
+.line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+}
+.pips {
+  display: inline-flex;
+  gap: 3px;
+}
+.pips i {
+  width: 5px;
+  height: 5px;
+  background: var(--accent);
+  animation: openingPip 1.2s steps(1, end) infinite;
+}
+.pips i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.pips i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes openingPip {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pips i {
+    animation: none;
+  }
+  .pips i:nth-child(2) {
+    opacity: 0.6;
+  }
+  .pips i:nth-child(3) {
+    opacity: 0.3;
+  }
+}
+
+/* An honest active failure: a status-down edge and LED, the message in the danger ink. */
+.failed {
+  border-left: 3px solid var(--status-down);
+}
+.tagLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tagLine .tag {
+  margin: 0;
+}
+.led {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--status-down);
+  box-shadow: 0 0 7px var(--status-down);
+  flex: none;
+}
+.message {
+  margin: 8px 0 4px;
+  color: var(--danger-text);
+}
+.detail {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.retry {
+  min-height: 44px;
+  min-width: 88px;
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin-top: 4px;
+  color: var(--accent-text);
+  font-size: 12px;
+  text-decoration: underline;
+}
+.back:hover,
+.back:focus-visible {
+  text-decoration-thickness: 2px;
+}
+
+@media (max-width: 800px) {
+  .panel {
+    margin: 12px;
+  }
+  .retry {
+    width: 100%;
+  }
+}

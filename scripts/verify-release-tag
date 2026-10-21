@@ -1,0 +1,137 @@
+#!/bin/sh
+# Decide whether a release tag may be acted on. Fail-closed (#832 Phase 1).
+#
+# usage: verify-release-tag <tag> [--signers FILE] [--trust FILE] [--quiet]
+#
+# exit 0  the tag may be used — either signed by a trusted key, or listed in the trust record's
+#         `unsigned_releases` map AND pointing at that entry's pinned commit
+# exit 1  refuse: not signed, signed by an untrusted key, or the trust root is unusable
+# exit 2  usage / environment error
+#
+# WHY THIS IS A SCRIPT AND NOT INLINE YAML
+#
+# Two workflows gate on this (deploy-prod, create-release) and a wrong answer in either is a
+# production deploy of unverified code. Inline shell in a workflow cannot be unit-tested, and the
+# negative cases here are the entire point — an unsigned tag, a tag signed by the wrong key, and a
+# MISSING trust root all have to be refused, and the third is the one that looks like success if
+# you are careless.
+#
+# THE MISSING-ROOT TRAP
+#
+# `git verify-tag` reports "No principal matched" BOTH for a tag signed by an unknown key AND for
+# a trust root that does not exist. A check that greps for that string cannot tell "untrusted
+# signer" from "somebody deleted the signers file", so a deleted file would read as a routine
+# refusal — or, in a step that only cares about exit status, could be mistaken for a condition to
+# work around. So the root's existence is proven BEFORE verifying, and separately.
+#
+# Likewise `Good "git" signature` WITHOUT a principal means a valid signature from an UNTRUSTED
+# key. Anything grepping /Good.*signature/ therefore accepts an attacker. This script never greps
+# the output at all: it uses the exit status of a verify performed against a root it has already
+# proven present.
+set -eu
+
+TAG=""; SIGNERS=""; TRUST=""; QUIET=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --signers) SIGNERS="${2:-}"; shift 2 ;;
+    --trust)   TRUST="${2:-}"; shift 2 ;;
+    --quiet)   QUIET=1; shift ;;
+    -*) echo "unknown option: $1" >&2; exit 2 ;;
+    *) [ -z "$TAG" ] && TAG="$1" || { echo "unexpected argument: $1" >&2; exit 2; }; shift ;;
+  esac
+done
+[ -n "$TAG" ] || { echo "usage: verify-release-tag <tag> [--signers FILE] [--trust FILE]" >&2; exit 2; }
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+[ -n "$SIGNERS" ] || SIGNERS="$ROOT/scripts/release-signers"
+[ -n "$TRUST" ]   || TRUST="$ROOT/scripts/release-trust.json"
+
+say() { [ "$QUIET" -eq 1 ] || printf '%s\n' "$*"; }
+refuse() { printf 'REFUSED: %s\n' "$*" >&2; exit 1; }
+
+# ---- the cutover ------------------------------------------------------------------
+# Releases that predate signing must keep deploying: enforcing on them would make the control
+# retroactive and break rollback to a shipped version. The exemption is therefore MEMBERSHIP in
+# an explicit, commit-pinned list — never an ordering comparison.
+#
+# The first version of this compared the tag name against `last_unsigned_release` with
+# `sort -V`, and that was a full bypass of the gate. Reproduced in review: `v`, `v0`, `v0.0.0`
+# and `v00.00.00` all sort below `v0.19.2`, all matched deploy-prod's `v*` trigger, and all took
+# the permissive branch — so anyone who could push a tag could deploy arbitrary content
+# unsigned. A comment above the check asserted the opposite ("sorts deterministically rather
+# than silently taking the permissive branch"); deterministic is not the same as safe, and none
+# of those names is a real release.
+#
+# Membership also has to pin the COMMIT. A name-only list still lets a historical tag be
+# force-pushed onto attacker content and redeployed, since the name would still match.
+[ -s "$TRUST" ] || { echo "trust record missing or empty: $TRUST" >&2; exit 2; }
+
+# Resolve the pin for this exact tag. Prints the SHA if the tag is a recorded unsigned release,
+# nothing if it is not, and exits non-zero only when the RECORD itself is unusable — so a broken
+# record can never be mistaken for "not exempt" and quietly fall through to the signature path
+# (which would be safe here, but the distinction matters for the error the operator sees).
+PIN="$(
+  TRUST_PATH="$TRUST" TAG_NAME="$TAG" python3 -c '
+import json, os, sys
+with open(os.environ["TRUST_PATH"]) as fh:
+    doc = json.load(fh)
+pins = doc.get("unsigned_releases")
+if not isinstance(pins, dict) or not pins:
+    sys.exit(1)
+if not isinstance(doc.get("last_unsigned_release"), str):
+    sys.exit(1)
+sha = pins.get(os.environ["TAG_NAME"])
+sys.stdout.write(sha if isinstance(sha, str) else "")
+'
+)" || { echo "trust record has no usable unsigned_releases map: $TRUST" >&2; exit 2; }
+
+if [ -n "$PIN" ]; then
+  # A recorded pre-cutover release. It still has to BE that release: verify the tag resolves to
+  # the pinned commit, so the exemption cannot be inherited by a moved tag.
+  git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1 \
+    || refuse "$TAG is a recorded unsigned release but does not exist in this repository"
+  actual="$(git rev-parse "$TAG^{commit}")"
+  [ "$actual" = "$PIN" ] \
+    || refuse "$TAG is a recorded unsigned release but points at $actual, not the recorded $PIN — the tag has been moved"
+  say "pre-cutover: $TAG is a recorded unsigned release at the expected commit — signature not required"
+  exit 0
+fi
+
+# ---- the trust root ---------------------------------------------------------------
+# Proven present BEFORE verifying, because a missing root is indistinguishable from an unknown
+# signer in git's output (see header). A root that exists but holds no usable entry is equally
+# fatal: verifying against an empty file refuses everything, which would look like "every release
+# is forged" rather than "the root is broken".
+[ -s "$SIGNERS" ] || refuse "trust root missing or empty: $SIGNERS (refusing rather than treating an absent root as an untrusted signer)"
+grep -qE '^[^#[:space:]]+[[:space:]]+ssh-' "$SIGNERS" \
+  || refuse "trust root $SIGNERS holds no signer entry — refusing rather than verifying against nothing"
+
+# ---- the signature ----------------------------------------------------------------
+git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1 \
+  || refuse "$TAG does not exist in this repository"
+
+[ "$(git cat-file -t "refs/tags/$TAG" 2>/dev/null)" = tag ] \
+  || refuse "$TAG is not a recorded pre-signing release and is not an annotated tag, so there is no signature to verify"
+TAGOBJ="$(git cat-file tag "refs/tags/$TAG")"
+# The signature covers the tag OBJECT; the name is only a ref. An old signed release re-published
+# under a higher name must not pass as that release (Hermes on #1206).
+[ "$(printf '%s\n' "$TAGOBJ" | sed -n '/^tag /{s/^tag //p;q;}')" = "$TAG" ] \
+  || refuse "$TAG: the signed tag object names a different release — refusing a relabelled release"
+# SSH signatures only: git picks the verifier from the signature's format, so a PGP or X.509
+# signature would be checked against this machine's keyring instead of the signers file.
+printf '%s\n' "$TAGOBJ" | grep -qx -- '-----BEGIN SSH SIGNATURE-----' \
+  || refuse "$TAG is not a recorded pre-signing release and is not signed with an SSH release key"
+if printf '%s\n' "$TAGOBJ" | grep -qE -- '-----BEGIN (PGP SIGNATURE|SIGNED MESSAGE)-----'; then
+  refuse "$TAG is not a recorded pre-signing release and carries a non-SSH signature"
+fi
+
+GNUPG_EMPTY="$(mktemp -d)"
+if GNUPGHOME="$GNUPG_EMPTY" git -c "gpg.ssh.allowedSignersFile=$SIGNERS" \
+  -c gpg.ssh.program=ssh-keygen -c gpg.program=false -c gpg.x509.program=false \
+  verify-tag "$TAG" >/dev/null 2>&1; then
+  rm -rf "$GNUPG_EMPTY"
+  say "verified: $TAG is signed by a trusted release key"
+  exit 0
+fi
+rm -rf "$GNUPG_EMPTY"
+refuse "$TAG is not a recorded pre-signing release and is not signed by a trusted key"

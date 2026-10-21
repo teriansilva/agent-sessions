@@ -1,0 +1,54 @@
+{
+  "_comment": "Cross-impl wire vectors for the Home Free mux (#579 P1). Python-generated; asserted by both Python and vitest.",
+  "frames": [
+    {
+      "name": "open",
+      "stream_id": 1,
+      "type": 1,
+      "payload_hex": "474554202f6170692f73657373696f6e73",
+      "frame_hex": "0000000101000011474554202f6170692f73657373696f6e73"
+    },
+    {
+      "name": "data",
+      "stream_id": 1,
+      "type": 2,
+      "payload_hex": "68656c6c6f2000ff20776f726c64",
+      "frame_hex": "000000010200000e68656c6c6f2000ff20776f726c64"
+    },
+    {
+      "name": "end",
+      "stream_id": 3,
+      "type": 3,
+      "payload_hex": "",
+      "frame_hex": "0000000303000000"
+    },
+    {
+      "name": "reset",
+      "stream_id": 5,
+      "type": 4,
+      "payload_hex": "07",
+      "frame_hex": "000000050400000107"
+    },
+    {
+      "name": "window",
+      "stream_id": 2,
+      "type": 5,
+      "payload_hex": "00010000",
+      "frame_hex": "000000020500000400010000"
+    },
+    {
+      "name": "data-empty",
+      "stream_id": 4,
+      "type": 2,
+      "payload_hex": "",
+      "frame_hex": "0000000402000000"
+    },
+    {
+      "name": "big-id",
+      "stream_id": 16909060,
+      "type": 1,
+      "payload_hex": "7773202f77732f7465726d2f636c617564653a616263",
+      "frame_hex": "01020304010000167773202f77732f7465726d2f636c617564653a616263"
+    }
+  ]
+}

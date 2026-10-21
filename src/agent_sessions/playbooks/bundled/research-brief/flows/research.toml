@@ -1,0 +1,57 @@
+format = 1
+title = "Question to reviewed brief"
+description = "A non-development example. Define scope, collect evidence, review independently and ask the operator to accept the result."
+
+[[steps]]
+id = "scope"
+title = "Agree on the question"
+actor = { kind = "operator" }
+brief = "Confirm the question {{research_question}}, the audience {{audience}}, source constraints, time range and acceptance criteria."
+
+[[steps.checklist]]
+key = "scope_agreed"
+title = "Operator confirms the question and acceptance criteria"
+probe = "none"
+
+[[steps]]
+id = "draft"
+title = "Draft with evidence"
+actor = { kind = "agent", engine = "codex", model = "default" }
+after = ["scope"]
+brief = "Answer {{research_question}} for {{audience}}. Cite the sources supporting each material claim. Distinguish observations from inference, explain contradictory evidence and state uncertainty. Revise findings raised by the independent review."
+
+[[steps.checklist]]
+key = "sources_support_claims"
+title = "Cited evidence supports each material claim"
+probe = "supervisor_judged"
+
+[[steps.checklist]]
+key = "uncertainty_stated"
+title = "The brief states relevant uncertainty and contradictory evidence"
+probe = "supervisor_judged"
+
+[[steps]]
+id = "review"
+title = "Review independently"
+actor = { kind = "agent", engine = "claude", model = "default" }
+after = ["draft"]
+distinct_from = [{ step = "draft", constraint = "session" }]
+rework = { to = "draft", when = "brief_reviewed", max_rounds = 3 }
+brief = "Independently check the draft against its sources and agreed scope. Record specific unsupported claims or omissions and an explicit verdict. Request revision when needed; after three revision rounds, ask the operator to decide."
+
+[[steps.checklist]]
+key = "brief_reviewed"
+title = "Independent review finds the evidence and scope acceptable"
+probe = "supervisor_judged"
+
+[[steps]]
+id = "accept"
+title = "Accept the brief"
+actor = { kind = "operator" }
+after = ["review"]
+brief = "Read the reviewed result and its limitations. Accept it explicitly or request further work. Acceptance does not publish or send the brief anywhere."
+
+[[steps.checklist]]
+key = "brief_accepted"
+title = "Operator accepts the final brief and its stated limitations"
+probe = "none"

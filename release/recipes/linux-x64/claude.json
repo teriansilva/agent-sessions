@@ -1,0 +1,158 @@
+{
+  "manifest": {
+    "binary": {
+      "env_var": "AGENT_SESSIONS_CLAUDE_BIN",
+      "name": "claude",
+      "search_paths": [
+        "~/.local/bin"
+      ],
+      "version_flag": "--version"
+    },
+    "capabilities": {
+      "archive": true,
+      "handoff_target": true,
+      "new": true,
+      "orchestrator_input": true,
+      "owns_transcript": true,
+      "raw_tty": true,
+      "resume": true,
+      "seed_start": true
+    },
+    "contract": 1,
+    "display": {
+      "accent": "amber",
+      "badge": "cc",
+      "name": "claude",
+      "order": 10
+    },
+    "identity": {
+      "id": "claude",
+      "label": "Claude Code",
+      "publisher": "battlelab",
+      "version": "2.1.286"
+    },
+    "install": {
+      "authority": "registry.npmjs.org",
+      "digest": "sha256:4887d7125e6c5ae5bf4dd5b0c5ae04469a9e387acb9e1281636d83d8d9a683e0",
+      "entrypoint": "node_modules/@anthropic-ai/claude-code-linux-x64/claude",
+      "kind": "npm-prefix",
+      "package": "@anthropic-ai/claude-code-linux-x64",
+      "platform": "linux-x64",
+      "version": "2.1.286"
+    },
+    "instructions": {
+      "files": [
+        "CLAUDE.md"
+      ]
+    },
+    "launch": {
+      "bypass": [
+        "--dangerously-skip-permissions"
+      ],
+      "model": {
+        "flag": "--model",
+        "kind": "flag",
+        "on_resume": true
+      },
+      "new": {
+        "flag": "--session-id",
+        "kind": "pin-flag"
+      },
+      "resume": {
+        "flag": "--resume",
+        "kind": "flag"
+      }
+    },
+    "models": {
+      "list": [
+        {
+          "aliases": [
+            "opus"
+          ],
+          "context_window": 1000000,
+          "id": "claude-opus-5"
+        },
+        {
+          "aliases": [
+            "sonnet"
+          ],
+          "context_window": 1000000,
+          "id": "claude-sonnet-5"
+        },
+        {
+          "aliases": [
+            "haiku"
+          ],
+          "context_window": 200000,
+          "id": "claude-haiku-4-5"
+        },
+        {
+          "context_window": 1000000,
+          "id": "claude-fable-5-1"
+        },
+        {
+          "context_window": 1000000,
+          "id": "claude-opus-4-8"
+        },
+        {
+          "context_window": 1000000,
+          "id": "claude-sonnet-4-6"
+        }
+      ]
+    },
+    "probe": {
+      "kind": "print-pinned"
+    },
+    "session_id": {
+      "legacy_bare_id": true,
+      "mint": "pinned",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "signin": {
+      "kind": "auth-login"
+    },
+    "store": {
+      "layout": "claude-projects",
+      "paths": {
+        "archive": "projects-archive",
+        "sessions": "projects"
+      },
+      "root": "~/.claude"
+    },
+    "terminal": {
+      "menu": "claude-numbered",
+      "menu_digit_submits": true,
+      "permission": "claude-permission",
+      "ready": "claude-first-paint"
+    },
+    "transcript": {
+      "kind": "claude-jsonl"
+    },
+    "unattended": {
+      "start_evidence": "claude-sessions"
+    },
+    "usage": {
+      "kind": "claude-cli-probe",
+      "probe_token": "/usage",
+      "source": "plan"
+    },
+    "verify": [
+      "binary",
+      "version",
+      "store",
+      "new",
+      "resume",
+      "transcript",
+      "usage"
+    ]
+  },
+  "recipe": {
+    "artifacts": [
+      {
+        "destination": "node_modules/@anthropic-ai/claude-code-linux-x64",
+        "sha256": "4887d7125e6c5ae5bf4dd5b0c5ae04469a9e387acb9e1281636d83d8d9a683e0",
+        "url": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.286.tgz"
+      }
+    ]
+  }
+}

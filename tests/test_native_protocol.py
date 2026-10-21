@@ -1,0 +1,1822 @@
+"""Synthetic native protocol fixtures: no CLI, credentials or inference (#1278)."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import uuid
+
+import pytest
+
+from agent_sessions import native_ipc
+from agent_sessions.native_protocol import (
+    MAX_FRAME_BYTES,
+    MAX_INPUT_TEXT,
+    MAX_TEXT,
+    ClaudeCodec,
+    CodexCodec,
+    ProtocolError,
+    decode,
+    encode,
+    validate_text,
+)
+
+SESSION = "b6bf1a94-f584-4d7a-b2a2-850de2ab17f5"
+OPERATION = "f84b4fa9-d57b-45c1-a219-26dc19b7f661"
+TURN = "0199f3ac-53fb-7c10-81ef-ce7c2e732b28"
+
+
+def codex_session():
+    codec = CodexCodec()
+    request = codec.create("/project", "gpt-6")
+    event = codec.feed(
+        {"id": request["id"], "result": {"thread": {"id": SESSION, "turns": []}, "model": "gpt-6"}}
+    )[0]
+    assert event.kind == "session"
+    return codec
+
+
+def codex_running():
+    codec = codex_session()
+    request = codec.submit("Inspect the project", OPERATION)
+    event = codec.feed(
+        {"id": request["id"], "result": {"turn": {"id": TURN, "items": [], "status": "inProgress"}}}
+    )[0]
+    assert event.kind == "turn_started"
+    return codec
+
+
+def codex_approval(request_id=2, **extra):
+    return {
+        "id": request_id,
+        "method": "item/commandExecution/requestApproval",
+        "params": {
+            "threadId": SESSION,
+            "turnId": TURN,
+            "itemId": "item-1",
+            "startedAtMs": 123,
+            "command": "git status",
+            **extra,
+        },
+    }
+
+
+def claude_running():
+    codec = ClaudeCodec(SESSION)
+    codec.submit("Inspect the project", OPERATION)
+    return codec
+
+
+def claude_approval(request_id="native-1", **extra):
+    return {
+        "type": "control_request",
+        "request_id": request_id,
+        "request": {
+            "subtype": "can_use_tool",
+            "tool_name": "Bash",
+            "tool_use_id": "toolu_1",
+            "input": {"command": "git status", "timeout": 1000},
+            **extra,
+        },
+    }
+
+
+def test_codex_initialization_and_literal_argv_keep_console_flags_out():
+    codec = CodexCodec()
+    assert codec.argv("/native/agent") == ["/native/agent", "app-server", "--listen", "stdio://"]
+    initialize = codec.initialize()
+    assert initialize["params"]["clientInfo"]["name"] == "battlelab_api"
+    assert codec.feed({"id": "foreign", "result": {}}) == []
+    assert (
+        codec.feed({"id": initialize["id"], "result": {"userAgent": "native"}})[0].kind
+        == "initialized"
+    )
+    assert codec.initialized() == {"method": "initialized"}
+    start = codec.create("/project", "gpt-6")
+    assert start["params"] == {
+        "cwd": "/project",
+        "model": "gpt-6",
+        "approvalPolicy": "untrusted",
+        "approvalsReviewer": "user",
+        "sandbox": "read-only",
+    }
+
+
+def test_claude_fixed_flags_preserve_auth_and_do_not_widen_permissions():
+    argv = ClaudeCodec.argv("/native/agent", SESSION, model="claude-opus-4-7")
+    assert "--print" in argv
+    assert argv[argv.index("--permission-prompts") + 1] == "host"
+    assert "--replay-user-messages" in argv
+    assert "--permission-prompt-tool" in argv
+    assert argv[argv.index("--permission-mode") + 1] == "default"
+    assert f"--session-id={SESSION}" in argv
+    assert not {"--bare", "--dangerously-skip-permissions", "--allowedTools", "--settings"} & set(
+        argv
+    )
+    assert f"--resume={SESSION}" in ClaudeCodec.argv("/native/agent", SESSION, resume=True)
+    assert ClaudeCodec(SESSION).initialize()["request"] == {"subtype": "initialize", "hooks": None}
+
+
+@pytest.mark.parametrize(
+    "binary", ["relative", "--dangerous", "/tmp/../bin/agent", "/tmp/agent\n--flag"]
+)
+def test_binary_validation(binary):
+    with pytest.raises(ProtocolError):
+        CodexCodec.argv(binary)
+    with pytest.raises(ProtocolError):
+        ClaudeCodec.argv(binary, SESSION)
+
+
+@pytest.mark.parametrize("model", ["--dangerous", "space model", "gpt=flags", "x\n--flags"])
+def test_model_values_cannot_add_flags(model):
+    with pytest.raises(ProtocolError):
+        CodexCodec().create("/project", model)
+    with pytest.raises(ProtocolError):
+        ClaudeCodec.argv("/native/agent", SESSION, model=model)
+
+
+def test_session_response_cannot_claim_configured_model_is_actual_execution():
+    codec = CodexCodec()
+    request = codec.create("/project", "alias")
+    result = codec.feed(
+        {
+            "id": request["id"],
+            "result": {
+                "thread": {"id": SESSION, "turns": []},
+                "model": "actual-selected-config",
+                "api_key": "not-public",
+            },
+        }
+    )[0].data
+    assert result["model_configured"] == "actual-selected-config"
+    assert result["model_effective"] is None
+    assert "not-public" not in json.dumps(result)
+    codec = ClaudeCodec(SESSION)
+    event = codec.feed(
+        {"type": "system", "subtype": "init", "session_id": SESSION, "model": "selected-config"}
+    )[0]
+    assert event.data["model_effective"] is None
+
+
+@pytest.mark.parametrize(("reported", "expected"), [("high", "high"), ("x y", None), (3, None)])
+def test_session_events_carry_the_reported_reasoning_level(reported, expected):
+    """#1511: codex reports the level an "agent default" thread runs at; anything not shaped like a
+    level is no report. Claude's `system/init` names none, so its report is always null."""
+    codec = CodexCodec()
+    request = codec.create("/project", None)
+    result = codec.feed(
+        {
+            "id": request["id"],
+            "result": {
+                "thread": {"id": SESSION, "turns": []},
+                "model": "gpt-6-codex",
+                "reasoningEffort": reported,
+            },
+        }
+    )[0].data
+    assert result["model_configured"] == "gpt-6-codex"
+    assert result["effort_configured"] == expected
+    # The journal boundary accepts the new field (and still accepts events without it).
+    assert native_ipc.normalize_event({"kind": "session", "data": result})["data"] == result
+    event = ClaudeCodec(SESSION).feed(
+        {"type": "system", "subtype": "init", "session_id": SESSION, "model": "claude-opus-5-5"}
+    )[0]
+    assert event.data["model_configured"] == "claude-opus-5-5"
+    assert event.data["effort_configured"] is None
+
+
+def test_read_is_an_observation_not_resume_or_completion():
+    codec = CodexCodec()
+    request = codec.read(SESSION)
+    assert request["method"] == "thread/read"
+    turns = [
+        {
+            "id": f"turn-{i}",
+            "status": "completed",
+            "items": [{"type": "secret", "value": "not-public"}],
+        }
+        for i in range(65)
+    ]
+    events = codec.feed(
+        {
+            "id": request["id"],
+            "result": {"thread": {"id": SESSION, "turns": turns, "model": "configured"}},
+        }
+    )
+    assert [event.kind for event in events] == ["session"]
+    assert len(events[0].data["turns"]) == 50
+    assert events[0].data["omitted_turns"] == 15
+    assert "not-public" not in json.dumps(events[0].data)
+    resume = codec.resume(SESSION, "/project")
+    assert resume["params"]["threadId"] == SESSION
+    assert resume["params"]["approvalPolicy"] == "untrusted"
+    assert "input" not in resume["params"]
+
+
+def test_codex_start_and_resume_carry_the_battlelab_session_as_a_shell_policy_set():
+    """#1406: a restrictive operator `shell_environment_policy` would strip the child's
+    BATTLELAB_SESSION from the agent's tool shell; the dotted per-thread `set` restores it and
+    touches nothing else of the operator's policy."""
+    key = "codex-api:6c51dd58-9155-47b0-aafa-2ccf0de04908"
+    told = {"shell_environment_policy.set.BATTLELAB_SESSION": key}
+    assert CodexCodec().create("/project", "gpt-6", session=key)["params"]["config"] == told
+    resume = CodexCodec().resume(SESSION, "/project", session=key)
+    assert resume["params"]["config"] == told and resume["params"]["threadId"] == SESSION
+    assert "config" not in CodexCodec().create("/project")["params"]
+    assert "config" not in CodexCodec.create_params("/project", None)
+
+
+def test_codex_memory_paths_ride_the_same_shell_policy_set():
+    """#1441: the shared project memory paths survive an operator shell policy the same way."""
+    key = "codex-api:6c51dd58-9155-47b0-aafa-2ccf0de04908"
+    paths = {"BATTLELAB_MEMORY": "/m/notes", "BATTLELAB_MEMORY_INBOX": "/m/inbox/t"}
+    told = {
+        "shell_environment_policy.set.BATTLELAB_SESSION": key,
+        "shell_environment_policy.set.BATTLELAB_MEMORY": "/m/notes",
+        "shell_environment_policy.set.BATTLELAB_MEMORY_INBOX": "/m/inbox/t",
+    }
+    assert CodexCodec().create("/p", None, session=key, shell_env=paths)["params"]["config"] == told
+    resume = CodexCodec().resume(SESSION, "/p", session=key, shell_env=paths)
+    assert resume["params"]["config"] == told
+    # Without memory the config is exactly the #1406 set.
+    assert CodexCodec().create("/p", None, session=key, shell_env={})["params"]["config"] == {
+        "shell_environment_policy.set.BATTLELAB_SESSION": key
+    }
+
+
+@pytest.mark.parametrize("action", ["read", "resume"])
+def test_native_response_must_match_requested_history(action):
+    codec = CodexCodec()
+    request = codec.read(SESSION) if action == "read" else codec.resume(SESSION, "/project")
+    with pytest.raises(ProtocolError, match="requested thread"):
+        codec.feed({"id": request["id"], "result": {"thread": {"id": "wrong-id", "turns": []}}})
+    assert codec.native_id is None
+
+
+def test_codex_early_notifications_wait_for_rpc_turn_identity():
+    codec = codex_session()
+    request = codec.submit("Hello", OPERATION)
+    stale = {
+        "method": "turn/completed",
+        "params": {"threadId": SESSION, "turn": {"id": "older-turn", "status": "completed"}},
+    }
+    assert codec.feed(stale) == []
+    assert (
+        codec.feed(
+            {
+                "method": "turn/started",
+                "params": {"threadId": SESSION, "turn": {"id": TURN, "status": "inProgress"}},
+            }
+        )
+        == []
+    )
+    assert codec.feed(codex_approval()) == []
+    events = codec.feed(
+        {"id": request["id"], "result": {"turn": {"id": TURN, "status": "inProgress"}}}
+    )
+    assert [event.kind for event in events] == [
+        "turn_started",
+        "background",
+        "approval",
+    ]
+    assert codec.operation_id == OPERATION
+    assert codec.native_turn_id == TURN
+
+
+def test_turn_handoff_carries_operation_identity_without_claiming_dedup():
+    codec = codex_session()
+    frame = codec.submit("Hello", OPERATION)
+    assert frame["params"]["clientUserMessageId"] == OPERATION
+    assert frame["params"]["input"] == [{"type": "text", "text": "Hello"}]
+    with pytest.raises(ProtocolError, match="already active"):
+        codec.submit("Hello", OPERATION)
+    claude = ClaudeCodec(SESSION)
+    frame = claude.submit("/clear @file", OPERATION)
+    assert frame["uuid"] == OPERATION
+    assert frame["client_composed"] is True
+    assert frame["origin"] == {"kind": "human"}
+    assert frame["message"]["content"] == "/clear @file"
+
+
+@pytest.mark.parametrize(
+    "decision,wire", [("approve", "accept"), ("reject", "decline"), ("cancel", "cancel")]
+)
+def test_codex_permissions_are_one_operation_only(decision, wire):
+    codec = codex_running()
+    event = codec.feed(
+        codex_approval(
+            proposedExecpolicyAmendment=["git"],
+            proposedNetworkPolicyAmendments=[{"action": "allow", "host": "example.org"}],
+        )
+    )[0]
+    response = codec.decide(event.data["request_id"], decision)
+    assert response == {"id": 2, "result": {"decision": wire}}
+    with pytest.raises(ProtocolError, match="no longer pending"):
+        codec.decide(event.data["request_id"], decision)
+    with pytest.raises(ProtocolError, match="already consumed"):
+        codec.feed(codex_approval())
+
+
+def test_rpc_integer_and_string_permission_ids_are_distinct():
+    codec = codex_running()
+    integer = codec.feed(codex_approval(2))[0]
+    string = codec.feed(codex_approval("2"))[0]
+    assert integer.data["request_id"] != string.data["request_id"]
+    assert type(codec.decide(integer.data["request_id"], "reject")["id"]) is int
+    assert type(codec.decide(string.data["request_id"], "reject")["id"]) is str
+    with pytest.raises(ProtocolError):
+        codec.feed(codex_approval(True))
+
+
+@pytest.mark.parametrize(
+    "mutate", ["foreign-thread", "foreign-turn", "unknown-effect", "lasting-filesystem"]
+)
+def test_unbound_or_unsupported_native_effects_are_refused(mutate):
+    codec = codex_running()
+    frame = codex_approval()
+    if mutate == "foreign-thread":
+        frame["params"]["threadId"] = "foreign"
+    elif mutate == "foreign-turn":
+        frame["params"]["turnId"] = "foreign"
+    elif mutate == "unknown-effect":
+        frame["method"] = "item/permissions/requestApproval"
+    else:
+        frame["method"] = "item/fileChange/requestApproval"
+        frame["params"]["grantRoot"] = "/project"
+    event = codec.feed(frame)[0]
+    assert event.kind == "send"
+    assert "error" in event.data["frame"]
+    assert "result" not in event.data["frame"]
+
+
+@pytest.mark.parametrize(
+    "decision", ["acceptForSession", "bypassPermissions", "allow", "approve-always"]
+)
+def test_persistent_permission_decisions_are_never_serialized(decision):
+    for codec, frame in [
+        (codex_running(), codex_approval()),
+        (claude_running(), claude_approval()),
+    ]:
+        request = codec.feed(frame)[0].data["request_id"]
+        with pytest.raises(ProtocolError, match="unsupported permission decision"):
+            codec.decide(request, decision)
+        assert codec.decide(request, "reject")
+
+
+def test_claude_approval_preserves_original_input_privately():
+    codec = claude_running()
+    request = claude_approval(
+        permission_suggestions=[{"type": "setMode", "mode": "bypassPermissions"}]
+    )
+    event = codec.feed(request)[0]
+    request["request"]["input"]["command"] = "mutated by caller"
+    event.data["summary"] = "mutated by browser"
+    response = codec.decide(event.data["request_id"], "approve")
+    assert response["response"]["response"] == {
+        "behavior": "allow",
+        "updatedInput": {"command": "git status", "timeout": 1000},
+    }
+    assert "updatedPermissions" not in json.dumps(response)
+    with pytest.raises(ProtocolError):
+        codec.decide(event.data["request_id"], "approve")
+
+
+def test_claude_cancel_denies_and_interrupts_only_the_pending_request():
+    codec = claude_running()
+    event = codec.feed(claude_approval())[0]
+    response = codec.decide(event.data["request_id"], "cancel")["response"]
+    assert response["request_id"] == "native-1"
+    assert response["response"]["behavior"] == "deny"
+    assert response["response"]["interrupt"] is True
+
+
+def test_claude_unknown_hook_callback_does_not_create_authority():
+    codec = claude_running()
+    event = codec.feed(
+        {
+            "type": "control_request",
+            "request_id": "hook-1",
+            "request": {
+                "subtype": "hook_callback",
+                "callback_id": "arbitrary",
+                "input": {"hook_event_name": "PreToolUse"},
+            },
+        }
+    )[0]
+    assert event.kind == "send"
+    assert event.data["frame"]["response"]["subtype"] == "error"
+
+
+def test_cancelled_permission_and_changed_identity_are_unusable():
+    codec = claude_running()
+    request = codec.feed(claude_approval())[0].data["request_id"]
+    with pytest.raises(ProtocolError, match="identity changed"):
+        codec.feed(claude_approval(input={"command": "different"}))
+    event = codec.feed({"type": "control_cancel_request", "request_id": "native-1"})[0]
+    assert event.kind == "approval_cancelled"
+    with pytest.raises(ProtocolError):
+        codec.decide(request, "approve")
+    with pytest.raises(ProtocolError, match="already consumed"):
+        codec.feed(claude_approval())
+
+
+@pytest.mark.parametrize("native_state", ["completed", "failed", "interrupted"])
+def test_codex_explicit_completion_clears_pending_permission(native_state):
+    codec = codex_running()
+    request = codec.feed(codex_approval())[0].data["request_id"]
+    event = codec.feed(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": SESSION,
+                "turn": {
+                    "id": TURN,
+                    "status": native_state,
+                    "error": {"message": "native detail", "private": "not-public"},
+                },
+            },
+        }
+    )[0]
+    assert event.data["state"] == native_state
+    assert event.data["operation_id"] == OPERATION
+    assert "not-public" not in json.dumps(event.data)
+    with pytest.raises(ProtocolError):
+        codec.decide(request, "approve")
+    assert codec.operation_id is None
+
+
+@pytest.mark.parametrize(
+    "subtype,is_error,reason,state",
+    [
+        ("success", False, None, "completed"),
+        ("success", True, None, "failed"),
+        ("error_max_turns", False, None, "failed"),
+        ("success", False, "aborted_streaming", "interrupted"),
+        ("success", False, "aborted_tools", "interrupted"),
+        ("success", False, "max_turns", "failed"),
+        # What Claude Code actually sends for an interrupt (captured from the CLI): an error
+        # result whose terminal reason is the abort — never a failure the operator must read.
+        ("error_during_execution", True, "aborted_streaming", "interrupted"),
+        ("error_during_execution", True, "aborted_tools", "interrupted"),
+        ("error_during_execution", True, None, "failed"),
+    ],
+)
+def test_claude_result_semantics(subtype, is_error, reason, state):
+    codec = claude_running()
+    event = codec.feed(
+        {
+            "type": "result",
+            "uuid": str(uuid.uuid4()),
+            "session_id": SESSION,
+            "subtype": subtype,
+            "is_error": is_error,
+            "terminal_reason": reason,
+            "result": "Answer",
+            "errors": [
+                "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"
+            ],
+        }
+    )[0]
+    assert event.kind == "turn_completed"
+    assert event.data["state"] == state
+    assert event.data["operation_id"] == OPERATION
+    # An interrupt shows as interrupted; Claude's internal diagnostic is no error to show.
+    if state == "interrupted":
+        assert not event.data["error"]
+    if state == "failed":
+        assert "ede_diagnostic" in event.data["error"]
+
+
+def test_claude_background_result_cannot_complete_submitted_turn():
+    codec = claude_running()
+    codec.feed(
+        {
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "background-1",
+            "session_id": SESSION,
+        }
+    )
+    event = codec.feed(
+        {
+            "type": "result",
+            "uuid": str(uuid.uuid4()),
+            "subtype": "success",
+            "is_error": False,
+            "origin": {"kind": "task-notification"},
+        }
+    )[0]
+    assert event.kind == "background"
+    assert codec.operation_id == OPERATION
+    result = codec.feed(
+        {"type": "result", "uuid": str(uuid.uuid4()), "subtype": "success", "is_error": False}
+    )[0]
+    assert result.data["background_active"] is True
+    event = codec.feed(
+        {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "background-1",
+            "status": "completed",
+        }
+    )[0]
+    assert event.data["active"] is False
+
+
+def test_unknown_origin_is_background_and_missing_error_status_is_not_success():
+    codec = claude_running()
+    assert (
+        codec.feed(
+            {
+                "type": "result",
+                "uuid": str(uuid.uuid4()),
+                "subtype": "success",
+                "is_error": False,
+                "origin": {"kind": "future-source"},
+            }
+        )[0].kind
+        == "background"
+    )
+    with pytest.raises(ProtocolError, match="explicit error"):
+        codec.feed({"type": "result", "uuid": str(uuid.uuid4()), "subtype": "success"})
+    assert codec.operation_id == OPERATION
+
+
+def test_claude_message_model_is_observed_and_subagent_model_is_not_parent():
+    codec = claude_running()
+    frame = {
+        "type": "assistant",
+        "message": {
+            "id": "msg_1",
+            "model": "claude-opus-4-7",
+            "content": [{"type": "text", "text": "Answer"}],
+        },
+        "hidden": "not-public",
+    }
+    events = codec.feed(frame)
+    assert [event.kind for event in events] == ["model", "text"]
+    assert events[0].data["model_effective"] == "claude-opus-4-7"
+    assert "not-public" not in json.dumps([event.data for event in events])
+    frame["parent_tool_use_id"] = "parent-1"
+    assert [event.kind for event in codec.feed(frame)] == ["background"]
+
+
+def test_synthetic_claude_message_is_not_effective_model_evidence():
+    codec = claude_running()
+    events = codec.feed(
+        {
+            "type": "assistant",
+            "message": {
+                "id": "msg_1",
+                "model": "<synthetic>",
+                "content": [{"type": "text", "text": "Error"}],
+            },
+        }
+    )
+    assert [event.kind for event in events] == ["text"]
+
+
+def test_stream_deltas_and_tool_results_stay_bounded_and_structured():
+    codec = codex_running()
+    event = codec.feed(
+        {
+            "method": "item/agentMessage/delta",
+            "params": {
+                "threadId": SESSION,
+                "turnId": TURN,
+                "itemId": "item-1",
+                "delta": "a" * (MAX_TEXT + 10),
+                "private": "not-public",
+            },
+        }
+    )[0]
+    assert len(event.data["text"]) == MAX_TEXT and event.data["truncated"] is True
+    assert event.data["partial"] is True
+    codec = claude_running()
+    tool = codec.feed(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "Read",
+                        "input": {"file_path": "/project/file"},
+                    }
+                ]
+            },
+        }
+    )[0]
+    assert tool.kind == "tool" and tool.data["state"] == "running"
+    result = codec.feed(
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_1",
+                        "is_error": True,
+                        "content": "missing",
+                    }
+                ]
+            },
+        }
+    )[0]
+    assert result.data["state"] == "failed"
+    delta = codec.feed(
+        {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "hello"},
+            },
+        }
+    )[0]
+    assert delta.kind == "text" and delta.data["partial"]
+
+
+def test_interrupt_is_a_request_and_never_fabricates_completion():
+    codex = codex_running()
+    request = codex.interrupt()
+    assert request["params"] == {"threadId": SESSION, "turnId": TURN}
+    event = codex.feed({"id": request["id"], "result": {}})[0]
+    assert event.kind == "response" and codex.operation_id == OPERATION
+    claude = claude_running()
+    request = claude.interrupt()
+    event = claude.feed(
+        {
+            "type": "control_response",
+            "response": {"request_id": request["request_id"], "subtype": "success", "response": {}},
+        }
+    )[0]
+    assert event.kind == "response" and claude.operation_id == OPERATION
+
+
+@pytest.mark.parametrize("factory", [codex_running, claude_running])
+def test_eof_is_uncertain_never_done_and_connection_cannot_retry(factory):
+    codec = factory()
+    event = codec.eof()
+    assert event.kind == "disconnected"
+    assert event.data["state"] == "uncertain"
+    assert event.data["operation_id"] == OPERATION
+    with pytest.raises(ProtocolError):
+        codec.submit("Retry", OPERATION)
+    with pytest.raises(ProtocolError):
+        codec.feed({})
+
+
+def test_native_request_errors_are_observed_without_resubmitting():
+    codec = codex_session()
+    request = codec.submit("Hi", OPERATION)
+    event = codec.feed({"id": request["id"], "error": {"code": -32000, "message": "declined"}})[0]
+    assert event.kind == "error"
+    assert event.data["action"] == "turn/start"
+    # The refused turn never ran, so the connection is free (review of #1278: it used to stay
+    # "active" forever). The codec itself never resends; the journal claim is what keeps an
+    # operation id to a single write, so the next turn needs a NEW operation id.
+    assert codec.operation_id is None
+    following = codec.submit("Next", str(uuid.uuid4()))
+    assert following["method"] == "turn/start" and following["id"] != request["id"]
+
+
+def test_foreign_claude_session_is_refused():
+    with pytest.raises(ProtocolError, match="identity changed"):
+        claude_running().feed(
+            {
+                "type": "result",
+                "uuid": str(uuid.uuid4()),
+                "session_id": str(uuid.uuid4()),
+                "subtype": "success",
+                "is_error": False,
+            }
+        )
+
+
+def test_jsonl_framing_limits_and_invalid_numbers():
+    frame = {"id": "request", "params": {"text": "a\nb"}}
+    assert decode(encode(frame)) == frame
+    for invalid in [
+        b'{"id": 1}',
+        b'{"id":\n',
+        b"[]\n",
+        b'{"x": NaN}\n',
+        b'{"x": "\xff"}\n',
+        b" " * (MAX_FRAME_BYTES + 1) + b"\n",
+    ]:
+        with pytest.raises(ProtocolError):
+            decode(invalid)
+    with pytest.raises(ProtocolError):
+        encode({"text": "a" * MAX_FRAME_BYTES})
+    nested = {}
+    for _ in range(34):
+        nested = {"x": nested}
+    with pytest.raises(ProtocolError):
+        encode(nested)
+
+
+@pytest.mark.parametrize("text", ["", "   ", "x" * (MAX_INPUT_TEXT + 1)])
+def test_invalid_submission_does_not_occupy_turn(text):
+    for codec in [codex_session(), ClaudeCodec(SESSION)]:
+        with pytest.raises(ProtocolError):
+            codec.submit(text, OPERATION)
+        assert codec.operation_id is None
+
+
+@pytest.mark.parametrize("identity", [True, None, "bad", SESSION.upper(), SESSION.replace("-", "")])
+def test_native_uuid_inputs_are_canonical_and_errors_are_typed(identity):
+    with pytest.raises(ProtocolError, match="canonical UUID"):
+        ClaudeCodec(identity)
+    with pytest.raises(ProtocolError, match="canonical UUID"):
+        ClaudeCodec.argv("/native/agent", identity)
+    for codec in [codex_session(), ClaudeCodec(SESSION)]:
+        with pytest.raises(ProtocolError, match="canonical UUID"):
+            codec.submit("Inspect", identity)
+        assert codec.operation_id is None
+
+
+def test_codex_resolved_callback_cannot_be_answered_later():
+    codec = codex_running()
+    request_id = codec.feed(codex_approval())[0].data["request_id"]
+    event = codec.feed(
+        {"method": "serverRequest/resolved", "params": {"threadId": SESSION, "requestId": 2}}
+    )[0]
+    assert event.kind == "approval_cancelled"
+    with pytest.raises(ProtocolError):
+        codec.decide(request_id, "approve")
+
+
+def test_native_error_notification_is_not_turn_completion_or_client_retry():
+    codec = codex_running()
+    event = codec.feed(
+        {
+            "method": "error",
+            "params": {
+                "threadId": SESSION,
+                "turnId": TURN,
+                "willRetry": True,
+                "error": {"message": "temporary native failure"},
+            },
+        }
+    )[0]
+    assert event.kind == "error"
+    assert event.data["native_will_retry"] is True
+    assert codec.operation_id == OPERATION
+
+
+def test_codex_started_reply_exposes_request_correlation_once():
+    codec = codex_session()
+    request = codec.submit("Inspect", OPERATION)
+    event = codec.feed(
+        {"id": request["id"], "result": {"turn": {"id": TURN, "status": "inProgress"}}}
+    )[0]
+    assert event.data["request_id"] == request["id"]
+    assert (
+        codec.feed(
+            {
+                "method": "turn/started",
+                "params": {"threadId": SESSION, "turn": {"id": TURN, "status": "inProgress"}},
+            }
+        )
+        == []
+    )
+
+
+def test_early_event_buffer_is_bounded_before_turn_identity_is_known():
+    codec = codex_session()
+    codec.submit("Inspect", OPERATION)
+    frame = {
+        "method": "item/agentMessage/delta",
+        "params": {"threadId": SESSION, "turnId": TURN, "itemId": "item-1", "delta": "x" * 100_000},
+    }
+    for _ in range(10):
+        assert codec.feed(frame) == []
+    with pytest.raises(ProtocolError, match="event buffer"):
+        codec.feed(frame)
+
+
+def test_claude_result_does_not_override_native_running_state():
+    codec = claude_running()
+    state = codec.feed(
+        {
+            "type": "system",
+            "subtype": "session_state_changed",
+            "state": "running",
+            "sdk_host_only": True,
+        }
+    )[0]
+    assert state.data["native_state"] == "running"
+    result = codec.feed(
+        {"type": "result", "uuid": str(uuid.uuid4()), "subtype": "success", "is_error": False}
+    )[0]
+    assert result.data["state"] == "completed"
+    assert result.data["background_active"] is True
+    assert result.data["native_state"] == "running"
+    idle = codec.feed({"type": "system", "subtype": "session_state_changed", "state": "idle"})[0]
+    assert idle.data["active"] is False
+
+
+def test_claude_task_update_alone_can_settle_a_background_task():
+    codec = claude_running()
+    codec.feed({"type": "system", "subtype": "task_started", "task_id": "agent-task"})
+    event = codec.feed(
+        {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "agent-task",
+            "patch": {"status": "killed"},
+        }
+    )[0]
+    assert event.kind == "background"
+    assert event.data["active"] is False
+    assert codec.operation_id == OPERATION
+
+
+@pytest.mark.parametrize("origin", [[], "human", {}, {"kind": []}])
+def test_malformed_claude_origin_cannot_masquerade_as_operator_turn(origin):
+    codec = claude_running()
+    with pytest.raises(ProtocolError, match="origin is malformed"):
+        codec.feed(
+            {
+                "type": "result",
+                "uuid": str(uuid.uuid4()),
+                "subtype": "success",
+                "is_error": False,
+                "origin": origin,
+            }
+        )
+    assert codec.operation_id == OPERATION
+
+
+@pytest.mark.parametrize(
+    "factory,frame", [(codex_running, codex_approval()), (claude_running, claude_approval())]
+)
+def test_approval_digest_binds_full_request_without_exposing_it(factory, frame):
+    codec = factory()
+    event = codec.feed(frame)[0]
+    # Codex binds the frame AND what was presented (for a file change, its patch too).
+    bound = (
+        {"frame": frame, "presented": json.loads(event.data["summary"])}
+        if factory is codex_running
+        else frame
+    )
+    expected = hashlib.sha256(
+        json.dumps(bound, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert event.data["payload_digest"] == expected
+    assert "frame" not in event.data and "input" not in event.data and "params" not in event.data
+    changed = json.loads(json.dumps(frame))
+    changed["extra"] = "changed request metadata"
+    with pytest.raises(ProtocolError, match="identity changed"):
+        codec.feed(changed)
+
+
+@pytest.mark.parametrize("model", ["x" * 257, "space model", {}, None])
+def test_invalid_model_identity_is_unknown_not_truncated_evidence(model):
+    codec = claude_running()
+    events = codec.feed(
+        {
+            "type": "assistant",
+            "message": {"model": model, "content": [{"type": "text", "text": "Answer"}]},
+        }
+    )
+    assert [event.kind for event in events] == ["text"]
+    configured = codec.feed(
+        {"type": "system", "subtype": "init", "model": model, "session_id": SESSION}
+    )[0]
+    assert configured.data["model_configured"] is None
+
+
+@pytest.mark.parametrize("text", ["x" * MAX_INPUT_TEXT, "😀" * MAX_INPUT_TEXT])
+def test_chat_sized_inputs_are_supported_without_truncation(text):
+    assert validate_text(text) == text
+    for codec in [codex_session(), ClaudeCodec(SESSION)]:
+        frame = codec.submit(text, OPERATION)
+        encoded = encode(frame)
+        assert len(encoded) < MAX_FRAME_BYTES
+        restored = decode(encoded)
+        actual = (
+            restored["params"]["input"][0]["text"]
+            if "params" in restored
+            else restored["message"]["content"]
+        )
+        assert actual == text
+
+
+@pytest.mark.parametrize("text", ["\0" * MAX_INPUT_TEXT, "unpaired\ud800"])
+def test_input_frame_size_and_utf8_are_validated_before_turn_is_claimed(text):
+    for codec in [codex_session(), ClaudeCodec(SESSION)]:
+        with pytest.raises(ProtocolError):
+            codec.submit(text, OPERATION)
+        assert codec.operation_id is None
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        b'{"type":"user","type":"result"}\n',
+        b'{"request":{"allow":false,"allow":true}}\n',
+        b'{\n"type":"result"\n}\n',
+        b'{"type":"result"}\r\n',
+        '{"type":"result"}\n'.encode("utf-16-be"),
+        '{"type":"result"}\n'.encode("utf-32-be"),
+        b'\xef\xbb\xbf{"type":"result"}\n',
+    ],
+)
+def test_native_jsonl_has_unambiguous_utf8_fields_and_one_record(line):
+    with pytest.raises(ProtocolError):
+        decode(line)
+
+
+def test_native_frame_size_includes_terminating_newline():
+    frame = {"x": "a" * (MAX_FRAME_BYTES - 9)}
+    encoded = encode(frame)
+    assert len(encoded) == MAX_FRAME_BYTES
+    assert decode(encoded) == frame
+    with pytest.raises(ProtocolError):
+        encode({"x": "a" * (MAX_FRAME_BYTES - 8)})
+
+
+def test_claude_assistant_without_optional_message_id_reaches_ipc():
+    from agent_sessions import native_ipc
+
+    event = claude_running().feed(
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "Answer"}]}}
+    )[0]
+    assert "item_id" not in event.data
+    assert native_ipc.normalize_event({"kind": event.kind, "data": event.data}) == {
+        "kind": "text",
+        "data": event.data,
+    }
+
+
+@pytest.mark.parametrize("identity", ["", "a" * 257, "space id", None, True])
+def test_claude_assistant_identity_is_never_truncated_or_coerced(identity):
+    with pytest.raises(ProtocolError, match="native identity"):
+        claude_running().feed(
+            {
+                "type": "assistant",
+                "message": {"id": identity, "content": [{"type": "text", "text": "Answer"}]},
+            }
+        )
+
+
+def result_frame(**changes):
+    return {
+        "type": "result",
+        "uuid": str(uuid.uuid4()),
+        "session_id": SESSION,
+        "subtype": "success",
+        "is_error": False,
+        **changes,
+    }
+
+
+def test_claude_repeated_result_cannot_complete_a_later_submission():
+    codec = claude_running()
+    first_result = result_frame()
+    assert codec.feed(first_result)[0].data["operation_id"] == OPERATION
+    second_operation = str(uuid.uuid4())
+    codec.submit("Next turn", second_operation)
+    assert codec.feed(first_result) == []
+    assert codec.operation_id == second_operation
+    with pytest.raises(ProtocolError, match="result identity changed"):
+        codec.feed({**first_result, "result": "Changed"})
+    assert codec.operation_id == second_operation
+    assert codec.feed(result_frame())[0].data["operation_id"] == second_operation
+
+
+def test_claude_idle_and_background_results_remain_replay_protected():
+    codec = ClaudeCodec(SESSION)
+    idle_result = result_frame()
+    assert codec.feed(idle_result) == []
+    codec.submit("New turn", OPERATION)
+    assert codec.feed(idle_result) == []
+    assert codec.operation_id == OPERATION
+    background = result_frame(origin={"kind": "task-notification"})
+    assert codec.feed(background)[0].kind == "background"
+    assert codec.feed(background) == []
+    assert codec.operation_id == OPERATION
+
+
+@pytest.mark.parametrize("identity", [None, "", "bad", True, SESSION.upper()])
+def test_claude_result_requires_unchanged_canonical_identity(identity):
+    codec = claude_running()
+    frame = result_frame(uuid=identity)
+    if identity is None:
+        frame.pop("uuid")
+    with pytest.raises(ProtocolError, match="canonical UUID"):
+        codec.feed(frame)
+    assert codec.operation_id == OPERATION
+
+
+def test_claude_result_ledger_never_evicts_a_completed_identity(monkeypatch):
+    from agent_sessions import native_protocol
+
+    monkeypatch.setattr(native_protocol, "MAX_RESULTS", 2)
+    codec = claude_running()
+    first = result_frame()
+    codec.feed(first)
+    codec.submit("Next turn", str(uuid.uuid4()))
+    codec.feed(result_frame())
+    assert codec.feed(first) == []
+    with pytest.raises(ProtocolError, match="capacity"):
+        codec.submit("Requires a fresh native connection", str(uuid.uuid4()))
+    with pytest.raises(ProtocolError, match="capacity"):
+        codec.feed(result_frame())
+    assert codec.operation_id is None
+
+
+@pytest.mark.parametrize(
+    "factory,frame",
+    [
+        (codex_running, codex_approval(command="x" * MAX_TEXT + "; consequential suffix")),
+        (codex_running, codex_approval(additionalPermissions={"hidden": "x" * MAX_TEXT})),
+        (claude_running, claude_approval(input={"command": "x" * MAX_TEXT + "; suffix"})),
+        (claude_running, claude_approval(input={"command": "😀" * (MAX_TEXT // 2)})),
+    ],
+)
+def test_approval_cannot_hide_consequential_payload_beyond_presentation_bound(factory, frame):
+    codec = factory()
+    with pytest.raises(ProtocolError, match="presentation bound"):
+        codec.feed(frame)
+    assert codec._approvals == {}
+    assert codec.operation_id == OPERATION
+
+
+def _file_change(request_id=5):
+    return {
+        "id": request_id,
+        "method": "item/fileChange/requestApproval",
+        "params": {"threadId": SESSION, "turnId": TURN, "itemId": "edit-1", "reason": "edit"},
+    }
+
+
+def _patch(diff, turn=TURN):
+    change = {"path": "a.py", "kind": {"type": "update"}, "diff": diff}
+    return {
+        "method": "item/fileChange/patchUpdated",
+        "params": {"threadId": SESSION, "turnId": turn, "itemId": "edit-1", "changes": [change]},
+    }
+
+
+def test_a_file_change_presents_its_patch_but_is_never_approvable():
+    """Nothing binds the patch Codex applies to the one shown (Hermes on #1278)."""
+    codec = codex_running()
+    assert codec.feed(_patch("-a\n+b\n")) == []
+    event = codec.feed(_file_change())[0]
+    assert event.kind == "approval" and event.data["complete"] is False
+    presented = json.loads(event.data["summary"])
+    assert presented["changes"][0]["diff"] == "-a\n+b\n" and presented["reason"] == "edit"
+    reply = codec.decide(event.data["request_id"], "reject")
+    assert reply == {"id": 5, "result": {"decision": "decline"}}
+
+
+def test_a_command_approval_is_complete():
+    event = codex_running().feed(codex_approval())[0]
+    assert event.data["complete"] is True
+
+
+def test_a_file_change_without_a_patch_or_from_another_turn_is_incomplete():
+    codec = codex_running()
+    assert codec.feed(_patch("-a\n+b\n", turn="another-turn")) == []  # not this turn's patch
+    event = codec.feed(_file_change())[0]
+    assert event.data["complete"] is False
+    assert "changes" not in json.loads(event.data["summary"])
+
+
+def test_a_patch_changing_after_presentation_declines_the_stale_approval():
+    codec = codex_running()
+    codec.feed(_patch("-a\n+b\n"))
+    key = codec.feed(_file_change())[0].data["request_id"]
+    events = codec.feed(_patch("-a\n+something else\n"))
+    sends = [e.data["frame"] for e in events if e.kind == "send"]
+    assert sends == [{"id": 5, "result": {"decision": "decline"}}]
+    assert [e.kind for e in events if e.kind != "send"] == ["approval_cancelled"]
+    with pytest.raises(ProtocolError):
+        codec.decide(key, "approve")  # the presented callback is gone
+
+
+def test_a_claude_prompt_presents_its_whole_permission_context():
+    codec = claude_running()
+    frame = claude_approval()
+    frame["request"].update(blocked_path="/etc/hosts", decision_reason="outside cwd", title="t")
+    event = codec.feed(frame)[0]
+    presented = json.loads(event.data["summary"])
+    assert (
+        presented["blocked_path"] == "/etc/hosts" and presented["decision_reason"] == "outside cwd"
+    )
+    assert "subtype" not in presented and event.data["complete"] is True
+
+
+def test_a_claude_sub_agent_prompt_is_refused():
+    codec = claude_running()
+    frame = claude_approval()
+    frame["request"]["agent_id"] = "agent-1"
+    (event,) = codec.feed(frame)
+    assert event.kind == "send" and event.data["frame"]["response"]["subtype"] == "error"
+
+
+def test_an_empty_initial_patch_is_not_a_presented_patch():
+    """Hermes on #1278: `changes: []` from item/started counted as presented."""
+    codec = codex_running()
+    started = {
+        "method": "item/started",
+        "params": {
+            "threadId": SESSION,
+            "turnId": TURN,
+            "item": {"id": "edit-1", "type": "fileChange", "status": "inProgress", "changes": []},
+        },
+    }
+    codec.feed(started)
+    event = codec.feed(_file_change())[0]
+    assert event.data["complete"] is False
+    codec2 = codex_running()
+    codec2.feed(_patch(""))  # a change with an empty diff presents nothing either
+    assert codec2.feed(_file_change())[0].data["complete"] is False
+
+
+def test_an_identical_repeated_patch_keeps_the_pending_request():
+    """Hermes on #1310: only a CHANGED proposal may invalidate a presented request."""
+    codec = codex_running()
+    codec.feed(_patch("-a\n+b\n"))
+    key = codec.feed(_file_change())[0].data["request_id"]
+    assert codec.feed(_patch("-a\n+b\n")) == []
+    assert codec.decide(key, "reject") == {"id": 5, "result": {"decision": "decline"}}
+
+
+# --- #1427: the command lifecycle fences an operator turn's output ------------------------------
+# Frame sequences from the real CLI (`stream-json --verbose`, the worker's own argv), recorded on
+# #1427 (comments 94438, 94477, 94505): every operator input gets `command_lifecycle` queued →
+# started → completed with the uuid BattleLab submitted; a turn the agent starts for a task
+# notification gets none, and its assistant frames carry no marker at all.
+
+NEXT = "3e0d7d5e-2a3b-4c1e-9f1a-6b2c8d4e5f60"
+
+
+def _life(command, state):
+    return {
+        "type": "command_lifecycle",
+        "command_uuid": command,
+        "state": state,
+        "uuid": str(uuid.uuid4()),
+        "session_id": SESSION,
+    }
+
+
+def _say(text, **extra):
+    message = {"id": "msg_" + uuid.uuid4().hex[:8], "content": [{"type": "text", "text": text}]}
+    return {
+        "type": "assistant",
+        "session_id": SESSION,
+        "parent_tool_use_id": None,
+        "message": message,
+        **extra,
+    }
+
+
+def _result(text, **extra):
+    return {
+        "type": "result",
+        "subtype": "success",
+        "uuid": str(uuid.uuid4()),
+        "is_error": False,
+        "terminal_reason": "completed",
+        "result": text,
+        "session_id": SESSION,
+        **extra,
+    }
+
+
+def _operator_turn(codec, operation, text):
+    """One complete operator turn, as the real CLI frames it."""
+    codec.submit("go", operation)
+    out = []
+    for frame in (
+        _life(operation, "queued"),
+        _life(operation, "started"),
+        _say(text, user_message_uuid=operation),
+        _result(text, origin={"kind": "human"}, user_message_uuid=operation),
+        _life(operation, "completed"),
+    ):
+        out += codec.feed(frame)
+    return out
+
+
+def _owner_text(events):
+    """{operation_id or None: the text attributed to it}: which operator turn owns each piece of
+    output. A turn the agent runs for itself names no operation (#1438); see `_agent_text`."""
+    owned: dict = {}
+    for e in events:
+        if e.kind == "text" and "agent_turn" not in e.data:
+            owned[e.data["operation_id"]] = owned.get(e.data["operation_id"], "") + e.data["text"]
+    return owned
+
+
+def _agent_text(events):
+    """{agent_turn: its text}: what each turn the agent ran for itself said (#1438)."""
+    owned: dict = {}
+    for e in events:
+        if e.kind == "text" and "agent_turn" in e.data:
+            assert "operation_id" not in e.data and "native_turn_id" not in e.data
+            owned[e.data["agent_turn"]] = owned.get(e.data["agent_turn"], "") + e.data["text"]
+    return owned
+
+
+def test_claude_lifecycle_is_unknown_until_one_correlated_cycle_completes():
+    codec = ClaudeCodec(SESSION)
+    assert not codec.lifecycle_proven  # a fresh generation proves nothing
+    codec.submit("go", OPERATION)
+    for frame in (_life(OPERATION, "queued"), _life(OPERATION, "started"), _say("hi")):
+        codec.feed(frame)
+        assert not codec.lifecycle_proven
+    codec.feed(_result("hi", origin={"kind": "human"}, user_message_uuid=OPERATION))
+    assert not codec.lifecycle_proven  # the cycle is complete only with its `completed`
+    codec.feed(_life(OPERATION, "completed"))
+    assert codec.lifecycle_proven
+
+
+def test_claude_without_lifecycle_frames_never_proves_the_fence():
+    """An older CLI emits none: its generation keeps the conservative dispatch rule for ever."""
+    codec = ClaudeCodec(SESSION)
+    for operation in (OPERATION, NEXT):
+        codec.submit("go", operation)
+        events = codec.feed(_say("reply")) + codec.feed(_result("reply"))
+        assert _owner_text(events) == {operation: "reply"}  # attribution as before
+    assert not codec.lifecycle_proven
+
+
+@pytest.mark.parametrize(
+    "stray",
+    [
+        lambda op: _life("9d1f0b8e-1c2d-4e3f-8a9b-0c1d2e3f4a5b", "started"),  # never submitted
+        lambda op: _life(op, "completed"),  # completed before its result
+        lambda op: _life(op, "failed"),  # a state we do not know
+    ],
+    ids=["unknown-command", "completed-early", "unknown-state"],
+)
+def test_claude_a_lifecycle_frame_outside_the_cycle_makes_the_fence_unknown(stray):
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    assert codec.lifecycle_proven
+    codec.submit("go", NEXT)
+    codec.feed(_life(NEXT, "queued"))
+    codec.feed(_life(NEXT, "started"))
+    codec.feed(stray(NEXT))
+    assert not codec.lifecycle_proven
+
+
+def test_claude_a_notification_turn_starting_before_the_operators_write_keeps_its_own_text():
+    """The race (#1427): a task-notification turn begins between the dispatch check and the
+    write. Its frames arrive after the write but before the operator's `started`: they are the
+    agent's own turn, and the operator's reply holds only its own text."""
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "started a task")
+    assert codec.lifecycle_proven
+    codec.submit("what next?", NEXT)  # written while the notification turn is starting
+    events = []
+    for frame in (
+        {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "bg1",
+            "status": "completed",
+            "session_id": SESSION,
+        },
+        {"type": "system", "subtype": "init", "session_id": SESSION},
+        _say("The background command finished."),  # unmarked: the notification turn's output
+        _result(
+            "The background command finished.",
+            origin={"kind": "task-notification", "producer": "session-task"},
+        ),
+        _life(NEXT, "queued"),
+        _life(NEXT, "started"),
+        _say("Here is what is next.", user_message_uuid=NEXT),
+        _result("Here is what is next.", origin={"kind": "human"}, user_message_uuid=NEXT),
+        _life(NEXT, "completed"),
+    ):
+        events += codec.feed(frame)
+    assert _owner_text(events) == {NEXT: "Here is what is next."}
+    completed = [e for e in events if e.kind == "turn_completed"]
+    assert len(completed) == 1 and completed[0].data["operation_id"] == NEXT
+    assert completed[0].data["text"] == "Here is what is next."
+    assert not codec.unowned_turn and codec.lifecycle_proven
+
+
+def test_claude_a_task_finishing_inside_an_operator_window_starts_no_other_turn():
+    """#94505: a task completing during an operator lifecycle is folded into that turn as system
+    frames; the reply is the operator's, and nothing is left running."""
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "started a task")
+    codec.submit("run the slow check", NEXT)
+    events = []
+    for frame in (
+        _life(NEXT, "queued"),
+        _life(NEXT, "started"),
+        {"type": "system", "subtype": "task_started", "task_id": "fg1", "session_id": SESSION},
+        {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "bg1",
+            "patch": {"status": "completed"},
+            "session_id": SESSION,
+        },
+        {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "bg1",
+            "status": "completed",
+            "session_id": SESSION,
+        },
+        _say("finished"),
+        _result("finished", origin={"kind": "human"}, user_message_uuid=NEXT),
+        _life(NEXT, "completed"),
+    ):
+        events += codec.feed(frame)
+    assert _owner_text(events) == {NEXT: "finished"}
+    assert [e.data["operation_id"] for e in events if e.kind == "turn_completed"] == [NEXT]
+    assert not codec.unowned_turn
+
+
+def test_claude_a_turn_the_agent_runs_for_itself_is_tracked_until_its_result():
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "started a task")
+    started, said = codec.feed(_say("The background command finished."))
+    assert codec.unowned_turn  # dispatch must wait for this turn to end
+    target = codec.background_turn
+    assert started.kind == "background" and started.data["background_turn"] == target
+    # #1438: what it says is recorded under its own target, never an operation.
+    assert _agent_text([said]) == {target: "The background command finished."}
+    assert _agent_text(codec.feed(_say("More of it."))) == {target: "More of it."}  # one target
+    (ended,) = codec.feed(_result("done", origin={"kind": "task-notification"}))
+    assert ended.data["background_turn"] is None and ended.data["state"] == "completed"
+    assert not codec.unowned_turn and codec.background_turn is None
+
+
+def test_claude_a_result_for_another_input_never_completes_the_operator_turn():
+    codec = claude_running()
+    events = codec.feed(_result("not yours", user_message_uuid=NEXT))
+    assert [e.kind for e in events] == ["background"]
+    assert codec.operation_id == OPERATION
+
+
+def test_codex_a_turn_the_agent_starts_itself_is_tracked_and_interrupted_by_its_own_id():
+    codec = codex_session()
+    unsolicited = "0199f3ac-53fb-7c10-81ef-bbbbbbbbbbbb"
+    started = {
+        "method": "turn/started",
+        "params": {"threadId": SESSION, "turn": {"id": unsolicited, "status": "inProgress"}},
+    }
+    (event,) = codec.feed(started)
+    target = codec.background_turn
+    assert event.kind == "background" and event.data["background_turn"] == target is not None
+    assert codec.unowned_turn  # an operator message now waits instead of a second turn/start
+    frame = codec.interrupt_background(target)
+    assert frame["method"] == "turn/interrupt"
+    assert frame["params"] == {"threadId": SESSION, "turnId": unsolicited}
+    with pytest.raises(ProtocolError):
+        codec.interrupt_background(str(uuid.uuid4()))  # only the exact target
+    with pytest.raises(ProtocolError):
+        codec.interrupt()  # there is no operator turn to interrupt
+    (ended,) = codec.feed(
+        {
+            "method": "turn/completed",
+            "params": {"threadId": SESSION, "turn": {"id": unsolicited, "status": "interrupted"}},
+        }
+    )
+    assert ended.data["background_turn"] is None
+    assert not codec.unowned_turn and codec.background_turn is None
+
+
+def test_claude_interrupts_its_own_turn_only_by_the_exact_target_and_never_mid_operator_turn():
+    codec = ClaudeCodec(SESSION)
+    codec.lifecycle_proven = True
+    codec.feed(_say("The background command finished."))
+    target = codec.background_turn
+    assert codec.interrupt_background(target)["request"]["subtype"] == "interrupt"
+    with pytest.raises(ProtocolError):
+        codec.interrupt_background(str(uuid.uuid4()))
+    running = claude_running()
+    with pytest.raises(ProtocolError):
+        running.interrupt_background(target)
+
+
+def test_a_client_that_cannot_run_a_turn_by_itself_offers_no_background_send_now():
+    from agent_sessions.native_protocol import OpencodeAcpCodec
+
+    assert OpencodeAcpCodec.send_now_background is None
+    assert ClaudeCodec.send_now_background == CodexCodec.send_now_background == "interrupt"
+
+
+def test_claude_inside_a_lifecycle_window_only_the_result_naming_the_input_completes_it():
+    """Hermes on #1429: an unbound result (no `user_message_uuid`) inside the operator's started
+    window is nobody's reply; the true, correlated answer still completes the turn."""
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    assert codec.lifecycle_proven
+    codec.submit("go", NEXT)
+    events = []
+    for frame in (
+        _life(NEXT, "queued"),
+        _life(NEXT, "started"),
+        _result("WRONG", origin={"kind": "human"}),  # names no input
+        _say("right", user_message_uuid=NEXT),
+        _result("right", origin={"kind": "human"}, user_message_uuid=NEXT),
+        _life(NEXT, "completed"),
+    ):
+        events += codec.feed(frame)
+    completed = [e for e in events if e.kind == "turn_completed"]
+    assert len(completed) == 1 and completed[0].data["operation_id"] == NEXT
+    assert completed[0].data["text"] == "right"
+    assert "WRONG" not in json.dumps(
+        [e.data for e in events if e.kind in {"text", "turn_completed"}]
+    )
+    # The anomaly cost the fence its proof; the next complete cycle earns it back.
+    assert not codec.lifecycle_proven
+    _operator_turn(codec, str(uuid.uuid4()), "three")
+    assert codec.lifecycle_proven
+
+
+def test_claude_an_interrupted_input_ends_its_cycle_with_cancelled():
+    """Captured from the real CLI (#1427): an interrupt's result names the input
+    (`error_during_execution`, `aborted_tools`) and the lifecycle ends `cancelled`."""
+    codec = ClaudeCodec(SESSION)
+    codec.submit("go", OPERATION)
+    events = []
+    for frame in (
+        _life(OPERATION, "queued"),
+        _life(OPERATION, "started"),
+        {
+            **_result("", origin={"kind": "human"}, user_message_uuid=OPERATION),
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "terminal_reason": "aborted_tools",
+        },
+        _life(OPERATION, "cancelled"),
+    ):
+        events += codec.feed(frame)
+    (completed,) = [e for e in events if e.kind == "turn_completed"]
+    assert completed.data["state"] == "interrupted" and not completed.data["error"]
+    assert codec.lifecycle_proven
+
+
+def test_claude_submit_now_goes_ahead_of_the_clis_own_queue_and_others_do_not():
+    """#1475: only the message Send now selected carries `priority: "now"`."""
+    codec = ClaudeCodec(SESSION)
+    plain = codec.submit("go", OPERATION)
+    assert "priority" not in plain
+    codec.operation_id = None
+    now = codec.submit_now("go", NEXT)
+    assert now["priority"] == "now"
+    assert {k: v for k, v in now.items() if k not in {"priority", "uuid"}} == {
+        k: v for k, v in plain.items() if k != "uuid"
+    }
+    assert now["uuid"] == codec.operation_id == NEXT
+    codex = codex_session()
+    assert "priority" not in json.dumps(codex.submit_now("go", OPERATION))
+
+
+def test_claude_a_send_now_message_cuts_the_notification_turn_the_cli_had_just_started():
+    """Captured from the real CLI (#1475, `claude` 2.1.300): after the interrupt, the CLI started
+    a turn for its queued task notification; the message written with `priority: "now"` cut it
+    before any output (its own result, origin task-notification, `aborted_streaming`) and ran.
+    The cut turn ends interrupted, and the reply is the message's own."""
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    assert codec.lifecycle_proven
+    codec.submit_now("Reply with exactly: B-ANSWER", NEXT)
+    events = []
+    for frame in (
+        {"type": "system", "subtype": "init", "session_id": SESSION},
+        {"type": "system", "subtype": "status", "status": "requesting", "session_id": SESSION},
+        _life(NEXT, "queued"),
+        {
+            **_result("", origin={"kind": "task-notification", "producer": "session-task"}),
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "terminal_reason": "aborted_streaming",
+        },
+        _life(NEXT, "started"),
+        {
+            "type": "system",
+            "subtype": "status",
+            "status": "requesting",
+            "session_id": SESSION,
+            "user_message_uuids": [NEXT],
+        },
+        _say("B-ANSWER"),
+        _result("B-ANSWER", origin={"kind": "human"}, user_message_uuid=NEXT),
+        _life(NEXT, "completed"),
+    ):
+        events += codec.feed(frame)
+    own = [e.data for e in events if e.kind == "background" and "background_turn" in e.data]
+    assert [d["state"] for d in own] == ["running", "interrupted"]
+    assert own[0]["background_turn"] and own[1]["background_turn"] is None
+    assert _agent_text(events) == {}
+    assert _owner_text(events) == {NEXT: "B-ANSWER"}
+    (completed,) = [e for e in events if e.kind == "turn_completed"]
+    assert completed.data["operation_id"] == NEXT and completed.data["state"] == "completed"
+    assert codec.lifecycle_proven and not codec.unowned_turn
+
+
+def test_claude_an_out_of_order_start_still_ends_the_agents_own_turn():
+    """#1475 review: `started` with no `queued` before it is an anomaly (the fence is lost), but
+    the operator's input starting still means the agent's own turn is over. Left running, the
+    pane would read the running message as waiting behind it."""
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    codec.submit("go", NEXT)
+    events = codec.feed(
+        {"type": "system", "subtype": "status", "status": "requesting", "session_id": SESSION}
+    )
+    assert codec.unowned_turn
+    events += codec.feed(_life(NEXT, "started"))
+    assert not codec.unowned_turn and codec.background_turn is None
+    assert not codec.lifecycle_proven
+    own = [e.data for e in events if e.kind == "background" and "background_turn" in e.data]
+    assert [d["state"] for d in own] == ["running", "completed"]
+    events = codec.feed(_say("two")) + codec.feed(
+        _result("two", origin={"kind": "human"}, user_message_uuid=NEXT)
+    )
+    assert _owner_text(events) == {NEXT: "two"}
+
+
+@pytest.mark.parametrize("ending,state", [("completed", "failed"), ("cancelled", "interrupted")])
+def test_claude_an_input_ended_without_its_result_completes_visibly(ending, state):
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    codec.submit("go", NEXT)
+    events = []
+    for frame in (_life(NEXT, "queued"), _life(NEXT, "started"), _life(NEXT, ending)):
+        events += codec.feed(frame)
+    (completed,) = [e for e in events if e.kind == "turn_completed"]
+    assert completed.data["operation_id"] == NEXT and completed.data["state"] == state
+    assert codec.operation_id is None and not codec.lifecycle_proven
+
+
+@pytest.mark.parametrize(
+    "anomaly",
+    [
+        lambda: _life("9d1f0b8e-1c2d-4e3f-8a9b-0c1d2e3f4a5b", "started"),  # a stray input
+        lambda: _result("x", origin={"kind": "human"}, user_message_uuid=str(uuid.uuid4())),
+        lambda: _result("x", origin={"kind": "human"}),  # names no input
+    ],
+    ids=["stray-lifecycle", "foreign-result", "unbound-result"],
+)
+def test_claude_a_cycle_that_saw_an_anomaly_never_re_earns_the_proof(anomaly):
+    """Hermes on #1429 (review 6192): any anomaly taints the cycle in flight. Its own correct
+    result and `completed` prove nothing; only a LATER clean cycle does."""
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    assert codec.lifecycle_proven
+    codec.submit("go", NEXT)
+    for frame in (_life(NEXT, "queued"), _life(NEXT, "started"), anomaly()):
+        codec.feed(frame)
+    assert not codec.lifecycle_proven
+    events = []
+    for frame in (
+        _result("right", origin={"kind": "human"}, user_message_uuid=NEXT),
+        _life(NEXT, "completed"),
+    ):
+        events += codec.feed(frame)
+    assert [e.data["text"] for e in events if e.kind == "turn_completed"] == ["right"]
+    assert not codec.lifecycle_proven  # the tainted cycle proved nothing
+    _operator_turn(codec, str(uuid.uuid4()), "clean")
+    assert codec.lifecycle_proven  # a later clean one does
+
+
+def _state(state):
+    return {
+        "type": "system",
+        "subtype": "session_state_changed",
+        "state": state,
+        "session_id": SESSION,
+    }
+
+
+def test_claude_a_running_state_no_input_owns_is_a_send_now_target_before_any_output():
+    """Hermes on #1429 (review 6203): a turn the agent starts for itself is a target from its
+    start, not from its first output; its idle state ends it."""
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    (_, started) = codec.feed(_state("running"))
+    target = codec.background_turn
+    assert target and codec.unowned_turn and started.data["background_turn"] == target
+    # the same turn, the same target: its text is recorded under it (#1438)
+    assert _agent_text(codec.feed(_say("thinking out loud"))) == {target: "thinking out loud"}
+    assert codec.background_turn == target
+    (_, ended) = codec.feed(_state("idle"))
+    assert ended.data["background_turn"] is None and not codec.unowned_turn
+
+
+def test_claude_a_running_state_inside_an_operator_window_is_that_inputs_turn():
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    codec.submit("go", NEXT)
+    for frame in (_life(NEXT, "queued"), _life(NEXT, "started"), _state("running")):
+        codec.feed(frame)
+    assert codec.background_turn is None and not codec.unowned_turn
+
+
+def test_claude_the_current_cli_marks_its_own_turn_with_requesting_before_any_output():
+    """Hermes on #1429 (review 6205): the CLI in this mode emits no session state, so the target
+    must come from what it DOES send. Real frames (captured, #1427): a notification turn's
+    `init`, then `status: requesting` 2 ms later, then 4.4 s with nothing, then output."""
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "started a task")
+    for frame in (
+        {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "bg1",
+            "status": "completed",
+            "session_id": SESSION,
+        },
+        {"type": "system", "subtype": "init", "session_id": SESSION},
+    ):
+        codec.feed(frame)
+    assert codec.background_turn is None  # neither of these starts a turn by itself
+    codec.feed(
+        {"type": "system", "subtype": "status", "status": "requesting", "session_id": SESSION}
+    )
+    target = codec.background_turn
+    assert target and codec.unowned_turn  # before any output
+    codec.feed(_say("The background command finished."))
+    assert codec.background_turn == target
+    codec.feed(_result("done", origin={"kind": "task-notification"}))
+    assert codec.background_turn is None and not codec.unowned_turn
+
+
+def test_claude_a_request_inside_the_operators_window_is_that_inputs_own():
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    codec.submit("go", NEXT)
+    for frame in (
+        _life(NEXT, "queued"),
+        _life(NEXT, "started"),
+        {"type": "system", "subtype": "status", "status": "requesting", "session_id": SESSION},
+    ):
+        codec.feed(frame)
+    assert codec.background_turn is None and not codec.unowned_turn
+
+
+# --- #1438: what the agent does in a turn of its own ---------------------------------------------
+
+
+def _use(tool_id, name, tool_input, **extra):
+    message = {
+        "id": "msg_" + uuid.uuid4().hex[:8],
+        "content": [{"type": "tool_use", "id": tool_id, "name": name, "input": tool_input}],
+    }
+    return {
+        "type": "assistant",
+        "session_id": SESSION,
+        "parent_tool_use_id": None,
+        "message": message,
+        **extra,
+    }
+
+
+def _tool_result(tool_id, content, *, is_error=False, **extra):
+    return {
+        "type": "user",
+        "session_id": SESSION,
+        "parent_tool_use_id": None,
+        "message": {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_id,
+                    "content": content,
+                    "is_error": is_error,
+                }
+            ],
+        },
+        **extra,
+    }
+
+
+def _own_turn(codec):
+    """An operator turn, then a wake-up the agent runs for itself; returns its target."""
+    _operator_turn(codec, OPERATION, "Waiting for the review.")
+    codec.feed(_say("The review is in."))
+    assert codec.unowned_turn and codec.background_turn
+    return codec.background_turn
+
+
+def test_claude_an_own_turns_tool_calls_are_recorded_under_its_target_never_an_operation():
+    codec = ClaudeCodec(SESSION)
+    target = _own_turn(codec)
+    used = codec.feed(_use("toolu_a", "Bash", {"command": "gh pr checks 1436"}))
+    done = codec.feed(_tool_result("toolu_a", "all green"))
+    failed = codec.feed(_use("toolu_b", "Read", {"file_path": "/nope"})) + codec.feed(
+        _tool_result("toolu_b", "no such file", is_error=True)
+    )
+    tools = [e for e in used + done + failed if e.kind == "tool"]
+    assert [(e.data["item_id"], e.data["state"]) for e in tools] == [
+        ("toolu_a", "running"),
+        ("toolu_a", "completed"),
+        ("toolu_b", "running"),
+        ("toolu_b", "failed"),
+    ]
+    for e in tools:
+        assert e.data["agent_turn"] == target
+        assert "operation_id" not in e.data and "native_turn_id" not in e.data
+        native_ipc.normalize_event({"kind": e.kind, "data": e.data})  # it passes the boundary
+    assert tools[0].data["tool"] == "Bash" and "gh pr checks 1436" in tools[0].data["summary"]
+
+
+@pytest.mark.parametrize(
+    ("result", "state"),
+    [
+        ({}, "completed"),
+        (
+            {
+                "subtype": "error_during_execution",
+                "is_error": True,
+                "terminal_reason": "aborted_streaming",
+            },
+            "interrupted",
+        ),
+        ({"subtype": "error_max_turns", "is_error": True, "terminal_reason": None}, "failed"),
+    ],
+)
+def test_claude_an_own_turns_end_says_how_it_ended(result, state):
+    codec = ClaudeCodec(SESSION)
+    _own_turn(codec)
+    (ended,) = codec.feed(_result("done", origin={"kind": "task-notification"}, **result))
+    assert ended.data["background_turn"] is None and ended.data["state"] == state
+
+
+def test_claude_an_own_turn_records_whole_messages_not_streamed_deltas():
+    codec = ClaudeCodec(SESSION)
+    _own_turn(codec)
+    delta = {
+        "type": "stream_event",
+        "session_id": SESSION,
+        "parent_tool_use_id": None,
+        "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hel"}},
+    }
+    assert [e for e in codec.feed(delta) if e.kind == "text"] == []
+
+
+def test_claude_a_subagents_frames_in_an_own_turn_stay_unrecorded():
+    codec = ClaudeCodec(SESSION)
+    _own_turn(codec)
+    events = codec.feed(_use("toolu_s", "Grep", {"pattern": "x"}, parent_tool_use_id="toolu_p"))
+    assert [e.kind for e in events] == ["background"]
+
+
+def test_claude_an_unreadable_own_turn_frame_is_skipped_not_fatal():
+    codec = ClaudeCodec(SESSION)
+    target = _own_turn(codec)
+    broken = _say("x")
+    broken["message"]["content"] = ["not a block"]
+    assert [e for e in codec.feed(broken) if e.kind == "text"] == []
+    assert codec.background_turn == target  # the connection and the turn carry on
+    assert _agent_text(codec.feed(_say("still here"))) == {target: "still here"}
+
+
+def test_claude_an_own_turn_never_changes_who_owns_operator_output():
+    """The #1429 fence holds: an own turn's output is the own turn's, and the next operator
+    turn's output is that turn's alone."""
+    codec = ClaudeCodec(SESSION)
+    target = _own_turn(codec)
+    events = codec.feed(_say("own words"))
+    events += _operator_turn(codec, NEXT, "operator words")
+    assert _agent_text(events) == {target: "own words"}
+    assert _owner_text(events) == {NEXT: "operator words"}
+
+
+@pytest.mark.parametrize(
+    ("data", "valid"),
+    [
+        ({"agent_turn": NEXT, "text": "a", "partial": False, "truncated": False}, True),
+        (
+            {"operation_id": OPERATION, "native_turn_id": OPERATION, "text": "a"}
+            | {"partial": False, "truncated": False},
+            True,
+        ),
+        (  # both: an own turn's output never also names an operation
+            {"agent_turn": NEXT, "operation_id": OPERATION, "native_turn_id": OPERATION}
+            | {"text": "a", "partial": False, "truncated": False},
+            False,
+        ),
+        ({"text": "a", "partial": False, "truncated": False}, False),  # neither
+        ({"agent_turn": "not-a-uuid", "text": "a", "partial": False, "truncated": False}, False),
+        (
+            {"agent_turn": NEXT, "native_turn_id": TURN, "text": "a"}
+            | {"partial": False, "truncated": False},
+            False,
+        ),
+    ],
+)
+def test_ipc_output_names_exactly_one_operator_or_agent_turn(data, valid):
+    event = {"kind": "text", "data": data}
+    if valid:
+        native_ipc.normalize_event(event)
+    else:
+        with pytest.raises(native_ipc.IPCError):
+            native_ipc.normalize_event(event)

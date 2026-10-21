@@ -1,0 +1,164 @@
+/* The dashboard's primary HQ contact (#1525): the KPI tile's surface, border and hover, at half
+ * height (a 60×80 portrait). The focus ring is --accent-text: plain --accent measures ~1.6:1 on the
+ * light page. */
+.card {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  min-width: 0;
+  min-height: 44px;
+  margin: 0;
+  padding: 6px 12px 6px 6px;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--bg-1);
+  color: var(--text-1);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.card:hover {
+  border-color: var(--line-strong);
+}
+.card:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.portrait {
+  width: 60px;
+  height: 80px;
+  box-sizing: border-box;
+}
+.text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+}
+.name {
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1.25;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+.open {
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent-text);
+  line-height: 1.35;
+}
+
+/* Off: the same box, a container with two actions. They wrap onto a second line rather than
+ * overflow (at 1100px they fit with 1px to spare). */
+.placeholder {
+  cursor: default;
+  padding-right: 6px;
+  gap: 8px;
+}
+.placeholder:hover {
+  border-color: var(--line);
+}
+.silhouette {
+  display: grid;
+  place-items: center;
+  flex: none;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  color: var(--text-3);
+}
+.silhouette svg {
+  display: block;
+}
+.placeholder .text {
+  justify-content: flex-start;
+  gap: 0;
+}
+.muted {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--text-muted);
+}
+.acts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: auto;
+  min-width: 0;
+}
+.textBtn {
+  min-height: 44px;
+  padding: 0 4px;
+  margin-left: -4px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+/* The action button's ghost, at 12px with 6px 8px padding so both actions fit the Plan quota column
+ * down to 1100px. */
+.ghost {
+  composes: ghost from "../ui/actionButton.module.css";
+  padding: 6px 8px;
+  font-size: 12px;
+  text-decoration: none;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+.ghost:hover,
+.ghost:focus-visible {
+  color: var(--text-1);
+  border-color: var(--line-strong);
+}
+.textBtn:focus-visible,
+.ghost:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+
+/* ≤800px: a compact row under the heading, full width; the "Primary HQ contact" line goes. */
+@media (max-width: 800px) {
+  .card {
+    width: 100%;
+    align-items: center;
+  }
+  .text {
+    gap: 6px;
+  }
+  .name {
+    font-size: 15px;
+  }
+  .label {
+    display: none;
+  }
+  .open {
+    margin-top: 0;
+  }
+  .placeholder .text {
+    align-self: stretch;
+    gap: 0;
+  }
+  .placeholder .name {
+    font-size: 14px;
+  }
+}

@@ -1,0 +1,194 @@
+#!/bin/sh
+# Cut a signed release. Run by the OPERATOR, never by CI (#832 Phase 1).
+#
+# usage: cut-signed-release <X.Y.Z> [--mirror URL] [--origin URL] [--key FILE] [--dry-run]
+#
+# WHY THIS IS NOT A WORKFLOW
+#
+# The signing key is passphrase-protected and the passphrase lives only in the operator's
+# password manager. That is the entire security model: on this infrastructure a PR job runs as
+# the CI account, which has passwordless root and passwordless ssh to the storage host, so file
+# modes and host choice protect nothing. Only the passphrase does — which means only a human can
+# sign, which means the release cut is this script rather than a button CI can press.
+#
+# A signature an unattended pipeline can produce on demand is a signature an attacker can produce
+# on demand. Making the cut manual is the point, not a limitation.
+#
+# That argument covers the PRIMARY key. The recovery key in the same trust root is, for now, kept
+# with its passphrase on CI-reachable storage (docs/release-signing.md, Accepted risk), so until
+# it moves the trust root as a whole is not beyond a PR job's reach.
+#
+# ORDERING IS THE OTHER HALF OF THE DESIGN
+#
+# A release exists on two remotes and the two pushes cannot be one transaction. One of them --
+# the Forgejo tag -- starts a production deploy (deploy-prod.yml triggers on `tags: ["v*"]`). So
+# the steps are ordered by irreversibility, not convenience:
+#
+#   1. publish + sign the MIRROR   (triggers nothing; a failure here has no blast radius)
+#   2. VERIFY both identities      (proving what landed, not what was intended)
+#   3. push the signed FORGEJO tag (the deploy-triggering step, taken LAST)
+#
+# Deployment therefore cannot begin from a half-published cut, because the half that would
+# trigger it is the half that goes last. That is structural rather than a check that has to
+# remember to fire.
+set -eu
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+note() { printf '\n==> %s\n' "$*"; }
+log() { printf '    %s\n' "$*"; }
+
+VERSION=""; MIRROR=""; ORIGIN="origin"; KEY=""; DRY=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --mirror) MIRROR="${2:-}"; shift 2 ;;
+    --origin) ORIGIN="${2:-}"; shift 2 ;;
+    --key)    KEY="${2:-}"; shift 2 ;;
+    --dry-run) DRY=1; shift ;;
+    -*) die "unknown option: $1" ;;
+    *) [ -z "$VERSION" ] && VERSION="$1" || die "unexpected argument: $1"; shift ;;
+  esac
+done
+[ -n "$VERSION" ] || die "usage: cut-signed-release <X.Y.Z> [--mirror URL] [--origin REMOTE] [--key FILE] [--dry-run]"
+
+case "$VERSION" in
+  v*) die "give the version without a leading v (got '$VERSION')" ;;
+  ""|*[!0-9A-Za-z.-]*) die "version must be X.Y.Z (got '$VERSION')" ;;
+esac
+printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' \
+  || die "version must be X.Y.Z with an optional -prerelease (got '$VERSION')"
+TAG="v$VERSION"
+
+SIGNERS="$(pwd)/scripts/release-signers"
+[ -s "$SIGNERS" ] || die "trust root missing or empty: $SIGNERS"
+[ -n "$MIRROR" ] || MIRROR="${AGENT_SESSIONS_MIRROR_REMOTE:-https://github.com/teriansilva/agent-sessions.git}"
+
+# ---- preconditions ---------------------------------------------------------------
+note "checking preconditions"
+[ -z "$(git status --porcelain)" ] || die "working tree is not clean — a release must be cut from a known state"
+branch="$(git rev-parse --abbrev-ref HEAD)"
+[ "$branch" = "main" ] || die "releases are cut from main (on '$branch')"
+git fetch -q "$ORIGIN" main
+[ "$(git rev-parse HEAD)" = "$(git rev-parse "$ORIGIN/main")" ] \
+  || die "HEAD is not $ORIGIN/main — pull or push first so the release matches what was reviewed"
+HEAD_SHA="$(git rev-parse HEAD)"
+log "cutting $TAG at $HEAD_SHA"
+
+if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+  existing="$(git rev-parse "$TAG^{commit}")"
+  [ "$existing" = "$HEAD_SHA" ] \
+    || die "$TAG already exists locally at $existing but HEAD is $HEAD_SHA — refusing to re-cut a shipped version"
+fi
+
+# The snapshot gate must pass before anything is signed: signing content that must not be
+# published is worse than publishing it unsigned, because the signature vouches for it.
+scripts/check-public-snapshot "$HEAD_SHA" >/dev/null || die "public-snapshot gate failed — not signing"
+log "snapshot gate passed"
+
+# The installer smoke — a pristine container install + uninstall. This USED to run in
+# create-release.yml before that workflow minted the tag, so a broken installer could never reach
+# prod. Now the tag push itself starts the deploy, so a gate that runs in a workflow dispatched
+# AFTER the push has already lost: production begins updating while the gate is still queuing.
+# It therefore moves here, ahead of every mutation, which is the same place in the order it
+# always occupied -- it is the tag creation that moved out from under it.
+#
+# This placement is enforceable rather than merely conventional, because deploy-prod.yml now
+# refuses a tag that is not signed by a trusted key: the only path that reaches production is a
+# tag produced by this script, and this script will not produce one until the smoke passes.
+#
+# Runs on --dry-run too. It mutates nothing outside a throwaway container, and a rehearsal that
+# skipped the one slow gate would rehearse the wrong thing.
+note "installer smoke (pristine container install + uninstall)"
+log "this is the release gate; it takes a few minutes"
+# The docker check is INSIDE the failure path on purpose. As a precondition it would make the
+# gate's presence depend on the environment; here it only turns an obscure failure into a
+# useful one, and never decides whether the gate runs.
+if ! scripts/smoke-install "$HEAD_SHA" .; then
+  command -v docker >/dev/null 2>&1 \
+    || die "the installer smoke could not run: it needs docker, which is not installed. Run the cut on a host that has it — do not cut a release without this gate."
+  die "installer smoke failed — refusing to sign or publish a release that does not install"
+fi
+log "installer smoke passed"
+
+# ---- step 1: the mirror (triggers nothing) ---------------------------------------
+note "step 1/3 — publishing and signing the mirror identity"
+log "this step triggers no deploy; a failure here changes nothing that has shipped"
+# --source is the COMMIT: the tag does not exist yet, because signing it is step 3.
+# Publishes the signed TAG only. The mirror's `main` belongs to publish-public.yml (#1250).
+set -- "$TAG" "$MIRROR" --signers "$SIGNERS" --source "$HEAD_SHA"
+[ -n "$KEY" ] && set -- "$@" --key "$KEY"
+[ "$DRY" -eq 1 ] && set -- "$@" --dry-run
+
+# NOT `cmd | tail -1`: the pipeline's status is tail's, so a failed publish would look like a
+# success and the empty result would flow onward. Capture, check, then take the last line.
+if ! _out="$(scripts/publish-release-snapshot "$@")"; then
+  printf '%s\n' "$_out" >&2
+  die "mirror publish failed — nothing has been announced and no deploy has started"
+fi
+printf '%s\n' "$_out" | sed 's/^/    /'
+SNAP="$(printf '%s\n' "$_out" | tail -1)"
+# An empty or non-SHA result means the publish reported success without producing an identity.
+printf '%s' "$SNAP" | grep -Eq '^[0-9a-f]{40}$' \
+  || die "mirror publish produced no usable commit id (got '$SNAP') — refusing to continue"
+log "mirror identity: $SNAP"
+
+# ---- step 2: verify what actually landed -----------------------------------------
+note "step 2/3 — verifying both identities"
+if [ "$DRY" -eq 0 ]; then
+  # --no-tags is load-bearing, not tidiness. git fetch AUTO-FOLLOWS tags: without it, fetching
+  # the mirror's tag into published-<TAG> ALSO creates a local refs/tags/<TAG> holding the
+  # MIRROR's identity. Step 3 would then find it, report "existing tag verifies — reusing it",
+  # and push the mirror's flat-snapshot commit into the private repo as the release. Observed
+  # end to end before this flag was added; the run reported success throughout.
+  git fetch -q --no-tags "$MIRROR" "refs/tags/$TAG:refs/tags/published-$TAG" --force \
+    || die "could not fetch back the published mirror tag to verify it"
+  git -c "gpg.ssh.allowedSignersFile=$SIGNERS" verify-tag "published-$TAG" >/dev/null 2>&1 \
+    || die "the published mirror tag does not verify against $SIGNERS — refusing to continue"
+  [ "$(git rev-parse "published-$TAG^{commit}")" = "$SNAP" ] \
+    || die "the published mirror tag points somewhere other than what was just built — refusing to continue"
+  log "mirror tag verified"
+else
+  log "dry-run: skipping fetch-back"
+fi
+
+# ---- step 3: the Forgejo tag (LAST — this starts the deploy) ----------------------
+note "step 3/3 — signing and pushing the release tag"
+log "this is the deploy-triggering step, taken only now that the mirror is verified"
+if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+  # Resume: the tag exists. It must verify AND point at the commit being released — a tag that
+  # verifies but names other content is exactly the "valid signature over the wrong identity"
+  # case, and a signature check alone accepts it.
+  [ "$(git rev-parse "$TAG^{commit}")" = "$HEAD_SHA" ] \
+    || die "$TAG already exists but points at $(git rev-parse --short "$TAG^{commit}"), not the commit being released ($(git rev-parse --short "$HEAD_SHA")). Refusing."
+  git -c "gpg.ssh.allowedSignersFile=$SIGNERS" verify-tag "$TAG" >/dev/null 2>&1 \
+    || die "$TAG already exists but is NOT signed by a trusted key — refusing to push or deploy it. Investigate before re-running."
+  log "existing $TAG verifies — reusing it"
+else
+  [ "$DRY" -eq 1 ] && { log "dry-run: would sign and push $TAG"; exit 0; }
+  if [ -n "$KEY" ]; then
+    _signwith="$KEY"
+  else
+    # No key file in normal use: the key is unlocked in ssh-agent, and git asks the agent for
+    # the identity matching this PUBLIC key.
+    _signwith="$(mktemp)"
+    awk '!/^#/ && NF { print $2, $3; exit }' "$SIGNERS" > "$_signwith"
+    [ -s "$_signwith" ] || die "no signer entry in $SIGNERS"
+  fi
+  git -c gpg.format=ssh -c "user.signingkey=$_signwith" tag -s "$TAG" -m "release $TAG" \
+    || die "could not sign $TAG (is the key unlocked? try: ssh-add <key>)"
+  # `git tag -s` EXITS 0 AND PRODUCES AN UNSIGNED TAG when the key cannot be unlocked (measured
+  # on git 2.43: it prints an error, makes the tag, and reports success). So the exit code above
+  # proves nothing; this does.
+  git -c "gpg.ssh.allowedSignersFile=$SIGNERS" verify-tag "$TAG" >/dev/null 2>&1 || {
+    git tag -d "$TAG" >/dev/null 2>&1 || true
+    die "$TAG was created but carries no valid signature — the key was probably not unlocked. Nothing pushed; the bad tag was removed. Try: ssh-add <key>"
+  }
+  log "signature verified locally"
+fi
+
+[ "$DRY" -eq 1 ] && { log "dry-run: would push $TAG"; exit 0; }
+git push "$ORIGIN" "refs/tags/$TAG" || die "could not push $TAG"
+
+note "released $TAG"
+log "mirror:  $SNAP"
+log "forgejo: $(git rev-parse "$TAG^{commit}")"
+log "the deploy pipeline reacts to the pushed tag from here."

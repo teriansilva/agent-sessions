@@ -1,0 +1,113 @@
+/* The Updates card's progress panel (#1085). HUD vocabulary: hairline box, flat accent fill, no
+ * radius, no gradient. Green and red here are STATUS (finished / failed), as docs/design.md §3
+ * reserves them; the running bar is the brand accent. */
+
+.panel {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 16px;
+  margin-bottom: 8px;
+  font: 400 0.7rem var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.head svg {
+  vertical-align: -2px;
+}
+
+.time {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+}
+
+.ok {
+  color: var(--status-up);
+}
+
+.bad {
+  color: var(--status-down);
+}
+
+.track {
+  height: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+}
+
+.fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 400ms ease;
+}
+
+.fillBad {
+  background: var(--status-down);
+}
+
+.steps {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.steps span {
+  flex: 1;
+  height: 3px;
+  background: var(--line-strong);
+}
+
+.steps .stepDone {
+  background: var(--accent);
+}
+
+.steps .stepNow {
+  background: color-mix(in srgb, var(--accent) 45%, var(--line-strong));
+}
+
+.hint {
+  margin: 8px 0 0;
+  font-size: 0.8rem;
+  color: var(--text-2);
+}
+
+.reload {
+  margin-top: 10px;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  background: var(--accent);
+  color: var(--on-accent);
+  font: 600 0.72rem var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.spin {
+  animation: spin 1.2s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fill {
+    transition: none;
+  }
+  .spin {
+    animation: none;
+  }
+}

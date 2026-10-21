@@ -1,0 +1,481 @@
+/* Settings → Agents, simplified (#1408). Tokens only (docs/design.md): no radius on boxes, status
+   colour only for state (an LED + a word, never colour alone), 44px targets, nothing wider than
+   the viewport from 320 to 1440. */
+
+/* ---- the list ------------------------------------------------------------------------------- */
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: var(--glass);
+}
+.row {
+  display: grid;
+  /* Fixed status and end columns: every row is its own grid, so content-sized columns would put
+     each row's status word somewhere else. */
+  grid-template-columns: 44px minmax(0, 1.1fr) 150px minmax(0, 1fr) 220px 24px;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 10px 14px;
+  min-height: 64px;
+  border-bottom: 1px solid var(--line);
+  position: relative;
+}
+.row:last-child {
+  border-bottom: 0;
+}
+.row:hover {
+  background: var(--row-hover);
+}
+.badge {
+  width: 40px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--eng, var(--line-strong));
+  color: var(--eng, var(--text-2));
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+/* The name is the row's link to the agent page; its box covers the whole row (::after), so the row
+   is one big target while the mode chips and the action stay separately clickable above it. */
+.name {
+  min-width: 0;
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  color: var(--text-1);
+  text-decoration: none;
+}
+.name::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.name:focus-visible {
+  outline: none;
+}
+.name:focus-visible::after {
+  outline: 1px solid var(--accent);
+  outline-offset: -2px;
+}
+.name b {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.name small {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  position: relative;
+  z-index: 1;
+}
+.mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  text-decoration: none;
+}
+.mode:hover,
+.mode:focus-visible {
+  color: var(--text-1);
+  border-color: var(--accent);
+  outline: none;
+}
+.end {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-2);
+  position: relative;
+  z-index: 1;
+}
+.chev {
+  color: var(--text-3);
+  font-size: 18px;
+  text-align: right;
+}
+.problemToggle {
+  position: relative;
+  z-index: 1;
+}
+.diag {
+  margin: 0 14px 12px 72px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.diag p {
+  margin: 0 0 8px;
+}
+.meter {
+  width: 64px;
+  height: 5px;
+  background: var(--line-strong);
+  position: relative;
+  flex: none;
+}
+.meter i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--text-2);
+}
+.empty {
+  padding: 18px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+/* ---- header + toolbar ----------------------------------------------------------------------- */
+.head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px 16px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.headActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.tools {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.search {
+  flex: 1 1 200px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--bg-1);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 13px;
+}
+.search:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+.seg {
+  display: flex;
+  border: 1px solid var(--line-strong);
+}
+.seg button {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 14px;
+  border: 0;
+  border-right: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.seg button:last-child {
+  border-right: 0;
+}
+.seg button[aria-pressed="true"] {
+  color: var(--text-1);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.seg button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -2px;
+}
+.seg em {
+  font-style: normal;
+  color: var(--text-3);
+  margin-left: 6px;
+  font-size: 12px;
+}
+
+/* ---- catalog strip -------------------------------------------------------------------------- */
+.more {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.more a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--text-1);
+  text-underline-offset: 3px;
+}
+.catalogLine {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--text-2);
+}
+.lineRow {
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+}
+.lineLabel {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.lineAlert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--status-down);
+  background: var(--glass);
+}
+
+/* ---- disclosures, installation -------------------------------------------------------------- */
+.disclosure > summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  cursor: pointer;
+  color: var(--text-1);
+  font-size: 13px;
+}
+.disclosure > summary:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+.install {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.summary b {
+  color: var(--text-1);
+  font-weight: 500;
+}
+.checks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+.checks li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.checks small {
+  display: block;
+  color: var(--text-3);
+}
+.muted {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.inlineError {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--danger-text);
+}
+
+/* ---- the ⋯ menu (AnchoredMenu; rows are the platform's context-menu rows) ------------------- */
+.menuWrap {
+  position: relative;
+  display: inline-flex;
+}
+.menuPanel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 40;
+  min-width: 200px;
+  width: max-content;
+  max-width: min(300px, calc(100vw - 16px));
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+}
+.menuItems {
+  display: flex;
+  flex-direction: column;
+}
+.menuItems:focus-visible {
+  outline: none;
+}
+.menuItem {
+  composes: item from "../sidebar/RowMenu.module.css";
+  min-height: 44px;
+  width: 100%;
+  text-align: left;
+}
+.menuItem:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.menuPanel .menuItems .menuDanger,
+.menuPanel .menuItems .menuDanger:hover,
+.menuPanel .menuItems .menuDanger:focus {
+  color: var(--danger-text);
+}
+
+/* ---- phone ---------------------------------------------------------------------------------- */
+@media (max-width: 800px) {
+  .row {
+    grid-template-columns: 40px minmax(0, 1fr) 24px;
+    grid-template-areas:
+      "badge name chev"
+      "badge state chev"
+      "badge modes chev"
+      "badge end chev";
+    row-gap: 6px;
+    padding: 12px;
+  }
+  .badge {
+    grid-area: badge;
+    align-self: start;
+  }
+  .name {
+    grid-area: name;
+  }
+  .state {
+    grid-area: state;
+  }
+  .modes {
+    grid-area: modes;
+  }
+  .end {
+    grid-area: end;
+    justify-content: flex-start;
+  }
+  .end:empty {
+    display: none;
+  }
+  .chev {
+    grid-area: chev;
+  }
+  .diag {
+    margin-left: 12px;
+  }
+  /* Search above the filters, each full width: the filter row must fit 320px without poking out
+     of its container, so its buttons share the width and wrap rather than overflow. */
+  .tools {
+    flex-direction: column;
+  }
+  /* Its row-direction flex-basis would become a 200px HEIGHT once the toolbar stacks. */
+  .search {
+    flex: 0 0 auto;
+  }
+  .seg {
+    flex-wrap: wrap;
+  }
+  .seg button {
+    flex: 1 1 auto;
+    padding: 0 6px;
+    font-size: 12px;
+  }
+  .seg em {
+    margin-left: 4px;
+  }
+  .end {
+    white-space: nowrap;
+  }
+  .meter {
+    width: 40px;
+  }
+}
+
+/* ---- agent page header ---------------------------------------------------------------------- */
+.heroActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.heroMeta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.heroMeta code {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+.heroMeta a {
+  color: var(--text-1);
+  text-underline-offset: 3px;
+}
+.techSummary {
+  gap: 8px;
+}
+.techSummary small {
+  color: var(--text-3);
+  font-size: 12px;
+}

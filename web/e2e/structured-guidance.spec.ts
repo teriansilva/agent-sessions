@@ -1,0 +1,256 @@
+import { expect, test, type Page } from "@playwright/test";
+import { ACTIVE, COMMAND, ID, QUEUED, clients, mockStructuredGuidance } from "./structuredGuidanceFixture";
+
+async function conversation(page: Page, engine: string, mode: string, theme = "dark") {
+  const fixture = await mockStructuredGuidance(page, engine, mode, theme);
+  await page.goto(`/s/${engine}/${ID}`);
+  await expect(page.getByTestId("structured-pane")).toBeVisible();
+  return fixture;
+}
+
+for (const [engine, mode] of clients) {
+  for (const theme of ["dark", "light"]) {
+    test(`${engine}: compact activity and readable reply (${theme})`, async ({ page }, testInfo) => {
+      await conversation(page, engine, mode, theme);
+      const activity = page.getByTestId("structured-activity");
+      await expect(activity).toBeVisible();
+      await expect(activity.locator("summary")).toContainText("12 commands & tools");
+      await expect(page.getByText(COMMAND, { exact: true })).toBeHidden();
+      await expect(page.getByTestId("structured-reply")).toContainText("parallel session startup");
+      await page.screenshot({ path: testInfo.outputPath("collapsed.png") });
+      await activity.locator("summary").focus();
+      await page.keyboard.press("Enter");
+      await expect(page.getByText(COMMAND, { exact: true })).toBeVisible();
+      await page.screenshot({ path: testInfo.outputPath("expanded.png") });
+      await page.keyboard.press("Enter");
+      await expect(page.getByText(COMMAND, { exact: true })).toBeHidden();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBe(0);
+    });
+  }
+  test(`${engine}: Send now targets the original queued and active messages`, async ({ page }) => {
+    const { state, calls } = await conversation(page, engine, mode);
+    const queued = page.getByTestId("structured-turn").filter({ hasText: "Only inspect the files." });
+    await expect(queued).toContainText(mode === "steer" ? "Adds this message to the current turn" : /Stops .+’s current reply, then sends this/);
+    const sendNow = queued.getByRole("button", { name: "Send now", exact: true });
+    expect((await sendNow.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    await sendNow.click();
+    await expect.poll(() => calls.length).toBe(1);
+    expect(calls[0]).toMatchObject({ turn_id: ACTIVE, queued_turn_id: QUEUED });
+    expect(calls[0].operation_id).toMatch(/^[0-9a-f-]{36}$/);
+    await expect(queued).toContainText(mode === "steer" ? "Awaiting agent acknowledgement" : "Waiting for the current response to stop");
+    expect(state.turns[1].text).toBe("Only inspect the files.");
+    await expect(sendNow).toBeHidden();
+  });
+  for (const recovery of ["accepted handoff", "IPC response lost", "worker stopped", "turn omitted"]) {
+    test(`${engine}: lost response recovery survives ${recovery}`, async ({ page }, testInfo) => {
+      const fixture = await conversation(page, engine, mode);
+      // Accepted IPC failures must be 503, not a definite 409; pinned by real-worker tests.
+      fixture.fail(true, recovery === "IPC response lost" ? 503 : undefined);
+      await page.getByRole("button", { name: "Send now", exact: true }).click();
+      const retry = page.getByRole("button", { name: "Retry Send now", exact: true });
+      await expect(retry).toBeVisible();
+      await expect(page.getByText(mode === "steer" ? "Awaiting agent acknowledgement"
+        : "Waiting for the current response to stop · sends next", { exact: true })).toBeVisible();
+      if (recovery === "worker stopped" || recovery === "turn omitted") {
+        fixture.state.active_turn = "";
+        fixture.state.native.send_now = "";
+        fixture.state.native.worker = "";
+        fixture.state.state = "unavailable";
+        fixture.state.turns.forEach((t) => { t.state = "uncertain"; });
+        if (recovery === "turn omitted") {
+          fixture.state.turns = [];
+          fixture.state.omitted_turns = 2;
+        }
+        fixture.state.revision++;
+        // The omitted turn's snapshot has landed: the window is empty (#1504 retired the static
+        // "earlier turns are not shown" line; older turns now load on scrolling up).
+        if (recovery === "turn omitted") await expect(page.getByTestId("structured-empty")).toBeVisible();
+        else await expect(page.getByTestId("structured-turn").first()).toHaveAttribute("data-state", "uncertain");
+      }
+      await expect(retry).toBeEnabled();
+      await page.screenshot({ path: testInfo.outputPath("recovery.png") });
+      // A durable replay observes the original receipt without changing the later snapshot.
+      await page.route("**/send-now", async (r) => {
+        fixture.calls.push(r.request().postDataJSON());
+        await r.fulfill({ json: { handoff: "sent", operation_id: fixture.calls[0].operation_id } });
+      });
+      await retry.click();
+      await expect.poll(() => fixture.calls.length).toBe(2);
+      expect(fixture.calls[1]).toEqual(fixture.calls[0]);
+      expect(fixture.calls[1]).toMatchObject({ turn_id: ACTIVE, queued_turn_id: QUEUED });
+      await expect(retry).toBeHidden();
+    });
+  }
+  test(`${engine}: a refused retry cannot erase an earlier uncertain request`, async ({ page }) => {
+    const fixture = await conversation(page, engine, mode);
+    fixture.fail(true, 503);
+    await page.getByRole("button", { name: "Send now", exact: true }).click();
+    const retry = page.getByRole("button", { name: "Retry Send now", exact: true });
+    await expect(retry).toBeEnabled();
+    let refuseRetry = true;
+    await page.route("**/send-now", async (r) => {
+      fixture.calls.push(r.request().postDataJSON());
+      await r.fulfill(refuseRetry
+        ? { status: 409, json: { detail: "the worker cannot be reached for this retry" } }
+        : { json: { handoff: "sent", operation_id: fixture.calls[0].operation_id } });
+    });
+    await retry.click();
+    await expect.poll(() => fixture.calls.length).toBe(2);
+    await expect(retry).toBeEnabled();
+    refuseRetry = false;
+    await retry.click();
+    await expect.poll(() => fixture.calls.length).toBe(3);
+    expect(fixture.calls[1]).toEqual(fixture.calls[0]);
+    expect(fixture.calls[2]).toEqual(fixture.calls[0]);
+    await expect(retry).toBeHidden();
+  });
+  test(`${engine}: a proven pre-write refusal permits a new deliberate selection`, async ({ page }) => {
+    const fixture = await conversation(page, engine, mode);
+    fixture.fail(false, 409);
+    const sendNow = page.getByRole("button", { name: "Send now", exact: true });
+    await sendNow.click();
+    await expect(page.getByTestId("structured-error")).toContainText("Send now not applied");
+    await expect(page.getByRole("button", { name: "Retry Send now", exact: true })).toBeHidden();
+    await expect(sendNow).toBeEnabled();
+    fixture.recover();
+    await sendNow.click();
+    await expect.poll(() => fixture.calls.length).toBe(2);
+    expect(fixture.calls[1].operation_id).not.toBe(fixture.calls[0].operation_id);
+    expect(fixture.calls[1]).toMatchObject({ turn_id: ACTIVE, queued_turn_id: QUEUED });
+  });
+}
+
+test("uncertain Send now retries the same selection after the active turn changes", async ({ page }) => {
+  const fixture = await conversation(page, "claude-api", "interrupt");
+  fixture.fail();
+  await page.getByRole("button", { name: "Send now", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Retry Send now", exact: true })).toBeVisible();
+  // A later snapshot must not silently retarget a retry to this new response.
+  fixture.state.active_turn = "33333333-2222-4333-8444-555555555555";
+  fixture.state.turns[0].state = "completed";
+  fixture.state.turns.push({ ...fixture.state.turns[0], turn_id: fixture.state.active_turn,
+    operation_id: fixture.state.active_turn, state: "running", text: "A newer response is active", tools: [] });
+  fixture.state.revision++;
+  await expect(page.getByText("A newer response is active", { exact: true })).toBeVisible();
+  fixture.recover();
+  await page.getByRole("button", { name: "Retry Send now", exact: true }).click();
+  await expect.poll(() => fixture.calls.length).toBe(2);
+  expect(fixture.calls[1]).toEqual(fixture.calls[0]);
+  expect(fixture.calls[0].turn_id).toBe(ACTIVE);
+});
+
+test("approval stays visible outside collapsed risky activity; read-only and old workers cannot Send now", async ({ page }, testInfo) => {
+  const { state } = await conversation(page, "opencode-api", "interrupt");
+  state.turns[0].state = "awaiting_approval";
+  state.turns[0].tools = [{ id: "risky", name: "command", summary: "git push --force", outcome: "failed",
+    risk: { level: "risky", reasons: ["rewrites remote history"] } }];
+  state.pending_requests = [{ request_id: "req", turn_id: ACTIVE, kind: "command", complete: true,
+    choices: ["approve", "reject"], payload: { command: "git status --short", cwd: "/home/u/demo" } }];
+  state.revision++;
+  await expect(page.getByRole("button", { name: "Approve once", exact: true })).toBeVisible();
+  await expect(page.getByTestId("structured-activity").locator("summary")).toContainText("Risky activity");
+  await expect(page.getByText("git push --force", { exact: true })).toBeHidden();
+  // The card's action summary shows the command; the full payload repeats it under the collapsed
+  // Details (#1339), so exactly one copy is visible.
+  await expect(page.getByText("git status --short", { exact: true }).filter({ visible: true })).toHaveCount(1);
+  await page.getByRole("button", { name: "Approve once", exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath("approval-visible.png") });
+  state.native.send_now = "";
+  state.revision++;
+  await expect(page.getByRole("button", { name: "Send now", exact: true })).toBeHidden();
+  state.native.send_now = "interrupt";
+  state.read_only = "agent removed";
+  state.revision++;
+  await expect(page.getByTestId("structured-pane")).toContainText("agent removed");
+  await expect(page.getByRole("button", { name: "Send now", exact: true })).toBeHidden();
+});
+
+const SECOND = "33333333-2222-4333-8444-666666666666";
+
+for (const theme of ["dark", "light"]) {
+  for (const busy of ["background", "operator turn", "idle", "worker exited"] as const) {
+    test(`#1430: the pane shows the agent working in the background (${busy}, ${theme})`, async ({ page }, testInfo) => {
+      const fixture = await mockStructuredGuidance(page, "claude-api", "interrupt", theme);
+      if (busy !== "operator turn") {
+        fixture.state.active_turn = "";
+        fixture.state.turns[0].state = "completed";
+      }
+      fixture.state.native.background_active = busy !== "idle";
+      if (busy === "worker exited") fixture.state.native.worker = ""; // a stale replayed flag
+      // Two queued messages: the row goes above the FIRST, exactly once.
+      fixture.state.turns.push({ ...fixture.state.turns[1], turn_id: SECOND, operation_id: SECOND,
+        text: "Then summarise them." });
+      await page.goto(`/s/claude-api/${ID}`);
+      await expect(page.getByTestId("structured-pane")).toBeVisible();
+      await expect(page.getByTestId("structured-turn").first()).toBeVisible();
+      const row = page.getByTestId("structured-background-work");
+      if (busy !== "background") {
+        await expect(row).toHaveCount(0);
+        return;
+      }
+      await expect(row).toHaveCount(1);
+      // A turn the agent runs for itself shows as that turn (#1438); this row is a task's.
+      await expect(row).toContainText("A background task is running");
+      const top = async (text: string) =>
+        (await page.getByTestId("structured-turn").filter({ hasText: text }).boundingBox())!.y;
+      const at = (await row.boundingBox())!.y;
+      expect(at).toBeGreaterThan(await top("Check startup."));
+      expect(at).toBeLessThan(await top("Only inspect the files."));
+      await page.screenshot({ path: testInfo.outputPath(`background-${theme}.png`) });
+    });
+  }
+}
+
+test("#1430: with nothing queued the row ends the conversation, and holds still for reduced motion", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const fixture = await mockStructuredGuidance(page, "claude-api", "interrupt");
+  fixture.state.active_turn = "";
+  fixture.state.turns = [{ ...fixture.state.turns[0], state: "completed" }];
+  fixture.state.native.background_active = true;
+  await page.goto(`/s/claude-api/${ID}`);
+  const row = page.getByTestId("structured-background-work");
+  await expect(row).toHaveCount(1);
+  const last = (await page.getByTestId("structured-turn").last().boundingBox())!;
+  expect((await row.boundingBox())!.y).toBeGreaterThanOrEqual(last.y + last.height - 1);
+  const motion = await row.locator("span[aria-hidden] span").first()
+    .evaluate((el) => getComputedStyle(el).animationName);
+  expect(motion).toBe("none");
+});
+
+/** The page's FIRST snapshot already shows the agent running a turn of its own (#1427). */
+async function behindAgentTurn(page: Page, theme = "dark", capable = true) {
+  const fixture = await mockStructuredGuidance(page, "claude-api", "interrupt", theme);
+  fixture.state.active_turn = "";
+  fixture.state.turns[0].state = "completed";
+  fixture.state.native.background_active = true;
+  fixture.state.native.background_turn = BACKGROUND;
+  fixture.state.native.send_now_background = capable ? "interrupt" : "";
+  await page.goto(`/s/claude-api/${ID}`);
+  await expect(page.getByTestId("structured-pane")).toBeVisible();
+  return fixture;
+}
+
+const BACKGROUND = "44444444-2222-4333-8444-555555555555";
+
+for (const theme of ["dark", "light"]) {
+  test(`#1427: a message queued behind the agent's own turn offers Send now against it (${theme})`, async ({ page }, testInfo) => {
+    const fixture = await behindAgentTurn(page, theme);
+    const queued = page.getByTestId("structured-turn").filter({ hasText: "Only inspect the files." });
+    const sendNow = queued.getByRole("button", { name: "Send now", exact: true });
+    await expect(sendNow).toBeVisible();
+    await expect(queued).toContainText(/Stops .+’s current reply, then sends this/); // #1442 wording
+    const box = (await sendNow.boundingBox())!;
+    expect(box.height).toBeGreaterThanOrEqual(44); // the touch target, in the new state too
+    await page.screenshot({ path: testInfo.outputPath("background-turn.png") });
+    await sendNow.click();
+    await expect.poll(() => fixture.calls.length).toBe(1);
+    expect(fixture.calls[0]).toMatchObject({ turn_id: BACKGROUND, queued_turn_id: QUEUED });
+  });
+}
+
+test("#1427: an older worker's background turn offers no Send now", async ({ page }) => {
+  await behindAgentTurn(page, "dark", false);
+  const queued = page.getByTestId("structured-turn").filter({ hasText: "Only inspect the files." });
+  await expect(queued).toContainText("1st in queue"); // #1442: its place in line
+  await expect(queued.getByRole("button", { name: "Send now", exact: true })).toHaveCount(0);
+});

@@ -1,0 +1,76 @@
+/* The adopt dialog (#948 P5). The chrome is the shared HUD dialog (../HudDialog.module.css, the Hand
+   off design); this sheet holds only what is adoption's own: the search box, the two-line mission
+   rows with their refusal reason, Load more, and the load error with its Retry. */
+
+.searchWrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 0 11px;
+  min-height: 44px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text-3);
+}
+.searchWrap:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.search {
+  flex: 1;
+  min-width: 0;
+  min-height: 42px;
+  appearance: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.search::placeholder {
+  color: var(--text-3);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* The mission's state, session count and age are INFORMATION on a row the operator can pick, not a
+   decorative label, so they take --text-2: --text-3 at 9.5px measured 3.63:1 on the row, below the
+   4.5:1 small-text floor (#961 review 4813). */
+.meta,
+.why {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+/* The refusal is a sentence the operator has to read, so it keeps its case. */
+.why {
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.more {
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.loadError {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}

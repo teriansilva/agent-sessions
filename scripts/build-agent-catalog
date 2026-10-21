@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Generate the deterministic release-bundled agent catalog; no downloads or signing."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from agent_sessions.plugins import feed  # noqa: E402
+
+
+def build() -> bytes:
+    entries = [
+        json.loads(p.read_text(), object_pairs_hook=feed._pairs)
+        for p in sorted((ROOT / "release/recipes/linux-x64").glob("*.json"))
+    ]
+    for path in sorted((ROOT / "src/agent_sessions/plugins/first_party").glob("*/plugin.toml")):
+        manifest = tomllib.loads(path.read_text())
+        if manifest.get("runtime", {}).get("kind") == "api":
+            entries.append({"manifest": manifest, "recipe": {"artifacts": []}})
+    entries.sort(key=lambda e: e["manifest"]["identity"]["id"])
+    for entry in entries:
+        feed.entry(entry, signed=True)
+    return feed.canonical({"format": 1, "agents": entries})
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+    output = ROOT / "src/agent_sessions/agent_catalog.json"
+    data = build()
+    if args.check:
+        if not output.is_file() or output.read_bytes() != data:
+            parser.error("bundled agent catalog is stale; run scripts/build-agent-catalog")
+    else:
+        output.write_bytes(data)
+    print("Bundled agent catalog matches the reviewed definitions.")
+
+
+if __name__ == "__main__":
+    main()

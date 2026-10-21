@@ -1,0 +1,285 @@
+/* Public share links (#1404 P4): the Share publicly… dialog (on the HUD dialog sheet) and the rows
+ * it shares with Settings → Sharing. Tokens only, no radius, no gradient (cssGuard.test.ts).
+ *
+ * Colour: the chosen access tile is the accent (a choice, not a state). RISKY and NO PASSWORD are
+ * warnings, so they carry the DEGRADED status tone — design.md §7 keeps red for active failure.
+ * Revoke is a removal, drawn in --danger-text like the other removals (design.md, row menus). */
+
+.dialog {
+  width: min(600px, 100%);
+}
+/* The §8 floor: the shared 26px close is too small to be the dialog's only dismiss on a phone. */
+.dialog .close {
+  width: 44px;
+  height: 44px;
+}
+
+.badge {
+  flex: none;
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+
+.optional {
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.tile {
+  appearance: none;
+  min-height: 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 3px;
+  padding: 8px 12px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.tile:hover,
+.tile:focus-visible {
+  color: var(--text-1);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+}
+.tile[aria-checked="true"] {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-2));
+  border-color: var(--accent);
+  color: var(--text-1);
+}
+.tileName {
+  font-size: 13px;
+  font-weight: 700;
+}
+.tileDesc {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--text-2);
+}
+
+/* A warning, not a failure: degraded tone on the rule and the word. */
+.risk {
+  margin: 0 0 10px;
+  padding: 8px 11px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--status-degraded) 10%, var(--bg-2));
+  border: 1px solid color-mix(in srgb, var(--status-degraded) 55%, var(--border));
+  border-left: 3px solid var(--status-degraded);
+}
+.risk b {
+  color: var(--warn-text);
+  letter-spacing: 0.06em;
+}
+
+.disclosure {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+
+.field {
+  margin-bottom: 12px;
+}
+
+.pwRow {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.pwRow input {
+  flex: 1;
+  min-width: 0;
+}
+.show {
+  flex: none;
+  min-width: 64px;
+}
+
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.preset {
+  appearance: none;
+  min-height: 44px;
+  padding: 0 12px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.preset:hover,
+.preset:focus-visible {
+  color: var(--text-1);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+}
+.preset[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-2));
+  border-color: var(--accent);
+  color: var(--text-1);
+}
+.date {
+  margin-top: 8px;
+}
+
+.help {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+.inlineLink {
+  color: var(--text-1);
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+.url {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+.linkActions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+.chip {
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+.chipMode {
+  color: var(--text-1);
+  border-color: var(--accent);
+}
+.chipWarn {
+  color: var(--warn-text);
+  border-color: color-mix(in srgb, var(--status-degraded) 60%, var(--border));
+}
+
+.listSection {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.listSection h3 {
+  margin: 0 0 8px;
+  font-weight: 400;
+}
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+.rowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rowMain .chips {
+  margin-bottom: 2px;
+}
+.rowTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.rowMeta {
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.revoke {
+  flex: none;
+  min-height: 44px;
+  min-width: 88px;
+  padding: 0 14px;
+  background: transparent;
+  color: var(--danger-text);
+  border: 1px solid color-mix(in srgb, var(--status-down) 55%, var(--border));
+  border-radius: 0;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.revoke:hover:not(:disabled),
+.revoke:focus-visible {
+  border-color: var(--status-down);
+}
+.revoke:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Settings → Sharing. */
+.settingsHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: var(--text-1);
+}
+
+@media (max-width: 800px) {
+  .tiles {
+    gap: 6px;
+  }
+  .tile {
+    padding: 7px 10px;
+  }
+}

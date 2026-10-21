@@ -1,0 +1,59 @@
+/* Shared by the SPA and connect shell (#946). Keep feedback on enabled controls only.
+ * No transform or clip-path: the visible corners must remain clickable at every frame. */
+@keyframes hud-btn-glitch {
+  0%,
+  100% {
+    filter: none;
+  }
+  25% {
+    filter: brightness(1.35) contrast(1.25);
+  }
+  50% {
+    filter: brightness(0.9) contrast(1.35);
+  }
+  75% {
+    filter: brightness(1.2) contrast(1.15);
+  }
+}
+
+:where(
+  button,
+  [role="button"],
+  input[type="button"],
+  input[type="submit"],
+  input[type="reset"],
+  .shine,
+  .gear,
+  .section-nav a
+):not(
+  :disabled,
+  [aria-disabled="true"],
+  [aria-disabled="true"] *,
+  [inert],
+  [inert] *
+) {
+  &.glitching {
+    animation: hud-btn-glitch 280ms steps(1, end);
+  }
+  &:active {
+    animation: hud-btn-glitch 160ms steps(1, end);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :where(
+    button,
+    [role="button"],
+    input[type="button"],
+    input[type="submit"],
+    input[type="reset"],
+    .shine,
+    .gear,
+    .section-nav a
+  ) {
+    &.glitching,
+    &:active {
+      animation: none !important;
+    }
+  }
+}

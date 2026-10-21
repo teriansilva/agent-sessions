@@ -1,0 +1,51 @@
+{
+  "_comment": [
+    "Shared normalization fixture for the terminal text size (#859). Read by BOTH",
+    "tests/test_prefs.py and web/src/theme/termSize.test.ts so the Python and TypeScript",
+    "implementations cannot drift on the edge cases that are exactly where they would:",
+    "half-values (round() is banker's in Python, Math.round is half-up in JS) and booleans",
+    "(isinstance(True, int) is True in Python).",
+    "JSON cannot express NaN / undefined / Infinity; each suite adds those in its own",
+    "language on top of these shared cases."
+  ],
+  "min": 8,
+  "max": 20,
+  "default": 13,
+  "read": [
+    { "in": 8,     "out": 8,  "why": "lower bound, in range" },
+    { "in": 13,    "out": 13, "why": "the default, in range" },
+    { "in": 20,    "out": 20, "why": "upper bound, in range" },
+    { "in": 9,     "out": 9,  "why": "ordinary in-range value" },
+
+    { "in": 7,     "out": 8,  "why": "below range clamps up" },
+    { "in": 2,     "out": 8,  "why": "hostile small value clamps, never strands the terminal" },
+    { "in": 0,     "out": 8,  "why": "zero clamps" },
+    { "in": -5,    "out": 8,  "why": "negative clamps" },
+    { "in": 21,    "out": 20, "why": "above range clamps down" },
+    { "in": 40,    "out": 20, "why": "hostile large value clamps" },
+
+    { "in": 12.4,  "out": 12, "why": "rounds down, then in range" },
+    { "in": 12.5,  "out": 13, "why": "HALF: floor(x+0.5)=13. Python round() would give 12" },
+    { "in": 10.5,  "out": 11, "why": "HALF: floor(x+0.5)=11. Python round() would give 10" },
+    { "in": 11.5,  "out": 12, "why": "HALF: both languages agree here; kept as a control" },
+    { "in": 7.5,   "out": 8,  "why": "HALF rounds to 8, which is in range" },
+    { "in": 7.4,   "out": 8,  "why": "rounds to 7, then clamps up" },
+    { "in": 20.5,  "out": 20, "why": "rounds to 21, then clamps down" },
+
+    { "in": "10",  "out": 13, "why": "a string is not a number: default, never parsed here" },
+    { "in": "",    "out": 13, "why": "empty string: default" },
+    { "in": "abc", "out": 13, "why": "non-numeric string: default" },
+    { "in": null,  "out": 13, "why": "null: default" },
+    { "in": true,  "out": 13, "why": "BOOL: isinstance(True, int) is True in Python — must fail on type" },
+    { "in": false, "out": 13, "why": "BOOL: false must not read as 0-then-clamp-to-8" },
+    { "in": [],    "out": 13, "why": "wrong container type: default" },
+    { "in": {},    "out": 13, "why": "wrong container type: default" }
+  ],
+  "write_accepted": [8, 9, 13, 19, 20],
+  "write_rejected": [
+    2, 7, 21, 40, 0, -5,
+    10.5, 9.25,
+    "10", "", "abc",
+    null, true, false, [], {}
+  ]
+}

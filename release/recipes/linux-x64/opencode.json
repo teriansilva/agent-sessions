@@ -1,0 +1,120 @@
+{
+  "manifest": {
+    "binary": {
+      "env_var": "AGENT_SESSIONS_OPENCODE_BIN",
+      "name": "opencode",
+      "search_paths": [
+        "~/.opencode/bin",
+        "~/.local/bin"
+      ],
+      "version_flag": "--version"
+    },
+    "capabilities": {
+      "archive": true,
+      "handoff_target": true,
+      "new": true,
+      "orchestrator_input": true,
+      "raw_tty": true,
+      "resume": true,
+      "seed_start": true
+    },
+    "contract": 1,
+    "display": {
+      "accent": "teal",
+      "badge": "oc",
+      "id_prefix": "ses_",
+      "name": "opencode",
+      "order": 20
+    },
+    "identity": {
+      "id": "opencode",
+      "label": "opencode",
+      "publisher": "battlelab",
+      "version": "1.18.34"
+    },
+    "install": {
+      "authority": "registry.npmjs.org",
+      "digest": "sha256:585bc53a8ae7e839b8702752a283ba826e1ca2152e8c14188efc5b6a738d9834",
+      "entrypoint": "node_modules/opencode-linux-x64-baseline/bin/opencode",
+      "kind": "npm-prefix",
+      "package": "opencode-linux-x64-baseline",
+      "platform": "linux-x64",
+      "version": "1.18.34"
+    },
+    "instructions": {
+      "files": [
+        "AGENTS.md"
+      ]
+    },
+    "launch": {
+      "admission": "sqlite-store-shared",
+      "new": {
+        "kind": "positional-dir"
+      },
+      "resume": {
+        "flag": "--session",
+        "kind": "positional-dir"
+      }
+    },
+    "maintenance": [
+      "sqlite-vacuum"
+    ],
+    "models": {
+      "configured_elsewhere": true
+    },
+    "probe": {
+      "kind": "run-session"
+    },
+    "session_id": {
+      "mint": "adopt",
+      "pattern": "^ses_[A-Za-z0-9]+$"
+    },
+    "signin": {
+      "kind": "auth-login"
+    },
+    "store": {
+      "layout": "opencode-sqlite",
+      "path_env": {
+        "db": "AGENT_SESSIONS_OPENCODE_DB",
+        "log": "AGENT_SESSIONS_OPENCODE_LOG"
+      },
+      "paths": {
+        "db": "opencode.db",
+        "log": "log/opencode.log"
+      },
+      "root": "~/.local/share/opencode"
+    },
+    "terminal": {
+      "permission": "opencode-permission"
+    },
+    "transcript": {
+      "kind": "opencode-sqlite",
+      "strict": true
+    },
+    "unattended": {
+      "start_evidence": "opencode-log"
+    },
+    "usage": {
+      "kind": "opencode-store-query",
+      "source": "tokens"
+    },
+    "verify": [
+      "binary",
+      "version",
+      "store",
+      "new",
+      "resume",
+      "transcript",
+      "usage"
+    ]
+  },
+  "recipe": {
+    "artifacts": [
+      {
+        "destination": "node_modules/opencode-linux-x64-baseline",
+        "sha256": "585bc53a8ae7e839b8702752a283ba826e1ca2152e8c14188efc5b6a738d9834",
+        "url": "https://registry.npmjs.org/opencode-linux-x64-baseline/-/opencode-linux-x64-baseline-1.18.34.tgz"
+      }
+    ]
+  }
+}
