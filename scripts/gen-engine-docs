@@ -222,6 +222,7 @@ def manifest_vocab() -> str:
         ("`launch.model.kind`", _vals(kinds.MODEL_KINDS)),
         ("`launch.model.flag`", _vals(kinds.MODEL_FLAGS)),
         ("`instructions.files`", _vals(kinds.INSTRUCTION_FILES)),
+        ("`tools.mcp` (how the CLI takes the memory tool per launch)", _vals(kinds.MCP_KINDS)),
         ("`capabilities`", _vals(kinds.CAPABILITIES)),
         ("`transcript.kind`", _vals(kinds.TRANSCRIPT_KINDS)),
         ("`usage.source`", _vals(kinds.USAGE_SOURCES)),

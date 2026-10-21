@@ -244,6 +244,56 @@ def test_codex_memory_paths_ride_the_same_shell_policy_set():
     }
 
 
+MCP_ENTRY = {
+    "mcp_servers.battlelab_memory": {
+        "command": "/venv/bin/python",
+        "args": ["-I", "-m", "agent_sessions.memory_mcp"],
+        "env": {"BATTLELAB_MEMORY": "/m/notes", "BATTLELAB_MEMORY_INBOX": "/m/inbox/t"},
+    }
+}
+
+
+def test_codex_memory_tool_rides_the_thread_config_on_its_own():
+    """#1506: the per-thread MCP entry stands alone — proven independently of the shell-policy
+    `set` keys — and merges beside them on start and resume when both are present."""
+    alone = CodexCodec().create("/p", None, mcp_config=MCP_ENTRY)["params"]["config"]
+    assert alone == MCP_ENTRY
+    key = "codex-api:6c51dd58-9155-47b0-aafa-2ccf0de04908"
+    paths = {"BATTLELAB_MEMORY": "/m/notes", "BATTLELAB_MEMORY_INBOX": "/m/inbox/t"}
+    both = CodexCodec().resume(SESSION, "/p", session=key, shell_env=paths, mcp_config=MCP_ENTRY)[
+        "params"
+    ]["config"]
+    assert both["mcp_servers.battlelab_memory"] == MCP_ENTRY["mcp_servers.battlelab_memory"]
+    assert both["shell_environment_policy.set.BATTLELAB_MEMORY"] == "/m/notes"
+    assert "config" not in CodexCodec().create("/p", None, mcp_config=None)["params"]
+    assert "config" not in CodexCodec().create("/p", None, mcp_config={})["params"]
+
+
+def test_claude_memory_tool_is_the_last_argv_pair():
+    """#1506: `--mcp-config` takes several values, so it is last; absent without memory."""
+    plain = ClaudeCodec.argv("/bin/claude", SESSION)
+    assert "--mcp-config" not in plain
+    argv = ClaudeCodec.argv("/bin/claude", SESSION, resume=True, mcp_config='{"mcpServers": {}}')
+    assert argv[-2:] == ["--mcp-config", '{"mcpServers": {}}']
+    assert argv[:-2] == ClaudeCodec.argv("/bin/claude", SESSION, resume=True)
+    assert "--strict-mcp-config" not in argv  # the operator's own servers still load
+
+
+def test_opencode_memory_tool_rides_mcp_servers_on_new_and_load():
+    from agent_sessions.native_protocol import OpencodeAcpCodec
+
+    servers = [{"name": "battlelab_memory", "command": "/venv/bin/python", "args": [], "env": []}]
+    agent = "battlelab-api-0123456789abcdef"
+    assert OpencodeAcpCodec(None, agent=agent).create("/p")["params"]["mcpServers"] == []
+    assert OpencodeAcpCodec(None, agent=agent).create("/p", servers)["params"]["mcpServers"] == (
+        servers
+    )
+    load = OpencodeAcpCodec(None, agent=agent).load("ses_Abc123", "/p", servers)
+    assert load["method"] == "session/load" and load["params"]["mcpServers"] == servers
+    plain = OpencodeAcpCodec(None, agent=agent).load("ses_Abc123", "/p")
+    assert plain["params"]["mcpServers"] == []
+
+
 @pytest.mark.parametrize("action", ["read", "resume"])
 def test_native_response_must_match_requested_history(action):
     codec = CodexCodec()
@@ -1820,3 +1870,127 @@ def test_ipc_output_names_exactly_one_operator_or_agent_turn(data, valid):
     else:
         with pytest.raises(native_ipc.IPCError):
             native_ipc.normalize_event(event)
+
+
+# ---- Codex MCP tool approvals (#1506): `mcpServer/elicitation/request` ---------------------------
+
+ELICITATION = json.loads(
+    (
+        __import__("pathlib").Path(__file__).parent / "fixtures" / "codex_mcp_elicitation.json"
+    ).read_text()
+)
+
+
+def _rebind(frame: dict, thread: str, turn: str) -> dict:
+    """A recorded frame re-pointed at this test's thread and turn (ids only, nothing else)."""
+    frame = json.loads(json.dumps(frame))
+    params = frame["params"]
+    params["threadId"] = thread
+    params["turnId"] = turn
+    return frame
+
+
+def mcp_pending(case="accept", **change):
+    """A running Codex turn holding the recorded MCP tool call and its elicitation request."""
+    codec = codex_running()
+    recorded = ELICITATION[case]
+    assert codec.feed(_rebind(recorded["item_started"], SESSION, TURN))[0].kind == "tool"
+    request = _rebind(recorded["request"], SESSION, TURN)
+    for path, value in change.items():
+        target = request["params"]
+        *parents, leaf = path.split("__")
+        for p in parents:
+            target = target[p]
+        if value is _DROP:
+            target.pop(leaf)
+        else:
+            target[leaf] = value
+    return codec, request, codec.feed(request)
+
+
+_DROP = object()
+
+
+@pytest.mark.parametrize("case", ["accept", "decline"])
+def test_a_recorded_codex_mcp_approval_is_presented_and_answered_exactly(case):
+    """The frame codex-cli 0.162.0 sent, and the answer it accepted, from the #1506 recording."""
+    recorded = ELICITATION[case]
+    codec, request, events = mcp_pending(case)
+    [event] = events
+    assert event.kind == "approval"
+    data = event.data
+    assert data["tool"] == "mcp_tool" and data["complete"] is True
+    assert data["choices"] == ["approve", "reject"]  # once only: no "always", no "cancel"
+    assert data["item_id"] == recorded["item_started"]["params"]["item"]["id"]
+    presented = json.loads(data["summary"])
+    assert presented["server"] == "battlelab_memory" and presented["tool"] == "memory_write"
+    assert presented["input"] == recorded["request"]["params"]["_meta"]["tool_params"]
+    decision = "approve" if case == "accept" else "reject"
+    answer = codec.decide(data["request_id"], decision)
+    assert answer == recorded["answer"]  # byte for byte what Codex accepted
+    with pytest.raises(ProtocolError):
+        codec.decide(data["request_id"], decision)  # consumed once
+
+
+@pytest.mark.parametrize("decision", ["always", "cancel"])
+def test_an_mcp_approval_is_allowed_once_or_denied_never_more(decision):
+    codec, _, [event] = mcp_pending()
+    with pytest.raises(ProtocolError):
+        codec.decide(event.data["request_id"], decision, grant="g")
+    # Refused BEFORE consumption: the operator can still answer it.
+    assert codec.decide(event.data["request_id"], "reject")["result"]["action"] == "decline"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"mode": "url"},
+        {"_meta__codex_approval_kind": "something_else"},
+        {"_meta": _DROP},
+        {"requestedSchema": {"type": "object", "properties": {"token": {"type": "string"}}}},
+        {"serverName": "evil server"},
+        {"serverName": "other_server"},  # no in-progress call of that server
+        {"_meta__tool_params": {"title": "different", "body": "args"}},  # not the call shown
+        {"_meta__tool_params": "not an object"},
+        {"turnId": "another-turn"},
+        {"threadId": "another-thread"},
+    ],
+)
+def test_a_malformed_or_uncorrelated_mcp_elicitation_fails_closed(change):
+    """Fail closed exactly like an unknown request: an error answer, which Codex reads as a
+    rejection; nothing is presented and nothing can be approved."""
+    codec, request, events = mcp_pending(**change)
+    assert [e.kind for e in events] == ["send"]
+    assert events[0].data["frame"] == {
+        "id": request["id"],
+        "error": {"code": -32601, "message": "Unsupported or uncorrelated permission request"},
+    }
+    assert codec._approvals == {}
+
+
+def test_an_mcp_elicitation_with_two_matching_calls_or_a_finished_call_fails_closed():
+    codec = codex_running()
+    started = _rebind(ELICITATION["accept"]["item_started"], SESSION, TURN)
+    twin = json.loads(json.dumps(started))
+    twin["params"]["item"]["id"] = "exec-twin"
+    codec.feed(started)
+    codec.feed(twin)
+    request = _rebind(ELICITATION["accept"]["request"], SESSION, TURN)
+    assert [e.kind for e in codec.feed(request)] == ["send"]  # ambiguous: which tool?
+    codec = codex_running()
+    codec.feed(started)
+    codec.feed(_rebind(ELICITATION["accept"]["item_completed"], SESSION, TURN))
+    assert [e.kind for e in codec.feed(request)] == ["send"]  # that call is over
+
+
+def test_an_over_long_mcp_request_is_declineable_but_not_approvable():
+    long_body = "x" * (MAX_TEXT + 10)
+    codec = codex_running()
+    started = _rebind(ELICITATION["accept"]["item_started"], SESSION, TURN)
+    started["params"]["item"]["arguments"] = {"title": "t", "body": long_body}
+    codec.feed(started)
+    request = _rebind(ELICITATION["accept"]["request"], SESSION, TURN)
+    request["params"]["_meta"]["tool_params"] = {"title": "t", "body": long_body}
+    [event] = codec.feed(request)
+    assert event.data["complete"] is False
+    assert "x" * 100 not in event.data["summary"]

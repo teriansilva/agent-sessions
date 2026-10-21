@@ -27,6 +27,16 @@ const FALLBACK: AiReviewConfig = {
   configured: false,
 };
 
+/** One-tap local servers for the setup wizard (#1544). "localhost" is the machine BattleLab runs on —
+ *  the server makes every AI call. A preset only fills the Base URL draft; nothing is saved until
+ *  Save connection, and the key-origin rule (`docs/invariants/ai-key-origin.md`) applies as typed. */
+const LOCAL_PRESETS: readonly { label: string; url: string }[] = [
+  { label: "Ollama", url: "http://localhost:11434/v1" },
+  { label: "LM Studio", url: "http://localhost:1234/v1" },
+  { label: "llama.cpp", url: "http://localhost:8080/v1" },
+  { label: "vLLM", url: "http://localhost:8000/v1" },
+];
+
 const TIMEOUT_MIN = 10;
 const TIMEOUT_MAX = 600;
 
@@ -627,6 +637,44 @@ export function AiEndpointSetup({
           mission turns. The key is stored server-side and never sent to the
           browser.
         </p>
+
+        {variant === "wizard" && (
+          <div className={styles.aiField}>
+            <span className={styles.aiFieldLabel} id={`${idp}-local-h`}>
+              Local AI on the BattleLab host
+            </span>
+            <div
+              className={styles.aiPresets}
+              role="group"
+              aria-labelledby={`${idp}-local-h`}
+            >
+              {LOCAL_PRESETS.map((p) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  className={styles.secBtnGhost}
+                  aria-pressed={urlDraft.trim() === p.url}
+                  onClick={() => {
+                    setUrlDraft(p.url);
+                    urlRev.current += 1;
+                    setUrlEdited(true);
+                    onDraftEdit();
+                  }}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <p className={styles.hint}>
+              <code>localhost</code> is the machine BattleLab runs on, not this
+              browser&apos;s device. A preset fills in the server&apos;s usual
+              address — check the port, then Save connection. A local server that
+              doesn&apos;t check keys still needs one here: type any text, like{" "}
+              <code>local</code>. A hosted endpoint receives the session content
+              these features send it.
+            </p>
+          </div>
+        )}
 
         <div className={styles.aiField}>
           <label className={styles.aiFieldLabel} htmlFor={`${idp}-base-url`}>

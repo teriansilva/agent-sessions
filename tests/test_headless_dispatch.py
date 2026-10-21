@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import pathlib
 import threading
 import time
@@ -1569,8 +1570,11 @@ async def test_project_memory_reaches_the_headless_spawn_only_when_on(env, prov,
     original = headless_dispatch._popen
     observed = []
 
+    argvs = []
+
     def capture(argv, **kwargs):
         observed.append(kwargs["env"])
+        argvs.append(list(argv))
         return original(argv, **kwargs)
 
     monkeypatch.setattr(headless_dispatch, "_popen", capture)
@@ -1582,6 +1586,15 @@ async def test_project_memory_reaches_the_headless_spawn_only_when_on(env, prov,
     assert not set(memory.ENV_KEYS) & set(observed[0])
     assert pathlib.Path(observed[1][memory.ENV_READ]).parent.name == pid
     assert pathlib.Path(observed[1][memory.ENV_INBOX]).is_dir()
+    # #1506: with memory on the spawned argv ends in the memory tool for exactly these paths, and
+    # is otherwise the memory-off argv; off, nothing is added.
+    assert "--mcp-config" not in argvs[0]
+    assert argvs[1][-2] == "--mcp-config"
+    server = json.loads(argvs[1][-1])["mcpServers"]["battlelab_memory"]
+    assert {k: server["env"][k] for k in memory.ENV_KEYS} == {
+        k: observed[1][k] for k in memory.ENV_KEYS
+    }
+    assert len(argvs[1]) == len(argvs[0]) + 2
     # A dispatch refused before the spawn mints no inbox (#1445 review): binding is the last step.
     refused = await headless_dispatch.dispatch(
         registry=reg, engine="claude", cwd=str(env), brief="go", authorize=lambda epoch: "no"

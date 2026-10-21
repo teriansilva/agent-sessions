@@ -39,6 +39,10 @@ archive = true
 [transcript]
 kind = "battlelab-chat"
 
+# BattleLab's memory tool (#1506), wired in per launch; versions proven in `agent_tools`.
+[tools]
+mcp = "claude-mcp-config-flag"
+
 [display]
 order = 15
 name = "claude-api"

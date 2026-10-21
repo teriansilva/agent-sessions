@@ -39,6 +39,10 @@ archive = true
 [transcript]
 kind = "battlelab-chat"
 
+# BattleLab's memory tool (#1506), wired in per launch; versions proven in `agent_tools`.
+[tools]
+mcp = "codex-config-override"
+
 [display]
 order = 35
 name = "codex-api"

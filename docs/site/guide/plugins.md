@@ -123,6 +123,7 @@ be a restriction, and a reader that skipped it would grant what the author meant
 | `maintenance` | no | Store maintenance the agent admits, e.g. `sqlite-vacuum`. |
 | `[models]` | no | `list` of `{ id, context_window, aliases }`, and `configured_elsewhere` (the engine's model is set in its own configuration, so pickers offer `default` only). Every id and alias names exactly one model, and none may be `default`. A `chat` agent’s list must be empty: its model is your endpoint configuration. |
 | `[instructions]` | no | `files`: the workspace-root instruction files the engine reads (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) — bare names from a fixed set, never a path. Forbidden for `chat`. |
+| `[tools]` | no | `mcp`: how the agent's CLI takes BattleLab's memory tool (an MCP server) for one launch — `claude-mcp-config-flag`, `codex-config-override` or `opencode-config-content`. Absent means the agent gets the memory environment variables only. An `api` agent may declare only the kind its protocol carries; forbidden for `chat` and `terminal`. |
 | `[display]` | yes | `name`, `badge` (2–3 lowercase letters), `accent` (a colour **token**, never a hex), `id_prefix` (stripped when an id is shown), and `order` in the roster. |
 | `[install]` | no | `kind`, `authority`, `package`, `version`, `digest` (`sha256:…`), `entrypoint`, and optional `platform`. A declared platform must match this host. The installer consumes only a pinned reviewed recipe matching these coordinates. Scoped npm entrypoints admit `@scope` only immediately below `node_modules`. |
 | `[signin]` | no | `kind`: `cli-subcommand` takes a closed login `subcommand`; `auth-login` runs fixed `auth login`; `interactive` starts the CLI; `none` offers no sign-in. Executed only by the explicit temporary sign-in operation. |
@@ -206,6 +207,7 @@ Every value a manifest may choose, generated from the kinds this build ships:
 | `launch.model.kind` | `flag` |
 | `launch.model.flag` | `--model`, `-m` |
 | `instructions.files` | `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` |
+| `tools.mcp` (how the CLI takes the memory tool per launch) | `claude-mcp-config-flag`, `codex-config-override`, `opencode-config-content` |
 | `capabilities` | `archive`, `handoff_target`, `new`, `orchestrator_input`, `owns_transcript`, `raw_tty`, `resume`, `seed_start` |
 | `transcript.kind` | `antigravity-brain`, `battlelab-chat`, `claude-jsonl`, `codex-rollout`, `gemini-chat`, `kimi-wire`, `none`, `opencode-sqlite` |
 | `usage.source` | `manual`, `none`, `plan`, `tokens` |

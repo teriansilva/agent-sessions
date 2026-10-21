@@ -635,7 +635,8 @@ async def run(
     ``attach_provider`` checks permanent native-history ownership for an attach-only client;
     unlike ``launch_provider`` it does not require an active engine or resolve its binary.
     ``launch_env`` (#1441) is extra environment for a LAUNCH only — the shared project memory
-    paths; ignored on attach.
+    paths, and a config variable carrying the memory tool where the CLI takes it that way
+    (#1506); ignored on attach.
 
     ``buf_key`` is the physical runtime key (dtach/lock/scrollback ring). ``transcript_key``
     is the logical session key for saved transcript replay; alias-backed Codex sessions need

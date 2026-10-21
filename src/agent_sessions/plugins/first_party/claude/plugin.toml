@@ -96,6 +96,10 @@ context_window = 1000000
 id = "claude-sonnet-4-6"
 context_window = 1000000
 
+# BattleLab's memory tool (#1506), wired in per launch; versions proven in `agent_tools`.
+[tools]
+mcp = "claude-mcp-config-flag"
+
 [display]
 order = 10
 name = "claude"

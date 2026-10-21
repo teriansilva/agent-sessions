@@ -21,6 +21,7 @@ import { engineInfo, mintsOwnId, useEngineRoster } from "../app/engineRoster";
 import type { EngineInfo, Folder, TwoFactorEnrollment } from "../types/api";
 import styles from "./Onboarding.module.css";
 import { AiEndpointSetup } from "./AiEndpointSetup";
+import { HqContactGallery } from "../components/hq/HqContactGallery";
 import { SlideCounter, SlideDots } from "../components/slideshow/Slideshow";
 import { useSlideshow } from "../components/slideshow/useSlideshow";
 import { newestRelease, whatsNewLabel } from "../whatsnew/due";
@@ -39,46 +40,52 @@ function Brackets({ hero = false }: { hero?: boolean }) {
   );
 }
 
-/** Slideshow tour slides — images are placeholders (web/public/onboarding/*.svg); the copy is
- *  the durable part. Real screenshots are a follow-up (#463 out-of-scope). */
+/** Slideshow tour slides (#1544): real captures of the app (`web/visual/promo/capture.mjs`), plus
+ *  two drawn slides for surfaces a capture can't show (the relay, Settings). The copy is the durable
+ *  part; re-run the capture when a surface changes. */
 const publicAsset = (path: string): string =>
   `${import.meta.env.BASE_URL}${path.replace(/^\/+/, "")}`;
 
 const SLIDES: { img: string; title: string; body: string }[] = [
   {
-    img: publicAsset("onboarding/sessions.svg"),
+    img: publicAsset("onboarding/dashboard.webp"),
+    title: "Welcome, Commander",
+    body: "The dashboard is your start page: what needs you, what's running, your missions and how much quota each agent has left — the whole operation on one screen.",
+  },
+  {
+    img: publicAsset("onboarding/hq.webp"),
+    title: "HQ — your General on the line",
+    body: "Ask HQ what needs you, have it start or nudge sessions, and follow up on what it started. Your primary contact — a General you pick — answers in their own voice. HQ runs on your own AI endpoint.",
+  },
+  {
+    img: publicAsset("onboarding/sessions.webp"),
     title: "Every agent, one deck",
-    body: "Every agent CLI on this machine gets its own persistent sessions in the sidebar, grouped by project, each with its agent's badge. Search, filter, favorite, archive.",
+    body: "Claude Code, Codex, opencode, Gemini, Antigravity and Kimi Code each get persistent sessions, grouped by project: terminal sessions that survive reboots and deploys, or API sessions with a structured view, approvals and a message queue.",
   },
   {
-    img: publicAsset("whatsnew/0.20/missions.svg"),
-    title: "Mission control",
-    body: "Say the outcome you want. Mission control proposes a plan — a project, an agent and the objectives that define done — starts the agent when you press Begin, settles each objective on evidence and asks when it is unsure.",
+    img: publicAsset("onboarding/missions.webp"),
+    title: "Missions (beta)",
+    body: "Give an objective. Mission control proposes a plan — a project, an agent and the objectives that define done — runs it when you say go, settles each objective on evidence and asks when it is unsure. Beta: still settling, expect changes.",
   },
   {
-    img: publicAsset("whatsnew/0.20/files.svg"),
+    img: publicAsset("onboarding/library.webp"),
+    title: "The Library",
+    body: "Playbooks, prompt templates, variables, memory, automations and skills — how your work gets done, reusable from every session and mission.",
+  },
+  {
+    img: publicAsset("onboarding/files.webp"),
     title: "Files, git & editing",
     body: "Every session has a Files panel: upload files or whole folders, edit a file right where you read it, and fetch, pull, stage, commit and push from its Git tab. A save never overwrites what the agent wrote meanwhile.",
   },
   {
-    img: publicAsset("whatsnew/0.20/templates.svg"),
-    title: "Prompt Templates",
-    body: "Keep reusable instructions with fill-in fields, tags and images. Pick one from any composer — or save a good prompt as a template — and send it to any session.",
-  },
-  {
-    img: publicAsset("onboarding/aireview.svg"),
-    title: "AI session reviews",
-    body: "An AI reads every running session and posts a one-line summary on each row, flagging the ones that need you — triage the whole fleet without scrolling transcripts. Point it at any OpenAI-compatible endpoint, even a local model.",
-  },
-  {
-    img: publicAsset("onboarding/overview.svg"),
+    img: publicAsset("onboarding/map.webp"),
     title: "Tactical map & auto-sort",
-    body: "A live flowchart of every session, grouped into projects — drag a session onto a project to reassign it. New sessions file themselves: AI auto-sort matches each one to the right project, or leaves it for you.",
+    body: "A live flowchart of every session, grouped into projects — open several agents side by side and drag a session onto a project to reassign it. AI auto-sort files new sessions for you.",
   },
   {
-    img: publicAsset("onboarding/mobile.svg"),
-    title: "Touch-ready",
-    body: "A mobile-first terminal with a real compose bar, control keys and image paste, plus console-style scroll-up history that survives reboots and deploys. Drive your whole fleet from a phone.",
+    img: publicAsset("onboarding/phone.webp"),
+    title: "Command from your phone",
+    body: "A mobile-first terminal with a real compose bar, control keys, dictation and image paste, plus scroll-up history that survives reboots and deploys. Drive the whole fleet from a phone.",
   },
   {
     img: publicAsset("onboarding/homefree.svg"),
@@ -86,14 +93,9 @@ const SLIDES: { img: string; title: string; body: string }[] = [
     body: "Your deck can stream through our blind relay — open battlelab.superstatus.io/connect in any browser and enter the console name + access key from your install. End-to-end encrypted; sessions run up to 4 hours.",
   },
   {
-    img: publicAsset("onboarding/qrsignin.svg"),
-    title: "Sign in by QR",
-    body: "Add a phone or tablet without retyping a password: scan a QR from a signed-in device to authorize the new one. Optional TOTP two-factor keeps the login yours.",
-  },
-  {
     img: publicAsset("onboarding/settings.svg"),
     title: "Tune it in Settings",
-    body: "Your AI endpoint, auto-sort, themes, security and more — all in Settings. The ? in the top bar brings back this tour (and a full setup re-run), the documentation and what's new, any time.",
+    body: "Your AI endpoint, your HQ contact, appearance, agents, two-factor and QR sign-in — all in Settings. The operator menu at the top right brings back this tour (and a full setup re-run), the documentation and What's new, any time.",
   },
 ];
 
@@ -102,6 +104,7 @@ const WIZARD_STEPS = [
   "security",
   "agents",
   "ai",
+  "contact",
   "project",
   "tour",
   "analytics",
@@ -113,6 +116,7 @@ const STEP_LABEL: Record<Step, string> = {
   security: "Secure your deck",
   agents: "Connected agents",
   ai: "Set up AI",
+  contact: "HQ contact",
   project: "First project",
   tour: "Tour",
   analytics: "Usage analytics",
@@ -262,10 +266,29 @@ export function Onboarding({
   const [shareAnalytics, setShareAnalytics] = useState(false);
   const [analyticsBusy, setAnalyticsBusy] = useState(false);
   const [analyticsErr, setAnalyticsErr] = useState<string | null>(null);
+  // The HQ contact step (#1544) exists only once an AI endpoint is configured: without one there is
+  // no HQ to answer, so a contact would be a face with nothing to say. Live: saving the endpoint in
+  // the AI step refreshes the config, and the rail grows by one.
+  const aiReady = !!config?.ai_review?.configured;
   const steps = useMemo(
-    () => WIZARD_STEPS.filter((s) => s !== "analytics" || analyticsStep),
-    [analyticsStep],
+    () =>
+      WIZARD_STEPS.filter(
+        (s) =>
+          (s !== "analytics" || analyticsStep) && (s !== "contact" || aiReady),
+      ),
+    [analyticsStep, aiReady],
   );
+  const afterAi: Step = aiReady ? "contact" : "project";
+  // The endpoint was removed while the contact step was open (Back → AI → Remove key → Next is
+  // not the only way): the step left the rail, so move on rather than render an unlisted step.
+  if (step === "contact" && !aiReady) setStep("project");
+  // Each step opens at its top (#1544): the card body is one scroller, and Next sits at the foot of a
+  // long step (AI), so the next step would otherwise open scrolled past its own title.
+  const paneRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const scroller = paneRef.current?.closest(`.${styles.cardBody}`);
+    scroller?.scrollTo?.({ top: 0 });
+  }, [step]);
 
   // Load engine discovery once we reach (or mount on) the wizard.
   useEffect(() => {
@@ -450,16 +473,17 @@ export function Onboarding({
         ))}
       </nav>
 
-      <div className={styles.pane}>
+      <div className={styles.pane} ref={paneRef}>
         {step === "welcome" && (
           <Step
-            title="Welcome to BattleLab"
-            desc="Command & Code. A quick setup, then you're in."
+            title="Welcome, Commander."
+            desc="BattleLab is your command deck. A one-minute briefing, then the deck is yours."
           >
             <p className={styles.copy}>
-              We'll check which agents are installed, let you wire up your AI,
-              create a first project, and launch your first session — about a
-              minute.
+              We'll check which agents report for duty on this host and connect
+              your AI — a local model works. With AI connected, you pick your HQ
+              contact: the General who briefs you. Then a first project, a short
+              tour, and your first session.
             </p>
             <p className={styles.copy}>
               Installed with streaming (the default)? Your deck is also
@@ -505,7 +529,7 @@ export function Onboarding({
         {step === "security" && (
           <Step
             title="Secure your deck"
-            desc="This box launches agents with permission bypass — treat it like SSH."
+            desc="This deck launches agents with permission bypass — guard it like SSH."
           >
             {loginOff ? (
               <>
@@ -698,7 +722,7 @@ export function Onboarding({
         {step === "ai" && (
           <Step
             title="Set up your AI"
-            desc="Powers session review, auto-sort and mission control. You provide it — an OpenAI-compatible endpoint: connect it, then pick the model."
+            desc="Your own AI — a local model or any OpenAI-compatible endpoint — powers HQ, session reviews, auto-sort and Missions (beta). Connect it, then pick the model."
           >
             <AiEndpointSetup variant="wizard" />
             <Foot>
@@ -714,6 +738,42 @@ export function Onboarding({
                 type="button"
                 className={styles.btn}
                 onClick={() => setStep("agents")}
+              >
+                <ArrowLeft size={14} /> Back
+              </button>
+              <button
+                type="button"
+                className={`${styles.pri} shine`}
+                onClick={() => setStep(afterAi)}
+              >
+                Next <ArrowRight size={14} />
+              </button>
+            </Foot>
+          </Step>
+        )}
+
+        {step === "contact" && (
+          <Step
+            title="Choose your HQ contact"
+            desc="The General who briefs you — HQ answers in their voice. Random brings a new face every day."
+          >
+            <HqContactGallery
+              subheadClass="sr-only"
+              hintClass={styles.copy}
+            />
+            <Foot>
+              <button
+                type="button"
+                className={styles.ghost}
+                onClick={() => setStep("project")}
+              >
+                Decide later
+              </button>
+              <span className={styles.grow} />
+              <button
+                type="button"
+                className={styles.btn}
+                onClick={() => setStep("ai")}
               >
                 <ArrowLeft size={14} /> Back
               </button>
@@ -779,7 +839,7 @@ export function Onboarding({
               <button
                 type="button"
                 className={styles.btn}
-                onClick={() => setStep("ai")}
+                onClick={() => setStep(aiReady ? "contact" : "ai")}
               >
                 <ArrowLeft size={14} /> Back
               </button>
@@ -797,7 +857,7 @@ export function Onboarding({
         {step === "tour" && (
           <Step
             title="The lay of the land"
-            desc="A 30-second tour of the main surfaces."
+            desc="A 30-second briefing on the main surfaces."
           >
             <Slideshow
               onDone={() => setStep(analyticsStep ? "analytics" : "launch")}
@@ -880,7 +940,7 @@ export function Onboarding({
         {step === "launch" && (
           <Step
             title="Start your first session"
-            desc="Everything's set — launch into your project."
+            desc="Everything's set, Commander — launch into your project."
           >
             {newEngines.length > 1 && (
               <label className={styles.field}>
@@ -926,8 +986,8 @@ export function Onboarding({
               <a href={DOCS_HOME_URL} target="_blank" rel="noopener noreferrer">
                 docs
               </a>{" "}
-              cover every feature — and the ? in the top bar brings back the tour,
-              the docs and What's new at any time.
+              cover every feature — and the operator menu at the top right brings
+              back the tour, the docs and What's new at any time.
             </p>
             {launchWait && (
               <p className={styles.note} role="status">

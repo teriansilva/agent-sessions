@@ -1574,3 +1574,33 @@ test("a recovered read BEFORE the receipt's revision does not settle the head", 
   expect(api.structuredSubmit).toHaveBeenCalledTimes(1);
   expect(screen.getAllByTestId("structured-pending")).toHaveLength(2);
 });
+
+test("a Codex MCP tool approval names the tool, its server and its arguments, and is allowed once or denied (#1506)", async () => {
+  const t = turn({ state: "awaiting_approval", reply: "" });
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({
+    state: "awaiting_approval", active_turn: t.turn_id, turns: [t],
+    pending_requests: [{
+      request_id: "i:78", turn_id: t.turn_id, kind: "mcp_tool", complete: true, item_id: "exec-mcp-1",
+      choices: ["approve", "reject"], always: [],
+      payload: {
+        server: "battlelab_memory", tool: "memory_write",
+        input: { title: "Ports", body: "<b>Use 41873</b> for previews" },
+        message: "Allow the battlelab_memory MCP server to run tool \"memory_write\"?",
+      },
+    }],
+  }));
+  vi.mocked(api.structuredDecide).mockResolvedValue({});
+  renderPane("codex-api");
+  const card = await screen.findByTestId("structured-request");
+  expect(card).toHaveTextContent(/asks to use memory_write from battlelab_memory/);
+  // The arguments, as text: markup in them is shown, never rendered.
+  expect(card).toHaveTextContent("Title: Ports");
+  expect(card).toHaveTextContent("<b>Use 41873</b> for previews");
+  expect(card.querySelector("b")).toBeNull();
+  expect(within(card).queryByRole("button", { name: /always|session/i })).toBeNull();
+  expect(within(card).queryByTestId("structured-always")).toBeNull();
+  expect(within(card).getByRole("button", { name: "Deny" })).toBeEnabled();
+  await userEvent.click(within(card).getByRole("button", { name: "Allow once" }));
+  const [, body] = vi.mocked(api.structuredDecide).mock.calls[0];
+  expect(body).toMatchObject({ request_id: "i:78", turn_id: t.turn_id, decision: "approve" });
+});

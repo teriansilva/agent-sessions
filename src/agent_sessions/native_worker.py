@@ -41,6 +41,7 @@ import time
 from pathlib import Path
 
 from . import (
+    agent_tools,
     native_attachments,
     native_ipc,
     native_journal,
@@ -157,6 +158,25 @@ def memory_environment(config: dict) -> dict[str, str]:
     ):
         raise WorkerError("invalid memory environment")
     return dict(value)
+
+
+def memory_tool(config: dict):
+    """The memory tool this generation carries (#1506), as an `agent_tools.Server`, or None.
+
+    Only beside the generation's memory paths, and only the kind the adapter's protocol carries
+    (`kinds.API_MCP_KINDS`); anything else refuses the spawn. Shaped from this worker's own
+    interpreter, never from the config.
+    """
+    try:
+        kind = agent_tools.api_kind(config["adapter"], config.get("memory_tool"))
+    except ValueError:
+        raise WorkerError("invalid memory tool") from None
+    paths = memory_environment(config)
+    if kind is None:
+        return None
+    if not paths:
+        raise WorkerError("invalid memory tool")
+    return agent_tools.server(paths)
 
 
 def battlelab_session(config: dict) -> str:
@@ -300,6 +320,7 @@ class Worker:
             return native_protocol.CodexCodec.argv(binary)
         if self.adapter == OPENCODE:
             return native_protocol.OpencodeAcpCodec.argv(binary)
+        tool = memory_tool(self.config)
         return native_protocol.ClaudeCodec.argv(
             binary,
             self.native_id,
@@ -307,6 +328,7 @@ class Worker:
             model=self.config.get("model"),
             bypass=self.config.get("bypass") is True,
             effort=self.config.get("effort"),
+            mcp_config=None if tool is None else agent_tools.claude_mcp_config(tool),
         )
 
     async def spawn(self) -> None:
@@ -739,14 +761,24 @@ class Worker:
         bypass = self.config.get("bypass") is True
         session = battlelab_session(self.config)
         shell_env = memory_environment(self.config)
+        tool = memory_tool(self.config)
+        mcp_config = None if tool is None else agent_tools.codex_thread_config(tool)
         if self.native_id is not None:
             await self.request(
                 self.codec.resume(
-                    self.native_id, cwd, model, bypass=bypass, session=session, shell_env=shell_env
+                    self.native_id,
+                    cwd,
+                    model,
+                    bypass=bypass,
+                    session=session,
+                    shell_env=shell_env,
+                    mcp_config=mcp_config,
                 )
             )
             return
-        request = self.codec.create(cwd, model, bypass=bypass, session=session, shell_env=shell_env)
+        request = self.codec.create(
+            cwd, model, bypass=bypass, session=session, shell_env=shell_env, mcp_config=mcp_config
+        )
         event = await self.request(request)
         native_id = event.data["native_id"]
         await asyncio.to_thread(self.bind_created, request["id"], event)
@@ -758,12 +790,14 @@ class Worker:
         codec = self.codec
         assert isinstance(codec, native_protocol.OpencodeAcpCodec)
         cwd, model = self.config["cwd"], self.config.get("model")
+        tool = memory_tool(self.config)
+        servers = None if tool is None else agent_tools.acp_servers(tool)
         if self.native_id is not None:
             # `session/load` replays history; the codec attributes none of it to a turn and no
             # replayed tool call can become a live approval.
-            await self.request(codec.load(self.native_id, cwd))
+            await self.request(codec.load(self.native_id, cwd, servers))
         else:
-            request = codec.create(cwd)
+            request = codec.create(cwd, servers)
             event = await self.request(request)
             native_id = event.data["native_id"]
             await asyncio.to_thread(self.bind_created, request["id"], event)

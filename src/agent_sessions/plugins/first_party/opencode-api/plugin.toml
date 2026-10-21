@@ -41,6 +41,10 @@ archive = true
 [transcript]
 kind = "battlelab-chat"
 
+# BattleLab's memory tool (#1506), wired in per launch; versions proven in `agent_tools`.
+[tools]
+mcp = "opencode-config-content"
+
 [display]
 order = 25
 name = "opencode-api"

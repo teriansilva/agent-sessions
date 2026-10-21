@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import hashlib
+import json
 import os
 import sqlite3
 from pathlib import Path
@@ -481,6 +482,10 @@ def test_a_launch_without_memory_strips_the_apps_own_copies(monkeypatch, tmp_pat
 # routes. Memory is never a system prompt, never evidence and never sent to a
 # model: no prompt, review, mission-judge or checklist module may import it.
 ALLOWED_IMPORTERS = {
+    # The memory tool (#1506): the per-launch wiring at the seams, and the MCP server the agent CLI
+    # starts. Neither is a prompt, evidence or model input: the server serves the agent's own view.
+    "agent_tools.py",
+    "memory_mcp.py",
     "headless_dispatch.py",
     "main.py",
     "memory_loop.py",
@@ -549,7 +554,12 @@ def test_the_terminal_route_binds_memory_on_launch_and_never_on_attach(
     monkeypatch.setattr(relaunch, "blocked", lambda key: False)
     monkeypatch.setattr(relaunch, "note_exit", lambda *a, **k: None)
     monkeypatch.setattr(ptybridge, "session_exists", lambda e, n: False)
-    monkeypatch.setattr(ptybridge, "launch_argv", lambda **kw: ["/bin/true"])
+    agent_argvs = []  # the engine argv of each LAUNCH, as the route hands it to dtach
+    monkeypatch.setattr(
+        ptybridge,
+        "launch_argv",
+        lambda **kw: agent_argvs.append(kw["launch_argv"]) or ["/bin/true"],
+    )
     monkeypatch.setattr(ptybridge, "attach_argv", lambda **kw: ["/bin/true"])
     monkeypatch.setattr(scopedspawn, "wrap", lambda argv, **kw: (argv, None))
     engine_bin("claude")
@@ -573,7 +583,6 @@ def test_the_terminal_route_binds_memory_on_launch_and_never_on_attach(
     rows = c.get("/api/sessions?limit=50").json()["sessions"]
     cwd = next(r["cwd"] for r in rows if r["id"] == "claude:11111111-1111-1111-1111-111111111111")
     pid = projects.create("repo-a", folders=[cwd]).id
-    memory.set_enabled(pid, True)
 
     def connect(url):
         try:
@@ -584,13 +593,25 @@ def test_the_terminal_route_binds_memory_on_launch_and_never_on_attach(
         except WebSocketDisconnect as e:
             return e.code
 
+    # Memory off: a launch gets neither the paths nor the memory tool (#1506).
+    assert connect(f"/ws/term/claude:{uuid.uuid4()}?new=1&cwd={cwd}") == 1000
+    memory.set_enabled(pid, True)
     assert connect(f"/ws/term/claude:{uuid.uuid4()}?new=1&cwd={cwd}") == 1000
     action["now"] = sessions.ATTACH
     assert connect("/ws/term/claude:11111111-1111-1111-1111-111111111111") == 1000
-    assert len(captured) == 2 and len(asked) == 1
-    launched, attached = captured
+    assert len(captured) == 3 and len(asked) == 2 and len(agent_argvs) == 2
+    off, launched, attached = captured
+    assert off == {}
     assert Path(launched[memory.ENV_READ]).parent.name == pid
+    assert set(launched) == set(memory.ENV_KEYS)  # claude takes the tool by flag, not env
     assert attached == {}
+    # The memory tool rides the LAUNCH argv, last, carrying exactly this launch's paths; the
+    # memory-off launch and the attach (no argv built at all) get nothing.
+    assert "--mcp-config" not in agent_argvs[0]
+    assert agent_argvs[1][-2] == "--mcp-config"
+    server = json.loads(agent_argvs[1][-1])["mcpServers"]["battlelab_memory"]
+    assert {k: server["env"][k] for k in memory.ENV_KEYS} == launched
+    assert server["args"] == ["-I", "-m", "agent_sessions.memory_mcp"]
 
 
 # ---- review round 1 on #1445: each finding's regression ----------------------------------------

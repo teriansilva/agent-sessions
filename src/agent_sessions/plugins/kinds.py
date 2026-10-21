@@ -235,6 +235,26 @@ MAINTENANCE_KINDS = frozenset({"sqlite-vacuum"})
 #: codex/opencode/kimi `AGENTS.md`; gemini `GEMINI.md`.
 INSTRUCTION_FILES = frozenset({"CLAUDE.md", "AGENTS.md", "GEMINI.md"})
 
+# --- tools --------------------------------------------------------------------------------------
+
+#: `tools.mcp` (#1506): how the agent CLI accepts BattleLab's memory tool (an MCP server,
+#: `agent_sessions.memory_mcp`) for ONE launch — a flag, a config override or a config environment
+#: variable, never a write into the workspace or the vendor's own config. Each names a shape in
+#: `agent_tools`, proven against the CLI versions recorded beside it there. Absent = the agent gets
+#: the memory environment variables only.
+#: claude `--mcp-config <json>`; codex `-c mcp_servers.<name>.*`; opencode
+#: `OPENCODE_CONFIG_CONTENT`.
+MCP_KINDS = frozenset(
+    {"claude-mcp-config-flag", "codex-config-override", "opencode-config-content"}
+)
+#: The `tools.mcp` kind each native API protocol carries in its own slot (claude's argv, codex's
+#: per-thread `config`, ACP `mcpServers`). An `api` manifest may declare only its protocol's.
+API_MCP_KINDS = {
+    "claude-stream-json": ("claude-mcp-config-flag",),
+    "codex-app-server": ("codex-config-override",),
+    "opencode-acp": ("opencode-config-content",),
+}
+
 # --- display -------------------------------------------------------------------------------------
 
 #: `display.accent` — a token name, never a hex. The web maps each to its HUD colour; a manifest

@@ -213,7 +213,7 @@ test("the setup wizard's Welcome and Launch steps link the docs in a new tab and
   await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
   await page.goto(NEW_SESSION_PATH);
   const wizard = page.getByRole("dialog", { name: "Set up BattleLab" });
-  await expect(wizard.getByRole("heading", { name: "Welcome to BattleLab" })).toBeVisible();
+  await expect(wizard.getByRole("heading", { name: "Welcome, Commander." })).toBeVisible();
 
   const docsButton = wizard.getByRole("link", { name: "Docs (opens in a new tab)" });
   await expect(docsButton).toHaveAttribute("href", DOCS_HOME_URL);
@@ -223,7 +223,7 @@ test("the setup wizard's Welcome and Launch steps link the docs in a new tab and
   await popup.waitForLoadState();
   expect(popup.url()).toBe(DOCS_HOME_URL);
   await popup.close();
-  await expect(wizard.getByRole("heading", { name: "Welcome to BattleLab" })).toBeVisible();
+  await expect(wizard.getByRole("heading", { name: "Welcome, Commander." })).toBeVisible();
 
   // Walk to the Launch step: every step's forward control, the tour's slides, then Finish tour.
   await wizard.getByRole("button", { name: /Get started/ }).click();

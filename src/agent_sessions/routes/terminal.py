@@ -35,12 +35,14 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import time
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket
 
 from .. import (
+    agent_tools,
     ai_review_loop,
     engines,
     fsbrowse,
@@ -800,6 +802,25 @@ def register(
                 cwd = match.cwd
                 if model_sel.flag or model_sel.replaces_record:
                     model_record = (transcript_key, model_sel)
+            # Shared project memory (#1441) is bound to a NEW agent process — this LAUNCH — and
+            # never to an attach: a reconnect reaches an agent whose environment is already fixed.
+            # With memory on, the launch also gets the memory tool (#1506) the way its manifest
+            # says its CLI takes one (`tools.mcp`): argv additions and/or environment, nothing
+            # written anywhere. Resolved before the argv is built, because it is part of it, and
+            # OFF the loop as one unit (#1505): the store lookup takes the scope lock and mints
+            # this launch's inbox.
+            memory_env: dict[str, str] = {}
+            mcp = agent_tools.NONE
+            if action == sessions.LAUNCH and launch is not None:
+
+                def _memory_for_launch():
+                    paths = memory.launch_env(transcript_key, cwd, kind="terminal")
+                    tool = agent_tools.terminal_launch(engines.manifest_of(prov), paths, os.environ)
+                    return paths, tool
+
+                memory_env, mcp = await asyncio.to_thread(_memory_for_launch)
+                launch = mcp.argv(launch)
+                launchtiming.mark("memory")
             try:
                 # Mode-explicit dtach (#165): on ATTACH the server has already verified
                 # a live master exists, so `dtach -a` is correct (and refuses to silently
@@ -882,15 +903,8 @@ def register(
             # Backstop timing (#631): mark when this fresh master started, so the finally can tell
             # whether it exited instantly and feed the bounded-relaunch guard. Only on LAUNCH — an
             # ATTACH runs no new master. Covers BOTH dispatch paths (take-over + #184) below.
-            # Shared project memory (#1441) is bound to a NEW agent process — this LAUNCH — and
-            # never to an attach: a reconnect reaches an agent whose environment is already fixed.
-            memory_env: dict[str, str] = {}
             if action == sessions.LAUNCH:
                 launch_started_at = time.monotonic()
-                memory_env = await asyncio.to_thread(
-                    memory.launch_env, transcript_key, cwd, kind="terminal"
-                )
-                launchtiming.mark("memory")
             # Cross-engine handoff (#597): a committed handoff bound to this physical key
             # delivers its seed via webterm's PTY injector (input, never argv). ATTACH also
             # carries the key: if the launching viewer dropped before the TUI was ready, the
@@ -923,7 +937,7 @@ def register(
                     lock=lock,
                     launch_provider=prov if action == sessions.LAUNCH else None,
                     attach_provider=prov if action == sessions.ATTACH else None,
-                    launch_env=memory_env,
+                    launch_env={**memory_env, **mcp.env},
                     have=have,
                     fp=fp,
                     tab_id=tab_id,
@@ -987,7 +1001,7 @@ def register(
                     lock=lock,
                     launch_provider=prov if action == sessions.LAUNCH else None,
                     attach_provider=prov if action == sessions.ATTACH else None,
-                    launch_env=memory_env,
+                    launch_env={**memory_env, **mcp.env},
                     have=have,
                     read_only_gate=read_only_gate,
                     seed_key=seed_key,

@@ -63,6 +63,10 @@ files = ["AGENTS.md"]
 [models]
 configured_elsewhere = true
 
+# BattleLab's memory tool (#1506), wired in per launch; versions proven in `agent_tools`.
+[tools]
+mcp = "opencode-config-content"
+
 [display]
 order = 20
 name = "opencode"

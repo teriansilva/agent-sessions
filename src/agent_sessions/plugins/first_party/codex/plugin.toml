@@ -58,6 +58,10 @@ id = "gpt-5-codex"
 [[models.list]]
 id = "gpt-5"
 
+# BattleLab's memory tool (#1506), wired in per launch; versions proven in `agent_tools`.
+[tools]
+mcp = "codex-config-override"
+
 [display]
 order = 30
 name = "codex"

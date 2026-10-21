@@ -348,6 +348,12 @@ class _Codec:
         )
 
 
+#: The approval kind of an MCP tool call Codex asks about (#1506), and the elicitation action each
+#: offered decision answers with (once only — see `CodexCodec.decide`).
+MCP_TOOL = "mcp_tool"
+_MCP_ACTIONS = {"approve": "accept", "reject": "decline"}
+
+
 class CodexCodec(_Codec):
     send_now_mode = "steer"
     send_now_background = "interrupt"
@@ -366,6 +372,10 @@ class CodexCodec(_Codec):
         # approval request names only its item; the patch arrives separately and is what an
         # approval would actually authorize.
         self._patches: dict[str, list[dict[str, Any]]] = {}
+        # The MCP tool calls of the active turn still in progress (#1506): item id → server, tool
+        # and arguments. An `mcpServer/elicitation/request` names only the server and the
+        # arguments; it is presented (and approvable) only when exactly one of these matches.
+        self._mcp_calls: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def argv(binary: str) -> list[str]:
@@ -392,10 +402,13 @@ class CodexCodec(_Codec):
         bypass: bool = False,
         session: str | None = None,
         shell_env: dict[str, str] | None = None,
+        mcp_config: dict | None = None,
     ) -> dict:
         if self.native_id is not None:
             raise ProtocolError("native thread is already bound")
-        params = self.create_params(cwd, model, bypass=bypass, session=session, shell_env=shell_env)
+        params = self.create_params(
+            cwd, model, bypass=bypass, session=session, shell_env=shell_env, mcp_config=mcp_config
+        )
         return self._request("thread/start", params)
 
     def read(self, thread_id: str) -> dict:
@@ -414,8 +427,11 @@ class CodexCodec(_Codec):
         bypass: bool = False,
         session: str | None = None,
         shell_env: dict[str, str] | None = None,
+        mcp_config: dict | None = None,
     ) -> dict:
-        params = self.create_params(cwd, model, bypass=bypass, session=session, shell_env=shell_env)
+        params = self.create_params(
+            cwd, model, bypass=bypass, session=session, shell_env=shell_env, mcp_config=mcp_config
+        )
         params["threadId"] = _identity(thread_id)
         # Never hydrate the full history into one frame: a long thread exceeds the frame bound
         # and could then never be resumed. BattleLab's own journal already holds what it saw.
@@ -432,6 +448,7 @@ class CodexCodec(_Codec):
         bypass: bool = False,
         session: str | None = None,
         shell_env: dict[str, str] | None = None,
+        mcp_config: dict | None = None,
     ) -> dict[str, Any]:
         # Skip-permissions (#1339) is the structured twin of the console's
         # `--dangerously-bypass-approvals-and-sandbox`: Codex never asks and runs unsandboxed.
@@ -455,6 +472,11 @@ class CodexCodec(_Codec):
             params.setdefault("config", {}).update(
                 {f"shell_environment_policy.set.{name}": value for name, value in shell_env.items()}
             )
+        if mcp_config:
+            # The memory tool (#1506): this thread's own `mcp_servers.<name>` entry
+            # (`agent_tools.codex_thread_config`), merged by name over the operator's servers.
+            # Independent of the `shell_environment_policy` keys (proven alone on 0.162.0).
+            params.setdefault("config", {}).update(mcp_config)
         return params
 
     def submit(self, text: str, operation_id: str, images=()) -> dict:
@@ -530,6 +552,19 @@ class CodexCodec(_Codec):
     ) -> dict:
         if answers is not None:
             raise ProtocolError("this agent's requests take no answer")
+        held = self._approvals.get(request_id)
+        if held is not None and held.get("kind") == MCP_TOOL:
+            # An MCP tool approval (#1506) is answered as the elicitation it is, ONCE: Codex
+            # offers `persist` scopes, but its schema defines no answer that selects one, and
+            # "always" would be written into the operator's own Codex config. Decline and
+            # approve only; anything else is refused before the request is consumed.
+            if decision not in _MCP_ACTIONS:
+                raise ProtocolError("an MCP tool request is allowed once or denied")
+            pending = self._decision(request_id, decision)
+            return {
+                "id": pending["id"],
+                "result": {"action": _MCP_ACTIONS[decision], "content": {}},
+            }
         # `always` (#1339): the exact `acceptWithExecpolicyAmendment` object / `acceptForSession`
         # the request itself listed, re-derived before anything is consumed.
         native = self._always(request_id, grant, cwd) if decision == "always" else None
@@ -591,6 +626,7 @@ class CodexCodec(_Codec):
         self.native_turn_id = None
         self._approvals.clear()
         self._patches.clear()
+        self._mcp_calls.clear()
         return [
             _event(
                 "turn_completed",
@@ -688,9 +724,101 @@ class CodexCodec(_Codec):
             return output
         return [_event("response", request_id=request_id, action=action)]
 
+    def _refuse(self, request_id: Any) -> list[NativeEvent]:
+        return [
+            _event(
+                "send",
+                frame={
+                    "id": request_id,
+                    "error": {
+                        "code": -32601,
+                        "message": "Unsupported or uncorrelated permission request",
+                    },
+                },
+            )
+        ]
+
+    def _mcp_approval(self, frame: dict, params: dict) -> list[NativeEvent]:
+        """`mcpServer/elicitation/request` as an MCP tool approval (#1506), the shape codex-cli
+        0.162.0 sends (recorded in `tests/fixtures/codex_mcp_elicitation.json`): a `form`
+        elicitation whose `_meta.codex_approval_kind` is `mcp_tool_call`, with an EMPTY
+        requested schema (it asks for a decision, never for data) and the call's arguments in
+        `_meta.tool_params`. It is bound to the one in-progress `mcpToolCall` item of this turn
+        with the same server and arguments, which names the tool. Anything else — another
+        elicitation mode or kind, a form asking for input, an uncorrelated turn or call — is
+        refused exactly as an unknown request is: Codex reads that as a rejection."""
+        request_id = _rpc_id(frame.get("id"))
+        meta = params.get("_meta")
+        server = params.get("serverName")
+        if (
+            self.operation_id is None
+            or params.get("threadId") != self.native_id
+            or params.get("turnId") != self.native_turn_id
+            or params.get("mode") != "form"
+            or not isinstance(meta, dict)
+            or meta.get("codex_approval_kind") != "mcp_tool_call"
+            or params.get("requestedSchema") != {"type": "object", "properties": {}}
+            or not isinstance(server, str)
+            or not _ID.fullmatch(server)
+            or not isinstance(meta.get("tool_params"), dict)
+        ):
+            return self._refuse(request_id)
+        arguments = meta["tool_params"]
+        calls = [
+            (item_id, call)
+            for item_id, call in self._mcp_calls.items()
+            if call["server"] == server and call["arguments"] == arguments
+        ]
+        if len(calls) != 1:
+            return self._refuse(request_id)
+        item_id, call = calls[0]
+        # What the operator decides on: server, tool and the complete arguments. Shown in full
+        # or not approvable — an over-long request stays declineable (decline needs no review).
+        presented: dict[str, Any] = {
+            "server": server,
+            "tool": call["tool"],
+            "input": arguments,
+            "message": _text(params.get("message"), limit=500),
+        }
+        complete = len(_summary(presented)) < MAX_TEXT
+        if not complete:
+            presented = {"server": server, "tool": call["tool"]}
+        digest = _digest({"frame": frame, "presented": presented})
+        key = self._remember(
+            request_id,
+            {
+                "id": request_id,
+                "operation_id": self.operation_id,
+                "native_turn_id": self.native_turn_id,
+                "params": params,
+                "frame": frame,
+                "digest": digest,
+                "complete": complete,
+                "presented": presented,
+                "kind": MCP_TOOL,
+                "item_id": item_id,
+            },
+        )
+        return [
+            _event(
+                "approval",
+                request_id=key,
+                payload_digest=digest,
+                native_turn_id=self.native_turn_id,
+                operation_id=self.operation_id,
+                item_id=item_id,
+                tool=MCP_TOOL,
+                summary=_summary(presented),
+                complete=complete,
+                choices=list(_MCP_ACTIONS),
+            )
+        ]
+
     def _approval(self, frame: dict, params: dict) -> list[NativeEvent]:
         request_id = _rpc_id(frame.get("id"))
         method = frame.get("method")
+        if method == "mcpServer/elicitation/request":
+            return self._mcp_approval(frame, params)
         allowed = method in {
             "item/commandExecution/requestApproval",
             "item/fileChange/requestApproval",
@@ -770,6 +898,28 @@ class CodexCodec(_Codec):
             )
         ]
 
+    def _track_mcp_call(self, item_id: str, item: dict, *, done: bool) -> None:
+        """Remember an in-progress MCP tool call of this turn (bounded), forget a finished one."""
+        if done:
+            self._mcp_calls.pop(item_id, None)
+            return
+        server, tool = item.get("server"), item.get("tool")
+        if (
+            not isinstance(server, str)
+            or not isinstance(tool, str)
+            or not _ID.fullmatch(server)
+            or not _ID.fullmatch(tool)
+            or not isinstance(item.get("arguments"), dict)
+        ):
+            return  # never presentable: its elicitation is refused
+        if item_id not in self._mcp_calls and len(self._mcp_calls) >= MAX_PENDING:
+            raise ProtocolError("native MCP call capacity exceeded")
+        self._mcp_calls[item_id] = {
+            "server": server,
+            "tool": tool,
+            "arguments": _copy_frame({"a": item["arguments"]})["a"],
+        }
+
     def _patch(self, params: dict) -> list[NativeEvent]:
         item_id = _identity(params.get("itemId"))
         changes = params.get("changes")
@@ -830,6 +980,7 @@ class CodexCodec(_Codec):
                 "item/commandExecution/requestApproval",
                 "item/fileChange/requestApproval",
                 "item/fileChange/patchUpdated",
+                "mcpServer/elicitation/request",
                 "error",
             }
         ):
@@ -920,6 +1071,8 @@ class CodexCodec(_Codec):
                 prior = []
                 if kind == "fileChange" and isinstance(item.get("changes"), list):
                     prior = self._patch({"itemId": item_id, "changes": item["changes"]})
+                if kind == "mcpToolCall":
+                    self._track_mcp_call(item_id, item, done=method == "item/completed")
                 return prior + [
                     _event(
                         "tool",
@@ -1000,6 +1153,7 @@ class ClaudeCodec(_Codec):
         model: str | None = None,
         bypass: bool = False,
         effort: str | None = None,
+        mcp_config: str | None = None,
     ) -> list[str]:
         native_id = _uuid(session_id)
         argv = [
@@ -1026,6 +1180,10 @@ class ClaudeCodec(_Codec):
         # Every generation of the session gets the level it was created with (#1407).
         if _effort(effort) is not None:
             argv.extend(["--effort", effort])
+        if mcp_config is not None:
+            # The memory tool (#1506, `agent_tools.claude_mcp_config`). LAST: the flag takes
+            # several values. Not `--strict-mcp-config`: the operator's own servers still load.
+            argv.extend(["--mcp-config", mcp_config])
         return argv
 
     def _request(self, action: str, **params: Any) -> dict:
@@ -1866,18 +2024,23 @@ class OpencodeAcpCodec(_Codec):
             },
         )
 
-    def create(self, cwd: str) -> dict:
+    def create(self, cwd: str, mcp_servers: list[dict] | None = None) -> dict:
         if self.native_id is not None:
             raise ProtocolError("native session is already bound")
-        return self._request("session/new", {"cwd": _path(cwd), "mcpServers": []})
+        # `mcpServers`: the memory tool (#1506, `agent_tools.acp_servers`) when this generation
+        # was given memory, else none — on `session/load` exactly as on `session/new`.
+        return self._request(
+            "session/new", {"cwd": _path(cwd), "mcpServers": list(mcp_servers or [])}
+        )
 
-    def load(self, session_id: str, cwd: str) -> dict:
+    def load(self, session_id: str, cwd: str, mcp_servers: list[dict] | None = None) -> dict:
         session_id = opencode_session_id(session_id)
         if self.native_id not in (None, session_id):
             raise ProtocolError("native session identity changed")
         self.native_id = session_id
         frame = self._request(
-            "session/load", {"sessionId": session_id, "cwd": _path(cwd), "mcpServers": []}
+            "session/load",
+            {"sessionId": session_id, "cwd": _path(cwd), "mcpServers": list(mcp_servers or [])},
         )
         self._expected_sessions[frame["id"]] = session_id
         return frame

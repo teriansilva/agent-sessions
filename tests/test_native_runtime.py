@@ -27,6 +27,7 @@ import test_manifest_api
 from agent_sessions import (
     ai_review_loop,
     chat_store,
+    engines,
     metadata,
     native_containment,
     native_events,
@@ -152,6 +153,8 @@ def host(tmp_home, tmp_path, monkeypatch):
     providers = [p for p in registry._PROVIDERS if p.engine_id not in ENGINES.values()]
     for source, name in ENGINES.items():
         doc = test_manifest_api._api(name=name, source=source, kind=KINDS[source])
+        # As the in-tree API manifests declare it (#1506): the memory tool its protocol carries.
+        doc["tools"] = {"mcp": plugin_kinds.API_MCP_KINDS[KINDS[source]][0]}
         providers.append(test_manifest_api._provider(doc, tmp_path))
     monkeypatch.setattr(registry, "_PROVIDERS", providers)
     monkeypatch.setattr(registry, "_BY_ID", {p.engine_id: p for p in providers})
@@ -956,6 +959,30 @@ def test_the_child_environment_carries_only_validated_memory_paths(source):
             native_worker.child_environment({**config, "memory_env": bad}, **extra)
 
 
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+def test_the_worker_carries_only_its_protocols_memory_tool_and_only_beside_the_paths(source):
+    """#1506: `memory_tool` in a worker config is honoured only as the kind the adapter's protocol
+    carries, and only with the generation's memory paths; anything else refuses the spawn."""
+    from agent_sessions import native_worker
+
+    paths = {"BATTLELAB_MEMORY": "/m/notes", "BATTLELAB_MEMORY_INBOX": "/m/inbox/t"}
+    (kind,) = plugin_kinds.API_MCP_KINDS[KINDS[source]]
+    config = {"adapter": KINDS[source], "memory_env": paths, "memory_tool": kind}
+    tool = native_worker.memory_tool(config)
+    assert tool is not None and {k: tool.env[k] for k in paths} == paths
+    assert tool.args == ("-I", "-m", "agent_sessions.memory_mcp")
+    assert native_worker.memory_tool({**config, "memory_tool": None}) is None
+    assert native_worker.memory_tool({"adapter": KINDS[source], "memory_env": {}}) is None
+    for bad in (
+        {**config, "memory_tool": "made-up"},
+        *({**config, "memory_tool": other} for other in plugin_kinds.MCP_KINDS - {kind}),
+        {**config, "memory_env": {}},  # a tool with no paths to serve
+        {**config, "memory_env": {**paths, "LD_PRELOAD": "/x.so"}},
+    ):
+        with pytest.raises(native_worker.WorkerError):
+            native_worker.memory_tool(bad)
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
 async def test_every_generation_tells_its_agent_the_battlelab_session(
@@ -996,6 +1023,177 @@ async def test_every_generation_tells_its_agent_the_battlelab_session(
         assert {t["method"] for t in threads} == {"thread/start", "thread/resume"}
         for t in threads:
             assert t["params"]["config"] == {"shell_environment_policy.set.BATTLELAB_SESSION": key}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+async def test_every_generation_with_memory_on_carries_the_memory_tool(
+    host, project, monkeypatch, source
+):
+    """#1506: a NEW generation and a RESUMING one each carry the memory tool in their protocol's own
+    slot, for that generation's own paths — claude's argv, codex's per-thread `config` (beside, and
+    independent of, the shell-policy keys), ACP `mcpServers` on `session/new` AND `session/load`."""
+    from agent_sessions import memory, projects
+
+    pid = projects.create("demo", folders=[str(project)]).id
+    memory.set_enabled(pid, True)
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 0.5)
+    engine = ENGINES[source]
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="one")
+
+    def config(w):
+        return json.loads((native_state.root() / "workers" / w / "config.json").read_text())
+
+    snap, _ = await settle(key, first)
+    worker = snap["native"]["worker"]
+    generations = [config(worker)]  # read while it lives: an exited worker's state is swept
+    for _ in range(200):
+        if native_state.read_lifecycle(worker).get("phase") == "exited":
+            break
+        await asyncio.sleep(0.05)
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 60.0)
+    nxt = ident()
+    await runtime.submit_turn(key, operation_id=nxt, text="two")
+    snap, turn = await settle(key, nxt)
+    assert turn["reply"] == "echo:two" and snap["native"]["worker"] != worker
+    generations.append(config(snap["native"]["worker"]))
+    expected_kind = {
+        "codex": "codex-config-override",
+        "claude": "claude-mcp-config-flag",
+        "opencode": "opencode-config-content",
+    }[source]
+    assert engines.manifest_of(engine).tools_mcp == expected_kind
+    assert [g["memory_tool"] for g in generations] == [expected_kind] * 2
+    paths = [g["memory_env"] for g in generations]
+    assert paths[0] != paths[1]  # every generation its own inbox
+
+    def told(env):
+        return {k: env[k] for k in memory.ENV_KEYS}
+
+    children = [f for f in frames(project) if "models" not in f["frame"]]
+    if source == "codex":
+        threads = [
+            f["frame"]
+            for f in children
+            if f["frame"].get("method") in {"thread/start", "thread/resume"}
+        ]
+        assert [t["method"] for t in threads] == ["thread/start", "thread/resume"]
+        for t, expected in zip(threads, paths, strict=True):
+            server = t["params"]["config"]["mcp_servers.battlelab_memory"]
+            assert told(server["env"]) == expected
+            assert server["args"] == ["-I", "-m", "agent_sessions.memory_mcp"]
+            assert "shell_environment_policy.set.BATTLELAB_MEMORY" in t["params"]["config"]
+    elif source == "opencode":
+        sessions = [
+            f["frame"]
+            for f in children
+            if f["frame"].get("method") in {"session/new", "session/load"}
+        ]
+        assert [x["method"] for x in sessions] == ["session/new", "session/load"]
+        for x, expected in zip(sessions, paths, strict=True):
+            [server] = x["params"]["mcpServers"]
+            assert server["name"] == "battlelab_memory"
+            env = {e["name"]: e["value"] for e in server["env"]}
+            assert told(env) == expected and env["OPENCODE_SERVER_PASSWORD"] == ""
+    else:
+        argvs = []
+        for f in children:
+            if f["argv"] not in argvs:
+                argvs.append(f["argv"])
+        assert len(argvs) == 2
+        assert any(a.startswith("--resume=") for a in argvs[1])
+        for argv, expected in zip(argvs, paths, strict=True):
+            assert argv[-2] == "--mcp-config"
+            server = json.loads(argv[-1])["mcpServers"]["battlelab_memory"]
+            assert told(server["env"]) == expected
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+async def test_a_generation_with_memory_off_carries_no_memory_tool(host, project, source):
+    """#1506: memory off — no paths, no tool kind in the config, nothing in any slot."""
+    key = (await runtime.create_session(ENGINES[source], str(project), operation_id=ident()))[
+        "session_key"
+    ]
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="one")
+    snap, _ = await settle(key, turn)
+    cfg = json.loads(
+        (native_state.root() / "workers" / snap["native"]["worker"] / "config.json").read_text()
+    )
+    assert cfg["memory_env"] == {} and cfg["memory_tool"] is None
+    for f in frames(project):
+        assert "--mcp-config" not in f["argv"]
+        params = f["frame"].get("params") or {}
+        assert params.get("mcpServers", []) == []
+        assert not any(k.startswith("mcp_servers") for k in (params.get("config") or {}))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+async def test_a_guarded_codex_mcp_tool_call_is_approved_or_denied_by_its_operator(
+    host, project, decision
+):
+    """#1506 (absorbs #1513): Codex asks for an MCP tool call with `mcpServer/elicitation/request`.
+    The pane gets a complete, once-only approval naming server, tool and arguments; Approve
+    answers `accept` and the memory tool runs (the note lands in THIS generation's inbox); Deny
+    answers `decline` and nothing is written."""
+    from agent_sessions import memory, projects
+
+    pid = projects.create("demo", folders=[str(project)]).id
+    memory.set_enabled(pid, True)
+    key = (await runtime.create_session("codex-api", str(project), operation_id=ident()))[
+        "session_key"
+    ]
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="MCPWRITE")
+    snap = await pending(key)
+    [request] = snap["pending_requests"]
+    assert request["kind"] == "mcp_tool" and request["complete"] is True
+    assert request["choices"] == ["approve", "reject"] and request["always"] == []
+    assert request["payload"]["server"] == "battlelab_memory"
+    assert request["payload"]["tool"] == "memory_write"
+    assert request["payload"]["input"] == {
+        "title": "Fake codex mcp",
+        "body": "written after an approval",
+    }
+    for refused in ("always", "cancel"):
+        with pytest.raises(runtime.StructuredError):
+            await runtime.decide(
+                key,
+                decision_id=ident(),
+                user="alice",
+                turn_id=turn,
+                request_id=request["request_id"],
+                decision=refused,
+                **({"grant": "g"} if refused == "always" else {}),
+            )
+    out = await runtime.decide(
+        key,
+        decision_id=ident(),
+        user="alice",
+        turn_id=turn,
+        request_id=request["request_id"],
+        decision=decision,
+    )
+    assert out["handoff"] == "sent"
+    _, settled = await settle(key, turn)
+    inbox = Path(
+        json.loads(
+            (native_state.root() / "workers" / snap["native"]["worker"] / "config.json").read_text()
+        )["memory_env"][memory.ENV_INBOX]
+    )
+    answers = [f["frame"] for f in frames(project) if f["frame"].get("id") == 78]
+    if decision == "approve":
+        assert settled["reply"].startswith("mcp:accept:Saved for review")
+        assert answers == [{"id": 78, "result": {"action": "accept", "content": {}}}]
+        assert [p.name for p in inbox.iterdir()] == ["fake-codex-mcp.md"]
+    else:
+        assert settled["reply"] == "mcp:decline:not-run"
+        assert answers == [{"id": 78, "result": {"action": "decline", "content": {}}}]
+        assert list(inbox.iterdir()) == []
 
 
 def test_lease_sweep_drops_only_gone_generations(host, tmp_path):

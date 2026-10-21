@@ -459,7 +459,7 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -
         # creation's generation is born only from `starting` (the `/start` that set it, under this
         # same lock) or `started`. Fail closed here, where every generation is born.
         raise NativeError(409, "this session has not been started; start or discard it")
-    from . import memory, resource_limits
+    from . import agent_tools, memory, resource_limits
 
     policy = resource_limits.values()
     worker = native_containment.WorkerIdentity.mint()
@@ -496,12 +496,16 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -
             os.environ, policy["library_threads"]
         ),
         "idle_timeout": WORKER_IDLE_TIMEOUT,
-        # Shared project memory (#1441), bound per GENERATION: every resume or relaunch is a new
-        # agent process and asks again, so a toggle reaches the next generation, never a live one.
-        "memory_env": memory.launch_env(
-            record["session_key"], record["request"]["cwd"], kind="api"
-        ),
     }
+    # Shared project memory (#1441), bound per GENERATION: every resume or relaunch is a new agent
+    # process and asks again, so a toggle reaches the next generation, never a live one. Bound
+    # last, once everything above that can refuse the launch has passed.
+    config["memory_env"] = memory.launch_env(
+        record["session_key"], record["request"]["cwd"], kind="api"
+    )
+    # The memory tool (#1506), only beside the paths: the manifest's kind, which the worker checks
+    # against its protocol (`agent_tools.api_kind`) and shapes into that protocol's own slot.
+    config["memory_tool"] = agent_tools.mcp_kind(prov.manifest) if config["memory_env"] else None
     if adapter == "opencode-acp":
         # The store the source resolves (`store.path_env` first): the worker's maintenance
         # admission is keyed by this database, like compaction's (Hermes on #1336).

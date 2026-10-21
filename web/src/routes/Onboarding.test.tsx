@@ -5,6 +5,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx, ConfigRefreshCtx } from "../app/config";
 import { api, ApiError } from "../lib/api";
 import type { AppConfig } from "../types/api";
+import { resetHqChoiceStore } from "../components/hq/hqChoiceStore";
 import { Onboarding } from "./Onboarding";
 
 vi.mock("../lib/api", () => ({
@@ -88,6 +89,7 @@ function renderWizard(onClose = vi.fn(), config = cfg(), refresh = vi.fn()) {
 }
 
 beforeEach(() => {
+  resetHqChoiceStore();
   mockNavigate.mockReset();
   vi.mocked(api.engines)
     .mockReset()
@@ -125,7 +127,9 @@ beforeEach(() => {
 
 test("welcome → security → agents lists discovered engines from /api/engines", async () => {
   renderWizard();
-  expect(screen.getByText(/welcome to battlelab/i)).toBeInTheDocument();
+  expect(
+    screen.getByRole("heading", { name: /welcome, commander/i }),
+  ).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: /get started/i }));
   // #675: the new Security step sits between Welcome and Connected agents.
   expect(
@@ -345,21 +349,26 @@ test("tour mode shows the slideshow and Done closes it", async () => {
       </ConfigCtx.Provider>
     </MemoryRouter>,
   );
-  expect(screen.getByText(/every agent, one deck/i)).toBeInTheDocument();
+  expect(
+    screen.getByRole("heading", { name: "Welcome, Commander" }),
+  ).toBeInTheDocument();
   expect(screen.getByText("1 / 10")).toBeInTheDocument();
-  // 10 slides (#971 refresh): Mission control, then Files/git/editing and Templates, then the rest.
+  // 10 slides (#1544 refresh): Dashboard, HQ, sessions, Missions (beta), Library, then the rest.
   const next = () => userEvent.click(screen.getByRole("button", { name: /^next$/i }));
   await next();
-  expect(screen.getByRole("heading", { name: "Mission control" })).toBeInTheDocument();
-  expect(screen.queryByText(/what's in flight/i)).not.toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: /^HQ/ })).toBeInTheDocument();
   await next();
-  expect(screen.getByRole("heading", { name: "Files, git & editing" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Every agent, one deck" })).toBeInTheDocument();
   await next();
-  expect(screen.getByRole("heading", { name: "Prompt Templates" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Missions (beta)" })).toBeInTheDocument();
+  await next();
+  expect(screen.getByRole("heading", { name: "The Library" })).toBeInTheDocument();
   for (let k = 0; k < 4; k++) await next();
   expect(screen.getByText(/home free — from anywhere/i)).toBeInTheDocument();
   await next();
-  await next();
+  // The last slide points at where the tour lives now — the operator menu, not a `?` button.
+  expect(screen.getByText(/operator menu/i)).toBeInTheDocument();
+  expect(screen.queryByText(/the \? in the top bar/i)).not.toBeInTheDocument();
   expect(screen.getByText("10 / 10")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: /^done$/i }));
   expect(onClose).toHaveBeenCalledTimes(1);
@@ -572,4 +581,150 @@ test("an API client is not offered by the first-run launch, which starts a termi
   await finishTourToLaunch();
   await userEvent.click(screen.getByRole("button", { name: /launch session/i }));
   expect(mockNavigate).toHaveBeenCalledWith(expect.stringMatching(/^\/s\/claude\//), expect.anything());
+});
+
+// ---- #1544: the HQ contact step follows the AI endpoint; local presets fill the URL ----
+
+const AI_ON = {
+  enabled: false,
+  base_url: "http://localhost:11434/v1",
+  model: "qwen3",
+  interval_minutes: 5,
+  max_input_chars: 24000,
+  request_timeout: null,
+  api_key_set: true,
+  configured: true,
+};
+
+function rail() {
+  return screen.getByRole("navigation", { name: /setup steps/i });
+}
+
+test("without an AI endpoint there is no HQ contact step: AI → Next lands on the project", async () => {
+  renderWizard();
+  expect(within(rail()).queryByText("HQ contact")).toBeNull();
+  await gotoAiStep();
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  expect(
+    screen.getByRole("heading", { name: /create your first project/i }),
+  ).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /back/i }));
+  expect(
+    screen.getByRole("heading", { name: /set up your ai/i }),
+  ).toBeInTheDocument();
+});
+
+test("with an AI endpoint the contact step follows AI, and a pick is written to hq_contact", async () => {
+  vi.mocked(api.setPrefs).mockResolvedValue({ hq_contact_rev: 1 });
+  renderWizard(vi.fn(), cfg({ ai_review: AI_ON, hq_contact: "random" }));
+  expect(within(rail()).getByText("HQ contact")).toBeInTheDocument();
+  await gotoAiStep();
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  expect(
+    screen.getByRole("heading", { name: /choose your hq contact/i }),
+  ).toBeInTheDocument();
+  const gallery = screen.getByRole("radiogroup", {
+    name: /select your primary hq contact/i,
+  });
+  expect(
+    within(gallery).getByRole("radio", { name: /random/i }),
+  ).toHaveAttribute("aria-checked", "true");
+  await userEvent.click(
+    within(gallery).getByRole("radio", { name: /general jack harlan/i }),
+  );
+  await waitFor(() =>
+    expect(api.setPrefs).toHaveBeenCalledWith({ hq_contact: "us-man" }),
+  );
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  expect(
+    screen.getByRole("heading", { name: /create your first project/i }),
+  ).toBeInTheDocument();
+  // Back from the project returns to the contact step, not past it.
+  await userEvent.click(screen.getByRole("button", { name: /back/i }));
+  expect(
+    screen.getByRole("heading", { name: /choose your hq contact/i }),
+  ).toBeInTheDocument();
+});
+
+test("Decide later skips the contact step without writing a choice", async () => {
+  renderWizard(vi.fn(), cfg({ ai_review: AI_ON }));
+  await gotoAiStep();
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  await userEvent.click(screen.getByRole("button", { name: /decide later/i }));
+  expect(
+    screen.getByRole("heading", { name: /create your first project/i }),
+  ).toBeInTheDocument();
+  expect(api.setPrefs).not.toHaveBeenCalledWith(
+    expect.objectContaining({ hq_contact: expect.anything() }),
+  );
+});
+
+test("the contact step appears as soon as the AI save lands in the config", async () => {
+  const tree = (config: AppConfig) => (
+    <MemoryRouter>
+      <ConfigCtx.Provider value={config}>
+        <Onboarding mode="wizard" onClose={vi.fn()} />
+      </ConfigCtx.Provider>
+    </MemoryRouter>
+  );
+  const { rerender } = render(tree(cfg()));
+  await gotoAiStep();
+  expect(within(rail()).queryByText("HQ contact")).toBeNull();
+  rerender(tree(cfg({ ai_review: AI_ON })));
+  expect(within(rail()).getByText("HQ contact")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  expect(
+    screen.getByRole("heading", { name: /choose your hq contact/i }),
+  ).toBeInTheDocument();
+});
+
+test("a local preset fills the Base URL draft and saves nothing", async () => {
+  vi.mocked(api.testAiEndpoint).mockClear();
+  renderWizard();
+  await gotoAiStep();
+  const presets = screen.getByRole("group", { name: /local ai on the battlelab host/i });
+  await userEvent.click(within(presets).getByRole("button", { name: "Ollama" }));
+  expect(screen.getByLabelText(/base url/i)).toHaveValue(
+    "http://localhost:11434/v1",
+  );
+  expect(
+    within(presets).getByRole("button", { name: "Ollama" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await userEvent.click(within(presets).getByRole("button", { name: "LM Studio" }));
+  expect(screen.getByLabelText(/base url/i)).toHaveValue(
+    "http://localhost:1234/v1",
+  );
+  expect(api.setPrefs).not.toHaveBeenCalled();
+  expect(api.testAiEndpoint).not.toHaveBeenCalled();
+});
+
+test("an endpoint removed while the contact step is open moves on, and the stored choice is untouched", async () => {
+  const tree = (config: AppConfig) => (
+    <MemoryRouter>
+      <ConfigCtx.Provider value={config}>
+        <Onboarding mode="wizard" onClose={vi.fn()} />
+      </ConfigCtx.Provider>
+    </MemoryRouter>
+  );
+  const { rerender } = render(tree(cfg({ ai_review: AI_ON, hq_contact: "europe-woman" })));
+  await gotoAiStep();
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  expect(
+    screen.getByRole("heading", { name: /choose your hq contact/i }),
+  ).toBeInTheDocument();
+  rerender(
+    tree(
+      cfg({
+        ai_review: { ...AI_ON, api_key_set: false, configured: false },
+        hq_contact: "europe-woman",
+      }),
+    ),
+  );
+  expect(
+    await screen.findByRole("heading", { name: /create your first project/i }),
+  ).toBeInTheDocument();
+  expect(within(rail()).queryByText("HQ contact")).toBeNull();
+  expect(api.setPrefs).not.toHaveBeenCalledWith(
+    expect.objectContaining({ hq_contact: expect.anything() }),
+  );
 });

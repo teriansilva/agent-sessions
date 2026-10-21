@@ -369,6 +369,9 @@ class Manifest:
     #: `memory.kind` (#1471): a member of `kinds.MEMORY_SOURCE_KINDS`, or "none". The agent's own
     #: memory store, which the Memory page can import from — read only.
     memory_kind: str = "none"
+    #: `tools.mcp` (#1506): a member of `kinds.MCP_KINDS`, or None. How this agent's CLI takes
+    #: BattleLab's memory tool for one launch (`agent_tools`).
+    tools_mcp: str | None = None
 
     @property
     def id(self) -> str:
@@ -836,6 +839,12 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
         memory_kind = r.str("kind", one_of=frozenset(kinds.MEMORY_SOURCE_KINDS))
         r.done()
 
+    tools_mcp = None
+    r = top.table("tools", required=False)
+    if r is not None:
+        tools_mcp = r.str("mcp", one_of=kinds.MCP_KINDS)
+        r.done()
+
     verify = top.strs("verify", one_of=kinds.VERIFY_CHECKS, max_items=len(kinds.VERIFY_CHECKS))
     top.done()
 
@@ -868,6 +877,7 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
         probe_kind=probe_kind,
         api=api,
         memory_kind=memory_kind,
+        tools_mcp=tools_mcp,
     )
     _cross_check(m)
     return m
@@ -932,6 +942,15 @@ def _instructions(top: _Reader) -> tuple[str, ...]:
 
 def _cross_check(m: Manifest) -> None:
     caps = m.capabilities
+    if m.tools_mcp is not None:
+        # The memory tool is started BY the agent CLI: a chat runtime runs no process and a
+        # terminal plugin has no agent, and an API protocol carries only its own slot's shape.
+        if m.runtime == "chat" or m.identity.kind == "terminal":
+            raise ManifestError("tools.mcp", "only an agent CLI starts an MCP server")
+        if m.runtime == "api" and (
+            m.api is None or m.tools_mcp not in kinds.API_MCP_KINDS.get(m.api.kind, ())
+        ):
+            raise ManifestError("tools.mcp", "is not the kind this API protocol carries")
     if m.memory_kind != "none":
         need = kinds.MEMORY_SOURCE_KINDS[m.memory_kind]
         if m.store is None or m.store.layout not in need or "sessions" not in m.store.paths:

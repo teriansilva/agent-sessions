@@ -234,6 +234,9 @@ export function requestIds(req: StructuredRequest): string[] {
 /** Claude's `AskUserQuestion` (#1463): a question for the operator, never a permission. */
 export const QUESTION_TOOL = "AskUserQuestion";
 
+/** An MCP tool call Codex asks to run (#1506): allowed once or denied, never more. */
+export const MCP_TOOL = "mcp_tool";
+
 export function isQuestion(req: StructuredRequest): boolean {
   return req.kind === QUESTION_TOOL;
 }
@@ -336,6 +339,14 @@ export function requestTitle(req: StructuredRequest, agent: string): string {
   }
   if (req.kind === "command") return `${agent} asks to run a command`;
   if (req.kind === "file_change") return `${agent} proposes a file change`;
+  if (req.kind === MCP_TOOL) {
+    // Codex's MCP tool approval (#1506): which tool of which server. Its arguments are the
+    // card's action lines (`payload.input`), and everything else stays under Details.
+    const p = object(req.payload);
+    const tool = display(p.tool) || "an MCP tool";
+    const server = display(p.server);
+    return server ? `${agent} asks to use ${tool} from ${server}` : `${agent} asks to use ${tool}`;
+  }
   const payload = object(req.payload);
   const call = object(payload.toolCall);
   if (call.kind === "execute") return `${agent} asks to run a command`;

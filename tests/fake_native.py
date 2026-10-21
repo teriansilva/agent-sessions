@@ -9,6 +9,11 @@ Behaviour is selected by the turn text, so a test drives it purely through the p
   answers with is logged like every other frame.
 * ``RUN:<command>`` — run one command tool call without asking (a skip-permissions session's
   tool row, #1339), then reply ``ran``.
+* ``MCPWRITE`` — (codex) one MCP tool call to the BattleLab memory tool, asked for with the
+  ``mcpServer/elicitation/request`` codex-cli 0.162.0 sends (#1506,
+  ``fixtures/codex_mcp_elicitation.json``). Only an ``accept`` runs it: the fake starts the
+  server from THIS thread's ``config["mcp_servers.battlelab_memory"]`` exactly as Codex would and
+  calls ``memory_write``; it replies ``mcp:<action or error>:<tool result>``.
 * ``HANG``    — start the turn and never finish it (for interrupt / worker death).
 * ``WAIT_RELEASE`` — finish normally after the test creates ``release-queued-turn``.
 * ``DIE``     — exit right after accepting the turn (native crash mid-turn).
@@ -99,9 +104,44 @@ def frames():
             yield frame
 
 
+def _run_mcp_tool(server, tool, arguments):
+    """Start an MCP server from a Codex per-thread config entry and call one tool, as Codex does
+    after an accepted approval: literal argv, the entry's env over a minimal base."""
+    import subprocess
+
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), **server.get("env", {})}
+    frames_in = [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18"},
+        },
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments},
+        },
+    ]
+    done = subprocess.run(  # noqa: S603 — literal argv from the thread's own config
+        [server["command"], *server["args"]],
+        input="".join(json.dumps(f) + "\n" for f in frames_in).encode(),
+        capture_output=True,
+        env=env,
+        timeout=60,
+        check=False,
+    )
+    replies = [json.loads(line) for line in done.stdout.splitlines() if line.strip()]
+    result = next((r["result"] for r in replies if r.get("id") == 2 and "result" in r), None)
+    return "no-result" if result is None else result["content"][0]["text"]
+
+
 def codex():
     thread = None
     turn = None
+    mcp_servers = {}
     stream = frames()
     for frame in stream:
         method, rid = frame.get("method"), frame.get("id")
@@ -136,6 +176,11 @@ def codex():
                 send({"id": rid, "result": {"data": data, "nextCursor": None}})
         elif method == "thread/start":
             thread = str(uuid.uuid4())
+            mcp_servers = {
+                k.split(".", 1)[1]: v
+                for k, v in (params.get("config") or {}).items()
+                if k.startswith("mcp_servers.")
+            }
             send(
                 {
                     "id": rid,
@@ -267,6 +312,66 @@ def codex():
                     }
                 )
             answer = "echo:" + text
+            if text == "MCPWRITE":
+                server = "battlelab_memory"
+                arguments = {"title": "Fake codex mcp", "body": "written after an approval"}
+                item = {
+                    "type": "mcpToolCall",
+                    "id": "exec-mcp-1",
+                    "server": server,
+                    "tool": "memory_write",
+                    "status": "inProgress",
+                    "arguments": arguments,
+                }
+                send(
+                    {
+                        "method": "item/started",
+                        "params": {"threadId": thread, "turnId": turn, "item": item},
+                    }
+                )
+                send(
+                    {
+                        "id": 78,
+                        "method": "mcpServer/elicitation/request",
+                        "params": {
+                            "threadId": thread,
+                            "turnId": turn,
+                            "serverName": server,
+                            "mode": "form",
+                            "_meta": {
+                                "codex_approval_kind": "mcp_tool_call",
+                                "persist": ["session", "always"],
+                                "tool_description": "Leave one short note.",
+                                "tool_params": arguments,
+                                "tool_params_display": [
+                                    {"name": k, "value": v, "display_name": k}
+                                    for k, v in arguments.items()
+                                ],
+                            },
+                            "message": f'Allow the {server} MCP server to run tool "memory_write"?',
+                            "requestedSchema": {"type": "object", "properties": {}},
+                        },
+                    }
+                )
+                reply = next(stream)
+                if "error" in reply:
+                    answer = "mcp:error:" + str(reply["error"].get("code"))
+                elif reply["result"].get("action") == "accept" and server in mcp_servers:
+                    answer = "mcp:accept:" + _run_mcp_tool(
+                        mcp_servers[server], "memory_write", arguments
+                    )
+                else:
+                    answer = "mcp:" + str(reply["result"].get("action")) + ":not-run"
+                send(
+                    {
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": thread,
+                            "turnId": turn,
+                            "item": {**item, "status": "completed"},
+                        },
+                    }
+                )
             if text == "APPROVE":
                 send(
                     {

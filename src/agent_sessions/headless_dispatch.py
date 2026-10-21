@@ -81,6 +81,7 @@ from dataclasses import dataclass, field
 from functools import partial
 
 from . import (
+    agent_tools,
     engine_auth,
     engines,
     handoff,
@@ -768,6 +769,9 @@ async def dispatch(
         argv, scope_unit = scopedspawn.wrap(argv, engine=engine, session_id=native)
         if scope_unit is not None:
             log.info("dispatching %s in scope %s", key, scope_unit)
+        # Where the engine's own argv starts inside the wrapped one: the memory tool (#1506) is
+        # added to THAT, inside the launch fence, once memory has bound this launch's paths.
+        agent_at = len(argv) - len(launch)
         env = dict(os.environ)
         env.setdefault("TERM", "xterm-256color")
         env.setdefault("COLORTERM", "truecolor")
@@ -1016,13 +1020,19 @@ async def dispatch(
                             if abandoned.is_set():
                                 return None, "the launch was abandoned before anything was spawned"
                             # A new agent process: its project's memory paths if memory is on
-                            # (#1441), resolved from the dispatch's own folder. `launch_env` never
-                            # raises.
-                            spawn_env = {**env, **memory.launch_env(key, cwd, kind="terminal")}
+                            # (#1441), resolved from the dispatch's own folder, and with them the
+                            # memory tool its manifest declares (#1506). `launch_env` never
+                            # raises; with memory off both are empty.
+                            memory_env = memory.launch_env(key, cwd, kind="terminal")
+                            mcp = agent_tools.terminal_launch(
+                                engines.manifest_of(prov), memory_env, env
+                            )
+                            spawn_argv = argv[:agent_at] + mcp.argv(argv[agent_at:])
+                            spawn_env = {**env, **memory_env, **mcp.env}
                             may_have_inherited = True
                             return (
                                 _popen(  # noqa: S603 — literal argv, no shell
-                                    argv,
+                                    spawn_argv,
                                     stdin=subprocess.DEVNULL,
                                     stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL,

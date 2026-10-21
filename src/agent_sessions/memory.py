@@ -9,7 +9,9 @@ project, every NEW agent process whose session resolves to it gets
 Nothing here names an engine, passes a CLI flag, pastes into a TUI or reads a transcript, so a new
 agent or a new CLI version needs no code. The agent learns the contract from one paragraph the
 operator pastes into the project's own instruction file (`INSTRUCTION_PARAGRAPH`); BattleLab never
-writes into a workspace.
+writes into a workspace. Where an engine's manifest says how its CLI takes an MCP server for one
+launch (`tools.mcp`, #1506), the same launch also gets the memory TOOL (`memory_mcp`, wired by
+`agent_tools`) over exactly these two paths, so that agent needs no paragraph.
 
 **Layout** (``AGENT_SESSIONS_MEMORY_DIR``, default ``~/.config/agent-sessions/memory``, 0700)::
 

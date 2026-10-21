@@ -1836,6 +1836,21 @@
 .endpointPlain {
   margin: 0 0 18px;
 }
+/* Setup wizard's local-AI presets (#1544): a wrapping row of ghost buttons. */
+.aiPresets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 2px 0 6px;
+}
+.aiPresets > button {
+  min-height: 44px;
+}
+.aiPresets > button[aria-pressed="true"] {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  color: var(--accent-text);
+}
 .endpointPlain h2 {
   display: flex;
   align-items: center;
