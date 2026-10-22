@@ -263,6 +263,10 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "propose_nudge": "proposal",
         "list_agents": "read",
         "propose_session": "proposal",
+        # #1554: usage, the fleet and the allowlisted settings view — all read-only.
+        "agent_usage": "read",
+        "fleet_status": "read",
+        "read_settings": "read",
     }
     names = [s["function"]["name"] for s in ask_orchestrator.tool_specs()]
     assert names == list(ask_orchestrator.TOOLS)

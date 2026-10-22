@@ -93,6 +93,20 @@ with the sidebar open.
   with the seconds so far.
 - HQ can look up a session's live state and screen, your missions and their objectives, your
   projects and your agents to answer.
+- HQ can tell you **how your agents' usage looks** ("how is my Claude usage?"), using what each
+  agent itself last reported, the same figures as Settings → Agents. It says what kind of figure
+  it is (a real quota with its reset time, a token count against the limit you set, your own
+  counter, or *not measured*, which is never 0 %), how long ago it was checked, and when a
+  figure is stale or the last check failed. It never asks the agents itself; **Ask the agents** in
+  Settings → Agents does that.
+- HQ can tell you **what your fleet is doing**: how many sessions each agent has needing you,
+  running, recently active or idle, and how many missions are in each state. If part of that
+  couldn't be read just now, it says so instead of reporting zero. It also knows **why an agent
+  can't start** (for example not installed, or removed).
+- HQ can **read your settings** for usage alerts, agents, automation, AI review on or off,
+  Pulse and appearance, and point you to where each is changed. It can never read your
+  passwords, keys, the AI endpoint's address or model, template values, forge credentials, or
+  any folder path.
 - When it needs a detail, HQ **asks you back**: one question with a few answers to tap, and
   sometimes a box for your own words. You can also just send a new message instead.
 - HQ can **propose a message** to a session no mission holds ("tell the rebase session to run

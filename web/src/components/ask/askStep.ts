@@ -19,6 +19,10 @@ const TOOL_WORDS: Record<string, string> = {
   mission_status: "Reading a mission's status…",
   list_projects: "Listing your projects…",
   list_agents: "Listing the agents…",
+  // #1554: the read-only usage, fleet and settings views.
+  agent_usage: "Reading agent usage…",
+  fleet_status: "Counting your sessions and missions…",
+  read_settings: "Reading your settings…",
 };
 
 const plural = (n: number, one: string, many: string) =>

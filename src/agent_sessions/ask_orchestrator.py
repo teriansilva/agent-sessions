@@ -51,6 +51,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from . import (
+    ask_settings,
     ask_store,
     engines,
     hq_contacts,
@@ -418,19 +419,53 @@ async def _list_projects(turn: _Turn, args: dict) -> tuple[dict, dict]:
     return {"projects": rows}, {"count": len(rows)}
 
 
+#: Why an agent can't be started, as HQ may say it (#1554): a CLOSED table of vetted, authored
+#: reasons. Anything else the start gate says becomes the generic line — never echoed.
+WHY_NOT_GENERIC = "cannot be started right now"
+
+
+def _why_not(why: str) -> str:
+    from . import engines, handoff
+
+    if not why:
+        return ""
+    table = {
+        engines.REMOVED_REASON: "it has been removed, so it can't start new sessions",
+        handoff._REASON_NOT_INSTALLED: "it is not installed",
+        handoff._REASON_NO_SEED: "it can't take a first message yet",
+        handoff._REASON_NOT_AGENT: "it is not an agent",
+    }
+    if why in table:
+        return table[why]
+    # `registry.unattended_start_state`'s one reason names the engine; matched by its fixed tail.
+    if "does not reveal its session id until after its first turn" in why:
+        return (
+            "it reveals its session only after its first turn, so it can't be started "
+            "unattended; start it from a terminal"
+        )
+    return WHY_NOT_GENERIC
+
+
 def _agent_rows() -> list[dict]:
-    from . import automation_runner
+    from . import ask_settings, automation_runner, engines
     from .engines import registry
 
+    labels = ask_settings.agent_labels()
     rows = []
     for prov in registry.present_providers():
         if not registry.is_agent(prov):
             continue
-        manifest = registry.manifest_of(prov)
-        name = getattr(getattr(manifest, "display", None), "name", "") or prov.engine_id
-        can_start, _why = automation_runner.engine_state(prov.engine_id)
+        name = labels.get(prov.engine_id) or f"agent {len(rows) + 1}"
+        can_start, why = automation_runner.engine_state(prov.engine_id)
         rows.append(
-            {"index": len(rows), "id": prov.engine_id, "name": str(name), "can_start": can_start}
+            {
+                "index": len(rows),
+                "id": prov.engine_id,
+                "name": str(name),
+                "can_start": can_start,
+                "why_not": "" if can_start else _why_not(why),
+                "retiring": bool(engines.is_retiring(prov)),
+            }
         )
     return rows
 
@@ -438,8 +473,170 @@ def _agent_rows() -> list[dict]:
 async def _list_agents(turn: _Turn, args: dict) -> tuple[dict, dict]:
     rows = await asyncio.to_thread(_agent_rows)
     turn.agents = rows
-    shown = [{"index": r["index"], "name": r["name"], "can_start": r["can_start"]} for r in rows]
+    shown = [
+        {
+            "index": r["index"],
+            "name": r["name"],
+            "can_start": r["can_start"],
+            **({"why_not": r["why_not"]} if r.get("why_not") else {}),
+            **({"retiring": True} if r.get("retiring") else {}),
+        }
+        for r in rows
+    ]
     return {"agents": shown}, {"count": len(rows)}
+
+
+# ---- usage, the fleet and the settings view (#1554) --------------------------------------------
+
+
+def _hours_ago(ts: object) -> float | None:
+    """Hours since ``ts`` (epoch seconds), computed here so the model does no epoch arithmetic."""
+    if not isinstance(ts, int | float) or isinstance(ts, bool) or not ts:
+        return None
+    return round(max(0.0, time.time() - float(ts)) / 3600, 1)
+
+
+USAGE_NOTES = {
+    "plan": "A quota the agent itself reported: used_pct per window, resetting at resets_in_hours.",
+    "tokens": "A token count the agent reported over window_days. It means something only against "
+    "limit_tokens, the operator's own limit; with no limit there is no percentage.",
+    "manual": "The operator's own counter, typed in Settings → Agents. Not measured by the agent.",
+    "none": "Not measured: this agent reports nothing and no counter is set. That is NOT 0 %.",
+}
+
+
+def _hours_until(ts: object, now: float) -> float | None:
+    if not isinstance(ts, int | float) or isinstance(ts, bool) or not ts:
+        return None
+    return round(max(0.0, float(ts) - now) / 3600, 1)
+
+
+def _usage_rows() -> list[dict]:
+    """`agent_usage.snapshot` (the cached read the Agents panel serves — it never probes), each row
+    BUILT from named fields: no vendor free text reaches the model unless it passes a shape gate."""
+    from . import agent_usage, ask_settings, prefs
+
+    budgets = prefs.get_agent_budgets()
+    names = ask_settings.agent_labels()
+    now = time.time()
+    out = []
+    for row in agent_usage.snapshot(budgets=budgets):
+        source = row.get("source")
+        if source not in USAGE_NOTES:
+            continue
+        r: dict = {
+            "agent": names.get(row.get("engine"), "an agent"),
+            "source": source,
+            "note": USAGE_NOTES[source],
+            "stale": bool(row.get("stale")),
+            "probe_failed": bool(row.get("error")),
+            "checked_hours_ago": _hours_ago(row.get("checked_at") or row.get("at") or None),
+            "alert_threshold_pct": budgets.get("threshold_pct"),
+        }
+        # Vendor text is untrusted and no shape test proves a string is not a key: the plan name
+        # is never sent, and a window keeps its label only from `window_label`'s closed set.
+        if source == "plan":
+            r["windows"] = [
+                {
+                    "label": ask_settings.window_label(w.get("label")) or f"window {i + 1}",
+                    "used_pct": w.get("used_pct"),
+                    "resets_in_hours": _hours_until(w.get("resets_at"), now),
+                }
+                for i, w in enumerate(row.get("windows") or [])
+                if isinstance(w, dict)
+            ]
+        if source == "tokens":
+            r["billable_tokens"] = agent_usage.billable(row.get("tokens"))
+            r["window_days"] = row.get("window_days")
+        if source in ("tokens", "manual"):
+            r["limit_tokens"] = row.get("limit_tokens") or None
+        if source == "manual":
+            r["manual_used"] = row.get("manual_used")
+        # `none` carries NO percentage at all: not measured is not 0 %.
+        if source != "none" and isinstance(row.get("used_pct"), int | float):
+            r["used_pct"] = row["used_pct"]
+        acc = row.get("access")
+        access = acc.get("state") if isinstance(acc, dict) else None
+        r["access"] = access if access in ("ok", "denied") else "unknown"
+        fc = row.get("forecast")
+        if isinstance(fc, dict) and fc.get("state") in ("ok", "exhausts", "out", "learning"):
+            r["forecast"] = fc["state"]
+        out.append(r)
+    return out
+
+
+async def _agent_usage(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    rows = await asyncio.to_thread(_usage_rows)
+    return {"agents": rows}, {"count": len(rows)}
+
+
+def _fleet_missions() -> dict | None:
+    """Missions per state, from each state's own `total` (computed over the full filtered set
+    before `limit`) — never summed from a capped list. Any read that fails, or answers with a
+    `store_error` (the degraded `total: 0`), makes the whole answer unknown: never zeros."""
+    out: dict[str, int] = {}
+    for state in sorted(missions.STATES):
+        r = missions.safe_list_missions(archived=False, state=state, limit=1)
+        if r.get("store_error") is not None or not isinstance(r.get("total"), int):
+            return None
+        out[state] = r["total"]
+    return out
+
+
+async def _fleet_status(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """Counts only. Sessions = exactly what `find_sessions` searches: the STRICT card read, then the
+    terminal's roots + exclusions boundary. States are Pulse's own, each session counted once."""
+    from . import ask_settings, pulse
+    from .routes.pulse import in_scope_cards
+
+    complete = True
+    sessions: dict | None
+    try:
+        cards = await asyncio.to_thread(
+            pulse.build_cards, window_days=None, working_keys=turn.working_keys, strict=True
+        )
+        cards = await asyncio.to_thread(in_scope_cards, cards)
+        names = await asyncio.to_thread(ask_settings.agent_labels)
+        sessions = {}
+        for c in cards:
+            agent = names.get(str(c.get("engine") or ""), "other agents")
+            state = str(c.get("state") or "")
+            if state not in ("needs_you", "in_flight", "recently_active", "idle"):
+                state = "idle"
+            sessions.setdefault(agent, {}).setdefault(state, 0)
+            sessions[agent][state] += 1
+    except pulse.CardsIncomplete:
+        # No fail-soft fallback: its counts could lose archive exclusions and ADD sessions.
+        sessions, complete = None, False
+    try:
+        mission_counts = await missions.run_admitted(_fleet_missions)
+    except Exception:  # noqa: BLE001 — an unreadable mission store is unknown, never zero
+        mission_counts = None
+    if mission_counts is None:
+        complete = False
+    return (
+        {
+            "complete": complete,
+            "sessions": sessions,
+            "missions": mission_counts,
+            "note": "Sessions are those HQ can search (inside your project roots, outside the "
+            "excluded folders). needs_you = waiting for the operator, even if running; "
+            "in_flight = its agent process is running, not necessarily mid-turn; "
+            "recently_active = activity in the last days; idle = the rest. Null means it "
+            "could not be read just now, never zero.",
+        },
+        {"count": sum(sum(v.values()) for v in (sessions or {}).values())},
+    )
+
+
+async def _read_settings(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    from . import ask_settings
+
+    try:
+        out = await asyncio.to_thread(ask_settings.read_settings, args.get("section"))
+    except ask_settings.UnknownSection as e:
+        raise _ToolRefused(f"refused: {e}", "bad_arguments") from None
+    return out, {"count": 1}
 
 
 # ---- asking back and nudging (#1443 Phase 2) ---------------------------------------------------
@@ -919,6 +1116,52 @@ TOOLS: dict[str, Tool] = {
                 ["project_index", "engine_index", "brief"],
             ),
             _propose_session,
+        ),
+        Tool(
+            "agent_usage",
+            "read",
+            _spec(
+                "agent_usage",
+                "Each agent's usage as the agent itself last reported it (it never asks the "
+                "agents anew). source says what a figure is: plan = a real quota, used_pct per "
+                "window and resets_in_hours; tokens = a count that means something only against "
+                "limit_tokens; manual = the operator's own counter; none = NOT measured, which is "
+                "not 0 %. Always say how long ago it was checked (checked_hours_ago). If stale or "
+                "probe_failed, say so and point the operator to Settings → Agents → Ask the "
+                "agents to refresh.",
+                {},
+                [],
+            ),
+            _agent_usage,
+        ),
+        Tool(
+            "fleet_status",
+            "read",
+            _spec(
+                "fleet_status",
+                "Counts only: the operator's sessions per agent and state (needs_you, in_flight, "
+                "recently_active, idle) and missions per state. complete=false or a null part "
+                "means it could not be read just now — say that, never report zeros. To name "
+                "sessions, use find_sessions.",
+                {},
+                [],
+            ),
+            _fleet_status,
+        ),
+        Tool(
+            "read_settings",
+            "read",
+            _spec(
+                "read_settings",
+                "One section of the operator's settings, read-only: usage (alert threshold, "
+                "token limits), agents (defaults, which agents start new sessions), automation "
+                "(session assistance and mission orchestration), ai_review (on/off, whether an "
+                "endpoint is configured), pulse (background scan, session review), appearance. "
+                "You cannot change settings: say where in Settings the operator changes them.",
+                {"section": {"type": "string", "enum": list(ask_settings.SECTIONS)}},
+                ["section"],
+            ),
+            _read_settings,
         ),
     )
 }
