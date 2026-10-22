@@ -76,6 +76,9 @@
       "layout": "antigravity-cli",
       "root": "~/.gemini/antigravity-cli"
     },
+    "terminal": {
+      "repaint": "winch"
+    },
     "transcript": {
       "kind": "antigravity-brain"
     },

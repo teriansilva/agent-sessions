@@ -41,6 +41,9 @@ source = "plan"
 kind = "agy-cli-probe"
 probe_token = "/usage"
 
+[terminal]
+repaint = "winch"
+
 [instructions]
 files = ["GEMINI.md"]
 

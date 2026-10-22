@@ -38,6 +38,7 @@ import {
   runsInTerminal,
   setRoster,
   useEngineRoster,
+  repaintsOnWinch,
   wipesOnRepaint,
 } from "./engineRoster";
 
@@ -148,6 +149,7 @@ function consumers(id: string): Record<string, unknown> {
     mintsOwn: mintsOwnId(id),
     placeholder: (mintNewSessionId(id) ?? "").startsWith("new-"),
     repaint: wipesOnRepaint(id),
+    repaintsOnWinch: repaintsOnWinch(id),
     strips: createScrollEraseStripper().strip(id, true, wipe).length < wipe.length,
     prefix: idPrefix(id),
     label4: sessionLabel(`${id}:zt_abcd1234`),
@@ -165,6 +167,7 @@ const ZETA_ANSWERS = {
   mintsOwn: true,
   placeholder: true,
   repaint: true,
+  repaintsOnWinch: false,
   strips: true,
   prefix: "zt_",
   label4: "zeta · abcd",
@@ -181,6 +184,7 @@ const FALLBACK = {
   mintsOwn: undefined,
   placeholder: false,
   repaint: false,
+  repaintsOnWinch: false,
   strips: false,
   prefix: "",
   label4: "zeta · zt_a",
@@ -219,6 +223,7 @@ describe("an eighth engine reaches every consumer through its manifest data", ()
       badge: { claude: "cc", opencode: "oc", codex: "cx", gemini: "gm", antigravity: "ag", kimi: "ki", shell: "sh" },
       reconcile: ["opencode", "codex", "antigravity", "kimi"],
       wipe: ["codex", "kimi"],
+      winch: ["antigravity"],
       handoffSource: SEVEN.filter((e) => e !== "shell"),
     } as const;
     for (const e of SEVEN) {
@@ -226,6 +231,7 @@ describe("an eighth engine reaches every consumer through its manifest data", ()
       expect(engineName(e), e).toBe(e);
       expect(mintsOwnId(e), e).toBe((old.reconcile as readonly string[]).includes(e));
       expect(wipesOnRepaint(e), e).toBe((old.wipe as readonly string[]).includes(e));
+      expect(repaintsOnWinch(e), e).toBe((old.winch as readonly string[]).includes(e));
       expect(isAgent(e), e).toBe(old.handoffSource.includes(e));
       expect(engineColor(e), e).toMatch(/^var\(--engine-[a-z]+\)$/);
     }
@@ -240,7 +246,12 @@ describe("before the roster loads", () => {
     expect(rosterReady()).toBe(false);
     expect(engineBadge("codex")).toBe("co");
     expect(mintNewSessionId("codex")).toBeNull();
+    expect(repaintsOnWinch("antigravity")).toBeUndefined();
     expect(canBeHandoffTarget("claude")).toBe(false);
+    markRosterFailed();
+    expect(getRoster().status).toBe("failed");
+    expect(getRoster().loaded).toBe(false);
+    expect(repaintsOnWinch("antigravity")).toBeUndefined();
   });
 
   test("a failed refresh KEEPS the last good roster; an empty success is distinct", () => {
@@ -249,6 +260,8 @@ describe("before the roster loads", () => {
     expect(getRoster().status).toBe("failed");
     expect(getRoster().loaded).toBe(true);
     expect(engineBadge("claude")).toBe("cc");
+    expect(repaintsOnWinch("antigravity")).toBe(true);
+    expect(repaintsOnWinch("claude")).toBe(false);
     setRoster([]);
     expect(getRoster()).toMatchObject({ status: "ready", loaded: true, engines: [] });
   });
@@ -348,5 +361,6 @@ describe("a roster row without the manifest fields degrades, never throws (#853 
     expect(mintNewSessionId("zeta")).toBeNull();
     expect(runsInTerminal("zeta")).toBeUndefined();
     expect(wipesOnRepaint("zeta")).toBe(false);
+    expect(repaintsOnWinch("zeta")).toBe(false);
   });
 });

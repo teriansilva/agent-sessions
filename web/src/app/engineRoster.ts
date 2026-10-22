@@ -298,6 +298,14 @@ export function wipesOnRepaint(id: string): boolean {
   return byId.get(id)?.terminal.repaint === "wipe";
 }
 
+/** Does this engine repaint its active viewport on a same-size SIGWINCH and re-stream the full
+ *  conversation on any geometry change? Until a roster has loaded (`snapshot.loaded`), returns
+ *  `undefined` so automatic resize-jiggle nudges wait or fail closed rather than guessing `false`. */
+export function repaintsOnWinch(id: string): boolean | undefined {
+  if (!snapshot.loaded) return undefined;
+  return byId.get(id)?.terminal.repaint === "winch";
+}
+
 /** The native-id prefix to strip for display (`ses_`, `session_`), or "". */
 export function idPrefix(id: string): string {
   return byId.get(id)?.display.id_prefix ?? "";

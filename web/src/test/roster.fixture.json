@@ -573,7 +573,7 @@
         "source": "plan"
       },
       "terminal": {
-        "repaint": "none"
+        "repaint": "winch"
       },
       "status": "active",
       "status_reason": null

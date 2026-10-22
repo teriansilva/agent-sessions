@@ -214,7 +214,9 @@ _CLI_PROBE_KINDS = frozenset({"claude-cli-probe", "agy-cli-probe"})
 # --- terminal / unattended / maintenance ---------------------------------------------------------
 
 #: `terminal.repaint`. `wipe`: the TUI wipes and repaints scrollback (codex, kimi — #969).
-REPAINT_KINDS = frozenset({"none", "wipe"})
+#: `winch`: `dtach -r winch`'s same-size SIGWINCH repaints the viewport in place, while any
+#: geometry change reflows and re-streams the full conversation history (antigravity).
+REPAINT_KINDS = frozenset({"none", "wipe", "winch"})
 #: `terminal.ready` — the first-paint rule the seed path waits on (`headless_seed._PAINTED`).
 READY_KINDS = frozenset({"bytes", "claude-first-paint"})
 #: `terminal.menu` — the numbered-menu parser (`screen_menus._PARSERS`, #1075).

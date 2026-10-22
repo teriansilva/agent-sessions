@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { mockRoster } from "./roster";
 
 // Opening an alt-screen session (claude, opencode), and every reconnect to one, repaints the
 // agent's frame without a REPAINT tap. Normal-buffer sessions keep the heuristic backstop
@@ -57,6 +58,7 @@ async function nudged(page: Page, n: number): Promise<boolean> {
 }
 
 test("opening a session repaints even when the attach painted a full frame", async ({ page }) => {
+  await mockRoster(page);
   await page.addInitScript(PAINTED_WS);
   await page.goto("/s/claude/repaint-on-attach");
   await expect(page.locator(".xterm-rows")).toContainText("line 79");
@@ -64,6 +66,7 @@ test("opening a session repaints even when the attach painted a full frame", asy
 });
 
 test("a reconnect repaints too", async ({ page }) => {
+  await mockRoster(page);
   await page.addInitScript(PAINTED_WS);
   await page.goto("/s/claude/repaint-on-reconnect");
   await expect(page.locator(".xterm-rows")).toContainText("line 79");

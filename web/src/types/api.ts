@@ -1492,7 +1492,7 @@ export interface EngineInfo {
    *  "Agent access" card says "memory tool" exactly when `mcp` is set. Absent on older servers. */
   tools?: { mcp: string | null };
   usage: { source: "plan" | "tokens" | "manual" | "none" | string };
-  terminal: { repaint: "none" | "wipe" | string };
+  terminal: { repaint: "none" | "wipe" | "winch" | string };
   /** `retiring` (#1126 PR B): manifest gone, live sessions attach-only. Absent ⇒ active. */
   status?: "active" | "retiring" | string;
   status_reason?: string | null;

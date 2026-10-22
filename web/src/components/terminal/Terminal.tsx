@@ -85,7 +85,12 @@ import { missionLink } from "../../lib/missionLink";
 import { shareLink } from "../../lib/shareLink";
 import { openTerminalLink } from "../../lib/terminalLink";
 import { stripHoverMouseReports } from "../../lib/hoverMouse";
-import { isAgent, useEngineRoster } from "../../app/engineRoster";
+import {
+  isAgent,
+  repaintsOnWinch,
+  subscribeRoster,
+  useEngineRoster,
+} from "../../app/engineRoster";
 
 // #554: how long the auto copy-on-select "Copied" toast stays up (matches the CSS fade).
 const COPIED_TOAST_MS = 1200;
@@ -742,9 +747,12 @@ export function Terminal({
     /** How long an attach gets to deliver its replay before the repaint. */
     const ATTACH_SETTLE_MS = 800;
     let jiggleTimers: ReturnType<typeof setTimeout>[] = [];
+    let jiggleUnsub: (() => void) | null = null;
     const clearJiggle = () => {
       for (const t of jiggleTimers) clearTimeout(t);
       jiggleTimers = [];
+      jiggleUnsub?.();
+      jiggleUnsub = null;
     };
     const visibleRowsBlank = () => {
       const rows = host.querySelector<HTMLElement>(".xterm-rows");
@@ -780,6 +788,33 @@ export function Terminal({
     // Publish the nudge so the REPAINT button can invoke it from render (#485). jiggleRows already
     // guards rows>4 and sock===sockRef.current, so a click on a superseded socket is a no-op.
     jiggleRef.current = jiggleRows;
+    // An engine with `terminal.repaint = "winch"` repaints its viewport on dtach's same-size
+    // attach SIGWINCH, and any geometry-changing jiggle causes it to clear and re-stream the
+    // entire conversation from turn 1. Before `/api/engines` has loaded (`repaintsOnWinch(engine)`
+    // is `undefined`), fail closed and defer the automatic check until the roster arrives rather
+    // than guessing false.
+    const whenAutoRepaintAllowed = (run: () => void) => {
+      const winch = repaintsOnWinch(engine);
+      if (winch === true) return;
+      if (winch === false) {
+        run();
+        return;
+      }
+      jiggleUnsub?.();
+      const off = subscribeRoster(() => {
+        if (sock !== sockRef.current) {
+          off();
+          if (jiggleUnsub === off) jiggleUnsub = null;
+          return;
+        }
+        const resolved = repaintsOnWinch(engine);
+        if (resolved === undefined) return;
+        off();
+        if (jiggleUnsub === off) jiggleUnsub = null;
+        if (resolved === false) run();
+      });
+      jiggleUnsub = off;
+    };
     const armRepaintBackstop = () => {
       attachBytes = 0;
       initialTailLock = true;
@@ -803,21 +838,23 @@ export function Terminal({
             setAppTailUnknown(true);
             appTailUnknownRef.current = true;
           }
-          if (altScreenOwner()) {
+          whenAutoRepaintAllowed(() => {
+            if (altScreenOwner()) {
+              jiggleRows();
+              return;
+            }
+            // "Blank" used to mean "essentially no replay bytes". #407 shows the
+            // byte count is not enough: a large raw replay can process successfully
+            // while xterm's visible row layer remains empty. In that case, repaint too.
+            // #416 extends this: a large replay can also leave only a SPARSE fragment
+            // painted (top rows filled, the rest blank) — repaint that too. The big-bytes
+            // gate keeps a legitimately short prompt (few rows, small replay) from jiggling.
+            const FRAGMENT_MIN_BYTES = 4096;
+            const fragment =
+              attachBytes >= FRAGMENT_MIN_BYTES && visibleRowsSparse();
+            if (attachBytes >= 512 && !visibleRowsBlank() && !fragment) return;
             jiggleRows();
-            return;
-          }
-          // "Blank" used to mean "essentially no replay bytes". #407 shows the
-          // byte count is not enough: a large raw replay can process successfully
-          // while xterm's visible row layer remains empty. In that case, repaint too.
-          // #416 extends this: a large replay can also leave only a SPARSE fragment
-          // painted (top rows filled, the rest blank) — repaint that too. The big-bytes
-          // gate keeps a legitimately short prompt (few rows, small replay) from jiggling.
-          const FRAGMENT_MIN_BYTES = 4096;
-          const fragment =
-            attachBytes >= FRAGMENT_MIN_BYTES && visibleRowsSparse();
-          if (attachBytes >= 512 && !visibleRowsBlank() && !fragment) return;
-          jiggleRows();
+          });
         }, ATTACH_SETTLE_MS),
       );
     };
@@ -828,10 +865,13 @@ export function Terminal({
     // settle, and with it the tail-lock release — every later chunk would then drag a reader
     // who scrolled up by the scrollbar back to the tail (Hermes on #1204).
     const repaintAfterReconnect = () => {
+      if (repaintsOnWinch(engine) === true) return;
       jiggleTimers.push(
         setTimeout(() => {
-          if (sock !== sockRef.current || !altScreenOwner()) return;
-          jiggleRows();
+          if (sock !== sockRef.current) return;
+          whenAutoRepaintAllowed(() => {
+            if (altScreenOwner()) jiggleRows();
+          });
         }, ATTACH_SETTLE_MS),
       );
     };
@@ -1801,7 +1841,7 @@ export function Terminal({
     if (role !== "owner") return;
     let lastNudge = 0;
     const nudgeIfVisible = () => {
-      if (document.visibilityState !== "visible") return;
+      if (document.visibilityState !== "visible" || repaintsOnWinch(engine) !== false) return;
       const now = Date.now();
       if (now - lastNudge < 500) return; // collapse the visibilitychange+focus double-fire
       lastNudge = now;
@@ -1815,7 +1855,7 @@ export function Terminal({
       window.removeEventListener("focus", nudgeIfVisible);
       window.removeEventListener("pageshow", nudgeIfVisible);
     };
-  }, [role, repaint]);
+  }, [role, engine, repaint]);
   const takeover = useCallback(() => {
     // Arm the one-shot force flag, then bump the epoch: the effect reconnects and the fresh
     // connect carries ?force=1, demoting the prior owner on the server (#184).

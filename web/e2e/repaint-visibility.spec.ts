@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { closeHeadActionsMenu, headAction } from "./headActions";
+import { mockRoster } from "./roster";
 
 // #503: returning to a backgrounded/minimized tab should auto-repaint (the same non-destructive
 // rows−1→rows nudge as the REPAINT button), because a frozen/blanked tab often comes back stale.
@@ -25,6 +26,7 @@ const resizeCount = () =>
 test("returning to the foreground auto-repaints (a fresh resize nudge) for the owner (#503)", async ({
   page,
 }) => {
+  await mockRoster(page);
   await page.addInitScript(RECORDING_WS);
   await page.goto("/s/claude/repaint-503");
   await expect(page.locator(".xterm")).toBeVisible();

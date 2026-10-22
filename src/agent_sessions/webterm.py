@@ -1147,7 +1147,11 @@ async def run(
                         # accepted geometry instead of trusting timing.
                         width_changed = new_cols != cur["cols"]
                         cur["cols"], cur["rows"] = new_cols, new_rows
-                        if width_changed and time.monotonic() - attach_at <= _RENUDGE_WINDOW_S:
+                        if (
+                            width_changed
+                            and not scrollback._repaints_on_winch(buf_key)
+                            and time.monotonic() - attach_at <= _RENUDGE_WINDOW_S
+                        ):
                             _schedule_trailing_nudge()
             elif msg.get("bytes") is not None and not _gated():
                 _write_owner_input(msg["bytes"])
@@ -1162,6 +1166,11 @@ async def run(
             await _repair_tty(buf_key)
         finally:
             await _replay_gated_input()
+        # Engines with `terminal.repaint = "winch"` (antigravity) already repaint their active
+        # viewport on `dtach -a -r winch`'s same-size SIGWINCH, while shrinking and restoring the
+        # PTY forces two full-conversation history reflows from turn 1.
+        if scrollback._repaints_on_winch(buf_key):
+            return
         # When and how long to wait before the forced repaint (#304/#349/#443, and #652 T-P1:
         # fire immediately for a fresh attach) is decided by `_nudge_plan` — see its docstring.
         settle = _nudge_plan(have, blank_attach)

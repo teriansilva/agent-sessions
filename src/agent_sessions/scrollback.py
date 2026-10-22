@@ -1407,6 +1407,18 @@ def _wipes_on_repaint(key: str) -> bool:
     return term is not None and term.repaint == "wipe"
 
 
+def _repaints_on_winch(key: str | None) -> bool:
+    """True when ``key``'s engine already repaints its active viewport on ``dtach -a -r winch``'s
+    same-size SIGWINCH and reflows its full conversation history on any geometry change
+    (``terminal.repaint == "winch"`` — antigravity)."""
+    if not key:
+        return False
+    from . import engines
+
+    term = engines.terminal_of(key)
+    return term is not None and term.repaint == "winch"
+
+
 def sanitize_live_output(key: str, data: bytes) -> bytes:
     """Return live PTY output safe for BattleLab-managed scrollback.
 

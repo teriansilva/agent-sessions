@@ -214,7 +214,7 @@ Every value a manifest may choose, generated from the kinds this build ships:
 | `usage.kind` | `agy-cli-probe`, `chat-response-tokens`, `claude-cli-probe`, `codex-app-server-probe`, `codex-rollout-field`, `kimi-web-usage-probe`, `opencode-store-query` |
 | `usage.probe_token` | `/usage` |
 | `usage.access` | `gemini-acp-auth`, `kimi-wire-auth-error` |
-| `terminal.repaint` | `none`, `wipe` |
+| `terminal.repaint` | `none`, `winch`, `wipe` |
 | `terminal.ready` | `bytes`, `claude-first-paint` |
 | `terminal.menu` | `claude-numbered`, `none` |
 | `terminal.permission` | `claude-permission`, `none`, `opencode-permission` |

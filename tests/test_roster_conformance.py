@@ -376,6 +376,7 @@ def test_every_moved_table_answers_what_the_old_one_did():
     seven = [e for e in roster if engines.manifest_of(e).runtime == "pty"]
     assert len(seven) == 7
     old_wipe = {"codex", "kimi"}
+    old_winch = {"antigravity"}
     # kimi moved from the manual counter to a plan reporter on purpose (#1239: kimi 2.1's
     # `kimi web` answers its quota) — the one recorded delta from the pre-P3 usage tables.
     old_manual = {"gemini"}
@@ -400,6 +401,7 @@ def test_every_moved_table_answers_what_the_old_one_did():
     for e in seven:
         k = f"{e}:x"
         assert scrollback._wipes_on_repaint(k) == (e in old_wipe), e
+        assert scrollback._repaints_on_winch(k) == (e in old_winch), e
         assert (e in agent_usage.MANUAL_ONLY) == (e in old_manual), e
         assert (e in agent_usage.REPORTERS) == (e in old_reporters), e
         prov = engines.get(e)

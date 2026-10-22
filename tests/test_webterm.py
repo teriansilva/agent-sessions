@@ -1483,6 +1483,51 @@ def test_up_to_date_same_width_reconnect_does_not_nudge(monkeypatch):
     assert calls == []
 
 
+def test_winch_repaint_engine_skips_nudge_and_trailing_renudge_while_keeping_tty_repair(
+    monkeypatch,
+):
+    # Engines declaring terminal.repaint = "winch" (antigravity) already repaint their active
+    # viewport on dtach's same-size attach SIGWINCH, and any geometry-changing _force_repaint
+    # causes them to clear and re-stream the entire conversation from turn 1. Verify that fresh
+    # attach, blank reconnect, and attach-window width resize never invoke _force_repaint, while
+    # _repair_tty still runs on attach.
+    from agent_sessions import webterm
+
+    key = "antigravity:winch-1"
+    assert webterm.scrollback._repaints_on_winch(key) is True
+    assert webterm.scrollback._repaints_on_winch("claude:winch-1") is False
+
+    repaired = []
+    orig_repair = webterm._repair_tty
+
+    def track_repair(fd):
+        repaired.append(fd)
+        return orig_repair(fd)
+
+    monkeypatch.setattr(webterm, "_repair_tty", track_repair)
+    webterm._BUFFERS.pop(key, None)
+    try:
+        # Fresh attach (have=0) + attach-window width resize burst:
+        calls_fresh = _run_349(
+            monkeypatch,
+            key=key,
+            have=0,
+            script=[
+                _resize(70, 20),
+                _resize(100, 40),
+                ("sleep", 0.35),
+            ],
+        )
+        # Blank reconnect (have>0, cold ring):
+        calls_blank = _run_349(monkeypatch, key=key, have=5, script=[("sleep", 0.3)])
+    finally:
+        webterm._drop_buffer(key)
+
+    assert calls_fresh == []
+    assert calls_blank == []
+    assert len(repaired) == 2
+
+
 def test_synthetic_attach_payload_ends_with_live_screen_seam(monkeypatch):
     # Operator report ("still a mess"): a transcript/VT attach payload ends at "now",
     # and the dtach replay below shows the same screen again — the boundary must be
