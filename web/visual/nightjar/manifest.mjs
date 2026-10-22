@@ -409,6 +409,7 @@ export const SWEEP = [
   // ---- /PR3 files ----
 ];
 
-export const WIDTHS = [1440, 1100, 390];
+// 834: an iPad in portrait, the width the 800 px breakpoint used to hand the desktop layout.
+export const WIDTHS = [1440, 1100, 834, 390];
 export const THEMES = ["dark", "light"];
 export const PIXEL_RATIOS = [1, 2];

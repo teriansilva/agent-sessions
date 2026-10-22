@@ -713,3 +713,54 @@ test("a first read says Acquiring in words, and the KPI cards never show a numbe
     await expect(page.getByTestId(tile).getByTestId("tile-loading")).toHaveText(/^Acquiring /);
   }
 });
+
+// Tablets and small phones (operator report, 2026-10-22). The board drew 1440 and 390 only, and the
+// one breakpoint (800 px) handed an iPad in portrait the desktop layout: four KPI tiles at ~180 px,
+// two columns at ~400 / 300 px and the HQ card squeezed into the fourth column. Measured, not looked
+// at: the layout each width gets, and the tiles' height (a tall, mostly empty tile is the symptom).
+const DEVICES = [
+  { name: "tablet portrait", width: 834, height: 1112, cols: 1, kpiCols: 2 },
+  { name: "tablet landscape", width: 1180, height: 820, cols: 2, kpiCols: 4 },
+  { name: "small phone", width: 360, height: 780, cols: 1, kpiCols: 2 },
+] as const;
+for (const d of DEVICES) {
+  test(`the dashboard fits a ${d.name} (${d.width} px): its own layout, compact tiles, no sideways scroll`, async ({
+    browser,
+  }) => {
+    const ctx = await browser.newContext({
+      viewport: { width: d.width, height: d.height },
+      hasTouch: true,
+      isMobile: d.width <= 800,
+    });
+    const page = await ctx.newPage();
+    await mockAll(page);
+    await page.goto("/dashboard");
+    await expect(page.getByTestId("running-row")).toHaveCount(2);
+    await expect(page.getByTestId("needs-you")).toBeVisible();
+    await animationsSettled(page);
+
+    // KPI tiles: the columns this width gets, and none a tall, mostly empty plate.
+    const tiles = page.getByTestId("dash-kpis").locator(":scope > *");
+    const boxes = await tiles.evaluateAll((els) => els.map((e) => e.getBoundingClientRect().toJSON()));
+    expect(new Set(boxes.map((b) => Math.round(b.top))).size, "rows of KPI tiles").toBe(4 / d.kpiCols);
+    for (const b of boxes) expect(b.height, `KPI tile height at ${d.width}`).toBeLessThanOrEqual(150);
+
+    // The sections: one column on a portrait tablet and a phone, two where there is room.
+    const needs = (await page.getByTestId("needs-you").boundingBox())!;
+    const running = (await page.getByTestId("running-row").first().boundingBox())!;
+    const stacked = running.y > needs.y + needs.height - 1;
+    expect(stacked, "running sessions below needs-you").toBe(d.cols === 1);
+
+    // The HQ card is never a sliver beside the heading.
+    const card = (await page.getByTestId("hq-primary-contact").boundingBox())!;
+    // Four columns: by construction (#1525) the card is the Plan quota tile's column, which holds the
+    // name on one line from 1024 px. Narrower, it is a row of its own.
+    const minCard = d.kpiCols === 4 ? 240 : Math.min(300, d.width - 48);
+    expect(card.width, "HQ contact card width").toBeGreaterThanOrEqual(minCard);
+
+    const pane = page.getByTestId("dashboard-pane");
+    const [scroll, client] = await pane.evaluate((el) => [el.scrollWidth, el.clientWidth]);
+    expect(scroll).toBeLessThanOrEqual(client + 1);
+    await ctx.close();
+  });
+}

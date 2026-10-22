@@ -22,7 +22,10 @@ const FULL = args.includes("--full");
 const MOTION = opt("motion", "off");
 mkdirSync(OUT, { recursive: true });
 
-const widths = FULL ? WIDTHS : [1440, 390];
+// `--widths 390,834,1024`: any widths. With it, a width ≤ 1180 is a touch device (phones and
+// tablets), at a tablet's portrait height.
+const WIDTHS_OPT = opt("widths", "").split(",").filter(Boolean).map(Number);
+const widths = WIDTHS_OPT.length ? WIDTHS_OPT : FULL ? WIDTHS : [1440, 390];
 const ratios = FULL ? PIXEL_RATIOS : [1];
 const browser = await chromium.launch();
 const failures = [];
@@ -31,11 +34,13 @@ for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
     for (const theme of THEMES)
       for (const dpr of ratios) {
         const phone = width < 800;
+        const touch = WIDTHS_OPT.length ? width <= 1180 : phone;
+        const height = phone ? 844 : touch ? Math.round(width * 1.33) : (cap.height ?? 960);
         const ctx = await browser.newContext({
-          viewport: { width, height: phone ? 844 : (cap.height ?? 960) },
+          viewport: { width, height },
           deviceScaleFactor: dpr,
-          isMobile: phone,
-          hasTouch: phone,
+          isMobile: touch,
+          hasTouch: touch,
           colorScheme: theme,
           baseURL: BASE,
           serviceWorkers: "block",
