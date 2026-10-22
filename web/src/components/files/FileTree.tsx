@@ -275,8 +275,8 @@ export function FileTree({
         rootState.kind !== "loading" &&
         rootState.kind !== "error" &&
         rows.length === 0 && (
-          <div className={styles.state}>
-            <span className={styles.stateTag}>Files // Empty folder</span>
+          <div className={styles.fileState}>
+            <span className={styles.fileStateTag}>Files // Empty folder</span>
             This folder has nothing in it. Not a loading state, not an error.
           </div>
         )}
@@ -291,7 +291,7 @@ export function FileTree({
                 {[0, 1, 2].map((i) => (
                   <div
                     key={i}
-                    className={styles.skeleton}
+                    className={styles.fileSkeleton}
                     style={{ width: `${60 - i * 10}%` }}
                   />
                 ))}
@@ -302,16 +302,16 @@ export function FileTree({
             return (
               <div
                 key={key}
-                className={`${styles.state} ${styles.stateBad}`}
+                className={`${styles.fileState} ${styles.fileStateBad}`}
                 role="alert"
                 style={{ paddingLeft: pad }}
               >
-                <span className={styles.stateTag}>Files // Unavailable</span>
+                <span className={styles.fileStateTag}>Files // Unavailable</span>
                 {row.state.message}
                 <div>
                   <button
                     type="button"
-                    className={styles.retry}
+                    className={styles.fileRetry}
                     onClick={() => load(row.dir)}
                   >
                     Retry
@@ -324,11 +324,11 @@ export function FileTree({
             return (
               <div
                 key={key}
-                className={`${styles.state} ${styles.stateWarn}`}
+                className={`${styles.fileState} ${styles.fileStateWarn}`}
                 role="status"
                 style={{ paddingLeft: pad }}
               >
-                <span className={styles.stateTag}>Files // Refresh failed</span>
+                <span className={styles.fileStateTag}>Files // Refresh failed</span>
                 {row.state.message} Showing the last good listing.
               </div>
             );
@@ -337,19 +337,19 @@ export function FileTree({
           return (
             <div
               key={`${key}:notes`}
-              className={`${styles.state} ${styles.stateWarn}`}
+              className={`${styles.fileState} ${styles.fileStateWarn}`}
               style={{ paddingLeft: pad }}
             >
               {!listing.complete && (
                 <>
-                  <span className={styles.stateTag}>Files // Truncated</span>
+                  <span className={styles.fileStateTag}>Files // Truncated</span>
                   This folder has more entries than the panel scans. Showing the
                   first {listing.entries.length}.
                 </>
               )}
               {(listing.unencodable ?? 0) > 0 && (
                 <>
-                  <span className={styles.stateTag}>
+                  <span className={styles.fileStateTag}>
                     Files // Undisplayable names
                   </span>
                   {listing.unencodable} entr
@@ -373,7 +373,7 @@ export function FileTree({
             data-file-row=""
             data-kind={entry.kind}
             data-drop-target={isDir && dropDir === entry.path ? "" : undefined}
-            className={`${styles.row} ${isDir ? styles.rowDir : ""} ${
+            className={`${styles.row} ${styles.treeRow} ${isDir ? styles.rowDir : ""} ${
               selected === entry.path ? styles.rowSelected : ""
             } ${isDir && dropDir === entry.path ? styles.dropRow : ""}`}
             // Only a DIRECTORY row is a drop target. A file row lets the event bubble to the

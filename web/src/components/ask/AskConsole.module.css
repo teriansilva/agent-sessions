@@ -130,18 +130,6 @@
 .opens.opens > * {
   margin-left: 0;
 }
-.mapBtn.mapBtn {
-  font-family: inherit;
-  cursor: pointer;
-}
-.mapBtn:hover:not(:disabled) {
-  color: var(--text);
-  border-color: var(--hud);
-}
-.mapBtn.mapBtn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
 /* "Open all in map", under the session rows it acts on. */
 .batch {
   display: flex;

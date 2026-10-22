@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { api } from "../../lib/api";
 import type { DashboardSessions, Session, SessionsPage } from "../../types/api";
-import { RecentSessionsTile, RunningTile } from "./Tiles";
+import { KpiStrip, RunningTile } from "./Tiles";
 import type { Polled } from "./usePolled";
 
 vi.mock("../../lib/api", async () => {
@@ -139,11 +139,53 @@ describe("RunningTile — the drill-down behind the count (#1123, Hermes 5240)",
   });
 });
 
-test("RecentSessionsTile says so when a refresh failed, instead of passing the old list off as current", () => {
+test("a tile says so when a refresh failed, instead of passing the old list off as current", () => {
   const res: Polled<DashboardSessions> = {
     ...dash(0),
     refreshFailed: true,
   } as Polled<DashboardSessions>;
-  wrap(<RecentSessionsTile res={res} retry={() => {}} />);
+  wrap(<RunningTile res={res} retry={() => {}} />);
   expect(screen.getByTestId("tile-refresh-error")).toBeInTheDocument();
+});
+
+describe("KpiStrip — NIGHTJAR readouts (#1568)", () => {
+  const loading = { status: "loading" } as Polled<never>;
+  const failed = { status: "error", message: "502" } as unknown as Polled<never>;
+
+  test("a first read says Acquiring in words, never a number", () => {
+    wrap(
+      <KpiStrip sessions={loading} missions={loading} quota={loading} needsYou={null} onJump={() => {}} />,
+    );
+    for (const id of ["kpi-agents", "kpi-missions", "kpi-needs", "kpi-quota"]) {
+      const kpi = screen.getByTestId(id);
+      expect(within(kpi).getByRole("status")).toHaveTextContent("Acquiring");
+      expect(kpi.textContent).not.toMatch(/\d/);
+    }
+  });
+
+  test("a failed read is a dash and the words, never a zero", () => {
+    wrap(
+      <KpiStrip sessions={failed} missions={failed} quota={failed} needsYou={null} needsYouFailed onJump={() => {}} />,
+    );
+    for (const id of ["kpi-agents", "kpi-missions", "kpi-needs", "kpi-quota"]) {
+      const kpi = screen.getByTestId(id);
+      expect(kpi).toHaveTextContent("— couldn’t read");
+      expect(kpi.textContent).not.toMatch(/\b0\b/);
+      expect(kpi.querySelector(".hud-led")).toHaveAttribute("data-tone", "down");
+    }
+  });
+
+  test("the live count is a readout with a working-share gauge, and its LED says up only when one works", () => {
+    const res = dash(4);
+    if (res.status === "ok") res.data.live.working = 3;
+    wrap(<KpiStrip sessions={res} missions={loading} quota={loading} needsYou={2} onJump={() => {}} />);
+    const kpi = screen.getByTestId("kpi-agents");
+    expect(kpi.querySelector(".nj-readout")).toHaveTextContent("4");
+    expect(within(kpi).getByRole("meter", { name: "3 of 4 live agents working" })).toHaveAttribute(
+      "aria-valuenow",
+      "75",
+    );
+    expect(kpi.querySelector(".hud-led")).toHaveAttribute("data-tone", "up");
+    expect(screen.getByTestId("kpi-needs").querySelector(".hud-led")).toHaveAttribute("data-tone", "att");
+  });
 });

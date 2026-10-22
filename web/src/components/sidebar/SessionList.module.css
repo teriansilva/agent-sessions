@@ -9,25 +9,16 @@
 .wrap[hidden] {
   display: none;
 }
+/* NEW SESSION is THE primary action button (ui/actionButton.module.css, #1531 Phase 6): the
+ * full-width amber plate at the head of the list, display caps, the §8 floor at every width. The
+ * mission rail's "+ New mission" wears this class too (#948 P2), so the two sidebars' calls to
+ * action stay one control. */
 .newBtn {
+  composes: primary from "../ui/actionButton.module.css";
   display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
   flex: none;
-  margin: 8px;
-  padding: 9px 0;
-  background: var(--cta-bg-1);
-  color: var(--cta-text);
-  border-radius: 0;
-  font-weight: 600;
+  margin: var(--sp-2);
   text-decoration: none;
-}
-.newBtn:hover {
-  background: color-mix(in srgb, var(--accent) 84%, #fff);
-}
-.newBtn:active {
-  background: var(--cta-bg-2);
 }
 .list {
   list-style: none;
@@ -37,28 +28,14 @@
   flex: 1;
 }
 .more {
-  padding: 10px 12px;
+  padding: 10px var(--sp-3);
 }
-.more button {
+/* LOAD MORE is THE ghost action button, full width. */
+.moreBtn {
+  composes: ghost from "../ui/actionButton.module.css";
   width: 100%;
-  background: transparent;
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 0;
-  padding: 6px 0;
-  cursor: pointer;
-  font: inherit;
 }
-.more button:hover:not(:disabled) {
-  background: var(--row-hover);
-  border-color: var(--accent);
-}
-.more button:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent);
-}
-.more button:disabled {
+.moreBtn:disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -78,9 +55,9 @@
 .row {
   position: relative;
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
   align-items: flex-start;
-  padding: 9px 12px;
+  padding: 9px var(--sp-3);
   cursor: pointer;
   text-decoration: none;
   color: inherit;
@@ -92,7 +69,30 @@
  * an accent rail so you can see which session you're in at a glance (#18). */
 .active {
   background: var(--row-hover);
-  border-left-color: var(--accent);
+  border-left-color: var(--hud);
+}
+.row:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+/* A ROW ARRIVES (#1568): a session that joins the list after it loaded (a new session, one that
+ * just matched) slides in from the rail with a one-shot HUD tint over it, and its LED flashes —
+ * opacity and transform only, once. SessionList adds the class for the arrival and removes it after;
+ * the first load and a page of "Load more" never arrive. Reduced gets the single fade
+ * (`.nj-fade-ok`), Off nothing (motion.css). */
+.rowArrived {
+  animation: global(nj-arrive) var(--t-arrive) var(--ease-out) both;
+}
+.rowArrived::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--hud-tint);
+  pointer-events: none;
+  animation: global(nj-flash) var(--t-arrive) var(--ease-out) both;
+}
+.rowArrived .led:global(.hud-led) {
+  animation: global(nj-led-flash) var(--t-arrive) var(--ease-out) 1;
 }
 /* Per-project rail (#285): coloured by the row's --proj var (explicit entity color, else
  * the stable cwd/id hash). An inset absolute layer just right of the active-row border so
@@ -116,7 +116,7 @@
   gap: 2px;
   padding-right: 6px;
   opacity: 0;
-  transition: opacity 0.1s;
+  transition: opacity var(--t-fast) var(--ease-out);
 }
 .rowWrap:hover .actions,
 .rowWrap:focus-within .actions,
@@ -128,32 +128,10 @@
     opacity: 1;
   }
 }
+/* The inline rename's ✓ / ✕: THE icon action button (a 44×44 ghost plate). */
 .iconBtn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-@media (max-width: 800px) {
-  .iconBtn {
-    width: 32px;
-    height: 32px;
-  }
-}
-.iconBtn:hover:not(:disabled) {
-  background: var(--row-hover);
-  color: var(--accent-text);
-}
-.iconBtn:focus-visible {
-  outline: none;
-  color: var(--accent-text);
-  box-shadow: 0 0 0 2px var(--accent);
+  composes: icon from "../ui/actionButton.module.css";
+  flex: none;
 }
 .iconBtn:disabled {
   opacity: 0.4;
@@ -176,20 +154,17 @@
   flex: 1;
   min-width: 0;
 }
+/* THE FIELD (nj-field): square, the HUD edge and the inset ring while it holds the caret. */
 .editInput {
+  composes: nj-field from global;
   flex: 1;
-  min-width: 0;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 0;
-  color: var(--text);
-  padding: 5px 8px;
-  font: inherit;
 }
-.editInput:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent);
+input.editInput {
+  width: auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 5px var(--sp-2);
+  font: inherit;
 }
 .body {
   min-width: 0;
@@ -216,7 +191,7 @@
   gap: 6px;
   margin-top: 3px;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.03em;
   color: var(--text-muted);
   white-space: nowrap;
@@ -232,7 +207,7 @@
 .engineTag {
   flex: none;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 9px;
+  font-size: var(--fs-micro);
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -252,7 +227,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 9px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.04em;
   color: var(--text-3);
   line-height: 15px;
@@ -269,7 +244,7 @@
 .handoffBadgeOut {
   flex: none;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 9px;
+  font-size: var(--fs-micro);
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -300,16 +275,18 @@
   background: var(--proj);
 }
 .empty {
-  color: var(--text-muted);
-  padding: 14px 12px;
-  font-size: 12px;
+  color: var(--text-3);
+  padding: 14px var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  letter-spacing: 0.04em;
 }
 
 /* AI review (#356): one-line summary under the title, the amber "needs a human" badge,
  * and the reviewing-spinner on the row's Review-now action. */
 .summary {
   margin-top: 2px;
-  font-size: 11.5px;
+  font-size: var(--fs-label);
   color: var(--text-2, var(--text-muted));
   white-space: nowrap;
   overflow: hidden;
@@ -365,13 +342,12 @@
   animation: none;
   transform: none;
 }
+/* Review now, in flight: the sparkle turns (THE spin keyframe; held still outside Full). */
 .spin {
-  animation: reviewSpin 1.2s linear infinite;
+  animation: global(nj-spin) 1.2s linear infinite;
 }
-@keyframes reviewSpin {
-  to {
-    transform: rotate(360deg);
-  }
+:root:not([data-motion="full"]) .spin {
+  animation: none;
 }
 
 /* Review-now outcome toast (#392): pinned to the sidebar foot — flex sibling of the
@@ -396,10 +372,12 @@
 }
 .toastLed {
   flex: none;
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   margin-top: var(--sp-1);
+  border-radius: 50%;
   background: var(--toast-led);
+  box-shadow: 0 0 var(--glow-led) var(--toast-led);
 }
 .toastText {
   flex: 1;
@@ -415,14 +393,22 @@
 .toastClose {
   flex: none;
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 28px;
+  margin: calc(-1 * var(--sp-1)) calc(-1 * var(--sp-1)) 0 0;
   background: transparent;
   border: 0;
-  color: var(--text-muted);
-  padding: 2px;
+  color: var(--text-3);
   cursor: pointer;
 }
 .toastClose:hover {
-  color: var(--text);
+  color: var(--text-1);
+}
+.toastClose:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
 }
 
 /* TOUCH FLOOR (#948 P2, docs/design.md §8). The mission rail wears these classes too, and it used to
@@ -431,8 +417,12 @@
 @media (pointer: coarse), (max-width: 800px) {
   .newBtn,
   .row,
-  .more button {
+  .more button,
+  .toastClose {
     min-height: 44px;
+  }
+  .toastClose {
+    min-width: 44px;
   }
 }
 
@@ -447,7 +437,7 @@
   align-items: center;
   gap: 3px;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 9px;
+  font-size: var(--fs-micro);
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;

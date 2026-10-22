@@ -50,24 +50,7 @@
 }
 
 .open {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 44px;
-  padding: 0 12px;
-  border: 1px solid var(--line-strong);
-  border-radius: 0;
-  background: transparent;
-  color: var(--text-2);
-  font: 400 0.72rem var(--font-mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-
-.open:hover {
-  border-color: var(--accent);
-  color: var(--text-1, var(--text));
+  composes: ghost from "../ui/actionButton.module.css";
 }
 
 .link {

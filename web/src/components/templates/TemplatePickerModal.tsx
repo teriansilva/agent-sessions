@@ -448,7 +448,7 @@ export function TemplatePickerModal({
                         {onSend ? (
                           <button
                             type="button"
-                            className={`${styles.act} ${styles.primary}`}
+                            className={styles.send}
                             disabled={
                               missing.length > 0 ||
                               blocked ||

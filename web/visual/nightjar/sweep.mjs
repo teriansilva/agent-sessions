@@ -64,7 +64,7 @@ for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
         const page = await ctx.newPage();
         const mockState = { theme, unhandled: new Set(), ...(cap.mock ?? {}) };
         await routeApi(page, mockState);
-        await routeTerminal(page, {});
+        await routeTerminal(page, cap.term ?? {});
         // A held asset never answers: the route's chunk is "still loading" when the shot is taken.
         if (cap.holdAsset) await page.route(new RegExp(cap.holdAsset), () => {});
         // Per-capture answers, registered AFTER the shared handler so they win (the last route

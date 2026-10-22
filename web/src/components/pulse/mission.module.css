@@ -319,24 +319,9 @@
 }
 
 .more {
-  min-height: 44px;
+  composes: ghost from "../ui/actionButton.module.css";
   width: 100%;
   margin-top: 8px;
-  padding: 8px;
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--text-2);
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.75rem;
-}
-.more:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-.more[disabled] {
-  opacity: 0.55;
-  cursor: default;
 }
 
 /* --- thread -------------------------------------------------------------------- */
@@ -398,24 +383,9 @@
   outline-offset: -1px;
 }
 .send {
+  composes: primary from "../ui/actionButton.module.css";
   flex: 0 0 auto;
-  min-height: 44px;
   min-width: 76px;
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: var(--on-accent);
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  letter-spacing: 0.1em;
-  cursor: pointer;
-}
-.send:focus-visible {
-  outline: 2px solid var(--text-1);
-  outline-offset: 2px;
-}
-.send[disabled] {
-  opacity: 0.5;
-  cursor: default;
 }
 
 /* --- honest empty / degraded states -------------------------------------------- */
@@ -477,23 +447,10 @@
   min-width: 0;
 }
 .openSession {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  composes: ghost tight from "../ui/actionButton.module.css";
   flex: none;
   /* Pushed to the row's right edge — and still right-aligned on the line it wraps to. */
   margin-left: auto;
-  min-height: 44px;
-  padding: 2px 10px;
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--text-2);
-  font-size: 0.74rem;
-  text-decoration: none;
-}
-.openSession:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 .sessionList {
@@ -996,24 +953,9 @@
  * (#967 P3, see the P3 block at the end of this sheet). `.objEditBtn` stays for the roster and
  * spawn controls that still use it. */
 .objEditBtn {
-  min-height: 44px;
-  padding: 6px 10px;
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--text-2);
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  letter-spacing: 0.1em;
-  cursor: pointer;
+  composes: ghost from "../ui/actionButton.module.css";
 }
-.objEditBtn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.objEditBtn[disabled] {
-  opacity: 0.5;
-  cursor: default;
-}
+
 .objAddRow {
   display: flex;
   gap: 8px;
@@ -1117,33 +1059,8 @@
    place, sized to the 44px touch floor the rest of the console holds to, and inline rather than a
    bar because each belongs to the one thing it is about rather than to the thread. */
 .missionQBtn {
-  min-height: 44px;
+  composes: ghost from "../ui/actionButton.module.css";
   margin: 8px 8px 0 0;
-  padding: 0 12px;
-  background: var(--bg-2);
-  color: var(--text-1);
-  border: 1px solid var(--border);
-  /* `inherit`, which is what these controls have always rendered (#948). The old
-     `font: 11px var(--font-sans, inherit)` named a token that does not exist, and its fallback
-     made the shorthand invalid, so the whole declaration fell back to inheriting. Same for the
-     relay and question inputs and the option buttons below. */
-  font: inherit;
-  letter-spacing: 0.06em;
-  cursor: pointer;
-}
-
-.missionQBtn:hover:not(:disabled) {
-  border-color: var(--accent);
-}
-
-.missionQBtn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.missionQBtn:disabled {
-  opacity: 0.55;
-  cursor: default;
 }
 
 /* The relay line, beside the screen it answers (#894). */
@@ -1863,10 +1780,14 @@
   border-top: 0;
   border-right: 0;
   border-bottom: 0;
+  cursor: pointer;
+}
+/* A row button takes the list's type; "+ New mission" does NOT — it is the sidebar's `.newBtn`, a
+   primary plate since #1568, and inheriting here would undo the plate's display font. */
+.railButton {
   font-family: inherit;
   font-size: inherit;
   line-height: inherit;
-  cursor: pointer;
 }
 .railButtonReset {
   border-left: 0;
@@ -1955,23 +1876,10 @@
   color: var(--text-2);
 }
 .landingClear {
+  composes: ghost from "../ui/actionButton.module.css";
   margin-left: auto;
-  min-height: 44px;
-  padding: 0 12px;
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--text-1);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  cursor: pointer;
 }
-.landingClear:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
+
 .landingEmpty {
   padding: 12px 0;
   font-size: 14px;
@@ -2552,7 +2460,6 @@
   color: var(--text-1);
 }
 .judgedToggle:focus-visible,
-.judgedReject:focus-visible,
 .judgedLink:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -2615,23 +2522,7 @@
   color: var(--text-3);
 }
 .judgedReject {
-  min-height: 44px;
-  padding: 0 1rem;
-  border: 1px solid var(--line-strong);
-  background: none;
-  color: var(--text-1);
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-.judgedReject:hover {
-  border-color: var(--text-2);
-}
-.judgedReject[disabled] {
-  opacity: 0.5;
-  cursor: default;
+  composes: ghost from "../ui/actionButton.module.css";
 }
 
 /* --- #1060 P4: the per-mission opt-in to autonomous menu answers -------------------------------- */

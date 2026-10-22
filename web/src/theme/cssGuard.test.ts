@@ -227,8 +227,6 @@ const KEYFRAME_PENDING: Record<string, readonly string[]> = {
   "components/overview/windowLayer.module.css": ["window-flash"],
   // Phase 10: the suggestions caret blinks with opacity like `.nj-caret`.
   "components/templates/SuggestionsPanel.module.css": ["blink"],
-  // Phase 6: the mic pulse uses the `--rec` LED glow on a pseudo-element.
-  "components/terminal/Compose.module.css": ["micPulse"],
 };
 
 function keyframes(css: string): { name: string; props: string[] }[] {

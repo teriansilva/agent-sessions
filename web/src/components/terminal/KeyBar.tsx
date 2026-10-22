@@ -151,7 +151,7 @@ export function KeyBar({ actions }: { actions: KeyAction[] }) {
           type="button"
           aria-label={a.aria}
           title={a.title}
-          className={a.text ? styles.txt : undefined}
+          className={a.text ? `${styles.key} ${styles.txt}` : styles.key}
           disabled={a.disabled}
           onClick={a.run}
         >

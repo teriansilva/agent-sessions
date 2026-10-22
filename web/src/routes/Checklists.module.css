@@ -71,41 +71,15 @@
 }
 
 /* --- buttons ------------------------------------------------------------------------------- */
-.cta,
-.ghostBtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 40px;
-  padding: 0 16px;
-  border-radius: 0;
-  font: inherit;
-  font-size: 0.85rem;
-  font-weight: 600;
-  cursor: pointer;
+.cta {
+  composes: primary from "../components/ui/actionButton.module.css";
   white-space: nowrap;
 }
-.cta {
-  background: var(--cta-bg-1);
-  color: var(--cta-text);
-  border: 1px solid transparent;
-}
-.cta:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
 .ghostBtn {
-  background: transparent;
-  color: var(--text-2);
-  border: 1px solid var(--line-strong);
+  composes: ghost from "../components/ui/actionButton.module.css";
+  white-space: nowrap;
 }
-.ghostBtn:hover {
-  color: var(--text-1);
-  background: var(--glass-strong);
-}
-.cta:focus-visible,
-.ghostBtn:focus-visible,
+
 .card:focus-visible,
 .cardNew:focus-visible,
 .back:focus-visible,

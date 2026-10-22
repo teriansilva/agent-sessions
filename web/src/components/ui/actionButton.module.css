@@ -38,6 +38,8 @@
   border: 1px solid transparent;
   border-radius: 0;
   cursor: pointer;
+  /* Also drawn on links (Open, Use template): a plate is never underlined. */
+  text-decoration: none;
   transition:
     filter var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out);
@@ -74,10 +76,14 @@
   font-weight: 500;
   color: var(--text-2);
 }
-.ghost:hover,
-.ghost:focus-visible {
+.ghost:hover:not(:disabled),
+.ghost:focus-visible:not(:disabled) {
   --nj-edge: var(--hud-dim);
   color: var(--text-1);
+}
+.ghost:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 /* A glyph-only ghost at the §8 floor in both directions: ⋯ is narrow content, not a narrow target. */
@@ -95,8 +101,8 @@
   --nj-edge: color-mix(in srgb, var(--status-down) 60%, transparent);
   color: var(--danger-text);
 }
-.danger:hover,
-.danger:focus-visible {
+.danger:hover:not(:disabled),
+.danger:focus-visible:not(:disabled) {
   --nj-edge: var(--status-down);
   --nj-face: color-mix(in srgb, var(--status-down) 10%, var(--bg-1));
   color: var(--danger-text);
@@ -110,4 +116,35 @@
 .dangerFilled:hover:not(:disabled),
 .dangerFilled:focus-visible:not(:disabled) {
   --nj-face: color-mix(in srgb, var(--status-down) 85%, white);
+}
+
+/* A row action (Open, Remove, Retry inside a list row): the same plate, tighter, at 32 px on a fine
+ * pointer, so a list does not grow a 44 px band per row on a desktop, and the §8 44 px floor wherever
+ * a finger is the input (coarse pointer or ≤800px) — the dialog close button's precedent. Name it
+ * after the variant it trims (`ghost compact`, `primary compact`, `icon compact`). */
+.compact {
+  min-height: 32px;
+  padding: 2px 10px;
+}
+/* The same narrow sides at the full 44px height: a row's one way in (Open, Open in map), which
+ * must sit beside the row's text yet keep the floor on every pointer. */
+.tight {
+  padding-left: 10px;
+  padding-right: 10px;
+}
+.icon.compact {
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+}
+@media (pointer: coarse), (max-width: 800px) {
+  .compact,
+  .icon.compact {
+    min-height: 44px;
+  }
+  .icon.compact {
+    width: 44px;
+    height: 44px;
+  }
 }

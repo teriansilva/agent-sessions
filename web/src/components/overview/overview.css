@@ -498,7 +498,11 @@
     display: none;
   }
 }
-.tr-ov-toolbar button {
+/* The toolbar's ACTIONS are the shared ghost plates (actionButton.module.css `ghost compact`,
+ * docs/design.md §6). What stays here is the two composite controls — the group-by strip and the
+ * window stepper — whose members are segments of one frame, not buttons of their own. */
+.tr-ov-groupby button,
+.tr-ov-wins-step button {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -510,12 +514,13 @@
   padding: 5px 9px;
   cursor: pointer;
 }
-.tr-ov-toolbar button:hover {
+.tr-ov-groupby button:hover,
+.tr-ov-wins-step button:hover {
   color: var(--text);
   background: var(--row-hover);
   border-color: var(--accent);
 }
-/* Inline "+ New project" name input (#361 Phase 4) — same chrome as the toolbar buttons. */
+/* Inline "+ New project" name input (#361 Phase 4). */
 .tr-ov-newproj {
   display: inline-flex;
   gap: 6px;
@@ -577,14 +582,9 @@
 .tr-ov-refused a:focus-visible {
   border-color: var(--accent);
 }
+/* The dismiss is the shared icon plate; only its place on the line is set here. */
 .tr-ov-refused button {
   margin-left: auto;
-  min-width: 32px;
-  min-height: 32px;
-  color: var(--text-2);
-  cursor: pointer;
-  background: transparent;
-  border: 0;
 }
 .tr-ov-partial {
   position: absolute;
@@ -649,7 +649,7 @@
 /* The windows readout + the operator's cap stepper (#936). One bordered control, not a readout
  * beside two buttons: the count and the limit it is measured against belong together, and the
  * shared frame is what says the steps act on the number to their left. Chrome matches
- * `.tr-ov-toolbar button` exactly — no radius, no gradient (docs/design.md). */
+ * the group-by strip exactly — no radius, no gradient (docs/design.md). */
 .tr-ov-wins {
   display: inline-flex;
   align-items: stretch;

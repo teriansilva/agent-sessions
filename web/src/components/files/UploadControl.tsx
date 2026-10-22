@@ -62,7 +62,7 @@ export function UploadControl({
       <button
         ref={btn}
         type="button"
-        className={styles.iconBtn}
+        className={styles.shellBtn}
         data-upload-trigger=""
         aria-haspopup="menu"
         aria-expanded={open}

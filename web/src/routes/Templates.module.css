@@ -50,53 +50,17 @@
 }
 
 /* Flat CTA + ghost — the Settings pair, restated in mono so they sit beside the chips. */
-.cta,
-.ghost,
-.danger {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 34px;
-  padding: 0 14px;
-  border-radius: 0;
-  font: inherit;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  font-weight: 600;
-  cursor: pointer;
-  text-decoration: none;
+.cta {
+  composes: primary from "../components/ui/actionButton.module.css";
   white-space: nowrap;
 }
-.cta {
-  background: var(--cta-bg-1);
-  color: var(--cta-text);
-  border: 1px solid transparent;
-}
 .ghost {
-  background: transparent;
-  color: var(--text-2);
-  border: 1px solid var(--line-strong);
-}
-.ghost:hover {
-  color: var(--text-1);
-  background: var(--glass-strong);
+  composes: ghost from "../components/ui/actionButton.module.css";
+  white-space: nowrap;
 }
 .danger {
-  background: transparent;
-  color: var(--status-down);
-  border: 1px solid color-mix(in srgb, var(--status-down) 55%, transparent);
-}
-.danger:hover {
-  background: color-mix(in srgb, var(--status-down) 12%, transparent);
-}
-.cta:disabled,
-.ghost:disabled,
-.danger:disabled {
-  opacity: 0.6;
-  cursor: default;
+  composes: danger from "../components/ui/actionButton.module.css";
+  white-space: nowrap;
 }
 
 .note {
@@ -326,29 +290,9 @@
   border-top: 1px solid var(--line);
 }
 .act {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  min-height: 28px;
-  padding: 0 9px;
-  border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--bg-2) 55%, transparent);
-  color: var(--text-2);
-  font: inherit;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  border-radius: 0;
-  cursor: pointer;
-  text-decoration: none;
+  composes: ghost compact from "../components/ui/actionButton.module.css";
 }
-.act:hover,
-.act:focus-visible {
-  color: var(--accent-text);
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
-}
+
 .actUse {
   color: var(--accent-text);
   border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
@@ -632,21 +576,7 @@
   color: var(--accent-text);
 }
 .iconBtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 30px;
-  min-height: 30px;
-  background: transparent;
-  border: 1px solid transparent;
-  color: var(--text-3);
-  cursor: pointer;
-  border-radius: 0;
-}
-.iconBtn:hover,
-.iconBtn:focus-visible {
-  color: var(--status-down);
-  border-color: color-mix(in srgb, var(--status-down) 55%, transparent);
+  composes: icon compact from "../components/ui/actionButton.module.css";
 }
 
 .imgs {
@@ -805,8 +735,7 @@
   .search,
   .act,
   .imAdd,
-  .addRow,
-  .iconBtn {
+  .addRow {
     min-height: 44px;
   }
   .act {
@@ -860,9 +789,6 @@
   .fields td input[type="checkbox"] {
     width: 24px;
     height: 24px;
-  }
-  .iconBtn {
-    min-width: 44px;
   }
   /* Text inputs are touch targets too (docs/design.md §8): name, description, the tag input,
    * the field cells. */
@@ -945,28 +871,12 @@
 /* The first-load failure's Retry sits inside the alert: there is no list to show, so the
  * action lives where the reason is. */
 .retry {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  composes: ghost compact from "../components/ui/actionButton.module.css";
   margin-left: 10px;
-  min-height: 28px;
-  padding: 0 9px;
-  border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--bg-2) 55%, transparent);
-  color: var(--text-2);
-  font: inherit;
-  font-size: 0.72rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  cursor: pointer;
 }
-.retry:hover {
-  color: var(--accent-text);
-  border-color: var(--accent);
-}
+
 @media (max-width: 800px) {
   .retry {
-    min-height: 44px;
     min-width: 44px;
   }
   /* The card title is a second edit link — a touch target like the rest (docs/design.md §8). */

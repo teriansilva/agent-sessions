@@ -45,25 +45,14 @@
   color: var(--text-muted);
   line-height: 1.6;
 }
-.card button {
-  min-height: 44px;
-  padding: 10px 14px;
-  border: 1px solid var(--line-strong);
-  background: var(--bg);
-  color: var(--text);
-  font: 600 12px var(--font-mono);
-  cursor: pointer;
+/* The buttons are the shared plates (docs/design.md §6): Save is the CTA, every other action a ghost. */
+.primary {
+  composes: primary from "../ui/actionButton.module.css";
 }
-.card button:disabled {
-  opacity: 0.55;
-  cursor: default;
+.secondary {
+  composes: ghost from "../ui/actionButton.module.css";
 }
-.card .primary {
-  background: var(--accent);
-  color: var(--on-accent);
-  border-color: var(--accent);
-}
-.card :is(input, button, summary):focus-visible {
+.card :is(input, summary):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }

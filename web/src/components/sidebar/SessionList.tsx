@@ -55,6 +55,12 @@ export const TOAST_OK_MS = 6_000;
 export const TOAST_ERR_MS = 12_000;
 const ROW_REORDER_ANIM_MS = 240;
 const ROW_REORDER_MIN_DELTA_PX = 2;
+/** A row ARRIVES (#1568) when it joins a list that had already loaded. More new rows than this at
+ *  once is a different list (a filter, the Archived tab, a page of "Load more"), not an arrival, and
+ *  a whole list sliding in would be noise. */
+const ROW_ARRIVAL_MAX = 3;
+/** The arrival's length (`--t-arrive`) plus slack before the class comes off. */
+const ROW_ARRIVAL_CLEAR_MS = 700;
 
 function reviewIsStale(s: Session): boolean {
   return (
@@ -526,6 +532,7 @@ export function SessionList({
   const rowRefs = useRef(new Map<string, HTMLLIElement>());
   const previousRowTops = useRef(new Map<string, number>());
   const reorderTimers = useRef<number[]>([]);
+  const arrivalTimers = useRef<number[]>([]);
 
   const setRowRef = useCallback(
     (id: string) => (el: HTMLLIElement | null) => {
@@ -538,6 +545,8 @@ export function SessionList({
   const clearReorderTimers = useCallback(() => {
     for (const id of reorderTimers.current) window.clearTimeout(id);
     reorderTimers.current = [];
+    for (const id of arrivalTimers.current) window.clearTimeout(id);
+    arrivalTimers.current = [];
   }, []);
 
   useEffect(() => clearReorderTimers, [clearReorderTimers]);
@@ -556,7 +565,25 @@ export function SessionList({
     const prevTops = previousRowTops.current;
     previousRowTops.current = nextTops;
     if (prevTops.size === 0) return; // initial load
-    if (motionMode() !== "full") return;
+
+    // Arrivals (#1568): rows that were not in the list a render ago. Full slides them in and
+    // flashes their LED; Reduced gives them the single fade; Off, nothing (motion.css).
+    const mode = motionMode();
+    const arrived = sessions.filter((s) => !prevTops.has(s.id));
+    if (mode !== "off" && arrived.length > 0 && arrived.length <= ROW_ARRIVAL_MAX) {
+      const cls = mode === "full" ? styles.rowArrived : "nj-fade-ok";
+      for (const s of arrived) {
+        const el = rowRefs.current.get(s.id);
+        if (!el) continue;
+        el.classList.add(cls);
+        const timer = window.setTimeout(() => {
+          el.classList.remove(cls);
+          arrivalTimers.current = arrivalTimers.current.filter((t) => t !== timer);
+        }, ROW_ARRIVAL_CLEAR_MS);
+        arrivalTimers.current.push(timer);
+      }
+    }
+    if (mode !== "full") return;
 
     for (const timer of reorderTimers.current) window.clearTimeout(timer);
     reorderTimers.current = [];
@@ -751,7 +778,12 @@ export function SessionList({
           ))}
           {hasMore && (
             <li className={styles.more}>
-              <button type="button" onClick={loadMore} disabled={loading}>
+              <button
+                type="button"
+                className={styles.moreBtn}
+                onClick={loadMore}
+                disabled={loading}
+              >
                 {loading ? "Loading…" : "Load more"}
               </button>
             </li>

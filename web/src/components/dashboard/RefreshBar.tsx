@@ -1,6 +1,6 @@
 import d from "./Dashboard.module.css";
 
-/** The dashboard's refresh bar (#1223): a 2px accent block sweeping a hairline track along the
+/** The dashboard's refresh bar (#1223): a 2px chrome-hue (`--hud`) block sweeping a hairline track along the
  *  top edge while retained data is being re-read behind it. Ask's working bar (#1171), without its
  *  step line — there is one question per source here, not one pipeline.
  *

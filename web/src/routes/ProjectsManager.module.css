@@ -53,37 +53,28 @@
   display: flex;
   gap: 2px;
 }
+/* A finger's six 44px actions do not fit beside the name on a phone: they take a line of their
+ * own, right-aligned, and the name keeps its width. */
+@media (pointer: coarse), (max-width: 800px) {
+  .rowHead {
+    flex-wrap: wrap;
+  }
+  .actions {
+    flex-basis: 100%;
+    justify-content: flex-end;
+  }
+}
 .iconBtn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  color: var(--text-muted);
-  cursor: pointer;
+  composes: icon compact from "../components/ui/actionButton.module.css";
 }
-.iconBtn:hover:not(:disabled) {
-  background: var(--row-hover);
-  color: var(--accent-text);
-}
-.iconBtn:focus-visible {
-  outline: none;
-  color: var(--accent-text);
-  box-shadow: 0 0 0 2px var(--accent);
-}
+
 /* The starred (default) project (#615): the only persistently-lit icon in the row, so it reads
    as state rather than as another action. Hover/focus already paint --accent, so this just makes
    the resting state match. */
-.starOn {
+.iconBtn.starOn {
   color: var(--accent-text);
 }
-.iconBtn:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
+
 .editForm {
   display: flex;
   align-items: center;
@@ -171,25 +162,9 @@
   cursor: pointer;
 }
 .smallBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 10px;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  background: var(--surface-2, #1c1c1c);
-  color: var(--text, #ddd);
-  border: 1px solid var(--border, #333);
-  border-radius: 0;
+  composes: ghost compact from "../components/ui/actionButton.module.css";
 }
-.smallBtn:hover:not(:disabled) {
-  border-color: var(--accent);
-}
-.smallBtn:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
+
 .newRow {
   display: flex;
   align-items: center;

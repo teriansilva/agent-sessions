@@ -428,7 +428,7 @@ export function FilePanel({
         <button
           ref={closeRef}
           type="button"
-          className={styles.iconBtn}
+          className={styles.shellBtn}
           onClick={close}
           aria-label="Close the file panel"
         >
@@ -463,7 +463,7 @@ export function FilePanel({
       <div className={styles.crumbs}>
         <button
           type="button"
-          className={styles.iconBtn}
+          className={styles.shellBtn}
           onClick={goUp}
           disabled={!canGoUp}
           aria-label="Go to the parent folder"
@@ -500,7 +500,7 @@ export function FilePanel({
         </nav>
         <button
           type="button"
-          className={styles.iconBtn}
+          className={styles.shellBtn}
           onClick={() => setRoot(cwd)}
           aria-label="Reset to the session folder"
         >
@@ -508,7 +508,7 @@ export function FilePanel({
         </button>
         <button
           type="button"
-          className={styles.iconBtn}
+          className={styles.shellBtn}
           onClick={() => setTick((n) => n + 1)}
           aria-label="Refresh"
         >
@@ -522,8 +522,8 @@ export function FilePanel({
       </div>
 
       {caps && !caps.ok ? (
-        <div className={`${styles.state} ${styles.stateBad}`} role="alert">
-          <span className={styles.stateTag}>Files // Unavailable</span>
+        <div className={`${styles.fileState} ${styles.fileStateBad}`} role="alert">
+          <span className={styles.fileStateTag}>Files // Unavailable</span>
           {caps.reason}
         </div>
       ) : tab === "git" ? (

@@ -101,22 +101,10 @@
   color: var(--text-3);
 }
 .runBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  composes: primary compact from "../ui/actionButton.module.css";
   margin-left: auto;
-  font-size: 0.75rem;
-  padding: 6px 12px;
-  min-height: 32px;
-  border: 1px solid var(--line-strong);
-  background: var(--cta-bg-1);
-  color: var(--cta-text);
-  cursor: pointer;
 }
-.runBtn:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
+
 .spin {
   animation: orch-spin 0.9s linear infinite;
 }
@@ -445,9 +433,7 @@
    * flex line instead, which is also the only way it reaches a comfortable tap target. */
   .runBtn {
     margin-left: 0;
-    min-height: 44px;
     width: 100%;
-    justify-content: center;
   }
   /* …and the meter itself takes the slack on its line rather than sitting at 110px with a
    * ragged gap where the button used to be. */
@@ -474,45 +460,13 @@
   margin-top: 8px;
 }
 .approve {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  min-height: 32px;
-  border: 1px solid var(--accent);
-  background: var(--cta-bg-1);
-  color: var(--cta-text);
-  font: inherit;
-  font-size: 0.76rem;
-  font-weight: 700;
-  cursor: pointer;
+  composes: primary compact from "../ui/actionButton.module.css";
 }
 .reject {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  /* Only an escalation puts a label beside the ✕ (it is that row's one control); everywhere
-   * else the button is the glyph alone and the gap collapses to nothing. */
-  gap: 6px;
-  font: inherit;
-  font-size: 0.76rem;
-  padding: 6px 12px;
-  min-height: 32px;
+  composes: ghost compact from "../ui/actionButton.module.css";
   min-width: 34px;
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--text-2);
-  cursor: pointer;
 }
-.approve:disabled,
-.reject:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-.reject:hover:not(:disabled) {
-  color: var(--text-1);
-  background: var(--glass-strong);
-}
+
 /* A stale verdict is information, not an incident — degraded, never `--status-down`. */
 .stale {
   margin: 7px 0 0;
@@ -523,11 +477,8 @@
 @media (max-width: 800px) {
   .approve {
     flex: 1;
-    justify-content: center;
-    min-height: 44px;
   }
   .reject {
-    min-height: 44px;
     min-width: 44px;
   }
 }

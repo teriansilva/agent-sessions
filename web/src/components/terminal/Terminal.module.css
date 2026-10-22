@@ -58,7 +58,7 @@
 .headEng {
   flex: none;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 9px;
+  font-size: var(--fs-micro);
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -73,7 +73,7 @@
   align-items: baseline;
   min-width: 0;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.04em;
   white-space: nowrap;
   color: var(--text-3);
@@ -151,6 +151,13 @@
 .term[data-app-owns-scroll="true"] :global(.xterm-viewport)::-webkit-scrollbar {
   display: none; /* legacy WebKit/Blink */
 }
+/* The BattleLab scheme's scrollbar (#1568): the thumb in the chrome line colour on the terminal's
+ * own ground. Colour only — `scrollbar-width` stays the platform's, because the scrollbar's width
+ * is part of the column count FitAddon measures (docs/invariants/terminal-text-size.md). The other
+ * schemes are third-party designs and keep the platform bar. */
+.term[data-term-scheme="battlelab"] :global(.xterm-viewport) {
+  scrollbar-color: var(--hud-dim) var(--term-bg);
+}
 /* On touch devices, xterm's hidden helper textarea sits over the text and would grab a
  * touch-drag (the gesture then went to the caret, not us — "scrolled one line then
  * stuck"). Make it non-interactive to pointers so drags reach the terminal: our handler
@@ -178,33 +185,36 @@
   user-select: text !important;
   -webkit-user-select: text !important;
 }
+/* The link-state chip (CONNECTING / RECONNECTING / the refusal): a mono telemetry chip on a scrim
+ * of the terminal's own ground (#473), square — it is a readout, not a control. While the socket is
+ * still trying, the radar loader (nj-radar) sits in front of the words; it is decorative, the
+ * words carry the state, and Reduced / Off hold it still (motion.css). It never moves itself. */
 .status {
   position: absolute;
   top: 6px;
   right: 10px;
   z-index: calc(var(--z-raised) + 4);
-  font-size: 11px;
-  color: var(--text-muted);
-  /* Frosted scrim over live terminal text — follows the terminal surface per theme (#473). */
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.08em;
+  color: var(--text-2);
   background: color-mix(in srgb, var(--term-bg) 78%, transparent);
-  border: 1px solid var(--border-subtle);
-  padding: 2px 8px;
+  border: 1px solid var(--hud-dim);
+  padding: 2px var(--sp-2);
   border-radius: 0;
   pointer-events: none;
 }
-.rejected {
-  color: #f3b0b0;
-  border-color: #5a2a2a;
+.statusRadar {
+  --radar-size: 12px;
 }
-/* On light the scrim is light, so the pale dark-theme rejection pink washes out — use the
- * semantic status hue there; dark keeps its exact current look (#473). */
-:global([data-theme="light"]) .rejected {
-  color: var(--status-down);
-  border-color: color-mix(
-    in srgb,
-    var(--status-down) 45%,
-    var(--border-subtle)
-  );
+/* A refusal is a failure: the semantic down hue as text (AA on both grounds) and edge — never the
+ * brand accent, never the old literal pinks. */
+.rejected {
+  color: var(--danger-text);
+  border-color: color-mix(in srgb, var(--status-down) 60%, var(--border-subtle));
 }
 /* Floating scroll-to-bottom button (#187, shown on every pointer type). Sits above any
  * safe-area inset in the bottom-right of the terminal area; frosted glass via backdrop-filter
@@ -220,29 +230,28 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  /* Round by exception (docs/design.md v2 §6): a floating glyph over the agent's text, not a
+     plate in a bar. It never moves; hover only firms up the glass and lights the edge. */
   border-radius: 50%;
-  color: var(--text);
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border-subtle));
+  color: var(--text-1);
+  border: 1px solid var(--hud-dim);
   background: color-mix(in srgb, var(--bg) 55%, transparent);
   backdrop-filter: blur(12px) saturate(160%);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.32);
+  box-shadow: var(--shadow-menu);
   cursor: pointer;
   transition:
-    transform 120ms ease-out,
-    opacity 120ms ease-out;
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
 }
 .scrollFab:hover,
 .scrollFab:active {
   background: color-mix(in srgb, var(--bg) 70%, transparent);
-  transform: translateY(-1px);
+  border-color: var(--hud);
+  color: var(--hud-text);
 }
-/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
-:root:not([data-motion="full"]) .scrollFab {
-  transition: none;
-}
-:root:not([data-motion="full"]) .scrollFab:hover,
-:root:not([data-motion="full"]) .scrollFab:active {
-  transform: none;
+.scrollFab:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -4px;
 }
 /* Solid-background fallback for browsers without backdrop-filter support
  * (older Android WebViews). Loses the see-through effect but stays legible. */
@@ -267,64 +276,70 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 14px;
-  color: var(--text);
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-1);
   background: color-mix(in srgb, var(--bg) 75%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
+  border: 1px solid var(--hud-dim);
   border-radius: 0;
-  font-size: 13px;
+  font-size: var(--fs-row);
   backdrop-filter: blur(10px) saturate(150%);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.32);
+  /* The READ ONLY rule: a 2px HUD edge on the left, drawn inside the box, over the menu depth. */
+  box-shadow:
+    inset 2px 0 0 var(--hud),
+    var(--shadow-menu);
 }
 .secondaryBanner > span {
   flex: 1;
   min-width: 0;
 }
+/* TAKE OVER is THE primary action button (ui/actionButton.module.css): an amber plate, §8 floor. */
 .takeoverBtn {
+  composes: primary from "../ui/actionButton.module.css";
   flex: none;
-  padding: 6px 12px;
-  border-radius: 0;
-  font-weight: 600;
-  font-size: 12.5px;
-  color: var(--on-accent); /* dark text on amber, theme-independent (#211) */
-  background: var(--accent);
-  border: 1px solid color-mix(in srgb, var(--accent) 85%, black);
-  cursor: pointer;
 }
-.takeoverBtn:hover,
-.takeoverBtn:focus-visible {
-  background: color-mix(in srgb, var(--accent) 90%, white);
-}
-/* Manual session-restart control (#331): a compact HUD-tag button in the panel header. Recovers a
- * wedged session (kill the agent process → resume from disk). Muted by default so it reads as a
- * recovery affordance, not a primary action; warms toward the accent on hover/focus. */
-.restartBtn {
+/* THE HEAD CHIP (#331 → #1568): every action in the pane head — Files, Recap, Brief, To map, Hand
+ * off, Restart, the "…" overflow and the ≤800px Actions trigger — is THE ghost action button
+ * (ui/actionButton.module.css): a painted chamfer, display caps, the inset focus ring.
+ *
+ * LOCAL MODIFIER: the shared ghost is 44px at every width; the desktop head is a 26px bar (its
+ * measured contract, see .panelHead and #783), so the chip restates a 20px height and a smaller
+ * cut on top of the composed variant. The coarse-pointer and ≤800px rules below restore the 44px
+ * floor. A pressed chip glitches once (nj-glitch-step, a filter step — Full only; motion.css turns
+ * it off in Reduced and Off). A toggled chip (aria-pressed, the Files drawer) lights its edge.
+ *
+ * `.restartBtn` is the class's old name, kept as an alias for the structured pane, which still
+ * reads it (components/structured/ is outside this change). The overrides are written
+ * `button.headChip`: one type selector over the shared class, so they hold whichever sheet loads
+ * last (the bundle does not promise the composed sheet comes first). */
+.headChip {
+  composes: ghost from "../ui/actionButton.module.css";
+  --c: var(--sp-1);
   flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 8px;
-  border-radius: 0;
-  font: inherit;
-  font-size: 11px;
+}
+/* `button.` outranks the composed variant whatever order the two sheets load in. */
+button.headChip {
+  min-height: 0;
+  height: 20px;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-micro);
   font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--text-2);
-  background: color-mix(in srgb, var(--bg-2) 60%, transparent);
-  border: 1px solid var(--line);
-  cursor: pointer;
 }
-.restartBtn:hover,
-.restartBtn:focus-visible {
-  color: var(--accent-text);
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+.headChip:active:not(:disabled) {
+  animation: global(nj-glitch-step) var(--t-arrive) steps(3, end) 1;
 }
-.restartBtn:disabled {
+button.headChip[aria-pressed="true"] {
+  --nj-edge: var(--hud);
+  --nj-face: color-mix(in srgb, var(--hud) 14%, var(--bg-1));
+  color: var(--hud-text);
+}
+.headChip:disabled {
   opacity: 0.55;
   cursor: default;
 }
-/* The session-brief trigger (#481) reuses .restartBtn now — a "Recap" text button matching the
- * REPAINT / RESTART chips beside it in the panel header (#497-followup). */
+.restartBtn {
+  composes: headChip;
+}
 @supports not (
   (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
 ) {
@@ -357,15 +372,15 @@
   padding: 4px 12px;
   border-radius: 0;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: lowercase;
   white-space: nowrap;
-  color: var(--accent-text);
+  color: var(--hud-text);
   background: color-mix(in srgb, var(--bg-0) 88%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
-  box-shadow: 0 0 12px var(--accent-glow);
+  border: 1px solid var(--hud-dim);
+  box-shadow: var(--glow-head);
 }
 .histPillMuted {
   color: var(--text-3);
@@ -375,29 +390,25 @@
 .histPillError {
   color: var(--status-down);
   border-color: color-mix(in srgb, var(--status-down) 40%, transparent);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--status-down) 15%, transparent);
+  box-shadow: none;
   cursor: pointer;
+}
+.histPillError:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .histPillError .histRetry {
   color: var(--accent-text);
 }
-.histSpin {
-  width: 10px;
-  height: 10px;
+/* The loading pill steps (THE steps loader, nj-steps): three cells lit in turn — opacity only, and
+ * nj-steps holds them still outside Full. Sized to the pill's micro type. */
+.histSteps {
   flex: none;
-  border: 1.5px solid color-mix(in srgb, var(--accent) 25%, transparent);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: histRot 0.8s linear infinite;
+  gap: 3px;
 }
-@keyframes histRot {
-  to {
-    transform: rotate(360deg);
-  }
-}
-/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
-:root:not([data-motion="full"]) .histSpin {
-  animation: none;
+.histSteps > i {
+  width: 4px;
+  height: 4px;
 }
 
 /* Auto copy-on-select confirmation (#554), and the link-copied chip the terminal and the structured
@@ -423,22 +434,20 @@
   --toast-led: var(--status-down);
   animation-duration: 2600ms;
 }
+/* Opacity only: the chip sits over the agent's output, and nothing over the terminal moves. */
 @keyframes copiedFlash {
   0% {
     opacity: 0;
-    transform: translate(-50%, 5px);
+    transform: translateX(-50%);
   }
-  12% {
-    opacity: 1;
-    transform: translate(-50%, 0);
-  }
+  12%,
   78% {
     opacity: 1;
-    transform: translate(-50%, 0);
+    transform: translateX(-50%);
   }
   100% {
     opacity: 0;
-    transform: translate(-50%, 0);
+    transform: translateX(-50%);
   }
 }
 /* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
@@ -462,10 +471,10 @@
    * phone. Labelling four chips at 390px does not fit, and the alternative was burying Recap and
    * Hand off in a menu, which would have regressed shipped behaviour to make room for Files.
    * The accessible name and tooltip are unchanged, so nothing is lost but the pixels. */
-  .restartBtn {
+  button.headChip {
     min-width: 44px;
-    min-height: 44px;
-    padding: 0 12px;
+    height: 44px;
+    padding: 0 var(--sp-3);
     justify-content: center;
   }
   .headActionLabel {
@@ -484,7 +493,7 @@
   align-items: center;
   gap: 3px;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 9px;
+  font-size: var(--fs-micro);
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -542,7 +551,7 @@
   display: inline-flex;
   align-items: center;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 9px;
+  font-size: var(--fs-micro);
   font-weight: 600;
   line-height: 15px;
   color: color-mix(in srgb, var(--accent-text) 64%, var(--text));
@@ -568,12 +577,13 @@
     height: 44px;
   }
   .headActions [data-testid="head-actions-menu"] {
+    height: 44px;
     min-height: 44px;
     min-width: 44px;
     padding: 0 12px;
     gap: 6px;
     font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 11px;
+    font-size: var(--fs-label);
     letter-spacing: 0.12em;
     text-transform: uppercase;
   }

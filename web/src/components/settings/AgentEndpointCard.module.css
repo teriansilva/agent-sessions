@@ -74,37 +74,15 @@
   gap: 10px;
   flex-wrap: wrap;
 }
-.primary,
-.ghost {
-  min-height: 44px;
-  min-width: 88px;
-  padding: 0 14px;
-  border-radius: 0;
-  font: 700 12px var(--font-mono);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
 .primary {
-  background: var(--accent);
-  color: var(--on-accent);
-  border: 0;
+  composes: primary from "../ui/actionButton.module.css";
+  min-width: 88px;
 }
 .ghost {
-  background: transparent;
-  color: var(--text);
-  border: 1px solid var(--line-strong);
+  composes: ghost from "../ui/actionButton.module.css";
+  min-width: 88px;
 }
-.primary:disabled,
-.ghost:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-.primary:focus-visible,
-.ghost:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
+
 /* #1222: the Tools permission. Each option is a full-width 44 px target. */
 .tools {
   border: 1px solid var(--line);

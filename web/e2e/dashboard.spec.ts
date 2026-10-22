@@ -9,6 +9,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { ASK_STREAM, fulfillAsk, mockAskConversations } from "./askStream";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { animationsSettled, storeMotionChoice } from "./nightjarShell";
 
 const NOW = Math.floor(Date.now() / 1000);
 const A = "claude:aaaaaaaa-0000-4000-8000-00000000000a";
@@ -673,4 +674,42 @@ test("long agent-authored titles and project names never overflow the page sidew
     el.clientWidth,
   ]);
   expect(scroll).toBeLessThanOrEqual(client + 1);
+});
+
+// NIGHTJAR Phase 5 (#1568). Rows arrive with the shared arrival (a slide and one tint flash on an
+// overlay). Reduced and Off remove that animation, so the overlay must REST invisible: before the
+// fix every row in Off stayed painted in the full tint.
+for (const motion of ["off", "reduced", "full"] as const) {
+  test(`arrived rows carry no tint at rest — ${motion}`, async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await storeMotionChoice(page, motion);
+    await mockAll(page);
+    await page.goto("/dashboard");
+    await expect(page.getByTestId("running-row")).toHaveCount(2);
+    await animationsSettled(page);
+    for (const row of [
+      page.getByTestId("running-row").first(),
+      page.getByTestId("mission-row").first(),
+      page.getByTestId("quota-row").first(),
+    ]) {
+      expect(await row.evaluate((el) => getComputedStyle(el, "::after").opacity)).toBe("0");
+    }
+  });
+}
+
+test("a first read says Acquiring in words, and the KPI cards never show a number before one is read", async ({
+  page,
+}) => {
+  await mockAll(page);
+  // Hold every dashboard source: the first read is in flight for the whole test.
+  await page.route(/\/api\/(dashboard\/sessions|agents\/usage(\?|$)|missions(\?|$)|pulse\/needs-you(\?|$))/, () => {});
+  await page.goto("/dashboard");
+  for (const id of ["kpi-agents", "kpi-missions", "kpi-needs", "kpi-quota"]) {
+    const kpi = page.getByTestId(id);
+    await expect(kpi.getByRole("status")).toHaveText("Acquiring");
+    expect(await kpi.textContent()).not.toMatch(/\d/);
+  }
+  for (const tile of ["dash-running", "dash-missions", "dash-quota"]) {
+    await expect(page.getByTestId(tile).getByTestId("tile-loading")).toHaveText(/^Acquiring /);
+  }
 });

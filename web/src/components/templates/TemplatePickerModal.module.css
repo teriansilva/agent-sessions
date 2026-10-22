@@ -227,44 +227,13 @@ textarea.input {
   gap: 6px;
   flex-wrap: wrap;
 }
+/* A picker row's actions are the shared plates at row height (docs/design.md §6): Insert a ghost,
+ * Send the call to action. */
 .act {
-  composes: nj-plate from global;
-  --nj-face: color-mix(in srgb, var(--bg-2) 55%, transparent);
-  --nj-edge: var(--line-strong);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  min-height: 32px;
-  padding: 0 var(--sp-3);
-  border: 1px solid transparent;
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-2);
-  cursor: pointer;
-  font-weight: 600;
-  transition: color var(--t-fast) var(--ease-out);
+  composes: ghost compact from "../ui/actionButton.module.css";
 }
-.act:hover,
-.act:focus-visible {
-  color: var(--accent-text);
-  --nj-edge: var(--hud);
-}
-.act:focus-visible {
-  outline: 2px solid var(--accent-text);
-  outline-offset: -3px;
-}
-.act:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-.primary {
-  --nj-face: color-mix(in srgb, var(--hud) 12%, transparent);
-  --nj-edge: var(--hud-dim);
-  color: var(--accent-text);
-  border-color: var(--hud-dim);
+.send {
+  composes: primary compact from "../ui/actionButton.module.css";
 }
 .note,
 .foot {
@@ -306,12 +275,12 @@ textarea.input {
     max-height: 86vh;
     padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
   }
-  .act {
+  .act,
+  .send {
     flex: 1;
   }
 }
 @media (pointer: coarse), (max-width: 800px) {
-  .act,
   .input,
   .search {
     min-height: 44px;

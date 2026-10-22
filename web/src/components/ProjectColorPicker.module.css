@@ -25,8 +25,7 @@
   background: var(--dot);
   cursor: pointer;
 }
-.swatch:focus-visible,
-.clear:focus-visible {
+.swatch:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -44,25 +43,14 @@
   color: var(--dot-ink);
 }
 .clear {
-  min-height: 44px;
-  padding: 6px 14px;
-  font: inherit;
-  font-size: 12.5px;
-  color: var(--text-2);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 0;
-  cursor: pointer;
+  composes: ghost from "./ui/actionButton.module.css";
 }
 .clear[aria-checked="true"] {
   color: var(--text);
   border-color: var(--accent);
 }
-.clear:hover:not(:disabled) {
-  border-color: var(--accent);
-}
-.swatch:disabled,
-.clear:disabled {
+
+.swatch:disabled {
   opacity: 0.55;
   cursor: default;
 }

@@ -7,6 +7,7 @@ import { api } from "../../lib/api";
 import { relTime } from "../../lib/format";
 import type { RecentWorkEntry, RecentWorkPayload } from "../../types/api";
 import { useScopeEpoch } from "../dashboard/useScopeEpoch";
+import { Loader } from "../hud/Loader";
 import dlg from "../HudDialog.module.css";
 import { useFocusContainment } from "../pulse/useModalDrawer";
 import s from "./AskHome.module.css";
@@ -160,7 +161,7 @@ export function RecentWork({
           Couldn’t read your recent work for this window.
         </p>
       ) : !data ? (
-        <p className={s.note}>Reading…</p>
+        <Loader kind="acquire" label="Acquiring recent work" className={s.loading} />
       ) : entries.length === 0 ? (
         <p className={s.note}>Nothing in this window yet.</p>
       ) : (
@@ -225,7 +226,7 @@ function Entry({ e, expandable }: { e: RecentWorkEntry; expandable?: boolean }) 
         <div className={s.ctl}>
           <button
             type="button"
-            className={`${s.btn} ${s.icon}`}
+            className={s.icon}
             aria-expanded={open}
             aria-label={open ? "Hide this session’s recap" : "Show this session’s recap"}
             onClick={() => setOpen((v) => !v)}
@@ -363,7 +364,7 @@ function RecentWorkDialog({
               Couldn’t read your recent work for this window.
             </p>
           ) : (
-            <p className={s.note}>Reading…</p>
+            <Loader kind="acquire" label="Acquiring recent work" className={s.loading} />
           )
         ) : days.length === 0 ? (
           <p className={s.note}>Nothing matches these filters.</p>

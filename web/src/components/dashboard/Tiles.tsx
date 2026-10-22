@@ -18,7 +18,6 @@ import {
 } from "../../lib/agentUsage";
 import { relTime } from "../../lib/format";
 import { missionLink, MISSION_PATH } from "../../lib/missionLink";
-import { SESSIONS_PATH } from "../../lib/routes";
 import type {
   AgentUsageResponse,
   AgentUsageRow,
@@ -27,8 +26,9 @@ import type {
 } from "../../types/api";
 import s from "../ask/AskHome.module.css";
 import { sessionRoute } from "../ask/needsYouLabels";
+import { Gauge, Led, type LedTone, Readout } from "../hud/Meters";
+import { Loader } from "../hud/Loader";
 import {
-  BAND_LABEL,
   forecastLine,
   lowestPlanLeft,
   resetsAt,
@@ -89,9 +89,7 @@ function Unready<T>({
 }) {
   if (res.status === "loading") {
     return (
-      <p className={s.note} data-testid="tile-loading">
-        Reading {what}…
-      </p>
+      <Loader kind="acquire" label={`Acquiring ${what}`} className={d.acquire} testId="tile-loading" />
     );
   }
   if (res.status === "error") {
@@ -137,40 +135,55 @@ export function KpiStrip({
   missions,
   quota,
   needsYou,
+  needsYouFailed = false,
   onJump,
 }: {
   sessions: Polled<DashboardSessions>;
   missions: Polled<MissionsSnapshot>;
   quota: Polled<AgentUsageResponse>;
   needsYou: number | null;
+  /** The NEEDS YOU read failed with nothing painted: "couldn’t read", never an endless Acquiring. */
+  needsYouFailed?: boolean;
   /** Open (scroll to) the tile a number counts. */
   onJump: (tileId: string) => void;
 }) {
   const live = sessions.status === "ok" ? sessions.data.live : null;
+  const liveOk = live && live.health === "ok" ? live : null;
   const plan = quota.status === "ok" ? lowestPlanLeft(quota.data.agents) : null;
   return (
     <div className={d.kpis} data-testid="dash-kpis">
       <Kpi
         label="Active agents"
         testid="kpi-agents"
+        tone={liveOk ? (liveOk.working > 0 ? "up" : "idle") : sessions.status === "loading" ? "idle" : "down"}
         onClick={() => onJump("dash-running")}
         value={
-          live && live.health === "ok" ? (
+          liveOk ? (
             <>
-              {live.total} <small>live · {live.working} working</small>
+              <Readout value={liveOk.total} />{" "}
+              <small>live · {liveOk.working} working</small>
             </>
           ) : sessions.status === "loading" ? (
-            "…"
+            <Acquiring />
           ) : (
-            <>
-              — <small>couldn’t read</small>
-            </>
+            <Unread />
           )
         }
+        meter={
+          liveOk && liveOk.total > 0 ? (
+            <span className={`${d.kpiMeter} ${d.kpiMeterUp}`}>
+              <Gauge
+                value={liveOk.working / liveOk.total}
+                low={-1}
+                label={`${liveOk.working} of ${liveOk.total} live agents working`}
+              />
+            </span>
+          ) : null
+        }
         sub={
-          live && live.health === "ok" && Object.keys(live.by_engine).length ? (
+          liveOk && Object.keys(liveOk.by_engine).length ? (
             <span className={d.per}>
-              {Object.entries(live.by_engine).map(([e, c]) => (
+              {Object.entries(liveOk.by_engine).map(([e, c]) => (
                 <span key={e}>
                   <b>{e}</b> {c.live}/{c.working}
                 </span>
@@ -182,35 +195,44 @@ export function KpiStrip({
       <Kpi
         label="Missions"
         testid="kpi-missions"
+        tone={
+          missions.status === "ok"
+            ? missions.data.reviewTotal > 0
+              ? "att"
+              : missions.data.activeTotal > 0
+                ? "up"
+                : "idle"
+            : missions.status === "loading"
+              ? "idle"
+              : "down"
+        }
         onClick={() => onJump("dash-missions")}
         value={
           missions.status === "ok" ? (
             <>
-              {missions.data.activeTotal + missions.data.reviewTotal}{" "}
+              <Readout value={missions.data.activeTotal + missions.data.reviewTotal} />{" "}
               <small>
-                {missions.data.activeTotal} active · {missions.data.reviewTotal}{" "}
-                in review
+                {missions.data.activeTotal} active · {missions.data.reviewTotal} in review
               </small>
             </>
           ) : missions.status === "loading" ? (
-            "…"
+            <Acquiring />
           ) : (
-            <>
-              — <small>couldn’t read</small>
-            </>
+            <Unread />
           )
         }
       />
       <Kpi
         label="Needs you"
         testid="kpi-needs"
+        tone={needsYou === null ? (needsYouFailed ? "down" : "idle") : needsYou > 0 ? "att" : "idle"}
         onClick={() => onJump("needs-you-h")}
         value={
           needsYou === null ? (
-            "…"
+            needsYouFailed ? <Unread /> : <Acquiring />
           ) : (
             <>
-              {needsYou}{" "}
+              <Readout value={needsYou} />{" "}
               <small>{needsYou === 1 ? "session" : "sessions"}</small>
             </>
           )
@@ -219,17 +241,26 @@ export function KpiStrip({
       <Kpi
         label="Plan quota — lowest left"
         testid="kpi-quota"
+        tone={
+          quota.status === "error"
+            ? "down"
+            : plan
+              ? plan.left <= 0
+                ? "down"
+                : plan.left < 25 || plan.stale
+                  ? "att"
+                  : "up"
+              : "idle"
+        }
         onClick={() => onJump("dash-quota")}
         value={
           quota.status === "error" ? (
-            <>
-              — <small>couldn’t read</small>
-            </>
+            <Unread />
           ) : quota.status === "loading" ? (
-            "…"
+            <Acquiring />
           ) : plan ? (
             <>
-              {Math.round(plan.left)}%{" "}
+              <Readout value={`${Math.round(plan.left)}%`} />{" "}
               <small>
                 {plan.engine} · {plan.label}
               </small>
@@ -237,6 +268,13 @@ export function KpiStrip({
           ) : (
             <small>no agent reports a plan quota</small>
           )
+        }
+        meter={
+          plan ? (
+            <span className={d.kpiMeter}>
+              <Gauge value={plan.left / 100} low={0.25} label={`${plan.engine} plan quota left`} />
+            </span>
+          ) : null
         }
         sub={
           plan ? (
@@ -252,16 +290,42 @@ export function KpiStrip({
   );
 }
 
+/** A first read in flight: the radar beside its words (a button holds phrasing content only, so
+ *  this is `Loader kind="radar"` drawn in spans). */
+function Acquiring() {
+  return (
+    <span className={`nj-loader is-radar ${d.kpiAcquire}`} role="status">
+      <span className="nj-radar" aria-hidden="true" />
+      <span className="nj-loader-label">Acquiring</span>
+    </span>
+  );
+}
+
+/** A failed read: a dash, never a zero, and the words. */
+function Unread() {
+  return (
+    <>
+      <Readout value="—" className={d.kpiNone} />{" "}
+      <small>couldn’t read</small>
+    </>
+  );
+}
+
 function Kpi({
   label,
   value,
   sub,
+  meter,
+  tone,
   onClick,
   testid,
 }: {
   label: string;
   value: ReactNode;
   sub?: ReactNode;
+  meter?: ReactNode;
+  /** The LED beside the label; the value beside it says the state in words. */
+  tone: LedTone;
   onClick: () => void;
   testid: string;
 }) {
@@ -273,10 +337,11 @@ function Kpi({
       data-testid={testid}
     >
       <span className={d.kpiLabel}>
-        <span className={s.sq} aria-hidden="true" />
+        <Led tone={tone} />
         {label}
       </span>
       <span className={d.kpiValue}>{value}</span>
+      {meter}
       {sub ? <span className={d.kpiSub}>{sub}</span> : null}
     </button>
   );
@@ -478,10 +543,7 @@ function LiveRow({
 }) {
   return (
     <Link className={d.lrow} to={sessionRoute(id)} data-testid="running-row">
-      <span
-        className={`${d.dot} ${working ? d.up : d.idle}`}
-        aria-hidden="true"
-      />
+      <Led tone={working ? "up" : "idle"} className={d.dot} />
       <span className={d.lbody}>
         <span className={d.tt}>{title}</span>
         <span className={d.mm}>{meta}</span>
@@ -529,9 +591,9 @@ export function MissionsTile({
                 to={missionLink(x.id)}
                 data-testid="mission-row"
               >
-                <span
-                  className={`${d.dot} ${x.state === "review" || x.needs_you ? d.deg : d.up}`}
-                  aria-hidden="true"
+                <Led
+                  tone={x.state === "review" || x.needs_you ? "att" : "up"}
+                  className={d.dot}
                 />
                 <span className={d.lbody}>
                   <span className={d.tt}>{x.title || x.id}</span>
@@ -645,7 +707,6 @@ function QuotaRow({ row }: { row: AgentUsageRow }) {
     : usedPct !== null && Number.isFinite(usedPct)
       ? 100 - usedPct
       : null;
-  const tone = fill === null ? "" : fill <= 0 ? d.down : fill < 25 ? d.deg : "";
   const stale = stalenessNote(row);
   const fc = forecastLine(row);
   return (
@@ -654,17 +715,15 @@ function QuotaRow({ row }: { row: AgentUsageRow }) {
         <span>{row.engine}</span>
         <span>{headline}</span>
       </div>
-      <div
-        className={`${d.bar} ${fill !== null ? "" : d.barNone}`}
-        aria-hidden="true"
-      >
-        {fill !== null ? (
-          <i
-            className={tone}
-            style={{ width: `${Math.max(0, Math.min(100, fill))}%` }}
-          />
-        ) : null}
-      </div>
+      {fill !== null ? (
+        <Gauge
+          value={Math.max(0, Math.min(100, fill)) / 100}
+          low={0.25}
+          label={`${row.engine} quota left`}
+        />
+      ) : (
+        <div className={d.barNone} aria-hidden="true" />
+      )}
       <div className={`${d.qSub} ${stale ? d.warnText : ""}`}>
         {usageCaption(row)}
         {stale ? ` · ${row.error ? "" : "stale — taken "}${stale}` : ""}
@@ -679,80 +738,5 @@ function QuotaRow({ row }: { row: AgentUsageRow }) {
         </div>
       ) : null}
     </div>
-  );
-}
-
-// ---- most recent sessions --------------------------------------------------------------------
-
-export function RecentSessionsTile({
-  res,
-  retry,
-}: {
-  res: Polled<DashboardSessions>;
-  retry: () => void;
-}) {
-  const rows = res.status === "ok" ? res.data.recent.rows : null;
-  return (
-    <Section
-      id="dash-recent"
-      testid="dash-recent"
-      title="Most recent sessions"
-      meta="by last activity · newest first"
-    >
-      <Unready res={res} retry={retry} what="sessions" />
-      {/* A failed refresh keeps the last list — and SAYS so, like every other tile (finding 5). */}
-      {res.status === "ok" ? (
-        <RefreshFailed show={res.refreshFailed} retry={retry} />
-      ) : null}
-      {rows ? (
-        rows.length === 0 ? (
-          <p className={s.note}>No sessions yet.</p>
-        ) : (
-          <>
-            <table className={d.rtable}>
-              <thead>
-                <tr>
-                  <th>Session</th>
-                  <th>State</th>
-                  <th className={d.wideOnly}>Agent · project</th>
-                  <th>Last activity</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.id} data-testid="recent-session-row">
-                    <td className={d.tdTitle}>
-                      <Link to={sessionRoute(r.id)}>{r.title || r.id}</Link>
-                      <span className={d.narrowMeta}>
-                        {r.engine}
-                        {r.project.name ? ` · ${r.project.name}` : ""}
-                      </span>
-                    </td>
-                    <td>
-                      <span
-                        className={`${d.band} ${d[`band_${r.band}`] ?? ""}`}
-                      >
-                        {BAND_LABEL[r.band]}
-                      </span>
-                    </td>
-                    <td className={`${d.tdMeta} ${d.wideOnly}`}>
-                      {r.engine}
-                      {r.project.name ? ` · ${r.project.name}` : ""}
-                    </td>
-                    <td className={d.tdMeta}>{relTime(r.last_activity)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div className={d.foot}>
-              <span>latest {rows.length}</span>
-              <Link className={d.go} to={SESSIONS_PATH}>
-                All sessions →
-              </Link>
-            </div>
-          </>
-        )
-      ) : null}
-    </Section>
   );
 }

@@ -288,7 +288,7 @@ export function NeedsYouDetailsDialog({
               </Link>
               <button
                 type="button"
-                className={`${s.btn} ${s.quiet}`}
+                className={s.quiet}
                 disabled={busy || outdated}
                 onClick={() => void act(() => api.needsYouDismiss(d.id, action?.id))}
                 data-testid="needs-you-dismiss"
@@ -299,7 +299,7 @@ export function NeedsYouDetailsDialog({
               {isChoose && action!.can_approve ? (
                 <button
                   type="button"
-                  className={`${s.btn} ${s.primary}`}
+                  className={s.primary}
                   disabled={busy}
                   onClick={() => void act(() => api.approveAction(action!.id))}
                   data-testid="needs-you-dialog-approve"
@@ -310,7 +310,7 @@ export function NeedsYouDetailsDialog({
               {isText && action!.can_approve ? (
                 <button
                   type="button"
-                  className={`${s.btn} ${s.primary}`}
+                  className={s.primary}
                   disabled={busy || !text.trim()}
                   onClick={() =>
                     void act(() =>

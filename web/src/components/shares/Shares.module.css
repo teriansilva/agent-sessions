@@ -236,25 +236,9 @@
   color: var(--text-2);
 }
 .revoke {
+  composes: danger from "../ui/actionButton.module.css";
   flex: none;
-  min-height: 44px;
   min-width: 88px;
-  padding: 0 14px;
-  background: transparent;
-  color: var(--danger-text);
-  border: 1px solid color-mix(in srgb, var(--status-down) 55%, var(--border));
-  border-radius: 0;
-  font: inherit;
-  font-size: 12.5px;
-  cursor: pointer;
-}
-.revoke:hover:not(:disabled),
-.revoke:focus-visible {
-  border-color: var(--status-down);
-}
-.revoke:disabled {
-  opacity: 0.6;
-  cursor: default;
 }
 
 /* Settings → Sharing. */

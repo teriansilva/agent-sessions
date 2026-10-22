@@ -75,10 +75,13 @@ import {
   WINDOW_CAP_MIN,
 } from "./workspace";
 import "./overview.css";
+import action from "../ui/actionButton.module.css";
 import { useEngineRoster } from "../../app/engineRoster";
 
 // Stable identity (module scope) so React Flow doesn't re-register node types each render.
 const nodeTypes = { projectGroup: ProjectGroupNode, session: SessionNode };
+/* The toolbar's actions: the shared ghost plate at row height (docs/design.md §6). */
+const TOOL = `${action.ghost} ${action.compact}`;
 
 // The map layout selector (#424 Phase 2) — one explicit grouping at a time.
 const GROUP_MODES: { key: GroupBy; label: string; Icon: typeof FolderTree }[] =
@@ -1041,11 +1044,16 @@ function OverviewCanvasInner({
                 aria-label="Project name"
                 autoFocus
               />
-              <button type="submit" disabled={!newName.trim() || createBusy}>
+              <button
+                type="submit"
+                className={TOOL}
+                disabled={!newName.trim() || createBusy}
+              >
                 Create
               </button>
               <button
                 type="button"
+                className={TOOL}
                 title="Cancel"
                 onClick={() => {
                   setNaming(false);
@@ -1059,6 +1067,7 @@ function OverviewCanvasInner({
           ) : (
             <button
               type="button"
+              className={TOOL}
               onClick={() => setNaming(true)}
               title="Create a project entity"
             >
@@ -1067,6 +1076,7 @@ function OverviewCanvasInner({
           )}
           <button
             type="button"
+            className={TOOL}
             onClick={() => expandAll(allKeys)}
             title="Expand all projects"
           >
@@ -1074,6 +1084,7 @@ function OverviewCanvasInner({
           </button>
           <button
             type="button"
+            className={TOOL}
             onClick={collapseAll}
             title="Collapse all projects"
           >
@@ -1082,6 +1093,7 @@ function OverviewCanvasInner({
           {hasPins && (
             <button
               type="button"
+              className={TOOL}
               onClick={resetLayout}
               title="Put every cluster in this layout back where the map lays it out"
               data-reset-layout
@@ -1130,6 +1142,7 @@ function OverviewCanvasInner({
               {ws.windows.some((w) => !w.minimized) && (
                 <button
                   type="button"
+                  className={TOOL}
                   onClick={() => ws.arrange(bounds)}
                   title="Arrange: tile the open windows across the map, sorted by name — any that don't fit go to the tray"
                   data-window-arrange
@@ -1140,6 +1153,7 @@ function OverviewCanvasInner({
               {ws.windows.length > 0 && (
                 <button
                   type="button"
+                  className={TOOL}
                   onClick={ws.closeAll}
                   title="Close every open session window"
                   data-window-close-all
@@ -1169,6 +1183,7 @@ function OverviewCanvasInner({
             ))}
             <button
               type="button"
+              className={action.icon}
               aria-label="Dismiss"
               onClick={dismissRefused}
               data-map-refused-dismiss

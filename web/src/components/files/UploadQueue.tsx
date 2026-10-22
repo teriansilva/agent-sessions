@@ -53,7 +53,7 @@ export function UploadQueue({ uploads }: { uploads: UploadsApi }) {
           {!busy && (
             <button
               type="button"
-              className={styles.queueClose}
+              className={`${styles.shellBtn} ${styles.queueClose}`}
               aria-label="Dismiss the upload queue"
               title="Dismiss"
               onClick={uploads.dismiss}
@@ -88,6 +88,9 @@ export function UploadQueue({ uploads }: { uploads: UploadsApi }) {
                     : r.relpath}
                 </span>
                 {r.size > 0 && <span className={styles.queueSize}>{humanSize(r.size)}</span>}
+                <span className={styles.queueBar} data-q={r.state.kind} aria-hidden="true">
+                  <i />
+                </span>
                 <span className={`${styles.queueState} ${cls}`} data-upload-state={r.state.kind}>
                   {text}
                 </span>

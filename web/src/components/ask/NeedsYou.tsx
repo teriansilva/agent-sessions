@@ -4,6 +4,8 @@ import { Link } from "react-router-dom";
 import { ApiError, api } from "../../lib/api";
 import { relTime } from "../../lib/format";
 import type { NeedsYouRow } from "../../types/api";
+import { Loader } from "../hud/Loader";
+import { Led } from "../hud/Meters";
 import s from "./AskHome.module.css";
 import { KIND_LABEL, approveLabel, sessionRoute } from "./needsYouLabels";
 import type { NeedsYouState } from "./useNeedsYou";
@@ -112,7 +114,7 @@ function Body({
   onChanged: () => void;
 }) {
   if (state.status === "loading" && !state.data) {
-    return <p className={s.note}>Reading sessions…</p>;
+    return <Loader kind="acquire" label="Acquiring sessions" className={s.loading} />;
   }
   if (state.status === "error" && !state.data) {
     // A failed read is NEVER drawn as "nothing needs you": that would be a claim we cannot make.
@@ -197,7 +199,7 @@ function Row({
 
   return (
     <div className={s.row} data-testid="needs-you-row" data-session={row.id}>
-      <span className={s.led} role="img" aria-label="Needs you" />
+      <Led tone="att" label="Needs you" className={s.led} />
       <div>
         <Link className={s.rowTitle} to={sessionRoute(row.id)}>
           {row.title || row.id}
@@ -220,7 +222,7 @@ function Row({
         {label ? (
           <button
             type="button"
-            className={`${s.btn} ${s.primary}`}
+            className={s.primary}
             disabled={busy}
             onClick={() => void approve()}
             data-testid="needs-you-approve"
@@ -230,7 +232,7 @@ function Row({
         ) : null}
         <button
           type="button"
-          className={`${s.btn} ${s.icon}`}
+          className={s.icon}
           aria-label={`Details for ${row.title || row.id}`}
           title="Details"
           onClick={() => onDetails(row.id)}

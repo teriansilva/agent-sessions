@@ -64,22 +64,8 @@
 }
 
 .pause {
-  composes: nj-plate from global;
-  --nj-face: var(--bg-1);
-  --nj-edge: var(--line-strong);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 0 var(--sp-3);
-  border: 1px solid transparent;
-  color: var(--text-2);
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  composes: ghost compact from "../components/ui/actionButton.module.css";
   white-space: nowrap;
-  cursor: pointer;
 }
 .pause[aria-pressed="true"] {
   color: var(--text-1);
@@ -186,29 +172,13 @@
   line-height: 1.4;
 }
 
+/* A slide's way in (Open Missions →) is the shared ghost plate (docs/design.md §6). */
 .cta {
-  composes: nj-plate from global;
-  --nj-face: var(--bg-1);
-  --nj-edge: var(--hud-dim);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  composes: ghost from "../components/ui/actionButton.module.css";
   margin-top: var(--sp-4);
-  min-height: 36px;
-  padding: 0 var(--sp-4);
-  border: 1px solid transparent;
-  color: var(--accent-text);
-  font-family: var(--font-display);
-  font-size: var(--fs-label);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  text-decoration: none;
-  cursor: pointer;
 }
 
-.pause:focus-visible,
-.tile:focus-visible,
-.cta:focus-visible {
+.tile:focus-visible {
   outline: 2px solid var(--accent-text);
   outline-offset: -3px;
 }
@@ -241,8 +211,7 @@
     max-height: 92vh;
   }
   .dialog .close,
-  .dialog .pause,
-  .dialog .cta {
+  .dialog .pause {
     min-height: 44px;
   }
   .dialog .close {

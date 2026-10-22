@@ -25,9 +25,28 @@ function declarations(selector: string): string {
   return bodies.join(";");
 }
 
+// A button that composes the shared sheet (docs/design.md §6) takes its floor from there.
+const actionCss = readFileSync(
+  resolve(process.cwd(), "src/components/ui/actionButton.module.css"),
+  "utf8",
+).replace(/\/\*[\s\S]*?\*\//g, "");
+
+function composedDeclarations(own: string): string {
+  const variants = own.match(/composes:\s*([\w\s]+?)\s+from\s+["'][^"']*actionButton\.module\.css["']/);
+  if (!variants) return "";
+  // Only the variant's base rule (plus the `ghost` an `icon` composes): a min-height under a
+  // media query is not the floor on a desktop pointer.
+  const names = variants[1].split(/\s+/).filter((n) => n !== "compact");
+  if (names.includes("icon")) names.push("ghost");
+  return names
+    .map((n) => [...actionCss.matchAll(new RegExp(`(?:^|\\n)[^{}@]*\\.${n}(?![\\w-])[^{}]*\\{([^}]*)\\}`, "g"))].map((m) => m[1]).join(";"))
+    .join(";");
+}
+
 function minHeightPx(selector: string): number {
+  const own = declarations(selector);
   const all = [
-    ...declarations(selector).matchAll(/min-height:\s*(\d+(?:\.\d+)?)px/g),
+    ...`${own};${composedDeclarations(own)}`.matchAll(/min-height:\s*(\d+(?:\.\d+)?)px/g),
   ];
   expect(all.length, `${selector} declares a min-height`).toBeGreaterThan(0);
   return Math.max(...all.map((m) => Number(m[1])));

@@ -474,42 +474,11 @@
   margin-top: 12px;
 }
 .updateBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 14px;
-  border-radius: 0;
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-  color: var(--text);
-  background: var(--bg);
-  border: 1px solid var(--border);
+  composes: ghost from "../components/ui/actionButton.module.css";
 }
-.updateBtn:hover:not(:disabled) {
-  border-color: var(--accent);
-  background: var(--row-hover);
-}
-.updateBtn:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
+
 .updateApply {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 14px;
-  border-radius: 0;
-  font: inherit;
-  font-weight: 700;
-  cursor: pointer;
-  border: 0;
-  background: var(--cta-bg-1);
-  color: var(--cta-text);
-}
-.updateApply:disabled {
-  opacity: 0.6;
-  cursor: default;
+  composes: primary from "../components/ui/actionButton.module.css";
 }
 
 /* --- Two-factor authentication (#116) --- */
@@ -544,62 +513,18 @@
   gap: 8px;
 }
 .secBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 14px;
-  border-radius: 0;
-  font: inherit;
-  font-weight: 700;
-  cursor: pointer;
-  border: 0;
-  background: var(--cta-bg-1);
-  color: var(--cta-text);
+  composes: primary from "../components/ui/actionButton.module.css";
 }
-.secBtn:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
+
 .secBtnGhost {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 14px;
-  border-radius: 0;
-  font: inherit;
-  cursor: pointer;
-  background: var(--surface-2, #1c1c1c);
-  color: var(--text, #ddd);
-  border: 1px solid var(--border, #333);
+  composes: ghost from "../components/ui/actionButton.module.css";
 }
-.secBtnGhost:hover {
-  background: var(--surface-3, #262626);
-}
-.secBtnGhost:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
+
 /* Caution accent for the bulk-archive confirm step (#142). */
 .danger {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 14px;
-  border-radius: 0;
-  font: inherit;
-  font-weight: 700;
-  cursor: pointer;
-  color: #ffd9d2;
-  background: #5a2018;
-  border: 1px solid #8a3324;
+  composes: danger from "../components/ui/actionButton.module.css";
 }
-.danger:hover {
-  background: #6d271d;
-}
-.danger:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
+
 /* Maintenance / cleanup row (#142). */
 .cleanupRow {
   display: flex;
@@ -1202,21 +1127,9 @@
   text-overflow: ellipsis;
 }
 .discoveryRemove {
+  composes: ghost compact from "../components/ui/actionButton.module.css";
   margin-left: auto;
   flex: none;
-  appearance: none;
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 0;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: 11px;
-  padding: 2px 8px;
-  cursor: pointer;
-}
-.discoveryRemove:hover {
-  color: var(--text);
-  border-color: var(--accent);
 }
 
 /* --- Entity-grouped Session overview (#465) -------------------------------------- */
@@ -1472,20 +1385,10 @@
   width: 120px;
 }
 .budgetRefresh {
+  composes: ghost from "../components/ui/actionButton.module.css";
   margin-left: auto;
-  border-radius: 0;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-1);
-  padding: 8px 12px;
-  min-height: 44px;
-  font-size: 12px;
-  cursor: pointer;
 }
-.budgetRefresh:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
+
 .budgetError {
   margin: 0 0 10px;
   font-size: 12px;
@@ -1615,24 +1518,9 @@
   color: var(--text);
 }
 .termSizeReset {
-  min-height: 44px;
-  padding: 0 11px;
-  border: 1px solid var(--border);
-  border-radius: 0;
-  background: transparent;
-  color: var(--text-muted);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  cursor: pointer;
+  composes: ghost from "../components/ui/actionButton.module.css";
 }
-.termSizeReset:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--text);
-}
-.termSizeReset:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
+
 /* Terminal FONT picker (#866). A card radiogroup like the theme picker above, because the
  * choice is made by LOOKING: every card renders its own name and specimen in its own face.
  * Same grid geometry as .themes, so the two controls read as one family of choices. */

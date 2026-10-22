@@ -119,7 +119,9 @@ export const THEMES: Record<ThemeId, ThemeMeta> = {
       background: "#0d0e10",
       foreground: "#e8e9ec",
       cursor: "#ffb000",
-      selectionBackground: "#33332a",
+      // NIGHTJAR (#1568): the selection is the chrome's amber at 22% over the ground (was a
+      // neutral olive-grey), so a selection reads as the HUD's own tint. Ink stays AA on it.
+      selectionBackground: "#42320c",
       ansi: DARK_ANSI,
     },
   },

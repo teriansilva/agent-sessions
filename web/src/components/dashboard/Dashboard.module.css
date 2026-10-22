@@ -1,8 +1,11 @@
 /* The BattleLab dashboard: overview cards, live work and quota, with Recent work on demand (#1467).
- * HUD vocabulary (docs/design.md):
- * flat square panels, no radius except LEDs, no gradients, mono uppercase callsigns, status colour
- * ONLY for state (LEDs, bands, quota bars), `--accent` only for brand / primary. Tokens only. Every
- * control is ≥ 44px tall. The section chrome itself is Ask's (`AskHome.module.css`). */
+ * NIGHTJAR (#1531, docs/design.md v2, Phase 5): the KPI cards are painted plates (`nj-plate`: the
+ * chamfer is drawn behind the content, so the whole card stays the hit area) carrying an LED, a
+ * display readout and, where a share exists, a segmented gauge. Rows are a section's rows (the
+ * frame and callsign are Ask's, `AskHome.module.css`) with an LED that carries no word of its own
+ * — the row's meta line says the state in words. Status colour ONLY for state, `--hud` for chrome,
+ * `--accent` only for the primary action. Tokens only (nightjarLedger.test.ts). Every control is
+ * ≥ 44px tall (§8), and every focus ring is inset: a section clips its corners. */
 
 .layout {
   width: 100%;
@@ -13,76 +16,105 @@
 .grid4 {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  column-gap: 10px;
+  column-gap: var(--sp-3);
 }
 .kpis {
   composes: grid4;
-  gap: 10px;
-  margin-bottom: 14px;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
 }
 .kpi {
+  composes: nj-plate from global;
+  --c: var(--cut);
+  --nj-face: var(--bg-1);
+  --nj-edge: var(--hud-dim);
+  --nj-rail: var(--hud);
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
+  align-items: stretch;
+  gap: var(--sp-1);
   min-height: 92px;
-  padding: 10px 14px 12px;
-  border: 1px solid var(--line);
-  background: var(--bg-1);
+  padding: var(--sp-3) var(--sp-4) var(--sp-3);
+  border: 1px solid transparent;
+  border-radius: 0;
   color: var(--text-1);
   text-align: left;
   font: inherit;
   cursor: pointer;
 }
 .kpi:hover {
-  border-color: var(--line-strong);
+  --nj-edge: var(--hud);
 }
 .kpi:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -4px;
 }
 .kpiLabel {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   font-family: var(--font-mono);
-  font-size: 0.64rem;
-  font-weight: 700;
-  letter-spacing: 0.14em;
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--text-3);
 }
 .kpiValue {
-  font-family: var(--font-mono);
-  font-size: 1.55rem;
-  font-weight: 700;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  min-height: 34px;
   color: var(--text-1);
 }
 .kpiValue small {
-  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
   font-weight: 400;
   color: var(--text-3);
-  letter-spacing: 0.03em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+/* "—" where a read failed: a readout, never a zero. */
+.kpiNone {
+  color: var(--text-3);
+}
+/* The first read: the radar beside its words (a span version of `Loader`, a button holds phrasing
+ * content only). */
+.kpiAcquire {
+  align-self: center;
+  --radar-size: 20px;
+}
+.kpiMeter {
+  margin-top: var(--sp-1);
+}
+/* The working share of the live agents is a state, so it is lit in the "up" hue, not the chrome's. */
+.kpiMeterUp :global(.nj-track > i.on) {
+  background: var(--status-up);
 }
 .kpiSub {
   font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: var(--fs-label);
   color: var(--text-3);
 }
 .per {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: var(--sp-1) var(--sp-3);
   color: var(--text-2);
 }
 .per b {
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--text-1);
 }
 
 .cols {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
-  gap: 14px;
+  gap: var(--sp-4);
   align-items: start;
 }
 /* Grid children default to `min-width: auto`, which lets one long unbroken title widen the column
@@ -92,27 +124,36 @@
 }
 
 /* ---- rows ---- */
+/* A new row arrives (the shared arrival: a short slide + one tint flash, `--t-arrive`, 0 in Off);
+ * a row that stays across polls keeps its key and never re-arrives. */
 .lrow {
+  composes: nj-arrive from global;
   display: grid;
-  grid-template-columns: 12px minmax(0, 1fr) auto;
-  gap: 10px;
+  grid-template-columns: var(--sp-3) minmax(0, 1fr) auto;
+  gap: var(--sp-3);
   align-items: center;
   min-height: 44px;
-  padding: 8px 14px;
+  padding: var(--sp-2) var(--sp-4);
   border-bottom: 1px solid var(--line);
   color: inherit;
   text-decoration: none;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 .lrow:hover {
-  background: var(--glass-strong);
+  background: var(--hud-tint);
+}
+.lrow:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
 }
 .lbody {
   display: flex;
   flex-direction: column;
+  gap: 2px;
   min-width: 0;
 }
 .tt {
-  font-size: 0.86rem;
+  font-size: var(--fs-row);
   font-weight: 600;
   color: var(--text-1);
   white-space: nowrap;
@@ -121,7 +162,8 @@
 }
 .mm {
   font-family: var(--font-mono);
-  font-size: 0.66rem;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.04em;
   color: var(--text-3);
   white-space: nowrap;
   overflow: hidden;
@@ -129,50 +171,37 @@
 }
 .rr {
   font-family: var(--font-mono);
-  font-size: 0.66rem;
+  font-size: var(--fs-micro);
   color: var(--text-3);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--status-unknown);
+  justify-self: center;
 }
-.up {
-  background: var(--status-up);
-}
-.deg {
-  background: var(--status-degraded);
-}
-.down {
-  background: var(--status-down);
-}
-.idle {
-  background: var(--text-3);
+/* A list of rows holds its LEDs steady: the breathing is the KPI card's, and a column of a dozen
+ * breathing dots is noise (and idle main-thread time, §8). A row's state CHANGE still flashes. */
+.dot:not(:global(.is-changed)) {
+  animation: none;
 }
 .foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--sp-3);
   min-height: 44px;
-  padding: 0 14px;
+  padding: var(--sp-2) var(--sp-4);
   font-family: var(--font-mono);
-  font-size: 0.66rem;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
   color: var(--text-3);
 }
+/* "All N running →", "All missions →", "All sessions →": the action button's ghost. */
 .go {
-  min-height: 44px;
-  display: inline-flex;
-  align-items: center;
-  border: 0;
-  background: transparent;
-  color: var(--brand, var(--accent-text));
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
+  composes: ghost from "../ui/actionButton.module.css";
   text-decoration: none;
-  cursor: pointer;
+  white-space: nowrap;
 }
 .scrollList {
   max-height: 320px;
@@ -183,15 +212,22 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--sp-3);
 }
 .warnText {
   color: var(--warn-text, var(--status-degraded));
 }
+/* The first read of a tile: Acquiring, with its words (Loader kind="acquire"). */
+.acquire {
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+}
 
 /* ---- quota ---- */
 .q {
-  padding: 10px 14px;
+  composes: nj-arrive from global;
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
   border-bottom: 1px solid var(--line);
 }
 .q:last-child {
@@ -200,55 +236,39 @@
 .qTop {
   display: flex;
   justify-content: space-between;
-  gap: 10px;
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  align-items: baseline;
+  gap: var(--sp-3);
+  font-family: var(--font-display);
+  font-size: var(--fs-row);
+  font-weight: 600;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-1);
 }
 .qTop span:last-child {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
   font-weight: 400;
   text-transform: none;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.04em;
   color: var(--text-2);
+  font-variant-numeric: tabular-nums;
 }
-.bar {
-  position: relative;
-  height: 8px;
-  margin: 7px 0 4px;
-  border: 1px solid var(--line);
-  background: var(--glass-strong);
-}
-.bar i {
-  position: absolute;
-  inset: 0 auto 0 0;
-  background: var(--status-up);
-}
-.bar i.deg {
-  background: var(--status-degraded);
-}
-.bar i.down {
-  background: var(--status-down);
-}
-/* Not measured: a dashed, empty track — visibly not a 0 % bar. */
+/* Not measured: a dashed, empty track — visibly not a 0 % gauge. */
 .barNone {
-  background: transparent;
-  border-style: dashed;
-  border-color: var(--line-strong);
+  height: 8px;
+  border: 1px dashed var(--line-strong);
 }
 .qSub {
   font-family: var(--font-mono);
-  font-size: 0.66rem;
+  font-size: var(--fs-micro);
   color: var(--text-3);
 }
 /* Forecast (the pace since recent readings). Muted when it lasts; status colour only when it does
    not — degraded for "runs out before the reset", down once it is out. */
 .qFc {
-  margin-top: 3px;
   font-family: var(--font-mono);
-  font-size: 0.66rem;
+  font-size: var(--fs-micro);
   color: var(--text-2);
 }
 .fcWarn {
@@ -258,111 +278,28 @@
   color: var(--status-down);
 }
 
-/* ---- most recent sessions ---- */
-/* FIXED layout: column widths come from the header, not from the longest title, so arbitrary
- * agent-authored text wraps inside its cell instead of pushing the table off the screen. */
-.rtable {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
-}
-.rtable th:nth-child(2),
-.rtable td:nth-child(2) {
-  width: 8.5rem;
-}
-.rtable th:nth-child(4),
-.rtable td:nth-child(4) {
-  width: 7.5rem;
-}
-.rtable th {
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--line);
-  text-align: left;
-  font-family: var(--font-mono);
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--text-3);
-}
-.rtable td {
-  height: 44px;
-  padding: 6px 14px;
-  border-bottom: 1px solid var(--line);
-  font-size: 0.82rem;
-  color: var(--text-2);
-  overflow-wrap: anywhere;
-}
-.tdTitle a {
-  color: var(--text-1);
-  font-weight: 600;
-  text-decoration: none;
-}
-.tdMeta {
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-  color: var(--text-3);
-}
-.narrowMeta {
-  display: none;
-}
-.band {
-  padding: 1px 6px;
-  border: 1px solid var(--line-strong);
-  font-family: var(--font-mono);
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-2);
-  white-space: nowrap;
-}
-.band_needs_you {
-  border-color: var(--status-degraded);
-  color: var(--warn-text, var(--status-degraded));
-}
-.band_in_flight {
-  border-color: var(--status-up);
-  color: var(--ok-text, var(--status-up));
-}
-
 @media (max-width: 800px) {
   .kpis {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
+    gap: var(--sp-2);
   }
   .kpi {
     min-height: 84px;
-    padding: 9px 10px;
+    padding: var(--sp-2) var(--sp-3);
+  }
+  .kpiValue :global(.nj-readout) {
+    font-size: var(--fs-readout-sm);
   }
   .kpiValue {
-    font-size: 1.3rem;
+    min-height: 24px;
   }
   .cols {
     grid-template-columns: 1fr;
   }
-  .wideOnly {
-    display: none;
-  }
-  .rtable th:nth-child(2),
-  .rtable td:nth-child(2) {
-    width: 6.5rem;
-  }
-  .rtable th:nth-child(4),
-  .rtable td:nth-child(4) {
-    width: 5.5rem;
-  }
-  /* Agent · project is stacked under the title on a phone, never hidden (review 75977). */
-  .narrowMeta {
-    display: block;
-    font-family: var(--font-mono);
-    font-size: 0.64rem;
-    color: var(--text-3);
-  }
 }
 
-/* #1223: the refresh bar — retained data is painted, a re-read runs behind it. Brand accent, not a
- * status colour: it says "working", not "healthy". Only `transform` moves (design §5). */
+/* #1223: the refresh bar — retained data is painted, a re-read runs behind it. The chrome hue, not
+ * a status colour: it says "working", not "healthy". Only `transform` moves (design §5). */
 .refreshBar {
   flex: none;
   position: relative;
@@ -375,17 +312,9 @@
 .refreshBlock {
   position: absolute;
   inset: 0 auto 0 0;
-  width: 28%;
-  background: var(--accent);
-  animation: dashRefreshScan 1.3s cubic-bezier(0.45, 0, 0.55, 1) infinite;
-}
-@keyframes dashRefreshScan {
-  from {
-    transform: translateX(-100%);
-  }
-  to {
-    transform: translateX(360%);
-  }
+  width: 40%;
+  background: var(--hud);
+  animation: global(nj-acquire) 1.3s var(--ease-io) infinite;
 }
 /* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
 :root:not([data-motion="full"]) .refreshBlock {
@@ -394,14 +323,12 @@
   opacity: 0.5;
 }
 
-/* The title row: the heading and the New project entry (#1187). Wraps under the heading on a
- * narrow screen rather than squeezing it. */
 /* The headline row (#1525): the heading block spans columns 1-3, New sits at the right end of
  * column 3, and the primary HQ contact is column 4 — the same top edge for both. */
 .top {
   composes: grid4;
   align-items: start;
-  margin-bottom: 14px; /* room for the card's focus ring */
+  margin-bottom: var(--sp-4); /* room for the card's focus ring */
 }
 .headBlock {
   grid-column: 1 / -2;
@@ -415,7 +342,7 @@
   align-self: start;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 .topCard {
   grid-column: -2 / -1;
@@ -434,7 +361,7 @@
 @media (max-width: 800px) {
   .top {
     grid-template-columns: minmax(0, 1fr) auto;
-    column-gap: 12px;
+    column-gap: var(--sp-3);
   }
   .headBlock {
     display: contents;
@@ -456,7 +383,7 @@
   .topCard {
     grid-column: 1 / -1;
     grid-row: 3;
-    margin: 10px 0 6px;
+    margin: var(--sp-3) 0 var(--sp-2);
   }
   .sub {
     grid-column: 1 / -1;
@@ -467,12 +394,34 @@
   composes: ghost from "../ui/actionButton.module.css";
   width: 100%;
   justify-content: space-between;
-  margin-bottom: 14px;
-  font-family: var(--font-mono);
+  margin-bottom: var(--sp-3);
   text-align: left;
+}
+.recentToggle svg {
+  transition: transform var(--t-base) var(--ease-out);
 }
 .recentToggle[aria-expanded="true"] svg {
   transform: rotate(180deg);
+}
+/* Recent work opens by growing its row (0fr → 1fr, the Disclosure idiom), never by a jump; closed
+ * it is hidden from everything once the row has shut (`visibility` flips at the end), and the
+ * route unmounts it a moment later so its reads retire. Off: --t-base is 0, so it is instant. */
+.recentBody {
+  display: grid;
+  grid-template-rows: 0fr;
+  visibility: hidden;
+  transition:
+    grid-template-rows var(--t-base) var(--ease-out),
+    visibility 0s linear var(--t-base);
+}
+.recentBodyOpen {
+  grid-template-rows: 1fr;
+  visibility: visible;
+  transition: grid-template-rows var(--t-base) var(--ease-out);
+}
+.recentInner {
+  min-height: 0;
+  overflow: hidden;
 }
 .history {
   display: flex;
@@ -491,7 +440,7 @@
 .menuPanel {
   position: absolute;
   right: 0;
-  top: calc(100% + 4px);
+  top: calc(100% + var(--sp-1));
   z-index: calc(var(--z-shell) + 10);
   min-width: 200px;
   width: max-content;

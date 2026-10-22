@@ -303,6 +303,7 @@ export function MissionRail({
           <div className={listStyles.more}>
             <button
               type="button"
+              className={listStyles.moreBtn}
               onClick={onReRead}
               disabled={loadingMore}
               data-testid="rail-re-read"
@@ -315,6 +316,7 @@ export function MissionRail({
           <div className={listStyles.more}>
             <button
               type="button"
+              className={listStyles.moreBtn}
               onClick={onLoadMore}
               disabled={loadingMore}
               data-testid="rail-load-more"

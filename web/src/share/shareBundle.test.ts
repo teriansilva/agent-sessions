@@ -25,6 +25,8 @@ const ALLOWED_OUTSIDE = new Set([
   "theme/motion.css",
   "theme/motion.ts",
   "components/hud/nightjar.css",
+  // The one button sheet (docs/design.md §6) the viewer's buttons compose: CSS only, no script.
+  "components/ui/actionButton.module.css",
   "lib/shareFormat.ts",
   "components/structured/Markdown.tsx",
   "components/structured/Markdown.module.css",

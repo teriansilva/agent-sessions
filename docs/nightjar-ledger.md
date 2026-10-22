@@ -40,12 +40,12 @@ the same list.
 | `components/agents/SessionDefaults.module.css` | css | 11 | todo |  |  |
 | `components/ask/AskCards.module.css` | css | 4 | done | popup:hq | card deploy-in, LED change flash |
 | `components/ask/AskConsole.module.css` | css | 4 | done | popup:hq | answer word fade + caret, match-row arrival, portrait scan (Full, ambient), acquire bar |
-| `components/ask/AskHome.module.css` | css | 4 | done | route:dashboard | none (layout; rows use the shared arrival flash) |
+| `components/ask/AskHome.module.css` | css | 5 | done | route:dashboard route:dashboard-acquiring route:dashboard-recent popup:needs-you-details popup:recent-work | rows arrive (slide + tint flash), needs-you LEDs blink in Full (steady in Reduced/Off), first read Acquiring (scan bar) |
 | `components/ask/AskSidebar.module.css` | css | 4 | done | popup:hq | drawer slide-in + scrim (≤800px) |
 | `components/automations/automations.module.css` | css | 10 | todo |  |  |
 | `components/chat/ChatPane.module.css` | css | 6 | todo |  |  |
 | `components/chat/EditProposal.module.css` | css | 6 | todo |  |  |
-| `components/dashboard/Dashboard.module.css` | css | 5 | todo |  |  |
+| `components/dashboard/Dashboard.module.css` | css | 5 | done | route:dashboard route:dashboard-acquiring route:dashboard-unread route:dashboard-recent | readouts flash on change (filter step), LEDs flash on a state change, new rows arrive (slide + tint flash), first read Acquiring (radar / scan bar), re-read keeps its data under the refresh bar (scan, static in Reduced/Off), Recent work grows its row (grid-rows) |
 | `components/EnableLoginDetails.module.css` | css | 11 | todo |  |  |
 | `components/files/filePanel.module.css` | css | 7 | todo |  |  |
 | `components/files/mediaPreview.module.css` | css | 7 | todo |  |  |
@@ -54,7 +54,7 @@ the same list.
 | `components/gallery/viewTabs.module.css` | css | 10 | todo |  |  |
 | `components/hq/HqContactGallery.module.css` | css | 11 | todo |  |  |
 | `components/hq/hq.module.css` | css | 4 | done | popup:hq | portrait loop (Full only, paused with the ambient pause) |
-| `components/hq/PrimaryContact.module.css` | css | 5 | todo |  |  |
+| `components/hq/PrimaryContact.module.css` | css | 5 | done | route:dashboard route:dashboard-acquiring | plate edge lights on hover (no movement); the portrait's own loop is HqPortrait's |
 | `components/hud/buttonGlitch.css` | css | 2 | done | gallery:buttons | glitch: filter only |
 | `components/HudDialog.module.css` | css | 3 | done | popup:hand-off popup:move-to-project popup:session-brief | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/hud/nightjar.css` | css | 2 | done | gallery:all | atmosphere, power-on, rail pulse, LED breathe/blink/flash, pips, gauge pulse, readout flash, seg/tab marker, disclosure, loaders, arrival, stream |
@@ -88,9 +88,9 @@ the same list.
 | `components/shell/HelpMenu.module.css` | css | 4 | done | popup:operator-menu | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
 | `components/shell/OperatorMenu.module.css` | css | 4 | done | popup:operator-menu | tile hover transition |
 | `components/shell/SectionNav.module.css` | css | 4 | done | route:dashboard route:mission | tab tint transition |
-| `components/sidebar/Filters.module.css` | css | 6 | todo |  |  |
+| `components/sidebar/Filters.module.css` | css | 6 | done | route:sidebar route:sidebar-folded route:sidebar-empty | disclosure (grid rows 0fr → 1fr, one container), chevron turn, segment tint transition |
 | `components/sidebar/RowMenu.module.css` | css | 3 | done | popup:session-row-menu | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
-| `components/sidebar/SessionList.module.css` | css | 6 | todo |  |  |
+| `components/sidebar/SessionList.module.css` | css | 6 | done | route:sidebar route:sidebar-empty route:sidebar-error route:sidebar-rename popup:session-row-menu | row arrival (nj-arrive + nj-flash overlay, LED nj-led-flash; Reduced: the single fade), FLIP reorder, review spin (nj-spin, Full only), toast-in, marquee (Full only) |
 | `components/slideshow/Slideshow.module.css` | css | 4 | done | popup:tour popup:whats-new | none (static dots) |
 | `components/structured/BackgroundWork.module.css` | css | 6 | todo |  |  |
 | `components/structured/Markdown.module.css` | css | 6 | todo |  |  |
@@ -101,12 +101,12 @@ the same list.
 | `components/templates/ConfirmDialog.module.css` | css | 3 | done | popup:confirm popup:git-confirm popup:playbook-delete | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/templates/SuggestionsPanel.module.css` | css | 10 | todo |  |  |
 | `components/templates/TemplatePickerModal.module.css` | css | 3 | done | popup:template-picker | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
-| `components/terminal/Compose.module.css` | css | 6 | todo |  |  |
+| `components/terminal/Compose.module.css` | css | 6 | done | route:session-compose route:session-pane popup:keybar | Talk recording: mic glyph opacity step (Full only), key menu appear / ≤800px sheet-up, Send glitch (.shine) |
 | `components/terminal/HandoffModal.module.css` | css | 3 | done | popup:hand-off | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/RuntimeGate.module.css` | css | 6 | todo |  |  |
 | `components/terminal/SentMessagesModal.module.css` | css | 3 | done | popup:sent-messages | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/SessionRecapModal.module.css` | css | 3 | done | popup:session-brief | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
-| `components/terminal/Terminal.module.css` | css | 6 | todo |  |  |
+| `components/terminal/Terminal.module.css` | css | 6 | done | route:session-pane popup:head-menu popup:toast | head chip glitch on press (nj-glitch-step, Full only), connect-chip radar (nj-radar), history pill steps (nj-steps), copied toast opacity only — nothing over the terminal moves |
 | `components/ui/actionButton.module.css` | css | 2 | done | gallery:buttons | press glitch (filter), hover |
 | `components/updates/UpdateProgressPanel.module.css` | css | 11 | todo |  |  |
 | `components/updates/UpdateWhatsNew.module.css` | css | 11 | todo |  |  |
@@ -170,13 +170,13 @@ the same list.
 | `components/templates/ConfirmDialog.tsx` | popup | 3 | done | popup:confirm popup:git-confirm | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/templates/SessionChooserModal.tsx` | popup | 3 | done | popup:session-chooser | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/templates/TemplatePickerModal.tsx` | popup | 3 | done | popup:template-picker | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
-| `components/terminal/Compose.tsx` | popup | 6 | todo |  |  |
+| `components/terminal/Compose.tsx` | popup | 6 | done | popup:sent-messages popup:template-picker popup:keybar | deploy-in (the dialogs it mounts), appear (its KeyBar menu) |
 | `components/terminal/HandoffModal.tsx` | popup | 3 | done | popup:hand-off | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/HeadActions.tsx` | popup | 3 | done | popup:head-menu | appear (fade, no rise), row tint transition (anchored on a phone too, design.md §5) |
 | `components/terminal/KeyBar.tsx` | popup | 3 | done | popup:keybar | appear (fade, no rise), row tint transition (anchored on a phone too, design.md §5) |
 | `components/terminal/SentMessagesModal.tsx` | popup | 3 | done | popup:sent-messages | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/SessionRecapModal.tsx` | popup | 3 | done | popup:session-brief | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
-| `components/terminal/Terminal.tsx` | popup | 6 | todo |  |  |
+| `components/terminal/Terminal.tsx` | popup | 6 | done | popup:head-menu popup:toast popup:session-brief popup:hand-off route:session-pane | appear (head menu), toast (opacity only over the terminal), deploy-in (the dialogs it mounts) |
 | `components/ui/AnchoredMenu.tsx` | popup | 3 | done | popup:operator-menu popup:dashboard-new | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
 | `routes/NewSessionLanding.tsx` | popup | 6 | todo |  |  |
 | `routes/Onboarding.tsx` | popup | 4 | done | popup:tour | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
@@ -210,3 +210,16 @@ the same list.
 | `battlelab-cloud catalog edge 403` | page | 12d | todo |  |  |
 | `web/public/og-image.svg + og-image.png` | page | 13 | todo |  |  |
 | `web/public/onboarding/* (tour slides)` | page | 13 | todo |  |  |
+
+**Note: `components/files/filePanel.module.css` (Phase 7, partial, #1568).** The row stays `todo`
+because the sheet is shared with #950 (the git tab and the viewer/editor are out of this slice). PR 3
+converted the shell, tree and upload selectors only: `.gutter` / `.grip`, `.head`, `.headName`,
+`.tab` / `.tabBadge`, `.crumbPath` / `.crumbSep` / `.crumbBtn`, `.rowSelected`, `.rowIconDir`,
+`.dropRow` / `.dropRoot`, `.queueClose`, `.queueRefusal`, `.queueRow`, plus the new tree- and
+shell-scoped classes `.shellBtn` (composes `actionButton` `icon`), `.treeRow`, `.fileState*`,
+`.fileRetry` (composes `ghost`), `.fileSkeleton` (composes `nj-skeleton`) and `.queueBar`. None of
+these is read by GitTab, BranchMenu, RowMenu or FileViewerModal. Motion: `nj-arrive` on tree rows,
+`nj-skeleton`, `nj-acquire` on a sending upload, `nj-glitch-step` on the SendPath flash (all Full
+only). Captures: `popup:files`, `popup:upload-menu`, `popup:upload-collision`, `files:tree-open`,
+`files:tree-loading`, `files:tree-unavailable`, `files:tree-truncated`, `files:panel-unavailable`,
+`files:upload-queue`, `files:send-flash`.

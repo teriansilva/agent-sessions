@@ -171,7 +171,11 @@ export function ResourceLimits() {
           </p>
         )}
         {!data && loading && <p role="status">Loading resource settings…</p>}
-        {!data && !loading && <button onClick={refresh}>Retry</button>}
+        {!data && !loading && (
+          <button type="button" className={styles.secondary} onClick={refresh}>
+            Retry
+          </button>
+        )}
         {data && draft && (
           <form
             onSubmit={(event) => {
@@ -208,6 +212,7 @@ export function ResourceLimits() {
                       : "Edit the console limit or select its value to replace this override. Other changes preserve it."}
                   </p>
                   <button
+                    className={styles.secondary}
                     type="button"
                     disabled={busy}
                     onClick={() => {
@@ -263,6 +268,7 @@ export function ResourceLimits() {
                 {busy ? "Saving…" : "Save limits"}
               </button>
               <button
+                className={styles.secondary}
                 type="button"
                 disabled={busy}
                 onClick={() => {

@@ -318,7 +318,6 @@ export function HeadActions({ actions, className, btnClassName, labelClassName, 
           title={a.title}
           aria-label={a.aria}
           aria-pressed={a.active}
-          style={a.active ? { borderColor: "var(--accent)", color: "var(--accent-text)" } : undefined}
         >
           {a.icon}
           <span className={labelClassName}>{a.label}</span>

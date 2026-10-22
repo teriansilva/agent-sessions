@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ChevronDown,
   Crosshair,
@@ -49,6 +49,10 @@ import styles from "./Ask.module.css";
  *  primary HQ contact's card opens the same sidebar, and it is all the dashboard holds of it. Its
  *  own HQ button is gone. **New** is the page's primary action and the one way to start work from
  *  here: a session, a mission or a project (#1187's wizard, which comes back here when it is done). */
+/** How long a closing Recent work stays mounted: past the longest `--t-base` (180 ms) so the
+ *  collapse is drawn with its content, short enough that its reads retire at once. */
+const RECENT_COLLAPSE_MS = 240;
+
 export default function Dashboard() {
   const cfg = useConfig();
   const refreshConfig = useConfigRefresh();
@@ -98,6 +102,18 @@ export default function Dashboard() {
   );
   const [recentRefreshing, setRecentRefreshing] = useState(false);
   const [recentOpen, setRecentOpen] = useState(false);
+  // Recent work stays mounted while its row shuts (the grid-rows collapse), then unmounts so its
+  // reads retire (#1467). Opening mounts it in the same render as the expansion.
+  const [recentMounted, setRecentMounted] = useState(false);
+  useEffect(() => {
+    if (recentOpen || !recentMounted) return;
+    const t = setTimeout(() => setRecentMounted(false), RECENT_COLLAPSE_MS);
+    return () => clearTimeout(t);
+  }, [recentOpen, recentMounted]);
+  const toggleRecent = () => {
+    if (!recentOpen) setRecentMounted(true);
+    setRecentOpen(!recentOpen);
+  };
   // #1223: the bar runs while any PAINTED source re-reads — a cold source shows its own skeleton,
   // and is not "refreshing" anything. It stays until the last of them settles.
   const revalidating =
@@ -228,6 +244,9 @@ export default function Dashboard() {
               missions={missionsRes}
               quota={quota}
               needsYou={count}
+              // No count once the read settled (failed, or answered without one): "couldn’t read",
+              // never an Acquiring that spins for ever.
+              needsYouFailed={count === null && state.status !== "loading"}
               onJump={jump}
             />
             <div className={d.cols}>
@@ -239,7 +258,7 @@ export default function Dashboard() {
                   className={d.recentToggle}
                   aria-expanded={recentOpen}
                   aria-controls="dashboard-details-content"
-                  onClick={() => setRecentOpen((open) => !open)}
+                  onClick={toggleRecent}
                   data-testid="dashboard-details-toggle"
                 >
                   Recent work
@@ -249,9 +268,10 @@ export default function Dashboard() {
                   id="dashboard-details-content"
                   role="region"
                   aria-labelledby="dashboard-recent-toggle"
-                  hidden={!recentOpen}
+                  className={`${d.recentBody} ${recentOpen ? d.recentBodyOpen : ""}`}
+                  inert={!recentOpen}
                 >
-                  {recentOpen ? recent : null}
+                  <div className={d.recentInner}>{recentMounted ? recent : null}</div>
                 </div>
                 <div className={d.history}>
                   <Link

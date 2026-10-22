@@ -1087,7 +1087,7 @@ export function AskConsole({
                             {canMap ? (
                               <button
                                 type="button"
-                                className={`${styles.openSession} ${a.mapBtn}`}
+                                className={styles.openSession}
                                 aria-label={`Open ${m.title} in map`}
                                 title={
                                   map?.openKeys.has(m.id)
@@ -1119,7 +1119,7 @@ export function AskConsole({
                               <div className={a.batch}>
                                 <button
                                   type="button"
-                                  className={`${styles.openSession} ${a.mapBtn}`}
+                                  className={styles.openSession}
                                   disabled={take.length === 0}
                                   onClick={() => openInMap(take)}
                                   title={
@@ -1186,7 +1186,7 @@ export function AskConsole({
                               {canMap ? (
                                 <button
                                   type="button"
-                                  className={`${styles.openSession} ${a.mapBtn}`}
+                                  className={styles.openSession}
                                   aria-label={`Open the session started in ${p.title} in map`}
                                   disabled={
                                     !map?.openKeys.has(p.session_key) && (map?.room ?? 0) < 1

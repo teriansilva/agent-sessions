@@ -165,54 +165,19 @@
 .row .input {
   flex: 1;
 }
-.primary,
-.ghost,
-.iconBtn {
-  flex: none;
-  min-height: 44px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 6px 16px;
-  border-radius: 0;
-  font: inherit;
-  font-size: 13px;
-  cursor: pointer;
-}
 .primary {
-  font-weight: 700;
-  color: var(--on-accent);
-  background: var(--accent);
-  border: 1px solid color-mix(in srgb, var(--accent) 85%, black);
+  composes: primary from "../components/ui/actionButton.module.css";
+  flex: none;
 }
-.primary:hover:not(:disabled),
-.primary:focus-visible:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 90%, white);
-}
-.ghost,
-.iconBtn {
-  color: var(--text-2);
-  background: transparent;
-  border: 1px solid var(--border);
-}
-.ghost:hover:not(:disabled),
-.ghost:focus-visible,
-.iconBtn:hover:not(:disabled),
-.iconBtn:focus-visible {
-  color: var(--text-1);
-  border-color: var(--line-strong);
+.ghost {
+  composes: ghost from "../components/ui/actionButton.module.css";
+  flex: none;
 }
 .iconBtn {
-  width: 44px;
-  padding: 0;
+  composes: icon from "../components/ui/actionButton.module.css";
+  flex: none;
 }
-.primary:disabled,
-.ghost:disabled,
-.iconBtn:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
+
 .card .primary {
   width: 100%;
   margin-top: 14px;

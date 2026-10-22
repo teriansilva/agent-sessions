@@ -26,13 +26,23 @@ test.beforeEach(async ({ page }) => {
 test("a menu item acts when pressed during the deploy-in animation (#1531)", async ({ page }) => {
   await page.goto(DASHBOARD_PATH);
   await trigger(page).click();
-  // FREEZE the entrance part-way (a desktop menu's fade, a phone sheet's slide-up), then press the
+  // FREEZE the entrance HALF-WAY (a desktop menu's fade, a phone sheet's slide-up), then press the
   // item where it is drawn at that moment. Pausing makes the claim deterministic on any runner (a
   // loaded one used to finish the 180 ms fade first) and lets a sheet that is still MOVING be
-  // pressed where it is, rather than where it was when measured.
+  // pressed where it is, rather than where it was when measured. Every entrance that moves the
+  // panel is frozen — its own and any on an element around it — and each at its midpoint: frozen
+  // wherever the runner happened to be, a sheet caught in its first frame still had the item below
+  // the viewport (#1568: the press landed on nothing).
   const hit = await panel(page).evaluate((el) => {
-    const running = el.getAnimations({ subtree: false }).filter((a) => a.playState === "running");
-    for (const a of running) a.pause();
+    const running = document.getAnimations().filter((a) => {
+      const t = (a.effect as KeyframeEffect | null)?.target;
+      return a.playState === "running" && t instanceof Element && (t === el || t.contains(el));
+    });
+    for (const a of running) {
+      a.pause();
+      const d = a.effect?.getComputedTiming().duration;
+      if (typeof d === "number" && d > 0) a.currentTime = d / 2;
+    }
     const item = el.querySelector<HTMLElement>('[role="menuitem"]')!;
     const r = item.getBoundingClientRect();
     return {

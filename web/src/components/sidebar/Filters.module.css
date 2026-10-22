@@ -2,84 +2,115 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 0 12px 8px;
+  padding: 0 var(--sp-3) var(--sp-2);
 }
 /* THE FOLD (#1069 follow-up). One header row: a chevron, the word, and what is in force. The
- * summary turns accent when a filter is narrowing the list, so a folded block cannot hide one. */
+ * summary turns into a HUD count badge when a filter is narrowing the list, so a folded block
+ * cannot hide one. */
 .toggle {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   width: 100%;
   min-height: 32px;
   padding: 0 2px;
   background: transparent;
   border: none;
   border-radius: 0;
-  color: var(--text-muted);
+  color: var(--text-3);
   cursor: pointer;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
+  font-size: var(--fs-label);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   text-align: left;
 }
 .toggle:hover {
-  color: var(--text);
+  color: var(--text-1);
 }
 .toggle:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: -2px;
 }
 .toggle small {
   margin-left: auto;
-  font-size: 10px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.06em;
-  color: var(--text-muted);
+  color: var(--text-3);
 }
 .toggle small.summaryOn {
-  color: var(--accent-text);
+  padding: 1px var(--sp-1);
+  border: 1px solid var(--hud-dim);
+  background: var(--hud-tint);
+  color: var(--hud-text);
 }
 .chev {
   flex: none;
-  transition: transform 120ms ease;
+  transition: transform var(--t-fast) var(--ease-out);
 }
 .toggle[aria-expanded="true"] .chev {
   transform: rotate(90deg);
 }
-/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
-:root:not([data-motion="full"]) .chev {
-  transition: none;
-}
+/* THE EXPANSION (#1568, the nj-disclosure recipe): one grid row eases 0fr → 1fr — bounded layout
+ * cost on ONE container — and the inner box clips while it does. Folded, the block is
+ * `visibility: hidden` (after the ease), so its controls leave the tab order and the accessibility
+ * tree exactly as `hidden` took them out before; the bar's gap is taken back with it. Off and
+ * Reduced set the durations to 0 / 120 ms through the motion tokens. */
 .body {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition:
+    grid-template-rows var(--t-base) var(--ease-out),
+    margin-top var(--t-base) var(--ease-out),
+    visibility 0s linear 0s;
+}
+.body[hidden] {
+  display: grid;
+  grid-template-rows: 0fr;
+  margin-top: -6px;
+  visibility: hidden;
+  transition:
+    grid-template-rows var(--t-base) var(--ease-out),
+    margin-top var(--t-base) var(--ease-out),
+    visibility 0s linear var(--t-base);
+}
+.bodyInner {
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-.body[hidden] {
-  display: none;
+  min-height: 0;
+  overflow: hidden;
 }
 
+/* THE FIELD (nj-field's recipe, #1531): square, on the sunken ground, the HUD edge and the inset
+ * focus ring. Stated here rather than composed because the project / agent / mission selects are
+ * bare children (the mission rail's MissionFilters reuses `.selects`); the desktop keeps the
+ * sidebar's compact 30px metric and the touch floor below restores 44px. */
 .search,
 .selects select {
   width: 100%;
-  background: color-mix(in srgb, var(--bg-2, var(--bg)) 55%, transparent);
-  color: var(--text);
+  background: var(--bg-2);
+  color: var(--text-1);
   border: 1px solid var(--border);
   border-radius: 0;
   padding: 6px 9px;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12px;
+  font-size: var(--fs-meta);
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.search:hover,
+.selects select:hover {
+  border-color: var(--hud-dim);
 }
 .search::placeholder {
-  color: var(--text-muted);
+  color: var(--text-3);
   letter-spacing: 0.04em;
 }
 .search:focus,
 .selects select:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 32%, transparent);
+  border-color: var(--hud);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .selects {
   display: flex;
@@ -89,49 +120,54 @@
   flex: 1;
   min-width: 0;
 }
+/* CLEAR is THE ghost action button. LOCAL MODIFIER: it sits in the selects' row, so on a desktop
+ * it takes the row's height instead of the shared 44px; the touch floor below restores it. */
 .clear {
+  composes: ghost from "../ui/actionButton.module.css";
   flex: none;
-  background: color-mix(in srgb, var(--bg-2, var(--panel)) 55%, transparent);
-  color: var(--text-muted);
-  border: 1px solid var(--border);
-  border-radius: 0;
-  padding: 0 10px;
-  cursor: pointer;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
-.clear:hover {
-  border-color: var(--accent);
-  color: var(--text);
+button.clear {
+  min-height: 0;
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-label);
 }
+/* Segmented Active/Archived on THE SEGMENT's look (nj-seg): one hairline box, square cells, the
+ * selected cell carries the HUD tint and the 2px marker line (no fill, no gloss — #211). */
 .tabs {
   display: flex;
-  gap: 6px;
+  border: 1px solid var(--line-strong);
 }
-/* Segmented Active/Archived — flat mono HUD chips (no gloss/gradient, #211). */
 .tabs button {
   flex: 1;
-  background: color-mix(in srgb, var(--bg-2, var(--panel)) 55%, transparent);
-  border: 1px solid var(--border);
-  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  color: var(--text-2);
   border-radius: 0;
   padding: 4px 0;
   cursor: pointer;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  letter-spacing: 0.08em;
+  font-size: var(--fs-label);
+  font-weight: 500;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+.tabs button + button {
+  border-left: 1px solid var(--line-strong);
 }
 .tabs button:hover {
-  border-color: var(--accent);
-  color: var(--text);
+  color: var(--text-1);
+}
+.tabs button:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .tabs button.on {
-  background: var(--accent);
-  color: var(--on-accent); /* dark text on the light amber accent (#211) */
-  border-color: transparent;
+  background: color-mix(in srgb, var(--hud) 18%, transparent);
+  box-shadow: inset 0 -2px 0 var(--hud);
+  color: var(--hud-text);
   font-weight: 600;
 }
 
@@ -142,7 +178,7 @@
   .toggle,
   .search,
   .selects select,
-  .clear,
+  button.clear,
   .tabs button {
     min-height: 44px;
   }
@@ -151,6 +187,6 @@
 /* The mission filter could not be applied (#948). */
 .note {
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  color: var(--text-muted);
+  font-size: var(--fs-label);
+  color: var(--text-3);
 }

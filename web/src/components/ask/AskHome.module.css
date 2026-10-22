@@ -1,37 +1,37 @@
-/* ASK's two sections above the field (#1086): RECENT WORK and NEEDS YOU, and the pinned bar they
- * collapse into once a conversation starts. HUD vocabulary (docs/design.md): square chrome, no
- * radius, no gradients, mono uppercase callsigns, status colour ONLY for state (a needs-you dot is
- * `--status-degraded`, whatever the row's kind), `--accent` only for brand / primary. Tokens only.
- * Every control is ≥ 44px tall (§8). */
+/* The dashboard's sections (#1086, #1123): NEEDS YOU, RECENT WORK and the tiles beside them.
+ * NIGHTJAR (#1531, docs/design.md v2 §6, Phase 5): each section is an armour frame (`nj-frame`: the
+ * chamfer, the lit top edge), its head a callsign — the hazard notch, the title in the display face,
+ * `//` before its meta. A frame CLIPS, so every focus ring inside is inset and anything that must
+ * escape (a dialog) is portalled. Status colour ONLY for state (a needs-you LED is the degraded hue,
+ * whatever the row's kind), `--accent` only for the primary action. Tokens only. Every control is
+ * ≥ 44px tall (§8), and every button is the action button (`ui/actionButton.module.css`). */
 
 .sec {
-  border: 1px solid var(--line);
-  background: var(--bg-1);
-  margin-bottom: 14px;
+  composes: nj-frame from global;
+  margin-bottom: var(--sp-4);
   text-align: left;
 }
 
 .head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-2) var(--sp-3);
   flex-wrap: wrap;
-  padding: 10px 14px;
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-4);
   border-bottom: 1px solid var(--line);
 }
 
 .sq {
-  width: 6px;
-  height: 6px;
-  flex: none;
-  background: var(--accent);
+  composes: nj-notch from global;
 }
 
 .title {
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  font-weight: 700;
-  letter-spacing: 0.14em;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--text-1);
 }
@@ -39,8 +39,13 @@
 .meta {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
-  letter-spacing: 0.04em;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--text-3);
+}
+.head > .meta::before {
+  content: "//  " / "";
+  color: var(--hud-text);
 }
 
 .headEnd {
@@ -58,7 +63,7 @@
 .seg label {
   min-height: 44px;
   min-width: 44px;
-  padding: 0 10px;
+  padding: 0 var(--sp-3);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -79,66 +84,54 @@
 }
 .seg label:has(input:checked) {
   position: relative;
-  border-color: var(--accent);
-  color: var(--brand, var(--accent-text));
+  z-index: var(--z-raised);
+  border-color: var(--hud);
+  background: var(--hud-tint);
+  color: var(--hud-text);
 }
 .seg label:has(input:focus-visible) {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 
+/* The action button (#967, #1568): each class here IS one of its variants, used alone — never two
+ * of them on one element (the variants set the same plate properties). */
 .btn {
-  min-height: 44px;
-  padding: 0 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--text-1);
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  composes: ghost from "../ui/actionButton.module.css";
   white-space: nowrap;
-  cursor: pointer;
+  text-decoration: none;
 }
 .btn:disabled {
   opacity: 0.55;
   cursor: default;
 }
 .primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
-  font-weight: 700;
+  composes: primary from "../ui/actionButton.module.css";
+  white-space: nowrap;
 }
 .icon {
-  width: 44px;
-  padding: 0;
-  color: var(--text-2);
+  composes: icon from "../ui/actionButton.module.css";
 }
-/* Dismiss REJECTS a decision: clearly secondary, never styled like Approve (review 72959). */
+/* Dismiss REJECTS a decision: the ghost, clearly secondary, never styled like Approve (review
+ * 72959); on a phone it also sits apart from it (below). */
 .quiet {
-  border-style: dashed;
-  color: var(--text-2);
+  composes: btn;
 }
 
 .select {
+  composes: nj-field from global;
+  display: inline-block;
+  width: auto;
   min-height: 44px;
-  padding: 0 10px;
-  border: 1px solid var(--line-strong);
-  background: var(--bg-2);
-  color: var(--text-1);
+  padding: 0 var(--sp-3);
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
 }
 
 /* ---- recent work ---- */
 .timeline {
-  padding: 6px 14px 12px;
+  padding: var(--sp-1) var(--sp-4) var(--sp-3);
 }
 .day {
   padding: 8px 0 2px;
@@ -149,11 +142,12 @@
   color: var(--text-3);
 }
 .entry {
+  composes: nj-arrive from global;
   display: grid;
   grid-template-columns: 52px 1fr auto;
-  gap: 10px;
+  gap: var(--sp-3);
   align-items: start;
-  padding: 7px 0;
+  padding: var(--sp-2) 0;
   border-bottom: 1px dashed var(--line);
 }
 .entry:last-child {
@@ -162,8 +156,9 @@
 .at {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
-  color: var(--text-3);
+  color: var(--hud-text);
   padding-top: 2px;
+  font-variant-numeric: tabular-nums;
 }
 .what {
   font-size: var(--fs-meta);
@@ -177,11 +172,13 @@
 }
 .chip {
   display: inline-block;
-  margin-left: 6px;
-  padding: 0 5px;
-  border: 1px solid var(--line);
+  margin-left: var(--sp-2);
+  padding: 0 var(--sp-1);
+  border: 1px solid var(--line-strong);
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
   color: var(--text-3);
 }
 .recap {
@@ -195,33 +192,41 @@
   white-space: pre-wrap;
 }
 .note {
-  padding: 10px 14px;
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
   font-size: var(--fs-label);
   line-height: 1.5;
   color: var(--text-3);
 }
+/* A first read: Acquiring, with its words (Loader kind="acquire"). */
+.loading {
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+}
 .err {
   color: var(--danger-text, var(--status-down));
+  border-left: 2px solid var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 8%, transparent);
 }
 
 /* ---- needs you ---- */
+/* A row waiting on you: the degraded rail down its left edge (an inset hairline, drawn inside the
+ * frame's clip), its LED, and the words "needs you" for both. It arrives with the shared flash. */
 .row {
+  composes: nj-arrive from global;
   display: grid;
-  grid-template-columns: 12px 1fr auto;
-  gap: 12px;
+  grid-template-columns: var(--sp-3) 1fr auto;
+  gap: var(--sp-3);
   align-items: start;
-  padding: 12px 14px;
+  padding: var(--sp-3) var(--sp-4);
   border-bottom: 1px solid var(--line);
+  box-shadow: inset 2px 0 0 var(--status-degraded);
 }
 .row:last-child {
   border-bottom: 0;
 }
 .led {
-  width: 8px;
-  height: 8px;
-  margin-top: 6px;
-  border-radius: 50%;
-  background: var(--status-degraded);
+  margin-top: var(--sp-1);
+  justify-self: center;
 }
 .rowTitle {
   font-size: var(--fs-row);
@@ -230,10 +235,19 @@
   text-decoration: none;
   overflow-wrap: anywhere;
 }
+.rowTitle:hover {
+  color: var(--hud-text);
+}
+.rowTitle:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
 .rowMeta {
   margin-top: 2px;
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--text-3);
 }
 .why {
@@ -254,24 +268,23 @@
 }
 .ctl {
   display: flex;
-  gap: 6px;
+  gap: var(--sp-2);
   align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
 .rowErr {
-  margin-top: 6px;
-  font-size: var(--fs-label);
-  color: var(--danger-text, var(--status-down));
+  composes: nj-error from global;
+  margin-top: var(--sp-2);
 }
 
 /* ---- a section's own control row ---- */
 .bar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
-  padding: 8px 0;
+  padding: var(--sp-2) 0;
 }
 .bar .sp {
   flex: 1;

@@ -1,29 +1,35 @@
-/* The dashboard's primary HQ contact (#1525): the KPI tile's surface, border and hover, at half
- * height (a 60×80 portrait). The focus ring is --accent-text: plain --accent measures ~1.6:1 on the
- * light page. */
+/* The dashboard's primary HQ contact (#1525): the KPI card's plate at half height (a 60×80
+ * portrait). NIGHTJAR (#1531, Phase 5): a painted plate (`nj-plate`, the small cut so the portrait
+ * clears the chamfer; the whole rectangle stays the hit area), the name in the display face, the
+ * "Open HQ" line in the chrome hue. The focus ring is --accent-text and inset: plain --accent
+ * measures ~1.6:1 on the light page. Tokens only. */
 .card {
+  composes: nj-plate from global;
+  --c: var(--cut-sm);
+  --nj-face: var(--bg-1);
+  --nj-edge: var(--hud-dim);
+  --nj-rail: var(--hud);
   display: flex;
   align-items: stretch;
-  gap: 12px;
+  gap: var(--sp-3);
   min-width: 0;
   min-height: 44px;
   margin: 0;
-  padding: 6px 12px 6px 6px;
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-2);
   box-sizing: border-box;
-  border: 1px solid var(--line);
+  border: 1px solid transparent;
   border-radius: 0;
-  background: var(--bg-1);
   color: var(--text-1);
   text-align: left;
   font: inherit;
   cursor: pointer;
 }
 .card:hover {
-  border-color: var(--line-strong);
+  --nj-edge: var(--hud);
 }
 .card:focus-visible {
   outline: 2px solid var(--accent-text);
-  outline-offset: 2px;
+  outline-offset: -3px;
 }
 .portrait {
   width: 60px;
@@ -34,30 +40,34 @@
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 3px;
+  gap: var(--sp-1);
   min-width: 0;
 }
 .name {
-  font-weight: 700;
-  font-size: 14px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: var(--fs-body);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   line-height: 1.25;
   color: var(--text-1);
   overflow-wrap: anywhere;
 }
 .label {
   font-family: var(--font-mono);
-  font-size: 10.5px;
-  letter-spacing: 0.1em;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--text-muted);
   line-height: 1.35;
 }
 .open {
-  margin-top: 3px;
+  margin-top: var(--sp-1);
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--fs-row);
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--accent-text);
   line-height: 1.35;
 }
@@ -66,18 +76,18 @@
  * overflow (at 1100px they fit with 1px to spare). */
 .placeholder {
   cursor: default;
-  padding-right: 6px;
-  gap: 8px;
+  padding-right: var(--sp-2);
+  gap: var(--sp-2);
 }
 .placeholder:hover {
-  border-color: var(--line);
+  --nj-edge: var(--hud-dim);
 }
 .silhouette {
   display: grid;
   place-items: center;
   flex: none;
   overflow: hidden;
-  border: 1px solid var(--line-strong);
+  border: 1px dashed var(--line-strong);
   background: var(--bg-2);
   color: var(--text-3);
 }
@@ -89,7 +99,7 @@
   gap: 0;
 }
 .muted {
-  font-size: 11.5px;
+  font-size: var(--fs-label);
   line-height: 1.35;
   color: var(--text-muted);
 }
@@ -97,43 +107,38 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  gap: var(--sp-1);
   margin-top: auto;
   min-width: 0;
 }
 .textBtn {
   min-height: 44px;
-  padding: 0 4px;
-  margin-left: -4px;
+  padding: 0 var(--sp-1);
+  margin-left: calc(-1 * var(--sp-1));
   border: 0;
   border-radius: 0;
   background: transparent;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--accent-text);
   cursor: pointer;
   white-space: nowrap;
 }
-/* The action button's ghost, at 12px with 6px 8px padding so both actions fit the Plan quota column
- * down to 1100px. */
+.textBtn:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+/* The action button's ghost, tightened so both actions fit the Plan quota column down to 1100px. */
 .ghost {
   composes: ghost from "../ui/actionButton.module.css";
-  padding: 6px 8px;
-  font-size: 12px;
+  padding: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-label);
   text-decoration: none;
   white-space: nowrap;
   box-sizing: border-box;
-}
-.ghost:hover,
-.ghost:focus-visible {
-  color: var(--text-1);
-  border-color: var(--line-strong);
-}
-.textBtn:focus-visible,
-.ghost:focus-visible {
-  outline: 2px solid var(--accent-text);
-  outline-offset: 2px;
 }
 
 /* ≤800px: a compact row under the heading, full width; the "Primary HQ contact" line goes. */
@@ -143,10 +148,10 @@
     align-items: center;
   }
   .text {
-    gap: 6px;
+    gap: var(--sp-1);
   }
   .name {
-    font-size: 15px;
+    font-size: var(--fs-title);
   }
   .label {
     display: none;
@@ -159,6 +164,6 @@
     gap: 0;
   }
   .placeholder .name {
-    font-size: 14px;
+    font-size: var(--fs-body);
   }
 }

@@ -3,7 +3,11 @@
 // and light, on desktop and mobile, must compute exactly the styles recorded from `main` BEFORE
 // the look existed — e2e/fixtures/api-look-baseline.json. Re-recorded once on purpose for #1531:
 // NIGHTJAR prepends the bundled "BattleLab Mono" face to --font-mono, which changed 148 font-family
-// values and nothing else (verified by diffing the two files). Re-record only on purpose:
+// values and nothing else (verified by diffing the two files). Re-recorded a second time on purpose
+// for #1568: the structured pane wears the terminal's head classes (panelHead, headActions,
+// restartBtn → headChip) and the shared composer's Talk / Send / toggle, so NIGHTJAR's session
+// chrome changed exactly those elements — the head bar, its label and chips, and the three composer
+// controls — and nothing in the transcript, its layout, or the chat pane. Re-record only on purpose:
 //   API_LOOK_BASELINE_WRITE=1 npx playwright test e2e/api-look-defaults.spec.ts --workers=1
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";

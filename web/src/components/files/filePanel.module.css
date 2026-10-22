@@ -42,11 +42,11 @@
 }
 .gutter:hover .grip,
 .gutter:focus-visible .grip {
-  background: var(--accent);
+  background: var(--hud);
 }
 .gutter:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .grip {
   position: absolute;
@@ -113,7 +113,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   min-height: 30px;
   padding: 0 6px 0 10px;
   border-bottom: 1px solid var(--line);
@@ -130,7 +130,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-label);
   color: var(--text-2);
 }
 .iconBtn {
@@ -175,16 +175,21 @@
   border-radius: 0;
   background: transparent;
   color: var(--text-3);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
   font-weight: 600;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out);
 }
-.tab[aria-selected="true"] {
+.tab:hover:not(:disabled) {
   color: var(--text-1);
 }
+.tab[aria-selected="true"] {
+  color: var(--hud-text);
+}
+/* The selected tab's lit rail (#1531): the panel's one HUD-coloured edge. */
 .tab[aria-selected="true"]::after {
   content: "";
   position: absolute;
@@ -192,9 +197,7 @@
   right: 6px;
   bottom: 0;
   height: 2px;
-  background: var(
-    --accent
-  ); /* the panel's ONLY accent surface — see design.md */
+  background: var(--hud);
 }
 .tab:disabled {
   color: var(--text-3);
@@ -202,15 +205,17 @@
   cursor: not-allowed;
 }
 .tab:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
+/* The count of changed files: the CTA pair (accent face, on-accent ink), so it reads in both modes. */
 .tabBadge {
-  font-size: 9.5px;
-  font-weight: 500;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
   letter-spacing: 0;
-  color: var(--text-2);
-  background: var(--bg-2);
+  color: var(--on-accent);
+  background: var(--accent);
   padding: 1px 5px;
 }
 
@@ -232,7 +237,7 @@
   direction: rtl; /* keep the TAIL of a long path visible — that's the part you're in */
   text-align: left;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   color: var(--text-2);
   background: transparent;
   border: 0;
@@ -240,7 +245,8 @@
   cursor: pointer;
 }
 .crumbPath:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 
 .crumbs2 {
@@ -258,9 +264,9 @@
 .crumbSep {
   flex: none;
   padding: 0 2px;
-  color: var(--text-3);
+  color: var(--hud-dim);
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
 }
 .crumbBtn {
   min-width: 0;
@@ -274,25 +280,26 @@
   background: transparent;
   color: var(--text-2);
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   cursor: pointer;
 }
 .crumbBtn:hover:not(:disabled) {
   color: var(--text-1);
   text-decoration: underline;
 }
+/* The folder you are in: the last segment, lit. */
 .crumbBtn:disabled {
-  color: var(--text-1);
+  color: var(--hud-text);
   cursor: default;
 }
 .crumbBtn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 @media (pointer: coarse) {
   .crumbBtn {
     min-height: 44px;
-    font-size: 12px;
+    font-size: var(--fs-meta);
   }
 }
 
@@ -332,8 +339,8 @@
   outline-offset: -2px;
 }
 .rowSelected {
-  background: var(--row-hover);
-  border-left-color: var(--accent);
+  background: var(--hud-tint);
+  border-left-color: var(--hud);
   color: var(--text-1);
 }
 .rowDir {
@@ -353,7 +360,7 @@
   color: var(--text-3);
 }
 .rowIconDir {
-  color: var(--accent-text);
+  color: var(--hud-text);
 }
 .rowName {
   min-width: 0;
@@ -413,9 +420,10 @@
 .foot {
   flex: none;
   display: flex;
+  flex-wrap: wrap; /* a narrow dock wraps the tags rather than clipping "DELETE" mid-word */
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 2px var(--sp-2);
   min-height: 26px;
   padding: 0 10px;
   border-top: 1px solid var(--line);
@@ -755,7 +763,7 @@
   }
   .tab {
     min-height: 44px;
-    font-size: 12px;
+    font-size: var(--fs-meta);
   }
   .iconBtn {
     width: 44px;
@@ -767,7 +775,7 @@
   }
   .crumbPath {
     min-height: 44px;
-    font-size: 11.5px;
+    font-size: var(--fs-meta);
   }
   .retry {
     min-height: 44px;
@@ -1068,12 +1076,12 @@
 /* The row under the cursor is the drop target, so `src/lib` takes a drop without navigating to
  * it first. The panel edge gets a softer outline so the whole surface still reads as receptive. */
 .dropRow {
-  outline: 1px dashed var(--accent);
+  outline: 1px dashed var(--hud);
   outline-offset: -1px;
-  background: var(--accent-glow);
+  background: var(--hud-tint);
 }
 .dropRoot {
-  outline: 1px dashed var(--line-strong);
+  outline: 1px dashed var(--hud-dim);
   outline-offset: -2px;
 }
 
@@ -1110,27 +1118,13 @@
   padding: 6px 10px;
 }
 .queueClose {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  min-height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--text-2);
-  cursor: pointer;
-}
-.queueClose:hover,
-.queueClose:focus-visible {
-  color: var(--accent-text);
-  outline: none;
+  /* The dismiss glyph is a `.shellBtn` (THE icon plate, #1568); this only keeps its place. */
+  margin-left: auto;
 }
 .queueRefusal {
   padding: 0 10px 8px;
-  color: var(--git-del-fg);
-  font-size: 12px;
+  color: var(--danger-text);
+  font-size: var(--fs-meta);
   line-height: 1.5;
 }
 .queueRows {
@@ -1142,11 +1136,11 @@
 .queueRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   min-height: 22px;
   padding: 0 10px;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
 }
 .queueName {
   flex: 1;
@@ -1198,11 +1192,7 @@
 @media (pointer: coarse) {
   .queueRow {
     min-height: 32px;
-    font-size: 12px;
-  }
-  .queueClose {
-    width: 44px;
-    min-height: 44px;
+    font-size: var(--fs-meta);
   }
   .confirmCheck {
     min-height: 44px;
@@ -1839,5 +1829,161 @@
   .logToggle,
   .logRow {
     min-height: 44px;
+  }
+}
+
+/* ------------------------------------------------------------------ NIGHTJAR shell, tree, upload (#1568)
+ *
+ * PR 3 of #1531 restyles the panel SHELL, the TREE and the UPLOAD strip only. The git tab and the
+ * viewer belong to #950, and several classes above are shared with them (`.row`, `.state*`,
+ * `.retry`, `.skeleton`, `.iconBtn`, `.gitLetter`, `.send`). Those rules are left as they are:
+ * the tree and the shell read the classes below INSTEAD of (or, for `.row`, beside) them, so
+ * nothing here changes a git-tab or viewer surface. Tokens only. */
+
+/* The shell's glyph buttons (close, up, home, refresh, upload): THE icon button (a painted plate,
+ * the full rectangle is the hit area — #782), compact at 30 px on a fine pointer so the 30 px head
+ * and crumb bars keep their height, the 44 px floor under a coarse pointer. Doubled selectors: the
+ * composed sheet may load after this one. */
+.shellBtn {
+  composes: icon from "../ui/actionButton.module.css";
+  flex: none;
+}
+@media (pointer: fine) {
+  .shellBtn.shellBtn {
+    width: 30px;
+    height: 30px;
+    min-height: 30px;
+    --c: 6px;
+  }
+}
+.shellBtn.shellBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Tree rows: `.row` is shared with the git tab, so the tree's look rides on this class beside it. */
+.treeRow {
+  font-size: var(--fs-meta);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+.treeRow .rowMain:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+/* A row ARRIVES when its folder opens (and on the panel's first listing): a fade and a 6 px
+ * slide, Full motion only. Expansion is the rows arriving, never an animated height (§8). */
+:root[data-motion="full"] .treeRow {
+  animation: global(nj-arrive) var(--t-arrive) var(--ease-out) both;
+}
+@media (pointer: coarse) {
+  .treeRow {
+    font-size: var(--fs-row);
+  }
+}
+/* The tree's "add path to message" control: a plate on hover / focus, and an acknowledgement when
+ * it lands — lit, plus one glitch step in Full. Scoped to the tree; the git tab keeps its own. */
+.treeRow .send:hover,
+.treeRow .send:focus-visible {
+  border-color: var(--hud-dim);
+  background: var(--hud-tint);
+  color: var(--text-1);
+}
+.treeRow .send:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.treeRow .sendFlash,
+.treeRow .sendFlash:hover {
+  border-color: var(--hud);
+  background: var(--hud-tint);
+  color: var(--hud-text);
+}
+:root[data-motion="full"] .treeRow .sendFlash {
+  animation: global(nj-glitch-step) var(--t-base) var(--ease-out) 1;
+}
+
+/* Tree and panel states: a status rail on a quiet face, a mono callsign, the sentence in body ink. */
+.fileState {
+  margin: var(--sp-1) var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--line-strong);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-2);
+  /* A server message can be a long unbroken URL; it wraps inside the rail, never past it. */
+  overflow-wrap: anywhere;
+}
+.fileStateWarn {
+  border-left-color: var(--status-degraded);
+  background: color-mix(in srgb, var(--status-degraded) 8%, transparent);
+}
+.fileStateBad {
+  border-left-color: var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 8%, transparent);
+}
+.fileStateTag {
+  display: block;
+  margin-bottom: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.fileStateWarn .fileStateTag {
+  color: var(--warn-text);
+}
+.fileStateBad .fileStateTag {
+  color: var(--danger-text);
+}
+/* Retry is THE ghost button; this only spaces it under the sentence. */
+.fileRetry {
+  composes: ghost from "../ui/actionButton.module.css";
+  margin-top: var(--sp-2);
+}
+
+/* Loading rows: the shared skeleton primitive (a scan band in Full, still in Reduced / Off). */
+.fileSkeleton {
+  composes: nj-skeleton from global;
+  --skeleton-h: 10px;
+  margin: var(--sp-2) 10px;
+}
+
+/* Upload progress per row: a 3 px track, filled when the file landed, a scan riding it while it
+ * sends (the shared Acquiring idiom), empty while queued. The fill is a progress fill, the one kind
+ * of element allowed to scale (§8); nothing here animates geometry. */
+.queueBar {
+  position: relative;
+  flex: none;
+  width: 64px;
+  height: 3px;
+  overflow: hidden;
+  background: var(--line-strong);
+}
+.queueBar > i {
+  position: absolute;
+  inset: 0;
+  background: var(--hud);
+  transform-origin: left center;
+  transform: scaleX(0);
+}
+.queueBar[data-q="done"] > i {
+  transform: none;
+}
+.queueBar[data-q="failed"] > i,
+.queueBar[data-q="skipped"] > i {
+  transform: none;
+  background: color-mix(in srgb, var(--status-down) 55%, transparent);
+}
+.queueBar[data-q="sending"] > i {
+  width: 40%;
+  transform: none;
+}
+:root[data-motion="full"] .queueBar[data-q="sending"] > i {
+  animation: global(nj-acquire) 1.4s var(--ease-io) infinite;
+}
+@media (max-width: 800px) {
+  .queueBar {
+    width: 40px;
   }
 }

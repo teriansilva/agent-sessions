@@ -975,6 +975,9 @@ textarea.nj-field {
   inset: 0;
   background: var(--hud-tint);
   pointer-events: none;
+  /* At rest the tint is gone: Reduced and Off remove the animation (motion.css), and without this
+   * the overlay would stay painted at full tint over every arrived row. */
+  opacity: 0;
   animation: nj-flash var(--t-arrive) var(--ease-out) both;
 }
 /* Streamed words: the newest fade in; the caret rides the end. Text is in the DOM the moment it

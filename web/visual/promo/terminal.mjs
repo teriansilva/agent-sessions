@@ -183,14 +183,23 @@ function screenFor(key, cols) {
   );
 }
 
-export async function routeTerminal(page) {
+/** `opts` (the NIGHTJAR sweep's `term`, #1568) puts the socket in a state the promo never needs:
+ *  `silent` — never answers, so the pane stays "connecting"; `closeCode` — closes with that code
+ *  (4403 is a refusal the pane shows as rejected; 4409 is busy, which it retries);
+ *  `role` / `holder` — the viewer is a read-only secondary behind the take-over banner. */
+export async function routeTerminal(page, opts = {}) {
   await page.routeWebSocket(/\/ws\//, (ws) => {
     const url = new URL(ws.url());
     const m = /\/ws\/(?:term\/)?([^/?]+)/.exec(url.pathname);
     const key = m ? decodeURIComponent(m[1]) : "claude:x";
     ws.onMessage(() => {});
+    if (opts.silent) return;
+    if (opts.closeCode) {
+      setTimeout(() => ws.close({ code: opts.closeCode, reason: opts.closeReason ?? "" }), 150);
+      return;
+    }
     setTimeout(() => {
-      ws.send(JSON.stringify({ t: "role", role: "owner" }));
+      ws.send(JSON.stringify({ t: "role", role: opts.role ?? "owner", ...(opts.holder ? { holder: opts.holder } : {}) }));
       const text = "\x1b[2J\x1b[H" + screenFor(key, Number(url.searchParams.get("cols"))).join("\r\n");
       const buf = Buffer.from(text);
       ws.send(buf);

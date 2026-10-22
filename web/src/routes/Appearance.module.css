@@ -227,22 +227,9 @@
   border-color: var(--accent);
 }
 .reset {
-  height: 44px;
-  padding: 0 14px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-2);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 0;
-  cursor: pointer;
+  composes: ghost from "../components/ui/actionButton.module.css";
 }
-.reset:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
+
 .chosen {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;

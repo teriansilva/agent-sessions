@@ -16,7 +16,8 @@
  *   open?: SweepStep[], openPhone?: SweepStep[], phoneFirst?: SweepStep[], expect?: string,
  *   expectCss?: string, asPerson?: boolean, at?: number, api?: Record<string, unknown>,
  *   mock?: Record<string, boolean>, storage?: Record<string, unknown>, widths?: ("desktop" | "phone")[],
- *   grant?: string[], holdAsset?: string, peerPath?: string, height?: number, present?: string }} SweepCapture
+ *   grant?: string[], holdAsset?: string, peerPath?: string, height?: number, present?: string,
+ *   term?: Record<string, unknown> }} SweepCapture
  *  `section`: a test id, or a panel's visible title, to capture alone (it must exist and have a
  *  size, or the sweep fails). `action`: an interaction the sweep performs before capturing.
  *  `motion`: the mode for this capture (default: the sweep's `--motion`, Off).
@@ -30,6 +31,7 @@
  *  `asPerson`: clear `navigator.webdriver` (the boot sequence stands down under automation);
  *  `at`: capture this many ms after load instead of waiting for the page to settle.
  *  `present`: a selector that must be visible at the moment of the shot, or the capture fails.
+ *  `term`: the terminal socket's state (visual/promo/terminal.mjs: silent, closeCode, role, holder).
  *  `api`: per-capture answers, `path → body` (a number answers that HTTP status), for a state the
  *  shared fixtures do not hold. `mock`: opt-in states of the shared mock (visual/promo: e.g.
  *  `archivedMission`, `bypassOffer`, `disabledAutomation`, `scratchFolder`). `storage`: localStorage
@@ -262,6 +264,32 @@ export const SWEEP = [
   // Routes (Phases 4–11). The skeleton: the route itself in its default state; each phase adds its
   // states (loading, empty, error, opened popups, focus) as ids of its own.
   { id: "route:dashboard", path: "/dashboard" },
+  // ---- PR3 dashboard ----
+  // Phase 5's dashboard states: every first read in flight (Acquiring), two reads that failed
+  // (a dash and the words, never a zero), and Recent work opened (the grid-rows disclosure).
+  {
+    id: "route:dashboard-acquiring",
+    path: "/dashboard",
+    holdAsset: "/api/(dashboard/sessions|agents/usage(\\?|$)|missions(\\?|$)|pulse/needs-you(\\?|$))",
+    at: 1500,
+    present: "[data-testid='tile-loading']",
+  },
+  {
+    id: "route:dashboard-unread",
+    path: "/dashboard",
+    api: {
+      "/api/missions": { status: 502, json: { detail: "mission store did not answer" } },
+      "/api/agents/usage": { status: 503, json: { detail: "usage cache unavailable" } },
+    },
+    present: "[data-testid='tile-error']",
+  },
+  {
+    id: "route:dashboard-recent",
+    path: "/dashboard",
+    open: [{ testId: "dashboard-details-toggle" }],
+    expectCss: "[data-testid='recent-work']",
+  },
+  // ---- /PR3 dashboard ----
   { id: "route:new-session", path: "/new" },
   { id: "route:mission", path: "/mission" },
   { id: "route:checklists", path: "/mission/checklists" },
@@ -276,6 +304,109 @@ export const SWEEP = [
   { id: "route:settings-interface", path: "/settings/appearance" },
   { id: "route:settings-agents", path: "/settings/agents" },
   { id: "route:settings-security", path: "/settings/security" },
+  // ---- PR3 chrome ----
+  // Session chrome (#1568 Phase 6): the sidebar list and its states, the pane head, the terminal
+  // chrome and the compose bar. On a phone the list is in the drawer.
+  { id: "route:sidebar", path: S1, phoneFirst: DRAWER },
+  { id: "route:sidebar-folded", path: S1, phoneFirst: DRAWER, storage: { "tr-sidebar-filters-open": "0" } },
+  {
+    id: "route:sidebar-empty",
+    path: S1,
+    phoneFirst: DRAWER,
+    api: { "/api/sessions": { sessions: [], total: 0, live_total: 0, next_offset: null, facets: { projects: [], engines: [] } } },
+  },
+  {
+    id: "route:sidebar-error",
+    path: S1,
+    phoneFirst: DRAWER,
+    api: { "/api/sessions": { status: 500, json: { detail: "sessions unavailable" } } },
+  },
+  {
+    id: "route:sidebar-rename",
+    path: S1,
+    phoneFirst: DRAWER,
+    open: [{ role: "button", name: "Session actions" }, { role: "menuitem", name: "Rename session" }],
+    expectCss: "input[aria-label='Session title']",
+  },
+  // The pane: the head's chips, the terminal and the folded compose bar (open on a phone).
+  { id: "route:session-pane", path: S1 },
+  // The compose bar open: textarea, key chips, Talk and Send.
+  { id: "route:session-compose", path: S1, open: [{ role: "button", name: "Open compose box" }], openPhone: [], present: "textarea" },
+  // The terminal's chrome states (#1568): reconnecting (the radar), refused, and a read-only
+  // viewer behind the take-over banner. Nothing is drawn over the xterm canvas itself.
+  // A busy master (4409) is retried: the pane shows the reconnecting chip with the radar.
+  { id: "route:term-reconnecting", path: S1, term: { closeCode: 4409 }, at: 1500 },
+  { id: "route:term-rejected", path: S1, term: { closeCode: 4403, closeReason: "forbidden" }, at: 2500 },
+  {
+    id: "route:term-readonly",
+    path: S1,
+    term: { role: "secondary", holder: { label: "Mac · Chrome", since: Math.floor(Date.now() / 1000) - 300 } },
+    expectCss: "[aria-label='Take over this session']",
+  },
+  // ---- /PR3 chrome ----
+  // ---- PR3 files ---- (#1568: the Files panel shell, tree and upload; the git tab and viewer are #950's)
+  {
+    id: "files:tree-open",
+    path: S1,
+    ...withFiles([{ css: "[data-file-row][data-kind='dir'] [data-row-main]" }]),
+    expectCss: "[data-file-row][data-kind='dir'] [aria-expanded='true']",
+  },
+  // The root listing held: the tree's skeleton (a scan band in Full; the sweep shoots Off).
+  { id: "files:tree-loading", path: S1, ...withFiles([]), holdAsset: "/api/files/list(\\?|$)", expectCss: "[data-file-tree] [role='status']" },
+  {
+    id: "files:tree-unavailable",
+    path: S1,
+    ...withFiles([]),
+    api: { "/api/files/list": { status: 503, json: { detail: "Could not read this folder." } } },
+    expectCss: "[data-file-tree] [role='alert']",
+  },
+  {
+    id: "files:tree-truncated",
+    path: S1,
+    ...withFiles([]),
+    api: {
+      "/api/files/list": {
+        path: "/home/commander/code/orbital-api",
+        parent: "/home/commander/code",
+        root: "/home/commander/code",
+        total: 900,
+        complete: false,
+        truncated: true,
+        entries: [
+          { name: "src", path: "/home/commander/code/orbital-api/src", kind: "dir", size: 4096, mtime: 0 },
+          { name: "package.json", path: "/home/commander/code/orbital-api/package.json", kind: "file", size: 1200, mtime: 0 },
+          { name: "README.md", path: "/home/commander/code/orbital-api/README.md", kind: "file", size: 3100, mtime: 0 },
+        ],
+      },
+    },
+    expectCss: "[data-file-tree] [data-file-row]",
+  },
+  {
+    id: "files:panel-unavailable",
+    path: S1,
+    ...withFiles([]),
+    api: { "/api/files/capabilities": { ok: false, reason: "The file service is not reachable from this box." } },
+    expectCss: "[data-file-panel] [role='alert']",
+  },
+  // A file mid-upload: the batch is accepted, the upload itself never answers, so the row stays SENDING.
+  {
+    id: "files:upload-queue",
+    path: S1,
+    ...withFiles([{ css: "[data-upload-files]", upload: "notes.md" }]),
+    api: { "/api/files/upload/batch": { batch_id: "b1", files: 1, bytes: 6, files_limit: 500, bytes_limit: 262144000, file_limit: 26214400 } },
+    holdAsset: "/api/files/upload(\\?|$)",
+    expectCss: "[data-upload-queue]",
+  },
+  // "Add the path to the message": the row's control lit for its acknowledgement window. Desktop
+  // only: on a phone the sheet closes on send (#792), so the flash is a dock state.
+  {
+    id: "files:send-flash",
+    path: S1,
+    widths: ["desktop"],
+    ...withFiles([{ css: "[data-file-row][data-kind='file'] button[aria-label^='Add ']" }]),
+    present: "[data-file-row][data-kind='file'] button[aria-label^='Add ']",
+  },
+  // ---- /PR3 files ----
 ];
 
 export const WIDTHS = [1440, 1100, 390];

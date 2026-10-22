@@ -2100,7 +2100,7 @@ export function Terminal({
               menu that still carries full labels — the KeyBar idiom, not an icon-only shrink. */}
           <HeadActions
             className={styles.headActions}
-            btnClassName={styles.restartBtn}
+            btnClassName={styles.headChip}
             labelClassName={styles.headActionLabel}
             actions={headActions}
             collapsed={isMobile}
@@ -2112,7 +2112,7 @@ export function Terminal({
         createPortal(
           <HeadActions
             className={styles.headActions}
-            btnClassName={styles.restartBtn}
+            btnClassName={styles.headChip}
             labelClassName={styles.headActionLabel}
             actions={headActions}
             collapsed={isMobile}
@@ -2173,10 +2173,15 @@ export function Terminal({
             className={`${styles.status} ${status.kind === "rejected" ? styles.rejected : ""}`}
             role="status"
           >
+            {/* Still trying (#1568): the radar loader in front of the words. Decorative — the
+                words say it — and held still outside Full by the motion mode. */}
+            {(status.kind === "connecting" || status.kind === "reconnecting") && (
+              <span className={`nj-radar nj-ambient ${styles.statusRadar}`} aria-hidden="true" />
+            )}
             {text}
           </div>
         )}
-        <div ref={hostRef} className={styles.term} />
+        <div ref={hostRef} className={styles.term} data-term-scheme={scheme} />
         {cover === "reopening" && <OpeningPanel overlay reload={reloadRoster} reloadOnMount />}
         {cover === "opening" && <OpeningPanel overlay />}
         {cover === "missing" && <NotFoundPanel overlay />}
@@ -2224,7 +2229,11 @@ export function Terminal({
               role="status"
               data-hist-pill="loading"
             >
-              <span className={styles.histSpin} aria-hidden="true" />
+              <span className={`nj-steps ${styles.histSteps}`} aria-hidden="true">
+                <i />
+                <i />
+                <i />
+              </span>
               loading older history…
             </span>
           </div>
