@@ -758,6 +758,8 @@ def _two_replies(monkeypatch, review, *, recap, question):
         system = str(messages[0].get("content") or "")
         if system == question_prompt:
             seen.append("question")
+            if isinstance(question, BaseException):
+                raise question
             return question
         seen.append("recap")
         return recap
@@ -819,9 +821,10 @@ async def test_a_question_that_COULD_NOT_BE_PRODUCED_leaves_the_escalation_stand
 ):
     """Asking degrades to the status quo, never to silence.
 
-    A fresh install has no AI endpoint and a configured one can answer with something unusable.
-    In both cases the operator must still be told the mission needs them — which is why the ask
-    is hung off the escalation rather than replacing it.
+    A fresh install has no AI endpoint and a configured one can fail outright. In both cases the
+    operator must still be told the mission needs them — which is why the ask is hung off the
+    escalation rather than replacing it. (An UNUSABLE reply is no longer this case: the server
+    words the question itself then, #1577 — see `test_an_UNUSABLE_reply_still_opens_a_card`.)
     """
     _running(store)
     _objective(store, KEY)
@@ -832,7 +835,7 @@ async def test_a_question_that_COULD_NOT_BE_PRODUCED_leaves_the_escalation_stand
         monkeypatch,
         configured,
         recap={"recap": "still stuck", "assessment": "stalled"},
-        question={"question": "Which?", "options": [{"label": "only one", "action_index": 0}]},
+        question=RuntimeError("the endpoint is down"),
     )
 
     out = await sup.run_pass(store)
@@ -845,6 +848,115 @@ async def test_a_question_that_COULD_NOT_BE_PRODUCED_leaves_the_escalation_stand
     # filed as a question would flag the mission for ever with nothing on screen to answer.
     kinds = [e["kind"] for e in missions.get_mission(store)["events"]]
     assert "error" in kinds and "question" not in kinds
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "reply, refused",
+    [
+        # What the question prompt TELLS the model to do when "keep going" is the only answer.
+        ({"question": "", "options": []}, "the model asked no question"),
+        ({"question": "Which?", "options": [{"label": "only one", "action_index": 0}]}, "fewer"),
+        ({"question": "Which PR? Also, waive it?", "options": []}, "more than one sentence"),
+        ("not json at all", "not a JSON object"),
+    ],
+)
+async def test_an_UNUSABLE_reply_still_opens_a_card(store, configured, monkeypatch, reply, refused):
+    """#1577. An escalated objective whose model reply was refused got NO card — an `error` row
+    every five minutes instead (249 of them against 16 questions on one install), under an
+    escalation telling the operator to "answer it on the decision card above".
+
+    The server words the card now: a fixed sentence, the offered actions with server labels and
+    server consequences, and a note on the event saying it fell back and why. Red against `main`,
+    where this left `open_question_row` empty and an `error` on the timeline.
+    """
+    _running(store)
+    _objective(store, KEY)
+    for i in range(sup.NUDGE_BUDGET):
+        _sent(store, f"d{i}", "delivered")
+    _input(monkeypatch, configured, fp="moved")
+    _two_replies(
+        monkeypatch,
+        configured,
+        recap={"recap": "still stuck", "assessment": "stalled"},
+        question=reply,
+    )
+
+    out = await sup.run_pass(store)
+    assert out["asked"] is not None, "an escalated objective was left with nothing to answer"
+    q = missions.open_question_row(store)
+    assert q is not None and q["objective"] == KEY
+    events = missions.get_mission(store)["events"]
+    assert not [e for e in events if e["kind"] == "error"], "the fallback still filed an error"
+    (event,) = [e for e in events if e["kind"] == "question"]
+    assert "checks green" in event["text"], "the card does not name the objective it is about"
+    origin = event["meta"]["origin"]
+    assert origin["fallback"] is True and refused in origin["refused"]
+    # The SERVER'S options, in the offered order — `close_mission` is not offered with a gate
+    # unmet, and every option carries the server's own consequence text.
+    actions = [o["action"] for o in event["meta"]["options"]]
+    assert actions == ["note_answer", "waive_objective", "stand_down_objective"]
+    assert all(o["consequence"] for o in event["meta"]["options"])
+
+    # …and the bound holds: one card per episode, no re-ask while it is open.
+    _input(monkeypatch, configured, fp="moved-again")
+    again = await sup.run_pass(store)
+    assert again["asked"] is None
+    assert len([e for e in missions.get_mission(store)["events"] if e["kind"] == "question"]) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("content", ["", "I have nothing to ask.", "   "])
+async def test_an_EMPTY_or_NON_JSON_completion_still_opens_a_card(
+    store, configured, monkeypatch, content
+):
+    """#1577 review. The model's commonest "say nothing" is an EMPTY completion on an HTTP 200,
+    which `review.complete_json` refuses with `MalformedReplyError` before any object exists — so
+    a test injecting objects after the parser could never see it. Driven through the real parsing
+    boundary: only `_post_chat` is faked, and it answers 200.
+    """
+    import json as _json
+
+    from agent_sessions import prompts
+
+    _running(store)
+    _objective(store, KEY)
+    for i in range(sup.NUDGE_BUDGET):
+        _sent(store, f"d{i}", "delivered")
+    _input(monkeypatch, configured, fp="moved")
+    question_prompt = prompts.effective("mission_question")
+
+    class _Resp:
+        status_code = 200
+
+        def __init__(self, text):
+            self._text = text
+
+        def json(self):
+            return {"choices": [{"message": {"content": self._text}, "finish_reason": "stop"}]}
+
+    async def _post(cfg, body, **kw):
+        if str(body["messages"][0].get("content") or "") == question_prompt:
+            return _Resp(content)
+        return _Resp(_json.dumps({"recap": "still stuck", "assessment": "stalled"}))
+
+    monkeypatch.setattr(
+        configured, "_require_config", lambda: {"base_url": "x", "api_key": "y", "model": "m"}
+    )
+    monkeypatch.setattr(configured, "_post_chat", _post)
+
+    out = await sup.run_pass(store)
+    assert out["asked"] is not None, "an empty completion left the operator with nothing to answer"
+    events = missions.get_mission(store)["events"]
+    assert not [e for e in events if e["kind"] == "error"], "the empty reply still filed an error"
+    (event,) = [e for e in events if e["kind"] == "question"]
+    origin = event["meta"]["origin"]
+    assert origin == {"fallback": True, "refused": "the reply was empty or not JSON", "dropped": 1}
+    assert content.strip() == "" or content not in str(event), "model reply text was stored"
+
+    _input(monkeypatch, configured, fp="moved-again")
+    again = await sup.run_pass(store)
+    assert again["asked"] is None, "the open card was asked again"
 
 
 @pytest.mark.anyio
@@ -929,7 +1041,7 @@ async def test_an_ASK_THAT_PRODUCED_NOTHING_is_retried_on_a_later_pass(
 
     `escalate_once` is arbitrated on `(mission, objective, episode)`, so the pass that WINS it is
     the only pass that ever entered the ask branch. An ask that produced nothing — a busy
-    authority fence, an unconfigured endpoint, an unusable reply — therefore lost the episode's
+    authority fence, an unconfigured endpoint, a failed call — therefore lost the episode's
     only question permanently: the operator kept the vague escalation and never got the concrete
     choice, on an objective the supervisor had already decided it could not resolve alone.
 
@@ -949,9 +1061,10 @@ async def test_an_ASK_THAT_PRODUCED_NOTHING_is_retried_on_a_later_pass(
     async def fake(messages, **kw):
         if str(messages[0].get("content") or "") == question_prompt:
             asks["n"] += 1
-            # The FIRST ask is unusable — one option is not a choice, so nothing opens.
+            # The FIRST ask fails outright, so nothing opens. (An unusable reply would open the
+            # server-worded card instead, #1577 — a failed CALL is what still produces nothing.)
             if asks["n"] == 1:
-                return {"question": "Which?", "options": [{"label": "one", "action_index": 0}]}
+                raise RuntimeError("the endpoint is down")
             return _A_QUESTION
         return {"recap": "still stuck", "assessment": "stalled"}
 
@@ -1019,9 +1132,9 @@ async def test_ONE_UNANSWERABLE_objective_does_not_starve_the_others(
             body = "\n".join(str(mm.get("content") or "") for mm in messages)
             key = KEY if f"Objective in question: {KEY}" in body else "second"
             asked_about.append(key)
-            # The FIRST objective is permanently unanswerable; the second is fine.
+            # The FIRST objective's ask permanently fails; the second is fine.
             if key == KEY:
-                return {"question": "Which?", "options": [{"label": "one", "action_index": 0}]}
+                raise RuntimeError("the endpoint refuses this one")
             return _A_QUESTION
         return {"recap": "still stuck", "assessment": "stalled"}
 

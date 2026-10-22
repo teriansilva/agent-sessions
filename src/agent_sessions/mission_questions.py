@@ -254,7 +254,19 @@ def render_actions(actions: tuple[tuple[str, str], ...] = ACTIONS) -> str:
 def options_from_reply(
     obj: object, actions: tuple[tuple[str, str], ...] = ACTIONS
 ) -> tuple[str, list[dict], int]:
-    """`(question, options, dropped)` from a model reply. Every refusal DROPS, never repairs.
+    """`(question, options, dropped)` from a model reply. See :func:`read_reply`."""
+    question, options, dropped, _why = read_reply(obj, actions)
+    return question, options, dropped
+
+
+def read_reply(
+    obj: object, actions: tuple[tuple[str, str], ...] = ACTIONS
+) -> tuple[str, list[dict], int, str]:
+    """`(question, options, dropped, refused)` from a model reply. Every refusal DROPS.
+
+    `refused` is empty when options came back, and otherwise names WHICH rule refused the reply
+    (#1577) — 249 "no usable question" rows on one install said nothing about why, and the
+    commonest cause turned out to be the model obeying its own prompt's "say nothing".
 
     An option whose index is out of range cannot be salvaged: the label alone says what the
     operator would be choosing and nothing about what would happen, so a "repaired" option is one
@@ -267,19 +279,19 @@ def options_from_reply(
     """
     dropped = 0
     if not isinstance(obj, dict):
-        return "", [], 1
+        return "", [], 1, "the reply was not a JSON object"
     question = obj.get("question")
     if not isinstance(question, str) or not question.strip():
-        return "", [], 1
+        return "", [], 1, "the model asked no question"
     # ONE QUESTION, not two joined by a full stop (#900 review 8, finding 4). Dropped rather than
     # truncated to the first sentence: keeping half of what the model asked and pairing it with
     # options written for both halves would be the server inventing the question, which is the
     # rule every other refusal in this module follows.
     if not is_one_sentence(question):
-        return "", [], 1
+        return "", [], 1, "the question was more than one sentence"
     raw = obj.get("options")
     if not isinstance(raw, list):
-        return "", [], 1
+        return "", [], 1, "the reply had no option list"
 
     out: list[dict] = []
     seen: set[int] = set()
@@ -320,8 +332,54 @@ def options_from_reply(
         if len(out) >= MAX_OPTIONS:
             break
     if len(out) < MIN_OPTIONS:
-        return "", [], dropped + 1
-    return question.strip()[:QUESTION_MAX], out, dropped
+        return "", [], dropped + 1, f"fewer than {MIN_OPTIONS} usable options"
+    return question.strip()[:QUESTION_MAX], out, dropped, ""
+
+
+#: The server's own label for each action, for a question the SERVER words (#1577). Plain choices
+#: in the operator's terms; the consequence text beside each one still comes from `CONSEQUENCE`.
+FALLBACK_LABELS: dict[str, str] = {
+    "note_answer": "Keep it open — I'll say what to do next",
+    "waive_objective": "Not needed for this mission",
+    "stand_down_objective": "Stop following up on it",
+    "close_mission": "The mission is done",
+}
+
+assert set(FALLBACK_LABELS) == ACTION_NAMES, "every action needs a fallback label"
+
+
+def fallback_question(
+    title: str, actions: tuple[tuple[str, str], ...] = ACTIONS
+) -> tuple[str, list[dict]]:
+    """`(question, options)` worded by the SERVER, for an objective the supervisor escalated and the
+    model would not or could not ask about (#1577).
+
+    The escalation already says the operator is needed, and its text sends them to "the decision
+    card above". When the model declines — which its prompt tells it to do whenever "keep going"
+    would be the only real answer, the exact situation of an agent that has stopped — there was no
+    card at all, and the ask was retried as an `error` row every five minutes, for ever.
+
+    **Nothing here decides anything a model wrote.** The sentence and every label are fixed; the
+    only quoted text is the objective's stored title — the same words the checklist already shows,
+    from the snapshot the fence compares, and possibly planner-proposed, so it is display text and
+    nothing more. The options are the SAME offered action list in the same order, each with its
+    server consequence, so the authority model is unchanged: what an answer does is still looked
+    up by action, server-side, and the settling ones still ask twice.
+    """
+    name = " ".join(str(title or "this objective").split())
+    if len(name) > 160:
+        name = name[:159].rstrip() + "…"
+    question = f"The supervisor can't move “{name}” forward on its own — what should happen next?"
+    options = [
+        {
+            "label": FALLBACK_LABELS[action],
+            "action": action,
+            "consequence": CONSEQUENCE[action],
+            "settling": action in SETTLING,
+        }
+        for action, _desc in actions[:MAX_OPTIONS]
+    ]
+    return question[:QUESTION_MAX], options
 
 
 async def _notice(mission_id: str, text: str, *, meta: object = None) -> None:
@@ -339,7 +397,7 @@ async def _notice(mission_id: str, text: str, *, meta: object = None) -> None:
 
 
 async def _fenced_open(
-    mission_id, objective_key, question, options, incarnation, episode, content, path
+    mission_id, objective_key, question, options, incarnation, episode, content, path, origin=None
 ):
     """Open the question INSIDE the write fence (#900 review 2, finding 2).
 
@@ -369,6 +427,7 @@ async def _fenced_open(
             expect_incarnation=incarnation,
             expect_episode=episode,
             expect_content=content,
+            origin=origin,
             path=path,
         )
 
@@ -378,11 +437,12 @@ async def _fenced_open(
 async def ask(mission_id: str, objective_key: str, *, context: str = "", path=None) -> dict | None:
     """Produce ONE question about one objective and store it. Returns the stored row, or None.
 
-    Never raises: a mission that cannot get a question asked is a mission that carries on being
-    nudged, which is the status quo rather than a failure. Silence would be the real problem, so
-    every outcome that is not "a question appeared" writes a timeline event saying which — an
-    absent question and a broken feature must not look the same (#883's rule, and #772's
-    complaint).
+    Never raises. A reply the server refuses — or an empty one — opens the server-worded card
+    from :func:`fallback_question` (#1577). A failed CALL (no endpoint, transport, a fence that
+    moved) asks nothing: the escalation stands and the ask is retried on a later pass. Silence
+    would be the real problem, so every outcome that is not "a question appeared" writes a
+    timeline event saying which — an absent question and a broken feature must not look the same
+    (#883's rule, and #772's complaint).
     """
     row = await missions.run_admitted(lambda: missions.get_mission(mission_id, path=path))
     if row is None:
@@ -459,18 +519,44 @@ async def ask(mission_id: str, objective_key: str, *, context: str = "", path=No
         # A notice about the asking is an `error`; only an actual question is a `question`.
         await _notice(mission_id, "No question could be asked — no AI endpoint is configured.")
         return None
+    except review.MalformedReplyError:
+        # THE ENDPOINT ANSWERED, WITH NOTHING USABLE (#1577 review). This is the commonest way a
+        # model obeys the prompt's "say nothing": an empty completion on a 200, which
+        # `complete_json` refuses before any object exists. It is a deterministic refusal of the
+        # reply — the same class as an object with no question — not a failure of the call, so it
+        # gets the server-worded card below rather than an `error` and a retry every pass.
+        obj = None
+        malformed = True
     except Exception as e:  # noqa: BLE001
         log.debug("mission question for %s failed: %s", mission_id, type(e).__name__)
         await _notice(mission_id, f"No question could be asked ({type(e).__name__}).")
         return None
+    else:
+        malformed = False
 
-    question, options, dropped = options_from_reply(obj, actions)
+    question, options, dropped, refused = read_reply(obj, actions)
+    if malformed:
+        refused = "the reply was empty or not JSON"
+    origin = None
     if not options:
-        await _notice(mission_id, "No usable question was produced.", meta={"dropped": dropped})
-        return None
+        # THE OPERATOR STILL GETS A CARD (#1577). This objective was escalated — the supervisor has
+        # already decided it cannot proceed without them — so "the model had nothing to ask" is
+        # not a reason to leave them with nothing to answer. The server words it instead, and says
+        # on the event that it did, and why the model's reply was not used.
+        question, options = fallback_question(str(target.get("title") or objective_key), actions)
+        origin = {"fallback": True, "refused": refused, "dropped": dropped}
+        log.info("mission question for %s used the server's wording: %s", mission_id, refused)
     try:
         return await _fenced_open(
-            mission_id, objective_key, question, options, incarnation, episode, content, path
+            mission_id,
+            objective_key,
+            question,
+            options,
+            incarnation,
+            episode,
+            content,
+            path,
+            origin=origin,
         )
     except missions.MissionError as e:
         # The objective moved under the model call. Not silent — an absent question and a broken

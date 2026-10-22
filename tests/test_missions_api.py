@@ -2389,6 +2389,53 @@ def test_an_EDIT_may_not_name_an_engine_that_could_not_have_been_OFFERED(api, mo
     assert missions.get_plan(m["id"])["engine"] == "claude"
 
 
+def test_every_PLAN_RESPONSE_lists_the_left_out_agents_and_none_can_be_SAVED(api, monkeypatch):
+    """#1577. The left-out agents ride on every response the plan card renders from — the plan
+    proposal, an edit, the detail read — and listing one never makes it choosable: an edit naming
+    it is refused by the same validation as any other engine that could not have been offered."""
+    from agent_sessions import mission_plan
+
+    c, hdr, proj = api
+    left_out = [{"id": "kimi", "label": "kimi", "reason": "can't be started unattended yet"}]
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": "claude", "label": "claude"}]
+    )
+    monkeypatch.setattr(mission_plan, "engine_unavailable", lambda: left_out)
+    _plan_reply(monkeypatch)
+    m = _create(c, hdr)
+
+    proposed = c.post(f"/api/missions/{m['id']}/plan", headers=hdr).json()
+    assert proposed["engine_unavailable"] == left_out
+    assert (
+        c.get(f"/api/missions/{m['id']}", headers=hdr).json()["plan"]["engine_unavailable"]
+        == left_out
+    )
+
+    refused = c.patch(
+        f"/api/missions/{m['id']}/plan",
+        json={"plan_id": proposed["plan_id"], "engine": "kimi"},
+        headers=hdr,
+    )
+    assert refused.status_code == 422, refused.text
+    assert missions.get_plan(m["id"])["engine"] == "claude"
+    # …nor its client-side placeholder value.
+    forced = c.patch(
+        f"/api/missions/{m['id']}/plan",
+        json={"plan_id": proposed["plan_id"], "engine": "unavailable:kimi"},
+        headers=hdr,
+    )
+    assert forced.status_code == 422, forced.text
+
+    edited = c.patch(
+        f"/api/missions/{m['id']}/plan",
+        json={"plan_id": proposed["plan_id"], "brief": "do it differently"},
+        headers=hdr,
+    )
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["engine_unavailable"] == left_out
+    assert edited.json()["engine"] == "claude"
+
+
 def test_an_EDIT_sends_a_PROJECT_ID_and_never_a_PATH(api, monkeypatch):
     """The same rule `POST /api/missions` follows, and the reason the client has no way to choose
     a working directory at all: an unknown id is a 404, and a path is simply not a field."""

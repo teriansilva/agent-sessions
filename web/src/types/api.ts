@@ -2691,6 +2691,7 @@ export interface Mission {
   plan_options?: {
     project_options: { id: string; name: string; cwd: string }[];
     engine_options: { id: string; label: string }[];
+    engine_unavailable?: MissionEngineUnavailable[];
   } | null;
   sessions: MissionSession[];
   objectives?: MissionObjective[];
@@ -2755,6 +2756,15 @@ export interface MissionOpenTurn {
   created_at: number;
 }
 
+/** An agent left out of the mission picker, and why (#1577). `reason` is a few plain words;
+ *  `detail` is the server's full sentence. */
+export interface MissionEngineUnavailable {
+  id: string;
+  label: string;
+  reason: string;
+  detail?: string;
+}
+
 /** A proposal: which project, which agent, what the agent will be told — and why that agent.
  *
  *  `plan_id` is the identity DISPATCH compares against. Every edit mints a new one, so a dispatch
@@ -2773,6 +2783,9 @@ export interface MissionPlan {
   /** What an override may choose from. Current as of the read, not as of the plan. */
   project_options?: { id: string; name: string; cwd: string }[];
   engine_options?: { id: string; label: string }[];
+  /** Agents the server does not offer for missions, each with its reason (#1577). Display only:
+   *  the server refuses any of these on save, whatever the client sends. */
+  engine_unavailable?: MissionEngineUnavailable[];
   /** Fields the model's reply could not supply, so the card can say why one is empty rather
    *  than looking merely unfilled. */
   dropped?: string[];

@@ -272,7 +272,7 @@ for (const theme of ["dark", "light"] as const) {
       );
 
       const below = row(page, "below");
-      await expect(below.getByTestId("objective-state")).toHaveText("judged not yet (0.62)");
+      await expect(below.getByTestId("objective-state")).toHaveText("judged met (0.62) · below 0.90");
       await below.getByTestId("objective-evidence-toggle").click();
       await expect(below.getByTestId("objective-evidence")).toContainText(/below your 0\.90/i);
       await expect(below.getByTestId("objective-reject-judgment")).toHaveCount(0);

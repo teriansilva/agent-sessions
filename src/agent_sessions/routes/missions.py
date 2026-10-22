@@ -999,6 +999,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             if plan is not None:
                 plan["project_options"] = mission_plan.picker_project_options()
                 plan["engine_options"] = mission_plan.engine_options()
+                plan["engine_unavailable"] = mission_plan.engine_unavailable()
             elif row.get("plan_state") in ("skipped", "failed"):
                 # PLAN MANUALLY NEEDS SOMETHING TO CHOOSE FROM (#967 P2b). The lists rode only on
                 # a stored plan, so the one mission that has to be planned by hand — no plan, and
@@ -1009,6 +1010,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 row["plan_options"] = {
                     "project_options": mission_plan.picker_project_options(),
                     "engine_options": mission_plan.engine_options(),
+                    "engine_unavailable": mission_plan.engine_unavailable(),
                 }
             row["plan"] = plan
         return JSONResponse(row)
@@ -1277,6 +1279,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return _fail(e)
         plan["project_options"] = mission_plan.picker_project_options()
         plan["engine_options"] = mission_plan.engine_options()
+        plan["engine_unavailable"] = mission_plan.engine_unavailable()
         return JSONResponse(plan)
 
     async def _first_plan(mission_id: str, body: dict) -> JSONResponse | None:
@@ -1350,6 +1353,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return _fail(e if e.status >= 500 else missions.MissionError(str(e), status=422))
         plan["project_options"] = mission_plan.picker_project_options()
         plan["engine_options"] = mission_plan.engine_options()
+        plan["engine_unavailable"] = mission_plan.engine_unavailable()
         return JSONResponse(plan)
 
     @app.post("/api/missions/{mission_id}/dispatch")

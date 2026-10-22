@@ -169,6 +169,50 @@ async def test_grep_then_shell_then_always_allow_each_get_their_own_card(world):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("asks", ["nothing", "a valid question"])
+async def test_a_permission_dialog_gets_NO_second_question_card(world, monkeypatch, asks):
+    """#1577 reviews. The dialog IS the decision and already has its card. The owed ask still ran
+    every pass: a model that answered with a valid question opened a second card over the dialog,
+    one that answered nothing got the server's fallback card (or an `error` row every pass), and
+    either held the objective after the dialog was gone. No question for a permission escalation,
+    live or answered — whatever the model would have said."""
+    from agent_sessions import prompts, review
+
+    mid, screen, _sent = world
+    question_prompt = prompts.effective("mission_question")
+    valid = {
+        "question": "Should the agent run the integration suite?",
+        "options": [
+            {"label": "Yes, run it", "action_index": 0},
+            {"label": "Not needed here", "action_index": 1},
+        ],
+    }
+
+    async def reply(messages, **kw):
+        if str(messages[0].get("content") or "") == question_prompt:
+            return valid if asks == "a valid question" else {"question": "", "options": []}
+        return {"recap": "waiting", "assessment": "needs_approval", "nudge": None}
+
+    monkeypatch.setattr(review, "complete_json", reply)
+    screen["name"] = "opencode_permission_grep.raw"
+    for _ in range(4):
+        await sup.run_pass(mid)
+    assert len(_live_cards()) == 1
+
+    # …nor once the dialog is answered and gone.
+    (card,) = _live_cards()
+    _operator_answers(card)
+    screen["name"] = None
+    for _ in range(4):
+        await sup.run_pass(mid)
+    events = missions.get_mission(mid)["events"]
+    assert not [e for e in events if e["kind"] == "question"], "a second card joined the dialog"
+    assert not [
+        e for e in events if e["kind"] == "error" and "question" in (e.get("text") or "")
+    ], "the dialog's escalation was still asked about every pass"
+
+
+@pytest.mark.anyio
 async def test_a_card_whose_dialog_was_answered_in_the_terminal_is_replaced(world):
     mid, screen, _sent = world
     screen["name"] = "opencode_permission_grep.raw"

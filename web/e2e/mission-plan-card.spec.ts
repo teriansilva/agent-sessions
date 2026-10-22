@@ -534,3 +534,53 @@ test("a FAILED plan shows the reason from plan_detail and Plan manually; Plan ag
   await expect(page.getByTestId("mission-replan")).toHaveText("Plan again");
   await expect(page.getByTestId("mission-replan")).toBeEnabled();
 });
+
+test("the agents missions can't use yet are LISTED in the picker, disabled, with the server's reason (#1577)", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  const server: Server = {
+    state: "draft",
+    plan_state: "skipped",
+    plan_generation: 1,
+    plan_detail: "no AI endpoint is configured, so nothing can be planned",
+    plan: null,
+    plan_options: {
+      project_options: PROJECTS,
+      engine_options: ENGINES,
+      engine_unavailable: [
+        {
+          id: "kimi",
+          label: "kimi",
+          reason: "can't be started unattended yet",
+          detail: "kimi does not reveal its session id until after its first turn",
+        },
+        { id: "gemini", label: "gemini", reason: "can't be started with a brief yet", detail: "" },
+      ],
+    },
+    objectives: OBJECTIVES,
+    objectives_state: "done",
+  };
+  await stub(page, server);
+  await page.goto("/mission");
+  await selectMission(page);
+  await page.getByTestId("mission-plan-manually").click();
+
+  const engine = page.getByTestId("mission-manual-engine");
+  const group = engine.getByTestId("mission-engine-unavailable");
+  await expect(group).toHaveAttribute("label", "Not available for missions yet");
+  const kimi = group.locator("option", { hasText: "kimi — can't be started unattended yet" });
+  // The DOM property, not `toBeDisabled`: Playwright reads an <option> inside a closed <select>
+  // as enabled whatever its attribute. The selectOption refusal below is the behavioural proof.
+  await expect(kimi).toHaveJSProperty("disabled", true);
+  await expect(kimi).toHaveAttribute("title", /does not reveal its session id/);
+  await expect(group.locator("option", { hasText: /^gemini — / })).toHaveJSProperty("disabled", true);
+  // A left-out agent cannot be chosen — not even by a script forcing the disabled option, which a
+  // person's picker would never offer: the card ignores it and Save stays disabled…
+  await engine.selectOption("unavailable:kimi", { force: true });
+  await expect(engine).toHaveValue("");
+  await expect(page.getByTestId("mission-manual-save")).toBeDisabled();
+  // …and the real choices still are.
+  await engine.selectOption("codex");
+  await expect(engine).toHaveValue("codex");
+});

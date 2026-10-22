@@ -5542,10 +5542,15 @@ def open_question(
     expect_incarnation: str = "",
     expect_episode: int | None = None,
     expect_content: str = "",
+    origin: dict | None = None,
     now: float | None = None,
     path: Path | None = None,
 ) -> dict:
     """Open ONE question about one objective, and stand that objective down (#892).
+
+    `origin` is the server's note on how the question was produced — `{"fallback": true,
+    "refused": "<why>"}` when the model asked nothing usable and the server worded it (#1577).
+    Server strings only; it rides on the event so a refused reply can be diagnosed after the fact.
 
     Both halves in ONE transaction, because they are one fact: a question the supervisor is
     waiting on is an objective it must stop nudging about, and a crash between them would leave
@@ -5693,6 +5698,7 @@ def open_question(
                     "objective": objective_key,
                     "episode": episode,
                     "options": opts,
+                    **({"origin": dict(origin)} if origin else {}),
                 },
             )
             # HOLD the objective while the question is open — in its OWN column, never in
@@ -7344,6 +7350,66 @@ def supervisor_checkpoint(mission_id: str, *, session_key: str, path: Path | Non
                 "growth_at": None,
             }
         )
+    finally:
+        con.close()
+
+
+def stop_escalated(
+    mission_id: str,
+    session_key: str,
+    mark: int,
+    *,
+    kind: str = "stall",
+    fp: str = "",
+    path: Path | None = None,
+) -> list[str]:
+    """The objectives this session was escalated on at this transcript mark (#1577).
+
+    A STOP is a session at a mark: until the transcript moves, it is the same stop. Read from the
+    escalation events, which carry the session and — for a session-level escalation — the
+    `stop_mark` it was raised at. A `needs_approval` stop is also its KIND and the input the model
+    read (`stop_fp`): a fresh decision at the same mark is a new stop. Empty when never raised.
+    """
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        rows = con.execute(
+            "SELECT json_extract(meta, '$.objective_key') AS k FROM mission_events "
+            "WHERE mission_id=? AND kind='escalation' AND session_key=? AND json_valid(meta) "
+            "AND json_extract(meta, '$.stop_mark')=? "
+            "AND COALESCE(json_extract(meta, '$.stop_kind'), 'stall')=? "
+            "AND COALESCE(json_extract(meta, '$.stop_fp'), '')=? ORDER BY seq",
+            (mission_id, session_key, int(mark), kind, fp),
+        ).fetchall()
+        return [str(r["k"]) for r in rows if r["k"] is not None]
+    finally:
+        con.close()
+
+
+def latest_escalation(
+    mission_id: str, objective_key: str, episode: int, *, path: Path | None = None
+) -> dict | None:
+    """The escalation event for this objective episode — `{session_key, meta}` — or ``None``.
+
+    Tells a caller WHICH session a held objective was escalated for, and whether it was a
+    permission dialog (`meta.prompt`), without trusting anything but the stored event (#1577).
+    """
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT session_key, meta FROM mission_events WHERE mission_id=? AND kind='escalation' "
+            "AND json_valid(meta) AND json_extract(meta, '$.objective_key')=? "
+            "AND json_extract(meta, '$.episode')=? ORDER BY seq DESC LIMIT 1",
+            (mission_id, objective_key, int(episode)),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            meta = json.loads(row["meta"]) if row["meta"] else {}
+        except ValueError:
+            meta = {}
+        return {"session_key": row["session_key"], "meta": meta if isinstance(meta, dict) else {}}
     finally:
         con.close()
 

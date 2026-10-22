@@ -52,12 +52,29 @@ test("judged met at or above the threshold reads 'judged met (0.93)'", () => {
   expect(judgedStateWord(j, "met")).toBe("judged met (0.93)");
 });
 
-test("below the threshold reads 'judged not yet' and does not count", () => {
+test("met BELOW the threshold says met and the bar, and does not count (#1577)", () => {
   const j = judgmentOf(
     row(verdict({ value: false, judged: { ...verdict().judged, confidence: 0.62 } })),
   )!;
-  expect(judgedStateWord(j, "met")).toBe("judged not yet (0.62)");
+  // Not "judged not yet": the judge said MET, short of the bar — the opposite reading.
+  expect(judgedStateWord(j, "met")).toBe("judged met (0.62) · below 0.90");
   expect(j.kind === "verdict" && j.counts).toBe(false);
+});
+
+test("a STALE met verdict keeps the met wording, below the bar or not (#1577 review)", () => {
+  const below = judgmentOf(
+    row(verdict({ stale: true, reason: "changed", value: undefined, judged: { ...verdict().judged, confidence: 0.62 } })),
+  )!;
+  expect(judgedStateWord(below, "met")).toBe("judged met (0.62) · below 0.90");
+  const above = judgmentOf(row(verdict({ stale: true, reason: "changed", value: undefined })))!;
+  expect(judgedStateWord(above, "met")).toBe("judged met (0.93)");
+});
+
+test("a NOT-met verdict reads 'judged not yet'", () => {
+  const j = judgmentOf(
+    row(verdict({ value: false, judged: { ...verdict().judged, met: false, confidence: 0.95 } })),
+  )!;
+  expect(judgedStateWord(j, "met")).toBe("judged not yet (0.95)");
 });
 
 test("a STALE judgment never counts, even when the stale record still says value", () => {

@@ -341,6 +341,70 @@ def _observation_supports(o: dict) -> bool:
     return missions.observation_supports(o)
 
 
+def _stop_already_raised(
+    mission_id: str,
+    session_key: str,
+    mark: int | None,
+    a: dict,
+    path=None,
+    *,
+    kind: str = "stall",
+    fp: str = "",
+) -> str:
+    """Why this session's stop must not be escalated again, or ``""`` (#1577 review). Blocking.
+
+    Scoped to the SESSION, never the mission: one answer elsewhere, or another session's question,
+    must not silence a different stop.
+    """
+    if mark is not None:
+        raised = set(
+            missions.stop_escalated(mission_id, session_key, mark, kind=kind, fp=fp, path=path)
+        )
+        # …while the work it was raised about is still OPEN (#1577 re-review 3). Settling that
+        # objective — waived, stood down, dropped — answers the card's own subject, not the stop:
+        # a still-stopped agent with other unmet objectives is raised again, on the next one, one
+        # card at a time. "Keep it open" settles nothing, so it keeps holding.
+        if any(
+            o["key"] in raised and not o["met"] and not o["stood_down"] for o in a["objectives"]
+        ):
+            return "this stop was already escalated; it is raised again when the transcript moves"
+    for o in a["objectives"]:
+        if not o.get("awaiting_answer"):
+            continue
+        rec = missions.latest_escalation(mission_id, o["key"], o["episode"], path=path)
+        if rec and rec["session_key"] == session_key and "prompt" not in rec["meta"]:
+            return "this session's card is still waiting for the operator"
+    return ""
+
+
+def _quiet_for(out: dict) -> str:
+    """`12 min`, `3 h` — how long a stopped session has been quiet, in words an operator reads."""
+    minutes = max(1, int(out.get("stalled_for_s") or 0) // 60)
+    return f"{minutes} min" if minutes < 120 else f"{minutes // 60} h"
+
+
+def _judged_met(o: dict) -> bool:
+    """Does this objective's CURRENT judgment say met, whatever its confidence? (#1577)
+
+    Display and ordering only. `observation_supports` / `judgment_counts` decide whether it COUNTS,
+    and a below-floor verdict does not; this answers the narrower question of whether the judge,
+    reading the current criterion, came down on the met side at all.
+    """
+    obs = o.get("observed")
+    rec = obs.get("judged") if isinstance(obs, dict) else None
+    if not isinstance(rec, dict) or rec.get("met") is not True:
+        return False
+    # A STALE or OPERATOR-REJECTED verdict is history, not a current reading: letting it push a row
+    # down the escalation order would hide the objective that actually needs attention.
+    if rec.get("stale") is True or obs.get("stale") is True or "rejected_at" in obs:
+        return False
+    if "criterion" in rec and rec["criterion"] != missions.judge_criterion(
+        o.get("title"), o.get("direction")
+    ):
+        return False
+    return True
+
+
 def assess(mission_id: str, *, now: float | None = None, path=None) -> dict:
     """The MECHANICAL half. No model call, and it runs on EVERY pass.
 
@@ -451,6 +515,11 @@ def assess(mission_id: str, *, now: float | None = None, path=None) -> dict:
                 "terminal": bool(
                     not b["unreadable"] and (b["indeterminate"] or b["remaining"] <= 0)
                 ),
+                # WHAT THE JUDGE LAST SAID, short of settling it (#1577). Never a settlement — a
+                # verdict below the confidence floor counts for nothing — only an ordering hint:
+                # an escalation about a stopped agent should name the work the judge still reads
+                # as undone, not the first row of a checklist it already reads as done.
+                "judged_met": _judged_met(o),
             }
         )
     # NOTHING TO FOLLOW THROUGH ON, said out loud (#896 review 6, finding 3).
@@ -1793,7 +1862,7 @@ async def run_pass(
         # An escalation is one of the reasons a mission "needs the operator", so this skip fires
         # on the very missions that have just escalated — and the ask lives below it. That made
         # the episode's only attempt the pass that raised the escalation: a busy authority fence,
-        # an unconfigured endpoint or an unusable reply lost the question for ever, and what the
+        # an unconfigured endpoint or a failed call lost the question for ever, and what the
         # operator was left with was the vague escalation this feature exists to replace.
         #
         # The escalation row IS the durable intent, so there is nothing new to persist: an
@@ -1993,6 +2062,9 @@ async def _pass_one_session(
             since=since,
             baseline_mark=cp.get("growth_mark"),
         )
+        # THE STOP'S IDENTITY (#1577): this session at this mark. A session-level escalation is
+        # raised once per stop; a new stop needs the transcript to move.
+        out["mark"] = mark_now
         if mark_now is not None and mark_now != (cp.get("growth_mark") or 0):
             # It MOVED — record the new baseline, so the stall clock restarts from progress
             # rather than from dispatch.
@@ -2003,6 +2075,12 @@ async def _pass_one_session(
             )
         if stalled:
             out["stalled"] = since_what
+            # WROTE AND STOPPED is not WROTE NOTHING (#1577). `growth_at` is only ever set when the
+            # mark moved, so its absence is "no growth seen since dispatch" — the wall this check
+            # exists for. A session with a recorded growth worked and then went quiet, and telling
+            # the operator it "has written nothing since it started" was simply false.
+            out["stalled_never_grew"] = not cp.get("growth_at")
+            out["stalled_for_s"] = max(0, int(time.time() - since))
 
     # (3e) A TOOL-PERMISSION DIALOG ON SCREEN (#1213). Read from the live frame, not from the model:
     # the dialog is a fact, and it is the operator's — so it gets a decision card (a ledger
@@ -2098,16 +2176,47 @@ async def _pass_one_session(
     # of it. A session whose engine store has not grown since dispatch is sitting at something that
     # eats keystrokes — a trust dialog, an auth wall, a first-run prompt — so `continue` goes into a
     # wall and the budget drains against a wall. The operator is the only one who can clear it.
+    # WHICH KIND OF STOP (#1577 review). A fresh `needs_approval` reading is a DECISION the model
+    # just saw — a changed screen, a new menu — and is its own stop even when the transcript has
+    # not moved, so it keeps its words and its identity (the input it read). A stall without one
+    # is the quiet itself, identified by the mark alone.
+    stop_kind = "approval" if reading.get("assessment") == "needs_approval" else "stall"
     if stalled and permission is None:
         proposal = None
         draft = None
-        escalate_because = f"the agent has written nothing since it started ({out['stalled']})"
+        if stop_kind == "stall":
+            escalate_because = (
+                f"the agent has written nothing since it started ({out['stalled']})"
+                if out.get("stalled_never_grew")
+                else f"the agent has stopped: nothing new in its transcript for {_quiet_for(out)}"
+            )
+    stop_fp = str(reading.get("input_fp") or "") if stop_kind == "approval" else ""
 
     if escalate_because:
         if not may_actuate:
             out["held_back"] = "another session in this pass already acted"
             return out
-        for o in a["objectives"]:
+        # ONCE PER STOP, FOR THIS SESSION (#1577 review). A stall or a `needs_approval` is about the
+        # SESSION; the objective is only where its card hangs. Walking on to the next unmet
+        # objective once a question held the first escalated — and, with the fallback, carded —
+        # every objective in turn for one stopped agent, and an answer brought it straight back.
+        # So it is held while THIS session's own card is unanswered, and raised again only when the
+        # transcript has moved (a new stop). Other sessions and other questions do not hold it.
+        # A permission dialog is exempt: each dialog is its own decision with its own card (#1213).
+        if permission is None:
+            held = await missions.run_admitted(
+                lambda: _stop_already_raised(
+                    mission_id, session_key, out.get("mark"), a, path, kind=stop_kind, fp=stop_fp
+                )
+            )
+            if held:
+                out["held_back"] = held
+                return out
+        # The work the judge still reads as UNDONE first (#1577): a stopped agent is usually
+        # stopped on the part it could not finish, and naming a row the judge already reads as met
+        # sent the operator to the one objective that needed nothing. Stable, so ties keep the
+        # checklist's order, and nothing is dropped — if every row reads met, the first still goes.
+        for o in sorted(a["objectives"], key=lambda r: bool(r.get("judged_met"))):
             if o["met"] or o["stood_down"] or o.get("awaiting_answer"):
                 continue
             # A permission dialog names ITSELF, not the objective (#1213): the operator needs to
@@ -2120,7 +2229,15 @@ async def _pass_one_session(
             meta = (
                 {"prompt": permission, "card": (permission_card.get("card") or {}).get("id")}
                 if permission is not None
-                else None
+                else (
+                    {
+                        "stop_mark": int(out["mark"]),
+                        "stop_kind": stop_kind,
+                        **({"stop_fp": stop_fp} if stop_fp else {}),
+                    }
+                    if out.get("mark") is not None
+                    else None
+                )
             )
             if await escalate(
                 mission_id,
@@ -2232,7 +2349,7 @@ async def _pass_one_session(
         # It was, and that made the episode's only ask a single attempt: `escalate_once` is
         # arbitrated on `(mission, objective, episode)`, so the pass that wins is the only pass
         # that ever entered this branch — and an ask that produced nothing (a busy authority
-        # fence, an unconfigured endpoint, an unusable reply) lost the question permanently. The
+        # fence, an unconfigured endpoint, a failed call) lost the question permanently. The
         # operator was left with the vague escalation and no concrete choice, for ever, on an
         # objective the supervisor had already decided it could not resolve alone.
         #
@@ -2250,8 +2367,9 @@ async def _pass_one_session(
         # Ordered AFTER the escalation deliberately, for two reasons:
         #
         # * the escalation is the DURABLE record, so a mission whose question could not be
-        #   produced — no AI endpoint, an unusable reply — still tells the operator it needs
-        #   them. Asking degrades to the status quo rather than to silence;
+        #   produced — no AI endpoint, a failed call, a fence that moved — still tells the operator
+        #   it needs them. Asking degrades to the status quo rather than to silence. (An UNUSABLE
+        #   reply no longer lands here: the server words the card itself, #1577.)
         # * `open_question` stands the objective down in its own transaction, and
         #   `derive_needs_you` drops an escalation for a stood-down objective — so a question
         #   that lands SUPERSEDES the vague escalation with a concrete choice, and the mission
@@ -2295,6 +2413,16 @@ async def _ask_owed(
         if o["met"] or o["stood_down"] or o.get("awaiting_answer") or not o.get("escalated"):
             continue
         if pace is not None and not pace.take_ask(mission_id, o["key"]):
+            continue
+        # NO QUESTION FOR A PERMISSION ESCALATION (#1577 review). The dialog was the decision and
+        # had its own card; a question about the objective it hung on — model-written or the
+        # server's fallback, live or after the dialog was answered — was a second card over it that
+        # held the objective and talked over the agent. Read from the stored escalation, so it
+        # holds whatever the screen shows now.
+        rec = await missions.run_admitted(
+            lambda o=o: missions.latest_escalation(mission_id, o["key"], o["episode"], path=path)
+        )
+        if rec and "prompt" in rec["meta"]:
             continue
         asked = await mission_questions.ask(
             mission_id, o["key"], context=context[:QUESTION_CONTEXT_MAX], path=path

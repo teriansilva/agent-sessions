@@ -9,7 +9,7 @@
  *     without a comparand lets two tabs overwrite each other's acknowledged changes (#904
  *     review 6). The `plan_id` on the wire is asserted, not the rendering.
  */
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 
@@ -1011,4 +1011,72 @@ test("an ordinary set arms the same confirmation with no 'worth a look' line", a
   await userEvent.click(screen.getByTestId("mission-begin"));
   await screen.findByTestId("mission-confirm-objectives");
   expect(screen.queryByTestId("mission-confirm-why")).toBeNull();
+});
+
+// ---- #1577: the agents the picker leaves out ------------------------------------------------------
+
+const UNAVAILABLE = [
+  {
+    id: "kimi",
+    label: "kimi",
+    reason: "can't be started unattended yet",
+    detail: "kimi does not reveal its session id until after its first turn",
+  },
+  { id: "gemini", label: "gemini", reason: "can't be started with a brief yet" },
+];
+
+test("the plan's agent picker LISTS the left-out agents, disabled, with the server's reason (#1577)", async () => {
+  mount(
+    mission({
+      state: "planned",
+      plan: plan({ engine_unavailable: UNAVAILABLE }),
+    }),
+  );
+  await openReview();
+  const select = screen.getByTestId("mission-plan-engine");
+  const group = screen.getByTestId("mission-engine-unavailable");
+  expect(select).toContainElement(group);
+  expect(group).toHaveAttribute("label", "Not available for missions yet");
+  const kimi = screen.getByRole("option", { name: "kimi — can't be started unattended yet" });
+  expect(kimi).toBeDisabled();
+  expect(kimi).toHaveAttribute("title", UNAVAILABLE[0].detail);
+  expect(screen.getByRole("option", { name: "gemini — can't be started with a brief yet" })).toBeDisabled();
+  // The real choices are untouched and still selectable.
+  expect(screen.getByRole("option", { name: "codex" })).toBeEnabled();
+  // A FORCED change to a left-out entry (a script; no person's picker offers it) is ignored: the
+  // plan keeps its agent and nothing is edited (#1577 review).
+  expect(select).toHaveValue("claude");
+  vi.mocked(api.editMissionPlan).mockClear();
+  fireEvent.change(select, { target: { value: "unavailable:kimi" } });
+  await act(async () => {});
+  expect(api.editMissionPlan).not.toHaveBeenCalled();
+  expect(select).toHaveValue("claude");
+});
+
+test("PLAN MANUALLY lists them too, and a plan with none adds no empty group", async () => {
+  render(
+    <Harness
+      mission={mission({
+        state: "draft",
+        plan: null,
+        plan_state: "skipped",
+        plan_options: { ...OPTIONS, engine_unavailable: UNAVAILABLE },
+      })}
+      onChanged={vi.fn()}
+      onNote={vi.fn()}
+    />,
+  );
+  await userEvent.click(screen.getByTestId("mission-plan-manually"));
+  const select = screen.getByTestId("mission-manual-engine");
+  expect(select).toContainElement(screen.getByTestId("mission-engine-unavailable"));
+  expect(screen.getByRole("option", { name: /^kimi — / })).toBeDisabled();
+  fireEvent.change(select, { target: { value: "unavailable:kimi" } });
+  expect(select).toHaveValue("");
+  expect(screen.getByTestId("mission-manual-save")).toBeDisabled();
+  cleanup();
+
+  mount(mission({ state: "planned", plan: plan() }));
+  await openReview();
+  expect(screen.getByTestId("mission-plan-engine")).toBeInTheDocument();
+  expect(screen.queryByTestId("mission-engine-unavailable")).toBeNull();
 });

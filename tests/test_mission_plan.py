@@ -164,6 +164,55 @@ def test_SHELL_is_never_offered_as_a_dispatch_target(monkeypatch):
     assert "shell" not in ids, "a brief pasted into a login shell executes"
 
 
+def test_the_LEFT_OUT_agents_are_listed_with_a_reason_and_never_offered(monkeypatch):
+    """#1577. The picker showed two agents out of nine and said nothing about the rest.
+
+    `engine_unavailable` names each agent `engine_options` leaves out, with plain words and the
+    server's full sentence — and stays disjoint from the offer, so it can never become a choice.
+    A non-agent engine is not listed at all: "shell — not an agent engine" is noise, not news.
+    """
+    from agent_sessions import engines
+
+    class P:
+        def __init__(self, eid, seed, present=True):
+            self.engine_id = eid
+            self.supports_seed_start = seed
+            self.present = present
+            self.manifest = engines.get(eid).manifest
+
+        def is_present(self):
+            return self.present
+
+    monkeypatch.setattr(
+        engines,
+        "all_providers",
+        lambda: [
+            P("claude", True),
+            P("shell", True),
+            P("gemini", False),
+            P("opencode", True, present=False),
+            P("kimi", True),
+        ],
+    )
+    real = engines.unattended_start_state
+    monkeypatch.setattr(
+        engines,
+        "unattended_start_state",
+        lambda prov: (False, "kimi does not reveal its session id")
+        if prov.engine_id == "kimi"
+        else real(prov),
+    )
+    offered = {e["id"] for e in mission_plan.engine_options()}
+    left_out = {e["id"]: e for e in mission_plan.engine_unavailable()}
+    assert offered == {"claude"}
+    assert set(left_out) == {"gemini", "opencode", "kimi"}, "shell is not an agent"
+    assert not offered & set(left_out), "a left-out agent was also offered"
+    assert left_out["gemini"]["reason"] == "can't be started with a brief yet"
+    assert left_out["opencode"]["reason"] == "not installed"
+    assert left_out["kimi"]["reason"] == "can't be started unattended yet"
+    assert left_out["kimi"]["detail"] == "kimi does not reveal its session id"
+
+
 def test_an_UNINSTALLED_engine_is_not_offered(monkeypatch):
     from agent_sessions import engines
 

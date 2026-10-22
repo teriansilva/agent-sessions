@@ -198,6 +198,40 @@ def engine_options() -> list[dict]:
     return out[:MAX_ENGINES]
 
 
+#: Plain words for why an agent is not offered (#1577). The raw reasons are written for the code's
+#: readers ("no seed-capable start yet", a list of missing capabilities); the picker needs a few
+#: words the operator can act on, and keeps the raw one as detail.
+_UNAVAILABLE_WORDS = {
+    handoff._REASON_NO_SEED: "can't be started with a brief yet",
+    handoff._REASON_NOT_INSTALLED: "not installed",
+}
+
+
+def engine_unavailable() -> list[dict]:
+    """The agents :func:`engine_options` leaves out, each with the server's reason (#1577).
+
+    DISPLAY ONLY. The picker showed two agents out of nine and said nothing about the rest, so the
+    operator could not tell "not supported for missions yet" from "missing". Nothing here is a
+    choice: every dispatch and plan-save path keeps validating against `engine_options()`, and the
+    model is never shown this list. Non-agent engines (a shell) are not listed at all.
+    """
+    out: list[dict] = []
+    for prov in engines.all_providers():
+        if not engines.is_agent(prov):
+            continue
+        ok, why = handoff.seed_start_state(prov, present=prov.is_present())
+        words = _UNAVAILABLE_WORDS.get(why or "", why or "")
+        if ok:
+            ok, why = engines.unattended_start_state(prov)
+            words = "can't be started unattended yet"
+        if ok:
+            continue
+        out.append(
+            {"id": prov.engine_id, "label": prov.engine_id, "reason": words, "detail": why or ""}
+        )
+    return out[:MAX_ENGINES]
+
+
 def render_options(
     projects_: list[dict], engines_: list[dict], *, fixed_project: bool = False
 ) -> str:
@@ -453,6 +487,7 @@ async def _attempt(mission_id: str, generation: int, *, path=None) -> dict:
     stored["dropped"] = dropped
     stored["project_options"] = projects_
     stored["engine_options"] = engines_
+    stored["engine_unavailable"] = engine_unavailable()
     return stored
 
 

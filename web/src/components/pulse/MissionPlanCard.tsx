@@ -25,7 +25,7 @@ import { Pencil } from "lucide-react";
 import { motionMode } from "../../theme/motion";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
-import type { Mission } from "../../types/api";
+import type { Mission, MissionEngineUnavailable } from "../../types/api";
 import action from "../ui/actionButton.module.css";
 import styles from "./mission.module.css";
 import { checksWhat, worthALook } from "./confirmSet";
@@ -53,6 +53,36 @@ function Lead({ text }: { text: string }) {
  *  The choices come from the mission detail's `plan_options`, which the server attaches exactly while
  *  a first plan may be saved, built by the same functions that validate the save. The client sends
  *  ids, never a path. A refusal (422) is the server's own sentence, shown under the form by the card. */
+/** The agents the server will not dispatch a mission to yet, listed under the real choices as
+ *  disabled entries with the server's reason (#1577). The picker used to show two agents out of
+ *  nine and say nothing about the rest. Disabled, so none of them can be chosen; the server refuses
+ *  them on save regardless. A native `<optgroup>`, so it reads the same on desktop and phone. */
+const UNAVAILABLE = "unavailable:";
+
+/** A left-out agent's entry, which no change may select — a disabled <option> stops a person, not a
+ *  script, and the server refuses it either way. */
+const isUnavailable = (value: string) => value.startsWith(UNAVAILABLE);
+
+function UnavailableEngines({
+  engines,
+}: {
+  engines?: MissionEngineUnavailable[] | null;
+}) {
+  if (!engines?.length) return null;
+  return (
+    <optgroup
+      label="Not available for missions yet"
+      data-testid="mission-engine-unavailable"
+    >
+      {engines.map((e) => (
+        <option key={e.id} value={`${UNAVAILABLE}${e.id}`} disabled title={e.detail || e.reason}>
+          {`${e.label} — ${e.reason}`}
+        </option>
+      ))}
+    </optgroup>
+  );
+}
+
 function ManualPlan({
   mission,
   start,
@@ -122,7 +152,9 @@ function ManualPlan({
             className={styles.planField}
             value={engine}
             disabled={start.disabled}
-            onChange={(e) => setEngine(e.target.value)}
+            onChange={(e) => {
+              if (!isUnavailable(e.target.value)) setEngine(e.target.value);
+            }}
             data-testid="mission-manual-engine"
           >
             <option value="">Choose an agent…</option>
@@ -131,6 +163,9 @@ function ManualPlan({
                 {e.label}
               </option>
             ))}
+            <UnavailableEngines
+              engines={mission.plan_options?.engine_unavailable}
+            />
           </select>
         </label>
       </div>
@@ -512,7 +547,10 @@ export function MissionPlanCard({
                 className={styles.planField}
                 value={plan.engine ?? ""}
                 disabled={disabled}
-                onChange={(e) => start.edit({ engine: e.target.value })}
+                onChange={(e) => {
+                  if (!isUnavailable(e.target.value))
+                    start.edit({ engine: e.target.value });
+                }}
                 data-testid="mission-plan-engine"
               >
                 <option value="">Choose an agent…</option>
@@ -521,6 +559,7 @@ export function MissionPlanCard({
                     {e.label}
                   </option>
                 ))}
+                <UnavailableEngines engines={plan.engine_unavailable} />
               </select>
             </label>
           </div>

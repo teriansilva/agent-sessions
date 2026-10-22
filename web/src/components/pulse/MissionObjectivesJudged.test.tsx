@@ -149,7 +149,7 @@ test("below the threshold the panel says so and the row does not claim met", asy
       },
     ),
   );
-  expect(screen.getByTestId("objective-state")).toHaveTextContent("judged not yet (0.62)");
+  expect(screen.getByTestId("objective-state")).toHaveTextContent("judged met (0.62) · below 0.90");
   await userEvent.click(screen.getByTestId("objective-evidence-toggle"));
   expect(screen.getByTestId("objective-evidence")).toHaveTextContent(/below your 0\.90/i);
 });

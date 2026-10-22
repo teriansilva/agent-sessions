@@ -789,6 +789,358 @@ async def test_a_STALLED_session_is_not_nudged_and_escalates_instead(store, monk
     assert "written nothing" in out["escalated"]["reason"]
 
 
+@pytest.mark.anyio
+async def test_a_session_that_WROTE_AND_STOPPED_is_not_told_it_wrote_nothing(store, monkeypatch):
+    """#1577. `growth_at` is set whenever the transcript moved, so a session with one recorded
+    worked and then went quiet — after 25 minutes of work, the operator was told "the agent has
+    written nothing since it started". It still escalates (it has stopped, and the operator is who
+    can say what next); only the false sentence goes. Red against `main`'s hard-coded wording.
+    """
+    _running(store)
+    _objective(store, KEY)
+    missions.note_growth(store, session_key=SESSION, mark=2_107_690, now=1.0)
+
+    async def _quiet(mission_id, session_key, *, path=None):
+        return {"assessment": "blocked", "nudge": None}
+
+    monkeypatch.setattr(sup, "consider", _quiet)
+    monkeypatch.setattr(
+        sup, "session_is_stalled", lambda *a, **k: (True, "no growth in 604s", 2_107_690)
+    )
+
+    out = await sup.run_pass(store)
+    reason = out["escalated"]["reason"]
+    assert "written nothing" not in reason, reason
+    assert "has stopped" in reason, reason
+    # A very long quiet reads in hours, not "for 497966 min" (#1577 review).
+    assert reason.endswith(" h"), reason
+
+
+def test_a_stopped_session_s_quiet_reads_in_minutes_then_hours():
+    assert sup._quiet_for({"stalled_for_s": 0}) == "1 min"
+    assert sup._quiet_for({"stalled_for_s": 604}) == "10 min"
+    assert sup._quiet_for({"stalled_for_s": 119 * 60}) == "119 min"
+    assert sup._quiet_for({"stalled_for_s": 1440 * 60}) == "24 h"
+
+
+@pytest.mark.anyio
+async def test_a_STALL_escalation_names_work_the_judge_still_reads_as_undone(store, monkeypatch):
+    """#1577. The escalation took the FIRST unmet objective — on the live mission that was the one
+    the judge had already read as met (0.80, short of the 0.90 bar), while the work actually stuck
+    was the fifth. A below-floor verdict settles nothing; it only orders which row is named.
+    """
+    _running(store)
+    missions.patch_objectives(
+        store,
+        [
+            {"op": "add", "key": k, "title": t, "probe": "supervisor_judged", "gate": True}
+            for k, t in (("mailbox", "the mailbox exists"), ("socials", "the accounts exist"))
+        ],
+    )
+    title = next(o["title"] for o in missions.objectives(store) if o["key"] == "mailbox")
+    missions.observe_objective(
+        store,
+        "mailbox",
+        observed=True,
+        value=False,
+        detail="reads as done, short of the bar",
+        judged={
+            "met": True,
+            "confidence": 0.8,
+            "threshold": 0.9,
+            "evidence": [],
+            "fingerprint": "f" * 32,
+            "criterion": missions.judge_criterion(title, None),
+        },
+    )
+    rows = {o["key"]: o for o in sup.assess(store)["objectives"]}
+    assert rows["mailbox"]["judged_met"] is True and rows["mailbox"]["met"] is False
+    assert rows["socials"]["judged_met"] is False
+
+    async def _quiet(mission_id, session_key, *, path=None):
+        return {"assessment": "blocked", "nudge": None}
+
+    async def _still_current(mission_id, *, path=None):
+        # The verdict still matches the output it read — the live case. Revalidation against
+        # this test's (absent) transcript would otherwise mark it stale before the pass reads it.
+        return {}
+
+    monkeypatch.setattr(sup.mission_judge, "mark_mission", _still_current)
+    monkeypatch.setattr(sup, "consider", _quiet)
+    monkeypatch.setattr(sup, "session_is_stalled", lambda *a, **k: (True, "no growth", 0))
+
+    out = await sup.run_pass(store)
+    assert out["escalated"]["objective_key"] == "socials", out["escalated"]
+
+
+def _quiet_agent_declines_to_ask(monkeypatch, *, assessment="blocked", stalled=True):
+    """A stopped session whose question model says nothing — the case the fallback card is for.
+    Returns the session's mark, which a test moves to make a NEW stop."""
+    from agent_sessions import review
+
+    mark = {"now": 100}
+
+    async def _reading(mission_id, session_key, *, path=None):
+        return {"assessment": assessment, "nudge": None}
+
+    async def _nothing(messages, **kw):
+        return {"question": "", "options": []}
+
+    monkeypatch.setattr(sup, "consider", _reading)
+    monkeypatch.setattr(
+        sup, "session_is_stalled", lambda *a, **k: (stalled, "no growth", mark["now"])
+    )
+    monkeypatch.setattr(review, "_require_config", lambda: {"base_url": "x", "api_key": "y"})
+    monkeypatch.setattr(review, "complete_json", _nothing)
+    return mark
+
+
+def _kinds(mid, kind):
+    return [e for e in missions.get_mission(mid)["events"] if e["kind"] == kind]
+
+
+@pytest.mark.anyio
+async def test_ONE_stopped_agent_gets_ONE_card_not_one_per_objective(store, monkeypatch):
+    """#1577 review, finding 1. Once a question held the first objective, the stall loop walked on
+    to the next unmet one — and with the fallback every objective got its own escalation, bell and
+    card for the same stopped agent (3 of each, reproduced). One stop, one card."""
+    _running(store)
+    for key in ("first", "second", "third"):
+        _objective(store, key)
+    _quiet_agent_declines_to_ask(monkeypatch)
+
+    for _ in range(6):
+        await sup.run_pass(store)
+
+    assert len(_kinds(store, "escalation")) == 1, _kinds(store, "escalation")
+    assert len(_kinds(store, "question")) == 1
+    assert missions.open_question_row(store)["objective"] == "first"
+
+
+@pytest.mark.anyio
+async def test_KEEP_IT_OPEN_does_not_bring_the_same_card_straight_back(store, monkeypatch):
+    """#1577 review, finding 2. The answer starts a new episode, and the stall was still measured
+    from the same quiet — so the next pass escalated (and belled) again, and asked again, for the
+    stop the operator had just answered. A new stall needs the transcript to move first."""
+    _running(store)
+    _objective(store, KEY)
+    _quiet_agent_declines_to_ask(monkeypatch)
+    for _ in range(2):
+        await sup.run_pass(store)
+    q = missions.open_question_row(store)
+    assert q is not None
+    keep = next(i for i, o in enumerate(q["options"]) if o["action"] == "note_answer")
+    assert "I'll say what to do next" in q["options"][keep]["label"]
+    missions.answer_question(store, q["seq"], option_index=keep)
+
+    for _ in range(4):
+        await sup.run_pass(store)
+
+    assert len(_kinds(store, "escalation")) == 1, "the answered stop escalated again"
+    assert len(_kinds(store, "question")) == 1, "the answered stop was asked again"
+
+
+@pytest.mark.anyio
+async def test_a_NEW_stop_after_the_transcript_moved_is_escalated_again(store, monkeypatch):
+    """#1577 review. "Once per stop" must not become "once ever": when the session writes and
+    stops again, that is a new stop and the operator hears about it."""
+    _running(store)
+    _objective(store, KEY)
+    _objective(store, "other")
+    mark = _quiet_agent_declines_to_ask(monkeypatch)
+    for _ in range(2):
+        await sup.run_pass(store)
+    q = missions.open_question_row(store)
+    keep = next(i for i, o in enumerate(q["options"]) if o["action"] == "note_answer")
+    missions.answer_question(store, q["seq"], option_index=keep)
+    await sup.run_pass(store)
+    assert len(_kinds(store, "escalation")) == 1
+
+    mark["now"] = 250  # it wrote, then stopped again
+    await sup.run_pass(store)
+    assert len(_kinds(store, "escalation")) == 2, "a new stop was silenced by the old answer"
+
+
+@pytest.mark.anyio
+async def test_another_question_or_answer_never_holds_THIS_sessions_stop(store, monkeypatch):
+    """#1577 review, findings A and B. The holds were mission-wide: any answer after the last
+    growth silenced the stop for good, and any open question held every session's escalation —
+    `needs_you` false with an agent stopped. Only this session's own stop and card hold it."""
+    _running(store)
+    _objective(store, KEY)
+    _objective(store, "other")
+    # A question the operator is answering, raised for ANOTHER session's escalation…
+    assert missions.escalate_once(
+        store, session_key=OTHER, objective_key=KEY, episode=1, reason="the other one is stuck"
+    )
+    missions.open_question(
+        store,
+        KEY,
+        "Which of the two open PRs is this mission's?",
+        [
+            {"label": "The one from Tuesday", "action": "note_answer"},
+            {"label": "Neither", "action": "waive_objective"},
+        ],
+    )
+    _quiet_agent_declines_to_ask(monkeypatch, assessment="needs_approval", stalled=False)
+    out = await sup.run_pass(store)
+    assert out["escalated"], "an unrelated open question held back a waiting agent"
+    assert out["escalated"]["objective_key"] == "other"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("settle", ["waive", "stand_down", "drop"])
+async def test_SETTLING_the_cards_objective_raises_the_still_stopped_agent_on_the_next(
+    store, monkeypatch, settle
+):
+    """#1577 re-review 3. The card is about ONE objective; waiving, standing down or dropping it
+    answers that, not the stop. The agent is still stopped with work left, so the next unmet
+    objective is raised — one card at a time — and the mission keeps needing the operator."""
+    _running(store)
+    for key in ("first", "second", "third"):
+        _objective(store, key)
+    _quiet_agent_declines_to_ask(monkeypatch)
+    for _ in range(2):
+        await sup.run_pass(store)
+    q = missions.open_question_row(store)
+    assert q["objective"] == "first"
+    if settle == "waive":
+        idx = next(i for i, o in enumerate(q["options"]) if o["action"] == "waive_objective")
+        missions.answer_question(store, q["seq"], option_index=idx)
+    elif settle == "stand_down":
+        idx = next(i for i, o in enumerate(q["options"]) if o["action"] == "stand_down_objective")
+        missions.answer_question(store, q["seq"], option_index=idx)
+    else:
+        missions.patch_objectives(store, [{"op": "drop", "key": "first"}])
+
+    for _ in range(3):
+        await sup.run_pass(store)
+    esc = _kinds(store, "escalation")
+    assert sorted(e["meta"]["objective_key"] for e in esc) == ["first", "second"], esc
+    assert missions.derive_needs_you([store])[store]["needs_you"] is True
+
+
+@pytest.mark.anyio
+async def test_two_sessions_stopped_at_the_SAME_mark_are_two_stops(store, monkeypatch):
+    """#1577 re-review 3 (a test gap). The stop is THIS session at a mark: two never-grew sessions
+    are both at mark 0, and one's escalation must not read as the other's."""
+    _running(store, SESSION, OTHER)
+    _objective(store, KEY)
+    _objective(store, "other")
+    mark = _quiet_agent_declines_to_ask(monkeypatch)
+    mark["now"] = 0
+    for _ in range(4):
+        await sup.run_pass(store)
+    raised_for = {e["session_key"] for e in _kinds(store, "escalation")}
+    assert raised_for == {SESSION, OTHER}, raised_for
+
+
+@pytest.mark.anyio
+async def test_a_FRESH_approval_after_an_answered_stop_still_gets_a_card(store, monkeypatch):
+    """#1577 Hermes review. The stop dedupe keyed on the mark alone, so after "keep it open" a
+    fresh `needs_approval` reading at the same mark — a changed screen, a new menu, no transcript
+    growth — was discarded as the old stop. A new decision is a new stop; the same reading is
+    not."""
+    _running(store)
+    _objective(store, KEY)
+    _quiet_agent_declines_to_ask(monkeypatch)
+    for _ in range(2):
+        await sup.run_pass(store)
+    q = missions.open_question_row(store)
+    keep = next(i for i, o in enumerate(q["options"]) if o["action"] == "note_answer")
+    missions.answer_question(store, q["seq"], option_index=keep)
+    await sup.run_pass(store)
+    assert len(_kinds(store, "escalation")) == 1
+
+    seen = {"fp": "screen-with-a-menu"}
+
+    async def _approval(mission_id, session_key, *, path=None):
+        return {"assessment": "needs_approval", "nudge": None, "input_fp": seen["fp"]}
+
+    monkeypatch.setattr(sup, "consider", _approval)
+    for _ in range(2):
+        await sup.run_pass(store)
+    assert len(_kinds(store, "escalation")) == 2, "a fresh decision was swallowed by the old stop"
+    assert missions.open_question_row(store) is not None, "the fresh decision has no card"
+
+    # …and once that is answered, the SAME reading is the same stop — but a NEW one (another
+    # menu, same mark) is a new decision again.
+    q = missions.open_question_row(store)
+    keep = next(i for i, o in enumerate(q["options"]) if o["action"] == "note_answer")
+    missions.answer_question(store, q["seq"], option_index=keep)
+    for _ in range(2):
+        await sup.run_pass(store)
+    assert len(_kinds(store, "escalation")) == 2, "the answered decision was raised again"
+    seen["fp"] = "screen-with-another-menu"
+    for _ in range(2):
+        await sup.run_pass(store)
+    assert len(_kinds(store, "escalation")) == 3, "a second fresh decision was swallowed"
+
+
+@pytest.mark.anyio
+async def test_THIS_sessions_open_card_holds_its_next_escalation(store, monkeypatch):
+    """#1577 review. While the card raised for THIS session waits, a session that keeps writing and
+    keeps reading `needs_approval` would otherwise escalate — and card — the next objective at
+    every new mark. Its own unanswered card holds it."""
+    _running(store)
+    for key in ("first", "second", "third"):
+        _objective(store, key)
+    mark = _quiet_agent_declines_to_ask(monkeypatch, assessment="needs_approval", stalled=False)
+    for _ in range(2):
+        await sup.run_pass(store)
+    assert missions.open_question_row(store) is not None
+    for m in (200, 300, 400):
+        mark["now"] = m  # it keeps writing
+        await sup.run_pass(store)
+    assert len(_kinds(store, "escalation")) == 1, _kinds(store, "escalation")
+    assert len(_kinds(store, "question")) == 1
+
+
+@pytest.mark.anyio
+async def test_an_UNRELATED_answer_does_not_silence_a_later_stop(store, monkeypatch):
+    """#1577 re-review, finding A (P2): the operator answers an unrelated question, THEN the
+    session stops — on the mission-wide hold that read as "already answered" and nothing escalated,
+    `needs_you` false. It must escalate."""
+    _running(store)
+    _objective(store, KEY)
+    _objective(store, "other")
+    missions.open_question(
+        store,
+        KEY,
+        "Which of the two open PRs is this mission's?",
+        [
+            {"label": "The one from Tuesday", "action": "note_answer"},
+            {"label": "Neither", "action": "waive_objective"},
+        ],
+    )
+    q = _kinds(store, "question")[0]
+    missions.answer_question(store, q["seq"], option_index=0)
+    _quiet_agent_declines_to_ask(monkeypatch)
+
+    out = await sup.run_pass(store)
+    assert out["escalated"], "an unrelated answer silenced this session's stop"
+    assert missions.derive_needs_you([store])[store]["needs_you"] is True
+
+
+def test_only_a_CURRENT_met_verdict_reads_as_judged_met():
+    """#1577 review. A stale, operator-rejected or other-criterion "met" is history: counting it
+    would push the very objective that needs attention to the back of the escalation order."""
+    title = "the mailbox exists"
+    crit = missions.judge_criterion(title, None)
+
+    def row(obs):
+        return {"title": title, "direction": None, "observed": obs}
+
+    met = {"met": True, "confidence": 0.8, "criterion": crit}
+    assert sup._judged_met(row({"value": False, "judged": met})) is True
+    assert sup._judged_met(row({"value": False, "judged": {**met, "met": False}})) is False
+    assert sup._judged_met(row({"value": False, "judged": {**met, "stale": True}})) is False
+    assert sup._judged_met(row({"stale": True, "judged": met})) is False
+    assert sup._judged_met(row({"value": False, "judged": met, "rejected_at": 5.0})) is False
+    assert sup._judged_met(row({"value": False, "judged": {**met, "criterion": "older"}})) is False
+    assert sup._judged_met(row(None)) is False
+
+
 # =================================================================================== finding 8
 @pytest.mark.anyio
 async def test_the_sweep_REACHES_every_eligible_mission_with_no_ceiling(tmp_path, monkeypatch):

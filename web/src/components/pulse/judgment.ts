@@ -138,8 +138,16 @@ export function judgedStateWord(j: Judged, fallback: string, state?: string): st
   }
   const c = j.confidence.toFixed(2);
   if (j.rejected) return `judged met (${c}) · rejected`;
-  if (j.stale) return `judged ${j.met && j.confidence >= j.threshold ? "met" : "not yet"} (${c})`;
-  return j.counts ? `judged met (${c})` : `judged not yet (${c})`;
+  if (j.counts) return `judged met (${c})`;
+  // MET, SHORT OF THE BAR (#1577). The judge said met and the confidence fell under the threshold,
+  // so it does not count — but "judged not yet" read as the judge saying the work was undone, the
+  // opposite of its verdict, and on one mission it made five finished objectives look unstarted.
+  // The same words when the verdict is STALE: staleness has its own marker on the row.
+  if (j.met) {
+    if (j.confidence < j.threshold) return `judged met (${c}) · below ${j.threshold.toFixed(2)}`;
+    return j.stale ? `judged met (${c})` : `judged met (${c}) · not counted`;
+  }
+  return `judged not yet (${c})`;
 }
 
 /** `transcript · claude:5f3c…a1`, `diff`. The label is the server's; only its shape is reformatted. */
