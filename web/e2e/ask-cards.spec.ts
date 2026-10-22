@@ -19,6 +19,7 @@ import {
   type FakeAsk,
   type FakeConversation,
 } from "./askStream";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const QID = "5e5e5e5e-0000-4000-8000-000000000001";
 const AID = "a".repeat(32);
@@ -135,7 +136,7 @@ test("a question is answered by option — pointer or keyboard — and the serve
   await expect(card).toContainText("Which project?");
   await expect(card).toContainText("Waiting for you");
   const second = card.getByRole("button", { name: "battlelab-cloud" });
-  expect((await second.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect((await second.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
 
   // Keyboard: Tab reaches the option, its ring is visible, Enter answers.
   await card.getByRole("button", { name: "agent-sessions" }).focus();
@@ -176,7 +177,7 @@ test("a nudge card sends through the approve route and shows what the ledger say
   const send = card.getByRole("button", { name: "Send to api rebase" });
   const dismiss = card.getByTestId("ask-nudge-dismiss");
   const [s, d] = [(await send.boundingBox())!, (await dismiss.boundingBox())!];
-  expect(s.height).toBeGreaterThanOrEqual(44);
+  expect(s.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   if (page.viewportSize()!.width <= 800) {
     // Stacked, full width, at the 44px floor (design.md ≤800px).
     expect(d.y).toBeGreaterThan(s.y);
@@ -283,11 +284,11 @@ test("a session card starts with the bypass value it shows, by keyboard, and fol
   const toggle = card.getByRole("switch");
   await expect(toggle).not.toBeChecked();
   await expect(row).toContainText("Permission bypass · Off");
-  expect((await row.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect((await row.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   const start = card.getByRole("button", { name: "Start session in agent-sessions" });
   const dismiss = card.getByTestId("ask-session-dismiss");
   const [s, d] = [(await start.boundingBox())!, (await dismiss.boundingBox())!];
-  expect(s.height).toBeGreaterThanOrEqual(44);
+  expect(s.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   if (page.viewportSize()!.width <= 800) {
     expect(d.y).toBeGreaterThan(s.y);
     expect(Math.abs(d.width - s.width)).toBeLessThanOrEqual(1);

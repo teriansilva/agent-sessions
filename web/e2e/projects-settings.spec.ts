@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
 import { projectPicker, launchFolder } from "./newSessionForm";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // Real-browser check of the project-entity surfaces: the Settings → Projects manager (list /
 // create-with-default-folder / archive report) and the new-session Project→Folder flow (#448:
@@ -132,7 +133,7 @@ test.describe("Settings → Projects manager (#361/#448)", () => {
       const radio = group.getByRole("radio", { name, exact: true });
       await expect(radio).toBeVisible();
       const box = (await radio.boundingBox())!;
-      expect(box.height).toBeGreaterThanOrEqual(44);
+      expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
       expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
     }
     await group.getByRole("radio", { name: "Sky" }).click();

@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { ACTIVE, ID, QUEUED, mockStructuredGuidance } from "./structuredGuidanceFixture";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #1442: with several messages queued, Send now is offered on the FIRST only and the queue keeps
 // its order; a reply Send now cut off says so.
@@ -31,7 +32,7 @@ for (const theme of ["dark", "light"]) {
     await expect(rows(page).nth(1).getByRole("button")).toHaveCount(1);
     await expect(rows(page).nth(1).getByRole("button", { name: "Remove this queued message" })).toBeVisible();
     const box = await sendNow(page).boundingBox();
-    expect(box!.height).toBeGreaterThanOrEqual(44); // design §8
+    expect(box!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR); // design §8
     await page.screenshot({ path: testInfo.outputPath(`queue-${theme}.png`) });
   });
 }

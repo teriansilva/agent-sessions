@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { clickHeadAction, FILES_ACTION } from "./headActions";
 import { openLinksFullScreen } from "./linkMode";
 import { animationsSettled } from "./nightjarShell";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 /** Uploading into the browsed directory (#807) — real-browser proof, desktop AND mobile.
  *
@@ -423,7 +424,7 @@ test.describe("coarse pointer", () => {
     // The prompt slides in on a phone (#1531): tap its corner where it lands.
     await animationsSettled(page);
     const box = (await skip.boundingBox())!;
-    expect(box.height).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     // Tap the inset corner: a 44px box can measure fine while the tap routes to the neighbouring
     // control, which is the failure #782 recorded and a box measurement cannot catch.
     await page.touchscreen.tap(box.x + 3, box.y + 3);
@@ -434,7 +435,7 @@ test.describe("coarse pointer", () => {
   test("the Upload control is a real 44px target", async ({ page }) => {
     await openPanel(page);
     const box = (await page.locator("[data-upload-trigger]").boundingBox())!;
-    expect(box.height).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     await page.touchscreen.tap(box.x + box.width - 3, box.y + box.height - 3);
     await expect(page.locator("[data-upload-menu]")).toBeVisible();
   });

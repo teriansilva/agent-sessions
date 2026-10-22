@@ -15,6 +15,7 @@ import {
   openMissionRail,
 } from "./mission-console";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const T = 1_700_000_000;
 const CONFIG = {
@@ -360,8 +361,8 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
       await page.keyboard.press("Tab");
       await expect(dismiss).toBeFocused();
       const shown = (await dismiss.boundingBox())!;
-      expect(shown.height).toBeGreaterThanOrEqual(44);
-      expect(shown.width).toBeGreaterThanOrEqual(44);
+      expect(shown.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+      expect(shown.width).toBeGreaterThanOrEqual(TOUCH_FLOOR);
       await page.keyboard.press("Enter");
       await expect(dialog).toHaveCount(0);
       await expect(trigger).toBeFocused();

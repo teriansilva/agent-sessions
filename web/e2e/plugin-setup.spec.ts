@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mockRoster } from "./roster";
 import type { PluginCatalog, PluginGeneration, PluginOperation, PluginReview } from "../src/types/plugins";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const PATH = "/settings/agents/setup/new";
 const GEN = "c0ef9b0a-322c-49c2-843e-d8c7564918c2";
@@ -320,8 +321,8 @@ test("setup controls retain touch size, keyboard order and wrapped sources at 32
   for (const target of targets) {
     const box = await target.boundingBox();
     expect(box).not.toBeNull();
-    expect(box!.height).toBeGreaterThanOrEqual(44);
-    expect(box!.width).toBeGreaterThanOrEqual(44);
+    expect(box!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    expect(box!.width).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
   await page.getByLabel("Search agents").focus();
   for (const name of ["All", "Ready", "Needs attention"]) {
@@ -339,7 +340,7 @@ test("setup controls retain touch size, keyboard order and wrapped sources at 32
   const consent = page.getByRole("checkbox", { name: /I trust this exact/ });
   await expect(consent).toBeFocused();
   const label = consent.locator("..");
-  expect((await label.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect((await label.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await page.keyboard.press("Space");
   await expect(consent).toBeChecked();
   await page.keyboard.press("Tab");
@@ -598,7 +599,7 @@ for (const theme of ["dark", "light"]) {
     await expect(page.getByRole("region", { name: "Public agent catalog" })).toHaveCount(0);
     expect(m.writes).toHaveLength(0);
     for (const control of [header.getByRole("link", { name: "Continue setup" }), page.getByTestId("agent-menu"), activePanel.locator("summary"), candidatePanel.locator("summary")]) {
-      expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
       expect((await control.boundingBox())!.height).toBeLessThanOrEqual(60);
     }
     await noOverflow(page);

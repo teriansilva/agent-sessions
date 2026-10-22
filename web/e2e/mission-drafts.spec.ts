@@ -14,6 +14,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { SESSION, T, deferred, missionConsole } from "./mission-directions";
 import { openMissionConversation, openMissionDetails } from "./mission-console";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 /** A line break and a doubled space, so a page that collapsed whitespace would fail. */
 const DRAFT_TEXT =
@@ -425,6 +426,6 @@ test("B2: on a phone the card's Send as written, Edit and Dismiss are at least 4
   for (const id of ["draft-send", "draft-edit", "draft-dismiss"]) {
     const box = await card.getByTestId(id).boundingBox();
     expect(box, id).not.toBeNull();
-    expect(box!.height, id).toBeGreaterThanOrEqual(44);
+    expect(box!.height, id).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
 });

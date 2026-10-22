@@ -7,6 +7,7 @@ import {
   openMissionRail,
 } from "./mission-console";
 import { mockRoster } from "./roster";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 /** THE TOP BAR'S nav, not "a link called Missions" (#1058).
  *
@@ -155,7 +156,7 @@ test("section buttons share the brand row and keep their own declared typography
       ).toBeLessThan(2);
       expect(b.x).toBeGreaterThanOrEqual(bb.x + bb.width);
       expect(b.x + b.width).toBeLessThanOrEqual(width);
-      expect(b.height).toBeGreaterThanOrEqual(44);
+      expect(b.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
       expect(b.height).toBeLessThanOrEqual(44);
       const look = await link.evaluate((el) => {
         const s = getComputedStyle(el);

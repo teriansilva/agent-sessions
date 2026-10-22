@@ -1,5 +1,6 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { mockRoster } from "./roster";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #1465: a sent API-session message leaves the composer at once and shows as pending in the
 // conversation — the native structured clients (the HTTP chat client: `chat-outbox.spec.ts`).
@@ -442,8 +443,8 @@ for (const theme of ["dark", "light"]) {
     const pane = (await page.getByTestId("api-log").boundingBox())!;
     for (const b of [edit, discard]) {
       const r = (await b.boundingBox())!;
-      expect(r.height).toBeGreaterThanOrEqual(44);
-      expect(r.width).toBeGreaterThanOrEqual(44);
+      expect(r.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+      expect(r.width).toBeGreaterThanOrEqual(TOUCH_FLOOR);
       if (mobile) expect(r.width).toBeGreaterThan(pane.width * 0.6); // full width on a phone
     }
     await edit.focus();
@@ -461,7 +462,7 @@ for (const theme of ["dark", "light"]) {
     await expect(unknown).toHaveAttribute("data-phase", "unknown");
     const retry = unknown.getByRole("button", { name: "Retry" });
     const drop = unknown.getByRole("button", { name: "Discard — it may still arrive" });
-    for (const b of [retry, drop]) expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    for (const b of [retry, drop]) expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     await retry.focus();
     await page.keyboard.press("Tab");
     await expect(drop).toBeFocused();

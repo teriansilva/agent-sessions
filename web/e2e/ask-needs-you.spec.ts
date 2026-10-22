@@ -12,6 +12,7 @@ import { expect, test, type Page, type Request } from "@playwright/test";
 
 import { ASK_STREAM, fulfillAsk, mockAskConversations } from "./askStream";
 import { openAsk } from "./askSidebar";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const A = "claude:aaaaaaaa-0000-4000-8000-00000000000a";
 const B = "claude:aaaaaaaa-0000-4000-8000-00000000000b";
@@ -215,7 +216,7 @@ test("NEEDS YOU lists only what needs you, and every Approve names what it does"
   await expect(rows.nth(2).getByTestId("needs-you-details")).toBeVisible();
   // ≥ 44px touch targets on every control (§8).
   for (const b of await needs(page).getByRole("button").all()) {
-    expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
 });
 

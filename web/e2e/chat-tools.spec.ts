@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mockRoster } from "./roster";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #1222 (#853 P9b): an API agent with READ TOOLS — its tool rows and its Tools setting. Built on the
 // #1209 harness: an API agent's session is a CHAT PANE, not a terminal. The server is mocked:
@@ -230,7 +231,7 @@ test(`Tools ${mode}: chosen by keyboard, 44 px targets, Save reachable and sends
   const write = card.getByRole("radio", { name: /Read files and propose edits/ });
   for (const opt of [none, read, write]) {
     const box = await opt.locator("xpath=ancestor::label[1]").boundingBox();
-    expect(box!.height).toBeGreaterThanOrEqual(44);
+    expect(box!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
   await none.focus();
   await page.keyboard.press("ArrowDown");

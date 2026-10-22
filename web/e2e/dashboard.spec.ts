@@ -10,6 +10,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { ASK_STREAM, fulfillAsk, mockAskConversations } from "./askStream";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
 import { animationsSettled, storeMotionChoice } from "./nightjarShell";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const NOW = Math.floor(Date.now() / 1000);
 const A = "claude:aaaaaaaa-0000-4000-8000-00000000000a";
@@ -568,7 +569,7 @@ test("New is a menu — session, mission, project — that opens on screen and g
     expect(box.x).toBeGreaterThanOrEqual(0);
     expect(box.x + box.width).toBeLessThanOrEqual(vw);
     for (const it of await menu.getByRole("menuitem").all()) {
-      expect((await it.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      expect((await it.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     }
     await menu.getByRole("menuitem", { name: item }).click();
     await expect(page).toHaveURL(url);
@@ -599,7 +600,7 @@ test("Recent work opens and closes with the keyboard while focus stays on its bu
   const toggle = page.getByTestId("dashboard-details-toggle");
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
   await expect(toggle).toHaveAttribute("aria-controls", /.+/);
-  expect((await toggle.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect((await toggle.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await toggle.focus();
   await page.keyboard.press("Enter");
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
@@ -624,7 +625,7 @@ test("All sessions opens the session history without expanding Recent work", asy
     "false",
   );
   await expect(history).toHaveAttribute("href", NEW_SESSION_PATH);
-  expect((await history.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect((await history.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await history.click();
   await expect(page).toHaveURL(new RegExp(`${NEW_SESSION_PATH}$`));
 });

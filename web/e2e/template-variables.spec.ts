@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // Real-browser checks for the templates' variables library (#1090, Phase 1). One variable is
 // defined in Library → Variables, two templates use it as a library field, and a send of EACH
@@ -299,7 +300,7 @@ test("library and variable actions are 44px touch targets on a phone", async ({
     page.getByRole("button", { name: /^new secret$/i }),
   ]) {
     const box = await el.boundingBox();
-    expect(box!.height).toBeGreaterThanOrEqual(44);
+    expect(box!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
   // Nothing overflows the phone's width.
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(

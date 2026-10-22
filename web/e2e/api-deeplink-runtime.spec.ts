@@ -1,5 +1,6 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { ROSTER, RUNTIME_HINTS_KEY, runtimeHintsValue } from "./roster";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 /** API-session links open straight into the conversation (#1502).
  *
@@ -236,7 +237,7 @@ test("a roster that keeps failing on a first visit: Retry within 8 s, and Retry 
   await expect(unavailable(page)).toContainText("Nothing was started");
   const retry = page.getByRole("button", { name: "Retry" });
   const box = await retry.boundingBox();
-  expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+  expect(box?.height ?? 0).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   ctl.roster = "ok";
   await retry.click();
   await expect(page.getByTestId("structured-pane")).toBeVisible();
@@ -456,7 +457,7 @@ test("a truly missing id: the settled not-found result, once the lookup has answ
   await expect(page.getByText("This session was not found.")).toBeVisible({ timeout: 15_000 });
   const back = page.getByRole("link", { name: /Back to Sessions/ });
   await expect(back).toBeVisible();
-  expect((await back.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+  expect((await back.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   // The interim chip never said "not found" before the lookup settled; it said Opening….
   expect(await seen(page)).toEqual(["This session was not found"]);
   expect(await sawOpening(page)).toBe(true);

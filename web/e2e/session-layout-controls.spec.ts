@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { ID, mockStructuredGuidance } from "./structuredGuidanceFixture";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 async function voice(page: Page) {
   await page.addInitScript(() => { window.SpeechRecognition = class {} as never; });
@@ -14,7 +15,7 @@ async function matchedButtons(page: Page) {
   expect(t.y).toBe(s.y);
   expect(t.x + t.width).toBeLessThanOrEqual(s.x);
   if (await page.evaluate(() => matchMedia("(pointer: coarse), (max-width: 800px)").matches))
-    expect(t.height).toBeGreaterThanOrEqual(44);
+    expect(t.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   expect(await talk.evaluate(el => getComputedStyle(el).font)).toBe(await send.evaluate(el => getComputedStyle(el).font));
   for (const button of [talk, send]) {
     await expect(button).toBeInViewport();

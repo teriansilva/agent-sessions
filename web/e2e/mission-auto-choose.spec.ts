@@ -14,6 +14,7 @@ import {
   openMissionDetails,
   openMissionRail,
 } from "./mission-console";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const T = 1_700_000_000;
 
@@ -133,7 +134,7 @@ test("at yolo the opt-in is in Follow-through and sends exactly {auto_choose: tr
   const row = await page
     .locator('[data-testid="mission-auto-choose"]:visible label')
     .boundingBox();
-  expect(row!.height).toBeGreaterThanOrEqual(44);
+  expect(row!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await box(page).check();
   await expect.poll(() => patches).toEqual([{ auto_choose: true }]);
 });

@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { clickHeadAction, FILES_ACTION } from "./headActions";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 /** The GIT tab's WRITE side (#806) — real-browser proof, desktop AND mobile.
  *
@@ -627,8 +628,8 @@ test.describe("coarse pointer", () => {
     await openGit(page);
     const trigger = page.locator("[data-row-menu-trigger='web/src/GitTab.tsx']");
     const box = (await trigger.boundingBox())!;
-    expect(box.width).toBeGreaterThanOrEqual(44);
-    expect(box.height).toBeGreaterThanOrEqual(44);
+    expect(box.width).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     // The assertion that actually matters: TAP the top-left inset of the declared target and
     // require the menu — a 44px box can measure fine while the tap routes to the row underneath
     // it, which is the failure #782 recorded and a box measurement cannot catch.
@@ -663,7 +664,7 @@ test.describe("coarse pointer", () => {
     const menu = page.locator("[data-row-menu]");
     const item = menu.locator("[data-git-op='discard']");
     const ib = (await item.boundingBox())!;
-    expect(ib.height).toBeGreaterThanOrEqual(44);
+    expect(ib.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     const mb = (await menu.boundingBox())!;
     expect(mb.x).toBeGreaterThanOrEqual(0);
     expect(mb.x + mb.width).toBeLessThanOrEqual(391);
@@ -1201,8 +1202,8 @@ test.describe("coarse pointer (#950)", () => {
   test("a row's commit checkbox is a real 44px target, reachable at its edge", async ({ page }) => {
     await openGit(page, { status: SELECTABLE });
     const box = (await page.locator("[data-git-row='web/src/GitTab.tsx'] label").first().boundingBox())!;
-    expect(box.width).toBeGreaterThanOrEqual(44);
-    expect(box.height).toBeGreaterThanOrEqual(44);
+    expect(box.width).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     await page.touchscreen.tap(box.x + 3, box.y + 3);
     await expect(page.locator("[data-git-select='web/src/GitTab.tsx']")).toBeChecked();
     await expect(page.locator("[data-file-viewer]")).toHaveCount(0); // not the row's viewer
@@ -1355,7 +1356,7 @@ test.describe("coarse pointer (#950 recent commits)", () => {
     await expect(page.locator("[data-commit-row]")).toHaveCount(3);
     const revert = page.locator(`[data-git-op='revert-commit'][data-commit='${"e".repeat(40)}']`);
     const box = (await revert.boundingBox())!;
-    expect(box.height).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     await page.touchscreen.tap(box.x + 3, box.y + 3);
     await expect(page.locator("[data-revert-commit-confirm]")).toBeVisible();
     const over = await page.evaluate(() => {

@@ -18,6 +18,7 @@ import {
   mockMissions,
   openMissionRail,
 } from "./mission-console";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const T = 1_700_000_000;
 const UUID = "f48fde5a-1111-2222-3333-444444444444";
@@ -585,11 +586,11 @@ test("a failed-before-briefed mission shows Start again; clicking it returns the
     const acts = await latest.getByTestId("thread-failure-actions").boundingBox();
     for (const b of [block, log]) {
       const bb = (await b.boundingBox())!;
-      expect(bb.height).toBeGreaterThanOrEqual(44);
+      expect(bb.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
       expect(Math.abs(bb.width - acts!.width)).toBeLessThan(1.5);
     }
   } else {
-    for (const b of [block, log]) expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    for (const b of [block, log]) expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
 
   await block.click();
@@ -640,9 +641,9 @@ test("a delivered-then-failed mission does not offer Start again, anywhere; Why 
   if (info.project.name === "mobile") {
     const acts = (await block.getByTestId("thread-failure-actions").boundingBox())!;
     const bb = (await openSession.boundingBox())!;
-    expect(bb.height).toBeGreaterThanOrEqual(44);
+    expect(bb.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     expect(Math.abs(bb.width - acts.width)).toBeLessThan(1.5);
-    expect((await why.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect((await why.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
 
   // AFTER A RELOAD, still Open session, still the launched session (PR #986 review).

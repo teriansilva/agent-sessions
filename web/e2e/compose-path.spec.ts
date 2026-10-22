@@ -1,5 +1,6 @@
 import { type Page, expect, test } from "@playwright/test";
 import { clickHeadAction, FILES_ACTION, headActionsReady } from "./headActions";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 /** Sending a path from the file panel into the compose draft (#792) — desktop AND mobile.
  *
@@ -208,8 +209,8 @@ test.describe("touch", () => {
     // reachable. It must be visible on its own.
     await expect(send).toBeVisible();
     const box = await send.boundingBox();
-    expect(box?.width).toBeGreaterThanOrEqual(44);
-    expect(box?.height).toBeGreaterThanOrEqual(44);
+    expect(box?.width).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    expect(box?.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   });
 
   test("the sheet closes so the draft is actually visible", async ({

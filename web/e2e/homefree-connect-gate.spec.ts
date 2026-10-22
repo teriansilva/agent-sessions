@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { verifyHuman } from "./connect-helpers";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #690 human-verification gate: the connect page must be inert to scripts. The contract is
 // network-observable — zero /altcha/challenge fetches and zero WebSocket constructions before a
@@ -350,7 +351,7 @@ test("the gate is keyboard-operable and its progress survives reduced motion", a
 
   // Thumb-sized target (docs/design.md §8) with an accessible progressbar.
   const box = (await hold.boundingBox())!;
-  expect(box.height).toBeGreaterThanOrEqual(44);
+  expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await expect(meter).toHaveAttribute("aria-labelledby", "gate-title");
 
   // Keyboard parity: a sustained Space press drives the same hold, with visible progress

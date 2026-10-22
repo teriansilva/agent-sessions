@@ -3,6 +3,7 @@ import { mockRoster } from "./roster";
 import directoryGrants from "../../tests/fixtures/claude_directory_grants.json" with { type: "json" };
 import { agentPicker } from "./newSessionForm";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #1311: a native API client's session is a STRUCTURED VIEW, never a terminal. The server is
 // mocked: the snapshot route is a small state machine, so the spec drives the real client through
@@ -170,7 +171,7 @@ for (const theme of ["dark", "light"] as const) {
     const dismiss = notice.getByRole("button", { name: "Dismiss reminder" });
     const open = notice.getByRole("link", { name: "Open previous session" });
     for (const action of [dismiss, open]) {
-      expect((await action.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      expect((await action.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     }
     await open.focus();
     await page.keyboard.press("Tab");
@@ -320,7 +321,7 @@ test("API documents: a failed upload preserves a mixed image/document draft", as
 async function targets(page: Page, scope: ReturnType<Page["getByTestId"]>) {
   for (const b of await scope.getByRole("button").all()) {
     const box = (await b.boundingBox())!;
-    expect(box.height, `${await b.textContent()} is a 44px target`).toBeGreaterThanOrEqual(44);
+    expect(box.height, `${await b.textContent()} is a 44px target`).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
 }
 

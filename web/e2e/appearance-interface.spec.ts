@@ -9,6 +9,7 @@ import {
   pushOutput,
   setupBench,
 } from "./terminal/harness";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const hexToRgb = (hex: string) => {
   const n = parseInt(hex.slice(1), 16);
@@ -151,7 +152,7 @@ test("the hex field shows its whole value (the old box clipped the last digit)",
   const fits = await field.evaluate((el) => (el as HTMLInputElement).scrollWidth <= (el as HTMLInputElement).clientWidth);
   expect(fits).toBe(true);
   const box = await field.boundingBox();
-  expect(box!.height).toBeGreaterThanOrEqual(44);
+  expect(box!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
 });
 
 test("every Interface target is ≥44px and nothing scrolls sideways at 360px", async ({ page }) => {
@@ -168,7 +169,7 @@ test("every Interface target is ≥44px and nothing scrolls sideways at 360px", 
     .getByRole("radio")
     .all()) {
     const b = (await radio.boundingBox())!;
-    expect(b.height).toBeGreaterThanOrEqual(44);
-    expect(b.width).toBeGreaterThanOrEqual(44);
+    expect(b.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    expect(b.width).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
 });

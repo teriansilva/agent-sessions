@@ -27,6 +27,7 @@ import {
   mockMissions,
   openMissionRail,
 } from "./mission-console";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const T = 1_700_000_000;
 
@@ -292,7 +293,7 @@ test("a row meets the 44px coarse-pointer floor", async ({ page }) => {
   const rows = shown(page, "objectives").getByRole("listitem");
   for (let i = 0; i < 4; i++) {
     const box = await rows.nth(i).boundingBox();
-    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
 });
 

@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { mockRoster } from "./roster";
 import { launchFolder } from "./newSessionForm";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #1209 (#853 P9a-3): an API agent's session is a CHAT PANE, not a terminal. The server is mocked:
 // `GET /api/chat/<sid>` is a small state machine, so the spec drives the real client through a
@@ -171,7 +172,7 @@ for (const theme of ["dark", "light"] as const) {
     expect(sent).toHaveLength(1);
 
     const send = page.getByRole("button", { name: "Send" });
-    expect((await send.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect((await send.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     await noOverflow(page);
   });
 }
@@ -221,7 +222,7 @@ test("a failed turn says why, keeps the message, and Retry resends that same tur
     "2 earlier turns were not sent",
   );
   const retry = page.getByRole("button", { name: "Retry" });
-  expect((await retry.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect((await retry.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await retry.click();
   await expect.poll(() => retried.length).toBe(1);
   expect(retried[0]).toContain(`/turns/${failed.turn_id}/retry`);
@@ -249,7 +250,7 @@ test("an unconfigured agent sends nothing and links to its settings", async ({
   );
   const link = page.getByRole("link", { name: /open agent settings/i });
   await expect(link).toHaveAttribute("href", "/settings/agents/apichat");
-  expect((await link.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect((await link.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await noOverflow(page);
 });
 
@@ -409,7 +410,7 @@ test("the Endpoint card: TEST never saves, SAVE activates the agent", async ({
   for (const name of ["Test", "Save"]) {
     expect(
       (await card.getByRole("button", { name }).boundingBox())!.height,
-    ).toBeGreaterThanOrEqual(44);
+    ).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
   await noOverflow(page);
 });

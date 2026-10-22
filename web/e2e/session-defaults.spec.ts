@@ -1,6 +1,7 @@
 import { expect, type Page, test } from "@playwright/test";
 import { ROSTER } from "./roster";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // API new-session defaults (#1407) in a real browser: save a model + level on the opencode — API
 // agent page, then the new-session screen preselects them and the create carries them. What
@@ -109,7 +110,7 @@ for (const theme of ["dark", "light"] as const) {
     const save = section.getByRole("button", { name: "Save defaults" });
     for (const target of [model, effort, save]) {
       const box = (await target.boundingBox())!;
-      expect(box.height, "44px target (design.md §8)").toBeGreaterThanOrEqual(44);
+      expect(box.height, "44px target (design.md §8)").toBeGreaterThanOrEqual(TOUCH_FLOOR);
     }
     await save.click();
     await expect(section.getByTestId("session-defaults-status")).toContainText("Saved");
@@ -145,7 +146,7 @@ test("a level changed for one session is sent, and Reset to defaults restores th
   await expect(effort).toHaveValue("high");
   await effort.selectOption("low");
   const reset = page.getByRole("button", { name: "Reset to defaults" });
-  expect((await reset.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect((await reset.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await reset.click();
   await expect(effort).toHaveValue("high");
   await effort.selectOption("low");

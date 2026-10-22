@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { promptPath, settingsPath } from "../src/routes/settingsTabs";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // Real-browser checks for Settings → AI → Prompts (#824): the catalog panel that replaced the
 // three inline prompt editors. Runs on desktop AND mobile (a jsdom test cannot tell you the
@@ -155,7 +156,7 @@ test("prompts: rows stay usable at phone width", async ({ page }, testInfo) => {
   await expect(row).toBeVisible();
   // 44px touch target (docs/design.md §8) and no horizontal overflow at phone width.
   const box = await row.boundingBox();
-  expect(box!.height).toBeGreaterThanOrEqual(44);
+  expect(box!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
   );

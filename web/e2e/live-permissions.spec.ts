@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { ID, mockLivePermissions, openPermissions } from "./livePermissionsFixture";
 import { animationsSettled } from "./nightjarShell";
 import { mockStructuredGuidance } from "./structuredGuidanceFixture";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const setup = async (page: Page, theme: "dark" | "light", engine = "codex-api", uncertain = false) => {
   const attempts = await mockLivePermissions(page, theme, engine, uncertain);
@@ -23,7 +24,7 @@ for (const theme of ["dark", "light"] as const) {
       await animationsSettled(page);
       for (const button of await dialog.getByRole("button").all()) {
         const box = (await button.boundingBox())!;
-        expect(box.height).toBeGreaterThanOrEqual(44);
+        expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
       }
       await dialog.getByRole("button", { name: "Stop turn & enable" }).click();
       await expect(dialog).toHaveCount(0);
@@ -45,7 +46,7 @@ for (const theme of ["dark", "light"] as const) {
     await expect(always).toBeVisible();
     expect(await always.evaluate((e) => getComputedStyle(e).backgroundColor))
       .toBe(await once.evaluate((e) => getComputedStyle(e).backgroundColor));
-    expect((await always.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect((await always.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     const ratio = await always.evaluate((el) => {
       const style = getComputedStyle(el);
       const luminance = (css: string) => {

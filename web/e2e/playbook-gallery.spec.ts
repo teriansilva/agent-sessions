@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { PLAYBOOKS_PATH } from "../src/lib/routes";
 import { commonMocks } from "./mission-directions";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const REV = "a".repeat(64);
 const NEW_REV = "b".repeat(64);
@@ -379,7 +380,7 @@ test("320px gallery and detail hold touch targets without horizontal overflow", 
       .getByTestId("playbooks-page")
       .locator("button:visible, a:visible, select:visible, input:visible")
       .all()) {
-      expect((await el.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      expect((await el.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     }
   }
 });

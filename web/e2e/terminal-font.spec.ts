@@ -8,6 +8,7 @@ import {
   isTermFontFamily,
   TERM_FONT_FAMILY_MAX_LEN,
 } from "../src/theme/termFont";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // The same table the pytest and Vitest suites read. Here it is checked against the browser's
 // OWN CSS parser, which is the only authority on whether a stack the operator typed will
@@ -271,7 +272,7 @@ test("cards and the stack field are keyboard-operable, and meet the 44px floor (
   await page.goto(settingsPath("terminal-appearance"));
   const system = page.getByRole("radio", { name: /^System/ });
   const box = await system.boundingBox();
-  expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+  expect(box?.height ?? 0).toBeGreaterThanOrEqual(TOUCH_FLOOR);
 
   // Reachable and operable without a pointer: focus the Custom card and activate it with the
   // keyboard, then type a stack and commit with Enter.

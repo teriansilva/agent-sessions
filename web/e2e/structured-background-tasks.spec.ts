@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { ID, mockStructuredGuidance } from "./structuredGuidanceFixture";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #1461: the worker knows which background tasks are alive. Show its reported activity,
 // including a reported wait, without guessing a task's state from a quiet transcript.
@@ -75,7 +76,7 @@ test("#1461: reported task progress updates live and keyboard-open details survi
   const details = task.locator("details");
   const disclosure = details.locator("summary");
   await expect(disclosure).toContainText("Details");
-  expect((await disclosure.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect((await disclosure.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await disclosure.focus();
   await page.keyboard.press("Enter");
   await expect(details).toHaveAttribute("open", "");

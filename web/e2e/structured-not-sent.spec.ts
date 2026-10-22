@@ -1,5 +1,6 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { mockRoster } from "./roster";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #1538: a queued message proven never sent says why, in the down status colour, and offers
 // Send again — a NEW operation with the same words and attachments, pending at once through the
@@ -156,7 +157,7 @@ for (const theme of ["dark", "light"]) {
     // Touch-sized actions; full width on a phone.
     for (const button of [again(page), discard]) {
       const b = await button.boundingBox();
-      expect(b?.height ?? 0).toBeGreaterThanOrEqual(44);
+      expect(b?.height ?? 0).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     }
     if (testInfo.project.name === "mobile") {
       const [a, d, r] = await Promise.all([again(page).boundingBox(), discard.boundingBox(), row(page).boundingBox()]);

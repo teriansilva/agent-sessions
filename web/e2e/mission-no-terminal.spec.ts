@@ -18,6 +18,7 @@ import {
   mockMissions,
   openMissionRail,
 } from "./mission-console";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const T = 1_700_000_000;
 const KEY = "claude:11111111-1111-1111-1111-111111111111";
@@ -338,7 +339,7 @@ test("every no-terminal control clears 44px", async ({ page }) => {
       .first()
       .boundingBox();
     expect(box, id).not.toBeNull();
-    expect(box!.height, id).toBeGreaterThanOrEqual(44);
+    expect(box!.height, id).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
 });
 

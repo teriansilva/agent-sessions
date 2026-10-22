@@ -7,6 +7,7 @@
  */
 import { expect, test } from "@playwright/test";
 import { setupBench } from "./terminal/harness";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const ENGINE = "claude";
 const UUID = "ffffffff-1111-2222-3333-444444444444";
@@ -49,8 +50,8 @@ test("≤800px: one Actions trigger, every action inside it with its label", asy
   await expect(trigger).toBeVisible();
   await expect(trigger).toContainText("Actions");
   const box = (await trigger.boundingBox())!;
-  expect(box.height).toBeGreaterThanOrEqual(44);
-  expect(box.width).toBeGreaterThanOrEqual(44);
+  expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  expect(box.width).toBeGreaterThanOrEqual(TOUCH_FLOOR);
 
   // No action chip is left on the bar.
   for (const name of [/open session brief/i, /hand off/i, /smaller terminal text/i, /bigger terminal text/i]) {

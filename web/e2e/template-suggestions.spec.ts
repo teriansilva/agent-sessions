@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // Real-browser checks for AI-suggested templates (#1090, Phase 3). The SUGGESTED tab starts empty
 // and analyses NOTHING until ANALYSE is pressed (asserted on the network: zero suggest requests
@@ -184,7 +185,7 @@ test("the suggestion cards are real touch targets and never overflow the phone",
     page.getByRole("button", { name: /dismiss fix review notes/i }),
     page.getByRole("button", { name: /analyse again/i }),
   ]) {
-    expect((await el.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect((await el.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
     page.viewportSize()!.width,
@@ -206,7 +207,7 @@ test("every Templates tab fits a 320px phone — measured against the tab row, n
   for (const tab of await row.getByRole("tab").all()) {
     const t = (await tab.boundingBox())!;
     expect(t.x + t.width, await tab.textContent()).toBeLessThanOrEqual(box.x + box.width + 0.5);
-    expect(t.height).toBeGreaterThanOrEqual(44);
+    expect(t.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
 });
 
@@ -220,8 +221,8 @@ test("WRITE ME A TEMPLATE FOR… works without any analysis and lands in the edi
   await box.fill("reviewing a pull request against our guidelines");
   const go = page.getByRole("button", { name: /write it/i });
   if (info.project.name === "mobile") {
-    expect((await go.boundingBox())!.height).toBeGreaterThanOrEqual(44);
-    expect((await box.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect((await go.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    expect((await box.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
   await go.click();
   await expect(page).toHaveURL(/\/templates\/new$/);

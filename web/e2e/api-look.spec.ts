@@ -7,6 +7,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
 import { mockApiPanes, openChat, openStructured } from "./apiLookFixture";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const hexToRgb = (hex: string) => {
   const n = parseInt(hex.slice(1), 16);
@@ -142,7 +143,7 @@ for (const width of [360, 390]) {
     expect(await sideways()).toBeLessThanOrEqual(0);
     for (const r of await page.getByRole("radiogroup").getByRole("radio").all()) {
       const b = (await r.boundingBox())!;
-      expect(b.height).toBeGreaterThanOrEqual(44);
+      expect(b.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     }
     for (const open of [openStructured, openChat]) {
       await open(page);

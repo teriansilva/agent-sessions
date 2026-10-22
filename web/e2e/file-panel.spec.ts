@@ -7,6 +7,7 @@ import {
   headActionsReady,
   paneHead,
 } from "./headActions";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 /** File panel (#783) — real-browser proof, desktop AND mobile.
  *
@@ -355,7 +356,7 @@ test.describe("file panel — touch", () => {
       expect(
         box!.height,
         `${sel} must be a real touch target`,
-      ).toBeGreaterThanOrEqual(44);
+      ).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     }
   });
 

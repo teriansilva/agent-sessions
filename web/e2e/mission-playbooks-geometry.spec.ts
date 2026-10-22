@@ -9,6 +9,7 @@
  */
 import { expect, test } from "@playwright/test";
 import { CHECKLISTS_PATH } from "../src/lib/routes";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const CONFIG = {
   csrf: "x",
@@ -173,7 +174,7 @@ test("every playbook control clears 44px on a phone and stays inside the viewpor
   await expect(gateLabel).toBeVisible();
   const box = await gateLabel.boundingBox();
   expect(box).not.toBeNull();
-  expect(Math.round(box!.height)).toBeGreaterThanOrEqual(44);
+  expect(Math.round(box!.height)).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   // …and it is the target: a tap anywhere in it flips the checkbox.
   const gate = page.getByTestId("objective-gate").first();
   const before = await gate.isChecked();

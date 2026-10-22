@@ -2,6 +2,7 @@ import { expect, type Page, test } from "@playwright/test";
 import { mockRoster } from "./roster";
 import { DASHBOARD_PATH, MAP_PATH, NEW_PROJECT_PATH, SESSIONS_PATH, NEW_SESSION_PATH } from "../src/lib/routes";
 import { agentPicker, projectPicker, launchFolder } from "./newSessionForm";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 /** The New project wizard (#1187), in a real browser on the desktop AND mobile projects.
  *
@@ -182,8 +183,8 @@ test.describe("New project wizard (#1187)", () => {
     const vw = page.viewportSize()!.width;
     for (const radio of await group.getByRole("radio").all()) {
       const box = (await radio.boundingBox())!;
-      expect(box.width).toBeGreaterThanOrEqual(44);
-      expect(box.height).toBeGreaterThanOrEqual(44);
+      expect(box.width).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+      expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
       expect(box.x + box.width).toBeLessThanOrEqual(vw);
     }
     // SampleProject is Amber, so Orange is preselected; the arrows walk the wheel.

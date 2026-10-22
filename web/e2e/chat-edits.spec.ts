@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mockRoster } from "./roster";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const SID = "0190a3b2-1c2d-7e3f-8a9b-0c1d2e3f4a5b";
 const TID = "11111111-2222-4333-8444-555555555555";
@@ -62,7 +63,7 @@ for (const theme of ["dark", "light"]) {
     const approve = page.getByRole("button", { name: "Approve & save" });
     const reject = page.getByRole("button", { name: "Reject", exact: true });
     for (const button of [approve, reject]) {
-      expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     }
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
     await reject.focus();

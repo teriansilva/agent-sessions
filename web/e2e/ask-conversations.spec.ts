@@ -12,6 +12,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { openAsk, pickConversation } from "./askSidebar";
 import { mockAskConversations, turnOf, type FakeAsk, type FakeConversation } from "./askStream";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const LONG =
   "Why does the flaky upload retry spec in web/e2e keep timing out on the shared runner overnight";
@@ -186,7 +187,7 @@ test("a long title stays inside the head; nothing scrolls sideways on a phone (#
   // The switcher shrinks; Delete, New conversation and Close keep their place on the same row.
   expect(sw!.x + sw!.width).toBeLessThanOrEqual(close!.x);
   expect(close!.x + close!.width).toBeLessThanOrEqual(head!.x + head!.width + 1);
-  expect(sw!.height).toBeGreaterThanOrEqual(44);
+  expect(sw!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await trigger.click();
   const menu = await panel.getByTestId("ask-switcher-menu").boundingBox();
   const box = await panel.boundingBox();
@@ -214,8 +215,8 @@ test("Delete asks first, by keyboard; confirmed, the conversation is gone and HQ
   const head = await panel.getByTestId("ask-head").boundingBox();
   const box = await remove.boundingBox();
   // A real target on the head's row (§8: 44 px).
-  expect(box!.width).toBeGreaterThanOrEqual(44);
-  expect(box!.height).toBeGreaterThanOrEqual(44);
+  expect(box!.width).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  expect(box!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   expect(box!.y).toBeGreaterThanOrEqual(head!.y - 1);
   expect(box!.y + box!.height).toBeLessThanOrEqual(head!.y + head!.height + 1);
 

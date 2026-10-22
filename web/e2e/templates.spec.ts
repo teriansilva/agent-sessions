@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openSettingsFromMenu } from "./settingsNav";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // Real-browser checks for TEMPLATES — the instruction-template gallery + editor (#905 P2).
 // Runs on desktop AND mobile: the one-column reflow, the bottom-sheet confirm and the 44px
@@ -294,12 +295,12 @@ test("mobile: one column, and every action is a real touch target", async ({ pag
 
   for (const name of [/edit pr review checklist/i, /duplicate pr review checklist/i, /delete pr review checklist/i]) {
     const box = (await page.getByRole("link", { name }).or(page.getByRole("button", { name })).first().boundingBox())!;
-    expect(box.height, String(name)).toBeGreaterThanOrEqual(44);
+    expect(box.height, String(name)).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
   for (const name of [/^All 2$/, /^review 1$/, /^ops 1$/]) {
-    expect((await page.getByRole("button", { name }).boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect((await page.getByRole("button", { name }).boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
-  expect((await page.getByRole("link", { name: /new template/i }).first().boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect((await page.getByRole("link", { name: /new template/i }).first().boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   // And the generic sweep over every control in the gallery — including the card-title link,
   // a second edit link that the enumeration above never covered (Hermes on #907, addendum).
   await expectTouchTargets(page, page.locator("main"));
@@ -399,7 +400,7 @@ test("mobile: the four card actions never clip — at 320px and at the 800px bre
       const box = (await page.getByRole("link", { name }).or(page.getByRole("button", { name })).first().boundingBox())!;
       expect(box.x, `${String(name)} @${width}`).toBeGreaterThanOrEqual(0);
       expect(box.x + box.width, `${String(name)} @${width}`).toBeLessThanOrEqual(width + 0.5);
-      expect(box.height, `${String(name)} @${width}`).toBeGreaterThanOrEqual(44);
+      expect(box.height, `${String(name)} @${width}`).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     }
     // No horizontal overflow hidden behind a suppressed page scroll.
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);

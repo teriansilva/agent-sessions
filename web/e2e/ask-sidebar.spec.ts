@@ -11,6 +11,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { ASK_STREAM, fulfillAsk, mockAskConversations } from "./askStream";
 import { openAsk, pickConversation } from "./askSidebar";
 import { openMapFromNav } from "./mapNav";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const ANSWER = {
   answer: "Two sessions touched the upload retry.",
@@ -102,7 +103,7 @@ test("Ask is the icon beside the bell on every route; it slides in from the righ
   await expect(panel.getByRole("heading", { name: "HQ" })).toBeVisible();
   // Every head control holds the 44px floor (design §8).
   for (const b of await panel.getByTestId("ask-head").getByRole("button").all()) {
-    expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
   // Desktop: non-modal, so the icon that opened it closes it. Phone: a modal drawer — the page
   // (top bar included) is inert under its scrim, exactly as with the bell's drawer — so ✕ does.
@@ -216,7 +217,7 @@ test("a match is ONE row: the session and its reason left, the way in right", as
   // …and it sits at the row's right edge rather than floating mid-row.
   expect(rb.x + rb.width - (jb.x + jb.width)).toBeLessThan(2);
   // The coarse-pointer floor survives the reflow.
-  expect((await row.getByRole("link").boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect((await row.getByRole("link").boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
 
   // A PHONE (the panel is ~92vw there) wraps it to its own line rather than crushing the title —
   // still right-aligned, and the page still does not scroll sideways.

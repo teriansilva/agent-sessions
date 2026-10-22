@@ -3,6 +3,7 @@ import { settingsPath } from "../src/routes/settingsTabs";
 
 import { mockMissions } from "./mission-console";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #750 — the #726 Pulse surfaces on a phone.
 //
@@ -405,7 +406,7 @@ test("'Run now' is still a 44px target where it now lives, and does not overflow
   await expect(run).toBeVisible();
 
   const rb = (await run.boundingBox())!;
-  expect(rb.height).toBeGreaterThanOrEqual(44);
+  expect(rb.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
 
   // Inside the viewport on both edges — the overflow half of the original complaint.
   const width = page.viewportSize()!.width;

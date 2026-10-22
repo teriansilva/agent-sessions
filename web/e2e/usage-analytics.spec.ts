@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #1009: usage-analytics consent, in a real browser on the desktop AND the mobile (Pixel 7)
 // projects. The wizard asks between Tour and Launch; the choice is posted as `analytics_consent`,
@@ -111,7 +112,7 @@ test("a fresh install is asked, unticked; ticking posts true and lands on Launch
   // The §8 touch floor applies under coarse pointers and at ≤800px — the mobile project.
   if (test.info().project.name === "mobile") {
     await cont.scrollIntoViewIfNeeded();
-    expect((await cont.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect((await cont.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
 
   await box.check();

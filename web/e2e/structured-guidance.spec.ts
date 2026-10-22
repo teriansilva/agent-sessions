@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { ACTIVE, COMMAND, ID, QUEUED, clients, mockStructuredGuidance } from "./structuredGuidanceFixture";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 async function conversation(page: Page, engine: string, mode: string, theme = "dark") {
   const fixture = await mockStructuredGuidance(page, engine, mode, theme);
@@ -32,7 +33,7 @@ for (const [engine, mode] of clients) {
     const queued = page.getByTestId("structured-turn").filter({ hasText: "Only inspect the files." });
     await expect(queued).toContainText(mode === "steer" ? "Adds this message to the current turn" : /Stops .+’s current reply, then sends this/);
     const sendNow = queued.getByRole("button", { name: "Send now", exact: true });
-    expect((await sendNow.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect((await sendNow.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     await sendNow.click();
     await expect.poll(() => calls.length).toBe(1);
     expect(calls[0]).toMatchObject({ turn_id: ACTIVE, queued_turn_id: QUEUED });
@@ -240,7 +241,7 @@ for (const theme of ["dark", "light"]) {
     await expect(sendNow).toBeVisible();
     await expect(queued).toContainText(/Stops .+’s current reply, then sends this/); // #1442 wording
     const box = (await sendNow.boundingBox())!;
-    expect(box.height).toBeGreaterThanOrEqual(44); // the touch target, in the new state too
+    expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR); // the touch target, in the new state too
     await page.screenshot({ path: testInfo.outputPath("background-turn.png") });
     await sendNow.click();
     await expect.poll(() => fixture.calls.length).toBe(1);

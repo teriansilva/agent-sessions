@@ -5,6 +5,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
 import { expectTerminalShows, pushOutput, setupBench } from "./terminal/harness";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const hexToRgb = (hex: string) => {
   const n = parseInt(hex.slice(1), 16);
@@ -108,7 +109,7 @@ test("at 360px the scheme cards fit, nothing scrolls sideways, every card is ≥
   expect(overflow).toBeLessThanOrEqual(0);
   for (const r of await radios.all()) {
     const b = (await r.boundingBox())!;
-    expect(b.height).toBeGreaterThanOrEqual(44);
-    expect(b.width).toBeGreaterThanOrEqual(44);
+    expect(b.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    expect(b.width).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
 });

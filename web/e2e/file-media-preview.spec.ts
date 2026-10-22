@@ -2,6 +2,7 @@ import { expect, test, type Page, type Route } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { headAction, FILES_ACTION } from "./headActions";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 /** Media preview in the Files viewer (#1530) — real-browser proof, desktop AND mobile.
  *
@@ -264,7 +265,7 @@ test.describe("media preview", () => {
     expect(await img.evaluate((el) => getComputedStyle(el).maxWidth)).toBe("100%");
     for (const sel of ["[data-media-fit]", "[data-media-actual]", "[data-media-download]"]) {
       const h = await viewer.locator(sel).evaluate((el) => el.getBoundingClientRect().height);
-      expect(h, sel).toBeGreaterThanOrEqual(44);
+      expect(h, sel).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     }
   });
 

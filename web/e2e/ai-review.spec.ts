@@ -1,6 +1,7 @@
 import { expect, type Page, test } from "@playwright/test";
 import { promptPath, settingsPath } from "../src/routes/settingsTabs";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // Real-browser checks for the AI session review surface (#356 PR 1, manual slice):
 // Settings → AI → Endpoint & model (the two-step connection/model flow, the write-only key, the
@@ -583,9 +584,9 @@ test("mobile: the Endpoint & model page renders at phone width", async ({
   ]);
   expect(ro!.width).toBeGreaterThan(200); // full-width line, not a crushed sliver
   expect(rb!.y).toBeGreaterThan(ro!.y + ro!.height - 1); // wrapped BELOW the field
-  expect(rb!.height).toBeGreaterThanOrEqual(44);
+  expect(rb!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   const remove = await page
     .getByRole("button", { name: "Remove key" })
     .boundingBox();
-  expect(remove!.height).toBeGreaterThanOrEqual(44);
+  expect(remove!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
 });

@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { clickHeadAction, FILES_ACTION } from "./headActions";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 /** GIT tab (#784) — real-browser proof, desktop AND mobile.
  *
@@ -295,7 +296,7 @@ test.describe("touch", () => {
     expect(
       box!.height,
       "git rows must be real touch targets",
-    ).toBeGreaterThanOrEqual(44);
+    ).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     const hit = await page.evaluate(
       ({ x, y }) =>
         document.elementFromPoint(x, y)?.closest("[data-git-row]") !== null,

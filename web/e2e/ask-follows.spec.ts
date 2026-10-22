@@ -10,6 +10,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { openAsk, pickConversation } from "./askSidebar";
 import { mockAskConversations, turnOf, type FakeAsk, type FakeConversation } from "./askStream";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const KEY = "claude:11111111-2222-4333-8444-555555555555";
 
@@ -99,7 +100,7 @@ test("updates sit between the turns, read as a word, and Unfollow works by keybo
   );
 
   const unfollow = rows.nth(1).getByRole("button", { name: "Unfollow api rebase" });
-  expect((await unfollow.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect((await unfollow.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   // Keyboard: Tab reaches it from the row's way in, with a visible ring; Enter unfollows.
   await rows.nth(1).getByTestId("ask-update-open").focus();
   await page.keyboard.press("Tab");
@@ -149,7 +150,7 @@ test("a session followed before its first update is listed with Unfollow, by key
   await expect(row).toContainText("Following");
   await expect(row).toContainText("api rebase");
   const unfollow = row.getByRole("button", { name: "Unfollow api rebase" });
-  expect((await unfollow.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect((await unfollow.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await row.getByTestId("ask-following-open").focus();
   await page.keyboard.press("Tab");
   await expect(unfollow).toBeFocused();
@@ -187,7 +188,7 @@ test("a nudge that could not be followed, and a spent budget, read as words (#15
   await expect(row).toContainText("already following 10 sessions");
   await expect(row.getByRole("button", { name: /Unfollow/ })).toHaveCount(0);
   const open = row.getByTestId("ask-update-open");
-  expect((await open.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect((await open.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   // Its LED is the unknown status beside the word, never colour alone.
   const led = row.locator('[aria-hidden="true"]').first();
   const unknown = await page.evaluate(() =>

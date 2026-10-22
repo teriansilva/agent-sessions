@@ -3,6 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { DOCS_HOME_URL } from "../src/lib/links";
 import { mockRoster } from "./roster";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 /** Help — in the operator menu since #1085, the `?` menu before (#987) — and the setup wizard's docs
  *  links, in a real browser (desktop + mobile).
@@ -202,7 +203,7 @@ test("measured: 44px rows, and the panel sits inside the viewport under the tile
   const menu = helpMenu(page);
   await expect(menu).toBeVisible();
   for (const item of await menu.getByRole("menuitem").all()) {
-    expect((await item.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect((await item.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
   const vw = page.viewportSize()!.width;
   const m = (await menu.boundingBox())!;

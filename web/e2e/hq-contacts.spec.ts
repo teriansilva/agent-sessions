@@ -9,6 +9,7 @@ import { CONTACTS, contactForDay } from "../src/components/hq/contacts";
 import { DASHBOARD_PATH, NEW_SESSION_PATH } from "../src/lib/routes";
 import { settingsPath } from "../src/routes/settingsTabs";
 import { ASK_STREAM, fulfillAsk, mockAskConversations } from "./askStream";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const name = (id: string) => CONTACTS.find((c) => c.id === id)!.name;
 
@@ -98,7 +99,7 @@ test("/ is the dashboard: Welcome, Commander., no HQ button, New primary beside 
   expect(accent).not.toBe("");
   const nb = (await fresh.boundingBox())!;
   const cb = (await card.boundingBox())!;
-  expect(nb.height).toBeGreaterThanOrEqual(44);
+  expect(nb.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   if (!isPhone(page)) {
     // Top-aligned, New directly left of the card, and the card exactly the Plan quota tile's column.
     expect(Math.abs(nb.y - cb.y)).toBeLessThanOrEqual(1);
@@ -205,7 +206,7 @@ test("the gallery is operable by keyboard and by mouse, and Select contact lands
   for (const box of await group.getByRole("radio").evaluateAll((els) =>
     els.map((e) => e.getBoundingClientRect().height),
   ))
-    expect(box).toBeGreaterThanOrEqual(44);
+    expect(box).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await noSidewaysScroll(page);
 });
 

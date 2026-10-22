@@ -19,6 +19,7 @@ import {
   openMissionRail,
 } from "./mission-console";
 import { missionControlSettings } from "./mission-directions";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const T = 1_700_000_000;
 const SRC = "transcript:claude:5f3c0000-0000-0000-0000-0000000000a1";
@@ -230,7 +231,7 @@ for (const theme of ["dark", "light"] as const) {
       const toggle = finding.getByTestId("objective-evidence-toggle");
       await expect(toggle).toHaveAttribute("aria-expanded", "false");
       const tb = (await toggle.boundingBox())!;
-      expect(tb.height).toBeGreaterThanOrEqual(44);
+      expect(tb.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
       await toggle.click();
       await expect(toggle).toHaveAttribute("aria-expanded", "true");
       const panel = finding.getByTestId("objective-evidence");
@@ -295,7 +296,7 @@ test("'Not met — judge again' sends ONE reject_judgment for the rendered episo
   const reject = finding.getByTestId("objective-reject-judgment");
   await expect(reject).toBeVisible();
   const rb = (await reject.boundingBox())!;
-  expect(rb.height).toBeGreaterThanOrEqual(44);
+  expect(rb.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await reject.click();
   await expect.poll(() => server.patches.length).toBe(1);
   expect(server.patches[0]).toEqual({

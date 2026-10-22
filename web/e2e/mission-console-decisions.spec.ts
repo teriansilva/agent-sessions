@@ -6,6 +6,7 @@ import {
   missionRow,
   mockMissions,
 } from "./mission-console";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 /** `ActionRow` in the MISSION CONSOLE, in a real browser (#726 Phases 1–2, moved here in #1049).
  *
@@ -284,7 +285,7 @@ test.describe("mobile", () => {
 
     // 44px is the touch-target floor from the repo's design guidance.
     const box = await approve.boundingBox();
-    expect(box!.height).toBeGreaterThanOrEqual(44);
+    expect(box!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
 
     // The page must never scroll horizontally (#494) — long rationales and screen dumps wrap or
     // scroll inside their own block.
@@ -366,7 +367,7 @@ test("a session's own menu is answered from the card, and answering never attach
   await expect(menu).toContainText("Which migration strategy should I use?");
   const opts = menu.getByTestId("menu-option");
   await expect(opts).toHaveText(["1. Online, batched", "2. Offline, in one transaction"]);
-  for (const i of [0, 1]) expect((await opts.nth(i).boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  for (const i of [0, 1]) expect((await opts.nth(i).boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
 
   // The first tap arms and sends nothing; the second sends the number AND the label shown.
   await opts.nth(1).click();

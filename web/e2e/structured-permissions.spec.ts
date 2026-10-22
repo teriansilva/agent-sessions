@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { mockRoster, ROSTER } from "./roster";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const ID = "d410d52a-4d13-4e9b-a4f6-5c4110378070";
 const TURN = "d410d52a-4d13-4e9b-a4f6-5c4110378071";
@@ -115,7 +116,7 @@ for (const theme of ["dark", "light"]) for (const engine of ["codex-api", "claud
     await card.screenshot({ path: testInfo.outputPath("complete-details.png") });
     await testInfo.attach("complete-details", { path: testInfo.outputPath("complete-details.png"), contentType: "image/png" });
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
-    for (const button of await card.getByRole("button").all()) expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    for (const button of await card.getByRole("button").all()) expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   });
 }
 test("after Allow a new OpenCode request names its tool and can also be allowed", async ({ page }) => {

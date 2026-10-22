@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PY_STACK_AVAILABLE, startStack, type Stack } from "./appmode";
 import { HOOK_TIMEOUT_MS } from "./harness";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 /** Retained prompts use the real authoring and bundle APIs, never an agent or live HOME. */
 test.describe.configure({ mode: "serial" });
@@ -231,7 +232,7 @@ test("prompt editing and source comparison fit 1440, 390 and 320px in both theme
       await prompt.scrollIntoViewIfNeeded();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       for (const button of await prompt.getByRole("button").all()) {
-        if (await button.isEnabled()) expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+        if (await button.isEnabled()) expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
       }
       await page.screenshot({ path: `design-review/1391-prompts-${theme}-${width}.png` });
       source("Review and test {{repo}}.", undefined, 2);

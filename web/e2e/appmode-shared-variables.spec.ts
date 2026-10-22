@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PY_STACK_AVAILABLE, startStack, type Stack } from "./appmode";
 import { HOOK_TIMEOUT_MS } from "./harness";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 /** Shared Library acceptance uses the real scoped/encrypted store in a temporary home. */
 test.describe.configure({ mode: "serial" });
@@ -162,7 +163,7 @@ test("the shared library remains usable in both themes at 1440, 390 and 320 pixe
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     for (const button of await page.getByRole("main").getByRole("button").all()) {
       const box = await button.boundingBox();
-      if (box) { expect(box.height).toBeGreaterThanOrEqual(44); expect(box.x + box.width).toBeLessThanOrEqual(width + 0.5); }
+      if (box) { expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR); expect(box.x + box.width).toBeLessThanOrEqual(width + 0.5); }
     }
     await page.screenshot({ path: `design-review/1390-variables-${theme}-${width}.png`, fullPage: true });
     const edit = page.getByRole("button", { name: "Edit token", exact: true });

@@ -1,5 +1,6 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { mockRoster } from "./roster";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #1465 for the HTTP chat client (`apichat`, runtime `chat`, rendered by ChatPane): a sent message
 // leaves the composer at once and shows as pending, with the same outbox contract as the native
@@ -176,7 +177,7 @@ test("refused → Edit puts the words back and releases the queue; the edit is a
   expect(fx.sends).toHaveLength(1); // the order holds behind the failure
   const edit = refused.getByRole("button", { name: "Edit" });
   const discard = refused.getByRole("button", { name: "Discard" });
-  for (const b of [edit, discard]) expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  for (const b of [edit, discard]) expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await edit.focus();
   await page.keyboard.press("Tab");
   await expect(discard).toBeFocused();
@@ -214,7 +215,7 @@ test("unknown → no Edit; Retry resends the same turn_id and the server keeps i
   await expect(page.getByTestId("structured-outbox-note")).toHaveText(
     "Leaving drops this list; a message already on its way may still arrive");
   for (const b of [entry.getByRole("button", { name: "Retry" }), entry.getByRole("button", { name: "Discard — it may still arrive" })])
-    expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await page.screenshot({ path: testInfo.outputPath("unknown.png") });
   await entry.getByRole("button", { name: "Retry" }).click();
   await expect.poll(() => fx.sends.length).toBe(2);

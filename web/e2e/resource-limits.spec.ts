@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { commonMocks } from "./mission-directions";
 import { settingsPath } from "../src/routes/settingsTabs";
 import type { Resources, ResourceValues } from "../src/types/resources";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 test("Resources has its own menu and editable memory budget without running usage", async ({
   page,
@@ -282,7 +283,7 @@ for (const theme of ["dark", "light"])
       "Background library threads",
     ]) {
       const box = await page.getByLabel(label).boundingBox();
-      expect(box!.height).toBeGreaterThanOrEqual(44);
+      expect(box!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
       expect(box!.x).toBeGreaterThanOrEqual(0);
       expect(box!.x + box!.width).toBeLessThanOrEqual(320);
     }

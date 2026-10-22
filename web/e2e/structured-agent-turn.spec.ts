@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { ID, mockStructuredGuidance } from "./structuredGuidanceFixture";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #1438: a turn the agent runs for itself — a scheduled wake-up, a task notification — is shown
 // as its own block with its latest call live, and Interrupt (or Esc) stops it.
@@ -74,7 +75,7 @@ for (const theme of ["dark", "light"]) {
 test("#1438: Interrupt stops the agent's own turn — the turn, by its target, not the worker", async ({ page }) => {
   const { interrupts, state } = await ownTurn(page);
   const box = await button(page).boundingBox();
-  expect(box!.height).toBeGreaterThanOrEqual(44); // design §8
+  expect(box!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR); // design §8
   await button(page).click();
   await expect.poll(() => interrupts.length).toBe(1);
   expect(interrupts[0].turn_id).toBe(OWN);

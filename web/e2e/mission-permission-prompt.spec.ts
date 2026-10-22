@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { MISSION, missionList, missionRow, mockMissions } from "./mission-console";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 /** An agent's TOOL-PERMISSION dialog on the mission page, in a real browser (#1213).
  *
@@ -219,7 +220,7 @@ test("the mission shows the permission dialog itself and answers it", async ({
   if (testInfo.project.name === "mobile") {
     for (const b of await options.all()) {
       const bb = await b.boundingBox();
-      expect(bb?.height ?? 0).toBeGreaterThanOrEqual(44);
+      expect(bb?.height ?? 0).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     }
   }
 

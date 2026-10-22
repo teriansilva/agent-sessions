@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { mockRoster } from "./roster";
 import { agentPicker, launchFolder, projectPicker } from "./newSessionForm";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #1436: the polished New session form, in a real browser on the desktop AND mobile projects —
 // what jsdom cannot show: the tiles really are ≥44px and clickable, the Start footer is on
@@ -104,9 +105,9 @@ test("every tile, row and the Start button are ≥44px tall (#1436, design §8)"
     )
     .evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().height)));
   expect(boxes.length).toBeGreaterThan(6);
-  for (const h of boxes) expect(h).toBeGreaterThanOrEqual(44);
+  for (const h of boxes) expect(h).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   const start = await page.getByRole("button", { name: /start session/i }).boundingBox();
-  expect(start!.height).toBeGreaterThanOrEqual(44);
+  expect(start!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
 });
 
 test("Start is on screen without scrolling on a phone (#1436)", async ({ page }) => {

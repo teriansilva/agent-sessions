@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mockRoster } from "./roster";
 import type { PluginCatalog } from "../src/types/plugins";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 async function catalogFixture(page: Page, state: "bundled" | "expired" | "corrupt" = "bundled") {
   const unavailable = state === "corrupt";
@@ -79,7 +80,7 @@ for (const theme of ["dark", "light"] as const) {
     expect(writes).toEqual(["preferences", "refresh"]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     for (const control of await panel.locator("button, a, label").all()) {
-      expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     }
     await panel.screenshot({ path: info.outputPath(`agent-catalog-panel-${theme}.png`) });
     await page.evaluate(() => document.querySelectorAll("*").forEach(element => { if (element.scrollTop) element.scrollTop = 0; }));

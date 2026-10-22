@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 /** What's new (#971) — the once-per-operator slideshow, in a real browser (desktop + mobile).
  *
@@ -307,7 +308,7 @@ test("phone: 44px targets, no horizontal overflow at 320px, and the footer reach
   for (const name of ["Close what's new", "Pause animation", "Open Missions", "Back", "Next"]) {
     const box = await d.getByRole("button", { name, exact: true }).boundingBox();
     expect(box, name).not.toBeNull();
-    expect(box!.height, name).toBeGreaterThanOrEqual(44);
+    expect(box!.height, name).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
   for (let i = 2; i <= 7; i++) {
     expect(await d.evaluate((el) => el.scrollWidth - el.clientWidth), `slide ${i} overflows`).toBeLessThanOrEqual(0);

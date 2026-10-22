@@ -22,6 +22,7 @@ import {
   openMissionRail,
   openObjectiveMenu,
 } from "./mission-console";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const T = 1_700_000_000;
 
@@ -590,8 +591,8 @@ test("the drag handle and ⋯ are real 44×44 targets", async ({ page }) => {
     for (let i = 0; i < 4; i++) {
       await els.nth(i).scrollIntoViewIfNeeded();
       const b = await box(page, els.nth(i));
-      expect(b.width, `${id} ${i} width`).toBeGreaterThanOrEqual(44);
-      expect(b.height, `${id} ${i} height`).toBeGreaterThanOrEqual(44);
+      expect(b.width, `${id} ${i} width`).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+      expect(b.height, `${id} ${i} height`).toBeGreaterThanOrEqual(TOUCH_FLOOR);
       // The box is the interactive element itself: the point at its corner hits it.
       const hit = await els.nth(i).evaluate((el) => {
         const r = el.getBoundingClientRect();
@@ -718,7 +719,7 @@ test("a finished mission's long objective can be read to its last clause, and cl
   expect(g.clauseBottom).toBeLessThanOrEqual(rowBox.y + rowBox.height + 1);
   if (phone) {
     const t = await box(page, toggle);
-    expect(t.height).toBeGreaterThanOrEqual(44);
+    expect(t.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
 
   // …and closed again.

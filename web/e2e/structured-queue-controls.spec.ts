@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { ACTIVE, ID, QUEUED, clients, mockStructuredGuidance } from "./structuredGuidanceFixture";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // Remove a queued message, and Always send now (#1447). Real browser: hit areas, wrapping on the
 // phone, and the automatic Send now that follows the queue without a click.
@@ -31,7 +32,7 @@ for (const theme of ["dark", "light"]) {
     const first = row(page, "Only inspect the files.");
     const remove = first.getByRole("button", { name: "Remove this queued message" });
     const box = (await remove.boundingBox())!;
-    expect(box.height).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     // Every control sits inside the pane: nothing pushed past the edge on a phone.
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBe(0);
     await page.screenshot({ path: testInfo.outputPath("queue.png") });
@@ -70,7 +71,7 @@ for (const [engine, mode] of clients) {
     const fixture = await queue(page, engine, mode);
     const first = row(page, "Only inspect the files.");
     const always = first.getByRole("button", { name: "Always send now", exact: true });
-    expect((await always.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect((await always.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     await always.click();
     await expect.poll(() => fixture.calls.length).toBe(1);
     expect(fixture.calls[0]).toMatchObject({ turn_id: ACTIVE, queued_turn_id: QUEUED });

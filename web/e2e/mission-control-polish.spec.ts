@@ -21,6 +21,7 @@ import {
 import { setupBench } from "./terminal/harness";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
 import { animationsSettled } from "./nightjarShell";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const T = 1_700_000_000;
 const ENGINE = "claude";
@@ -233,7 +234,7 @@ test("the start screen is ONE composer box: the brief on top, one footer row ins
   for (const c of controls) {
     expect(await c.evaluate((el) => !!el.closest('[data-testid="composer-foot"]'))).toBe(true);
     const b = await box(c);
-    expect(b.height, "44px floor").toBeGreaterThanOrEqual(44);
+    expect(b.height, "44px floor").toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
   const order = await page.evaluate(() =>
     ["new-mission-project", "new-mission-template", "new-mission-start"].map(
@@ -422,12 +423,12 @@ test("the header ⋯ is a context menu — RowMenu's rows, not a stack of border
   // A row, not a button: no edge of its own, the 44px floor, an icon beside the label.
   const again = await row("mission-replan");
   expect(again.border).toEqual(["0px", "0px", "0px", "0px"]);
-  expect(again.height).toBeGreaterThanOrEqual(44);
+  expect(again.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   expect(again.icon).toBe(true);
   // A destructive row says so in danger TEXT, never with a red border.
   const abandon = await row("mission-abandon");
   expect(abandon.border).toEqual(["0px", "0px", "0px", "0px"]);
-  expect(abandon.height).toBeGreaterThanOrEqual(44);
+  expect(abandon.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   expect(abandon.color).toBe(dangerText);
   // …and a hairline separates it from the plan group, as RowMenu draws one.
   expect(

@@ -17,6 +17,7 @@ import {
   mockMissions,
   openMissionRail,
 } from "./mission-console";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const NEEDY = "msn_" + "1".repeat(32);
 const OTHER = "msn_" + "2".repeat(32);
@@ -438,7 +439,7 @@ test("the checklist is chosen per mission: default pre-selected, the pick is wha
   const box = await pick.boundingBox();
   expect(box!.x).toBeGreaterThanOrEqual(foot!.x - 0.5);
   expect(box!.x + box!.width).toBeLessThanOrEqual(foot!.x + foot!.width + 0.5);
-  expect(box!.height).toBeGreaterThanOrEqual(44);
+  expect(box!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   const vw = page.viewportSize()!.width;
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(vw);
 

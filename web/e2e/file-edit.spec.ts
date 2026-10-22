@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { clickHeadAction, FILES_ACTION } from "./headActions";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 /** File editing (#950) — real-browser proof, desktop AND mobile.
  *
@@ -484,7 +485,7 @@ test.describe("file editor — touch", () => {
 
     const edit = viewer.locator("[data-edit-toggle]");
     const eb = (await edit.boundingBox())!;
-    expect(eb.height).toBeGreaterThanOrEqual(44);
+    expect(eb.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     await page.touchscreen.tap(eb.x + eb.width / 2, eb.y + 2); // the top edge, not the centre
     await expect(viewer.locator("[data-edit-done]")).toBeVisible();
     await expect(viewer.locator(".cm-content")).not.toHaveAttribute("inputmode", "none");
@@ -498,7 +499,7 @@ test.describe("file editor — touch", () => {
     const saveBtn = viewer.locator("[data-save]");
     await expect(saveBtn).toBeEnabled();
     const sb = (await saveBtn.boundingBox())!;
-    expect(sb.height).toBeGreaterThanOrEqual(44);
+    expect(sb.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     await page.touchscreen.tap(sb.x + sb.width - 2, sb.y + sb.height - 2); // bottom-right corner
     await expect.poll(() => writes.length).toBe(1);
 

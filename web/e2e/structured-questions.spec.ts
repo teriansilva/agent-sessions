@@ -1,5 +1,6 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { ACTIVE, ID, mockStructuredGuidance } from "./structuredGuidanceFixture";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #1463: an API agent's question shows its options. Codex's async question (it keeps working)
 // is answered by the operator's next message; the buttons compose and send that message.
@@ -71,7 +72,7 @@ for (const theme of ["dark", "light"]) {
     await expect(block(page)).toContainText("keeps working meanwhile");
     await expect(options(page)).toHaveCount(2);
     for (const option of await options(page).all()) {
-      expect((await option.boundingBox())!.height).toBeGreaterThanOrEqual(44); // design §8
+      expect((await option.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR); // design §8
     }
     await expect(send(page)).toBeDisabled();
     await page.screenshot({ path: testInfo.outputPath(`question-open-${theme}.png`), fullPage: true });
@@ -395,7 +396,7 @@ for (const bypass of [true, false]) {
       // A question is never offered as an approval.
       await expect(page.getByRole("button", { name: /allow|approve/i })).toHaveCount(0);
       for (const option of await askOptions(page).all()) {
-        expect((await option.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+        expect((await option.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
       }
       await askOptions(page).nth(1).click();
       await page.screenshot({ path: testInfo.outputPath(`ask-${bypass ? "skip" : "guarded"}-${theme}.png`), fullPage: true });

@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { verifyHuman } from "./connect-helpers";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #579 app-only connect: the public connect page no longer exposes the recovery terminal pane.
 // Real browser guard because this is page structure/layout, not a jsdom-only contract.
@@ -136,7 +137,7 @@ test("connect page explains the blind relay in a dismissible modal", async ({
   if (isMobile) {
     for (const name of ["How does it work?", "Close"]) {
       const box = await page.getByRole("button", { name }).boundingBox();
-      expect(box!.height, `${name} touch target`).toBeGreaterThanOrEqual(44);
+      expect(box!.height, `${name} touch target`).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     }
   }
 

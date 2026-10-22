@@ -17,6 +17,7 @@ import {
   mockMissions,
   openMissionRail,
 } from "./mission-console";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const T = 1_700_000_000;
 
@@ -275,7 +276,7 @@ test("every control clears 44px and a long option does not overflow its card", a
   for (const c of controls) {
     const box = await c.boundingBox();
     expect(box, "a control was not laid out").not.toBeNull();
-    expect(box!.height).toBeGreaterThanOrEqual(44);
+    expect(box!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
 
   const cardBox = (await card.boundingBox())!;

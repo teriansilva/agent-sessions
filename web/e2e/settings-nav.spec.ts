@@ -4,6 +4,7 @@ import {
   SETTINGS_SECTIONS,
   settingsPath,
 } from "../src/routes/settingsTabs";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #956: Settings is a sidebar of pages on desktop and a grouped index on a phone. A real browser,
 // because what breaks here is layout: a sixteen-entry sidebar that clips its last entry on a short
@@ -192,7 +193,7 @@ test.describe("phone", () => {
     await expect(rows).toHaveText(SETTINGS_SECTIONS.map((s) => s.label));
     for (const row of await rows.all()) {
       const box = (await row.boundingBox())!;
-      expect(box.height, await row.textContent()).toBeGreaterThanOrEqual(44);
+      expect(box.height, await row.textContent()).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     }
 
     // A tap 2px inside the row's top edge still lands on the row — the 44px is the hit area,
@@ -210,8 +211,8 @@ test.describe("phone", () => {
 
     const back = page.getByRole("link", { name: "Back to settings" });
     const bb = (await back.boundingBox())!;
-    expect(bb.height).toBeGreaterThanOrEqual(44);
-    expect(bb.width).toBeGreaterThanOrEqual(44);
+    expect(bb.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    expect(bb.width).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     await back.click();
     await expect(page).toHaveURL(urlOf(settingsPath()));
   });

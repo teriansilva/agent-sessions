@@ -15,6 +15,7 @@ import {
   mockMissions,
   openMissionRail,
 } from "./mission-console";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const T = 1_700_000_000;
 const ID = "msn_plan";
@@ -362,7 +363,7 @@ test("with NO AI endpoint the card says it couldn't plan; Plan manually saves a 
   // Every control on the card holds the 44px floor.
   for (const el of [page.getByTestId("mission-plan-manually"), project, engine, save, page.getByTestId("mission-manual-cancel")]) {
     const b = await el.boundingBox();
-    expect(b!.height, "44px floor").toBeGreaterThanOrEqual(44);
+    expect(b!.height, "44px floor").toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
   await shot(page, "skipped-plan-manually", info.project.name);
 

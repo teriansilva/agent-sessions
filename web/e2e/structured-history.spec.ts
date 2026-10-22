@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mockRoster } from "./roster";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #1504: an API session's pane shows the snapshot's newest 50 turns; scrolling up past them loads
 // the turns before, a page at a time, to the first. In a real browser, desktop and mobile:
@@ -272,7 +273,7 @@ for (const theme of ["dark", "light"] as const) {
     const retry = page.getByTestId("api-history-retry");
     await expect(retry).toBeVisible();
     await expect(page.getByRole("alert")).toHaveText("Couldn't load earlier turns.");
-    expect((await retry.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect((await retry.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     // The label reads the accent's text token, at a contrast that passes for normal text.
     const look = await retry.evaluate((el) => {
       const probe = document.createElement("span");

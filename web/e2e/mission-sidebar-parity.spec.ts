@@ -12,6 +12,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { missionList, missionRow, mockMissions, openMissionRail } from "./mission-console";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const SESSION = {
   id: "claude:11111111-1111-4111-8111-111111111111",
@@ -148,7 +149,7 @@ test("both sidebars keep the 44px touch floor on a phone", async ({ page }, test
     const c = controls(page, route);
     for (const name of ["new button", "search", "project select", "active tab"] as const) {
       const box = (await c[name].first().boundingBox())!;
-      expect(box.height, `${route} ${name}`).toBeGreaterThanOrEqual(44);
+      expect(box.height, `${route} ${name}`).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     }
   }
 });

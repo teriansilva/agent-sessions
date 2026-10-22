@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
 import { mockRoster } from "./roster";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #993 increment 1: Settings → Maintenance gains "Archive old missions" and "Prune". The network
 // is mocked so the page renders without a backend; every assertion is on what a real browser
@@ -100,7 +101,7 @@ const card = (page: Page, heading: string) =>
 async function expectHitArea(scope: Page | Locator, name: RegExp) {
   const box = await scope.getByRole("button", { name }).boundingBox();
   expect(box).not.toBeNull();
-  expect(box!.height).toBeGreaterThanOrEqual(44);
+  expect(box!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -230,7 +231,7 @@ test("a failed dry run shows an error with Retry, and nothing runs (#993)", asyn
   const refresh = prune.getByRole("button", { name: "Refresh the cache measurements" });
   const box = await refresh.boundingBox();
   expect(box).not.toBeNull();
-  expect(box!.height).toBeGreaterThanOrEqual(44);
+  expect(box!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await refresh.click();
   await expect(page.getByTestId("prune-count-stale_sockets")).toHaveText("159 · 38 KB");
 });

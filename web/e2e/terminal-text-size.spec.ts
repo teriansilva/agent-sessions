@@ -4,6 +4,7 @@ import { settingsPath } from "../src/routes/settingsTabs";
 // Pane-head actions are reached wherever HeadActions put them: inline on a wide pane, behind the
 // "…" overflow when folded (#783), or in the single ≤800px "Actions" menu on a phone (#948 P6).
 import { clickHeadAction } from "./headActions";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #859: the terminal font size IS the agent's column count. At the shipped 13 px a phone gives
 // it ~50 columns, where a column-laid-out TUI (opencode) collapses — its label column squeezed
@@ -262,8 +263,8 @@ test("Settings' stepper meets the 44px touch floor and disables at the clamps (#
   for (const b of [smaller, bigger]) {
     const box = await b.boundingBox();
     expect(box, "the stepper button must be laid out").not.toBeNull();
-    expect(box!.width).toBeGreaterThanOrEqual(44);
-    expect(box!.height).toBeGreaterThanOrEqual(44);
+    expect(box!.width).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    expect(box!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
 
   // Walk to the floor: the control must stop rather than wrap or go unreadable.

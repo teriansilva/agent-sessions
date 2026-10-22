@@ -19,6 +19,7 @@ import {
   missionRow,
   mockMissions,
 } from "./mission-console";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 const T = 1_700_000_000;
 const CONFIG = {
@@ -578,7 +579,7 @@ test("STAND DOWN moved to the row and kept its episode fence (#942)", async ({
   const box = await btn.boundingBox();
   expect(box?.height ?? 0).toBeGreaterThanOrEqual(20);
   const rowBox = await row.boundingBox();
-  expect(rowBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+  expect(rowBox?.height ?? 0).toBeGreaterThanOrEqual(TOUCH_FLOOR);
 });
 
 test("the mission-level notices survive the fold, including the no-rows case (#942)", async ({

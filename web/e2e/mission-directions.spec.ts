@@ -29,6 +29,7 @@ import {
   staleNudge,
 } from "./mission-directions";
 import { openMissionConversation, openMissionDetails } from "./mission-console";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 /** Click a chip and wait for the caret to come back to the text, which it does on the next frame. */
 async function chip(field: Locator, name: string) {
@@ -354,8 +355,8 @@ async function atLeast44(locator: Locator, label: string) {
     await el.scrollIntoViewIfNeeded();
     const b = await el.boundingBox();
     expect(b, `${label} #${i} has no box`).not.toBeNull();
-    expect(b!.height, `${label} #${i} height`).toBeGreaterThanOrEqual(44);
-    expect(b!.width, `${label} #${i} width`).toBeGreaterThanOrEqual(44);
+    expect(b!.height, `${label} #${i} height`).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    expect(b!.width, `${label} #${i} width`).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   }
 }
 
