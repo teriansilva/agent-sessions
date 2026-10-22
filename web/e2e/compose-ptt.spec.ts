@@ -313,7 +313,20 @@ test("holding Space outside a text field dictates; inside it types (#738)", asyn
 
   // Space held on the page background is push-to-talk.
   await textarea.evaluate((el: HTMLElement) => el.blur());
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  // A point on the page that nothing interactive owns — not a fixed (5,5): the shell's corner
+  // belongs to the drawer toggle's 44px touch area since #1531.
+  const bare = await page.evaluate(() => {
+    const owned =
+      "button, a, input, textarea, select, [role], [tabindex], .xterm";
+    for (let y = 4; y < innerHeight; y += 12)
+      for (let x = 4; x < innerWidth; x += 12) {
+        const el = document.elementFromPoint(x, y);
+        if (el && !el.closest(owned)) return { x, y };
+      }
+    return null;
+  });
+  expect(bare).not.toBeNull();
+  await page.mouse.click(bare!.x, bare!.y);
   await page.keyboard.down(" ");
   await expect(
     page.getByRole("button", { name: /stop voice input/i }),

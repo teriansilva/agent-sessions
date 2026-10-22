@@ -1,0 +1,61 @@
+/* The NIGHTJAR footer's live telemetry (#1531, docs/design.md v2 §5): CPU, RAM and HQ's token use,
+ * in place of the retired classification text. Mono micro caps; values in --text-1 and tabular;
+ * the pips are the Pips primitive. A changed value bumps once (a filter step, Full only). On a phone
+ * the bar keeps CPU, RAM % and HQ CTX. Tokens only. */
+.cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  /* --text-2, not --text-3: at 10px --text-3 measures 3.9:1 on --bg-1 — under AA for text. */
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.stripe {
+  flex: none;
+  width: 48px;
+  height: 8px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 4px, transparent 4px 8px);
+  opacity: 0.8;
+}
+.tm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.v {
+  color: var(--text-1);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.dim {
+  color: var(--text-2);
+}
+.sep {
+  flex: none;
+  width: 1px;
+  height: 12px;
+  background: var(--line-strong);
+}
+.bump {
+  animation: global(nj-glitch-step) var(--t-arrive) var(--ease-out) 1;
+}
+.unavailable {
+  color: var(--text-2);
+}
+@media (max-width: 800px) {
+  .wide {
+    display: none;
+  }
+  .cluster {
+    gap: var(--sp-2);
+  }
+  .stripe {
+    width: 24px;
+  }
+}

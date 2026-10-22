@@ -26,20 +26,6 @@ import { SlideCounter, SlideDots } from "../components/slideshow/Slideshow";
 import { useSlideshow } from "../components/slideshow/useSlideshow";
 import { newestRelease, whatsNewLabel } from "../whatsnew/due";
 
-/** Corner-bracket frame (the `.hud-cnr` primitive in App.css). Inlined here — the shared
- *  `HudFrame` component lands on the HUD-compliance branch (#466); App.tsx inlines them too. */
-function Brackets({ hero = false }: { hero?: boolean }) {
-  const c = hero ? "hud-cnr hero" : "hud-cnr";
-  return (
-    <>
-      <span className={`${c} tl`} aria-hidden="true" />
-      <span className={`${c} tr`} aria-hidden="true" />
-      <span className={`${c} bl`} aria-hidden="true" />
-      <span className={`${c} br`} aria-hidden="true" />
-    </>
-  );
-}
-
 /** Slideshow tour slides (#1544): real captures of the app (`web/visual/promo/capture.mjs`), plus
  *  two drawn slides for surfaces a capture can't show (the relay, Settings). The copy is the durable
  *  part; re-run the capture when a surface changes. */
@@ -537,7 +523,6 @@ export function Onboarding({
                   className={styles.row}
                   style={{ alignItems: "flex-start" }}
                 >
-                  <Brackets />
                   <ShieldCheck size={16} aria-hidden="true" />
                   <div>
                     <strong>Login is off — your access key is the gate</strong>
@@ -592,7 +577,6 @@ export function Onboarding({
                     className={styles.row}
                     style={{ alignItems: "flex-start" }}
                   >
-                    <Brackets />
                     {twofaQr && (
                       <img
                         className={styles.qr}
@@ -675,7 +659,6 @@ export function Onboarding({
               ) : (
                 engines.map((e) => (
                   <li key={e.id} className={styles.row}>
-                    <Brackets />
                     <span className={styles.eng}>{e.id}</span>
                     {e.present ? (
                       <span className={styles.ok}>✓ ready</span>
@@ -1063,7 +1046,6 @@ function Overlay({
         tabIndex={-1}
         className={`${styles.card} ${wide ? styles.wide : ""}`}
       >
-        <Brackets hero />
         <header className={styles.bar}>
           <span className={styles.brand}>
             <span aria-hidden="true">◢</span> BATTLE<b>LAB</b>

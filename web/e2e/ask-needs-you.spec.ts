@@ -385,9 +385,11 @@ test("dismissing the details dialog by its backdrop closes ONLY the dialog, not 
   const dialog = page.getByTestId("needs-you-dialog");
   await expect(dialog).toBeVisible();
 
-  // A press on the backdrop, clear of the dialog box.
-  const vp = page.viewportSize()!;
-  await page.mouse.click(4, vp.height - 4);
+  // A press on the backdrop, clear of the dialog box — above it: on a phone the dialog is a bottom
+  // sheet flush with the floor and the full width (#1531), so no bottom corner is backdrop.
+  const db = (await dialog.boundingBox())!;
+  expect(db.y).toBeGreaterThan(16);
+  await page.mouse.click(4, db.y / 2);
   await expect(dialog).toHaveCount(0);
   await expect(panel).toHaveAttribute("data-open", "true");
   await expect(panel.getByTestId("ask-match").first()).toBeVisible();

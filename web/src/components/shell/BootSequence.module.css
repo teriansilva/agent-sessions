@@ -1,0 +1,62 @@
+/* The boot sequence (#1531, docs/design.md v2 §8 rule 5): ~1.2 s, once per visit, Full only. A
+ * click-through layer (the app is usable behind it) with the uplink log — real reads only — over a
+ * scan band; the shell's panels power on in sequence underneath (`.app.booting`, App.css). Any
+ * input dismisses it. Tokens only. */
+.boot {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-boot);
+  pointer-events: none;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--ground) 55%, transparent);
+  animation: global(nj-fade-out) var(--t-slow) var(--ease-in) 900ms both;
+}
+.log {
+  composes: nj-frame-sm from global;
+  --nj-face: color-mix(in srgb, var(--bg-1) 92%, transparent);
+  min-width: min(360px, calc(100vw - 32px));
+  padding: var(--sp-3) var(--sp-4);
+  display: grid;
+  gap: var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-1);
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  color: var(--text-1);
+}
+.line {
+  display: flex;
+  gap: var(--sp-2);
+  animation: global(nj-fade-in) var(--t-base) var(--ease-out) both;
+}
+.line:nth-child(3) {
+  animation-delay: 150ms;
+}
+.line:nth-child(4) {
+  animation-delay: 300ms;
+}
+.line:nth-child(5) {
+  animation-delay: 450ms;
+}
+.ok {
+  color: var(--ok-text);
+}
+.val {
+  color: var(--text-1);
+}
+.bar {
+  composes: nj-acquire from global;
+  margin-top: var(--sp-2);
+}

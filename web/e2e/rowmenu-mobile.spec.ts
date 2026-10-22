@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { mockRoster } from "./roster";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { animationsSettled } from "./nightjarShell";
 
 const now = Math.floor(Date.now() / 1000);
 const sessions = [
@@ -113,6 +114,8 @@ test.describe("Mobile Context Menu", () => {
     // The menu (bottom sheet) should open.
     const menu = page.getByRole("menu", { name: "Session actions" });
     await expect(menu).toBeVisible();
+    // The sheet slides up from the floor (#1531): read it where it lands.
+    await animationsSettled(page);
 
     // Check if it's at the bottom (bottom: 0).
     // The sheet is anchored to the visible bottom of the (dynamic) viewport — its lower
@@ -148,6 +151,8 @@ test.describe("Mobile Context Menu", () => {
     // The menu should open.
     const menu = page.getByRole("menu", { name: "Session actions" });
     await expect(menu).toBeVisible();
+    // The sheet slides up from the floor (#1531): read it where it lands.
+    await animationsSettled(page);
 
     // In this range (700px), it should now be a bottom sheet (as it is <= 800px).
     // The sheet is anchored to the visible bottom of the (dynamic) viewport — its lower
@@ -177,6 +182,8 @@ test.describe("Mobile Context Menu", () => {
     await actionsTrigger.click();
     const menu = page.getByRole("menu", { name: "Session actions" });
     await expect(menu).toBeVisible();
+    // The sheet slides up from the floor (#1531): read it where it lands.
+    await animationsSettled(page);
 
     // At 768px it should be a bottom sheet now (as it is <= 800px).
     // The sheet is anchored to the visible bottom of the (dynamic) viewport — its lower
@@ -237,6 +244,8 @@ test.describe("Mobile Context Menu", () => {
 
     const menu = page.getByRole("menu", { name: "Session actions" });
     await expect(menu).toBeVisible();
+    // The sheet slides up from the floor (#1531): read it where it lands.
+    await animationsSettled(page);
 
     // Bounded to the viewport + internally scrollable (was max-height:none / overflow:visible).
     const shape = await menu.evaluate((el) => {
@@ -286,6 +295,8 @@ test.describe("Mobile Context Menu", () => {
 
     const menu = page.getByRole("menu", { name: "Session actions" });
     await expect(menu).toBeVisible();
+    // The sheet slides up from the floor (#1531): read it where it lands.
+    await animationsSettled(page);
 
     // Android URL-bar collapse ⇒ a window resize / scroll while the sheet is open.
     await page.evaluate(() => window.dispatchEvent(new Event("resize")));
@@ -294,6 +305,8 @@ test.describe("Mobile Context Menu", () => {
 
     // Still open — the sheet does not dismiss itself on viewport chrome changes.
     await expect(menu).toBeVisible();
+    // The sheet slides up from the floor (#1531): read it where it lands.
+    await animationsSettled(page);
   });
 });
 
@@ -327,6 +340,8 @@ test.describe("the drawer survives its own portalled menu (#940)", () => {
     await page.locator('button[aria-label="Session actions"]').first().click();
     const menu = page.getByRole("menu", { name: /session actions/i });
     await expect(menu).toBeVisible();
+    // The sheet slides up from the floor (#1531): read it where it lands.
+    await animationsSettled(page);
 
     await menu.getByRole("menuitem", { name: /^rename/i }).click();
 
@@ -373,6 +388,8 @@ test.describe("the drawer survives its own portalled menu (#940)", () => {
     await page.locator('button[aria-label="Session actions"]').first().click();
     const menu = page.getByRole("menu", { name: /session actions/i });
     await expect(menu).toBeVisible();
+    // The sheet slides up from the floor (#1531): read it where it lands.
+    await animationsSettled(page);
     await menu.getByRole("menuitem", { name: /session brief/i }).click();
 
     const brief = page.getByRole("dialog", { name: /.+/ }).filter({
@@ -460,6 +477,8 @@ test.describe("the drawer survives its own portalled menu (#940)", () => {
         .click();
       const menu = page.getByRole("menu", { name: /session actions/i });
       await expect(menu).toBeVisible();
+    // The sheet slides up from the floor (#1531): read it where it lands.
+    await animationsSettled(page);
       await menu.getByRole("menuitem", { name: child.item }).click();
 
       // The child is up. Counted rather than named, so this holds for the one with no close

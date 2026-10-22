@@ -80,6 +80,23 @@ The Dashboard is one column: the heading and New, your HQ contact as a full-widt
 them, then the overview cards, then Needs you, the collapsed Recent work
 control and All sessions link, followed by Running sessions, Missions and Quota.
 
+## The footer readout (every page)
+
+The bar along the bottom of every page shows the host and HQ at a glance, read every 5 seconds
+while the tab is visible (a hidden tab reads nothing):
+
+| Readout | Shows |
+|---|---|
+| **CPU** | The host's processor load. |
+| **RAM** | Memory in use, as a percentage and *used / total GB*. |
+| **HQ // CTX** | How large HQ's context was on its most recent answer, in tokens. |
+| **TODAY** | Every token HQ has used since local midnight. |
+
+Only real numbers: a value the host cannot report shows **—**, and a token count the AI endpoint
+did not report exactly is an estimate marked **≈**. If the read fails, the bar says
+*TELEMETRY // UNAVAILABLE*. Only token counts are kept for HQ, never what was asked or answered.
+On a phone the bar keeps CPU, RAM and HQ's context and drops the rest.
+
 ## What it does not do
 
 - It never starts, stops or changes anything by itself. Opening the page only reads.

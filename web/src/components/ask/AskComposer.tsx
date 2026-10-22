@@ -42,7 +42,7 @@ export function AskComposer({
 
   return (
     <form
-      className={styles.composerBox}
+      className={`${styles.composerBox} ${a.box}`}
       onSubmit={(e) => {
         e.preventDefault();
         send();

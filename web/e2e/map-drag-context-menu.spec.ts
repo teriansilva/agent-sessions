@@ -1,5 +1,7 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
+import { animationsSettled } from "./nightjarShell";
+
 /** #968 — the map's clusters move where they are put, and every session on the map opens the
  *  sidebar's menu. In a real browser, because every claim here lives where jsdom cannot see:
  *  React Flow's d3-drag (and its click suppression after a drag), the node transform the pins
@@ -133,6 +135,8 @@ async function flowPos(loc: Locator): Promise<{ x: number; y: number }> {
 }
 
 async function box(loc: Locator) {
+  // Measure a settled popup (#1531): a menu fades in, a dialog deploys with a 6 px rise.
+  await animationsSettled(loc.page());
   const b = await loc.boundingBox();
   if (!b) throw new Error("no box");
   return b;

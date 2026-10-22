@@ -13,7 +13,7 @@
  *  mount it without the start model, which is the lifecycle half on its own; the planning-state
  *  tests mount it with one (`WithStart`).
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 
@@ -367,6 +367,29 @@ test("UNARCHIVE offers RECORD ONLY beside restarting the agents", async () => {
   });
 });
 
+test("while the unarchive request runs, focus stays in the dialog and it says so (#1531)", async () => {
+  // Hermes on #1560: busy disables every button, and a disabled button drops focus to the body —
+  // outside the modal trap, with nothing in the dialog able to take it.
+  let resolve: (v: { mission: ReturnType<typeof mission> }) => void = () => {};
+  vi.mocked(api.unarchiveMission).mockImplementation(
+    () => new Promise((r) => (resolve = r as typeof resolve)),
+  );
+  render(
+    <MissionHeaderActions
+      mission={mission({ state: "done", archived_at: 99 })}
+      onChanged={() => {}}
+      onNote={() => {}}
+    />,
+  );
+  await userEvent.click(screen.getByTestId("mission-unarchive"));
+  await userEvent.click(screen.getByTestId("mission-unarchive-record"));
+  const dialog = screen.getByTestId("mission-unarchive-dialog");
+  await waitFor(() => expect(dialog).toHaveFocus());
+  expect(dialog).toHaveAttribute("aria-busy", "true");
+  expect(within(dialog).getByRole("status")).toHaveTextContent(/bringing it back/i);
+  await act(async () => resolve({ mission: mission() }));
+});
+
 test("UNARCHIVE can still restart the agents, explicitly", async () => {
   vi.mocked(api.unarchiveMission).mockResolvedValue({ mission: mission() });
   render(
@@ -466,4 +489,29 @@ test("UNARCHIVE names the scope the mission moved INTO", async () => {
   // ONE FIELD (#896 review 14): "it moved" and "where it went" cannot be forwarded apart,
   // because there is nothing to forward apart.
   expect(onChanged.mock.calls.at(-1)?.[0]).toMatchObject({ movedTo: "active" });
+});
+
+test("the UNARCHIVE choice is a dialog: focus on the safe option, Esc and outside click cancel, focus returns (#1531)", async () => {
+  vi.mocked(api.unarchiveMission).mockResolvedValue({ mission: mission() });
+  render(
+    <MissionHeaderActions
+      mission={mission({ state: "done", archived_at: 99 })}
+      onChanged={() => {}}
+      onNote={() => {}}
+    />,
+  );
+  const trigger = screen.getByTestId("mission-unarchive");
+  await userEvent.click(trigger);
+  const dialog = screen.getByRole("dialog", { name: "Bring this mission back" });
+  expect(dialog).toHaveAttribute("aria-modal", "true");
+  expect(screen.getByTestId("mission-unarchive-record")).toHaveFocus();
+  await userEvent.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(trigger).toHaveFocus();
+
+  await userEvent.click(trigger);
+  const backdrop = screen.getByRole("dialog").parentElement!;
+  await userEvent.pointer({ keys: "[MouseLeft>]", target: backdrop });
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(api.unarchiveMission).not.toHaveBeenCalled();
 });

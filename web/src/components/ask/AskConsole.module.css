@@ -1,5 +1,9 @@
-/* ASK's chat column (#1069): only what the mission thread's primitives (`mission.module.css`
- * `.threadCol` / `.pane` / `.event` / `.composerDock`) do not already say. */
+/* HQ's chat column (#1069; Ask until #1525), NIGHTJAR (#1531): only what the mission thread's
+ * primitives (`mission.module.css` `.threadCol` / `.pane` / `.event` / `.composerDock`) do not
+ * already say. The head is a callsign with the contact's portrait in a scan frame; the operator's
+ * turns carry the HUD rule; answers are framed plates whose words fade in as they arrive
+ * (RevealText); the composer is a chamfered field. Doubled selectors win over `mission.module.css`
+ * whatever order the two sheets load in. Tokens only. */
 
 /* The page is the column: it fills the route's height so the dock sits on the bottom edge. */
 .col {
@@ -24,40 +28,52 @@
 /* Before the first question the greeting sits in the middle of the empty thread. */
 .intro {
   margin-block: auto;
-  padding-block: 24px;
+  padding-block: var(--sp-5);
 }
 
-/* The operator's own turn is set apart by the brand rule, the thread's one non-status accent. */
-.you {
-  border-left: 3px solid var(--accent);
+/* The operator's own turn is set apart by the HUD rule, the thread's one non-status accent. */
+.you.you {
+  border-left: 3px solid var(--hud);
+  background: color-mix(in srgb, var(--hud) 6%, transparent);
+}
+/* An answer: a framed plate (the chamfered edge, the rail along its top) — the transmission. */
+.answer {
+  composes: nj-frame-sm from global;
+}
+.answer.answer {
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--line-strong);
+  margin-top: var(--sp-2);
 }
 
 .group {
-  margin-top: 10px;
+  margin-top: var(--sp-3);
 }
 
 /* The thread's type, a step up from the mission thread's dense primitives: Ask is read in a narrow
  * sidebar, often at arm's length (operator, 2026-10). Doubled selectors so they win over
  * `mission.module.css` whatever order the two sheets load in. */
 .text.text {
-  font-size: 0.95rem;
+  font-size: var(--fs-row);
   line-height: 1.55;
 }
 .reason.reason {
   margin-top: 2px;
-  font-size: 0.8rem;
+  font-size: var(--fs-label);
   line-height: 1.45;
   color: var(--text-2);
 }
 .label.label {
-  font-size: 0.7rem;
+  font-size: var(--fs-micro);
 }
 /* #1525: an answer's head names its speaker, in --text-2: the --text-3 label measures only 3.7:1
  * dark and 4.0:1 light; --text-2 gives 7.55:1 and 8.22:1. The poster is decoration. */
 .speaker.speaker {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
+  font-family: var(--font-display);
+  letter-spacing: 0.16em;
   color: var(--text-2);
 }
 .speakerPoster {
@@ -88,12 +104,12 @@
 }
 .md code {
   font-family: var(--font-mono);
-  font-size: 0.85em;
+  font-size: var(--fs-meta);
 }
 .md pre {
-  padding: 6px 8px;
+  padding: 6px var(--sp-2);
   border: 1px solid var(--line);
-  background: var(--bg-0);
+  background: var(--surface-3);
   overflow-x: auto;
   white-space: pre;
 }
@@ -120,7 +136,7 @@
 }
 .mapBtn:hover:not(:disabled) {
   color: var(--text);
-  border-color: var(--accent);
+  border-color: var(--hud);
 }
 .mapBtn.mapBtn:disabled {
   opacity: 0.5;
@@ -130,7 +146,7 @@
 .batch {
   display: flex;
   justify-content: flex-end;
-  margin: 10px 0 0 10px;
+  margin: var(--sp-3) 0 0 var(--sp-3);
 }
 
 /* #1086: an answer row for a session on the NEEDS YOU list. The dot is STATE (`--status-degraded`,
@@ -141,11 +157,11 @@
   gap: 6px;
   margin-left: 8px;
   font-family: var(--font-mono);
-  font-size: 0.6rem;
+  font-size: var(--fs-micro);
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--warn-text, var(--status-degraded));
+  color: var(--warn-text);
 }
 .needsDot {
   width: 8px;
@@ -154,32 +170,24 @@
   background: var(--status-degraded);
 }
 .detailsBtn {
-  min-width: 44px;
-  min-height: 44px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--text-2);
-  cursor: pointer;
+  composes: icon from "../ui/actionButton.module.css";
 }
 
-/* #1171: the conversation's only chrome — back to the dashboard, the page's name, New
- * conversation. The back link is Settings' (`Settings.module.css .back`), at the 44px touch
- * target (design §8). */
+/* #1171: the conversation's only chrome — the callsign, the switcher, New and Close, at the 44px
+ * touch target (design §8). */
 .head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 0;
+  gap: var(--sp-3);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--hud-dim);
 }
 /* #1525: Off is one row (HQ, picker, +, ×); with a contact the 60×80 portrait spans two rows —
  * "HQ" over the name, then the picker, + and × — so the picker keeps its width at 390px. */
 .headMain {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-3);
   flex: 1;
   min-width: 0;
 }
@@ -189,7 +197,29 @@
 .headContact .headMain {
   flex-direction: column;
   align-items: stretch;
-  gap: 4px;
+  gap: var(--sp-1);
+}
+/* The portrait's scan frame (#1531): decorative, Full only; a slow line passes over the face,
+ * paused with the ambient pause (hidden tab, idle) through `nj-ambient`. */
+.portraitFrame {
+  position: relative;
+  flex: none;
+  display: block;
+  line-height: 0;
+  outline: 1px solid var(--hud-dim);
+  outline-offset: 2px;
+  overflow: hidden;
+  --nj-scan-travel: 80px;
+}
+.portraitFrame::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  background: var(--hud);
+  opacity: 0;
+  pointer-events: none;
+  animation: global(nj-scan-once) 4.2s linear infinite;
 }
 .headPortrait {
   width: 60px;
@@ -202,8 +232,9 @@
 }
 .whoName {
   font-family: var(--font-mono);
-  font-size: 0.72rem;
-  letter-spacing: 0.04em;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--text-2);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -212,54 +243,41 @@
 .headTools {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   flex: 1;
   min-width: 0;
 }
 .back {
+  composes: icon from "../ui/actionButton.module.css";
+  flex: none;
+}
+/* The callsign: a hazard notch, then HQ in display caps. */
+.title {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  flex: none;
-  color: var(--text);
-  border: 1px solid var(--border);
-  background: var(--panel);
-}
-.back:hover,
-.back:focus-visible {
-  border-color: var(--accent);
-}
-.title {
+  gap: var(--sp-2);
   margin: 0;
-  font-size: 1rem;
-  letter-spacing: 0.06em;
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--accent-text);
+  color: var(--hud-text);
+}
+.title::before {
+  content: "";
+  flex: none;
+  width: 22px;
+  height: 10px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.85;
 }
 .sp {
   flex: 1;
 }
 .newBtn {
-  width: 44px;
-  height: 44px;
+  composes: icon from "../ui/actionButton.module.css";
   flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--text-1);
-  cursor: pointer;
-}
-.newBtn:focus-visible,
-.back:focus-visible {
-  outline: 2px solid var(--accent-text);
-  outline-offset: 2px;
-}
-.newBtn:hover:not(:disabled) {
-  border-color: var(--accent);
 }
 .newBtn:disabled {
   opacity: 0.55;
@@ -267,16 +285,17 @@
 }
 
 .greeting {
-  margin: 0 0 12px;
-  font-size: 1rem;
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-body);
   line-height: 1.5;
   color: var(--text-2);
 }
 .needsEndpoint {
   margin: 0;
-  padding: 10px 12px;
+  padding: var(--sp-3);
   border: 1px dashed var(--line-strong);
-  font-size: 0.85rem;
+  border-left: 2px solid var(--status-degraded);
+  font-size: var(--fs-meta);
   line-height: 1.5;
   color: var(--text-2);
 }
@@ -284,34 +303,24 @@
   color: var(--accent-text);
 }
 
-/* #1171: the pending answer. A scan block sweeps a hairline track — brand accent, not a status
- * colour: it says "working", not "healthy". Only `transform` and `opacity` move (never geometry or
- * `clip-path`, design §5), and all of it stops under reduced motion. */
+/* #1171: the pending answer, on the NIGHTJAR acquire bar (`nj-acquire`, the Loader's look): HUD,
+ * not a status colour — it says "working", not "healthy". Only `transform` and `opacity` move. */
 .working {
   margin-top: 6px;
-  animation: askArrive 180ms ease-out both;
+  animation: global(nj-fade-in) var(--t-base) var(--ease-out) both;
 }
 .scan {
-  position: relative;
-  height: 2px;
-  overflow: hidden;
-  background: var(--line);
-}
-.scanBlock {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 28%;
-  background: var(--accent);
-  animation: askScan 1.3s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  margin: 0;
 }
 .workingRow {
   display: flex;
   align-items: baseline;
-  gap: 10px;
-  margin-top: 8px;
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
   font-family: var(--font-mono);
-  font-size: 0.72rem;
-  letter-spacing: 0.06em;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
   color: var(--text-2);
 }
 .step {
@@ -321,52 +330,53 @@
 .step::after {
   content: "▍";
   margin-left: 4px;
-  color: var(--accent-text);
-  animation: askBlink 1s steps(1) infinite;
+  color: var(--hud-text);
+  animation: global(nj-caret) 1s steps(1, end) infinite;
 }
 .elapsed {
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
 }
-/* A match row that has just arrived settles in rather than popping. */
+/* A match row that has just arrived settles in rather than popping (fade + rise, never a scale). */
 .arrive {
-  animation: askArrive 220ms ease-out both;
+  animation: global(nj-arrive) var(--t-base) var(--ease-out) both;
 }
 
-@keyframes askScan {
-  from {
-    transform: translateX(-100%);
-  }
-  to {
-    transform: translateX(360%);
-  }
-}
-@keyframes askBlink {
-  50% {
-    opacity: 0;
-  }
-}
-@keyframes askArrive {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+/* The error row: a failure is a state — the red rule and --danger-text. */
+.errorRow.errorRow {
+  color: var(--danger-text);
+  border-left: 3px solid var(--status-down);
+  padding-left: var(--sp-3);
 }
 
-/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+/* The composer box: a chamfered field over the mission composer's own box. */
+.box.box {
+  border: 1px solid var(--border);
+  border-top: 2px solid var(--hud-dim);
+  clip-path: polygon(
+    var(--cut-sm) 0,
+    100% 0,
+    100% calc(100% - var(--cut-sm)),
+    calc(100% - var(--cut-sm)) 100%,
+    0 100%,
+    0 var(--cut-sm)
+  );
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.box.box:focus-within {
+  border-color: var(--hud-dim);
+  border-top-color: var(--hud);
+}
+
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). The portrait's
+ * scan is decorative; it simply is not drawn. */
 :root:not([data-motion="full"]) .working,
 :root:not([data-motion="full"]) .arrive,
 :root:not([data-motion="full"]) .step::after {
   animation: none;
 }
-:root:not([data-motion="full"]) .scanBlock {
-  animation: none;
-  width: 100%;
-  opacity: 0.5;
+:root:not([data-motion="full"]) .portraitFrame::after {
+  display: none;
 }
 
 /* The composer's hint keeps to "Enter to send" on a phone, where the rest ran under Send. */
@@ -384,26 +394,29 @@
   min-width: 0;
 }
 .switch {
+  composes: nj-plate from global;
+  --nj-face: var(--bg-1);
+  --nj-edge: var(--line-strong);
   width: 100%;
   min-height: 44px;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 10px;
-  border: 1px solid var(--line-strong);
-  background: transparent;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3);
+  border: 1px solid transparent;
   color: var(--text-2);
   text-align: left;
   cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out);
 }
 .switch:hover,
 .switchOpen {
-  border-color: var(--accent);
+  --nj-edge: var(--hud);
 }
 .switch:focus-visible,
 .menuItem:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .switchTitle {
   flex: 1 1 auto;
@@ -411,45 +424,48 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.8rem;
+  font-size: var(--fs-meta);
   color: var(--text-1);
 }
+/* HQ's conversation switcher (a listbox) on THE menu chrome (ui/menu.module.css, #1531). It stays a
+ * drop-down at every width: it opens inside the HQ panel, which on a phone already IS the full-width
+ * sheet, so the list spans it edge to edge. */
 .menu {
+  composes: panel from "../ui/menu.module.css";
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
   right: 0;
-  z-index: 5;
+  z-index: calc(var(--z-raised) + 4);
   max-height: min(60vh, 420px);
   overflow-y: auto;
-  border: 1px solid var(--line-strong);
-  background: var(--bg-2);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  padding: 0;
 }
 .menuItem {
   display: flex;
   flex-direction: column;
   justify-content: center;
   min-height: 52px;
-  padding: 6px 12px;
+  padding: var(--sp-1) var(--sp-3);
   border-left: 3px solid transparent;
   border-bottom: 1px solid var(--line);
   cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 .menuItem:hover {
-  background: var(--row-hover);
+  background: color-mix(in srgb, var(--hud) 10%, transparent);
 }
-/* The conversation on screen: the brand rule, as the operator's own turns carry it. */
+/* The conversation on screen: the HUD rail, as the operator's own turns carry it. */
 .menuCur {
-  border-left-color: var(--accent);
-  background: var(--row-hover);
+  border-left-color: var(--hud);
+  background: color-mix(in srgb, var(--hud) 8%, transparent);
 }
 .menuTitle {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.85rem;
+  font-size: var(--fs-row);
   color: var(--text-1);
 }
 /* A conversation with an unseen update (#1443 Phase 4): the accent marker plus words for a screen
@@ -463,7 +479,7 @@
 .menuUnreadDot {
   width: 7px;
   height: 7px;
-  background: var(--accent);
+  background: var(--hud);
 }
 .srOnly {
   position: absolute;
@@ -476,29 +492,29 @@
 .menuMeta {
   margin-top: 2px;
   font-family: var(--font-mono);
-  font-size: 0.64rem;
+  font-size: var(--fs-micro);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-3);
 }
 .menuEmpty,
 .menuFoot {
-  padding: 8px 12px;
+  padding: var(--sp-2) var(--sp-3);
   font-family: var(--font-mono);
-  font-size: 0.64rem;
+  font-size: var(--fs-micro);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-3);
 }
 /* Every session the conversation follows, at the thread's end: Unfollow never waits for an update. */
 .following {
-  margin-top: 6px;
+  margin-top: var(--sp-2);
 }
 /* The update budget is spent (#1517): a notice in the notice voice, never a status colour. */
 .followNotice {
-  margin: 12px 0;
-  padding: 6px 10px;
+  margin: var(--sp-3) 0;
+  padding: var(--sp-1) var(--sp-3);
   border-left: 2px solid var(--line-strong);
-  font: 12px/1.5 var(--font-mono);
+  font: var(--fs-meta)/1.5 var(--font-mono);
   color: var(--text-muted);
 }

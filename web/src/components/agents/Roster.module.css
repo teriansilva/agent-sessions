@@ -87,7 +87,7 @@
   flex-wrap: wrap;
   gap: 6px;
   position: relative;
-  z-index: 1;
+  z-index: var(--z-raised);
 }
 .mode {
   display: inline-flex;
@@ -118,7 +118,7 @@
   font-size: 12px;
   color: var(--text-2);
   position: relative;
-  z-index: 1;
+  z-index: var(--z-raised);
 }
 .chev {
   color: var(--text-3);
@@ -127,7 +127,7 @@
 }
 .problemToggle {
   position: relative;
-  z-index: 1;
+  z-index: var(--z-raised);
 }
 .diag {
   margin: 0 14px 12px 72px;
@@ -343,7 +343,7 @@
   color: var(--danger-text);
 }
 
-/* ---- the ⋯ menu (AnchoredMenu; rows are the platform's context-menu rows) ------------------- */
+/* ---- the ⋯ menu (AnchoredMenu; rows are THE menu chrome's rows) ------------------------------ */
 .menuWrap {
   position: relative;
   display: inline-flex;
@@ -352,12 +352,11 @@
   position: absolute;
   right: 0;
   top: calc(100% + 4px);
-  z-index: 40;
+  z-index: calc(var(--z-map) + 10);
   min-width: 200px;
   width: max-content;
   max-width: min(300px, calc(100vw - 16px));
-  border: 1px solid var(--line-strong);
-  background: var(--bg-2);
+  /* The plate, rows and phone sheet are THE menu chrome (ui/menu.module.css, #1531). */
 }
 .menuItems {
   display: flex;
@@ -367,7 +366,7 @@
   outline: none;
 }
 .menuItem {
-  composes: item from "../sidebar/RowMenu.module.css";
+  composes: item from "../ui/menu.module.css";
   min-height: 44px;
   width: 100%;
   text-align: left;

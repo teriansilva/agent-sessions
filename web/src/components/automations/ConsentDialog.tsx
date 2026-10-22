@@ -14,6 +14,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
+import { useHoldFocusWhileBusy } from "../templates/useHoldFocusWhileBusy";
 import { useInertBehind } from "../templates/useInertBehind";
 import { widenedLine } from "../../lib/automations";
 import type { ConsentRequired } from "../../types/automations";
@@ -72,15 +73,22 @@ export function ConsentDialog({
   const title = mode === "save" ? `Save changes to “${name}”?` : `Enable “${name}”?`;
   const confirmLabel = mode === "save" ? "Save changes" : "Enable automation";
 
+  // While the request runs every control is disabled: the dialog itself holds focus (#1560).
+  const panelRef = useRef<HTMLDivElement>(null);
+  useHoldFocusWhileBusy(panelRef, busy);
+
   return createPortal(
     <div
       className={hud.backdrop}
       onMouseDown={() => (busy ? undefined : onCancel())}
     >
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-busy={busy || undefined}
+        tabIndex={-1}
         className={hud.dialog}
         onMouseDown={(e) => e.stopPropagation()}
         data-testid="consent-dialog"

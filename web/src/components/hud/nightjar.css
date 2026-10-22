@@ -190,6 +190,139 @@
   animation: nj-scan-once var(--t-slow) var(--ease-out) both;
 }
 
+/* ============================== frame (single element) ============================== */
+/* The panel look on ONE element, for surfaces whose markup is not ours to wrap (dialogs, menus,
+ * sheets, toasts, cards): a chamfered edge, the two cut lines drawn as hard-stop lines in the
+ * background (the background stays put while a dialog's content scrolls, so they never scroll
+ * away), and the rail as the top border. A CSS module composes it —
+ * `composes: nj-frame from global;` — and sets `--nj-face` for its ground instead of
+ * `background`, which would erase the cut lines. */
+/* Positioned for the scan line and cut lines, at ZERO specificity: a module that composes the
+ * frame and positions itself (a fixed dialog, an absolute menu) always wins, whatever order the
+ * stylesheets load in. */
+:where(.nj-frame, .nj-frame-sm, .nj-frame-quiet) {
+  position: relative;
+}
+.nj-frame,
+.nj-frame-sm,
+.nj-frame-quiet {
+  --c: var(--cut);
+  --nj-face: var(--bg-1);
+  --nj-edge: var(--hud-dim);
+  border: 1px solid var(--nj-edge);
+  border-top: 2px solid var(--hud);
+  background:
+    linear-gradient(
+        to bottom right,
+        transparent calc(50% - 1px),
+        var(--nj-edge) calc(50% - 0.5px) calc(50% + 0.5px),
+        transparent calc(50% + 1px)
+      )
+      top left / var(--c) var(--c) no-repeat border-box,
+    linear-gradient(
+        to bottom right,
+        transparent calc(50% - 1px),
+        var(--nj-edge) calc(50% - 0.5px) calc(50% + 0.5px),
+        transparent calc(50% + 1px)
+      )
+      bottom right / var(--c) var(--c) no-repeat border-box,
+    var(--nj-face);
+  clip-path: polygon(
+    var(--c) 0,
+    100% 0,
+    100% calc(100% - var(--c)),
+    calc(100% - var(--c)) 100%,
+    0 100%,
+    0 var(--c)
+  );
+}
+.nj-frame-sm {
+  --c: var(--cut-sm);
+}
+.nj-frame-quiet {
+  border-top-width: 1px;
+  border-top-color: var(--line-strong);
+  --nj-edge: var(--line-strong);
+}
+/* Deploy-in for popups: fade + 6 px rise, never a scale; interactive from the first frame. In
+ * Reduced it is a 120 ms fade (`nj-fade-ok`). */
+.nj-deploy {
+  animation: nj-rise-in var(--t-base) var(--ease-out) both;
+}
+:root[data-motion="reduced"] .nj-deploy {
+  animation: nj-fade-in var(--t-fast) var(--ease-out) both !important;
+}
+/* Appear-in for anchored menus: a fade with NO rise. A menu opens at the pointer or under its
+ * trigger, and its rows must not move under the pointer that is about to press one (a 6 px rise
+ * also kept the rows "unstable" for a pointer that arrived during it). Phone sheets slide up. */
+.nj-appear {
+  animation: nj-fade-in var(--t-base) var(--ease-out) both;
+}
+.nj-scrim {
+  background: var(--scrim);
+  animation: nj-fade-in var(--t-base) var(--ease-out) both;
+}
+:root[data-motion="reduced"] .nj-scrim {
+  animation: nj-fade-in var(--t-fast) var(--ease-out) both !important;
+}
+/* A bottom sheet slides up from the floor of the viewport. */
+.nj-sheet-in {
+  animation: nj-sheet-up var(--t-slow) var(--ease-out) both;
+}
+:root[data-motion="reduced"] .nj-sheet-in {
+  animation: nj-fade-in var(--t-fast) var(--ease-out) both !important;
+}
+
+/* ============================== plate (interactive) ============================== */
+/* The chamfer for anything you PRESS (#1531, #782, #946): the cut corners are PAINT, never
+ * geometry. A clip-path would take the corners out of the hit area — and a tap 3 px inside a
+ * button's corner (#782's boundary test) must still land. So the control stays a full rectangle;
+ * two pseudo-elements behind its content paint the chamfered edge (::before) and the face
+ * (::after). A module composes it — `composes: nj-plate from global;` — and sets `--nj-face`,
+ * `--nj-edge` (and `--nj-rail` for a lit top edge) instead of `background` / `border-color`. The
+ * element's own border stays (for layout) but transparent. */
+.nj-plate {
+  --c: var(--cut-sm);
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--border);
+  --nj-rail: var(--nj-edge);
+  isolation: isolate;
+  background: transparent;
+  border-color: transparent;
+}
+:where(.nj-plate) {
+  position: relative;
+}
+.nj-plate::before,
+.nj-plate::after {
+  content: "";
+  position: absolute;
+  z-index: var(--z-under);
+  pointer-events: none;
+  clip-path: polygon(
+    var(--c) 0,
+    100% 0,
+    100% calc(100% - var(--c)),
+    calc(100% - var(--c)) 100%,
+    0 100%,
+    0 var(--c)
+  );
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+/* The edge (with its rail on top) fills the padding box — never past it: an absolutely positioned
+ * child outside the padding box is scrollable overflow, and every plate would report a 1 px
+ * `scrollWidth > clientWidth` (a "label overflows" check failed on that). The control's own 1 px
+ * border stays transparent around it, so the hit area is still the whole border box… */
+.nj-plate::before {
+  inset: 0;
+  background: linear-gradient(var(--nj-rail) 0 2px, var(--nj-edge) 2px);
+}
+/* …and the face, one pixel in. */
+.nj-plate::after {
+  inset: 1px;
+  background: var(--nj-face);
+}
+
 /* ============================== callsign ============================== */
 .nj-callsign {
   display: flex;
@@ -394,20 +527,41 @@
 /* ============================== chips, stamps ============================== */
 .nj-chip {
   --c: 6px;
+  --nj-face: color-mix(in srgb, var(--text-1) 6%, var(--bg-1));
+  --nj-edge: transparent;
+  --nj-rail: transparent;
+  position: relative;
+  isolation: isolate;
   display: inline-flex;
   align-items: center;
   gap: 6px;
   height: 32px;
   padding: 0 var(--sp-3);
   border: 0;
-  background: color-mix(in srgb, var(--text-1) 6%, transparent);
+  background: transparent;
   color: var(--text-2);
   font: 500 var(--fs-label) / 1 var(--font-mono);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   white-space: nowrap;
-  clip-path: polygon(var(--c) 0, 100% 0, 100% calc(100% - var(--c)), calc(100% - var(--c)) 100%, 0 100%, 0 var(--c));
   transition: filter var(--t-fast) var(--ease-out);
+}
+/* The chip's chamfer is paint (the plate recipe), so its corners stay pressable. */
+.nj-chip::before,
+.nj-chip::after {
+  content: "";
+  position: absolute;
+  z-index: var(--z-under);
+  pointer-events: none;
+  clip-path: polygon(var(--c) 0, 100% 0, 100% calc(100% - var(--c)), calc(100% - var(--c)) 100%, 0 100%, 0 var(--c));
+}
+.nj-chip::before {
+  inset: 0;
+  background: var(--nj-edge);
+}
+.nj-chip::after {
+  inset: 0;
+  background: var(--nj-face);
 }
 button.nj-chip {
   cursor: pointer;
@@ -418,7 +572,7 @@ button.nj-chip:hover {
 .nj-chip.is-on,
 .nj-chip[aria-pressed="true"],
 .nj-chip[aria-checked="true"] {
-  background: color-mix(in srgb, var(--hud) 22%, transparent);
+  --nj-face: color-mix(in srgb, var(--hud) 22%, var(--bg-1));
   color: var(--hud-text);
 }
 .nj-chip .nj-n {
@@ -550,7 +704,6 @@ button.nj-chip:hover {
 
 /* ============================== fields ============================== */
 .nj-field {
-  --c: var(--cut-sm);
   display: block;
   width: 100%;
   min-height: 40px;
@@ -561,7 +714,8 @@ button.nj-chip:hover {
   font-family: inherit;
   font-size: var(--fs-body);
   line-height: 1.4;
-  clip-path: polygon(var(--c) 0, 100% 0, 100% calc(100% - var(--c)), calc(100% - var(--c)) 100%, 0 100%, 0 var(--c));
+  /* Square: an input cannot host the plate's pseudo-elements, and a clipped field would lose its
+   * corners from the hit area (#782). */
   transition: border-color var(--t-fast) var(--ease-out);
 }
 .nj-field.is-mono {
@@ -717,6 +871,24 @@ textarea.nj-field {
 }
 
 /* ============================== loaders ============================== */
+.nj-loader {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.nj-loader.is-acquire,
+.nj-loader.is-skeleton {
+  display: grid;
+  gap: var(--sp-2);
+}
+.nj-loader-label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
 /* Acquiring: a scan bar riding a track. */
 .nj-acquire {
   position: relative;

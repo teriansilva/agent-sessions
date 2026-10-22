@@ -95,6 +95,40 @@ async function answer(path, q, method, req, state) {
       return json({ unread: false, conversations: 0 });
     case "/api/automations/origins":
       return json({ origins: {} });
+    // The Library and Automations pages read their limits from these (#1531 sweep): a `{}` answer
+    // crashed them into the error fallback. Valid, empty catalogs — the pages' own empty states.
+    case "/api/automations":
+      if (method === "GET")
+        return json({
+          automations: [],
+          engines: [],
+          loop: { enabled: true, owner: true },
+          limits: {
+            interval_min_minutes: 15,
+            max_runs_per_day_max: 48,
+            max_concurrent_max: 4,
+            pause_after_failures_max: 10,
+            triggers: ["schedule"],
+            actions: ["prompt"],
+            autonomy: ["ask", "auto"],
+            timezone: "Europe/Bucharest",
+          },
+        });
+      break;
+    case "/api/library/skills":
+      return json({ skills: [] });
+    case "/api/memory":
+      if (method === "GET") return json({ projects: [] });
+      break;
+    case "/api/variables":
+      if (method === "GET")
+        return json({
+          variables: [],
+          collections: [],
+          migration_required: false,
+          limits: { variables_max: 200, value_max: 4096, name_max: 64, secret_min: 8, collections_max: 20 },
+        });
+      break;
     case "/api/ask/conversations":
       state.ask ??= [];
       if (method === "GET")

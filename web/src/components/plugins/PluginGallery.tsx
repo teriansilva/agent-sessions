@@ -116,11 +116,12 @@ export function AgentMenu({ id, label, data, onChange }: {
       focus="first-item"
       classes={{ wrap: r.menuWrap, panel: r.menuPanel, items: r.menuItems }}
     >
-      {(close) => {
+      {(close, menuTrigger) => {
         // The dialog returns focus to the ⋯ TRIGGER: the item that opened it is gone once the menu
-        // closes, and focus returned to a removed node is focus lost.
+        // closes, and focus returned to a removed node is focus lost. AnchoredMenu hands the trigger
+        // over, because on a phone the menu is a portalled sheet with no DOM path back to it.
         const act = (fn: (trigger: HTMLElement) => void) => (e: MouseEvent<HTMLButtonElement>) => {
-          const trigger = e.currentTarget.closest(`.${r.menuWrap}`)?.querySelector<HTMLElement>('[data-testid="agent-menu"]') ?? e.currentTarget;
+          const trigger = menuTrigger() ?? e.currentTarget;
           close();
           fn(trigger);
         };

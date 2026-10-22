@@ -171,10 +171,11 @@
   bottom: 0;
   display: flex;
   align-items: stretch;
-  z-index: 8; /* above the terminal's touch overlay (6) and FAB (7), below every modal */
+  z-index: calc(var(--z-raised) + 7); /* above the terminal's touch overlay (6) and FAB (7), below every modal */
   background: var(--bg-1);
-  border-left: 1px solid var(--line);
-  box-shadow: -12px 0 28px rgb(0 0 0 / 35%);
+  /* The one drawer chrome (#1531): the lit rail along its open edge. */
+  border-left: 2px solid var(--hud);
+  box-shadow: var(--shadow-drawer);
 }
 
 /* Sheet: the whole window body, above the terminal — FilePanel renders its scrim + sheet
@@ -183,7 +184,7 @@
 .drawerSheet {
   position: absolute;
   inset: 0;
-  z-index: 8;
+  z-index: calc(var(--z-raised) + 7);
   display: flex;
   flex-direction: column;
 }

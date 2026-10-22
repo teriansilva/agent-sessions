@@ -10,6 +10,7 @@ import {
 } from "@playwright/test";
 import { mockRoster } from "./roster";
 import { settingsPath } from "../src/routes/settingsTabs";
+import { animationsSettled } from "./nightjarShell";
 
 // #1404 P4a: public share links for API sessions, end to end in a real browser.
 //
@@ -385,6 +386,10 @@ async function openDialog(page: Page) {
   await headAction(page, "Share this session publicly");
   const dialog = page.getByRole("dialog", { name: "Share publicly" });
   await expect(dialog).toBeVisible();
+  // On a phone the dialog slides up from the floor (#1531). A press during the slide finds its
+  // target still below the screen, and Playwright SCROLLS the dialog to reach it — the 48 px
+  // `scrollTop` a loaded CI runner caught in "visibleWithoutScrolling". Use it once it lands.
+  await animationsSettled(page);
   return dialog;
 }
 

@@ -36,6 +36,7 @@ import {
   opFor,
 } from "./objectiveDirection";
 import { useModalDrawer } from "./useModalDrawer";
+import { useHoldFocusWhileBusy } from "../templates/useHoldFocusWhileBusy";
 
 export function ObjectiveDirectionDialog({
   objective,
@@ -115,6 +116,8 @@ export function ObjectiveDirectionDialog({
     onChange: () => setChoice(value),
   });
 
+  // While the request runs its controls are disabled: the dialog itself holds focus (#1560).
+  useHoldFocusWhileBusy(panelRef, busy);
   return createPortal(
     <div className={dlg.backdrop}>
       <div

@@ -19,8 +19,15 @@ const darkTheme = () => document.documentElement.dataset.theme !== "light";
  * drifting rightward, radial-masked so it fades at the edges. Returns a teardown that stops the
  * rAF loop and unbinds the resize listener.
  */
+/** Between two paints of the data-flow canvas (#1531): its trails drift a fraction of a pixel per
+ *  frame, so a slower paint looks the same and the idle budget (e2e/motion-modes.spec.ts) holds. */
+export const PAINT_MS = 50;
+
 export function runDataFlow(canvas: HTMLCanvasElement): () => void {
-  const ctx = canvas.getContext("2d");
+  // `desynchronized`: the ambient canvas need not present in lock-step with the DOM, and skipping
+  // that sync took its per-paint main-thread commit from ~0.9 ms to a fraction (#1531 idle budget:
+  // 2.75% → 1.45% at the same 20 paints/s). Tearing is invisible on faint drifting trails.
+  const ctx = canvas.getContext("2d", { desynchronized: true, alpha: true });
   if (!ctx) return () => {};
 
   let W = 0;
@@ -34,6 +41,7 @@ export function runDataFlow(canvas: HTMLCanvasElement): () => void {
     a: number;
   }[] = [];
   let raf = 0;
+  let wait: ReturnType<typeof setTimeout> | undefined;
   let running = false;
 
   const mk = () => {
@@ -72,11 +80,27 @@ export function runDataFlow(canvas: HTMLCanvasElement): () => void {
   // the same. Each frame fades what is there toward transparent (one composite fill, no full-screen
   // repaint of a grid) and strokes each trail once in a flat colour: no per-particle gradient
   // objects. Together that keeps the idle budget in e2e/motion-modes.spec.ts.
+  //
+  // The wait between paints is a TIMER, not skipped animation frames: every frame the page asks for
+  // is a main-thread frame (a style pass for the ambient CSS layers included), so a loop that asked
+  // every vsync and painted one in three cost more the faster the compositor got. Asking only when
+  // it will paint caps the page's ambient frames at ~20/s on any display (#1531 idle budget).
   let lastPaint = 0;
+  const later = (ms: number) => {
+    wait = setTimeout(() => {
+      wait = undefined;
+      if (running) raf = requestAnimationFrame(frame);
+    }, ms);
+  };
+  const halt = () => {
+    cancelAnimationFrame(raf);
+    if (wait !== undefined) clearTimeout(wait);
+    wait = undefined;
+  };
   const frame = (now: number = performance.now()) => {
     if (!running) return;
-    if (now - lastPaint < 50) {
-      raf = requestAnimationFrame(frame);
+    if (now - lastPaint < PAINT_MS) {
+      later(PAINT_MS - (now - lastPaint));
       return;
     }
     const steps = lastPaint ? Math.min(4, (now - lastPaint) / 16.7) * SCALE : SCALE;
@@ -100,7 +124,7 @@ export function runDataFlow(canvas: HTMLCanvasElement): () => void {
         p.y = Math.random() * H;
       }
     }
-    raf = requestAnimationFrame(frame);
+    later(PAINT_MS);
   };
   const onResize = () => {
     size();
@@ -113,10 +137,10 @@ export function runDataFlow(canvas: HTMLCanvasElement): () => void {
     running = want;
     if (want) {
       lastPaint = 0;
-      frame();
+      raf = requestAnimationFrame(frame);
     }
     else {
-      cancelAnimationFrame(raf);
+      halt();
       still();
     }
   };
@@ -128,7 +152,7 @@ export function runDataFlow(canvas: HTMLCanvasElement): () => void {
   const unsubscribe = onMotionChange(sync);
   return () => {
     running = false;
-    cancelAnimationFrame(raf);
+    halt();
     unsubscribe();
     window.removeEventListener("resize", onResize);
   };

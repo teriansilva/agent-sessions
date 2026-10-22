@@ -225,7 +225,7 @@ function rules(css: string): { selector: string; body: string; line: number }[] 
 }
 
 const COLOUR = /#[0-9a-fA-F]{3,8}(?![\w-])|\brgba?\(|\bhsla?\(/;
-const ROUND_OK = /led|radar|round|ping|spinner|fab/i;
+const ROUND_OK = /led|radar|round|ping|spinner|fab|dot/i;
 
 export function literalFindings(css: string): string[] {
   const out: string[] = [];

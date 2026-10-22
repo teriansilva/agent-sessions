@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { ID, mockLivePermissions, openPermissions } from "./livePermissionsFixture";
+import { animationsSettled } from "./nightjarShell";
 import { mockStructuredGuidance } from "./structuredGuidanceFixture";
 
 const setup = async (page: Page, theme: "dark" | "light", engine = "codex-api", uncertain = false) => {
@@ -18,6 +19,8 @@ for (const theme of ["dark", "light"] as const) {
       await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
       await expect(dialog).toContainText("queued messages");
       expect(attempts).toEqual([]);
+      // Measured where the dialog LANDS: it deploys in with a 6 px rise (#1531).
+      await animationsSettled(page);
       for (const button of await dialog.getByRole("button").all()) {
         const box = (await button.boundingBox())!;
         expect(box.height).toBeGreaterThanOrEqual(44);

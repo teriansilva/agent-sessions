@@ -1,27 +1,28 @@
-/* First-run onboarding overlay (#463) — tactical-HUD vocabulary (docs/design.md): near-black
- * frosted scrim, corner-bracket frame, amber accent, mono `//` chrome, no rounded corners.
- * All colours from the shared tokens (index.css) so theme + custom accent cascade. */
+/* First-run onboarding overlay (#463), NIGHTJAR (#1531): a scrim in the dialog band, the card an
+ * armour frame (`nj-frame`, the hero edge) that deploys in, plates for the agent rows, the shared
+ * action buttons and field look. Tokens only, so theme + custom accent cascade. */
 
 .scrim {
+  composes: nj-scrim from global;
   position: fixed;
   inset: 0;
-  z-index: 60;
+  /* The dialog band (#1531): it was 60, under every menu and the bell's drawer. */
+  z-index: var(--z-dialog);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
-  background: color-mix(in srgb, var(--bg-0) 78%, transparent);
-  backdrop-filter: blur(6px);
+  padding: var(--sp-5);
 }
 .card {
-  position: relative;
+  composes: nj-frame nj-deploy nj-fade-ok from global;
+  --nj-face: var(--bg-1);
+  /* The one hero panel on screen while it is open: the brighter edge. */
+  --nj-edge: color-mix(in srgb, var(--hud) 70%, transparent);
   width: 100%;
   max-width: 560px;
   max-height: calc(100dvh - 40px);
   display: flex;
   flex-direction: column;
-  background: var(--panel);
-  border: 1px solid var(--line-strong);
   color: var(--text-1);
 }
 .card.wide {
@@ -46,7 +47,7 @@
   color: var(--brand-soft);
 }
 .copy a:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: 2px;
 }
 
@@ -55,23 +56,24 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 14px;
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-4);
   border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--bg-1) 70%, transparent);
 }
 .brand {
-  font-size: 13px;
-  letter-spacing: 0.2em;
+  font-family: var(--font-display);
+  font-size: var(--fs-row);
+  font-weight: 600;
+  letter-spacing: 0.22em;
   text-transform: uppercase;
   color: var(--brand-soft);
 }
 .brand b {
   color: var(--brand);
-  font-weight: 800;
+  font-weight: 700;
 }
 .barTag {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.14em;
   color: var(--text-3);
 }
@@ -80,8 +82,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 36px;
+  height: 36px;
   border: 1px solid transparent;
   background: transparent;
   color: var(--text-2);
@@ -89,7 +91,17 @@
 }
 .x:hover {
   color: var(--text-1);
-  border-color: var(--border);
+  border-color: var(--hud-dim);
+}
+.x:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+@media (max-width: 800px), (pointer: coarse) {
+  .x {
+    width: 44px;
+    height: 44px;
+  }
 }
 .cardBody {
   min-height: 0;
@@ -111,9 +123,10 @@
 }
 .railHead {
   padding: 0 16px 10px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.18em;
+  font-family: var(--font-display);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.22em;
   color: var(--text-3);
 }
 .step {
@@ -121,7 +134,7 @@
   align-items: center;
   gap: 10px;
   padding: 9px 16px;
-  font-size: 13px;
+  font-size: var(--fs-row);
   color: var(--text-3);
 }
 .step.done {
@@ -129,8 +142,8 @@
 }
 .step.cur {
   color: var(--text-1);
-  box-shadow: inset 2px 0 0 var(--accent);
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  box-shadow: inset 2px 0 0 var(--hud);
+  background: color-mix(in srgb, var(--hud) 10%, transparent);
 }
 .stepDot {
   flex: 0 0 auto;
@@ -139,13 +152,14 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
-  border: 1.5px solid var(--line-strong);
+  font-size: var(--fs-micro);
+  font-family: var(--font-mono);
+  border: 1px solid var(--line-strong);
   color: var(--text-3);
 }
 .step.done .stepDot {
-  border-color: var(--accent);
-  color: var(--accent-text);
+  border-color: var(--hud);
+  color: var(--hud-text);
 }
 .step.cur .stepDot {
   border-color: var(--accent);
@@ -163,17 +177,22 @@
 }
 .h2 {
   margin: 0;
-  font-size: 18px;
+  font-family: var(--font-display);
+  font-size: var(--fs-h2);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--hud-text);
 }
 .desc {
   margin: 6px 0 0;
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   color: var(--text-2);
   line-height: 1.5;
 }
 .copy {
   margin: 16px 0 0;
-  font-size: 13px;
+  font-size: var(--fs-row);
   color: var(--text-2);
   line-height: 1.55;
 }
@@ -195,46 +214,48 @@
   flex-direction: column;
   gap: 8px;
 }
+/* A plate (the chamfered `nj-frame-sm`), quiet edge. */
 .row {
-  position: relative;
+  composes: nj-plate from global;
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--line-strong);
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
-  border: 1px solid var(--line);
-  background: var(--bg-1);
+  border: 1px solid transparent;
 }
 .skeleton {
   padding: 16px;
   color: var(--text-3);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-meta);
 }
 .eng {
   width: 110px;
-  font-size: 13px;
+  font-size: var(--fs-row);
 }
 .ok {
   width: 74px;
-  font-size: 12px;
-  color: var(--status-up);
+  font-size: var(--fs-meta);
+  color: var(--ok-text);
 }
 .na {
   width: 74px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-3);
 }
 .path {
   flex: 1;
   min-width: 0;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-label);
   color: var(--text-3);
   overflow-wrap: anywhere;
 }
 .badge {
   flex: none;
-  font-size: 9.5px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   padding: 2px 7px;
@@ -242,7 +263,7 @@
   color: var(--text-3);
 }
 .badgeGo {
-  color: var(--status-up);
+  color: var(--ok-text);
   border-color: color-mix(in srgb, var(--status-up) 45%, transparent);
 }
 
@@ -252,26 +273,33 @@
   flex-direction: column;
   gap: 5px;
   margin-bottom: 13px;
-  font-size: 11px;
+  font-size: var(--fs-label);
   letter-spacing: 0.04em;
   color: var(--text-2);
 }
+/* The `nj-field` look on native controls (a descendant selector cannot compose). */
 .field input,
 .field select {
-  background: var(--bg-1);
+  --c: var(--cut-sm);
+  background: var(--bg-2);
   color: var(--text-1);
   border: 1px solid var(--border);
   border-radius: 0;
   padding: 9px 11px;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-row);
   color-scheme: inherit;
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.field input:hover,
+.field select:hover {
+  border-color: var(--hud-dim);
 }
 .field input:focus-visible,
 .field select:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent);
+  border-color: var(--hud);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .newFolder {
   display: flex;
@@ -288,13 +316,13 @@
   border-radius: 0;
   padding: 8px 11px;
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
 }
 .checkbox {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--fs-row);
   color: var(--text-1);
   cursor: pointer;
 }
@@ -305,13 +333,13 @@
 }
 .err {
   margin: 4px 0 0;
-  font-size: 12px;
-  color: var(--status-down);
+  font-size: var(--fs-meta);
+  color: var(--danger-text);
 }
 .note {
   margin: 4px 0 0;
-  font-size: 12px;
-  color: var(--status-up);
+  font-size: var(--fs-meta);
+  color: var(--ok-text);
 }
 
 /* Footer button row. */
@@ -326,42 +354,23 @@
 .grow {
   flex: 1;
 }
-.btn,
-.pri,
-.ghost {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font: inherit;
-  font-size: 12.5px;
-  border-radius: 0;
-  padding: 8px 15px;
-  cursor: pointer;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-1);
+/* The wizard's buttons are THE action buttons (#967, #1531): composed, never restated. `.ghost` is
+ * the quiet one (later / skip): no edge, tertiary ink. The shared definition holds the 44px floor
+ * the real-browser spec for #1009's step measures. */
+.btn {
+  composes: ghost from "../components/ui/actionButton.module.css";
 }
 .pri {
-  background: var(--cta-bg-1);
-  border-color: var(--accent);
-  color: var(--cta-text);
-  font-weight: 600;
-}
-.pri:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 84%, #fff);
+  composes: primary from "../components/ui/actionButton.module.css";
 }
 .ghost {
-  border-color: transparent;
-  color: var(--text-3);
+  composes: ghost from "../components/ui/actionButton.module.css";
 }
-/* The §8 44px touch floor, under coarse pointers and at ≤800px (docs/design.md). The wizard's buttons
- * sat at 35.5px on a phone; the real-browser spec for #1009's step measures it. */
-@media (max-width: 800px), (pointer: coarse) {
-  .btn,
-  .pri,
-  .ghost {
-    min-height: 44px;
-  }
+/* Doubled: it overrides the composed ghost at a higher specificity, whatever the sheet order. */
+.ghost.ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-3);
 }
 .btn:disabled,
 .pri:disabled {
@@ -374,6 +383,20 @@
   display: flex;
   flex-direction: column;
 }
+/* The standalone replay (Help → Intro tour) sits straight in the card, which has no padding of its
+ * own; the wizard's Tour step is inside the padded step pane, so only the direct child is padded. */
+.cardBody > .tour {
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
+}
+/* When the footer wraps, the primary keeps the right edge (the spacer cannot reach a new line). */
+.foot > .pri:last-child {
+  margin-left: auto;
+}
+@media (max-width: 800px) {
+  .cardBody > .tour {
+    padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  }
+}
 .shot {
   width: 100%;
   height: auto;
@@ -382,11 +405,15 @@
 }
 .tourTitle {
   margin: 14px 0 4px;
-  font-size: 15px;
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 .tourBody {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-row);
   color: var(--text-2);
   line-height: 1.55;
 }
@@ -424,7 +451,7 @@
   .step {
     flex: none;
     padding: 6px 10px;
-    font-size: 11px;
+    font-size: var(--fs-label);
   }
   /* #692: the AI step's footer carries five controls (later / Back / Save & validate /
      Next + spacer); let them wrap instead of forcing horizontal overflow at ≤800px. */
@@ -438,7 +465,9 @@
   flex: none;
   width: 104px;
   height: 104px;
-  background: #fff;
+  /* A QR code is content, not chrome: dark modules on a light quiet zone in BOTH themes, or
+   * scanners fail. The token says so. */
+  background: var(--qr-ground);
   padding: 4px;
 }
 .qr svg {

@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useModalDrawer } from "../pulse/useModalDrawer";
+import { useHoldFocusWhileBusy } from "../templates/useHoldFocusWhileBusy";
 import dialog from "../HudDialog.module.css";
 import styles from "./StructuredPane.module.css";
 
@@ -43,10 +44,14 @@ export function PermissionsDialog({
       if (!triggerRef.current?.isConnected) fallbackFocusRef.current?.focus();
     });
   }, [fallbackFocusRef]);
+  // While enabling runs both buttons are disabled: the dialog itself holds focus (#1560).
+  useHoldFocusWhileBusy(panelRef, busy);
   return createPortal(
     <div className={dialog.backdrop}>
       <div
         ref={panelRef}
+        tabIndex={-1}
+        aria-busy={busy || undefined}
         role="dialog"
         aria-modal="true"
         aria-labelledby={title}

@@ -13,6 +13,7 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useConfig, useConfigRefresh } from "../app/config";
+import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import { FolderPickerModal } from "../components/FolderPickerModal";
 import { ProjectColorPicker } from "../components/ProjectColorPicker";
 import { ProjectSessionDefaults } from "../components/projects/ProjectSessionDefaults";
@@ -486,20 +487,33 @@ export function ProjectsManagerCard() {
     }
   };
 
+  // Deletion asks in THE confirm dialog (#1531), never the browser's own `window.confirm`: the same
+  // chrome, Esc / backdrop cancel and safe-default focus as every other destructive action, and
+  // focus back on the row's Delete afterwards.
+  const [pendingDelete, setPendingDelete] = useState<{
+    entity: ProjectEntity;
+    trigger: HTMLElement | null;
+  } | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const remove = async (entity: ProjectEntity) => {
-    // window.confirm over a custom dialog — destructive but cheap to re-do (the
-    // entity is just metadata), so a native confirm is proportionate.
-    const ok = window.confirm(
-      `Delete project “${entity.name}”? Its sessions revert to folder grouping — ` +
-        "session files are never touched.",
-    );
-    if (!ok) return;
+    setPendingDelete({
+      entity,
+      trigger: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+    });
+  };
+  const confirmRemove = async () => {
+    if (!pendingDelete) return;
+    const { entity } = pendingDelete;
     setError(null);
+    setDeleting(true);
     try {
       await api.deleteProject(entity.id);
       await refresh();
     } catch (e) {
       setError(errMessage(e, "Couldn’t delete the project."));
+    } finally {
+      setDeleting(false);
+      setPendingDelete(null);
     }
   };
 
@@ -507,7 +521,11 @@ export function ProjectsManagerCard() {
 
   return (
     <section className={settings.section} aria-labelledby="projects-manager-h">
-      <h2 id="projects-manager-h">Projects</h2>
+      {/* tabIndex -1: the focus target after a delete removes the row whose button opened the
+          confirm (#1531, Hermes on #1560) — the section itself, never the page's body. */}
+      <h2 id="projects-manager-h" tabIndex={-1}>
+        Projects
+      </h2>
       <p className={settings.hint}>
         Group sessions across folders: a project adopts launch folders and can
         be assigned per session. Projects are metadata — assigning or archiving
@@ -609,6 +627,21 @@ export function ProjectsManagerCard() {
             ))}
           </ul>
         </details>
+      )}
+      {pendingDelete && (
+        <ConfirmDialog
+          tag="Delete project"
+          title={`Delete project “${pendingDelete.entity.name}”?`}
+          confirmLabel="Delete project"
+          danger
+          busy={deleting}
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={() => void confirmRemove()}
+          returnFocusTo={pendingDelete.trigger}
+          fallbackFocusSelector="#projects-manager-h"
+        >
+          <p>Its sessions revert to folder grouping — session files are never touched.</p>
+        </ConfirmDialog>
       )}
     </section>
   );

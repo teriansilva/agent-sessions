@@ -969,7 +969,7 @@
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  z-index: 40;
+  z-index: calc(var(--z-map) + 10);
   width: min(340px, calc(100vw - 16px));
   display: flex;
   flex-direction: column;
@@ -1528,18 +1528,12 @@
   position: absolute;
   right: 0;
   top: calc(100% + 4px);
-  z-index: 40;
+  z-index: calc(var(--z-map) + 10);
   min-width: 180px;
   /* As wide as its longest item, and as wide as a confirmation sentence needs, up to 300px (#967). */
   width: max-content;
   max-width: min(300px, calc(100vw - 16px));
-  border: 1px solid var(--line-strong);
-  background: var(--bg-2);
-  /* Rows run edge to edge, as RowMenu's do (#967). */
-  padding: 4px 0;
-  /* Flat fill, hairline border, zero radius — `docs/design.md`. The elevation cue is the border
-   * and the ground change, never a shadow gradient. */
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  /* The plate, rows and phone sheet are THE menu chrome (ui/menu.module.css, #1531). */
 }
 
 .overflowItems {
@@ -1562,7 +1556,7 @@
 /* The consequence of the confirmation an item is waiting on, under the items and outside the menu
  * role (#967). */
 .overflowMenu > .missionConfirm {
-  margin: 8px 12px 4px;
+  margin: var(--sp-2) var(--sp-3) var(--sp-1);
 }
 
 /* THE MENU'S ROWS ARE THE PLATFORM'S CONTEXT-MENU ROWS (#967). The header ⋯ drew each item as a
@@ -1574,13 +1568,13 @@
  * The danger rules carry the panel's classes so they outrank RowMenu's hover and focus colours without
  * depending on which sheet loads first. */
 .menuItem {
-  composes: item from "../sidebar/RowMenu.module.css";
+  composes: item from "../ui/menu.module.css";
 }
 .menuIcon {
-  composes: itemIcon from "../sidebar/RowMenu.module.css";
+  composes: itemIcon from "../ui/menu.module.css";
 }
 .menuSep {
-  composes: sep from "../sidebar/RowMenu.module.css";
+  composes: sep from "../ui/menu.module.css";
 }
 .overflowMenu .overflowItems .menuItem:disabled {
   opacity: 0.4;
@@ -1752,28 +1746,7 @@
   outline: 2px solid var(--accent);
   outline-offset: 4px;
 }
-.titleDialog {
-  width: 460px;
-  max-width: calc(100vw - 32px);
-  max-height: calc(100dvh - 32px);
-  overflow: auto;
-  padding: 20px;
-  border: 1px solid var(--line-strong);
-  background: var(--bg-1);
-  color: var(--text-1);
-}
-.titleDialog::backdrop {
-  background: color-mix(in srgb, var(--bg-0) 75%, transparent);
-}
-.titleDialog h2 {
-  margin: 0;
-  font: 600 12px var(--font-mono);
-  text-transform: uppercase;
-}
-.titleDialog p {
-  overflow-wrap: anywhere;
-  line-height: 1.5;
-}
+/* The full-title dialog moved to MissionTitle.module.css, on THE dialog chrome (#1531). */
 .topbarActions {
   max-width: 100%;
   justify-content: flex-end;
@@ -2169,7 +2142,7 @@
  * status), above the rows it slides past. The others move aside to show where it will land. */
 .objRowDragging {
   position: relative;
-  z-index: 2;
+  z-index: calc(var(--z-raised) + 1);
   background: var(--bg-2);
   outline: 1px solid var(--accent);
   outline-offset: -1px;

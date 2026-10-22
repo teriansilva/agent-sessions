@@ -1,50 +1,52 @@
-/* ASK's right-hand sidebar (#1294). Tactical-HUD vocabulary: 1px accent rule, no radius, no
- * gradient. It slides in from the right edge; only `transform` moves (design §5), and not at all
- * under reduced motion. */
+/* HQ's right-hand drawer (#1294, Ask until #1525) on the one drawer chrome (NIGHTJAR #1531): an
+ * opaque face with the lit rail along its open edge, no radius, a scrim behind it on a phone. It
+ * slides in from the right edge; only `transform` moves, over `--t-slow`, and not at all outside
+ * the Full motion mode. */
 
 .panel {
   position: fixed;
-  /* Under the 52px command bar, which stays on top so the icon that opened this can close it. */
-  top: 52px;
+  /* Under the command bar, which stays on top so the icon that opened this can close it. Portalled
+   * to <body>, outside `.app` where the header height is declared, hence the fallback. */
+  top: var(--app-header-height, 52px);
   right: 0;
   bottom: 0;
-  z-index: 33;
+  z-index: calc(var(--z-map) + 3);
   width: min(440px, 100vw);
   display: flex;
   flex-direction: column;
-  padding-inline: 14px;
-  padding-right: calc(14px + env(safe-area-inset-right, 0px));
-  /* OPAQUE, the bell dropdown's fill: `--panel` is itself translucent, and a chat column over the
-   * dashboard or a live terminal showed the page's text through it. */
+  padding-inline: var(--sp-3);
+  padding-right: calc(var(--sp-3) + env(safe-area-inset-right, 0px));
+  /* OPAQUE: a chat column over the dashboard or a live terminal must not show the page through. */
   background: var(--bg-1);
-  border-left: 1px solid var(--accent);
-  box-shadow: -2px 0 14px rgba(0, 0, 0, 0.45);
+  border-left: 2px solid var(--hud);
+  box-shadow: var(--shadow-drawer);
   transform: translateX(100%);
   visibility: hidden;
   transition:
-    transform 0.18s ease,
-    visibility 0s linear 0.18s;
+    transform var(--t-slow) var(--ease-out),
+    visibility 0s linear var(--t-slow);
 }
 .open {
   transform: translateX(0);
   visibility: visible;
   transition:
-    transform 0.18s ease,
+    transform var(--t-slow) var(--ease-out),
     visibility 0s;
 }
 
 .scrim {
   position: fixed;
   inset: 0;
-  /* Above the session drawer (30), below the panel and the topbar (40) — the bell's numbers. */
-  z-index: 32;
-  background: rgba(0, 0, 0, 0.5);
+  /* Above the session drawer, below the panel and the topbar — the bell's numbers. */
+  z-index: calc(var(--z-map) + 2);
+  background: var(--scrim);
   border: 0;
   padding: 0;
   cursor: pointer;
+  animation: global(nj-fade-in) var(--t-base) var(--ease-out) both;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 800px) {
   .panel {
     width: min(92vw, 440px);
   }

@@ -233,3 +233,34 @@ test("an equal-tip branch switch refreshes open history and hides the previous b
   await screen.findByRole("button", { name: "Revert ccccccc: Change on other" });
   expect(api.gitLog).toHaveBeenCalledTimes(2);
 });
+
+test("the git confirms are THE confirm dialog: safe focus, wording kept, Escape owned, danger filled (#1531)", async () => {
+  const { ConfirmDialog: Shared } = await import("../templates/ConfirmDialog");
+  // The shared dialog's destructive confirm, rendered on its own, is the reference look.
+  const ref = render(
+    <Shared tag="t" title="x" confirmLabel="Go" danger onCancel={() => {}} onConfirm={() => {}} />,
+  );
+  const dangerClass = screen.getByRole("button", { name: "Go" }).className;
+  ref.unmount();
+
+  vi.mocked(api.gitDiscard).mockReset();
+  render(<GitTab {...props("/home/u/proj")} status={dirty950()} />);
+  await userEvent.click(screen.getByRole("button", { name: "Revert b.txt to the last commit" }));
+  const dialog = screen.getByRole("alertdialog", { name: "Revert file" });
+  expect(dialog).toHaveAttribute("aria-modal", "true");
+  expect(dialog.closest("[data-git-confirm]")).not.toBeNull();
+  expect(dialog.textContent).toContain("back to the last commit");
+  // Focus starts on the SAFE action.
+  expect(screen.getByRole("button", { name: /^cancel$/i })).toHaveFocus();
+  const go = document.querySelector("[data-revert-go]") as HTMLElement;
+  expect(go).toHaveTextContent("Revert file");
+  expect(go.className).toBe(dangerClass);
+  // Escape cancels the confirm and nothing behind it (the panel) sees the key.
+  const behind = vi.fn();
+  window.addEventListener("keydown", behind);
+  await userEvent.keyboard("{Escape}");
+  window.removeEventListener("keydown", behind);
+  expect(document.querySelector("[data-revert-confirm]")).toBeNull();
+  expect(behind).not.toHaveBeenCalled();
+  expect(api.gitDiscard).not.toHaveBeenCalled();
+});

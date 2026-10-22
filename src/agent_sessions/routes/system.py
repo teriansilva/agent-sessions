@@ -31,6 +31,7 @@ from .. import (
     scopedspawn,
     session_input,
     sysinfo,
+    telemetry,
     twofactor,
     update,
 )
@@ -456,6 +457,13 @@ def register(
             with contextlib.suppress(Exception):
                 scancache.clear()
         return JSONResponse(snap)
+
+    @app.get("/api/telemetry")
+    async def live_telemetry(_: str = Depends(logged_in)) -> JSONResponse:
+        """The NIGHTJAR footer's readout (#1531): host CPU %, RAM, and HQ's token use. Behind the
+        login like ``/api/system`` (the same host facts, live); the CPU sample is cached, so many
+        polling tabs cost one /proc/stat read per interval."""
+        return JSONResponse(await telemetry.collect(), headers={"Cache-Control": "no-store"})
 
     @app.get("/api/system")
     async def system_info(_: str = Depends(logged_in)) -> JSONResponse:

@@ -57,6 +57,45 @@ function targetPath(n: PulseNotification): string {
  *  Every row names its project and session and links straight into the terminal — the point of
  *  the whole feature is that the operator can intervene in one tap, not that they read a
  *  summary and go hunting. */
+/** The drawer form's media query: the shell's one phone breakpoint (#1531). */
+export const BELL_DRAWER_QUERY = "(max-width: 800px)";
+
+/** Ids that arrived while the panel was OPEN, for the arrival flash (#1531). Rows present when it
+ *  opens, and rows that came in while it was closed, are not arrivals: the operator never saw them
+ *  appear. Derived during render from the previous render's state (React's pattern for state that
+ *  follows a prop), so no effect sets state synchronously. */
+function useArrivals(ids: string[], open: boolean): Set<string> {
+  const key = ids.join("\u0000");
+  const [seen, setSeen] = useState<{ key: string; known: Set<string>; fresh: Set<string> }>(() => ({
+    key,
+    known: new Set(ids),
+    fresh: new Set(),
+  }));
+  if (seen.key !== key) {
+    const fresh = open ? new Set(ids.filter((id) => !seen.known.has(id))) : new Set<string>();
+    setSeen({ key, known: new Set([...seen.known, ...ids]), fresh });
+  }
+  useEffect(() => {
+    if (seen.fresh.size === 0) return;
+    const t = setTimeout(() => setSeen((s) => ({ ...s, fresh: new Set() })), 600);
+    return () => clearTimeout(t);
+  }, [seen.fresh]);
+  return seen.fresh;
+}
+
+/** True for one arrival window after `count` RISES (the first read from zero included; never when it falls). */
+function useRise(count: number): boolean {
+  const [state, setState] = useState({ count, bump: 0 });
+  if (state.count !== count) setState({ count, bump: count > state.count ? state.bump + 1 : state.bump });
+  const [shown, setShown] = useState(0);
+  useEffect(() => {
+    if (state.bump === 0) return;
+    const t = setTimeout(() => setShown(state.bump), 520);
+    return () => clearTimeout(t);
+  }, [state.bump]);
+  return state.bump !== shown;
+}
+
 export function NotificationBell() {
   // Re-render when the engine roster lands or changes (#853 P4): this renders agent names,
   // badges or colours, which come from the roster, not from a client-side list.
@@ -72,6 +111,11 @@ export function NotificationBell() {
    *  non-decision signal — the console is degraded, and saying so beats a silent wrong count. */
   const [uncertain, setUncertain] = useState(0);
   const [open, setOpen] = useState(false);
+  const arrived = useArrivals(
+    items.map((n) => n.id),
+    open,
+  );
+  const bump = useRise(unread);
   // Inline confirm for `Clear all` (#752) — NOT an undo, and not a modal.
   //
   // Undo was the first choice and does not survive the API: `dismiss` deletes server-side and
@@ -91,14 +135,14 @@ export function NotificationBell() {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
-  // ≤640px is where the topbar collapses; below it the panel is a right-hand drawer instead of
-  // an anchored dropdown (#750). Tracked live so a rotate/resize switches form without a
-  // reopen.
+  // ≤800px — the design's ONE phone breakpoint (docs/design.md v2 §5; it was 640px until #1531)
+  // — the panel is a right-hand drawer instead of an anchored dropdown (#750). Tracked live so a
+  // rotate/resize switches form without a reopen.
   const [drawer, setDrawer] = useState(
-    () => window.matchMedia?.("(max-width: 640px)").matches ?? false,
+    () => window.matchMedia?.(BELL_DRAWER_QUERY).matches ?? false,
   );
   useEffect(() => {
-    const mq = window.matchMedia?.("(max-width: 640px)");
+    const mq = window.matchMedia?.(BELL_DRAWER_QUERY);
     if (!mq) return;
     const on = () => setDrawer(mq.matches);
     mq.addEventListener("change", on);
@@ -337,7 +381,7 @@ export function NotificationBell() {
           {items.map((n) => (
             <li
               key={n.id}
-              className={`${styles.row} ${n.read ? "" : styles.unread}`}
+              className={`${styles.row} ${n.read ? "" : styles.unread} ${arrived.has(n.id) ? styles.arrived : ""}`}
             >
               <button
                 type="button"
@@ -468,7 +512,7 @@ export function NotificationBell() {
       >
         <Bell size={18} aria-hidden="true" />
         {unread > 0 && (
-          <span className={styles.badge} aria-hidden="true">
+          <span className={`${styles.badge} ${bump ? styles.badgeBump : ""}`} aria-hidden="true">
             {unread > 99 ? "99+" : unread}
           </span>
         )}

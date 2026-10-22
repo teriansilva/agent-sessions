@@ -613,7 +613,7 @@
 .saveBar {
   position: sticky;
   bottom: 0;
-  z-index: 2;
+  z-index: calc(var(--z-raised) + 1);
   min-height: var(--cl-bar);
   display: flex;
   flex-wrap: wrap;

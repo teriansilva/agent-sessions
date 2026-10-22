@@ -331,9 +331,10 @@ test("archive after handoff is on by default and archives the source (#1274)", a
 
   await dialog.getByRole("button", { name: /^hand off$/i }).click();
   await page.waitForURL(`**/s/codex/${TARGET_NATIVE}`);
-  expect(
-    archived.some((u) => decodeURIComponent(u).includes(UUID)),
-  ).toBe(true);
+  // Fired off the navigation path, so it can land just after the URL changes: poll for it.
+  await expect
+    .poll(() => archived.some((u) => decodeURIComponent(u).includes(UUID)))
+    .toBe(true);
 });
 
 test("unchecking archive leaves the source session alone (#1274)", async ({

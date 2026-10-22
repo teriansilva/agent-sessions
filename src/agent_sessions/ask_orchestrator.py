@@ -54,6 +54,7 @@ from . import (
     ask_store,
     engines,
     hq_contacts,
+    hq_usage,
     mission_plan,
     missions,
     prompts,
@@ -1118,7 +1119,8 @@ async def run_turn(turn: _Turn) -> list[dict]:
         if last:
             body["tool_choice"] = "none"
         try:
-            r = await review.post_chat_response(cfg, body)
+            with hq_usage.hq_call():  # the footer's HQ token count (#1531)
+                r = await review.post_chat_response(cfg, body)
         except review.TransportTimeout as e:
             return fail(str(e), "timeout")
         except review.ReviewError as e:

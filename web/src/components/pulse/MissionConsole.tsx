@@ -1128,6 +1128,21 @@ export function MissionConsole({
    *  `archived` can be a render behind the rail — so a late create's `reload()` issued an Active
    *  request that was then accepted into the Archived scope (finding 3). Read at ISSUE time. */
   const archivedRef = useRef(false);
+  /** Set when an action moves the console to another scope and so unmounts the control holding
+   *  focus (an unarchive, #1531): the landing heading takes focus once it renders. */
+  const focusLandingAfterMove = useRef(false);
+  const consoleRoot = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!focusLandingAfterMove.current) return;
+    const heading = consoleRoot.current?.querySelector<HTMLElement>(
+      '[data-testid="mission-landing-heading"]',
+    );
+    if (!heading) return; // not rendered yet: the next commit retries
+    focusLandingAfterMove.current = false;
+    // Only when focus was actually lost — never steal it from wherever the operator moved it.
+    const active = document.activeElement;
+    if (!active || active === document.body || !active.isConnected) heading.focus();
+  });
   /** …and HOW MANY ROWS ARE OPEN, for exactly the same reason (#896 review 25, finding 1). A
    *  refresh re-reads the pages the operator has opened, and a callback captured before they
    *  opened another one would re-read fewer — collapsing the rail rather than refreshing it.
@@ -1687,6 +1702,9 @@ export function MissionConsole({
         // the same new generation, from a `reload` closed over the old scope — the exact race
         // `setScope` was introduced to end (#896 review 8, finding 3).
         setScope(false);
+        // The switch unmounts the Unarchive button the dialog just returned focus to; the
+        // landing it lands on takes focus once it renders (Hermes on #1560).
+        focusLandingAfterMove.current = true;
         if (opts.membershipChanged) onMembershipChanged?.();
         return;
       }
@@ -1828,7 +1846,7 @@ export function MissionConsole({
   if (railOnly) return railSlotEl ? createPortal(rail, railSlotEl) : null;
 
   return (
-    <div className={styles.console} data-testid="mission-console">
+    <div ref={consoleRoot} className={styles.console} data-testid="mission-console">
       {/* THE RAIL RENDERS INTO THE SHELL'S SIDEBAR ON THIS ROUTE (#935).
           The operator had two vertical lists side by side — the shell's sessions and this one —
           so the shell lists missions here instead and the console keeps only the thread.

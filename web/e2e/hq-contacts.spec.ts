@@ -88,9 +88,10 @@ test("/ is the dashboard: Welcome, Commander., no HQ button, New primary beside 
   const card = page.getByTestId("hq-primary-contact");
   await expect(card).toHaveAccessibleName(`Open HQ — ${name("southamerica-woman")}`);
   const fresh = page.getByTestId("dashboard-new");
-  // New is the primary action: the accent fill with its on-accent ink, at the 44px floor.
+  // New is the primary action: the accent fill with its on-accent ink, at the 44px floor. The fill
+  // is the plate's face, painted by `::after` (#1531: controls paint their chamfer, never clip).
   const [bg, accent] = await fresh.evaluate((el) => [
-    getComputedStyle(el).backgroundColor,
+    getComputedStyle(el, "::after").backgroundColor,
     getComputedStyle(document.documentElement).getPropertyValue("--accent").trim(),
   ]);
   expect(bg).not.toBe("rgba(0, 0, 0, 0)");

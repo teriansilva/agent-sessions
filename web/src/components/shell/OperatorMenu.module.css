@@ -16,6 +16,7 @@
 }
 
 .tile {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 0;
@@ -28,17 +29,17 @@
   cursor: pointer;
   /* The bar is tight; the username must never push the row into a second line. */
   max-width: 220px;
-  overflow: hidden;
+  transition: border-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
 }
 .tile:hover {
-  color: var(--text);
-  border-color: var(--border);
+  color: var(--text-1);
+  border-color: var(--hud-dim);
 }
 .tile[aria-expanded="true"] {
-  border-color: var(--accent);
+  border-color: var(--hud);
 }
 .tile:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: -2px;
 }
 
@@ -49,10 +50,10 @@
   flex: none;
   width: 30px;
   height: 30px;
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
-  color: var(--accent-text);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  background: color-mix(in srgb, var(--hud) 20%, transparent);
+  color: var(--hud-text);
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
   font-weight: 700;
   letter-spacing: 0.06em;
   line-height: 1;
@@ -65,7 +66,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: var(--fs-micro);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-2);
@@ -74,13 +75,13 @@
 
 /* --- the panel's identity header --------------------------------------------- */
 .who {
-  padding: 10px 12px;
+  padding: var(--sp-3);
   border-bottom: 1px solid var(--line);
 }
 .whoName {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 700;
+  font-family: var(--font-display);
+  font-size: var(--fs-meta);
+  font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-1);
@@ -90,7 +91,7 @@
 .whoSub {
   margin-top: 3px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.06em;
   color: var(--text-3);
 }
@@ -108,6 +109,12 @@
 @media (max-width: 800px) {
   .tile {
     height: 34px;
+  }
+  /* The tile stays 34px in the tight bar; its HIT AREA is the 44px floor (#1531 touch targets). */
+  .tile::after {
+    content: "";
+    position: absolute;
+    inset: -5px;
   }
   .square {
     width: 32px;

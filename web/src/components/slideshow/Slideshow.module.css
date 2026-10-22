@@ -27,16 +27,25 @@
 .dot[aria-current="step"] i {
   width: 18px;
   border-radius: 0;
-  background: var(--accent);
+  background: var(--hud);
 }
 .dot:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: 1px;
+}
+
+/* Under a coarse pointer each dot is a full 44px target (#1531 touch targets). Below 800px the
+ * dots give way to the counter, so this is a tablet's case. */
+@media (pointer: coarse) {
+  .dot {
+    width: 44px;
+    height: 44px;
+  }
 }
 
 .counter {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.12em;
   color: var(--text-3);
   font-variant-numeric: tabular-nums;

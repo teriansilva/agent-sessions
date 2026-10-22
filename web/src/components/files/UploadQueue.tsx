@@ -176,7 +176,7 @@ function CollisionPrompt({
         data-collision-prompt=""
       >
         <div className={styles.confirmHead}>
-          <span className="hud-tag">Upload // Name taken</span>
+          <span className={styles.confirmTag}>Upload // Name taken</span>
         </div>
         <p className={styles.confirmBody}>
           <strong>{name}</strong> already exists here. Nothing has been overwritten.
@@ -191,7 +191,7 @@ function CollisionPrompt({
           <button
             ref={first}
             type="button"
-            className={styles.ctrlBtn}
+            className={styles.confirmGhost}
             data-collision="skip"
             onClick={() => pick("skip")}
           >
@@ -199,7 +199,7 @@ function CollisionPrompt({
           </button>
           <button
             type="button"
-            className={styles.ctrlBtn}
+            className={styles.confirmGhost}
             data-collision="keep_both"
             onClick={() => pick("keep_both")}
           >
@@ -207,7 +207,7 @@ function CollisionPrompt({
           </button>
           <button
             type="button"
-            className={`${styles.ctrlBtn} ${styles.ctrlBad}`}
+            className={styles.confirmBad}
             data-collision="replace"
             onClick={() => pick("replace")}
           >

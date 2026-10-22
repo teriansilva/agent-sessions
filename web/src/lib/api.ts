@@ -99,6 +99,7 @@ import type {
   SessionsPage,
   SessionsQuery,
   SystemInfo,
+  Telemetry,
   Template,
   TemplateInput,
   TemplatesResponse,
@@ -996,6 +997,8 @@ export const api = {
     ),
   /** Host/system info for the Settings → System card (fail-soft fields). */
   system: () => getJson<SystemInfo>("/api/system"),
+  /** The NIGHTJAR footer's live readout (#1531): host CPU / RAM and HQ's token use. */
+  telemetry: () => getJson<Telemetry>("/api/telemetry"),
   resources: () => getJson<Pick<Resources, "settings">>("/api/system/resources?usage=false"),
   setResources: (body: Partial<ResourceValues>) => mutateJson<{ settings: ResourceSettings }>("POST", "/api/system/resources", body),
   /** Self-update: compare the running version to the channel's latest. */

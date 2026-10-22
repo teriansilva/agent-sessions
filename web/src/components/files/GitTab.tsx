@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   ArrowDownToLine,
   Check,
@@ -36,6 +35,7 @@ import {
 } from "./gitOps";
 import { RowMenu, type RowOp } from "./RowMenu";
 import { SendPath } from "./SendPath";
+import { ConfirmDialog as SharedConfirmDialog } from "../templates/ConfirmDialog";
 import styles from "./filePanel.module.css";
 
 /** Group order is deliberate: a conflict blocks everything else, so it sorts first. */
@@ -1513,91 +1513,31 @@ function ConfirmDialog({
   onConfirm: () => void;
   children: React.ReactNode;
 }) {
-  const ref = useRef<HTMLButtonElement>(null);
-  const box = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    // `aria-modal` while Tab walks out to the page behind is a false claim — and here it is a
-    // dangerous one: FilePanel disables its own trap while this is open, so a keyboard user could
-    // reach the tree, change the root, and confirm against a different repository.
-    ref.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        onCancel();
-        return;
-      }
-      if (e.key !== "Tab") return;
-      const root = box.current;
-      if (!root) return;
-      const focusable = Array.from(
-        root.querySelectorAll<HTMLElement>('button:not([disabled]), [tabindex]:not([tabindex="-1"])'),
-      );
-      if (!focusable.length) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const active = document.activeElement as HTMLElement | null;
-      if (e.shiftKey && (active === first || !root.contains(active))) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && (active === last || !root.contains(active))) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("keydown", onKey, true);
-      // Restored on UNMOUNT, which is the only moment that works for both paths: doing it in the
-      // click handler set focus and then React tore the portal down and blurred it again. On
-      // confirm the row usually goes with the write, so the branch trigger — which always
-      // exists — is the fallback that keeps a keyboard user inside the panel instead of on <body>.
-      if (returnFocusTo && document.contains(returnFocusTo)) {
-        returnFocusTo.focus();
-        return;
-      }
-      document.querySelector<HTMLElement>("[data-branch-trigger]")?.focus();
-    };
-  }, [onCancel, returnFocusTo]);
-
-  return createPortal(
-    <>
-      <button
-        type="button"
-        className={styles.confirmScrim}
-        aria-label={`Cancel: ${label}`}
-        onClick={onCancel}
-      />
-      <div
-        ref={box}
-        className={`${styles.confirm} ${danger ? styles.confirmDanger : ""}`}
-        role="alertdialog"
-        aria-modal="true"
-        aria-label={label}
-        // `data-git-confirm` is the ONE marker FilePanel stands its sheet trap down for, so a new
-        // confirmation cannot be missed from a hand-kept list (#950 added two and was).
-        data-git-confirm=""
-        {...{ [`data-${dataName}-confirm`]: "" }}
-      >
-        <div className={styles.confirmHead}>
-          <span className="hud-tag">{tag}</span>
-        </div>
-        <p className={styles.confirmBody}>{children}</p>
-        <div className={styles.confirmRow}>
-          <button ref={ref} type="button" className={styles.ctrlBtn} onClick={onCancel}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className={`${styles.ctrlBtn} ${danger ? styles.ctrlBad : styles.ctrlPrimary}`}
-            {...{ [`data-${dataName}-go`]: "" }}
-            onClick={onConfirm}
-          >
-            {goLabel}
-          </button>
-        </div>
-      </div>
-    </>,
-    document.body,
+  // THE confirm dialog (#1531): this used to be a local copy with its own chrome and its own trap.
+  // The shared one carries every guarantee the copy had — focus on Cancel, Tab contained, Escape
+  // owned in the capture phase (so FilePanel never closes on the same key), focus back on the
+  // trigger or, when the row left with the write, on the branch trigger — plus one chrome.
+  //
+  // `data-git-confirm` is the ONE marker FilePanel stands its sheet trap down for, so a new
+  // confirmation cannot be missed from a hand-kept list (#950 added two and was);
+  // `data-<dataName>-confirm` / `data-<dataName>-go` are the hooks the browser tests use.
+  return (
+    <SharedConfirmDialog
+      role="alertdialog"
+      tag={tag}
+      title={label}
+      confirmLabel={goLabel}
+      danger={danger}
+      returnFocusTo={returnFocusTo}
+      fallbackFocusSelector="[data-branch-trigger]"
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+      markers={{
+        dialog: { "data-git-confirm": "", [`data-${dataName}-confirm`]: "" },
+        confirm: { [`data-${dataName}-go`]: "" },
+      }}
+    >
+      <p>{children}</p>
+    </SharedConfirmDialog>
   );
 }

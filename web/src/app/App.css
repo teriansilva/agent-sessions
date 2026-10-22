@@ -31,7 +31,7 @@
   /* Sit above the fixed ambient data-flow canvas (#211 Phase 4); transparent so it shows
    * through the frosted-glass chrome. */
   position: relative;
-  z-index: 1;
+  z-index: var(--z-raised);
   background: transparent;
   /* Make .app a backdrop ROOT (#211 4b). The frosted chrome — the floating panels and, on
    * mobile, the off-canvas sidebar drawer — relies on backdrop-filter sampling the content
@@ -72,30 +72,78 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
-  /* Frosted-glass HUD panel (#211 Phase 4): translucent so the ambient canvas reads faintly
-   * behind it. Falls back to the opaque --panel where backdrop-filter isn't supported. */
   position: relative;
-  /* Floating panel (#211 redux): margins so it sits off the edges with its corner brackets
-   * fully visible (not clipped), and a full border (not just border-right) since it no longer
-   * butts the viewport edge. */
-  margin: 12px 6px 12px 12px;
-  background: var(--panel);
-  background: color-mix(in srgb, var(--panel) 55%, transparent);
-  backdrop-filter: blur(7px) saturate(110%);
-  border: 1px solid var(--line);
+  /* A floating NIGHTJAR panel (#211 redux → #1531): margins so it sits off the edges, on the
+   * atmosphere. */
+  margin: var(--sp-3) 6px var(--sp-3) var(--sp-3);
+  --nj-edge: var(--hud-dim);
+  /* NIGHTJAR frame (#1531, the `nj-frame` recipe on one element): a chamfered edge, the two cut
+     lines in the background, the lit rail as the top border, an opaque face. */
+  --c: var(--cut);
+  border: 1px solid var(--nj-edge);
+  border-top: 2px solid var(--hud);
+  background:
+    linear-gradient(
+        to bottom right,
+        transparent calc(50% - 1px),
+        var(--nj-edge) calc(50% - 0.5px) calc(50% + 0.5px),
+        transparent calc(50% + 1px)
+      )
+      top left / var(--c) var(--c) no-repeat border-box,
+    linear-gradient(
+        to bottom right,
+        transparent calc(50% - 1px),
+        var(--nj-edge) calc(50% - 0.5px) calc(50% + 0.5px),
+        transparent calc(50% + 1px)
+      )
+      bottom right / var(--c) var(--c) no-repeat border-box,
+    var(--bg-1);
+  clip-path: polygon(
+    var(--c) 0,
+    100% 0,
+    100% calc(100% - var(--c)),
+    calc(100% - var(--c)) 100%,
+    0 100%,
+    0 var(--c)
+  );
 }
+/* Boot (#1531, components/shell/BootSequence.tsx): the panels power on in sequence — fade + 6 px
+ * rise, never a scale — once per visit, Full only (motion.css stops it in Reduced / Off). */
+.app.booting .hud-topbar {
+  animation: nj-fade-in var(--t-slow) var(--ease-out) both;
+}
+/* Desktop only: at ≤800px the sidebar is the off-canvas drawer, and its transform IS its open /
+ * closed state. The rise ends at `transform: none` and, filled `both`, showed the CLOSED drawer
+ * for the whole boot (Hermes on #1560). A phone's drawer is not part of the power-on. */
+@media (min-width: 801px) {
+  .app.booting .sidebar {
+    animation: nj-rise-in var(--t-slow) var(--ease-out) 150ms both;
+  }
+}
+.app.booting .terminal-pane {
+  animation: nj-rise-in var(--t-slow) var(--ease-out) 300ms both;
+}
+.app.booting .hud-classbar {
+  animation: nj-fade-in var(--t-slow) var(--ease-out) 450ms both;
+}
+
+/* The sector fade on a route change (App.tsx): the pane's content fades in, never moves. */
+.terminal-pane.sector-in > * {
+  animation: nj-fade-in var(--t-route) var(--ease-out) both;
+}
+
 /* Desktop sidebar resize handle (#507): sits in the 12px gutter between the floating sidebar
  * and pane panels (each has a 6px facing margin), centered on the grid column boundary at
  * var(--sidebar-w). Spans the deck row (between the 52px topbar and 28px classbar). The
  * component renders it only on desktop, expanded; CSS just paints + positions it. */
 .sidebar-resize {
   position: absolute;
-  top: 52px;
+  top: var(--app-header-height);
   bottom: 28px;
   left: var(--sidebar-w, 320px);
   width: 12px;
   transform: translateX(-50%);
-  z-index: 3;
+  z-index: calc(var(--z-raised) + 2);
   cursor: col-resize;
   display: flex;
   align-items: center;
@@ -108,15 +156,12 @@
   width: 2px;
   height: 40px;
   background: var(--line-strong);
-  transition:
-    background 0.12s ease,
-    height 0.12s ease;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 .sidebar-resize:hover .sidebar-resize-grip,
 .sidebar-resize:focus-visible .sidebar-resize-grip,
 .app.resizing .sidebar-resize-grip {
-  background: var(--accent);
-  height: 64px;
+  background: var(--hud);
 }
 .sidebar-resize:focus-visible {
   outline: none;
@@ -131,11 +176,6 @@
 .app.resizing .sidebar,
 .app.resizing .terminal-pane {
   pointer-events: none;
-}
-.topbarActions {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
 }
 /* The sidebar body fills the remaining height so the session list scrolls within its column. */
 .sidebarBody {
@@ -191,10 +231,10 @@
 }
 .hud-h {
   margin: 0;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
   font-weight: 600;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--text-2);
 }
@@ -209,30 +249,31 @@
   background: transparent;
   border: 0;
   cursor: pointer;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   line-height: 1;
   white-space: nowrap;
   color: var(--text-3);
-  padding: 6px 12px;
+  padding: 6px var(--sp-3);
+  transition:
+    color var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out);
 }
 .hud-seg button + button {
   border-left: 1px solid var(--line-strong);
 }
+/* The NIGHTJAR segment: the HUD tint and a lit underline (docs/design.md v2 §6). */
 .hud-seg button[aria-checked="true"] {
-  background: var(--accent-glow);
-  color: var(--accent-text);
-}
-/* The light-amber accent fails AA on the pale glow in light mode — use the darker wordmark amber. */
-:root[data-theme="light"] .hud-seg button[aria-checked="true"] {
-  color: var(--brand);
+  background: color-mix(in srgb, var(--hud) 18%, transparent);
+  box-shadow: inset 0 -2px 0 var(--hud);
+  color: var(--hud-text);
 }
 .hud-seg button:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 /* Screen-reader-only (#548): keeps the <aside> landmark's "Sessions" name now that the
  * visible heading became the sort control. */
@@ -250,27 +291,8 @@
 /* Sidebar panel footer: "60 ENGAGED · 4 LIVE" telemetry tag. */
 .sidebar-foot {
   flex: none;
-  padding: 9px 12px;
-  border-top: 1px dashed var(--line);
-}
-/* Settings gear — topbar action button. */
-.gear {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 0;
-  color: var(--text-muted);
-  /* Explicit transparent bg: without it the UA paints the default (grey) button face
-   * under color-scheme:dark (#149). */
-  background: transparent;
-  border: 1px solid transparent;
-}
-.gear:hover {
-  color: var(--text);
-  border-color: var(--border);
-  background: var(--row-hover);
+  padding: 9px var(--sp-3);
+  border-top: 1px solid var(--line);
 }
 /* BattleLab wordmark (#211 redux): the prominent command-bar wordmark — uppercase, wide
  * tracking, an amber ◢ mark, "BATTLE" in soft + a bold brand-amber "LAB". */
@@ -278,33 +300,60 @@
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: 0.2em;
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.22em;
   text-transform: uppercase;
   color: var(--brand-soft);
   white-space: nowrap;
 }
 .hud-brand .mk {
   color: var(--accent-text);
-  font-size: 14px;
+  font-size: var(--fs-body);
   line-height: 1;
 }
 .hud-brand b {
   color: var(--brand);
-  font-weight: 800;
+  font-weight: 700;
 }
 .terminal-pane {
   grid-area: pane;
   position: relative;
-  /* Floating hero panel (#211 redux): margins + border + its white hero corner brackets.
-   * This IS the frosted-glass window — translucent + backdrop-filter so the ambient data-flow
-   * field blurs behind it while routed content (landing/settings/overview) sits ON the glass.
-   * The terminal renders its own opaque surface on top, so terminal text stays crisp. */
-  margin: 12px 12px 12px 6px;
-  border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--panel) 55%, transparent);
-  backdrop-filter: blur(14px) saturate(120%);
+  /* The floating hero panel (#211 redux → NIGHTJAR #1531): an opaque armour panel with a lit
+   * rail; routed content (landing/settings/overview) sits directly on it — no box-in-a-box. */
+  margin: var(--sp-3) var(--sp-3) var(--sp-3) 6px;
+  /* The one hero panel (docs/design.md v2 §6, §7): a brighter edge. */
+  --nj-edge: color-mix(in srgb, var(--hud) 70%, transparent);
+  /* NIGHTJAR frame (#1531, the `nj-frame` recipe on one element): a chamfered edge, the two cut
+     lines in the background, the lit rail as the top border, an opaque face. */
+  --c: var(--cut);
+  border: 1px solid var(--nj-edge);
+  border-top: 2px solid var(--hud);
+  background:
+    linear-gradient(
+        to bottom right,
+        transparent calc(50% - 1px),
+        var(--nj-edge) calc(50% - 0.5px) calc(50% + 0.5px),
+        transparent calc(50% + 1px)
+      )
+      top left / var(--c) var(--c) no-repeat border-box,
+    linear-gradient(
+        to bottom right,
+        transparent calc(50% - 1px),
+        var(--nj-edge) calc(50% - 0.5px) calc(50% + 0.5px),
+        transparent calc(50% + 1px)
+      )
+      bottom right / var(--c) var(--c) no-repeat border-box,
+    var(--bg-1);
+  clip-path: polygon(
+    var(--c) 0,
+    100% 0,
+    100% calc(100% - var(--c)),
+    calc(100% - var(--c)) 100%,
+    0 100%,
+    0 var(--c)
+  );
   min-width: 0;
   min-height: 0; /* allow the flex child (.wrap / .landing, height:100%) to shrink */
   display: flex;
@@ -318,10 +367,6 @@
   flex: 1 1 auto;
   min-height: 0;
 }
-.placeholder {
-  color: var(--text-muted);
-  font-size: 13px;
-}
 
 /* Full-width command topbar (#211 redux): spans both columns — toggle, the prominent
  * BATTLELAB wordmark, SYS/MISSION telemetry, and the actions (the session title lives in
@@ -333,10 +378,11 @@
   align-items: center;
   gap: 16px;
   height: var(--app-header-height);
-  padding: 0 18px;
-  background: color-mix(in srgb, var(--bg-1) 55%, transparent);
-  backdrop-filter: blur(7px) saturate(110%);
-  border-bottom: 1px solid var(--line);
+  padding: 0 var(--sp-4);
+  background: var(--bg-1);
+  /* The command bar's lit line (#1531). */
+  border-bottom: 1px solid var(--hud);
+  box-shadow: var(--glow-rail);
 }
 /* Topbar corner: the notification bell and the operator tile, against the right edge. (The SYS
    clock and MISSION timer that sat before it were removed in #1085.) */
@@ -373,9 +419,6 @@
      * alignment only works while that neighbour exists. */
     margin-left: auto;
   }
-  .hud-topbar-actions > *:not([data-topbar-keep]) {
-    display: none;
-  }
 }
 /* Full-width classification footer (#211 redux): the bottom HUD bar. */
 .hud-classbar {
@@ -385,12 +428,12 @@
   justify-content: space-between;
   gap: 16px;
   height: 28px;
-  padding: 0 18px;
-  background: color-mix(in srgb, var(--bg-1) 55%, transparent);
-  backdrop-filter: blur(7px) saturate(110%);
-  border-top: 1px solid var(--line);
+  padding: 0 var(--sp-4);
+  background: var(--bg-1);
+  border-top: 1px solid var(--hud-dim);
 }
 .navToggle {
+  position: relative;
   flex: none;
   display: flex;
   align-items: center;
@@ -402,6 +445,21 @@
   border-radius: 0;
   color: var(--text);
   cursor: pointer;
+  transition: border-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
+}
+.navToggle:hover {
+  border-color: var(--hud-dim);
+  color: var(--hud-text);
+}
+.navToggle:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
+}
+/* The tile stays 32px in the tight bar; its HIT AREA is the 44px floor (#1531 touch targets). */
+.navToggle::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
 }
 .backdrop {
   display: none;
@@ -415,39 +473,29 @@
     display: flex;
     flex-direction: column;
   }
-  /* Solid chrome on mobile (#228): mobile Chrome (Android) often doesn't render the panels'
-   * backdrop-filter at all, so the translucent frosted backgrounds just leak the moving canvas
-   * + terminal through sharp and look broken. The blur isn't deliverable there, so degrade to
-   * near-opaque surfaces — a clean tactical-HUD look, with the ambient field still reading in
-   * the gaps between the floating panels. Desktop keeps the real frost. */
-  .hud-topbar,
-  .hud-classbar {
-    background: color-mix(in srgb, var(--bg-1) 96%, transparent);
-  }
-  .terminal-pane {
-    background: color-mix(in srgb, var(--panel) 96%, transparent);
-  }
+  /* The bars and panels are opaque at every width (#1531); nothing to degrade here. */
   .hud-topbar {
     flex: none;
     position: relative;
-    z-index: 40; /* above the drawer so the toggle is always reachable */
+    z-index: calc(var(--z-map) + 10); /* above the drawer so the toggle is always reachable */
   }
   .sidebar {
     position: fixed;
-    z-index: 30;
+    z-index: var(--z-map);
     top: 0;
     left: 0;
     width: min(85vw, 320px);
     height: 100dvh;
     margin: 0;
-    padding-top: 52px; /* clear the fixed command bar */
+    padding-top: var(--app-header-height); /* clear the fixed command bar */
     transform: translateX(-100%);
-    transition: transform 0.18s ease;
-    box-shadow: 2px 0 14px rgba(0, 0, 0, 0.45);
-    /* Near-opaque drawer (#228): it floats over the live terminal, and mobile Chrome won't
-     * blur it, so a translucent drawer would show the high-contrast terminal text straight
-     * through. Solid keeps it readable; the box-shadow still separates it from the pane. */
-    background: color-mix(in srgb, var(--panel) 96%, transparent);
+    transition: transform var(--t-slow) var(--ease-out);
+    box-shadow: var(--shadow-drawer);
+    /* Opaque drawer (#228): it floats over the live terminal, and mobile Chrome won't blur it,
+     * so a translucent drawer would show the terminal text straight through. NIGHTJAR (#1531):
+     * its open edge is the lit rail. */
+    background: var(--bg-1);
+    border-right: 2px solid var(--hud);
   }
   .app.navOpen .sidebar {
     transform: translateX(0);
@@ -456,11 +504,11 @@
     display: block;
     position: fixed;
     inset: 0;
-    z-index: 20;
-    background: rgba(0, 0, 0, 0.5);
+    z-index: var(--z-pane-overlay);
+    background: var(--scrim);
     opacity: 0;
     pointer-events: none;
-    transition: opacity 0.18s ease;
+    transition: opacity var(--t-slow) var(--ease-out);
   }
   .app.navOpen .backdrop {
     opacity: 1;
@@ -471,41 +519,6 @@
     min-height: 0;
     margin: 8px;
   }
-}
-.landing,
-.session-view {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 24px;
-  text-align: center;
-}
-.landing h1 {
-  font-size: 18px;
-  margin: 0;
-}
-.landing p,
-.placeholder {
-  color: var(--text-muted);
-  font-size: 13px;
-  margin: 0;
-}
-.landing .hint {
-  font-size: 12px;
-  opacity: 0.7;
-}
-.session-id {
-  font:
-    12px ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    Consolas,
-    monospace;
-  color: var(--accent-text);
 }
 
 /* ============================================================================
@@ -523,7 +536,7 @@
   inset: 0;
   width: 100%;
   height: 100%;
-  z-index: 0;
+  z-index: var(--z-base);
   pointer-events: none;
   /* The 48px grid is the canvas's CSS background (#1531): static, so it never costs a frame; the
      canvas paints only the drifting trails over it, and its radial mask fades both at the edges. */
@@ -543,30 +556,13 @@ body.hud-static-grid {
   background-size: 48px 48px;
 }
 
-/* Light chrome clarity (#473). Over the paper-grey ground + static grid, the 55%-translucent
- * bar fill and the 12%-opacity --line hairline barely register — the topbar/classbar read as
- * washed-out. Light only: firm the separating edge to the opaque --border with a subtle 1px
- * lift, and lift the mono telemetry tags one step (--text-3 → --text-2). Dark is untouched. */
-:root[data-theme="light"] .hud-topbar {
-  border-bottom-color: var(--border);
-  box-shadow: 0 1px 0 rgba(10, 12, 16, 0.06);
-}
-:root[data-theme="light"] .hud-classbar {
-  border-top-color: var(--border);
-  box-shadow: 0 -1px 0 rgba(10, 12, 16, 0.06);
-}
-:root[data-theme="light"] .hud-topbar .hud-tag,
-:root[data-theme="light"] .hud-classbar .hud-tag {
+/* Light chrome (#473, #1531): the bars are opaque NIGHTJAR surfaces now, so they need no firming;
+ * the mono telemetry tags lift one step (--text-3 → --text-2) on the paper-grey ground. */
+/* The bars' mono tags are read, not just scanned: --text-2 in both modes (--text-3 is under AA at
+ * this size on --bg-1). */
+.hud-topbar .hud-tag,
+.hud-classbar .hud-tag {
   color: var(--text-2);
-}
-/* Desktop only: raise the frosted fill toward opaque (still ~92%, so the ambient grid reads
- * faintly through). Mobile already degrades both bars to 96% (#228) — that stays the winner
- * under 800px because this rule doesn't apply there. */
-@media (min-width: 801px) {
-  :root[data-theme="light"] .hud-topbar,
-  :root[data-theme="light"] .hud-classbar {
-    background: color-mix(in srgb, var(--bg-1) 92%, transparent);
-  }
 }
 
 /* Corner-bracket frame: wrap a positioned element, drop four <span class="hud-cnr tl|tr|bl|br">.
@@ -577,7 +573,7 @@ body.hud-static-grid {
   height: 16px;
   border: 0 solid var(--accent);
   pointer-events: none;
-  z-index: 3;
+  z-index: calc(var(--z-raised) + 2);
 }
 .hud-cnr.tl {
   top: -1px;
@@ -619,6 +615,14 @@ body.hud-static-grid {
   align-items: center;
   gap: 12px;
   min-width: 0;
+  /* Host and version sit at the right end; the live telemetry (#1531) leads the bar. */
+  margin-left: auto;
+}
+@media (max-width: 800px) {
+  /* A phone keeps CPU · RAM · HQ CTX and the version; the host name goes (#1531). */
+  .hud-footer-left .hud-tag:not(.hud-version) {
+    display: none;
+  }
 }
 .hud-version {
   color: var(--text-2);
@@ -627,7 +631,7 @@ body.hud-static-grid {
 .hud-update-chip {
   appearance: none;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   font-weight: 700;
@@ -680,7 +684,7 @@ body.hud-static-grid {
 .sidebar-drawer-dismiss:focus-visible {
   top: 0;
   right: 0;
-  z-index: 2;
+  z-index: calc(var(--z-raised) + 1);
   width: auto;
   height: 44px;
   margin: 0;
@@ -691,7 +695,7 @@ body.hud-static-grid {
   color: var(--text-1);
   border: 1px solid var(--accent);
   outline: none;
-  font: 600 11px var(--font-mono, ui-monospace, monospace);
+  font: 600 var(--fs-label) var(--font-mono, ui-monospace, monospace);
   letter-spacing: 0.16em;
   text-transform: uppercase;
 }
@@ -723,11 +727,20 @@ body.hud-static-grid {
   min-width: 76px;
   padding: 0 10px;
   border: 1px solid var(--line-strong);
+  background: color-mix(in srgb, var(--text-1) 5%, transparent);
   color: var(--text-2);
   text-decoration: none;
-  font: 400 0.68rem var(--font-mono);
+  font: 400 var(--fs-micro) var(--font-mono);
   letter-spacing: 0.1em;
   text-transform: uppercase;
+  transition:
+    color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+/* Square, not chamfered: the corners of a section are part of its hit area (#946's check). */
+.section-nav a:hover:not([aria-current]) {
+  color: var(--text-1);
+  border-color: var(--hud-dim);
 }
 .section-nav a[aria-current="page"],
 .section-nav a[aria-current="true"] {
@@ -736,8 +749,13 @@ body.hud-static-grid {
   background: var(--accent);
 }
 .section-nav a:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+/* On the accent fill the ring is the fill's own ink, or it would vanish into it. */
+.section-nav a[aria-current]:focus-visible,
+.section-nav-split.is-active .section-nav-chevron:focus-visible {
+  outline-color: var(--on-accent);
 }
 
 /* BETA (#1085): a small outlined tag beside the label. Accent ink on the bar's ground — the brand
@@ -747,13 +765,16 @@ body.hud-static-grid {
   padding: 1px 3px;
   border: 1px solid var(--accent);
   color: var(--accent-text);
-  font: 600 0.5rem/1 var(--font-mono);
+  font: 600 var(--fs-micro)/1 var(--font-mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 .section-nav a[aria-current] .section-nav-beta {
   border-color: var(--on-accent);
   color: var(--on-accent);
+}
+.section-nav-beta-short {
+  display: none;
 }
 
 /* A SECTION WITH A SUB-MENU (#1069) is its link plus a chevron, drawn as one box: the link gives
@@ -769,7 +790,7 @@ body.hud-static-grid {
      shared edge hit-testing gave the link's last half-pixel to the chevron — the #946 hit-area
      check caught it. Lifting the link settles the tie in its favour. */
   position: relative;
-  z-index: 1;
+  z-index: var(--z-raised);
 }
 .section-nav-chevron {
   display: flex;
@@ -793,8 +814,8 @@ body.hud-static-grid {
   transform: rotate(180deg);
 }
 .section-nav-chevron:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .section-nav-split.is-active .section-nav-chevron {
   color: var(--on-accent);
@@ -831,7 +852,7 @@ body.hud-static-grid {
     height: auto;
   }
   .hud-brand {
-    font-size: 12px;
+    font-size: var(--fs-meta);
     letter-spacing: 0.08em;
     gap: 4px;
   }
@@ -883,8 +904,16 @@ body.hud-static-grid {
     top: 2px;
     right: 2px;
     padding: 0 2px;
-    font-size: 0.42rem;
+    font-size: var(--fs-micro);
+    letter-spacing: 0;
+    text-transform: none;
     background: var(--bg-1);
+  }
+  .section-nav-beta-long {
+    display: none;
+  }
+  .section-nav-beta-short {
+    display: inline;
   }
   .section-nav a[aria-current] .section-nav-beta {
     background: var(--accent);
@@ -925,7 +954,7 @@ body.hud-static-grid {
     gap: 3px;
   }
   .hud-brand {
-    font-size: 11px;
+    font-size: var(--fs-label);
     gap: 2px;
     letter-spacing: 0.04em;
   }

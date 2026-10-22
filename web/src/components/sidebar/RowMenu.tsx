@@ -95,12 +95,14 @@ export function MenuPopover({
 }: MenuPopoverProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  // The anchor is read once, at open: a context menu does not chase a moving target.
+  // The anchor is fixed at open. A pointer anchor is read once (a context menu does not chase the
+  // pointer); an element anchor is re-measured when a scroll moves it (see the scroll handler).
   const anchorRef = useRef(anchor);
 
   // Exposed as CSS custom props (not top/right inline styles) so the mobile media query can win
-  // and pin the menu to the bottom instead.
-  useLayoutEffect(() => {
+  // and pin the menu to the bottom instead. A function, because an element anchor that moves while
+  // the menu is open is followed (see the scroll handler below), not abandoned.
+  const place = useCallback(() => {
     const menu = menuRef.current;
     if (!menu) return;
     const menuH = menu.offsetHeight;
@@ -148,10 +150,14 @@ export function MenuPopover({
       `${Math.min(maxRight, Math.max(EDGE, right))}px`,
     );
   }, []);
+  useLayoutEffect(place, [place]);
 
-  // Focus the first item on open (menu-button pattern).
+  // Focus the first item on open (menu-button pattern). `preventScroll`: the menu is fixed, so it
+  // never needs scrolling into view — and a default focus scrolled an overflow-hidden ancestor
+  // (the map's React Flow box) by a pixel, a scroll the close effect below then read as "the
+  // trigger moved" and shut the menu it had just opened (#1531).
   useEffect(() => {
-    itemRefs.current[0]?.focus();
+    itemRefs.current[0]?.focus({ preventScroll: true });
   }, []);
 
   // Close on an outside pointerdown (both modes). On DESKTOP the menu is a popover anchored to
@@ -173,15 +179,59 @@ export function MenuPopover({
     document.addEventListener("pointerdown", onPointerDown);
     let detachViewport = () => {};
     if (!isSheet) {
+      // A scroll never strands the popover away from its trigger (#1531). A box scrolling
+      // elsewhere (a live terminal beside the menu printing output) leaves the trigger where it
+      // was; a container scrolled and reset (React Flow pins its own box back to 0 when a click or
+      // focus nudges it) moved nothing either. So an element anchor is re-read two frames on: the
+      // menu follows a trigger that moved and closes only on one that left the screen; a
+      // pointer anchor closes when the scrolled box is under the point (or is the page).
+      const a = anchorRef.current;
+      let at = "element" in a ? a.element.getBoundingClientRect() : null;
+      let pending = 0;
       const onScroll = (e: Event) => {
-        if (menuRef.current?.contains(e.target as Node)) return;
-        onClose(false);
+        const t = e.target;
+        if (t instanceof Node && menuRef.current?.contains(t)) return;
+        if ("element" in a && at) {
+          if (pending) return;
+          // Two frames: a box nudged in one frame is put back by its owner's scroll handler in
+          // the next. A trigger still displaced after both has really moved: the menu FOLLOWS it
+          // while it is on screen, and closes once it is gone or scrolled out of view.
+          pending = requestAnimationFrame(() => {
+            pending = requestAnimationFrame(() => {
+              pending = 0;
+              const now = a.element.getBoundingClientRect();
+              const was = at;
+              if (was && Math.abs(now.left - was.left) <= 1 && Math.abs(now.top - was.top) <= 1) return;
+              const gone =
+                !a.element.isConnected ||
+                now.bottom < 0 ||
+                now.top > window.innerHeight ||
+                now.right < 0 ||
+                now.left > window.innerWidth;
+              if (gone) {
+                onClose(false);
+                return;
+              }
+              at = now;
+              place();
+            });
+          });
+          return;
+        }
+        if (!(t instanceof Element) || t === document.documentElement || t === document.body) {
+          onClose(false);
+          return;
+        }
+        const r = t.getBoundingClientRect();
+        if ("point" in a && a.point.x >= r.left && a.point.x <= r.right && a.point.y >= r.top && a.point.y <= r.bottom)
+          onClose(false);
       };
       const onResize = () => onClose(false);
       // capture: the sidebar list scrolls its own box, not the window
       window.addEventListener("scroll", onScroll, true);
       window.addEventListener("resize", onResize);
       detachViewport = () => {
+        if (pending) cancelAnimationFrame(pending);
         window.removeEventListener("scroll", onScroll, true);
         window.removeEventListener("resize", onResize);
       };
@@ -190,13 +240,13 @@ export function MenuPopover({
       document.removeEventListener("pointerdown", onPointerDown);
       detachViewport();
     };
-  }, [onClose, ownerRef]);
+  }, [onClose, ownerRef, place]);
 
   const onMenuKeyDown = (e: React.KeyboardEvent) => {
     const focusable = itemRefs.current.filter(Boolean) as HTMLButtonElement[];
     const cur = focusable.indexOf(document.activeElement as HTMLButtonElement);
     const focusAt = (i: number) =>
-      focusable[(i + focusable.length) % focusable.length]?.focus();
+      focusable[(i + focusable.length) % focusable.length]?.focus({ preventScroll: true });
     switch (e.key) {
       case "ArrowDown":
         e.preventDefault();

@@ -127,15 +127,16 @@ test("section buttons share the brand row and keep their own declared typography
     expect(hb.height, `header at ${width}`).toBeLessThanOrEqual(52);
     // THE NAV'S OWN VALUES (#967). They were pinned to the mission Send's mono type (#944/#946); that
     // Send is now the session pane's Send, so the look is asserted as the values App.css declares:
-    // --font-mono at 0.68rem and weight 400, 0.1em tracking, uppercase, 44px. Drift in the nav, or in
-    // the tokens behind it, fails here.
+    // --font-mono at --fs-micro (the NIGHTJAR type scale, #1531) and weight 400, 0.1em tracking,
+    // uppercase, 44px. Drift in the nav, or in the tokens behind it, fails here.
     const declared = await page.evaluate(() => {
       const probe = document.createElement("span");
       probe.style.fontFamily = "var(--font-mono)";
+      probe.style.fontSize = "var(--fs-micro)";
       document.body.append(probe);
       const family = getComputedStyle(probe).fontFamily;
+      const size = parseFloat(getComputedStyle(probe).fontSize);
       probe.remove();
-      const size = parseFloat(getComputedStyle(document.documentElement).fontSize) * 0.68;
       return { family, size, spacing: size * 0.1 };
     });
     // EVERY SECTION (#1058), in the #1294 order: Dashboard leads, Library closes, and the map

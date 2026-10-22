@@ -5,7 +5,7 @@
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.55);
-  z-index: 60;
+  z-index: calc(var(--z-shell) + 10);
 }
 
 .panel {
@@ -19,7 +19,7 @@
   flex-direction: column;
   background: var(--panel);
   border-right: 1px solid var(--line-strong);
-  z-index: 61;
+  z-index: calc(var(--z-shell) + 11);
 }
 
 .head {

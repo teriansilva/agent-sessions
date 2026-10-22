@@ -1,6 +1,6 @@
 /* The operator menu's panel and rows. Born as the `?` Help menu (#987), whose items moved into the
- * operator menu in #1085: the anchored panel the mission `⋯` draws (`mission.module.css`
- * .overflowMenu) and RowMenu's rows. Flat fill, hairline border, zero radius — `docs/design.md`. */
+ * operator menu in #1085. On THE menu chrome (ui/menu.module.css, NIGHTJAR #1531): this sheet keeps
+ * placement and the two-line row layout; at ≤800px AnchoredMenu draws it as the bottom sheet. */
 
 .wrap {
   position: relative;
@@ -11,17 +11,12 @@
   position: absolute;
   right: 0;
   top: calc(100% + 4px);
-  /* The top-bar panel is portalled into <body> (`AnchoredMenu` `portal`), where it has to clear the
-   * app shell's own layers — the notification bell's panel uses the same 60. */
-  z-index: 60;
+  /* Portalled into <body> from the top bar, where it has to clear the app shell's own layers —
+   * the notification bell's panel uses the same layer. */
+  z-index: calc(var(--z-shell) + 10);
   min-width: 240px;
   width: max-content;
   max-width: min(320px, calc(100vw - 16px));
-  border: 1px solid var(--line-strong);
-  background: var(--bg-2);
-  padding: 4px 0;
-  /* The elevation cue is the border and the ground change, never a shadow gradient. */
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
 }
 
 /* In the drawer the `?` is the leftmost action, so the panel opens to its right and stays inside. */
@@ -41,14 +36,13 @@
 }
 
 .item {
-  composes: item from "../sidebar/RowMenu.module.css";
+  composes: item from "../ui/menu.module.css";
   /* The coarse-pointer floor, as everywhere else. */
   min-height: 44px;
-  text-decoration: none;
 }
 
 .icon {
-  composes: itemIcon from "../sidebar/RowMenu.module.css";
+  composes: itemIcon from "../ui/menu.module.css";
 }
 
 .label {
@@ -59,13 +53,13 @@
 }
 
 .sub {
-  font-size: 11px;
-  color: var(--text-3, var(--text-muted));
+  font-size: var(--fs-label);
+  color: var(--text-3);
 }
 
 .trail {
   display: flex;
   margin-left: auto;
-  padding-left: 12px;
-  color: var(--text-3, var(--text-muted));
+  padding-left: var(--sp-3);
+  color: var(--text-3);
 }

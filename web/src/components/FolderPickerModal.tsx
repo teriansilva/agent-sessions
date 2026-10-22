@@ -1,8 +1,11 @@
-import { ChevronRight, FolderPlus, House } from "lucide-react";
+import { ChevronRight, FolderPlus, House, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api, ApiError } from "../lib/api";
 import type { FsDir } from "../types/api";
+import dlg from "./HudDialog.module.css";
 import styles from "./FolderPickerModal.module.css";
+import { useFocusContainment } from "./pulse/useModalDrawer";
 
 /** Pick a folder from the filesystem, rooted at `~/` (#448). Browse by navigating into
  *  subdirectories (breadcrumb to jump back up), `Select this folder` returns the current path, and
@@ -11,7 +14,11 @@ import styles from "./FolderPickerModal.module.css";
  *  is realpath-contained under home; this component only ever shows what the server returns.
  *
  *  Accessibility mirrors MoveToProjectModal: `role="dialog"`, `aria-modal`, labelled title, focus
- *  moves in on open + returns to the trigger on close, Esc + backdrop cancel. */
+ *  moves in on open + returns to the trigger on close, Tab contained, Esc + backdrop cancel.
+ *
+ *  THE dialog (#1531): on the HudDialog chrome, a bottom sheet at ≤800px, and portalled to <body> —
+ *  rendered in place, its fixed backdrop was trapped by any host that is a containing block for
+ *  `position: fixed` (the sidebar, a pane, the wizard), like MoveToProjectModal's was (#948). */
 export function FolderPickerModal({
   initialPath,
   title = "Choose a folder",
@@ -32,6 +39,8 @@ export function FolderPickerModal({
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
   const firstRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  useFocusContainment({ active: true, panelRef: dialogRef });
 
   const browse = useCallback((path?: string) => {
     setDirs(null);
@@ -65,14 +74,17 @@ export function FolderPickerModal({
   // Restore focus to the trigger on unmount + global Esc to cancel.
   useEffect(() => () => returnFocusTo?.focus?.(), [returnFocusTo]);
   useEffect(() => {
+    // Owned in the capture phase: the topmost surface answers Escape, so the host (a drawer, the
+    // wizard) never closes on the same key.
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
+        e.stopPropagation();
         onCancel();
       }
     };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
   }, [onCancel]);
 
   // Breadcrumb: home + each path segment below it, each clickable to jump up.
@@ -104,18 +116,25 @@ export function FolderPickerModal({
   };
 
   const titleId = "folder-picker-title";
-  return (
-    <div className={styles.backdrop} onMouseDown={onCancel}>
+  return createPortal(
+    <div className={dlg.backdrop} onMouseDown={onCancel}>
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={styles.dialog}
+        className={`${dlg.dialog} ${dlg.narrow}`}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <h3 id={titleId} className={styles.title}>
-          {title}
-        </h3>
+        <div className={dlg.head}>
+          <h3 id={titleId} className={`${dlg.tag} ${styles.title}`}>
+            {title}
+          </h3>
+          <button type="button" className={dlg.close} onClick={onCancel} aria-label="Close folder picker">
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
 
         <div className={styles.crumbs} aria-label="Current folder">
           <button
@@ -145,11 +164,11 @@ export function FolderPickerModal({
           ))}
         </div>
 
-        {error && <p className={styles.error}>{error}</p>}
+        {error && <p className={`${dlg.error} ${styles.error}`}>{error}</p>}
         {dirs === null ? (
-          <p className={styles.empty}>Loading…</p>
+          <p className={`${dlg.muted} ${styles.empty}`}>Loading…</p>
         ) : dirs.length === 0 ? (
-          <p className={styles.empty}>No subfolders here.</p>
+          <p className={`${dlg.muted} ${styles.empty}`}>No subfolders here.</p>
         ) : (
           <ul className={styles.list}>
             {dirs.map((d) => (
@@ -181,7 +200,7 @@ export function FolderPickerModal({
         >
           <input
             type="text"
-            className={styles.mkInput}
+            className={`${dlg.input} ${styles.mkInput}`}
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             placeholder="new folder name"
@@ -190,20 +209,20 @@ export function FolderPickerModal({
           />
           <button
             type="submit"
-            className={styles.mkBtn}
+            className={`${dlg.cancel} ${styles.mkBtn}`}
             disabled={creating || !newName.trim()}
           >
             <FolderPlus size={13} aria-hidden="true" /> Create
           </button>
         </form>
 
-        <div className={styles.actions}>
-          <button type="button" className={styles.cancel} onClick={onCancel}>
+        <div className={dlg.actions}>
+          <button type="button" className={dlg.cancel} onClick={onCancel}>
             Cancel
           </button>
           <button
             type="button"
-            className={styles.select}
+            className={`${dlg.go} ${styles.select}`}
             onClick={() => onPick(cwd)}
             disabled={dirs === null || !cwd}
           >
@@ -211,6 +230,7 @@ export function FolderPickerModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

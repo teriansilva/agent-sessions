@@ -20,13 +20,6 @@ const hexToRgb = (hex: string) => {
   return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
 };
 
-/** Trailing alpha of a computed colour — works for both `rgba(r, g, b, a)` and
- *  `color(srgb r g b / a)` serializations of a translucent color-mix. */
-const alphaOf = (color: string) => {
-  const m = color.match(/([\d.]+)\)$/);
-  return m ? Number(m[1]) : NaN;
-};
-
 /** Background of the nearest painted ancestor of the xterm rows — the surface that shows
  *  through in the slack FitAddon leaves below the last row (the #473 "dark band"). */
 const surfaceBehindTerminal = (page: Page) =>
@@ -52,6 +45,32 @@ const ansiSpan = (page: Page, marker: string) =>
 test.beforeEach(async ({ page }) => {
   await throttleIfAsked(page);
 });
+
+/** The NIGHTJAR v2 bars (#1531, docs/design.md §5), in either theme: opaque --bg-1 surfaces, the
+ *  top bar closed by the lit --hud rail and the footer opened by the --hud-dim edge. They read as
+ *  distinct surfaces by that edge, not by translucency over the work below. The expected colours
+ *  are resolved from the live tokens, because --hud follows the operator's accent. */
+async function expectNightjarBars(page: Page) {
+  const resolve = (v: string) =>
+    page.evaluate((value) => {
+      const probe = document.createElement("i");
+      probe.style.color = value;
+      document.body.append(probe);
+      const out = getComputedStyle(probe).color;
+      probe.remove();
+      return out;
+    }, v);
+  const topbar = page.locator(".hud-topbar");
+  const classbar = page.locator(".hud-classbar");
+  await expect(topbar).toHaveCSS("border-bottom-color", await resolve("var(--hud)"));
+  await expect(classbar).toHaveCSS("border-top-color", await resolve("var(--hud-dim)"));
+  for (const bar of [topbar, classbar]) {
+    // Opaque: the --bg-1 colour itself (an `rgb()`, no alpha), never a translucent mix.
+    const bg = await bar.evaluate((el) => getComputedStyle(el).backgroundColor);
+    expect(bg).toBe(await resolve("var(--bg-1)"));
+    expect(bg.startsWith("rgb(")).toBe(true);
+  }
+}
 
 async function openBench(page: Page, theme: "dark" | "light") {
   // This fixture measures colors; the generic resize repaint would erase its injected sample.
@@ -82,34 +101,21 @@ test.describe("light theme (#473)", () => {
 
   test("topbar + classbar read as distinct surfaces", async ({
     page,
-  }, testInfo) => {
+  }) => {
     await openBench(page, "light");
-    const topbar = page.locator(".hud-topbar");
-    const classbar = page.locator(".hud-classbar");
-    // The separating edge is the opaque --border (light #c9ccd2), not the 12% --line hairline.
-    await expect(topbar).toHaveCSS("border-bottom-color", hexToRgb("#c9ccd2"));
-    await expect(classbar).toHaveCSS("border-top-color", hexToRgb("#c9ccd2"));
-    // Telemetry tags lift one step: --text-3 → --text-2 (#41454d).
-    await expect(classbar.locator(".hud-tag").first()).toHaveCSS(
+    await expectNightjarBars(page);
+    // Light tags are the darker --text-2 (#41454d), readable on the light --bg-1.
+    await expect(page.locator(".hud-classbar .hud-tag").first()).toHaveCSS(
       "color",
       hexToRgb("#41454d"),
-    );
-    // Chrome fill: desktop rises 55% → 92%; mobile keeps the #228 96% degrade (the light
-    // override is desktop-scoped so it must NOT beat the mobile rule's near-opaque fill).
-    const alpha = alphaOf(
-      await topbar.evaluate((el) => getComputedStyle(el).backgroundColor),
-    );
-    expect(alpha).toBeCloseTo(
-      testInfo.project.name === "mobile" ? 0.96 : 0.92,
-      2,
     );
   });
 });
 
 test.describe("dark theme stays as-is (#473 sanity)", () => {
-  test("terminal surface + ANSI palette + chrome are unchanged", async ({
+  test("terminal surface + ANSI palette are unchanged; the chrome is the v2 bars", async ({
     page,
-  }, testInfo) => {
+  }) => {
     await openBench(page, "dark");
     // Surface = the dark xterm canvas bg (#0d0e10; was the visually identical #0e0e0e).
     expect(await surfaceBehindTerminal(page)).toBe(hexToRgb("#0d0e10"));
@@ -120,22 +126,11 @@ test.describe("dark theme stays as-is (#473 sanity)", () => {
     await expect(ansiSpan(page, "GRN32")).toHaveCSS("color", hexToRgb("#4e9a06"));
     await expect(ansiSpan(page, "YLW33")).toHaveCSS("color", hexToRgb("#c4a000"));
     await expect(ansiSpan(page, "CYN36")).toHaveCSS("color", hexToRgb("#06989a"));
-    // Chrome keeps the dark frosted look: --line edge, --text-3 tags, 55%/96% fill.
-    const topbar = page.locator(".hud-topbar");
-    await expect(topbar).toHaveCSS(
-      "border-bottom-color",
-      "rgba(255, 255, 255, 0.08)",
-    );
+    // The chrome is the NIGHTJAR v2 bars (docs/design.md §5), the same contract as light.
+    await expectNightjarBars(page);
     await expect(page.locator(".hud-classbar .hud-tag").first()).toHaveCSS(
       "color",
-      hexToRgb("#6f747d"),
-    );
-    const alpha = alphaOf(
-      await topbar.evaluate((el) => getComputedStyle(el).backgroundColor),
-    );
-    expect(alpha).toBeCloseTo(
-      testInfo.project.name === "mobile" ? 0.96 : 0.55,
-      2,
+      hexToRgb("#a7abb3"),
     );
   });
 });

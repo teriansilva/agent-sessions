@@ -45,7 +45,16 @@ from pathlib import Path
 
 import httpx
 
-from . import assessment, metadata, prefs, prompts, scrollback, template_secrets, transcript
+from . import (
+    assessment,
+    hq_usage,
+    metadata,
+    prefs,
+    prompts,
+    scrollback,
+    template_secrets,
+    transcript,
+)
 
 # Output field caps — server-owned, applied AFTER parsing so an over-long model reply is
 # truncated rather than rejected (the shape is the contract; the length is hygiene).
@@ -1322,6 +1331,9 @@ async def _post_chat(
     inventory in ``tests/test_prompts_registry.py``'s ``POST_SITES``.
     """
     _assert_registered_system_prompts(body.get("messages") or [])
+    # HQ's calls are marked by HQ's pipeline (`hq_usage.hq_call`), never inferred from the prompt
+    # text: identical registry texts would otherwise count another feature's call (#1531).
+    hq = hq_usage.in_hq_call()
     # Secret template values (#1090 Phase 2) never ride to the endpoint: once a secret is pasted
     # into a session it is in that session's transcript and screen, which every prompt here may
     # read. Redacted HERE — the one transport — so it holds for every prompt, current or future,
@@ -1343,6 +1355,7 @@ async def _post_chat(
         async with _request_payload(attempt, cfg, admission) as payload:
             r = await client.post(url, **payload)
         if r.status_code not in _JSON_MODE_REFUSED:
+            _note_hq_usage(hq, body, r)
             return r
         # A refusal names no field, so the degrade is ORDERED and each step isolates exactly
         # one. Drop the thinking option first: if the retry then succeeds, that field was the
@@ -1354,6 +1367,7 @@ async def _post_chat(
                 r = await client.post(url, **payload)
             if r.status_code not in _JSON_MODE_REFUSED:
                 _thinking_refused.add(key)
+                _note_hq_usage(hq, body, r)
                 return r
             # Still refused with the thinking option already gone. That proves something about
             # `response_format` and NOTHING about a field absent from this request, so the memo
@@ -1368,6 +1382,7 @@ async def _post_chat(
             _assert_registered_system_prompts(attempt.get("messages") or [])
             async with _request_payload(attempt, cfg, admission) as payload:
                 r = await client.post(url, **payload)
+        _note_hq_usage(hq, body, r)
         return r
 
 
@@ -1413,6 +1428,18 @@ def _assert_registered_system_prompts(messages: list[dict]) -> None:
                 "refusing to send a system prompt that did not come from the registry — "
                 "every system message must be prompts.effective('<id>') (#824)"
             )
+
+
+def _note_hq_usage(hq: bool, body: dict, r) -> None:
+    """Count an HQ call's tokens from the response this transport already has (#1531). Numbers
+    only; best-effort — telemetry never fails or alters a model call."""
+    if not hq or getattr(r, "status_code", None) != 200:
+        return
+    try:
+        p, t, est = hq_usage.usage_from(r.json(), body.get("messages") or [], body.get("tools"))
+        hq_usage.record(p, t, est)
+    except Exception:  # noqa: BLE001 — a malformed body is the caller's to report, not ours
+        return
 
 
 async def complete_json(messages: list[dict], *, model: str | None = None) -> dict:

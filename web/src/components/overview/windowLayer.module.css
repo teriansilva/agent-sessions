@@ -9,7 +9,7 @@
   right: 0;
   bottom: 0;
   left: 0;
-  z-index: 5; /* over the canvas, under the toolbar (z 6) */
+  z-index: calc(var(--z-raised) + 4); /* over the canvas, under the toolbar (z 6) */
   pointer-events: none;
 }
 
@@ -60,7 +60,7 @@
   position: absolute;
   bottom: 40px;
   left: 50%;
-  z-index: 19;
+  z-index: calc(var(--z-dock) + 9);
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
@@ -130,7 +130,7 @@
   position: absolute;
   bottom: 84px;
   left: 50%;
-  z-index: 20;
+  z-index: var(--z-pane-overlay);
   padding: 6px 10px;
   font-size: 11.5px;
   color: var(--text);

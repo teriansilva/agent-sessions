@@ -1,4 +1,4 @@
-/* The wizard shell (#1187). Tokens only, no radius, no gradient (design.md §9). Desktop: a step
+/* The wizard shell (#1187, NIGHTJAR #1531). Tokens only, no radius (design.md §9). Desktop: a step
  * rail beside the step body. ≤800px: the rail gives way to a progress bar above it — a rail of five
  * labelled steps does not fit 320px, and a phone reads "step 2 of 5" faster anyway. */
 
@@ -27,14 +27,26 @@
   max-width: 1120px;
 }
 
+/* The callsign kicker: a hazard notch, then the wizard's name in display caps. */
 .kicker {
   grid-area: kicker;
-  font-family: var(--font-mono);
-  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
   font-weight: 600;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--text-3);
+}
+.kicker::before {
+  content: "";
+  flex: none;
+  width: 22px;
+  height: 10px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.85;
 }
 
 /* ---- rail (desktop) ---- */
@@ -58,7 +70,7 @@
   padding: 0 12px;
   font: inherit;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   text-align: left;
@@ -76,8 +88,8 @@ button.railItem:hover {
   color: var(--text);
 }
 button.railItem:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .num {
   font-variant-numeric: tabular-nums;
@@ -90,10 +102,11 @@ button.railItem:focus-visible {
   color: var(--text);
 }
 .current .railItem {
-  border-left-color: var(--accent);
+  border-left-color: var(--hud);
+  background: color-mix(in srgb, var(--hud) 10%, transparent);
 }
 .current .num {
-  color: var(--accent-text);
+  color: var(--hud-text);
 }
 .todo {
   color: var(--text-3);
@@ -105,7 +118,7 @@ button.railItem:focus-visible {
 }
 .progressText {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-label);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-2);
@@ -116,9 +129,15 @@ button.railItem:focus-visible {
   height: 3px;
   background: var(--line);
 }
+/* The fill is a scaled bar, never an animated width (design.md: no box geometry; progress fills
+ * are on the scale list), and it moves only in Full — Reduced and Off jump to the step. */
 .fill {
   height: 100%;
-  background: var(--accent);
+  background: var(--hud);
+  transform-origin: left center;
+}
+:root[data-motion="full"] .fill {
+  transition: transform var(--t-base) var(--ease-out);
 }
 
 /* ---- body + nav ---- */
@@ -131,15 +150,18 @@ button.railItem:focus-visible {
 }
 .heading {
   margin: 0;
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--text);
+  font-family: var(--font-display);
+  font-size: var(--fs-readout-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--hud-text);
 }
 .heading:focus {
   outline: none;
 }
 .heading:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: 4px;
 }
 .nav {
@@ -152,7 +174,7 @@ button.railItem:focus-visible {
   border-top: 1px solid var(--line);
 }
 .nextNote {
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   color: var(--danger-text);
 }
 .secondary {
@@ -187,6 +209,6 @@ button.railItem:focus-visible {
     grid-area: progress;
   }
   .heading {
-    font-size: 18px;
+    font-size: var(--fs-h2);
   }
 }

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { clickHeadAction, FILES_ACTION } from "./headActions";
 import { openLinksFullScreen } from "./linkMode";
+import { animationsSettled } from "./nightjarShell";
 
 /** Uploading into the browsed directory (#807) — real-browser proof, desktop AND mobile.
  *
@@ -162,6 +163,8 @@ async function openPanel(page: Page, opts: Opts = {}) {
   await clickHeadAction(page, FILES_ACTION);
   await expect(page.locator("[data-file-panel]")).toBeVisible();
   await expect(page.locator("[data-file-tree]")).toBeVisible();
+  // On a phone the panel is a sheet that slides up (#1531): measure and tap it once it has landed.
+  await animationsSettled(page);
 }
 
 /** Pick files through the REAL `<input type=file>` behind the Upload menu. */
@@ -417,6 +420,8 @@ test.describe("coarse pointer", () => {
     await pickFiles(page, [oneFile("a.txt")]);
     const skip = page.locator("[data-collision='skip']");
     await expect(skip).toBeVisible();
+    // The prompt slides in on a phone (#1531): tap its corner where it lands.
+    await animationsSettled(page);
     const box = (await skip.boundingBox())!;
     expect(box.height).toBeGreaterThanOrEqual(44);
     // Tap the inset corner: a 44px box can measure fine while the tap routes to the neighbouring

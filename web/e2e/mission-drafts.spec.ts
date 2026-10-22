@@ -377,6 +377,9 @@ test("D5: an edit that lost the race to its draft sends nothing, keeps the text,
   await page.getByTestId("draft-edit").click();
   const block = composer(page);
   const input = block.getByTestId("relay-input");
+  // Edit INSERTS the draft into the box; filling before it lands left the draft appended to the
+  // edit (a race CI caught). Wait for it, as D4 does, then replace it.
+  await expect(input).toHaveValue(DRAFT_TEXT);
   await input.fill(EDITED);
   await block.getByTestId("relay-send").click();
 

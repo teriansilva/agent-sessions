@@ -1,52 +1,69 @@
-/* Ask's cards (#1443 Phase 2) — the reviewed mockup's `.card` family, on the app's tokens. A raised
- * surface inside the turn: square, 1px rule, no colour of its own. The one filled control is the
- * effect; state is an LED plus a word, never colour alone (docs/design.md). */
+/* HQ's cards (#1443 Phase 2, NIGHTJAR #1531): the question, proposal and session cards inside a
+ * turn, and the follow / update rows between turns. A card is a chamfered plate (`nj-frame-sm` on
+ * --bg-2, the rail along its top) that deploys in (fade + rise, never a scale); its head is a
+ * callsign (notch + display caps); its one filled control is the effect (the shared primary); state
+ * is an LED plus a word, never colour alone, and an LED flashes once when its state changes
+ * (`Led`). Tokens only. Overrides of the frame's own custom properties use doubled selectors so
+ * they win whatever order the stylesheets load in. */
 
 .card {
-  margin-top: 10px;
-  border: 1px solid var(--line-strong);
-  background: var(--bg-2);
+  composes: nj-frame-sm nj-deploy nj-fade-ok from global;
+  margin-top: var(--sp-3);
 }
-.edgeWarn {
+.card.card {
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--line-strong);
+}
+.edgeWarn.edgeWarn {
   border-left: 3px solid var(--status-degraded);
 }
-.edgeBad {
+.edgeBad.edgeBad {
   border-left: 3px solid var(--status-down);
 }
 
+/* The callsign head: a hazard notch, the kind in display caps, the state on the right. */
 .head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
   border-bottom: 1px solid var(--line);
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--text-2);
+  color: var(--text-1);
+}
+.head::before {
+  content: "";
+  flex: none;
+  width: 18px;
+  height: 8px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.85;
 }
 .k {
-  color: var(--text-3);
-  font-weight: 600;
+  color: var(--text-1);
 }
 .st {
   margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
   font-weight: 600;
-  color: var(--text-3);
-  letter-spacing: 0.08em;
+  color: var(--hud-text);
+  letter-spacing: 0.12em;
 }
 
 .body {
-  padding: 10px;
+  padding: var(--sp-3);
 }
 .muted {
   opacity: 0.72;
 }
 .lead {
-  margin: 0 0 8px;
-  font-size: 0.95rem;
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-row);
   line-height: 1.45;
   font-weight: 600;
   color: var(--text-1);
@@ -55,15 +72,15 @@
 .kv {
   display: grid;
   grid-template-columns: 76px minmax(0, 1fr);
-  gap: 5px 10px;
+  gap: 5px var(--sp-3);
   margin: 0;
-  font-size: 0.85rem;
+  font-size: var(--fs-meta);
 }
 .kv dt {
   padding-top: 3px;
   font-family: var(--font-mono);
-  font-size: 0.66rem;
-  letter-spacing: 0.1em;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-3);
 }
@@ -75,20 +92,21 @@
 }
 
 .blockLabel {
-  margin: 10px 0 4px;
+  margin: var(--sp-3) 0 var(--sp-1);
   font-family: var(--font-mono);
-  font-size: 0.66rem;
-  letter-spacing: 0.1em;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-3);
 }
-/* The nudge's exact bytes, verbatim: mono, inset well, nothing elided. */
+/* The nudge's exact bytes, verbatim: mono, an inset well, nothing elided. */
 .verbatim {
-  padding: 8px 10px;
+  padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--line);
+  border-left: 2px solid var(--hud-dim);
   background: var(--surface-3);
   font-family: var(--font-mono);
-  font-size: 0.78rem;
+  font-size: var(--fs-label);
   line-height: 1.55;
   color: var(--text-1);
   white-space: pre-wrap;
@@ -96,10 +114,10 @@
 }
 .note {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
   align-items: flex-start;
-  margin-top: 8px;
-  font-size: 0.8rem;
+  margin-top: var(--sp-2);
+  font-size: var(--fs-label);
   line-height: 1.45;
   color: var(--text-2);
 }
@@ -112,45 +130,37 @@
 .actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  padding: 10px;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
   border-top: 1px solid var(--line);
 }
-.cta,
-.ghost,
+/* The effect is the shared primary; the rest are the shared ghost (#967). */
+.cta {
+  composes: primary from "../ui/actionButton.module.css";
+}
+.ghost {
+  composes: ghost from "../ui/actionButton.module.css";
+}
+/* An answer option: a chamfered plate that lights its edge on hover. */
 .opt {
+  composes: nj-plate from global;
   display: inline-flex;
   align-items: center;
   gap: 6px;
   min-height: 44px;
-  padding: 0 14px;
+  padding: 0 var(--sp-3);
+  border: 1px solid transparent;
+  color: var(--text-1);
+  font-size: var(--fs-meta);
   cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out);
 }
-.cta {
-  border: 0;
-  background: var(--cta-bg-1);
-  color: var(--cta-text);
-  font-weight: 700;
-  font-size: 0.85rem;
+.opt.opt {
+  --nj-face: var(--bg-1);
+  --nj-edge: var(--line-strong);
 }
-.ghost {
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--text-1);
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-.opt {
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--text-1);
-  font-size: 0.85rem;
-}
-.opt:hover:not(:disabled) {
-  border-color: var(--accent);
+.opt.opt:hover:not(:disabled) {
+  --nj-edge: var(--hud);
 }
 .cta:disabled,
 .ghost:disabled,
@@ -158,68 +168,58 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
-/* design.md §8: focus is a 2px accent reticle, never the UA ring. */
-.cta:focus-visible,
-.ghost:focus-visible,
+/* Focus is the inset reticle (docs/design.md v2 §6): the chamfer would clip an outer ring. */
 .opt:focus-visible,
-.freeRow input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+.freeRow input:focus-visible,
+.switchRow input:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 
 .opts {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 .freeRow {
   display: flex;
-  gap: 8px;
-  margin-top: 8px;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
 }
+/* The free-text answer: the `nj-field` look (composes cannot reach a descendant selector). */
 .freeRow input {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 44px;
-  padding: 0 10px;
-  border: 1px solid var(--line-strong);
-  background: var(--surface-3);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  background: var(--bg-1);
   color: var(--text-1);
-  font-size: 0.85rem;
+  font-size: var(--fs-meta);
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.freeRow input:hover {
+  border-color: var(--hud-dim);
+}
+.freeRow input:focus {
+  border-color: var(--hud);
 }
 
-/* The outcome row replaces the actions once decided. */
+/* The outcome row replaces the actions once decided: an LED (the `Led` primitive, which flashes
+ * once on a change) and the outcome's word in its AA text tone. */
 .outcome {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px 10px;
-  padding: 8px 10px;
+  gap: 6px var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
   border-top: 1px solid var(--line);
-}
-.led {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-}
-.led_ok {
-  background: var(--status-up);
-}
-.led_warn {
-  background: var(--status-degraded);
-}
-.led_bad {
-  background: var(--status-down);
-}
-.led_neutral {
-  background: var(--status-unknown);
 }
 .ow {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
 }
 .ow_ok {
@@ -237,7 +237,7 @@
 .od {
   flex: 1 1 140px;
   min-width: 0;
-  font-size: 0.82rem;
+  font-size: var(--fs-label);
   color: var(--text-2);
 }
 
@@ -246,10 +246,10 @@
 .switchRow {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: var(--sp-3);
   min-height: 44px;
-  margin-top: 10px;
-  padding: 8px 10px;
+  margin-top: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--line);
   cursor: pointer;
 }
@@ -260,10 +260,6 @@
   margin: 2px 0 0;
   accent-color: var(--accent);
 }
-.switchRow input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
 .switchText {
   display: flex;
   flex-direction: column;
@@ -272,51 +268,53 @@
 }
 .switchName {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-1);
 }
 .switchRisk {
-  font-size: 0.8rem;
+  font-size: var(--fs-label);
   line-height: 1.4;
   color: var(--text-2);
 }
 .ways {
   display: inline-flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--sp-2);
   margin-left: auto;
 }
 
-/* A followed session's update (#1443 Phase 4): a compact row between turns, no card around it. */
+/* A followed session's update (#1443 Phase 4): a compact row between turns, no card around it —
+ * hairlines and a HUD tick on its left edge. */
 .update {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px 10px;
-  margin: 10px 0;
-  padding: 8px 10px;
+  gap: 6px var(--sp-3);
+  margin: var(--sp-3) 0;
+  padding: var(--sp-2) var(--sp-3);
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
+  box-shadow: inset 2px 0 0 var(--hud-dim);
 }
 .updateBody {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 2px 10px;
+  gap: 2px var(--sp-3);
   flex: 1 1 200px;
   min-width: 0;
 }
 .updateTitle {
   min-width: 0;
   overflow-wrap: anywhere;
-  font-size: 0.85rem;
+  font-size: var(--fs-meta);
   color: var(--text-1);
 }
 
-/* ≤800px: actions stack full width at the 44px floor (design.md); cards take the column. */
+/* ≤800px: actions stack full width at the 44px floor; cards take the column. */
 @media (max-width: 800px) {
   .actions {
     flex-direction: column;
@@ -329,10 +327,10 @@
     grid-template-columns: 64px minmax(0, 1fr);
   }
 }
-/* A followed session's row (#1443 Phase 4): not a state, so a flat accent square, never an LED. */
+/* A followed session's row (#1443 Phase 4): not a state, so a flat HUD square, never an LED. */
 .bullet {
   width: 6px;
   height: 6px;
   flex: none;
-  background: var(--accent);
+  background: var(--hud);
 }

@@ -47,7 +47,7 @@ import sqlite3
 import time
 from collections.abc import AsyncIterator, Callable
 
-from . import engines, missions, prompts, pulse, review
+from . import engines, hq_usage, missions, prompts, pulse, review
 
 log = logging.getLogger(__name__)
 
@@ -357,18 +357,19 @@ async def _stage2_refine(
         return None
     user = {"question": query, "candidates": candidates}
     try:
-        obj = await review.complete_json(
-            [
-                {"role": "system", "content": prompts.effective("ask_verify")},
-                # Sanitized AT the sink, not upstream: bound_history's role gate (user/assistant
-                # only) is what keeps client-supplied turns from smuggling in a system message,
-                # and applying it here means that fact is readable from the call site — by a
-                # reviewer and by the registry ratchet. It is idempotent, so re-running it on
-                # already-bounded turns is free.
-                *bound_history(history),
-                {"role": "user", "content": json.dumps(user)},
-            ]
-        )
+        with hq_usage.hq_call():  # the footer's HQ token count (#1531)
+            obj = await review.complete_json(
+                [
+                    {"role": "system", "content": prompts.effective("ask_verify")},
+                    # Sanitized AT the sink, not upstream: bound_history's role gate (user /
+                    # assistant only) is what keeps client-supplied turns from smuggling in a
+                    # system message, and applying it here means that fact is readable from the
+                    # call site — by a reviewer and by the registry ratchet. It is idempotent, so
+                    # re-running it on already-bounded turns is free.
+                    *bound_history(history),
+                    {"role": "user", "content": json.dumps(user)},
+                ]
+            )
     except review.NotConfiguredError:
         raise  # config can't vanish mid-ask in practice, but never mask it as a degrade
     except review.ReviewError:
@@ -441,13 +442,14 @@ async def ask_events(
             *(_catalog_entry(c, now) for c in slice_),
         ],
     }
-    obj = await review.complete_json(
-        [
-            {"role": "system", "content": prompts.effective("ask_catalog")},
-            *bound_history(turns),
-            {"role": "user", "content": json.dumps(user)},
-        ]
-    )
+    with hq_usage.hq_call():  # the footer's HQ token count (#1531)
+        obj = await review.complete_json(
+            [
+                {"role": "system", "content": prompts.effective("ask_catalog")},
+                *bound_history(turns),
+                {"role": "user", "content": json.dumps(user)},
+            ]
+        )
     answer, matches = _validate_matches(obj, set(by_id))
     if not matches:
         yield {"type": "answer", "final": True, **_result(answer, [], by_id, "catalog")}

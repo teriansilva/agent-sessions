@@ -486,7 +486,12 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
       await expect(page.getByTestId("mission-replan")).toBeVisible();
     },
     async () => {
-      // REOPEN: a terminal mission. Same argument, other end of the lifecycle.
+      // REOPEN: a terminal mission. Same argument, other end of the lifecycle. The ⋯ menu above is
+      // a modal bottom sheet on a phone (#1531): close it as an operator would before going on.
+      if (await page.getByRole("menu").count()) {
+        await page.keyboard.press("Escape");
+        await expect(page.getByRole("menu")).toHaveCount(0);
+      }
       await openMissionRail(page);
       await page.locator('[data-testid="rail-mission"]:visible').nth(2).click();
       await page.keyboard.press("Escape");
@@ -562,6 +567,13 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
       const railNav = document.querySelector<HTMLElement>(
         'nav[aria-label="Missions" i]',
       );
+      const mOverflow = document.querySelector<HTMLElement>(
+        '[data-testid="mission-overflow-menu"]',
+      );
+      const unarchive =
+        document
+          .querySelector('[data-testid="mission-confirm-unarchive"]')
+          ?.closest<HTMLElement>('[role="dialog"]') ?? null;
       const railOnScreen =
         railNav !== null &&
         railNav.getBoundingClientRect().left >= 0 &&
@@ -572,6 +584,10 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
         // An objective row's ⋯ menu, while it is open (#967 P3). It is portalled to <body>, so it
         // is outside the console's subtree, and its items are this surface's controls.
         document.querySelector('[role="menu"][aria-label^="Actions for"]'),
+        // The mission's ⋯ menu and the unarchive choice, while open: both are portalled to <body>
+        // since #1531 (a phone sheet, THE dialog), so they are outside the console's subtree too.
+        mOverflow,
+        unarchive,
       ].filter(Boolean) as HTMLElement[];
       const bad: string[] = [];
       const names: string[] = [];
@@ -581,7 +597,12 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
       // with the drawer open, what is inside it. Asserting it unconditionally would fail on the
       // trap WORKING — which is exactly what happened when this kept looking for the console's
       // retired `rail-drawer` and found nothing, concluding no trap was open.
-      const trap = document.querySelector('aside.sidebar[role="dialog"]');
+      // The same holds for the modal surfaces portalled above it (#1531): the unarchive dialog, and
+      // the ⋯ menu where it is a modal sheet — with one open, the console behind it is inert.
+      const trap =
+        document.querySelector('aside.sidebar[role="dialog"]') ??
+        unarchive ??
+        (mOverflow?.hasAttribute("data-sheet") ? mOverflow : null);
       let focusChecked = 0;
       const els = roots.flatMap((r) =>
         Array.from(r.querySelectorAll<HTMLElement>(sel)),

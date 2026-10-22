@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -162,28 +162,76 @@ test("archive with a failed member shows the failed list and Retry re-calls the 
   expect(api.archiveProject).toHaveBeenLastCalledWith("p-1");
 });
 
-test("delete asks for confirmation (files-never-touched copy) before calling the API", async () => {
+test("delete asks in the shared confirm dialog (files-never-touched copy); confirming deletes (#1531)", async () => {
   const user = userEvent.setup();
-  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  const native = vi.spyOn(window, "confirm");
   vi.mocked(api.deleteProject).mockResolvedValue({ deleted: true, id: "p-1" });
   render(<Card />);
   await screen.findByText("SampleProject");
-  await user.click(
-    screen.getByRole("button", { name: "Delete project SampleProject" }),
-  );
-  expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/never touched/i));
+  await user.click(screen.getByRole("button", { name: "Delete project SampleProject" }));
+  const dialog = await screen.findByRole("dialog", { name: /Delete project “SampleProject”\?/ });
+  expect(dialog).toHaveTextContent(/never touched/i);
+  expect(native).not.toHaveBeenCalled(); // never the browser's own confirm
+  // Focus starts on the SAFE action.
+  expect(screen.getByRole("button", { name: /^cancel$/i })).toHaveFocus();
+  expect(api.deleteProject).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: /^delete project$/i }));
   expect(api.deleteProject).toHaveBeenCalledWith("p-1");
   await waitFor(() => expect(api.projectEntities).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 });
 
-test("a declined confirm aborts the delete", async () => {
+test("a successful delete removes the row it was opened from; focus lands on the section, not the body (#1531)", async () => {
   const user = userEvent.setup();
-  vi.spyOn(window, "confirm").mockReturnValue(false);
+  vi.mocked(api.deleteProject).mockResolvedValue({ deleted: true, id: "p-1" });
   render(<Card />);
   await screen.findByText("SampleProject");
-  await user.click(
-    screen.getByRole("button", { name: "Delete project SampleProject" }),
+  // The refresh after the delete no longer lists the project, so its Delete button unmounts.
+  vi.mocked(api.projectEntities).mockResolvedValue({ projects: [] } as never);
+  const trigger = screen.getByRole("button", { name: "Delete project SampleProject" });
+  trigger.focus();
+  await user.keyboard("{Enter}");
+  await screen.findByRole("dialog");
+  await user.click(screen.getByRole("button", { name: /^delete project$/i }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(trigger.isConnected).toBe(false);
+  expect(screen.getByRole("heading", { name: "Projects" })).toHaveFocus();
+});
+
+test("while a delete is pending, focus stays in the dialog — Tab included (#1531)", async () => {
+  // Hermes on #1560: busy disables every button, and a disabled button drops focus to the body —
+  // outside the modal — where Tab then walks the page behind it.
+  const user = userEvent.setup();
+  let resolve: (v: { deleted: boolean; id: string }) => void = () => {};
+  vi.mocked(api.deleteProject).mockImplementation(
+    () => new Promise((r) => (resolve = r as typeof resolve)),
   );
+  render(<Card />);
+  await screen.findByText("SampleProject");
+  await user.click(screen.getByRole("button", { name: "Delete project SampleProject" }));
+  const dialog = await screen.findByRole("dialog", { name: /Delete project “SampleProject”\?/ });
+  await user.click(screen.getByRole("button", { name: /^delete project$/i }));
+  await waitFor(() => expect(dialog).toHaveFocus());
+  expect(dialog).toHaveAttribute("aria-busy", "true");
+  await user.tab();
+  expect(dialog.contains(document.activeElement)).toBe(true);
+  await act(async () => resolve({ deleted: true, id: "p-1" }));
+});
+
+test("Cancel and Escape abort the delete and return focus to the trigger (#1531)", async () => {
+  const user = userEvent.setup();
+  render(<Card />);
+  await screen.findByText("SampleProject");
+  const trigger = screen.getByRole("button", { name: "Delete project SampleProject" });
+  await user.click(trigger);
+  await screen.findByRole("dialog");
+  await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(trigger).toHaveFocus();
+  await user.click(trigger);
+  await screen.findByRole("dialog");
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog")).toBeNull();
   expect(api.deleteProject).not.toHaveBeenCalled();
 });
 

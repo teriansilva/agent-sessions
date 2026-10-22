@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 
-import { runButtonGlitch, runDataFlow } from "./dataFlow";
+import { PAINT_MS, runButtonGlitch, runDataFlow } from "./dataFlow";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -184,4 +184,38 @@ test("runButtonGlitch arms no timer outside Full, and a live switch arms / clear
   stop();
   set.mockRestore();
   clear.mockRestore();
+});
+
+test("between two paints the loop waits on a timer and asks for no animation frame (#1531)", () => {
+  mockReducedMotion(false);
+  document.documentElement.dataset.motion = "full";
+  vi.useFakeTimers();
+  let pending: FrameRequestCallback | null = null;
+  const raf = vi.fn((cb: FrameRequestCallback) => {
+    pending = cb;
+    return 3;
+  });
+  vi.stubGlobal("requestAnimationFrame", raf);
+  vi.stubGlobal("cancelAnimationFrame", vi.fn());
+  const canvas = fakeCanvas();
+  const ctx = canvas.getContext("2d") as unknown as { fillRect: ReturnType<typeof vi.fn> };
+  const stop = runDataFlow(canvas);
+  expect(raf).toHaveBeenCalledTimes(1);
+
+  // The first frame paints, then the loop sleeps PAINT_MS without asking for frames: each frame it
+  // asked for would be a main-thread frame (style pass included) whether it painted or not.
+  const before = ctx.fillRect.mock.calls.length;
+  pending!(1000);
+  expect(ctx.fillRect.mock.calls.length).toBeGreaterThan(before);
+  expect(raf).toHaveBeenCalledTimes(1);
+  vi.advanceTimersByTime(PAINT_MS - 1);
+  expect(raf).toHaveBeenCalledTimes(1);
+  vi.advanceTimersByTime(1);
+  expect(raf).toHaveBeenCalledTimes(2);
+
+  // Stopping clears the pending wait too: no frame is asked for after teardown.
+  pending!(1000 + PAINT_MS);
+  stop();
+  vi.advanceTimersByTime(PAINT_MS * 4);
+  expect(raf).toHaveBeenCalledTimes(2);
 });

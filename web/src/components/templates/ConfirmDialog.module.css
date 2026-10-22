@@ -1,155 +1,75 @@
-/* Confirm dialog for the templates surfaces (#905). Same HUD vocabulary as the sent-messages
- * modal: near-black ground, square chrome, mono micro-labels, bottom sheet on mobile. */
+/* THE confirm dialog (#905, NIGHTJAR #1531): on THE dialog chrome (components/HudDialog.module.css),
+ * composed, never restated. What is its own: the title line, a body that scrolls between a fixed
+ * head and fixed actions (the confirm is always reachable, Hermes on #1484), and the destructive
+ * confirm, which is the one place red is filled. Tokens only. */
 
 .backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  background: rgba(0, 0, 0, 0.55);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
+  composes: backdrop from "../HudDialog.module.css";
+}
+/* A confirmation is the TOP of the stack (#1531): it can be raised from inside any sheet or viewer
+ * (the phone's file sheet sits at --z-dialog + 1, the viewer at --z-dialog-stack), and a confirm
+ * under its own opener cannot be answered. Doubled class: wins whatever the stylesheet order. */
+.backdrop.backdrop {
+  z-index: calc(var(--z-dialog-stack) + 5);
 }
 
 .dialog {
+  composes: dialog from "../HudDialog.module.css";
   width: min(460px, 100%);
-  background: var(--bg-1);
-  color: var(--text-1);
-  border: 1px solid var(--line-strong);
-  border-radius: 0;
-  padding: 15px 18px 16px;
-  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5);
-  /* Never taller than the screen: the head and the actions stay put and a long body scrolls
-     between them, so the confirm button is always reachable (Hermes on #1484). */
   display: flex;
   flex-direction: column;
   max-height: calc(100dvh - 40px);
+  overflow-y: hidden;
 }
 
 .head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 8px;
+  composes: head from "../HudDialog.module.css";
 }
 .tag {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--accent-text);
+  composes: tag from "../HudDialog.module.css";
 }
 .close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border: 1px solid var(--line);
-  background: transparent;
-  color: var(--text-2);
-  border-radius: 0;
-  cursor: pointer;
-}
-.close:hover,
-.close:focus-visible {
-  color: var(--accent-text);
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+  composes: close from "../HudDialog.module.css";
 }
 
 .title {
-  margin: 0 0 6px;
-  font-size: 0.95rem;
+  margin: 0 0 var(--sp-2);
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
   font-weight: 600;
+  letter-spacing: 0.04em;
   color: var(--text-1);
 }
 .body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  font-size: 12.5px;
+  font-size: var(--fs-row);
   line-height: 1.5;
   color: var(--text-2);
-  margin-bottom: 12px;
 }
 .body p {
-  margin: 0 0 6px;
+  margin: 0 0 var(--sp-2);
 }
 
 .actions {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-}
-.cancel,
-.confirm {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 34px;
-  padding: 0 14px;
-  border-radius: 0;
-  font: inherit;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  font-weight: 600;
-  cursor: pointer;
+  composes: actions from "../HudDialog.module.css";
+  flex: none;
 }
 .cancel {
-  background: transparent;
-  color: var(--text-1);
-  border: 1px solid var(--line-strong);
-}
-.cancel:hover {
-  background: var(--glass-strong);
+  composes: cancel from "../HudDialog.module.css";
 }
 .confirm {
-  background: var(--cta-bg-1);
-  color: var(--cta-text);
-  border: 1px solid transparent;
+  composes: go from "../HudDialog.module.css";
 }
-.confirm.danger {
-  background: transparent;
-  color: var(--status-down);
-  border-color: color-mix(in srgb, var(--status-down) 55%, transparent);
-}
-.confirm.danger:hover {
-  background: color-mix(in srgb, var(--status-down) 12%, transparent);
-}
-.cancel:disabled,
-.confirm:disabled {
-  opacity: 0.6;
-  cursor: default;
+/* A destructive confirm: filled red with `--on-danger` ink (AA in both modes). */
+.danger {
+  composes: danger from "../HudDialog.module.css";
 }
 
-/* Mobile (≤800px): a bottom sheet; both actions grow to a real touch target. */
 @media (max-width: 800px) {
-  .backdrop {
-    padding: 0;
-    align-items: flex-end;
-  }
   .dialog {
-    width: 100%;
-    border-left: 0;
-    border-right: 0;
-    border-bottom: 0;
-    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0));
     max-height: 100dvh;
-  }
-  .actions {
-    justify-content: stretch;
-  }
-  .cancel,
-  .confirm {
-    flex: 1;
-    min-height: 44px;
-  }
-  .close {
-    width: 44px;
-    height: 44px;
+    padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
   }
 }

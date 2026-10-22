@@ -20,6 +20,7 @@ import {
 } from "./mission-console";
 import { setupBench } from "./terminal/harness";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { animationsSettled } from "./nightjarShell";
 
 const T = 1_700_000_000;
 const ENGINE = "claude";
@@ -141,10 +142,26 @@ const BUTTON_KEYS = [
 async function buttonLook(el: Locator, keys = BUTTON_KEYS) {
   await el.page().mouse.move(0, 0);
   await expect(el).toBeVisible();
+  // At rest: a plate's face eases out of its hover colour over --t-fast after the pointer leaves.
+  await animationsSettled(el.page());
   return el.evaluate((node, keys) => {
     (document.activeElement as HTMLElement | null)?.blur?.();
     const s = getComputedStyle(node);
-    return Object.fromEntries(keys.map((k) => [k, s.getPropertyValue(k)]));
+    // A plate (#1531) paints its face and edge on ::after / ::before behind its text; its own
+    // background is transparent on purpose. Its look is read from the painted layers.
+    const face = getComputedStyle(node, "::after");
+    const edge = getComputedStyle(node, "::before");
+    const plate = face.content !== "none" && face.content !== "normal";
+    return Object.fromEntries(
+      keys.map((k) => [
+        k,
+        plate && k === "background-color"
+          ? face.backgroundColor
+          : plate && k.startsWith("border") && k.endsWith("color")
+            ? edge.backgroundImage
+            : s.getPropertyValue(k),
+      ]),
+    );
   }, keys);
 }
 

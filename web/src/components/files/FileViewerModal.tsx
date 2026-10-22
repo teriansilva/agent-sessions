@@ -1190,7 +1190,7 @@ export function FileViewerModal({
             data-close-confirm=""
           >
             <div className={styles.confirmHead}>
-              <span className="hud-tag">Unsaved edits</span>
+              <span className={styles.confirmTag}>Unsaved edits</span>
             </div>
             <p className={styles.confirmBody}>
               <strong>{name}</strong> has changes that are not saved.{" "}
@@ -1204,7 +1204,7 @@ export function FileViewerModal({
             <div className={styles.confirmRow}>
               <button
                 type="button"
-                className={`${styles.ctrlBtn} ${styles.ctrlBad}`}
+                className={styles.confirmBad}
                 onClick={discardAndLeave}
                 data-discard-close=""
               >
@@ -1213,7 +1213,7 @@ export function FileViewerModal({
               <button
                 ref={keepRef}
                 type="button"
-                className={styles.cta}
+                className={styles.confirmGo}
                 onClick={keepEditing}
                 data-keep-editing=""
               >

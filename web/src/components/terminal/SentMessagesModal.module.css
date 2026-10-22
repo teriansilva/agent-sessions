@@ -1,61 +1,26 @@
-/* Sent-messages recovery modal (#619). Same HUD vocabulary as the session brief (#481) and the
- * canonical tokens in index.css: near-black ground, phosphor-amber accent, mono micro-labels,
- * square chrome (no rounded corners, no gradients). Mobile reflows to a bottom sheet. */
+/* Sent-messages recovery modal (#619) on THE dialog (../HudDialog.module.css, NIGHTJAR #1531): the
+ * frame, head, close and the ≤800px bottom sheet are composed; this sheet holds the message rows,
+ * their badges and actions. Tokens only. */
 
 .backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  background: rgba(0, 0, 0, 0.55);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
+  composes: backdrop from "../HudDialog.module.css";
 }
 
 .dialog {
+  composes: dialog from "../HudDialog.module.css";
   width: min(460px, 100%);
   max-height: min(80vh, 660px);
-  overflow-y: auto;
-  background: var(--bg-1);
-  color: var(--text-1);
-  border: 1px solid var(--line-strong);
-  border-radius: 0;
-  padding: 15px 18px 16px;
-  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5);
 }
 
 .head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 9px;
+  composes: head from "../HudDialog.module.css";
 }
 /* The heading doubles as the dialog's accessible name, so it carries the accent, not --text-3. */
 .tag {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--accent-text);
+  composes: tag from "../HudDialog.module.css";
 }
 .close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border: 1px solid var(--line);
-  background: transparent;
-  color: var(--text-2);
-  border-radius: 0;
-  cursor: pointer;
-}
-.close:hover,
-.close:focus-visible {
-  color: var(--accent-text);
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+  composes: close from "../HudDialog.module.css";
 }
 
 .list {
@@ -78,7 +43,7 @@
 }
 .when {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-3);
@@ -87,7 +52,7 @@
  * unsent-draft blue (#477) — deliberately not a status hue: this is information, not an error. */
 .badge {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--status-draft);
@@ -98,7 +63,7 @@
 /* The ring is device-global (a fresh session has no id yet), so an entry can come from elsewhere. */
 .other {
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-3);
@@ -107,7 +72,7 @@
 /* Two-line preview: enough to recognise the message, never enough to bury the actions. */
 .body {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   line-height: 1.5;
   color: var(--text-1);
   white-space: pre-wrap;
@@ -121,7 +86,7 @@
 .attachments {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-3);
@@ -134,30 +99,37 @@
 /* 26px chips read as secondary next to the compose CTA; the mobile rule below lifts them to a
  * comfortable touch target. */
 .act {
+  composes: nj-plate from global;
+  --nj-face: color-mix(in srgb, var(--bg-2) 55%, transparent);
+  --nj-edge: var(--line-strong);
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 26px;
-  padding: 0 8px;
+  min-height: 32px;
+  padding: 0 var(--sp-3);
+  border: 1px solid transparent;
   font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.08em;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-2);
-  background: color-mix(in srgb, var(--bg-2) 55%, transparent);
-  border: 1px solid var(--line);
-  border-radius: 0;
   cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out);
 }
 .act:hover,
 .act:focus-visible {
   color: var(--accent-text);
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+  --nj-edge: var(--hud);
+}
+.act:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .primary {
+  --nj-face: color-mix(in srgb, var(--hud) 12%, transparent);
+  --nj-edge: var(--hud-dim);
   color: var(--accent-text);
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: var(--hud-dim);
 }
 
 .foot {
@@ -165,28 +137,23 @@
   padding-top: 9px;
   border-top: 1px solid var(--line);
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-3);
 }
 
-/* Mobile (≤800px): a bottom sheet; the row actions grow to a real touch target. */
-@media (max-width: 800px) {
-  .backdrop {
-    padding: 0;
-    align-items: flex-end;
-  }
-  .dialog {
-    width: 100%;
-    max-height: 82vh;
-    border-left: 0;
-    border-right: 0;
-    border-bottom: 0;
-    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0));
-  }
+/* Mobile (≤800px): the bottom sheet comes from the shared dialog; the row actions grow to a real
+ * touch target. */
+@media (pointer: coarse), (max-width: 800px) {
   .act {
-    height: 34px;
-    padding: 0 12px;
+    min-height: 44px;
+    padding: 0 var(--sp-3);
+  }
+}
+@media (max-width: 800px) {
+  .dialog {
+    max-height: 82vh;
+    padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
   }
 }

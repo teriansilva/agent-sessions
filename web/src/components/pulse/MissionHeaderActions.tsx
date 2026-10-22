@@ -55,14 +55,25 @@ import {
   Share2,
   Undo2,
 } from "lucide-react";
-import { useCallback, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
 
 import { ApiError, api } from "../../lib/api";
 import { missionLink } from "../../lib/missionLink";
 import { shareLink } from "../../lib/shareLink";
 import type { Mission } from "../../types/api";
 
+import dlg from "../HudDialog.module.css";
+import { useInertBehind } from "../templates/useInertBehind";
+import { useHoldFocusWhileBusy } from "../templates/useHoldFocusWhileBusy";
 import action from "../ui/actionButton.module.css";
+import { useFocusContainment } from "./useModalDrawer";
 import { MissionOverflow } from "./MissionOverflow";
 import { missionDotClass, missionStateLabel } from "./missionState";
 import styles from "./mission.module.css";
@@ -133,6 +144,9 @@ export function MissionHeaderActions({
   const [confirming, setConfirming] = useState<
     "abandon" | "archive" | "done" | "failed" | "unarchive" | null
   >(null);
+  /** The Unarchive button that opened the choice: focus goes back to it when the dialog closes. */
+  const [unarchiveTrigger, setUnarchiveTrigger] =
+    useState<HTMLButtonElement | null>(null);
 
   const state = mission.state;
   const archived = mission.archived_at != null;
@@ -247,10 +261,11 @@ export function MissionHeaderActions({
         type="button"
         className={action.primary}
         disabled={busy}
-        aria-expanded={confirming === "unarchive"}
-        onClick={() =>
-          setConfirming(confirming === "unarchive" ? null : "unarchive")
-        }
+        aria-haspopup="dialog"
+        onClick={(e) => {
+          setUnarchiveTrigger(e.currentTarget);
+          setConfirming(confirming === "unarchive" ? null : "unarchive");
+        }}
         data-testid="mission-unarchive"
       >
         Unarchive
@@ -418,6 +433,8 @@ export function MissionHeaderActions({
           }
           role="menuitem"
           data-testid="mission-failed"
+          // The first tap only arms the confirmation, so a phone sheet stays for the second.
+          data-menu-keep-open={confirming === "failed" ? undefined : ""}
         >
           {icon(<Ban size={15} />)}
           {confirming === "failed" ? "Confirm mark failed" : "Mark failed"}
@@ -430,12 +447,14 @@ export function MissionHeaderActions({
         type="button"
         className={styles.menuItem}
         onClick={() =>
-          void shareLink({ title: mission.title, path: missionLink(mission.id) }).then(
-            (outcome) => {
-              if (outcome === "copied") onNote("Link copied.");
-              else if (outcome === "failed") onNote("Copying the link needs a secure origin.");
-            },
-          )
+          void shareLink({
+            title: mission.title,
+            path: missionLink(mission.id),
+          }).then((outcome) => {
+            if (outcome === "copied") onNote("Link copied.");
+            else if (outcome === "failed")
+              onNote("Copying the link needs a secure origin.");
+          })
         }
         role="menuitem"
         data-testid="mission-share-link"
@@ -463,6 +482,8 @@ export function MissionHeaderActions({
           }
           role="menuitem"
           data-testid="mission-abandon"
+          // The first tap only arms the confirmation, so a phone sheet stays for the second.
+          data-menu-keep-open={confirming === "abandon" ? undefined : ""}
         >
           {icon(<CircleX size={15} />)}
           {confirming === "abandon" ? "Confirm abandon" : "Abandon"}
@@ -487,6 +508,8 @@ export function MissionHeaderActions({
         }
         role="menuitem"
         data-testid="mission-archive"
+        // The first tap only arms the confirmation, so a phone sheet stays for the second.
+        data-menu-keep-open={confirming === "archive" ? undefined : ""}
       >
         {icon(<Archive size={15} />)}
         {confirming === "archive" ? "Confirm archive" : "Archive"}
@@ -500,53 +523,128 @@ export function MissionHeaderActions({
       {primary}
       {menu}
       {archived && confirming === "unarchive" ? (
-        <div
-          className={styles.headerConfirm}
-          role="group"
-          aria-label="Bring this mission back"
-        >
-          <p
-            className={styles.missionConfirm}
-            data-testid="mission-confirm-unarchive"
-          >
-            {/* The capitals are the warning (#896 review 6, finding 4), kept through #967's recasing. */}
-            Bringing this mission back can also RESTART its agents, by
-            relaunching each session from its transcript.
-          </p>
-          <div className={styles.headerConfirmActions}>
-            <button
-              type="button"
-              className={styles.missionBtn}
-              disabled={busy}
-              onClick={() =>
-                void act(
-                  () => api.unarchiveMission(mission.id, { sessions: false }),
-                  "Unarchiving",
-                  { movedTo: "active" },
-                )
-              }
-              data-testid="mission-unarchive-record"
-            >
-              Record only
-            </button>
-            <button
-              type="button"
-              className={`${styles.missionBtn} ${styles.missionBtnDanger}`}
-              disabled={busy}
-              onClick={() =>
-                void act(
-                  () => api.unarchiveMission(mission.id, { sessions: true }),
-                  "Unarchiving",
-                  { movedTo: "active", membershipChanged: true },
-                )
-              }
-              data-testid="mission-unarchive-sessions"
-            >
-              Restart agents
-            </button>
-          </div>
-        </div>
+        <UnarchiveDialog
+          busy={busy}
+          returnFocusTo={unarchiveTrigger}
+          onCancel={() => setConfirming(null)}
+          onRecordOnly={() =>
+            void act(
+              () => api.unarchiveMission(mission.id, { sessions: false }),
+              "Unarchiving",
+              { movedTo: "active" },
+            )
+          }
+          onRestart={() =>
+            void act(
+              () => api.unarchiveMission(mission.id, { sessions: true }),
+              "Unarchiving",
+              { movedTo: "active", membershipChanged: true },
+            )
+          }
+        />
       ) : null}
     </div>
+  );
+}
+
+/** THE UNARCHIVE CHOICE (#896 review 6, finding 4; a dialog since #1531). Unarchive restores
+ *  sessions by RELAUNCHING them from their transcripts, so the button only opens this choice, and
+ *  the safe option (Record only) comes first and takes focus. It is THE dialog: portalled, modal,
+ *  the page behind inert, Tab contained, Esc and an outside press cancel, focus back on Unarchive.
+ *  The results are the ones the inline panel had: `sessions: false` / `sessions: true`. */
+function UnarchiveDialog({
+  busy,
+  returnFocusTo,
+  onCancel,
+  onRecordOnly,
+  onRestart,
+}: {
+  busy: boolean;
+  returnFocusTo: HTMLElement | null;
+  onCancel: () => void;
+  onRecordOnly: () => void;
+  onRestart: () => void;
+}) {
+  const panel = useRef<HTMLDivElement | null>(null);
+  const safe = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    safe.current?.focus();
+  }, []);
+  // While the request runs every button is disabled: the dialog itself holds focus (#1560).
+  useHoldFocusWhileBusy(panel, busy);
+  useInertBehind(returnFocusTo);
+  useFocusContainment({ active: true, panelRef: panel });
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (!busy) onCancel();
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [busy, onCancel]);
+  const titleId = "mission-unarchive-title";
+  return createPortal(
+    <div
+      className={dlg.backdrop}
+      onMouseDown={() => (busy ? undefined : onCancel())}
+    >
+      <div
+        ref={panel}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-busy={busy || undefined}
+        tabIndex={-1}
+        className={`${dlg.dialog} ${dlg.narrow}`}
+        onMouseDown={(e) => e.stopPropagation()}
+        data-testid="mission-unarchive-dialog"
+      >
+        <div className={dlg.head}>
+          <span id={titleId} className={dlg.tag}>
+            Bring this mission back
+          </span>
+        </div>
+        <p className={dlg.muted} data-testid="mission-confirm-unarchive">
+          {/* The capitals are the warning (#896 review 6, finding 4), kept through #967's recasing. */}
+          Bringing this mission back can also RESTART its agents, by relaunching
+          each session from its transcript.
+        </p>
+        <p className={dlg.help} role="status">
+          {busy ? "Bringing it back…" : ""}
+        </p>
+        <div className={dlg.actions}>
+          <button
+            type="button"
+            className={dlg.cancel}
+            disabled={busy}
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className={action.danger}
+            disabled={busy}
+            onClick={onRestart}
+            data-testid="mission-unarchive-sessions"
+          >
+            Restart agents
+          </button>
+          <button
+            ref={safe}
+            type="button"
+            className={dlg.go}
+            disabled={busy}
+            onClick={onRecordOnly}
+            data-testid="mission-unarchive-record"
+          >
+            Record only
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }

@@ -158,11 +158,12 @@ async function assertTarget(panel: Locator, t: Locator, floor: number) {
 }
 
 // The two widths a Pixel 7 does not cover (Hermes on #1316): a narrow phone, where the drawer is
-// ~330px wide, and 641–800px, where the panel is still the ANCHORED dropdown but the ≤800px touch
-// floor applies. The armed `Clear all?` row and the settled `Clear` are the states that crowd.
+// ~330px wide, and a 700px tablet. Since #1531 the drawer takes over at the shell's one phone line
+// (800px), so the tablet gets the drawer too — the anchored dropdown no longer exists in the
+// 641–800 band. The armed `Clear all?` row and the settled `Clear` are the states that crowd.
 for (const vp of [
   { name: "narrow phone (360px, drawer)", width: 360, height: 740, drawer: true },
-  { name: "tablet (700px, anchored)", width: 700, height: 900, drawer: false },
+  { name: "tablet (700px, drawer)", width: 700, height: 900, drawer: true },
 ]) {
   test(`${vp.name}: every state keeps 44px targets inside the panel`, async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== "mobile", "one pass per width is enough");

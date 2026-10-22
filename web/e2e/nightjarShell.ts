@@ -2,7 +2,10 @@
  *  primitives gallery and Settings to render with no backend. Every unknown `/api/**` answers `{}`. */
 import type { Page } from "@playwright/test";
 
-export async function mockNightjarShell(page: Page, opts: { hqContact?: string } = {}) {
+export async function mockNightjarShell(
+  page: Page,
+  opts: { hqContact?: string } = {},
+) {
   await page.route("**/api/**", (r) => r.fulfill({ json: {} }));
   await page.route("**/api/config", (r) =>
     r.fulfill({
@@ -21,18 +24,33 @@ export async function mockNightjarShell(page: Page, opts: { hqContact?: string }
   );
   await page.route("**/api/sessions**", (r) =>
     r.fulfill({
-      json: { sessions: [], total: 0, next_offset: null, facets: { projects: [], engines: [] } },
+      json: {
+        sessions: [],
+        total: 0,
+        next_offset: null,
+        facets: { projects: [], engines: [] },
+      },
     }),
   );
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
-  await page.route("**/api/engines", (r) => r.fulfill({ json: { engines: [] } }));
-  await page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [] } }));
-  await page.route(/\/api\/projects($|\?)/, (r) => r.fulfill({ json: { projects: [] } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
+  await page.route("**/api/engines", (r) =>
+    r.fulfill({ json: { engines: [] } }),
+  );
+  await page.route(/\/api\/folders(\?.*)?$/, (r) =>
+    r.fulfill({ json: { folders: [] } }),
+  );
+  await page.route(/\/api\/projects($|\?)/, (r) =>
+    r.fulfill({ json: { projects: [] } }),
+  );
   await page.route(/\/api\/pulse$/, (r) =>
     r.fulfill({ json: { cards: [], generated_at: 1, window_days: 3 } }),
   );
   await page.route("**/api/pulse/notifications", (r) =>
-    r.fulfill({ json: { notifications: [], unread: 0, uncertain: 0, settled: [] } }),
+    r.fulfill({
+      json: { notifications: [], unread: 0, uncertain: 0, settled: [] },
+    }),
   );
   await page.route("**/api/missions**", (r) =>
     r.fulfill({ json: { missions: [], total: 0, next_offset: null } }),
@@ -40,7 +58,10 @@ export async function mockNightjarShell(page: Page, opts: { hqContact?: string }
 }
 
 /** Store a motion choice for the page's origin BEFORE the app boots (the pre-paint script reads it). */
-export async function storeMotionChoice(page: Page, choice: "full" | "reduced" | "off" | null) {
+export async function storeMotionChoice(
+  page: Page,
+  choice: "full" | "reduced" | "off" | null,
+) {
   await page.addInitScript((c) => {
     try {
       if (c) localStorage.setItem("tr-motion", c);
@@ -49,4 +70,16 @@ export async function storeMotionChoice(page: Page, choice: "full" | "reduced" |
       /* storage blocked */
     }
   }, choice);
+}
+
+/** Wait until every FINITE animation on the page has finished (#1531). Sheets slide up and dialogs
+ *  deploy in over 120–320 ms; a geometry assertion or a corner tap taken during that window
+ *  measures a moving box. Infinite ones (a pulse, a spinner) are ignored: they never finish. */
+export async function animationsSettled(page: Page) {
+  await page.waitForFunction(() =>
+    document
+      .getAnimations()
+      .filter((a) => a.effect?.getComputedTiming().iterations !== Infinity)
+      .every((a) => a.playState === "finished" || a.playState === "idle"),
+  );
 }

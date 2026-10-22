@@ -343,6 +343,13 @@ async function geometry(page: Page) {
       let ancestor: HTMLElement | null = el;
       let bg: number[] = [];
       while (ancestor) {
+        // A plate (#1531: a control paints its chamfered face on `::after`, behind its text) is
+        // read by that face — its own background is transparent on purpose.
+        const face = getComputedStyle(ancestor, "::after");
+        if (face.content !== "none" && face.content !== "normal") {
+          bg = color(face.backgroundColor);
+          if (bg[3] === 255) break;
+        }
         bg = color(getComputedStyle(ancestor).backgroundColor);
         if (bg[3] === 255) break;
         ancestor = ancestor.parentElement;

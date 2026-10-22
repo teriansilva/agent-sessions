@@ -1,0 +1,218 @@
+/* THE MENU (#1531 Phase 3): one chrome for every menu, popover and listbox — the sidebar row ⋯
+ * (`MenuPopover`), every `AnchoredMenu` (section sub-menus, operator, Dashboard New, Automations ⋯,
+ * mission ⋯, plugins), the pane's overflow, the files menus and HQ's conversation switcher. Their own
+ * sheets keep only placement; plate, rows, separators and the phone sheet come from here, composed,
+ * never restated (sidebar/RowMenu.module.css re-exports these names for its long-standing composers).
+ *
+ * NIGHTJAR: a chamfered plate (`nj-frame-sm`: the cut edge, cut lines and the lit rail — depth comes
+ * from the edge, since a shadow cannot show through the clip), appearing with a fade and NO rise
+ * (`nj-appear`: its rows must not move under the pointer about to press one; interactive from its
+ * first frame). Rows are 44 px at every width; the row under the pointer or focus carries the HUD
+ * tint and a 2 px rail. At ≤800px a menu is a bottom sheet (a scrim, a title row, 48 px rows,
+ * Cancel, sliding up from the floor), except the session pane's own menus (design.md §5). Tokens
+ * only (docs/nightjar-ledger.md). */
+
+.panel {
+  composes: nj-frame-sm nj-appear nj-fade-ok from global;
+  --nj-face: var(--bg-1);
+  padding: var(--sp-1) 0;
+  color: var(--text-2);
+  overscroll-behavior: contain;
+  /* Explicit: a wrapper (the phone sheet's click-through box) may set pointer-events: none, and
+     an inherited none would let presses fall through to the rows underneath, whatever order the
+     stylesheets load in. */
+  pointer-events: auto;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  /* 44px at every width: a menu row is a target, and the operator menu's measured contract
+     (e2e/help-menu.spec.ts) holds it there on desktop too. */
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-3);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.2;
+  color: var(--text-2);
+  cursor: pointer;
+  text-align: left;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+.itemIcon {
+  display: flex;
+  flex: none;
+  color: var(--text-3);
+}
+.item:hover:not([aria-disabled]),
+.item:focus {
+  outline: none;
+  background: color-mix(in srgb, var(--hud) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--hud);
+  color: var(--text-1);
+}
+.item:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.item:hover:not([aria-disabled]) .itemIcon,
+.item:focus .itemIcon {
+  color: var(--hud-text);
+}
+.item[aria-disabled] {
+  opacity: 0.4;
+  cursor: default;
+}
+@media (pointer: coarse), (max-width: 800px) {
+  .item {
+    min-height: 44px;
+  }
+}
+
+/* A destructive item (#967): label and icon in the text-safe failure red, on hover and focus too,
+ * so the one item that removes something never reads like its neighbours. */
+.itemDanger,
+.itemDanger:hover:not([aria-disabled]),
+.itemDanger:focus,
+.itemDanger .itemIcon,
+.itemDanger:hover:not([aria-disabled]) .itemIcon,
+.itemDanger:focus .itemIcon {
+  color: var(--danger-text);
+}
+
+/* An item with a second line — why it is disabled, for one (#967). */
+.itemText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.itemHint {
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+  white-space: normal;
+}
+
+.sep {
+  height: 1px;
+  background: var(--line);
+  margin: var(--sp-1) 0;
+}
+
+/* A labelled group header inside a menu (#1109): tiny mono caps, no hit target of its own. */
+.groupLabel {
+  padding: var(--sp-2) var(--sp-3) 3px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ------------------------------------------------------------------ the phone sheet */
+
+/* Behind the sheet; a press on it closes the menu. */
+.scrim {
+  composes: nj-scrim from global;
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-menu);
+}
+/* A click-through box sized to the DYNAMIC viewport (100dvh excludes a mobile browser's collapsing
+ * toolbar) that pins the sheet to the visible bottom. Taps above the sheet fall through to the
+ * scrim. */
+.sheetWrap {
+  position: fixed;
+  inset: 0;
+  height: 100vh;
+  height: 100dvh;
+  z-index: calc(var(--z-menu) + 1);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+/* The sheet: full width, flush to the floor, the rail along its top and one cut corner. Two
+ * classes, so it outranks a caller's own desktop placement whatever the stylesheet order. */
+.sheetWrap > .sheet {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+  max-height: 85vh;
+  max-height: 85dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* An item scrolled into view (End, focus) stops above the bottom padding, not under it. */
+  scroll-padding-block: var(--sp-2) max(var(--sp-3), env(safe-area-inset-bottom));
+  pointer-events: auto;
+  padding: 0 0 max(var(--sp-3), env(safe-area-inset-bottom));
+  border: none;
+  border-top: 2px solid var(--hud);
+  background: var(--bg-1);
+  clip-path: polygon(var(--cut) 0, 100% 0, 100% 100%, 0 100%, 0 var(--cut));
+  animation: global(nj-sheet-up) var(--t-slow) var(--ease-out) both;
+}
+.sheetWrap > .sheet [role="menuitem"],
+.sheetWrap > .sheet [role="option"] {
+  min-height: 48px;
+  padding-left: var(--sp-4);
+  padding-right: var(--sp-4);
+  font-size: var(--fs-row);
+}
+.sheetHead {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: var(--sp-3) var(--sp-4) var(--sp-2);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: var(--sp-1);
+}
+.sheetTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.sheetTitle::before {
+  content: "";
+  flex: none;
+  width: 22px;
+  height: 10px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.85;
+}
+.sheetSub {
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cancel {
+  composes: ghost from "./actionButton.module.css";
+  width: calc(100% - 2 * var(--sp-4));
+  margin: var(--sp-3) var(--sp-4) 0;
+}

@@ -165,7 +165,7 @@
 .touchLayer {
   position: absolute;
   inset: 0;
-  z-index: 6;
+  z-index: calc(var(--z-raised) + 5);
   background: transparent;
   touch-action: none;
 }
@@ -182,7 +182,7 @@
   position: absolute;
   top: 6px;
   right: 10px;
-  z-index: 5;
+  z-index: calc(var(--z-raised) + 4);
   font-size: 11px;
   color: var(--text-muted);
   /* Frosted scrim over live terminal text — follows the terminal surface per theme (#473). */
@@ -214,7 +214,7 @@
   position: absolute;
   right: calc(12px + env(safe-area-inset-right, 0));
   bottom: calc(12px + env(safe-area-inset-bottom, 0));
-  z-index: 7;
+  z-index: calc(var(--z-raised) + 6);
   width: 44px;
   height: 44px;
   display: inline-flex;
@@ -263,7 +263,7 @@
   top: calc(8px + env(safe-area-inset-top, 0));
   left: 8px;
   right: 8px;
-  z-index: 7;
+  z-index: calc(var(--z-raised) + 6);
   display: flex;
   align-items: center;
   gap: 12px;
@@ -343,7 +343,7 @@
   top: calc(8px + env(safe-area-inset-top, 0));
   left: 0;
   right: 0;
-  z-index: 7;
+  z-index: calc(var(--z-raised) + 6);
   display: flex;
   justify-content: center;
   pointer-events: none;
@@ -400,50 +400,28 @@
   animation: none;
 }
 
-/* Auto copy-on-select confirmation (#554). A transient tactical-HUD telemetry chip shown when a
- * mouse selection is copied to the clipboard, then fades. Square + flat + tokenized per
- * docs/design.md (no rounded corners; only the LED stays circular); mono uppercase like the rest
- * of the HUD chrome. Duration matches COPIED_TOAST_MS in Terminal.tsx. */
+/* Auto copy-on-select confirmation (#554), and the link-copied chip the terminal and the structured
+ * pane share. THE TOAST (ui/toast.module.css, #1531) in its chip voice with a state LED; this keeps
+ * the placement (centred over the terminal's foot) and the timing: it shows, then fades. Duration
+ * matches COPIED_TOAST_MS in Terminal.tsx. */
 .copiedToast {
+  composes: toast chip led ok from "../ui/toast.module.css";
   position: absolute;
   bottom: 12px;
   left: 50%;
-  z-index: 7;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px 11px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--text-1);
-  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
-  border: 1px solid var(--accent);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  z-index: calc(var(--z-raised) + 6);
+  /* The success flash is the brand moment, not a status: the LED is the chrome colour. */
+  --toast-led: var(--hud);
   pointer-events: none;
-  animation: copiedFlash 1200ms ease forwards;
-}
-/* Accent LED — dots stay circular in the HUD. */
-.copiedToast::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 7px var(--accent);
+  animation: copiedFlash 1200ms var(--ease-out) forwards;
 }
 /* The clipboard write failed — a non-secure origin has no `navigator.clipboard` (#617). Semantic
- * status red, never the brand accent: this is a failure, not a brand moment (docs/design.md). It
- * lingers longer than the success flash because it asks the operator to do something. */
+ * status red, never the brand accent: this is a failure. It lingers longer than the success flash
+ * because it asks the operator to do something. */
 .copyFailed {
-  border-color: var(--status-down);
+  composes: err from "../ui/toast.module.css";
+  --toast-led: var(--status-down);
   animation-duration: 2600ms;
-}
-.copyFailed::before {
-  background: var(--status-down);
-  box-shadow: 0 0 7px var(--status-down);
 }
 @keyframes copiedFlash {
   0% {

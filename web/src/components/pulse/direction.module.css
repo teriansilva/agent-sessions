@@ -133,29 +133,22 @@
   color: var(--danger-text);
 }
 
-/* --- the Edit direction dialog's choices ------------------------------------------------------- */
+/* --- the Edit direction dialog's choices (NIGHTJAR #1531: THE dialog's option plates) ----------- */
 
 .choices {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 .choice {
-  min-height: 44px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 12px;
-  background: var(--bg-2);
-  color: var(--text-2);
-  border: 1px solid var(--border);
-  font-size: 13px;
-  cursor: pointer;
+  composes: option from "../HudDialog.module.css";
+  font-weight: 400;
 }
 .choice:has(input:checked) {
+  --nj-face: color-mix(in srgb, var(--hud) 14%, var(--bg-2));
+  --nj-edge: var(--hud);
+  border-color: var(--hud);
   color: var(--text-1);
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg-2));
 }
 .choice input {
   flex: none;
@@ -165,7 +158,7 @@
   accent-color: var(--accent);
 }
 .choice input:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: 2px;
 }
 .choiceText {
@@ -175,16 +168,16 @@
   min-width: 0;
 }
 .choiceText small {
-  font-size: 11.5px;
+  font-size: var(--fs-label);
   color: var(--text-3);
 }
 .copied {
   margin: 0;
-  padding: 8px 10px;
-  background: var(--bg-2);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-3);
   border: 1px solid var(--line);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1.5;
   color: var(--text-2);
   white-space: pre-wrap;
@@ -199,7 +192,7 @@
   border: 0;
   background: transparent;
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   color: var(--text-2);
   text-decoration: underline;
   text-underline-offset: 3px;
@@ -210,7 +203,7 @@
   color: var(--text-1);
 }
 .link:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: 2px;
 }
 .link:disabled {

@@ -318,7 +318,7 @@
   cursor: inherit;
 }
 .segOpt:has(input:checked) {
-  z-index: 1;
+  z-index: var(--z-raised);
   color: var(--text);
   border-color: var(--accent);
   box-shadow: inset 0 0 0 1px var(--accent);
@@ -326,7 +326,7 @@
 .segOpt:has(input:focus-visible) {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
-  z-index: 2;
+  z-index: calc(var(--z-raised) + 1);
 }
 
 /* Agents per step: one table — step, agent, model, state — grouped by flow. */

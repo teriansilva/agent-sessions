@@ -297,7 +297,7 @@ test("the shell's mobile line decides the form: modal at <=800px, beside the pag
   await mockShell(page);
   await page.goto("/dashboard");
 
-  // 720px: between the bell's 640 and the shell's 800 — a 440px panel covers most of the page,
+  // 720px: under the shell's 800px line (the bell's drawer line too, since #1531) — a 440px panel covers most of the page,
   // so it is the modal drawer: page inert, scrim, ✕ / scrim close it.
   await page.setViewportSize({ width: 720, height: 800 });
   let panel = await openAsk(page);

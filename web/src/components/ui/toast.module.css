@@ -1,0 +1,50 @@
+/* THE TOAST (#1531 Phase 3): one look for every transient confirmation — the sidebar's review-now
+ * outcome, the terminal's copy and link chips (also the structured pane's share-link chip), the
+ * mission-control settings' "Saved." A toast keeps its own placement and timing; the plate, the
+ * state LED and the slide-in come from here, composed.
+ *
+ * A chamfered plate (`nj-frame-sm`) on `--bg-2`; the state rides an LED in the status colour and the
+ * plate's edge, never the brand accent; it slides in (fade + 8 px, `nj-toast-in`). Tokens only. */
+
+.toast {
+  composes: nj-frame-sm from global;
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--hud-dim);
+  --toast-led: var(--hud);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-1);
+  animation: global(nj-toast-in) var(--t-base) var(--ease-out) both;
+}
+/* The telemetry-chip voice: mono caps, the smallest size. */
+.chip {
+  width: fit-content;
+  padding: var(--sp-1) var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+/* A state LED drawn by the toast itself (a surface with its own LED element omits this). */
+.led::before {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--toast-led);
+  box-shadow: 0 0 var(--glow-led) var(--toast-led);
+}
+.ok {
+  --toast-led: var(--status-up);
+}
+.err {
+  --toast-led: var(--status-down);
+  --nj-edge: color-mix(in srgb, var(--status-down) 60%, transparent);
+  border-color: color-mix(in srgb, var(--status-down) 60%, transparent);
+}

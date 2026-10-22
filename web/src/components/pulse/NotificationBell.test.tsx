@@ -27,7 +27,7 @@ function mockWidth(isPhone: boolean) {
   vi.stubGlobal(
     "matchMedia",
     vi.fn((q: string) => ({
-      matches: q.includes("640") ? isPhone : false,
+      matches: q.includes("800") ? isPhone : false,
       media: q,
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
@@ -258,4 +258,28 @@ test("an automation's failure opens its run history, not the mission console (#1
   const panel = screen.getByRole("dialog", { name: /notifications/i });
   await waitFor(() => expect(panel).toHaveTextContent("Automation failed: nightly"));
   expect(panel.querySelector('a[href="/mission/automations/abc123"]')).not.toBeNull();
+});
+
+// =============================================================================================
+// NIGHTJAR arrival (#1531): only a row that comes in while the panel is OPEN flashes in.
+// =============================================================================================
+
+test("a row arriving while the panel is open is marked as an arrival; the rows it opened with are not (#1531)", async () => {
+  const { panel } = await open(false);
+  await waitFor(() => expect(panel).toHaveTextContent("claude needs a decision"));
+  const first = within(panel).getByText("claude needs a decision").closest("li")!;
+  const plain = first.className;
+
+  vi.spyOn(api, "notifications").mockResolvedValue({
+    notifications: [{ ...NOTIFICATION, id: "n2", title: "codex needs a decision" }, NOTIFICATION],
+    unread: 2,
+  });
+  window.dispatchEvent(new CustomEvent(ACTION_RESOLVED_EVENT));
+  await waitFor(() => expect(panel).toHaveTextContent("codex needs a decision"));
+  const arrived = within(panel).getByText("codex needs a decision").closest("li")!;
+  // The arrival carries one more class than a row that was already there.
+  expect(arrived.className.split(/\s+/).filter(Boolean).length).toBeGreaterThan(
+    plain.split(/\s+/).filter(Boolean).length,
+  );
+  expect(within(panel).getByText("claude needs a decision").closest("li")!.className).toBe(plain);
 });

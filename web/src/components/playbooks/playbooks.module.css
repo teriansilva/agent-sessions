@@ -266,29 +266,29 @@
 .review h3 {
   margin: 8px 0;
 }
+/* PlaybookDialog (#1531): a native <dialog> on THE dialog chrome (../HudDialog.module.css, composed
+ * by the component); these rules place it, give it the scrim and size its scrolling body. */
 .dialog {
   margin: auto;
-  padding: 18px;
   overflow-wrap: anywhere;
 }
 .dialog::backdrop {
-  background: color-mix(in srgb, var(--bg-0) 70%, transparent);
+  background: var(--scrim);
 }
 .dialogBody {
   max-height: 50dvh;
   overflow: auto;
 }
 .dialog h2 {
-  font-size: 18px;
-}
-.danger {
-  color: var(--danger-text);
-  background: var(--bg-2);
-  border-color: var(--status-down);
+  margin: 0 0 var(--sp-2);
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 @media (max-width: 800px) {
   .dialog {
-    margin: auto auto 10px;
+    margin: auto auto var(--sp-2);
     width: calc(100% - 20px);
   }
   .page {

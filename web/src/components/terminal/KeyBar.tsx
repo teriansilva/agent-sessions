@@ -187,6 +187,7 @@ export function KeyBar({ actions }: { actions: KeyAction[] }) {
                 key={a.id}
                 type="button"
                 role="menuitem"
+                className={styles.keyMenuItem}
                 aria-label={a.aria}
                 title={a.title}
                 disabled={a.disabled}

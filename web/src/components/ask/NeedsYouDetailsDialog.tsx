@@ -9,6 +9,7 @@ import dlg from "../HudDialog.module.css";
 import { useFocusContainment } from "../pulse/useModalDrawer";
 import s from "./AskHome.module.css";
 import { optionLabel, sessionRoute, TEXT_VERBS } from "./needsYouLabels";
+import { useHoldFocusWhileBusy } from "../templates/useHoldFocusWhileBusy";
 
 /** ⓘ on a NEEDS YOU row (#1086): the session's last words, its screen, exactly what approving
  *  does — and, for a text decision, the orchestrator's suggested message AS the action, editable.
@@ -130,6 +131,8 @@ export function NeedsYouDetailsDialog({
   const showScreen = !d?.last_words || Boolean(d?.menu) || isChoose || Boolean(action?.menu);
   const titleId = "needs-you-details-title";
 
+  // While the request runs its controls are disabled: the dialog itself holds focus (#1560).
+  useHoldFocusWhileBusy(panel, busy);
   return createPortal(
     // `data-modal-inside` (#1294, Hermes on #1296): this dialog can be opened from the Ask
     // drawer, which is a modal on a phone, and it is portalled to <body> — so without the marker a
@@ -141,6 +144,8 @@ export function NeedsYouDetailsDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-busy={busy || undefined}
+        tabIndex={-1}
         className={`${dlg.dialog} ${s.details}`}
         onMouseDown={(e) => e.stopPropagation()}
         data-testid="needs-you-dialog"

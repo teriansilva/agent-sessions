@@ -142,7 +142,7 @@ export function WizardShell({
             Step {current + 1} / {steps.length}{" // "}{step?.label}
           </div>
           <div className={styles.bar} aria-hidden="true">
-            <div className={styles.fill} style={{ width: `${pct}%` }} />
+            <div className={styles.fill} style={{ transform: `scaleX(${pct / 100})` }} />
           </div>
         </div>
 

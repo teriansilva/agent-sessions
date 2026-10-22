@@ -29,7 +29,7 @@
 
 .title {
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: var(--fs-micro);
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -38,7 +38,7 @@
 
 .meta {
   font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: var(--fs-micro);
   letter-spacing: 0.04em;
   color: var(--text-3);
 }
@@ -65,7 +65,7 @@
   border: 1px solid var(--line-strong);
   margin-left: -1px;
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--fs-micro);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-2);
@@ -98,7 +98,7 @@
   background: transparent;
   color: var(--text-1);
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--fs-micro);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   white-space: nowrap;
@@ -132,7 +132,7 @@
   background: var(--bg-2);
   color: var(--text-1);
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--fs-micro);
   letter-spacing: 0.06em;
 }
 
@@ -143,7 +143,7 @@
 .day {
   padding: 8px 0 2px;
   font-family: var(--font-mono);
-  font-size: 0.64rem;
+  font-size: var(--fs-micro);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-3);
@@ -161,12 +161,12 @@
 }
 .at {
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: var(--fs-micro);
   color: var(--text-3);
   padding-top: 2px;
 }
 .what {
-  font-size: 0.86rem;
+  font-size: var(--fs-meta);
   line-height: 1.45;
   color: var(--text-2);
   overflow-wrap: anywhere;
@@ -181,7 +181,7 @@
   padding: 0 5px;
   border: 1px solid var(--line);
   font-family: var(--font-mono);
-  font-size: 0.64rem;
+  font-size: var(--fs-micro);
   color: var(--text-3);
 }
 .recap {
@@ -189,14 +189,14 @@
   padding: 8px 10px;
   border-left: 2px solid var(--accent-soft);
   background: var(--glass-strong);
-  font-size: 0.82rem;
+  font-size: var(--fs-label);
   line-height: 1.5;
   color: var(--text-2);
   white-space: pre-wrap;
 }
 .note {
   padding: 10px 14px;
-  font-size: 0.8rem;
+  font-size: var(--fs-label);
   line-height: 1.5;
   color: var(--text-3);
 }
@@ -224,7 +224,7 @@
   background: var(--status-degraded);
 }
 .rowTitle {
-  font-size: 0.92rem;
+  font-size: var(--fs-row);
   font-weight: 600;
   color: var(--text-1);
   text-decoration: none;
@@ -233,12 +233,12 @@
 .rowMeta {
   margin-top: 2px;
   font-family: var(--font-mono);
-  font-size: 0.66rem;
+  font-size: var(--fs-micro);
   color: var(--text-3);
 }
 .why {
   margin-top: 6px;
-  font-size: 0.84rem;
+  font-size: var(--fs-meta);
   line-height: 1.45;
   color: var(--text-2);
   overflow-wrap: anywhere;
@@ -246,7 +246,7 @@
 .kind {
   margin-right: 6px;
   font-family: var(--font-mono);
-  font-size: 0.6rem;
+  font-size: var(--fs-micro);
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -261,7 +261,7 @@
 }
 .rowErr {
   margin-top: 6px;
-  font-size: 0.8rem;
+  font-size: var(--fs-label);
   color: var(--danger-text, var(--status-down));
 }
 
@@ -298,7 +298,7 @@
 .lab {
   margin: 14px 0 6px;
   font-family: var(--font-mono);
-  font-size: 0.64rem;
+  font-size: var(--fs-micro);
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -307,7 +307,7 @@
 .quote {
   border-left: 2px solid var(--line-strong);
   padding: 6px 10px;
-  font-size: 0.86rem;
+  font-size: var(--fs-meta);
   line-height: 1.5;
   color: var(--text-2);
   background: var(--glass-strong);
@@ -335,7 +335,7 @@
 }
 .md code {
   font-family: var(--font-mono);
-  font-size: 0.8em;
+  font-size: var(--fs-meta);
 }
 .md pre {
   padding: 6px 8px;
@@ -349,7 +349,7 @@
   border: 1px solid var(--line);
   background: var(--term-bg, var(--bg-0));
   font-family: var(--font-mono);
-  font-size: 0.74rem;
+  font-size: var(--fs-micro);
   line-height: 1.5;
   color: var(--text-2);
   white-space: pre-wrap;
@@ -361,13 +361,13 @@
   border: 1px solid var(--line-strong);
   padding: 10px 12px;
   background: var(--bg-2);
-  font-size: 0.86rem;
+  font-size: var(--fs-meta);
   color: var(--text-1);
 }
 .bytes {
   margin-top: 6px;
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--fs-micro);
   color: var(--text-3);
 }
 .bytes code {
@@ -383,7 +383,7 @@
   background: var(--bg-2);
   color: var(--text-1);
   font: inherit;
-  font-size: 0.88rem;
+  font-size: var(--fs-meta);
   line-height: 1.5;
   padding: 9px 11px;
 }
@@ -397,7 +397,7 @@
   text-transform: none;
   letter-spacing: 0;
   font-family: inherit;
-  font-size: 0.86rem;
+  font-size: var(--fs-meta);
   white-space: normal;
   text-align: left;
 }

@@ -1,5 +1,6 @@
 import { useId, useRef } from "react";
 import { ChevronDown } from "lucide-react";
+import t from "./MissionTitle.module.css";
 import styles from "./mission.module.css";
 
 /** Keep a long title from displacing the composer. The native dialog makes the
@@ -27,20 +28,22 @@ export function MissionTitle({ title }: { title: string }) {
         </span>
         <ChevronDown size={16} aria-hidden="true" />
       </button>
-      <dialog
-        ref={dialog}
-        className={styles.titleDialog}
-        aria-labelledby={label}
-      >
-        <h2 id={label}>Mission title</h2>
-        <p>{title}</p>
-        <button
-          type="button"
-          className={styles.missionBtn}
-          onClick={() => dialog.current?.close()}
-        >
-          Close
-        </button>
+      <dialog ref={dialog} className={t.dialog} aria-labelledby={label}>
+        <div className={t.head}>
+          <h2 id={label} className={t.tag}>
+            Mission title
+          </h2>
+        </div>
+        <p className={t.body}>{title}</p>
+        <div className={t.actions}>
+          <button
+            type="button"
+            className={t.close}
+            onClick={() => dialog.current?.close()}
+          >
+            Close
+          </button>
+        </div>
       </dialog>
     </>
   );

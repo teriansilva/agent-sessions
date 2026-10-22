@@ -46,7 +46,8 @@ How BattleLab itself looks: the frame, menus, buttons and panels.
   miniature of the app in that mode.
 - **Motion**: how much the frame moves. **Match device** (the default) follows your device's
   reduce-motion setting: Reduced when it asks, Full otherwise. **Full** runs the ambient scanlines
-  and pulses, the start-up sequence, arrivals, streamed answers and transitions. **Reduced** keeps
+  and pulses, the start-up sequence (about a second, once per visit; any key, click or tap skips
+  it, and nothing waits for it), arrivals, streamed answers and transitions. **Reduced** keeps
   only short fades on state changes: no loops, no start-up sequence, no portrait video, steady
   status lights. **Off** stops everything that moves; the look stays complete. Motion never touches
   the terminal, the editor or the text you are typing, and never delays input. Saved on this

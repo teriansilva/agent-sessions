@@ -267,9 +267,17 @@ test("a stale 'can host' does not lose a batch: map → Dashboard → shrink →
   await mockApp(page);
   await page.goto("/overview"); // measured: this map can host windows
   await expect(page.locator(".tr-overview .tr-ov-chip").first()).toBeVisible();
+  // …once it HAS measured: the window layer mounts only for a box measured able to host one. A
+  // chip alone can paint before the measurement, and leaving then records nothing (`null`), so
+  // Open all never appears — the flake a loaded runner hit.
+  await expect(page.locator("[data-window-layer]")).toBeAttached();
   // Leave WITHIN the SPA, so the last measurement (`hostable: true`) is kept.
   await page.locator('[data-testid="section-nav"] >> text=Dashboard').first().click();
   await expect(page).toHaveURL(/\/dashboard/);
+  // The URL moves before the old route is gone (the Dashboard chunk may still be loading): shrink
+  // the viewport only once the map has UNMOUNTED, or the still-mounted map measures 400 px and
+  // truthfully records "cannot host" — the stale-true this test needs is then never stale.
+  await expect(page.locator(".tr-overview")).toHaveCount(0);
   await page.setViewportSize({ width: 1920, height: 400 });
   const panel = await askThree(page);
   await panel.getByTestId("ask-match-map-all").click();

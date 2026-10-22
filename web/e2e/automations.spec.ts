@@ -12,6 +12,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { AUTOMATION_NEW_PATH, AUTOMATIONS_PATH, automationEditPath, automationPath, NEW_SESSION_PATH } from "../src/lib/routes";
 import { automation, mockAutomations } from "./automations";
+import { animationsSettled } from "./nightjarShell";
 
 const SESSION_ACTION = {
   kind: "start_session",
@@ -748,6 +749,8 @@ test("a long message in the consent dialog is shown in full — its last charact
   const scope = page.getByTestId("consent-scope");
   await expect(scope).toContainText(long);
   await expect(page.getByTestId("consent-show-all")).toHaveCount(0);
+  // A sheet/dialog slides in (#1531): measure where it lands.
+  await animationsSettled(page);
   // Not merely in the DOM: the LAST characters are painted, reachable by scrolling the dialog, and
   // nothing clips them — before the box is ticked.
   const seen = await scope.evaluate((ul) => {

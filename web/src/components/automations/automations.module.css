@@ -382,20 +382,16 @@ textarea.control {
   color: var(--text-2);
 }
 
-/* The row ⋯ menu: the platform's context-menu rows (RowMenu), composed. */
+/* The row ⋯ menu: THE menu chrome (ui/menu.module.css, #1531), composed; this keeps placement. */
 .menuWrap {
   position: relative;
   display: inline-flex;
 }
 .menuPanel {
-  z-index: 60;
+  z-index: calc(var(--z-shell) + 10);
   min-width: 180px;
   width: max-content;
   max-width: min(300px, calc(100vw - 16px));
-  border: 1px solid var(--line-strong);
-  background: var(--bg-2);
-  padding: 4px 0;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
 }
 .menuItems {
   display: flex;
@@ -405,7 +401,7 @@ textarea.control {
   outline: none;
 }
 .menuItem {
-  composes: item from "../sidebar/RowMenu.module.css";
+  composes: item from "../ui/menu.module.css";
   width: 100%;
   min-height: 44px;
   text-align: left;
@@ -714,36 +710,23 @@ textarea.control {
 }
 
 /* --- the consent dialog ------------------------------------------------------------------------ */
+/* The consent dialog's own pieces (#1531): the close is THE dialog's; the title and lede are
+ * display caps and body text on tokens. */
 .dialogClose {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  border: 1px solid var(--line);
-  background: transparent;
-  color: var(--text-2);
-  border-radius: 0;
-  cursor: pointer;
-}
-.dialogClose:hover,
-.dialogClose:focus-visible {
-  color: var(--accent-text);
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
-  outline: none;
+  composes: close from "../HudDialog.module.css";
 }
 .dialogTitle {
-  margin: 0 0 6px;
-  font-family: var(--font-mono);
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  margin: 0 0 var(--sp-1);
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   overflow-wrap: anywhere;
 }
 .dialogLede {
-  margin: 0 0 10px;
-  font-size: 13px;
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-row);
   color: var(--text-2);
 }
 .scopeList {
@@ -808,14 +791,17 @@ textarea.control {
   color: var(--warn-text);
 }
 .agree {
+  composes: nj-plate from global;
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--line-strong);
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-3);
   min-height: 44px;
-  margin-top: 12px;
-  padding: 4px 12px;
-  border: 1px solid var(--line-strong);
-  font-size: 13px;
+  margin-top: var(--sp-3);
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid transparent;
+  font-size: var(--fs-row);
   cursor: pointer;
 }
 .agree input {

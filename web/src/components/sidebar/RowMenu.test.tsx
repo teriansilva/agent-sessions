@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Archive, Pencil, Sparkles } from "lucide-react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -108,17 +108,64 @@ test("outside click closes; clicking the trigger again toggles", async () => {
   expect(screen.queryByRole("menu")).not.toBeInTheDocument();
 });
 
-test("scrolling the surrounding container closes the menu (anchor moved)", async () => {
+/** jsdom lays nothing out: a scroll that "moves" the trigger is its rect changing, by hand. */
+const rect = (top: number) => ({ top, left: 10, right: 40, bottom: top + 30, width: 30, height: 30, x: 10, y: top, toJSON: () => ({}) }) as DOMRect;
+const nextFrame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null))));
+
+test("a scroll that moves the trigger ON screen: the menu follows it (#1531)", async () => {
   const user = userEvent.setup();
   render(
     <div data-testid="scrollbox">
       <RowMenu items={entries({})} />
     </div>,
   );
-  await user.click(screen.getByRole("button", { name: "Session actions" }));
-  expect(screen.getByRole("menu")).toBeInTheDocument();
+  const trigger = screen.getByRole("button", { name: "Session actions" });
+  const box = vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue(rect(100));
+  await user.click(trigger);
+  const menu = screen.getByRole("menu");
+  expect(menu.style.getPropertyValue("--rm-top")).toBe("134px"); // under the trigger: 130 + GAP
+  box.mockReturnValue(rect(300));
   fireEvent.scroll(screen.getByTestId("scrollbox"));
+  await act(nextFrame);
+  expect(screen.getByRole("menu")).toBe(menu);
+  expect(menu.style.getPropertyValue("--rm-top")).toBe("334px");
+});
+
+test("a scroll that takes the trigger OFF screen closes the menu (#1531)", async () => {
+  const user = userEvent.setup();
+  render(
+    <div data-testid="scrollbox">
+      <RowMenu items={entries({})} />
+    </div>,
+  );
+  const trigger = screen.getByRole("button", { name: "Session actions" });
+  const box = vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue(rect(100));
+  await user.click(trigger);
+  expect(screen.getByRole("menu")).toBeInTheDocument();
+  box.mockReturnValue(rect(-200));
+  fireEvent.scroll(screen.getByTestId("scrollbox"));
+  await act(nextFrame);
   expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+});
+
+test("a scroll that leaves the trigger where it was keeps the menu (#1531)", async () => {
+  // A live terminal beside the menu printing output scrolls its own box; a container nudged and
+  // reset in the same frame (React Flow pins its box back to 0) moved nothing. Closing on those
+  // shut menus mid-press.
+  const user = userEvent.setup();
+  render(
+    <div data-testid="scrollbox">
+      <div data-testid="elsewhere" />
+      <RowMenu items={entries({})} />
+    </div>,
+  );
+  const trigger = screen.getByRole("button", { name: "Session actions" });
+  vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue(rect(100));
+  await user.click(trigger);
+  fireEvent.scroll(screen.getByTestId("elsewhere"));
+  fireEvent.scroll(screen.getByTestId("scrollbox"));
+  await act(nextFrame);
+  expect(screen.getByRole("menu")).toBeInTheDocument();
 });
 
 test("selecting an item dispatches its action, closes, and restores trigger focus", async () => {

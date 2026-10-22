@@ -48,15 +48,38 @@ for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
           },
           [theme, cap.motion ?? MOTION],
         );
+        if (cap.asPerson)
+          await ctx.addInitScript(() => {
+            Object.defineProperty(Navigator.prototype, "webdriver", { configurable: true, get: () => false });
+          });
         const page = await ctx.newPage();
         await routeApi(page, { theme, unhandled: new Set() });
         await routeTerminal(page, {});
         const name = `${cap.id.replace(/[:/]/g, "_")}-${width}-${theme}-${dpr}x`;
         try {
           await page.goto(cap.path);
-          if (cap.ready) await page.getByTestId(cap.ready).first().waitFor({ timeout: 15000 });
-          await page.waitForLoadState("networkidle").catch(() => {});
-          await page.waitForTimeout(cap.action ? 300 : 800);
+          if (cap.at !== undefined) {
+            await page.waitForTimeout(cap.at);
+          } else {
+            if (cap.ready) await page.getByTestId(cap.ready).first().waitFor({ timeout: 15000 });
+            await page.waitForLoadState("networkidle").catch(() => {});
+            await page.waitForTimeout(cap.action ? 300 : 800);
+          }
+          for (const step of [...(phone ? (cap.phoneFirst ?? []) : []), ...(cap.open ?? [])]) {
+            const target =
+              "testId" in step
+                ? page.getByTestId(step.testId).first()
+                : page.getByRole(step.role, { name: step.name, exact: true }).first();
+            await target.click({ timeout: 10000 });
+            // A drawer slides in before its rows can be pressed.
+            await page.waitForTimeout(250);
+          }
+          if (cap.open && cap.ready) await page.getByTestId(cap.ready).first().waitFor({ timeout: 10000 });
+          if (cap.expect || cap.expectCss) {
+            const opened = cap.expect ? page.getByRole(cap.expect) : page.locator(cap.expectCss);
+            await opened.first().waitFor({ state: "visible", timeout: 10000 });
+            await page.waitForTimeout(450); // past the deploy-in, so the still is the settled popup
+          }
           if (cap.action === "stream") {
             await page.getByRole("button", { name: "Stream an answer" }).click();
             // Mid-stream: the caret is riding the end and words are still fading in.
@@ -66,6 +89,10 @@ for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
             await page.getByRole("button", { name: "A unit arrives" }).click();
             await page.waitForTimeout(150); // inside the 500 ms arrival flash
           }
+          // The state the capture names must be ON SCREEN at the moment of the shot (a fixed delay
+          // alone proves nothing: the boot is once per visit and dismissable).
+          if (cap.present && !(await page.locator(cap.present).first().isVisible()))
+            throw new Error(`${cap.present} is not on screen at capture time`);
           if (cap.action === "power-on") {
             // The power-on is one-shot (320 ms): replay it, and photograph it WHILE it runs — the
             // panel's own animations must be running at the moment of the shot, or the capture is

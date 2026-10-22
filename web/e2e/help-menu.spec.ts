@@ -103,7 +103,11 @@ test("the operator menu carries Settings and Help: first item focused, arrows mo
 
 test("a second click closes it, a double-click does not leave it open, and an outside press closes it", async ({
   page,
-}) => {
+}, testInfo) => {
+  // On a phone the menu is a modal bottom sheet (#1531): the tile sits under its scrim and the
+  // background is inert, so "click the trigger again" and "press outside at the floor" are not
+  // its close paths. e2e/nightjar-popups.spec.ts pins the sheet's own (Esc, Cancel, the scrim).
+  test.skip(testInfo.project.name === "mobile", "the phone sheet's close paths are nightjar-popups.spec.ts");
   await setup(page);
   await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
   await page.goto(NEW_SESSION_PATH);
@@ -125,7 +129,9 @@ test("a second click closes it, a double-click does not leave it open, and an ou
   await expect(helpMenu(page)).toHaveCount(0);
 });
 
-test("Tab and Shift+Tab leave the menu: it closes and focus is back on the tile", async ({ page }) => {
+test("Tab and Shift+Tab leave the menu: it closes and focus is back on the tile", async ({ page }, testInfo) => {
+  // Desktop only: the phone sheet is modal, so Tab stays inside it (#1531; AnchoredMenu.test.tsx).
+  test.skip(testInfo.project.name === "mobile", "the phone sheet contains Tab");
   await setup(page);
   await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
   await page.goto(NEW_SESSION_PATH);

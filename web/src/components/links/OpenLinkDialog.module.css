@@ -1,37 +1,38 @@
-/* The Open session choice (#1232): two tiles on the HUD dialog sheet. */
+/* The Open session choice (#1232): two tiles on THE dialog (../HudDialog.module.css, NIGHTJAR
+ * #1531). The tiles are the dialog's own option plates, taller. Tokens only. */
 .choices {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin: 4px 0 10px;
+  gap: var(--sp-3);
+  margin: var(--sp-1) 0 var(--sp-3);
 }
 .choice {
   composes: option from "../HudDialog.module.css";
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
+  gap: var(--sp-1);
   min-height: 96px;
-  padding: 12px;
+  padding: var(--sp-3);
 }
 .choiceName {
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-family: var(--font-display);
+  font-size: var(--fs-meta);
   font-weight: 600;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--text-1);
 }
 .choiceHelp {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-2);
   white-space: normal;
 }
 .remember {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-3);
   min-height: 44px;
-  font-size: 13px;
+  font-size: var(--fs-row);
   color: var(--text-1);
   cursor: pointer;
 }

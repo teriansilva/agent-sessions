@@ -18,6 +18,12 @@
  *  It is deliberately NOT `aria-modal`: this is a small anchored menu over a page that stays
  *  usable, not a surface that owns the screen.
  *
+ *  **At ≤800px it is a bottom sheet** (#1531 Phase 3: every menu is one on a phone). Portalled to
+ *  `<body>` whatever `portal` says, with a scrim, a title row and Cancel, 48px rows, and — unlike the
+ *  desktop menu — it IS modal: the background goes inert and Tab stays inside. Esc, a press on the
+ *  scrim and Cancel close it, and focus returns to the trigger. The arrow-key contract is the same.
+ *  The chrome (plate, rows, sheet) is `ui/menu.module.css`; a caller's `classes` keep placement.
+ *
  *  **Where focus lands on open is the caller's decision** (#987 review). The mission menu focuses
  *  the menu wrapper, because which of its items comes first depends on the mission's state and
  *  some of them are destructive. The Help menu has no such item, so it focuses the first one.
@@ -32,7 +38,13 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { useIsMobile } from "../../lib/useIsMobile";
 import { useModalDrawer } from "../pulse/useModalDrawer";
+import m from "./menu.module.css";
+
+/** The desktop menu isolates nothing (the page behind stays live). Module-level, so the hook's
+ *  isolation effect sees one stable array rather than a fresh literal every render. */
+const ISOLATE_NOTHING: never[] = [];
 
 /** The menu's own items, in DOM order, minus the ones that cannot be actioned. Read from the DOM
  *  rather than from a list prop because WHICH items exist is the caller's rendering to decide — a
@@ -86,9 +98,16 @@ export function AnchoredMenu({
   /** A sentence under the items. It sits in the panel but OUTSIDE `role="menu"`, whose children
    *  may only be menu items. */
   note?: ReactNode;
-  /** The items. A function receives `close`, for items that act and are done; the mission menu
-   *  passes plain nodes, because its two-tap confirmations keep the menu open. */
-  children: ReactNode | ((close: () => void) => ReactNode);
+  /** The items. A function receives `close`, for items that act and are done, and the trigger —
+   *  the element focus should go back to when an item opens a dialog (the phone sheet is portalled,
+   *  so an item cannot find the trigger by walking up the DOM). The mission menu passes plain nodes,
+   *  because its two-tap confirmations keep the menu open. */
+  children:
+    | ReactNode
+    | ((
+        close: () => void,
+        trigger: () => HTMLButtonElement | null,
+      ) => ReactNode);
 }) {
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<{
@@ -101,6 +120,16 @@ export function AnchoredMenu({
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   const close = () => setOpen(false);
+  // The trigger as render state too, so the items function can be handed it without reading a ref
+  // during render; the ref stays the hook's (useModalDrawer's focus restore).
+  const [triggerEl, setTriggerEl] = useState<HTMLButtonElement | null>(null);
+  const bindTrigger = useCallback((el: HTMLButtonElement | null) => {
+    triggerRef.current = el;
+    setTriggerEl(el);
+  }, []);
+  const getTrigger = () => triggerEl;
+  // The phone sheet replaces the anchored popover at the shell's one mobile line.
+  const sheet = useIsMobile();
 
   const measure = useCallback(() => {
     const r = triggerRef.current?.getBoundingClientRect();
@@ -144,6 +173,8 @@ export function AnchoredMenu({
     // `useModalDrawer`'s restore puts focus back on the trigger, from which the next Tab continues
     // into the page. Both directions, because a trap that holds one way is still a trap.
     if (e.key === "Tab") {
+      // The phone sheet is modal: Tab stays inside it (the hook contains focus) rather than leave.
+      if (sheet) return;
       e.preventDefault();
       setOpen(false);
       return;
@@ -179,12 +210,18 @@ export function AnchoredMenu({
     // followed the same press toggled `open` back on — so two real clicks left the menu OPEN.
     insideRefs: [triggerRef],
     // The background stays live. Naming an empty set is what says "this panel isolates nothing",
-    // rather than inheriting the default that makes `#root` inert.
-    inertRefs: [],
+    // rather than inheriting the default that makes `#root` inert. The phone sheet is the
+    // opposite: it owns the screen, so `#root` (the default) goes inert behind it.
+    inertRefs: sheet ? undefined : ISOLATE_NOTHING,
     // …AND FOCUS IS NOT CONTAINED, which is a SECOND thing and not implied by the first (#942
-    // review). Tab is handled above instead: it closes.
-    containFocus: false,
+    // review). Tab is handled above instead: it closes. The sheet contains it.
+    containFocus: sheet,
   });
+
+  // A trigger that turns DISABLED means the action its menu started is now in flight (the
+  // mission menu's confirmed Archive, say): the menu closes, so a phone's modal sheet never keeps
+  // the screen while the work it launched runs on (#1531).
+  if (disabled && open) setOpen(false);
 
   // Declared after the hook, so it runs after the hook's own focus-in and has the last word.
   useEffect(() => {
@@ -192,10 +229,67 @@ export function AnchoredMenu({
     menuItems(panelRef.current)[0]?.focus();
   }, [open, focus]);
 
-  const panel = open ? (
+  const items = (
+    <div
+      ref={menuRef}
+      tabIndex={-1}
+      className={classes.items}
+      role="menu"
+      aria-label={label}
+    >
+      {typeof children === "function" ? children(close, getTrigger) : children}
+    </div>
+  );
+
+  const panel = !open ? null : sheet ? (
+    <>
+      {/* A press on the scrim is a press outside the sheet: the hook closes it. */}
+      <div
+        className={m.scrim}
+        aria-hidden="true"
+        data-testid={menuTestId ? `${menuTestId}-scrim` : undefined}
+      />
+      <div className={m.sheetWrap}>
+        {/* The sheet is MODAL (the page behind is inert), so it is a named modal dialog around
+            the menu (Hermes on #1560): its title, the menu and Cancel all live inside it, and the
+            menu inside keeps its own roving keyboard. */}
+        <div
+          ref={panelRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label={label}
+          className={`${classes.panel} ${m.sheet}`}
+          data-testid={menuTestId}
+          data-modal-inside=""
+          data-sheet=""
+          onKeyDown={onKeyDown}
+          // A modal sheet covers the page its action changes, so activating an item closes it
+          // (#1531) — after the item's own handler has run. An item that only ARMS a two-tap
+          // confirmation marks itself `data-menu-keep-open` and the sheet stays for the second tap.
+          onClick={(e) => {
+            const item = (e.target as Element).closest('[role="menuitem"]');
+            if (!item || item.hasAttribute("data-menu-keep-open")) return;
+            if ((item as HTMLButtonElement).disabled) return;
+            queueMicrotask(close);
+          }}
+        >
+          <div className={m.sheetHead} aria-hidden="true">
+            <span className={m.sheetTitle}>{label}</span>
+          </div>
+          {head}
+          {/* The focus target on open when the caller asks for "menu", and the menu itself. */}
+          {items}
+          {note}
+          <button type="button" className={m.cancel} onClick={close}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </>
+  ) : (
     <div
       ref={panelRef}
-      className={classes.panel}
+      className={`${m.panel} ${classes.panel}`}
       data-testid={menuTestId}
       data-modal-inside={portal ? "" : undefined}
       style={
@@ -214,24 +308,16 @@ export function AnchoredMenu({
     >
       {head}
       {/* The focus target on open when the caller asks for "menu", and the menu itself. */}
-      <div
-        ref={menuRef}
-        tabIndex={-1}
-        className={classes.items}
-        role="menu"
-        aria-label={label}
-      >
-        {typeof children === "function" ? children(close) : children}
-      </div>
+      {items}
       {note}
     </div>
-  ) : null;
+  );
 
   return (
     <span className={classes.wrap}>
       <button
         type="button"
-        ref={triggerRef}
+        ref={bindTrigger}
         className={triggerClassName}
         disabled={disabled}
         aria-haspopup="menu"
@@ -239,14 +325,14 @@ export function AnchoredMenu({
         aria-label={label}
         onClick={() => {
           // Measured BEFORE it opens, so a portalled panel's first paint is already in place.
-          if (!open && portal) measure();
+          if (!open && portal && !sheet) measure();
           setOpen((v) => !v);
         }}
         data-testid={triggerTestId}
       >
         {trigger}
       </button>
-      {panel && portal ? createPortal(panel, document.body) : panel}
+      {panel && (portal || sheet) ? createPortal(panel, document.body) : panel}
     </span>
   );
 }

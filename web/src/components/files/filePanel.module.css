@@ -10,7 +10,7 @@
  * no z-index at all beyond sitting over the pane's decorative corner brackets.
  *
  * The SHEET and the VIEWER are portalled to <body> and land in the modal band. That is not
- * cosmetic: the terminal's `.touchLayer` is `position:absolute; inset:0; z-index:6;
+ * cosmetic: the terminal's `.touchLayer` is `position:absolute; inset:0; z-index: calc(var(--z-raised) + 5);
  * touch-action:none` and it eats touches. Anything rendered inside the pane subtree below that
  * layer would be untouchable on a phone. Portal + modal band is what makes touch work at all.
  * Viewer sits one step above the sheet because it opens FROM the sheet.
@@ -18,7 +18,7 @@
 
 .dock {
   position: relative;
-  z-index: 1; /* over the pane's .hud-cnr decorations, under everything interactive */
+  z-index: var(--z-raised); /* over the pane's .hud-cnr decorations, under everything interactive */
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -31,7 +31,7 @@
 /* Resize gutter — a real focusable separator, matching the shipped sidebar one. */
 .gutter {
   position: relative;
-  z-index: 2;
+  z-index: calc(var(--z-raised) + 1);
   flex: none;
   width: 6px;
   cursor: col-resize;
@@ -61,22 +61,26 @@
 /* ------------------------------------------------------------------ sheet (narrow pane) */
 
 .sheetScrim {
+  composes: nj-scrim from global;
   position: fixed;
   inset: 0;
-  z-index: 200;
+  z-index: var(--z-dialog);
   border: 0;
   padding: 0;
-  background: color-mix(in srgb, var(--bg-0) 72%, transparent);
   /* A tap on the scrim closes. Also stops the scroll chaining to the page behind. */
   overscroll-behavior: contain;
 }
+/* The one sheet chrome (#1531): an opaque face with the lit rail along its top edge, sliding up from
+ * the floor (`nj-sheet-in`; a 120 ms fade in Reduced, still in Off). */
 .sheet {
+  composes: nj-sheet-in nj-fade-ok from global;
   position: fixed;
   inset: 0;
-  z-index: 201;
+  z-index: calc(var(--z-dialog) + 1);
   display: flex;
   flex-direction: column;
   background: var(--bg-1);
+  border-top: 2px solid var(--hud);
   /* 100dvh, not vh — mobile browser chrome would otherwise hide the footer. */
   height: 100dvh;
 }
@@ -84,8 +88,8 @@
   flex: none;
   width: 54px;
   height: 3px;
-  margin: 8px auto 2px;
-  background: var(--line-strong);
+  margin: var(--sp-2) auto 2px;
+  background: var(--hud-dim);
 }
 
 /* Contained sheet (#1109): the window-hosted variant renders INLINE inside the host's own
@@ -98,6 +102,9 @@
 }
 .sheet.sheetInHost {
   height: auto; /* the host box is the size; 100dvh is the portalled sheet's business */
+  /* No slide (#1531): inside a map window the sheet appears because the WINDOW crossed a width,
+     not because anything was opened — the same panel changes shape, it does not arrive. */
+  animation: none;
 }
 
 /* ------------------------------------------------------------------ shared chrome */
@@ -436,22 +443,24 @@
 
 /* ------------------------------------------------------------------ viewer overlay */
 
+/* The viewer wears THE dialog chrome (#1531): the scrim fades in, the frame is an armour panel
+ * (chamfer, cut lines, the lit rail) that deploys in. `position: fixed` is restated after the
+ * composed frame on purpose: this module's rules load after nightjar.css, so it wins. */
 .viewerScrim {
+  composes: nj-scrim from global;
   position: fixed;
   inset: 0;
-  z-index: 210; /* above the sheet (201) — the viewer opens FROM it */
+  z-index: var(--z-dialog-stack); /* above the sheet (201) — the viewer opens FROM it */
   border: 0;
   padding: 0;
-  background: color-mix(in srgb, var(--bg-0) 72%, transparent);
 }
 .viewer {
+  composes: nj-frame nj-deploy nj-fade-ok from global;
   position: fixed;
-  z-index: 211;
+  z-index: calc(var(--z-dialog-stack) + 1);
   inset: 5vh 5vw;
   display: flex;
   flex-direction: column;
-  background: var(--bg-1);
-  border: 1px solid var(--line-strong);
 }
 .viewerHead {
   flex: none;
@@ -466,8 +475,10 @@
   flex: 1;
 }
 .viewerName {
-  font-size: 14px;
+  font-family: var(--font-display);
+  font-size: var(--fs-body);
   font-weight: 600;
+  letter-spacing: 0.04em;
   color: var(--text-1);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -475,7 +486,7 @@
 }
 .viewerPath {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   color: var(--text-3);
   overflow-wrap: anywhere;
 }
@@ -792,43 +803,26 @@
  * the same reason KeyBar portals its own. z-index 55 puts it over the compose bar (50) and the
  * RowMenu portal (51), under the notification bell (60) and every modal (200). */
 .headMenu {
+  composes: panel from "../ui/menu.module.css";
   position: fixed;
-  z-index: 55;
+  z-index: calc(var(--z-shell) + 5);
   min-width: 152px;
-  padding: 4px 0;
   /* max-height is set inline to the space under the trigger; the list scrolls inside it (#958). */
   overflow-y: auto;
-  overscroll-behavior: contain;
-  background: var(--bg-1);
-  border: 1px solid var(--line-strong);
-  box-shadow: 0 6px 18px rgb(0 0 0 / 38%);
 }
 .headMenuItem {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 34px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--text-1);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  composes: item from "../ui/menu.module.css";
   letter-spacing: 0.06em;
-  text-align: left;
-  cursor: pointer;
+  color: var(--text-1);
 }
-.headMenuItem:hover,
-.headMenuItem:focus-visible {
-  background: var(--row-hover);
-  outline: none;
-}
-@media (pointer: coarse) {
+/* ≤800px: these menus KEEP their own placement — the branch menu caps its height to the VISUAL
+ * viewport, which an on-screen keyboard shrinks (#1005), and the pane's overflow is placed by its
+ * tuned logic (#958). A CSS bottom sheet would override both; only their rows grow (#1531). */
+@media (max-width: 800px) {
   .headMenuItem {
-    min-height: 44px;
-    font-size: 12.5px;
+    min-height: 48px;
+    padding: 0 var(--sp-4);
+    font-size: var(--fs-row);
   }
 }
 
@@ -1194,11 +1188,11 @@
 .confirmCheck {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 12px;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
   color: var(--text-2);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-label);
 }
 
 @media (pointer: coarse) {
@@ -1212,7 +1206,7 @@
   }
   .confirmCheck {
     min-height: 44px;
-    font-size: 12.5px;
+    font-size: var(--fs-meta);
   }
 }
 
@@ -1258,7 +1252,7 @@
 
 .menuScrim {
   position: fixed;
-  z-index: 204; /* directly under `.aboveSheet` */
+  z-index: calc(var(--z-dialog) + 4); /* directly under `.aboveSheet` */
   inset: 0;
   padding: 0;
   border: 0;
@@ -1270,53 +1264,64 @@
  * lands on the sheet. The viewer already established this band (`.viewerScrim` 210, "above the
  * sheet — the viewer opens FROM it"); a menu takes the slot just under it. */
 .aboveSheet {
-  z-index: 205;
+  z-index: calc(var(--z-dialog) + 5);
 }
 .menuEmpty {
-  padding: 6px 12px 10px;
+  padding: var(--sp-1) var(--sp-3) var(--sp-3);
   color: var(--text-2);
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   line-height: 1.5;
 }
 
+/* The prompts (upload name taken, unsaved edits) are THE dialog (#1531): composed from
+ * components/HudDialog.module.css. Centred with `inset: 0; margin: auto` rather than a translate,
+ * because the deploy-in animates `transform`. */
 .confirmScrim {
+  composes: nj-scrim from global;
   position: fixed;
-  z-index: 211;
+  z-index: calc(var(--z-dialog-stack) + 1);
   inset: 0;
   padding: 0;
   border: 0;
-  background: color-mix(in srgb, var(--bg-0) 72%, transparent);
 }
 .confirm {
+  composes: dialog from "../HudDialog.module.css";
   position: fixed;
   /* Above the viewer (210) as well as the sheet (201): this is an alertdialog, so nothing in
      this surface may paint over it. Tying with the sheet at 201 left the outcome to DOM order. */
-  z-index: 212;
-  top: 50%;
-  left: 50%;
+  z-index: calc(var(--z-dialog-stack) + 2);
+  inset: 0;
+  margin: auto;
   width: min(420px, calc(100vw - 24px));
-  transform: translate(-50%, -50%);
-  padding: 14px 16px 16px;
-  background: var(--bg-1);
-  border: 1px solid var(--line-strong);
-  box-shadow: 0 10px 30px rgb(0 0 0 / 45%);
+  height: max-content;
 }
 .confirmHead {
-  margin-bottom: 8px;
+  composes: head from "../HudDialog.module.css";
+}
+.confirmTag {
+  composes: tag from "../HudDialog.module.css";
 }
 .confirmBody {
   margin: 0;
   color: var(--text-1);
-  font-size: 12.5px;
+  font-size: var(--fs-row);
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
 .confirmRow {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 14px;
+  composes: actions from "../HudDialog.module.css";
+  flex-wrap: wrap;
+}
+.confirmGhost {
+  composes: cancel from "../HudDialog.module.css";
+}
+.confirmGo {
+  composes: go from "../HudDialog.module.css";
+}
+/* The destructive choice in a prompt whose SAFE answer is the primary (Keep editing): outlined. */
+.confirmBad {
+  composes: danger from "../ui/actionButton.module.css";
 }
 
 @media (pointer: coarse) {
@@ -1498,13 +1503,13 @@
   /* Without `min-height: 0` a flex item refuses to shrink below its content, so the box would
    * grow past the cap and the scroll would never engage. */
   min-height: 0;
-  padding: 4px 0;
+  padding: var(--sp-1) 0;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 .menuFoot {
   flex: none;
-  padding: 4px 0;
+  padding: var(--sp-1) 0;
   border-top: 1px solid var(--line);
 }
 /* Pinned ABOVE the scrolling list: a filter that scrolls away with the rows is a filter you
@@ -1513,24 +1518,15 @@
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 8px 10px 6px;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3) var(--sp-1);
   border-bottom: 1px solid var(--line);
 }
 .menuSearch {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 5px 8px;
-  border: 1px solid var(--line-strong);
-  border-radius: 0;
-  background: var(--bg-2);
-  color: var(--text-1);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-}
-.menuSearch:focus-visible {
-  border-color: var(--accent);
-  outline: none;
+  composes: nj-field is-mono from global;
+  min-height: 32px;
+  padding: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-label);
 }
 .menuCount {
   align-self: flex-start;
@@ -1540,18 +1536,18 @@
   background: transparent;
   color: var(--accent-text);
 }
-@media (pointer: coarse) {
+@media (pointer: coarse), (max-width: 800px) {
   .menuSearch {
     min-height: 44px;
-    font-size: 12.5px;
+    font-size: var(--fs-meta);
   }
 }
 .menuHead {
-  padding: 8px 12px 4px;
+  padding: var(--sp-2) var(--sp-3) var(--sp-1);
   border-top: 1px solid var(--line);
 }
 .menuSep {
-  margin: 4px 0;
+  margin: var(--sp-1) 0;
   border-top: 1px solid var(--line);
 }
 .menuItemText {
@@ -1626,14 +1622,6 @@
   }
 }
 
-/* The discard confirmation reuses `.confirm` (defined alongside the upload collision prompt in
- * #807) and changes only the one thing that must differ: this dialog is about DESTROYING work,
- * so its border carries the deletion colour. A modifier rather than a second `.confirm` block —
- * two definitions of one class would let source order decide whether the destructive signal
- * survives, and status colour is load-bearing in this panel. */
-.confirmDanger {
-  border-color: var(--git-del-fg);
-}
 
 /* ------------------------------------------------------------------ commit selected (#950) */
 

@@ -82,7 +82,15 @@ export function MissionLanding({
   return (
     <div className={styles.landing} data-testid="mission-landing">
       <div className={styles.landingInner}>
-        <h2 className={styles.landingHeading}>What should this mission achieve?</h2>
+        {/* tabIndex -1: where focus goes when an action moves the console to this landing and
+            unmounts the control that had it (an unarchive switching scope, #1531). */}
+        <h2
+          className={styles.landingHeading}
+          tabIndex={-1}
+          data-testid="mission-landing-heading"
+        >
+          What should this mission achieve?
+        </h2>
         <p className={styles.landingSub}>
           Mission control plans the work, dispatches an agent and drives it to a pull request.
         </p>

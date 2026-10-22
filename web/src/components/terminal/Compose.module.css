@@ -121,7 +121,7 @@
 }
 /* Inert chips (the API composer's tools while a send is in flight) grey out like a disabled Send. */
 .keys button:disabled,
-.keyMenu button:disabled,
+.keyMenuItem:disabled,
 .mic:disabled {
   opacity: 0.55;
   cursor: default;
@@ -134,42 +134,24 @@
 .moreKey {
   flex: none;
 }
-/* Overflow popover (#234): pops UP from the more button (terminal is above). */
-/* Portalled to <body> with position:fixed (#500): bottom/left are set inline from the "…" trigger,
-   so .compose's overflow-y:auto and .terminal-pane's overflow:hidden can't clip it. Opens upward. */
+/* Overflow popover (#234): pops UP from the more button (terminal is above). On THE menu chrome
+   (ui/menu.module.css, #1531). Portalled to <body> with position:fixed (#500): bottom/left are set
+   inline from the "…" trigger, so .compose's overflow-y:auto and .terminal-pane's overflow:hidden
+   can't clip it. At ≤800px it docks full width above the key bar — a sheet that keeps the compose
+   bar (and the keyboard) in view, because these keys are sent WHILE typing. */
 .keyMenu {
+  composes: panel from "../ui/menu.module.css";
   position: fixed;
-  z-index: 50;
+  z-index: var(--z-shell);
   display: flex;
   flex-direction: column;
-  gap: 2px;
   min-width: 168px;
   max-width: calc(100vw - 16px);
-  padding: 4px;
-  background: var(--panel);
-  border: 1px solid var(--line-strong);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 }
-.keyMenu button {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 34px;
-  padding: 0 10px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12px;
+.keyMenuItem {
+  composes: item from "../ui/menu.module.css";
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--text-2);
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  text-align: left;
-  cursor: pointer;
-}
-.keyMenu button:hover {
-  color: var(--accent-text);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .keyMenuIcon {
   display: inline-flex;
@@ -177,6 +159,32 @@
   justify-content: center;
   width: 20px;
   flex: none;
+}
+/* A key drawn as text rather than an icon (the "esc" chip), inline and in the menu (#1531: the
+ * class KeyBar always named and no sheet ever defined). */
+.txt {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+@media (max-width: 800px) {
+  .keyMenu {
+    left: 0 !important;
+    right: 0;
+    width: 100%;
+    max-width: none;
+    border-left: none;
+    border-right: none;
+    background: var(--bg-1);
+    clip-path: polygon(var(--cut) 0, 100% 0, 100% 100%, 0 100%, 0 var(--cut));
+    animation: global(nj-sheet-up) var(--t-slow) var(--ease-out) both;
+  }
+  .keyMenuItem {
+    min-height: 48px;
+    font-size: var(--fs-row);
+  }
 }
 .spacer {
   flex: none;

@@ -20,6 +20,7 @@ import { missionRow } from "./mission-console";
 import { setupBench } from "./terminal/harness";
 import { mockRoster } from "./roster";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { animationsSettled } from "./nightjarShell";
 
 const ENGINE = "claude";
 const UUID = "cccccccc-1111-2222-3333-444444444444";
@@ -119,6 +120,8 @@ async function openRowMenu(page: Page) {
 /** What a dialog looks like, as the browser computed it. Parts are located by role and label, never by
  *  class name, so this works for all four dialogs without knowing their CSS modules. */
 async function look(dialog: Locator) {
+  // The dialog deploys in and, on a phone, slides up (#1531): read it where it lands.
+  await animationsSettled(dialog.page());
   await expect(dialog).toBeVisible();
   return dialog.evaluate((el) => {
     const css = (n: Element | null | undefined, keys: string[]) => {
@@ -162,6 +165,9 @@ type Look = Awaited<ReturnType<typeof look>>;
  *  purpose: a mission row has two lines and a project row one. */
 async function rowLook(row: Locator) {
   await row.page().mouse.move(0, 0);
+  // A row's state change is a short colour transition (#1531 motion): read the SETTLED look, not a
+  // frame in the middle of it.
+  await row.evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
   return row.evaluate((el) => {
     const s = getComputedStyle(el);
     return Object.fromEntries(

@@ -76,7 +76,10 @@ export function SectionNav({
           `title` says it in words. */}
       {s.beta ? (
         <span className="section-nav-beta" aria-hidden="true">
-          Beta
+          {/* The word on a labelled tile; on the ≤800px icon-only tile (28px wide at 320px) a
+              10px "BETA" cannot fit, so it is the letter (#1531: 10px is the type floor). */}
+          <span className="section-nav-beta-long">Beta</span>
+          <span className="section-nav-beta-short">β</span>
         </span>
       ) : null}
     </Link>

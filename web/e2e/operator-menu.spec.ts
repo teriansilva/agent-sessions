@@ -10,6 +10,7 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { animationsSettled } from "./nightjarShell";
 
 async function mockShell(
   page: Page,
@@ -149,6 +150,8 @@ test("on a short landscape screen every item — Sign out included — stays rea
   await page.getByTestId("operator-menu").click();
   const panel = page.getByTestId("operator-menu-panel");
   await expect(panel).toBeVisible();
+  // A sheet/dialog slides in (#1531): measure where it lands.
+  await animationsSettled(page);
   const box = (await panel.boundingBox())!;
   expect(box.y + box.height).toBeLessThanOrEqual(320);
   expect(await panel.evaluate((el) => getComputedStyle(el).overflowY)).toBe("auto");

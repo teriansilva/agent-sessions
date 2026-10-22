@@ -857,12 +857,15 @@ export function AskConsole({
       >
         {/* #1525: [portrait] [HQ + the contact's name / picker · + · ×]. Off keeps one row. */}
         {contact ? (
-          <HqPortrait
-            contact={contact}
-            playing={visible}
-            className={a.headPortrait}
-            testId="hq-head-portrait"
-          />
+          // The scan frame (#1531): decorative, Full only, paused with the ambient pause.
+          <span className={`${a.portraitFrame} nj-ambient`} aria-hidden="true">
+            <HqPortrait
+              contact={contact}
+              playing={visible}
+              className={a.headPortrait}
+              testId="hq-head-portrait"
+            />
+          </span>
         ) : null}
         <div className={a.headMain}>
         <div className={a.who}>
@@ -987,7 +990,7 @@ export function AskConsole({
                   <div className={`${styles.eventText} ${a.text}`}>{t.question}</div>
                 </article>
                 <article
-                  className={styles.event}
+                  className={`${styles.event} ${a.answer}`}
                   aria-label={`Answer from ${speakerName(t.contact)}`}
                   aria-busy={t.pending}
                   data-speaker={t.contact}
@@ -1000,6 +1003,7 @@ export function AskConsole({
                         text={t.answer}
                         testId="ask-answer"
                         instant={!t.live}
+                        streaming={t.pending}
                         markup={blockMarkup}
                       />
                       {/* Missions first, then sessions — each group labelled only when there
@@ -1138,7 +1142,7 @@ export function AskConsole({
                     <AskWorking step={t.step} />
                   ) : null}
                   {t.error ? (
-                    <div className={styles.objStale} data-testid="ask-error">
+                    <div className={`${styles.objStale} ${a.errorRow}`} data-testid="ask-error">
                       {t.error}
                     </div>
                   ) : null}

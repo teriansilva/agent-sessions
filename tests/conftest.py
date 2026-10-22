@@ -62,6 +62,7 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_PUSH_SUBS": ".config/agent-sessions/push-subscriptions.json",
     "AGENT_SESSIONS_ORCHESTRATOR_LEDGER": ".config/agent-sessions/orchestrator-ledger.jsonl",
     "AGENT_SESSIONS_AGENT_USAGE": ".config/agent-sessions/agent-usage.json",
+    "AGENT_SESSIONS_HQ_USAGE": ".config/agent-sessions/hq-usage.json",  # #1531 footer telemetry
     "AGENT_SESSIONS_TEMPLATES": ".config/agent-sessions/templates.json",
     "AGENT_SESSIONS_TEMPLATE_VARS": ".config/agent-sessions/template-variables.json",
     "AGENT_SESSIONS_TEMPLATE_SECRETS_KEY": ".config/agent-sessions/template-secrets.key",

@@ -177,6 +177,9 @@
   --page-max: 1400px;
   --prose-max: 80ch;
   /* Depth: ONE ordered scale. A `done` file names one of these, never a number. */
+  /* Paint behind its own element's content, inside that element's isolated stacking context: the
+     plate's chamfered edge and face (nightjar.css `.nj-plate`, `.nj-chip`). Never a layer. */
+  --z-under: -1;
   --z-base: 0;
   --z-raised: 1;
   --z-dock: 10;
@@ -196,6 +199,12 @@
   --shadow-drawer: 0 0 32px rgba(0, 0, 0, 0.5);
   /* Recording red (dictation). A signal colour, not failure text. */
   --rec: #ff5a5a;
+  /* A QR code's quiet zone and modules ground: white in BOTH themes — a scanner needs the
+     contrast, so this is content, not chrome. */
+  --qr-ground: #ffffff;
+  /* The command bar's height, at the root so portalled surfaces (drawers, the HQ panel) can read
+     it; the shell (.app) uses the same value. */
+  --app-header-height: 52px;
   /* Ink on a filled --status-down (a destructive dialog's confirm): white holds AA on it in both
      modes (6.1:1), where --text-1 fails on light. Pinned by contrast.test.ts. */
   --on-danger: #ffffff;

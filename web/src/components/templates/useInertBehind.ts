@@ -9,7 +9,11 @@ import { useEffect } from "react";
  *  round 7 — jsdom never enforces inert, so only a real browser showed it). A trigger that
  *  unmounted meanwhile (a KeyBar "…" overflow item goes the moment it is clicked) cannot take
  *  focus either; the composer's stable "More keys" trigger stands in for it. */
-export function useInertBehind(returnFocusTo?: HTMLElement | null) {
+export function useInertBehind(
+  returnFocusTo?: HTMLElement | null,
+  /** Where focus goes when the trigger is gone (default: the composer's "More keys"). */
+  fallbackSelector: string = 'button[aria-label="More keys"]',
+) {
   useEffect(() => {
     const root = document.getElementById("root");
     const mine = !!root && !root.hasAttribute("inert"); // a nested dialog leaves the outer one's mark
@@ -18,8 +22,8 @@ export function useInertBehind(returnFocusTo?: HTMLElement | null) {
       if (mine) root.removeAttribute("inert");
       const el = returnFocusTo?.isConnected
         ? returnFocusTo
-        : document.querySelector<HTMLElement>('button[aria-label="More keys"]');
+        : document.querySelector<HTMLElement>(fallbackSelector);
       el?.focus?.();
     };
-  }, [returnFocusTo]);
+  }, [returnFocusTo, fallbackSelector]);
 }

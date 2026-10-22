@@ -1782,6 +1782,11 @@ test("UNARCHIVE lands you in the scope the mission moved INTO, not the one it le
   await page.getByTestId("mission-unarchive").click();
   await page.getByTestId("mission-unarchive-record").click();
 
+  // FOCUS LANDS SOMEWHERE STABLE (Hermes on #1560). The dialog handed focus back to Unarchive,
+  // and the scope switch then unmounted that button with the archived selection — leaving the
+  // keyboard on the document body. The destination scope's landing heading takes it instead.
+  await expect(page.getByTestId("mission-landing-heading")).toBeFocused();
+
   // THE SCOPE ON SCREEN IS ACTIVE. The toggle offers the way back to Archived, which it only
   // does from the active rail.
   const scope = page.locator('[data-testid="rail-scope-active"]:visible').first();

@@ -1,5 +1,5 @@
-/** The pending answer (#1171): a scan bar that moves, the step the ask is on, and how long it has
- *  been at it. It replaced a static `…` that looked the same whether the ask had just started or
+/** The pending answer (#1171): the NIGHTJAR acquire bar (#1531, the `Loader` acquire look), the step
+ *  the ask is on, and how long it has been at it. It replaced a static `…` that looked the same whether the ask had just started or
  *  had been stuck for a minute.
  *
  *  The words come from the server's own progress events, so they say what is actually happening
@@ -23,9 +23,9 @@ export function AskWorking({ step }: { step: AskStep | null }) {
   const secs = Math.max(0, Math.floor((now - started) / 1000));
   return (
     <div className={a.working} data-testid="ask-working">
-      <div className={a.scan} aria-hidden="true">
-        <span className={a.scanBlock} />
-      </div>
+      {/* The shared acquire bar (components/hud/nightjar.css): a half-filled track that holds still
+          outside Full motion, so a frozen frame still says "working". */}
+      <div className={`nj-acquire ${a.scan}`} aria-hidden="true" />
       <div className={a.workingRow}>
         <span role="status" className={a.step} data-testid="ask-step">
           {askStepLabel(step)}

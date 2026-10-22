@@ -483,7 +483,7 @@
     justify-content: flex-start;
   }
 }
-/* New's menu — the section sub-menu's panel and rows (SectionNav.module.css). */
+/* New's menu — on THE menu chrome (ui/menu.module.css, #1531); this keeps placement only. */
 .menuWrap {
   position: relative;
   display: inline-flex;
@@ -492,14 +492,10 @@
   position: absolute;
   right: 0;
   top: calc(100% + 4px);
-  z-index: 60;
+  z-index: calc(var(--z-shell) + 10);
   min-width: 200px;
   width: max-content;
   max-width: min(320px, calc(100vw - 16px));
-  border: 1px solid var(--line-strong);
-  background: var(--bg-2);
-  padding: 4px 0;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
 }
 .menuItems {
   display: flex;
@@ -510,8 +506,7 @@
   outline: none;
 }
 .menuItem {
-  composes: item from "../sidebar/RowMenu.module.css";
+  composes: item from "../ui/menu.module.css";
   min-height: 44px;
-  gap: 10px;
-  text-decoration: none;
+  gap: var(--sp-2);
 }

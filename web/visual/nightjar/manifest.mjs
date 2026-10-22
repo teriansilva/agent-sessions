@@ -7,10 +7,24 @@
 //   node visual/nightjar/sweep.mjs --base http://127.0.0.1:41918 --out ../out/nightjar [--only id,id] [--full]
 
 /** @typedef {{ id: string, path: string, ready?: string, section?: string, fullPage?: boolean,
- *   action?: "stream" | "arrive" | "power-on", motion?: "full" | "reduced" | "off" }} SweepCapture
+ *   action?: "stream" | "arrive" | "power-on", motion?: "full" | "reduced" | "off",
+ *   open?: ({ testId: string } | { role: string, name: string })[], expect?: string,
+ *   phoneFirst?: ({ testId: string } | { role: string, name: string })[], asPerson?: boolean,
+ *   at?: number, expectCss?: string, present?: string }} SweepCapture
+ *  `expectCss`: like `expect`, a selector that must be visible once the popup is open — for a
+ *  panel whose role changes with the width (HQ: complementary on desktop, a dialog on a phone).
+ *  `asPerson`: clear `navigator.webdriver` (the boot sequence stands down under automation);
+ *  `at`: capture this many ms after load instead of waiting for the page to settle.
+ *  `present`: a selector that must be visible at the moment of the shot, or the capture fails.
  *  `section`: a test id, or a panel's visible title, to capture alone (it must exist and have a
  *  size, or the sweep fails). `action`: an interaction the sweep performs before capturing.
- *  `motion`: the mode for this capture (default: the sweep's `--motion`, Off). */
+ *  `motion`: the mode for this capture (default: the sweep's `--motion`, Off).
+ *  `open`: controls to click, in order, to open a popup; `expect`: the ARIA role that must then be
+ *  visible (`dialog`, `menu`, `alertdialog`…), or the sweep fails. Every width runs, so one id
+ *  covers the desktop popup AND its ≤800px bottom sheet. */
+
+/** On a phone the session rows live in the off-canvas drawer: open it first. */
+const DRAWER = [{ role: "button", name: "Open session list" }];
 
 /** @type {SweepCapture[]} */
 export const SWEEP = [
@@ -24,6 +38,54 @@ export const SWEEP = [
   { id: "gallery:stream", path: "/__nightjar", ready: "nightjar-gallery", section: "Streaming", action: "stream", motion: "full" },
   { id: "gallery:arrival", path: "/__nightjar", ready: "nightjar-gallery", section: "Arrival", action: "arrive", motion: "full" },
   { id: "gallery:power-on", path: "/__nightjar", ready: "g-panel-power", section: "g-panel-power", action: "power-on", motion: "full" },
+  // Popups (Phase 3): opened by clicking real controls, so a capture is the real popup.
+  { id: "popup:operator-menu", path: "/dashboard", open: [{ testId: "operator-menu" }], expect: "menu" },
+  { id: "popup:dashboard-new", path: "/dashboard", open: [{ testId: "dashboard-new" }], expect: "menu" },
+  { id: "popup:session-row-menu", path: "/new", phoneFirst: DRAWER, open: [{ role: "button", name: "Session actions" }], expect: "menu" },
+  {
+    id: "popup:hand-off",
+    path: "/new",
+    phoneFirst: DRAWER,
+    open: [{ role: "button", name: "Session actions" }, { role: "menuitem", name: "Hand off session to another engine" }],
+    expect: "dialog",
+  },
+  {
+    id: "popup:move-to-project",
+    path: "/new",
+    phoneFirst: DRAWER,
+    open: [{ role: "button", name: "Session actions" }, { role: "menuitem", name: "Move session to a project" }],
+    expect: "dialog",
+  },
+  {
+    id: "popup:session-brief",
+    path: "/new",
+    phoneFirst: DRAWER,
+    open: [{ role: "button", name: "Session actions" }, { role: "menuitem", name: "Open session brief" }],
+    expect: "dialog",
+  },
+  {
+    id: "popup:whats-new",
+    path: "/dashboard",
+    open: [{ testId: "operator-menu" }, { role: "menuitem", name: "What's new in 0.20" }],
+    expect: "dialog",
+  },
+  { id: "popup:bell", path: "/dashboard", open: [{ role: "button", name: "Notifications" }], expect: "dialog" },
+  {
+    id: "popup:tour",
+    path: "/dashboard",
+    open: [{ testId: "operator-menu" }, { role: "menuitem", name: "Intro tour" }],
+    expect: "dialog",
+  },
+  // HQ opens from the primary contact card (#1525: the dashboard has no HQ button).
+  {
+    id: "popup:hq",
+    path: "/dashboard",
+    ready: "hq-primary-contact",
+    open: [{ testId: "hq-primary-contact" }],
+    expectCss: '[data-testid="ask-sidebar"][data-open="true"]',
+  },
+  // The boot sequence (Phase 4), mid-boot: Full, as a person, 450 ms after load.
+  { id: "route:boot", path: "/dashboard", motion: "full", asPerson: true, at: 450, present: "[data-testid='boot-sequence']" },
   // Routes (Phases 4–11). The skeleton: the route itself in its default state; each phase adds its
   // states (loading, empty, error, opened popups, focus) as ids of its own.
   { id: "route:dashboard", path: "/dashboard" },

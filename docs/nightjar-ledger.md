@@ -35,13 +35,13 @@ the same list.
 
 | Path | Kind | Phase | Status | Captures | Motion |
 |---|---|---|---|---|---|
-| `app/App.css` | css | 4 | todo |  |  |
+| `app/App.css` | css | 4 | done | route:dashboard route:new-session route:boot popup:session-row-menu | sector fade-in (Full), boot power-on, ≤800px drawer slide-in + backdrop |
 | `components/agents/Roster.module.css` | css | 11 | todo |  |  |
 | `components/agents/SessionDefaults.module.css` | css | 11 | todo |  |  |
-| `components/ask/AskCards.module.css` | css | 4 | todo |  |  |
-| `components/ask/AskConsole.module.css` | css | 4 | todo |  |  |
-| `components/ask/AskHome.module.css` | css | 4 | todo |  |  |
-| `components/ask/AskSidebar.module.css` | css | 4 | todo |  |  |
+| `components/ask/AskCards.module.css` | css | 4 | done | popup:hq | card deploy-in, LED change flash |
+| `components/ask/AskConsole.module.css` | css | 4 | done | popup:hq | answer word fade + caret, match-row arrival, portrait scan (Full, ambient), acquire bar |
+| `components/ask/AskHome.module.css` | css | 4 | done | route:dashboard | none (layout; rows use the shared arrival flash) |
+| `components/ask/AskSidebar.module.css` | css | 4 | done | popup:hq | drawer slide-in + scrim (≤800px) |
 | `components/automations/automations.module.css` | css | 10 | todo |  |  |
 | `components/chat/ChatPane.module.css` | css | 6 | todo |  |  |
 | `components/chat/EditProposal.module.css` | css | 6 | todo |  |  |
@@ -53,10 +53,10 @@ the same list.
 | `components/gallery/gallery.module.css` | css | 10 | todo |  |  |
 | `components/gallery/viewTabs.module.css` | css | 10 | todo |  |  |
 | `components/hq/HqContactGallery.module.css` | css | 11 | todo |  |  |
-| `components/hq/hq.module.css` | css | 4 | todo |  |  |
+| `components/hq/hq.module.css` | css | 4 | done | popup:hq | portrait loop (Full only, paused with the ambient pause) |
 | `components/hq/PrimaryContact.module.css` | css | 5 | todo |  |  |
 | `components/hud/buttonGlitch.css` | css | 2 | done | gallery:buttons | glitch: filter only |
-| `components/HudDialog.module.css` | css | 3 | todo |  |  |
+| `components/HudDialog.module.css` | css | 3 | done | popup:hand-off popup:move-to-project popup:session-brief | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/hud/nightjar.css` | css | 2 | done | gallery:all | atmosphere, power-on, rail pulse, LED breathe/blink/flash, pips, gauge pulse, readout flash, seg/tab marker, disclosure, loaders, arrival, stream |
 | `components/links/HandoffStub.module.css` | css | 4 | todo |  |  |
 | `components/links/OpenLinkDialog.module.css` | css | 3 | todo |  |  |
@@ -79,19 +79,19 @@ the same list.
 | `components/pulse/missionDrawer.module.css` | css | 8 | todo |  |  |
 | `components/pulse/mission.module.css` | css | 8 | todo |  |  |
 | `components/pulse/missionThread.module.css` | css | 8 | todo |  |  |
-| `components/pulse/NotificationBell.module.css` | css | 4 | todo |  |  |
+| `components/pulse/NotificationBell.module.css` | css | 4 | done | popup:bell | deploy-in, ≤800px drawer slide-in + scrim, row arrival flash, badge bump (filter) |
 | `components/pulse/Orchestrator.module.css` | css | 8 | todo |  |  |
 | `components/sessions/AdoptToMissionModal.module.css` | css | 3 | todo |  |  |
 | `components/settings/AgentEndpointCard.module.css` | css | 11 | todo |  |  |
 | `components/settings/ResourceLimits.module.css` | css | 11 | todo |  |  |
 | `components/shares/Shares.module.css` | css | 11 | todo |  |  |
-| `components/shell/HelpMenu.module.css` | css | 4 | todo |  |  |
-| `components/shell/OperatorMenu.module.css` | css | 4 | todo |  |  |
-| `components/shell/SectionNav.module.css` | css | 4 | todo |  |  |
+| `components/shell/HelpMenu.module.css` | css | 4 | done | popup:operator-menu | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
+| `components/shell/OperatorMenu.module.css` | css | 4 | done | popup:operator-menu | tile hover transition |
+| `components/shell/SectionNav.module.css` | css | 4 | done | route:dashboard route:mission | tab tint transition |
 | `components/sidebar/Filters.module.css` | css | 6 | todo |  |  |
-| `components/sidebar/RowMenu.module.css` | css | 3 | todo |  |  |
+| `components/sidebar/RowMenu.module.css` | css | 3 | done | popup:session-row-menu | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
 | `components/sidebar/SessionList.module.css` | css | 6 | todo |  |  |
-| `components/slideshow/Slideshow.module.css` | css | 4 | todo |  |  |
+| `components/slideshow/Slideshow.module.css` | css | 4 | done | popup:tour popup:whats-new | none (static dots) |
 | `components/structured/BackgroundWork.module.css` | css | 6 | todo |  |  |
 | `components/structured/Markdown.module.css` | css | 6 | todo |  |  |
 | `components/structured/NotSent.module.css` | css | 6 | todo |  |  |
@@ -102,25 +102,25 @@ the same list.
 | `components/templates/SuggestionsPanel.module.css` | css | 10 | todo |  |  |
 | `components/templates/TemplatePickerModal.module.css` | css | 3 | todo |  |  |
 | `components/terminal/Compose.module.css` | css | 6 | todo |  |  |
-| `components/terminal/HandoffModal.module.css` | css | 3 | todo |  |  |
+| `components/terminal/HandoffModal.module.css` | css | 3 | done | popup:hand-off | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/RuntimeGate.module.css` | css | 6 | todo |  |  |
 | `components/terminal/SentMessagesModal.module.css` | css | 3 | todo |  |  |
-| `components/terminal/SessionRecapModal.module.css` | css | 3 | todo |  |  |
+| `components/terminal/SessionRecapModal.module.css` | css | 3 | done | popup:session-brief | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/Terminal.module.css` | css | 6 | todo |  |  |
 | `components/ui/actionButton.module.css` | css | 2 | done | gallery:buttons | press glitch (filter), hover |
 | `components/updates/UpdateProgressPanel.module.css` | css | 11 | todo |  |  |
 | `components/updates/UpdateWhatsNew.module.css` | css | 11 | todo |  |  |
-| `components/wizard/WizardShell.module.css` | css | 4 | todo |  |  |
+| `components/wizard/WizardShell.module.css` | css | 4 | done | route:new-project | progress fill, rail tint |
 | `index.css` | css | 1 | todo |  |  |
 | `routes/AgentsSettings.module.css` | css | 11 | todo |  |  |
 | `routes/Appearance.module.css` | css | 11 | todo |  |  |
-| `routes/Ask.module.css` | css | 4 | todo |  |  |
+| `routes/Ask.module.css` | css | 4 | done | popup:hq | none (layout) |
 | `routes/Checklists.module.css` | css | 8 | todo |  |  |
 | `routes/Memory.module.css` | css | 10 | todo |  |  |
 | `routes/NewProject.module.css` | css | 10 | todo |  |  |
 | `routes/NewSessionLanding.module.css` | css | 6 | todo |  |  |
 | `routes/NightjarGallery.module.css` | css | 2 | done | gallery:all | none (layout) |
-| `routes/Onboarding.module.css` | css | 4 | todo |  |  |
+| `routes/Onboarding.module.css` | css | 4 | done | popup:tour | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `routes/ProjectsManager.module.css` | css | 11 | todo |  |  |
 | `routes/Pulse.module.css` | css | 8 | todo |  |  |
 | `routes/Settings.module.css` | css | 11 | todo |  |  |
@@ -130,10 +130,16 @@ the same list.
 | `theme/fonts.css` | css | 1 | done | gallery:all | none (font faces) |
 | `theme/motion.css` | css | 1 | done | gallery:all | the mode rules and keyframes themselves |
 | `tokens.css` | css | n/a | n/a: the palette itself (literal allowlist) | — | — |
-| `whatsnew/WhatsNewDialog.module.css` | css | 4 | todo |  |  |
-| `app/App.tsx` | popup | 4 | todo |  |  |
-| `components/ask/AskSidebar.tsx` | popup | 4 | todo |  |  |
-| `components/ask/AskSwitcher.tsx` | popup | 3 | todo |  |  |
+| `whatsnew/WhatsNewDialog.module.css` | css | 4 | done | popup:whats-new | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced; slide image fade |
+| `components/ui/menu.module.css` | css | 3 | done | popup:operator-menu popup:session-row-menu popup:dashboard-new | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
+| `components/ui/toast.module.css` | css | 3 | todo |  |  |
+| `components/pulse/MissionTitle.module.css` | css | 8 | todo |  |  |
+| `components/shell/FooterTelemetry.module.css` | css | 4 | done | route:dashboard | value bump (filter step, Full only) |
+| `components/shell/BootSequence.module.css` | css | 4 | done | route:boot | boot: log lines fade in, acquire bar, layer fades out; panels power on (fade + rise) |
+| `app/ShellStates.module.css` | css | 4 | todo |  |  |
+| `app/App.tsx` | popup | 4 | done | popup:session-row-menu | ≤800px drawer slide-in + backdrop |
+| `components/ask/AskSidebar.tsx` | popup | 4 | done | popup:hq | drawer slide-in + scrim (≤800px) |
+| `components/ask/AskSwitcher.tsx` | popup | 4 | done | popup:hq | listbox deploy-in |
 | `components/ask/NeedsYouDetailsDialog.tsx` | popup | 3 | todo |  |  |
 | `components/ask/RecentWork.tsx` | popup | 3 | todo |  |  |
 | `components/automations/ConsentDialog.tsx` | popup | 3 | todo |  |  |
@@ -153,29 +159,30 @@ the same list.
 | `components/pulse/MissionOverflow.tsx` | popup | 3 | todo |  |  |
 | `components/pulse/MissionRail.tsx` | popup | 8 | todo |  |  |
 | `components/pulse/MissionTitle.tsx` | popup | 3 | todo |  |  |
-| `components/pulse/NotificationBell.tsx` | popup | 3 | todo |  |  |
+| `components/pulse/NotificationBell.tsx` | popup | 4 | done | popup:bell | deploy-in, drawer slide-in, row arrival flash |
 | `components/pulse/ObjectiveDirectionDialog.tsx` | popup | 3 | todo |  |  |
 | `components/sessions/AdoptToMissionModal.tsx` | popup | 3 | todo |  |  |
 | `components/shares/SharePubliclyModal.tsx` | popup | 3 | todo |  |  |
-| `components/sidebar/MoveToProjectModal.tsx` | popup | 3 | todo |  |  |
-| `components/sidebar/RowMenu.tsx` | popup | 3 | todo |  |  |
+| `components/sidebar/MoveToProjectModal.tsx` | popup | 3 | done | popup:move-to-project | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
+| `components/sidebar/RowMenu.tsx` | popup | 3 | done | popup:session-row-menu | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
 | `components/structured/PermissionsDialog.tsx` | popup | 3 | todo |  |  |
 | `components/structured/StructuredPane.tsx` | popup | 6 | todo |  |  |
 | `components/templates/ConfirmDialog.tsx` | popup | 3 | todo |  |  |
 | `components/templates/SessionChooserModal.tsx` | popup | 3 | todo |  |  |
 | `components/templates/TemplatePickerModal.tsx` | popup | 3 | todo |  |  |
 | `components/terminal/Compose.tsx` | popup | 6 | todo |  |  |
-| `components/terminal/HandoffModal.tsx` | popup | 3 | todo |  |  |
+| `components/terminal/HandoffModal.tsx` | popup | 3 | done | popup:hand-off | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/HeadActions.tsx` | popup | 3 | todo |  |  |
 | `components/terminal/KeyBar.tsx` | popup | 3 | todo |  |  |
 | `components/terminal/SentMessagesModal.tsx` | popup | 3 | todo |  |  |
-| `components/terminal/SessionRecapModal.tsx` | popup | 3 | todo |  |  |
+| `components/terminal/SessionRecapModal.tsx` | popup | 3 | done | popup:session-brief | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/Terminal.tsx` | popup | 6 | todo |  |  |
-| `components/ui/AnchoredMenu.tsx` | popup | 3 | todo |  |  |
+| `components/ui/AnchoredMenu.tsx` | popup | 3 | done | popup:operator-menu popup:dashboard-new | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
 | `routes/NewSessionLanding.tsx` | popup | 6 | todo |  |  |
-| `routes/Onboarding.tsx` | popup | 4 | todo |  |  |
+| `routes/Onboarding.tsx` | popup | 4 | done | popup:tour | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `routes/RenameProjectModal.tsx` | popup | 3 | todo |  |  |
-| `whatsnew/WhatsNewDialog.tsx` | popup | 4 | todo |  |  |
+| `whatsnew/WhatsNewDialog.tsx` | popup | 4 | done | popup:whats-new | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
+| `components/pulse/MissionHeaderActions.tsx` | popup | 3 | todo |  |  |
 | `components/hud/DataFlowCanvas.tsx` | canvas | 1 | done | gallery:all | canvas trails (Full, dark), still grid otherwise |
 | `components/overview/OverviewCanvas.tsx (React Flow)` | canvas | 9 | todo |  |  |
 | `components/memory/MemoryGraph.tsx (React Flow)` | canvas | 9 | todo |  |  |

@@ -94,6 +94,11 @@ import {
 } from "../lib/routes";
 import { SETTINGS_PATH } from "../routes/settingsTabs";
 import { OperatorMenu } from "../components/shell/OperatorMenu";
+import { FooterTelemetry } from "../components/shell/FooterTelemetry";
+import { BootSequence } from "../components/shell/BootSequence";
+import { useBoot } from "../components/shell/useBoot";
+import { Loader } from "../components/hud/Loader";
+import shellStates from "./ShellStates.module.css";
 import { SectionNav } from "../components/shell/SectionNav";
 import {
   activeSection,
@@ -180,6 +185,8 @@ function Layout() {
   const [navOpen, setNavOpen] = useState(false);
   // Footer version surface (#661): the running version + the tap-to-reload update chip.
   const version = useAppVersion();
+  // The boot sequence (#1531): once per visit, Full motion only; the panels power on under it.
+  const booting = useBoot();
   // Desktop collapse, persisted. Mobile uses navOpen (off-canvas) and ignores this.
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(COLLAPSE_KEY) === "1",
@@ -403,6 +410,20 @@ function Layout() {
   const asideRef = useRef<HTMLElement | null>(null);
   const headerRef = useRef<HTMLElement | null>(null);
   const mainRef = useRef<HTMLElement | null>(null);
+  // The sector fade (#1531, docs/design.md v2 §8 "Route change"): a 160 ms fade of the pane on a
+  // route change, by restarting a CSS animation on the SAME element — nothing remounts (a remount
+  // would close a live session's socket). Session routes are skipped: the terminal is a work
+  // surface and never gets decorative motion. The animation is a no-op outside Full (motion.css).
+  const sectorPath = location.pathname;
+  useEffect(() => {
+    const el = mainRef.current;
+    if (!el || sectorPath.startsWith("/s/")) return;
+    el.classList.remove("sector-in");
+    void el.offsetWidth; // restart the animation
+    el.classList.add("sector-in");
+    const t = setTimeout(() => el.classList.remove("sector-in"), 400);
+    return () => clearTimeout(t);
+  }, [sectorPath]);
   const backdropRef = useRef<HTMLButtonElement | null>(null);
   const navToggleRef = useRef<HTMLButtonElement | null>(null);
   const drawerIsModal = isMobile && navOpen;
@@ -509,8 +530,14 @@ function Layout() {
       <AskPanelContext.Provider value={askPanel}>
       <WhatsNewCtx.Provider value={whatsNew.open}>
       <ButtonGlitch />
+      <BootSequence
+        on={booting}
+        host={config?.hostname ?? null}
+        operator={config?.username ?? null}
+        version={version.displayVersion}
+      />
       <div
-        className={cls}
+        className={booting ? `${cls} booting` : cls}
         style={{ "--sidebar-w": `${sidebarW}px` } as React.CSSProperties}
       >
         {/* Canvas lives INSIDE .app so it's within the panels' backdrop scope: .app is a
@@ -602,10 +629,6 @@ function Layout() {
               : undefined
           }
         >
-          <span className="hud-cnr tl" />
-          <span className="hud-cnr tr" />
-          <span className="hud-cnr bl" />
-          <span className="hud-cnr br" />
           {/* NO VISIBLE ✕, BUT A WAY OUT FROM INSIDE (#962). The operator asked for the ✕ gone, and
               touch users close the drawer on the scrim. That is not enough for a screen-reader user
               on a phone: the opener sits in the inert header, and the scrim is outside the dialog
@@ -757,13 +780,13 @@ function Layout() {
           onClick={() => setNavOpen(false)}
         />
         <main className="terminal-pane" ref={mainRef}>
-          <span className="hud-cnr hero tl" />
-          <span className="hud-cnr hero tr" />
-          <span className="hud-cnr hero bl" />
-          <span className="hud-cnr hero br" />
           <ChunkErrorBoundary>
             <Suspense
-              fallback={<div className="tr-overview tr-ov-state">Loading…</div>}
+              fallback={
+                <div className={shellStates.state}>
+                  <Loader kind="radar" label="Loading…" />
+                </div>
+              }
             >
               {/* The console reads the slot from here (#935) — see `railSlot.tsx`. */}
               <MissionRailSlotProvider value={railSlot}>
@@ -829,6 +852,8 @@ function Layout() {
             to, or ask (#1232). Renders nothing unless it is asking. */}
         <EntryLinks />
         <footer className="hud-classbar">
+          {/* Live telemetry (#1531): CPU, RAM and HQ's token use — never classification text. */}
+          <FooterTelemetry />
           <span className="hud-footer-left">
             <span className="hud-tag">
               {config?.hostname

@@ -14,7 +14,7 @@
 .engine::before { content: ""; width: 8px; height: 8px; background: currentColor; flex-shrink: 0; }
 .kind { font: 9px var(--font-mono); letter-spacing: .14em; color: var(--text-2); }
 /* Bottom-left, with the zoom controls bottom-right: the two never meet, however narrow the canvas. */
-.legend { position: absolute; left: 12px; bottom: 12px; max-width: calc(100% - 96px); box-sizing: border-box; z-index: 5; display: flex; flex-wrap: wrap; gap: 14px; align-items: center; padding: 6px 10px; font-size: 11px; color: var(--text-2); background: var(--panel); border: 1px solid var(--border); }
+.legend { position: absolute; left: 12px; bottom: 12px; max-width: calc(100% - 96px); box-sizing: border-box; z-index: calc(var(--z-raised) + 4); display: flex; flex-wrap: wrap; gap: 14px; align-items: center; padding: 6px 10px; font-size: 11px; color: var(--text-2); background: var(--panel); border: 1px solid var(--border); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .solid, .dashed { display: inline-block; width: 24px; border-top: 1.5px solid var(--text-2); }
 .dashed { border-top-style: dashed; }

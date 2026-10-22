@@ -1950,6 +1950,20 @@ export interface EnginesResponse {
 
 /** Host/system info (Settings → System). Every field is fail-soft server-side, so any
  *  of them may be absent depending on the platform / permissions. */
+/** `GET /api/telemetry` (#1531). Every field may be null where the host cannot say (non-Linux). */
+export interface Telemetry {
+  cpu_pct: number | null;
+  mem: { used: number; total: number; pct: number } | null;
+  hq: {
+    ctx_tokens: number | null;
+    ctx_estimated: boolean;
+    today_tokens: number;
+    today_estimated: boolean;
+    at: number | null;
+  };
+  as_of: number;
+}
+
 export interface SystemInfo {
   os?: string;
   platform?: string;

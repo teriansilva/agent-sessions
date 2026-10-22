@@ -79,3 +79,42 @@ test("focus lands on the safe action and returns to the trigger", async () => {
   expect(inertAtFocus).toBe(false);
   trigger.remove();
 });
+
+test("a destructive confirm is the filled danger action; a plain one is the primary (#1531)", () => {
+  const a = render(<ConfirmDialog tag="t" title="x" confirmLabel="Delete" danger onCancel={() => {}} onConfirm={() => {}} />);
+  const danger = screen.getByRole("button", { name: "Delete" }).className;
+  a.unmount();
+  render(<ConfirmDialog tag="t" title="x" confirmLabel="Save" onCancel={() => {}} onConfirm={() => {}} />);
+  const plain = screen.getByRole("button", { name: "Save" }).className;
+  expect(danger).toMatch(/danger/);
+  expect(plain).not.toMatch(/danger/);
+  // Whatever the confirm is, focus starts on the SAFE action.
+  expect(screen.getByRole("button", { name: /^cancel$/i })).toHaveFocus();
+});
+
+test("Escape is owned by the dialog: nothing behind it sees the key (#1531)", async () => {
+  const behind = vi.fn();
+  window.addEventListener("keydown", behind);
+  const { onCancel } = dialog();
+  await userEvent.keyboard("{Escape}");
+  window.removeEventListener("keydown", behind);
+  expect(onCancel).toHaveBeenCalledTimes(1);
+  expect(behind).not.toHaveBeenCalled();
+});
+
+test("markers and role reach the dialog and its confirm (#1531)", () => {
+  render(
+    <ConfirmDialog
+      tag="t"
+      title="Revert file"
+      confirmLabel="Revert"
+      role="alertdialog"
+      markers={{ dialog: { "data-x-confirm": "" }, confirm: { "data-x-go": "" } }}
+      onCancel={() => {}}
+      onConfirm={() => {}}
+    />,
+  );
+  const d = screen.getByRole("alertdialog", { name: "Revert file" });
+  expect(d).toHaveAttribute("data-x-confirm");
+  expect(screen.getByRole("button", { name: "Revert" })).toHaveAttribute("data-x-go");
+});

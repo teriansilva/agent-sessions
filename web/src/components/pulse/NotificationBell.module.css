@@ -1,4 +1,7 @@
-/* Notification bell (#726 Phase 3). Tactical-HUD vocabulary: 1px borders, no radii, mono tags.
+/* Notification bell (#726 Phase 3, NIGHTJAR #1531). The panel is an armour frame (`nj-frame`:
+ * chamfered edge, cut lines, the lit rail) that deploys in (fade + 6 px rise, never a scale); on a
+ * phone it is a drawer sliding in from the right behind a scrim. A row that arrives while the panel
+ * is open flashes in (`nj-arrive`); the badge bumps when the count rises. Tokens only.
  *
  * The badge is `--status-degraded` (amber), NOT `--status-down` (red). Per docs/design.md, red
  * means error/offline/destructive; an escalation wants a DECISION and must never read as an
@@ -23,10 +26,14 @@
 .btn:hover {
   color: var(--text-1);
 }
+.btn:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
 .btnOn {
-  color: var(--accent-text);
-  border-color: var(--line-strong);
-  background: var(--glass-strong);
+  color: var(--hud-text);
+  border-color: var(--hud-dim);
+  background: color-mix(in srgb, var(--hud) 12%, transparent);
 }
 .badge {
   position: absolute;
@@ -38,10 +45,14 @@
   background: var(--status-degraded);
   color: var(--on-accent);
   font-family: var(--font-mono);
-  font-size: 0.55rem;
+  font-size: var(--fs-micro);
   font-weight: 700;
   line-height: 14px;
   text-align: center;
+}
+/* The count rose: one brightness step on the badge (a filter, never a scale — it holds text). */
+.badgeBump {
+  animation: global(nj-glitch-step) var(--t-arrive) var(--ease-out) 1;
 }
 
 /* `fixed`, not `absolute`: the panel is portalled to <body> at both widths (#752), so it has no
@@ -54,6 +65,9 @@
  * 14px body (§4) for the reason, a 15px title, the `.hud-h` heading spec (mono 11px/600 .16em)
  * for chrome, mono 11.5px for the meta line, and 16px gutters. */
 .panel {
+  composes: nj-frame nj-deploy nj-fade-ok from global;
+  --nj-face: var(--bg-1);
+  --nj-edge: var(--hud-dim);
   position: fixed;
   top: 56px;
   right: 8px;
@@ -61,10 +75,7 @@
   max-height: min(78vh, 720px);
   overflow-y: auto;
   overscroll-behavior: contain;
-  background: var(--bg-1);
-  border: 1px solid var(--accent);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
-  z-index: 60;
+  z-index: calc(var(--z-shell) + 10);
 }
 
 /* Two tiers: heading + count (+ close on a phone), then the list's actions on their own row. */
@@ -76,7 +87,7 @@
 .panel .head {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: var(--z-raised);
 }
 .headTop {
   display: flex;
@@ -85,13 +96,25 @@
   min-height: 52px;
   padding: 4px 16px;
 }
+/* The callsign: a hazard notch, then the name in display caps. */
 .heading {
-  font-family: var(--font-mono);
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font-display);
+  font-size: var(--fs-meta);
   font-weight: 600;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--text-1);
+}
+.heading::before {
+  content: "";
+  flex: none;
+  width: 22px;
+  height: 10px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.85;
 }
 /* The count pairs the unread colour (the badge's `--status-degraded`) with words — never colour
  * alone (§8). The dot is the status signal; the text stays a neutral, readable token. */
@@ -100,7 +123,7 @@
   align-items: center;
   gap: 6px;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-label);
   letter-spacing: 0.06em;
   color: var(--text-2);
   font-variant-numeric: tabular-nums;
@@ -132,7 +155,7 @@
 .toolbar .confirmYes {
   min-height: 36px;
   padding: 4px 12px;
-  font-size: 13px;
+  font-size: var(--fs-row);
 }
 /* Only the armed confirmation is destructive, and only then does it earn the colour. */
 .confirmYes {
@@ -141,7 +164,7 @@
   font-weight: 700;
 }
 .confirm {
-  font-size: 13px;
+  font-size: var(--fs-row);
   font-weight: 600;
   color: var(--text-1);
   margin-right: 4px;
@@ -154,7 +177,7 @@
   gap: 10px;
   margin: 0;
   padding: 36px 16px;
-  font-size: 14px;
+  font-size: var(--fs-body);
   color: var(--text-2);
   text-align: center;
 }
@@ -184,11 +207,15 @@
   background: var(--glass-strong);
   border-left-color: var(--status-degraded);
 }
+/* Arrived while the panel was open: a 6 px slide and one HUD-tint flash (nj-arrive). */
+.arrived {
+  composes: nj-arrive nj-fade-ok from global;
+}
 .title {
   grid-column: 1;
   grid-row: 1;
   align-self: center;
-  font-size: 15px;
+  font-size: var(--fs-title);
   font-weight: 600;
   line-height: 1.35;
   color: var(--text-1);
@@ -197,7 +224,7 @@
 .reason {
   grid-column: 1 / -1;
   margin-top: 6px;
-  font-size: 14px;
+  font-size: var(--fs-body);
   line-height: 1.5;
   color: var(--text-2);
   overflow-wrap: anywhere;
@@ -222,7 +249,7 @@
 .rowX:hover,
 .rowX:focus-visible {
   color: var(--text-1);
-  border-color: var(--line-strong);
+  border-color: var(--hud-dim);
 }
 
 .foot {
@@ -233,14 +260,14 @@
   flex-wrap: wrap;
   margin-top: 12px;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-label);
   color: var(--text-3);
 }
 .proj {
   min-width: 0;
   max-width: 100%;
   overflow-wrap: anywhere;
-  color: var(--brand);
+  color: var(--hud-text);
   border: 1px solid var(--line-strong);
   padding: 2px 7px;
 }
@@ -263,13 +290,17 @@
   gap: 6px;
   min-height: 36px;
   padding: 4px 12px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-1);
-  border: 1px solid var(--accent-soft);
+  border: 1px solid var(--hud-dim);
   text-decoration: none;
+  font-family: var(--font-display);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
 }
 .open svg {
   color: var(--accent-text);
@@ -291,8 +322,12 @@
 .open:focus-visible,
 .closeBtn:focus-visible,
 .settledClear:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+/* On the accent fill the ring is the fill's own ink. */
+.open:focus-visible {
+  outline-color: var(--on-accent);
 }
 
 @media (max-width: 800px) {
@@ -337,28 +372,28 @@
  * every row clipped, and since
  * `scrollWidth === clientWidth` the clipped half could not be scrolled into view at all.
  *
- * Breakpoint is 640px, not the 800px above: 640 is where the topbar collapses and the
- * telemetry disappears. Between 641 and 800 the bell is still right-aligned and the dropdown
- * still lands on-screen, so it stays a dropdown there.
+ * Breakpoint is the shell's one phone line, 800px (`BELL_DRAWER_QUERY`, #1531): it used to be
+ * 640px, which left a 641–800 band where the anchored dropdown had to carry the touch floor.
  *
  * These rules only ever apply to the portalled copy — a `position: fixed` drawer rendered
  * inside `.wrap` would be clipped to the topbar, which sets `backdrop-filter` and is therefore
  * a containing block for fixed descendants. */
 .scrim {
+  composes: nj-scrim from global;
   position: fixed;
   inset: 0;
   /* Above the session sidebar (30) and its backdrop (20), BELOW the topbar (40) — App.css
    * keeps the topbar on top "so the toggle is always reachable", and the same has to hold for
    * the bell: you close this drawer with the control that opened it. */
-  z-index: 32;
-  background: rgba(0, 0, 0, 0.5);
+  z-index: calc(var(--z-map) + 2);
   border: 0;
   padding: 0;
   cursor: pointer;
 }
 .drawer {
+  composes: nj-fade-ok from global;
   position: fixed;
-  z-index: 33;
+  z-index: calc(var(--z-map) + 3);
   top: 0;
   right: 0;
   width: min(92vw, 400px);
@@ -373,9 +408,10 @@
    * the rows. A list of decisions is read, not glanced at — it gets a solid ground. */
   background: var(--bg-1);
   border: 0;
-  border-left: 1px solid var(--accent);
-  box-shadow: -2px 0 14px rgba(0, 0, 0, 0.45);
-  animation: bell-drawer-in 0.18s ease both;
+  /* The drawer's lit edge faces the page it slides over. */
+  border-left: 2px solid var(--hud);
+  box-shadow: var(--shadow-drawer);
+  animation: bell-drawer-in var(--t-slow) var(--ease-out) both;
 }
 @keyframes bell-drawer-in {
   from {
@@ -385,10 +421,7 @@
     transform: translateX(0);
   }
 }
-/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
-:root:not([data-motion="full"]) .drawer {
-  animation: none;
-}
+/* Reduced: the slide becomes motion.css's 120 ms fade (`nj-fade-ok`); Off: nothing moves. */
 
 /* Rows whose state could not be established (#852). Amber — "not current", never red, which is
  * reserved for errors and failure (docs/design.md). The hue rides an edge and `--warn-text`, the
@@ -399,7 +432,7 @@
   border-top: 1px solid var(--line);
   border-left: 3px solid var(--status-degraded);
   color: var(--warn-text);
-  font-size: 13.5px;
+  font-size: var(--fs-row);
   line-height: 1.5;
 }
 
@@ -414,7 +447,7 @@
   gap: 8px;
   padding: 12px 16px 4px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-label);
   font-weight: 600;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -428,14 +461,14 @@
   padding: 4px 12px;
   font-family: inherit;
   letter-spacing: 0.08em;
-  font-size: 11px;
+  font-size: var(--fs-label);
 }
 .settledRow {
   padding-top: 10px;
   padding-bottom: 10px;
 }
 .settledRow .title {
-  font-size: 14px;
+  font-size: var(--fs-body);
   font-weight: 500;
   color: var(--text-2);
 }

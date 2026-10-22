@@ -9,6 +9,7 @@ import {
   RECENT_WINDOW_MIN,
 } from "../lib/recentWindow";
 import type { PulseConfig, PulseDepth } from "../types/api";
+import toast from "../components/ui/toast.module.css";
 import styles from "./Settings.module.css";
 
 const FALLBACK: PulseConfig = {
@@ -191,7 +192,7 @@ export function PulseSettings() {
       </p>
       {error && <p className={styles.err}>{error}</p>}
       {saved && (
-        <p className={styles.ok} role="status">
+        <p className={`${toast.toast} ${toast.chip} ${toast.led} ${toast.ok}`} role="status">
           Saved.
         </p>
       )}

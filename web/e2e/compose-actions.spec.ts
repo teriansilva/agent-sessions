@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { animationsSettled } from "./nightjarShell";
 
 // #500: the compose bar is a single row — one collapsible key group (↑ ↓ ← → ↵ tab 📎 ✕) that overflows
 // into ONE "…" menu when narrow, then the mic, then Send (always last). No second (kebab) menu; no
@@ -98,6 +99,8 @@ test("the overflow … menu is fully on-screen (not clipped) at a narrow width (
   await more.click();
   const menu = page.getByRole("menu");
   await expect(menu).toBeVisible();
+  // A sheet/dialog slides in (#1531): measure where it lands.
+  await animationsSettled(page);
 
   // The popover is fully within the viewport on all four edges (portalled + clamped).
   const box = (await menu.boundingBox())!;

@@ -53,7 +53,7 @@ export function PlaybookDialog({
       <div className={hud.head}>
         <span className={hud.tag}>{tag}</span>
         <button
-          className={buttons.icon}
+          className={hud.close}
           aria-label="Close"
           disabled={busy}
           onClick={onCancel}
@@ -73,7 +73,7 @@ export function PlaybookDialog({
           Cancel
         </button>
         <button
-          className={`${buttons.primary} ${danger ? styles.danger : ""}`}
+          className={danger ? buttons.dangerFilled : buttons.primary}
           disabled={busy || confirmDisabled}
           onClick={onConfirm}
         >

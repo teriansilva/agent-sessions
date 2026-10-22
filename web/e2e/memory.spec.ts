@@ -6,6 +6,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { MEMORY_PATH } from "../src/lib/routes";
 import { CONFIG, commonMocks } from "./mission-directions";
 import { mockRoster, ROSTER } from "./roster";
+import { animationsSettled } from "./nightjarShell";
 
 const PID = "p-1a2b3c4d";
 const NOW = Date.now() / 1000;
@@ -348,6 +349,8 @@ test("a short phone with more places than one import takes: the confirm stays re
   const dialog = page.getByRole("dialog");
   const confirm = dialog.getByRole("button", { name: "Import 16 notes" });
   await expect(confirm).toBeVisible();
+  // A sheet/dialog slides in (#1531): measure where it lands.
+  await animationsSettled(page);
   const box = (await confirm.boundingBox())!;
   expect(box.y + box.height, "the confirm button is on screen").toBeLessThanOrEqual(560);
   // A sheet taller than the screen loses its TOP (it is anchored to the bottom): the title and

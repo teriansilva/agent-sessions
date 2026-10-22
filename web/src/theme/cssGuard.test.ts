@@ -88,6 +88,18 @@ describe("every var(--name) the app reads is defined somewhere (#948)", () => {
       .map(({ at, m }) => `${at} ${m[1]}`);
     expect(missing).toEqual([]);
   });
+  test("every pre-existing hook is still a missing read (remove an entry once fixed)", () => {
+    const stale = [...PREEXISTING_HOOKS].filter((k) => {
+      const [f, ref] = k.split(":");
+      const [local, name] = ref.split(".");
+      const src = codeSource(f).replace(/^import[^\n]*$/gm, "");
+      const imp = codeSource(f).match(new RegExp(`import\\s+${local}\\s+from\\s+["'](\\.[^"']+\\.module\\.css)["']`));
+      if (!imp || !new RegExp(`\\b${local}\\.${name}\\b`).test(src)) return true;
+      const cssFile = relative(SRC, resolve(SRC, f, "..", imp[1])).split("\\").join("/");
+      return moduleClasses(cssFile).has(name);
+    });
+    expect(stale).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------
@@ -293,5 +305,114 @@ describe("pages outside the SPA (report only until Phase 12)", () => {
     });
     console.info(`[nightjar] pages outside the SPA:\n  ${report.join("\n  ")}`);
     expect(report).toHaveLength(PAGES.length);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------
+// Every class a component reads from a CSS module exists in it (#1531)
+// ---------------------------------------------------------------------------------------------------
+
+/** A CSS module that loses a rule still compiles: `styles.optRow` is just `undefined`, the element
+ *  gets no class, and the layout quietly collapses (it happened once in the NIGHTJAR rewrite of the
+ *  Hand off sheet). So: for every `import x from "./y.module.css"`, every `x.name` / `x["name"]`
+ *  read in that file must be a class the module defines. */
+function moduleClasses(cssFile: string): Set<string> {
+  const src = read(cssFile).replace(/\/\*[\s\S]*?\*\//g, "");
+  const names = new Set<string>();
+  // Selectors only (outside declaration blocks): strip `{…}` bodies, then collect `.name`.
+  const selectors = src.replace(/\{[^{}]*\}/g, "{}").replace(/\{[^{}]*\}/g, "{}");
+  for (const m of selectors.matchAll(/\.(-?[_a-zA-Z][\w-]*)/g)) names.add(m[1]);
+  return names;
+}
+
+/** Classes read from a module that has never defined them (verified against `main` before #1531):
+ *  hooks a test or a parent selector keys on, harmless as `undefined`. Listed so a NEW missing class
+ *  still fails; remove an entry when its class gets a rule or its read goes away. */
+const PREEXISTING_HOOKS = new Set([
+  "components/chat/ChatPane.tsx:styles.turn",
+  "components/structured/Outbox.tsx:chat.turn",
+  "components/structured/StructuredPane.tsx:chat.turn",
+  "routes/AppearanceApi.tsx:chat.turn",
+  "components/playbooks/ProjectPlaybook.tsx:styles.invalid",
+  "components/pulse/ActionRow.tsx:styles.age",
+  "components/pulse/MissionConsole.tsx:styles.paneInner",
+  "components/structured/Markdown.tsx:styles.lang",
+  "components/structured/NotSent.tsx:styles.reason",
+  "components/wizard/WizardShell.tsx:styles.stepLabel",
+  "routes/Settings.tsx:styles.navGroup",
+  "routes/Settings.tsx:styles.indexGroup",
+]);
+
+describe("every CSS-module class a component reads is defined (#1531)", () => {
+  test("the checker sees what it is for", () => {
+    expect([...moduleClasses("components/HudDialog.module.css")]).toContain("dialog");
+  });
+  test("in every component", () => {
+    const missing: string[] = [];
+    for (const f of CODE) {
+      const full = codeSource(f);
+      // Reads only: drop the import lines themselves (`toast.module.css` is not `toast.module`).
+      const src = full.replace(/^import[^\n]*$/gm, "");
+      for (const imp of full.matchAll(/import\s+(\w+)\s+from\s+["'](\.[^"']+\.module\.css)["']/g)) {
+        const [, local, rel] = imp;
+        // A local of the same name (a `d` date in a file that imports `d` styles) shadows it.
+        const shadowed = new RegExp(
+          `(const|let|var)\\s+${local}\\b|\\(\\s*${local}\\s*[,)]|\\b${local}\\s*=>|,\\s*${local}\\s*[,)]`,
+        ).test(src);
+        if (shadowed) continue;
+        const cssFile = relative(SRC, resolve(SRC, f, "..", rel)).split("\\").join("/");
+        const defined = moduleClasses(cssFile);
+        const uses = [
+          ...src.matchAll(new RegExp(`\\b${local}\\.([A-Za-z_][\\w]*)`, "g")),
+          ...src.matchAll(new RegExp(`\\b${local}\\[["']([\\w-]+)["']\\]`, "g")),
+        ].map((m) => m[1]);
+        for (const u of new Set(uses))
+          if (!defined.has(u) && !PREEXISTING_HOOKS.has(`${f}:${local}.${u}`))
+            missing.push(`${f}: ${local}.${u} (${cssFile})`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+});
+
+// ---- a CSS module's animation names resolve (#1531, Hermes on #1560) -----------------------
+// CSS modules scope an animation NAME like a class: `animation: nj-sheet-up …` in a `.module.css`
+// compiles to `_nj-sheet-up_<hash>`, a keyframe that does not exist, so the rule silently animates
+// nothing. Sixteen NIGHTJAR rules (every phone sheet's slide-up, the dialogs' scan, toasts, the
+// boot fade-out, the HQ caret) shipped that way. A keyframe defined in a GLOBAL stylesheet is named
+// from a module as `global(name)`; one defined in the module itself stays local.
+
+/** The animation names a stylesheet's `animation` / `animation-name` declarations use. */
+function animationNames(css: string): { name: string; wrapped: boolean; line: number }[] {
+  const out: { name: string; wrapped: boolean; line: number }[] = [];
+  const re = /\banimation(?:-name)?\s*:\s*([^;}]+)/g;
+  for (const m of css.matchAll(re)) {
+    const line = css.slice(0, m.index).split("\n").length;
+    for (const part of m[1].split(",")) {
+      const tok = part.trim().match(/^(global\()?\s*([A-Za-z_-][\w-]*)\s*\)?/);
+      if (!tok || ["none", "inherit", "initial", "unset", "var"].includes(tok[2])) continue;
+      out.push({ name: tok[2], wrapped: Boolean(tok[1]), line });
+    }
+  }
+  return out;
+}
+
+const GLOBAL_KEYFRAMES = new Set(
+  CSS.filter((f) => !f.endsWith(".module.css")).flatMap((f) => keyframes(cssSource(f)).map((k) => k.name)),
+);
+
+describe("a CSS module names a global keyframe as global(name) (#1531)", () => {
+  test("the checker sees through a bare name and accepts a wrapped one", () => {
+    expect(animationNames("a { animation: nj-sheet-up 1s both; }")[0]).toMatchObject({ name: "nj-sheet-up", wrapped: false });
+    expect(animationNames("a { animation: global(nj-sheet-up) 1s; }")[0]).toMatchObject({ name: "nj-sheet-up", wrapped: true });
+    expect(GLOBAL_KEYFRAMES.has("nj-sheet-up")).toBe(true);
+  });
+  test("no module uses a global keyframe by its bare (module-scoped) name", () => {
+    const bad = CSS.filter((f) => f.endsWith(".module.css")).flatMap((f) =>
+      animationNames(cssSource(f))
+        .filter((a) => !a.wrapped && GLOBAL_KEYFRAMES.has(a.name))
+        .map((a) => `${f}:${a.line} ${a.name}`),
+    );
+    expect(bad).toEqual([]);
   });
 });

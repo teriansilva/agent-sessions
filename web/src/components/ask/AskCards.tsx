@@ -21,6 +21,7 @@ import { type ReactNode, useState } from "react";
 
 import type { AskNudgeCard, AskQuestionCard, AskSessionCard, AskUpdate } from "../../types/api";
 
+import { Led, type LedTone } from "../hud/Meters";
 import c from "./AskCards.module.css";
 
 export function QuestionCard({
@@ -94,6 +95,8 @@ export function QuestionCard({
 }
 
 type Tone = "ok" | "warn" | "bad" | "neutral";
+/** An outcome's LED (#1531): the status tone it carries; it flashes once when the tone changes. */
+const LED: Record<Tone, LedTone> = { ok: "up", warn: "att", bad: "down", neutral: "idle" };
 
 /** The outcome words for a settled or in-flight proposal — from the ledger's own state. */
 function outcome(p: AskNudgeCard): { word: string; tone: Tone; detail: string } | null {
@@ -211,7 +214,7 @@ export function NudgeCard({
       ) : (
         <>
           <div className={c.outcome} role="status" data-testid="ask-nudge-outcome">
-            <span className={`${c.led} ${c[`led_${out.tone}`]}`} aria-hidden="true" />
+            <Led tone={LED[out.tone]} />
             <span className={`${c.ow} ${c[`ow_${out.tone}`]}`}>{out.word}</span>
             <span className={c.od}>{out.detail}</span>
           </div>
@@ -399,7 +402,7 @@ export function SessionCard({
         </div>
       ) : (
         <div className={c.outcome} role="status" data-testid="ask-session-outcome">
-          <span className={`${c.led} ${c[`led_${out.tone}`]}`} aria-hidden="true" />
+          <Led tone={LED[out.tone]} />
           <span className={`${c.ow} ${c[`ow_${out.tone}`]}`}>{out.word}</span>
           <span className={c.od}>{out.detail}</span>
           {p.state === "started" && ways ? <span className={c.ways}>{ways}</span> : null}
@@ -481,7 +484,7 @@ export function UpdateRow({
   const w = UPDATE_WORDS[u.kind];
   return (
     <div className={c.update} data-testid="ask-update" data-kind={u.kind} role="status">
-      <span className={`${c.led} ${c[`led_${w.tone}`]}`} aria-hidden="true" />
+      <Led tone={LED[w.tone]} />
       <span className={c.updateBody}>
         <span className={`${c.ow} ${c[`ow_${w.tone}`]}`}>{w.word}</span>
         <span className={c.updateTitle}>{u.title || "A session you follow"}</span>

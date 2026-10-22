@@ -1,39 +1,51 @@
-/* The HUD dialog (#948): one design for the small pickers, Adopt to mission, Move to project and
- * Rename project. It is the Hand off vocabulary (#597, terminal/HandoffModal.module.css): a
- * near-black panel, a mono tag as the dialog's label, a square close, a "from" line, rows on --bg-2,
- * a ruled footer, and a bottom sheet at ≤800px.
+/* THE DIALOG (#948, NIGHTJAR #1531): one design for every dialog. Hand off (#597) and the pickers
+ * compose these classes instead of restating them, so they cannot drift apart —
+ * e2e/dialog-hand-off-parity.spec.ts measures them against the Hand off dialog itself.
  *
- * Why a shared sheet: these dialogs used to share one written against tokens tokens.css never
- * defined (--surface-1, --mono, --focus), so its hard-coded fallbacks painted a purple from a retired
- * palette in both themes, and the copies kept it. Real tokens only and no fallbacks, so a missing
- * name cannot hide behind a hex. e2e/dialog-hand-off-parity.spec.ts measures these dialogs against
- * the Hand off dialog itself, and src/theme/cssGuard.test.ts refuses undefined tokens and purple hex.
+ * NIGHTJAR: an armour frame (`nj-frame`: chamfered edge, cut lines, the lit rail), a callsign head
+ * (hazard notch + display caps), a scrim that fades in, and a deploy-in (fade + 6 px rise + a
+ * one-shot scan, never a scale; interactive from the first frame). At ≤800px it is a bottom sheet
+ * that slides up. Tokens only (docs/nightjar-ledger.md: done).
  *
  * Every dialog on this sheet is portalled to <body>. The sidebar and panes are containing blocks for
  * `position: fixed` (backdrop-filter, the drawer's transform), so a backdrop rendered inside them
  * covers that column instead of the viewport. */
 
 .backdrop {
+  composes: nj-scrim from global;
   position: fixed;
   inset: 0;
-  z-index: 200;
-  background: rgba(0, 0, 0, 0.55);
+  z-index: var(--z-dialog);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
+  padding: var(--sp-5);
 }
 
 .dialog {
+  composes: nj-frame nj-deploy nj-fade-ok from global;
   width: min(560px, 100%);
   max-height: min(86vh, 720px);
   overflow-y: auto;
-  background: var(--bg-1);
   color: var(--text-1);
-  border: 1px solid var(--line-strong);
-  border-radius: 0;
-  padding: 15px 18px 16px;
-  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5);
+  padding: var(--sp-4) var(--sp-5) var(--sp-4);
+  overscroll-behavior: contain;
+}
+/* A dialog takes focus itself only to HOLD it (a pending request disables every control): no ring
+ * around the whole frame, and its busy state is announced (aria-busy, a status line). */
+.dialog:focus {
+  outline: none;
+}
+/* The one-shot scan line that passes over the dialog as it deploys. */
+.dialog::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  background: var(--hud);
+  opacity: 0;
+  pointer-events: none;
+  animation: global(nj-scan-once) var(--t-slow) var(--ease-out) both;
 }
 /* One list or one field needs less width than Hand off's tiles and preview. */
 .narrow {
@@ -44,50 +56,78 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 9px;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
 }
+/* The callsign: a hazard notch, then the dialog's name in display caps. */
 .tag {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.16em;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--text-3);
+  color: var(--text-1);
+}
+.tag::before {
+  content: "";
+  flex: none;
+  width: 22px;
+  height: 10px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.85;
 }
 .close {
+  composes: nj-plate from global;
+  --nj-face: var(--bg-1);
+  --nj-edge: var(--line-strong);
+  flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
-  border: 1px solid var(--line);
-  background: transparent;
+  width: 36px;
+  height: 36px;
+  border: 1px solid transparent;
   color: var(--text-2);
-  border-radius: 0;
   cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out);
 }
 .close:hover,
 .close:focus-visible {
   color: var(--accent-text);
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+  --nj-edge: var(--hud);
+}
+.close:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+@media (pointer: coarse), (max-width: 800px) {
+  .close {
+    width: 44px;
+    height: 44px;
+  }
 }
 
 .from {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  margin: 0 0 12px;
-  padding-bottom: 10px;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-3);
+  padding-bottom: var(--sp-3);
   border-bottom: 1px solid var(--line);
 }
 .fromLabel {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
   color: var(--text-3);
   flex: 0 0 auto;
 }
 .fromTitle {
-  font-size: 12.5px;
+  font-size: var(--fs-row);
   font-weight: 600;
   color: var(--text-1);
   min-width: 0;
@@ -96,40 +136,39 @@
 
 .label {
   display: block;
-  margin-bottom: 6px;
+  margin-bottom: var(--sp-2);
   font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.16em;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--text-3);
 }
 
-/* Sentences (loading, empty, help) sit on --text-2 rather than Hand off's --text-3: they are read,
- * not scanned, and --text-3 at this size is under AA on --bg-1. */
+/* Sentences (loading, empty, help) sit on --text-2: they are read, not scanned, and --text-3 at
+ * this size is under AA on --bg-1. */
 .muted {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-row);
   color: var(--text-2);
 }
 .help {
-  margin: 10px 0 0;
-  font-size: 11.5px;
-  line-height: 1.4;
+  margin: var(--sp-3) 0 0;
+  font-size: var(--fs-meta);
+  line-height: 1.45;
   color: var(--text-2);
 }
-/* A failure is a state, so its rule carries the status colour; the text uses --danger-text, the
- * status hue lightened to hold AA as small text (tokens.css). */
+/* A failure is a state, so its rule carries the status colour; the text uses --danger-text. */
 .error {
-  margin: 10px 0 0;
-  padding: 7px 10px;
-  font-size: 12px;
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
   color: var(--danger-text);
-  background: var(--bg-2);
+  background: color-mix(in srgb, var(--status-down) 8%, var(--bg-2));
   border-left: 3px solid var(--status-down);
 }
 
-/* Option rows: Hand off's tile language laid out as a list. Accent border and soft accent fill for
- * the chosen or current row, a dashed border for one that cannot be picked. */
+/* Option rows: chamfered plates. The chosen or current row carries the HUD tint and a lit edge;
+ * one that cannot be picked is dashed. */
 .list {
   list-style: none;
   margin: 0;
@@ -138,38 +177,46 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-1);
 }
 .option {
+  composes: nj-plate from global;
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--border);
   appearance: none;
   width: 100%;
   min-height: 44px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 6px 12px;
-  background: var(--bg-2);
+  gap: var(--sp-3);
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid transparent;
   color: var(--text-2);
-  border: 1px solid var(--border);
-  border-radius: 0;
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--fs-row);
   text-align: left;
   cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out);
 }
 .option:hover:not(:disabled),
 .option:focus-visible:not(:disabled) {
   color: var(--text-1);
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  --nj-edge: var(--hud-dim);
+}
+.option:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .option[aria-pressed="true"],
 .option[aria-current="true"] {
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg-2));
-  border-color: var(--accent);
+  --nj-face: color-mix(in srgb, var(--hud) 14%, var(--bg-2));
+  --nj-edge: var(--hud);
   color: var(--text-1);
 }
+/* Unpickable: a dashed edge (a real border here — the plate cannot dash its painted edge). */
 .option:disabled {
-  border-style: dashed;
+  --nj-edge: transparent;
+  border: 1px dashed var(--border);
   opacity: 0.6;
   cursor: default;
 }
@@ -194,57 +241,60 @@
   flex-direction: column;
 }
 .input {
-  width: 100%;
+  composes: nj-field from global;
   min-height: 44px;
-  padding: 0 11px;
-  background: var(--bg-2);
-  color: var(--text-1);
-  border: 1px solid var(--border);
-  border-radius: 0;
-  font: inherit;
-  font-size: 13px;
-}
-.input:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent);
 }
 
 .actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 14px;
-  padding-top: 12px;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-3);
   border-top: 1px solid var(--line);
 }
-/* The dialog's ghost and CTA are the shared action buttons (#967). They are composed, not restated:
- * the one definition is ui/actionButton.module.css, which the mission header, landing and plan card
- * use too. */
+/* The dialog's ghost and CTA are the shared action buttons (#967). Composed, not restated. */
 .cancel {
   composes: ghost from "./ui/actionButton.module.css";
 }
 .go {
   composes: primary from "./ui/actionButton.module.css";
 }
+/* A destructive dialog's confirm: the one place red is filled. */
+.danger {
+  composes: dangerFilled from "./ui/actionButton.module.css";
+}
 
-/* Mobile (≤800px): a bottom sheet, actions stacked full width with the primary on top. */
+/* Mobile (≤800px): a bottom sheet that slides up, actions stacked full width, primary on top. */
 @media (max-width: 800px) {
   .backdrop {
-    padding: 10px;
+    padding: 0;
     align-items: flex-end;
   }
+  /* A bottom sheet: full width, flush to the floor, one cut corner (top left) like the menu
+   * sheets; the bottom-right cut line is not drawn. */
   .dialog {
     width: 100%;
     max-height: 88vh;
+    border-left: 0;
+    border-right: 0;
+    border-bottom: 0;
+    padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
+    background-size:
+      var(--c) var(--c),
+      0 0,
+      auto;
+    clip-path: polygon(var(--c) 0, 100% 0, 100% 100%, 0 100%, 0 var(--c));
+    animation: global(nj-sheet-up) var(--t-slow) var(--ease-out) both;
   }
   .actions {
     flex-direction: column-reverse;
     align-items: stretch;
   }
   .go,
-  .cancel {
+  .cancel,
+  .danger {
     justify-content: center;
     text-align: center;
   }
