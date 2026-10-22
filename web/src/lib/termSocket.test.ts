@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { rejectReason, TermSocket, type TermStatus } from "./termSocket";
+import {
+  rejectReason,
+  RX_FIRST_FRAME_MS,
+  RX_STALL_MS,
+  TermSocket,
+  type TermStatus,
+} from "./termSocket";
 
 // Minimal fake WebSocket: lets a test drive open/message/close and capture sends.
 class FakeWS {
@@ -333,5 +339,92 @@ test("a 4404 carries its code, so the pane can tell it from other refusals (#150
     kind: "rejected",
     reason: "session not found or ended",
     code: 4404,
+  });
+});
+
+describe("receive watchdog (#1570)", () => {
+  test("an open socket that hears nothing for RX_STALL_MS is dropped and reconnects", () => {
+    vi.useFakeTimers();
+    const { ts, statuses } = makeSocket();
+    ts.connect();
+    const ws = FakeWS.instances[0];
+    ws.open();
+    ws.message(JSON.stringify({ t: "seq", n: 0 }));
+    vi.advanceTimersByTime(RX_STALL_MS - 5_000);
+    expect(FakeWS.instances).toHaveLength(1);
+    expect(statuses.at(-1)).toEqual({ kind: "connected" });
+    vi.advanceTimersByTime(10_000);
+    // The stalled socket was detached without waiting for its close handshake…
+    expect(statuses.at(-1)).toEqual({ kind: "reconnecting", attempt: 1 });
+    // …and its late onclose cannot schedule a second retry.
+    ws.drop(1006);
+    vi.advanceTimersByTime(1_000);
+    expect(FakeWS.instances).toHaveLength(2);
+    expect(statuses.filter((s) => s.kind === "reconnecting")).toHaveLength(2); // retry + connect()
+  });
+
+  test("the server's 20 s ping keeps a quiet socket alive", () => {
+    vi.useFakeTimers();
+    const { ts, statuses } = makeSocket();
+    ts.connect();
+    const ws = FakeWS.instances[0];
+    ws.open();
+    for (let i = 0; i < 10; i++) {
+      vi.advanceTimersByTime(20_000);
+      ws.message(JSON.stringify({ t: "p" }));
+    }
+    expect(FakeWS.instances).toHaveLength(1);
+    expect(statuses.at(-1)).toEqual({ kind: "connected" });
+  });
+
+  test("before the first frame the allowance is RX_FIRST_FRAME_MS", () => {
+    vi.useFakeTimers();
+    const { ts, statuses } = makeSocket();
+    ts.connect();
+    FakeWS.instances[0].open();
+    vi.advanceTimersByTime(RX_STALL_MS + 10_000);
+    expect(statuses.at(-1)).toEqual({ kind: "connected" });
+    vi.advanceTimersByTime(RX_FIRST_FRAME_MS - RX_STALL_MS);
+    expect(statuses.at(-1)).toEqual({ kind: "reconnecting", attempt: 1 });
+  });
+
+  test("a tab returning after sleeping past the deadline reconnects at once, before any timer runs", () => {
+    vi.useFakeTimers();
+    const { ts, statuses } = makeSocket();
+    ts.connect();
+    const ws = FakeWS.instances[0];
+    ws.open();
+    ws.message(JSON.stringify({ t: "p" }));
+    // The device slept: wall time jumped past the deadline but no timer callback has run.
+    vi.setSystemTime(Date.now() + RX_STALL_MS + 1_000);
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    // Dropped and a fresh socket opened by the wake — the stale OPEN one was not left alone.
+    expect(statuses).toContainEqual({ kind: "reconnecting", attempt: 1 });
+    expect(FakeWS.instances).toHaveLength(2);
+  });
+
+  test("a tab returning with a fresh link leaves the socket alone", () => {
+    vi.useFakeTimers();
+    const { ts } = makeSocket();
+    ts.connect();
+    const ws = FakeWS.instances[0];
+    ws.open();
+    ws.message(JSON.stringify({ t: "p" }));
+    vi.setSystemTime(Date.now() + 10_000);
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(FakeWS.instances).toHaveLength(1);
+  });
+
+  test("close() stops the watchdog", () => {
+    vi.useFakeTimers();
+    const { ts, statuses } = makeSocket();
+    ts.connect();
+    FakeWS.instances[0].open();
+    ts.close();
+    vi.advanceTimersByTime(RX_FIRST_FRAME_MS * 2);
+    expect(statuses.at(-1)).toEqual({ kind: "connected" });
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

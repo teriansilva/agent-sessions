@@ -107,6 +107,8 @@ async function mockApp(
     /** Project entities. Empty for fixtures that need the cluster count to come from the
      *  sessions alone — an empty entity still renders as a drag-target cluster (#447). */
     projects?: { id: string; name: string; color: string; archived: boolean }[];
+    /** While true, every new terminal socket is accepted and refused at once — a lost link (#1570). */
+    down?: () => boolean;
   } = {},
 ): Promise<SockLog> {
   const log: SockLog = { conns: [], input: {}, resize: {}, frames: {}, routes: [] };
@@ -170,6 +172,10 @@ async function mockApp(
     ws.onClose(() => {
       conn.closed = true;
     });
+    if (opts.down?.()) {
+      setTimeout(() => void ws.close({ code: 4000, reason: "down" }), 50);
+      return;
+    }
     ws.send(JSON.stringify({ t: "role", role: "owner" }));
     ws.send(JSON.stringify({ t: "seq", n: 0 }));
     // Enough lines that the viewport has real scrollback to move independently.
@@ -371,6 +377,27 @@ test.describe("desktop workspace", () => {
   // eslint-disable-next-line no-empty-pattern -- Playwright requires the destructuring form
   test.beforeEach(async ({}, testInfo) => {
     test.skip(testInfo.project.name === "mobile", "desktop-only workspace (#208)");
+  });
+
+  test("a map window's terminal gets the uplink veil when its link is lost, and loses it on recovery (#1570)", async ({
+    page,
+  }) => {
+    let down = false;
+    const log = await mockApp(page, { down: () => down });
+    await openFirstWindow(page, log);
+    await page.waitForTimeout(400); // past the veil's 750 ms "the link held" mark
+    down = true;
+    await log.routes[0].close({ code: 4000, reason: "down" });
+    const veil = win(page, 1).getByTestId("uplink-veil");
+    await expect(veil).toHaveAttribute("data-phase", "lost", { timeout: 8000 });
+    // The veil is inside the window, over its terminal, and the window's chrome stays usable.
+    const [v, w] = [await rectOf(veil), await rectOf(win(page, 1))];
+    expect(v.x).toBeGreaterThanOrEqual(w.x - 1);
+    expect(v.y).toBeGreaterThan(w.y);
+    expect(v.x + v.width).toBeLessThanOrEqual(w.x + w.width + 1);
+    await expect(win(page, 1).locator("[data-window-head]")).toBeVisible();
+    down = false;
+    await expect(veil).toHaveCount(0, { timeout: 15000 });
   });
 
   test("a chip opens one window with one socket; the same chip focuses it without a second", async ({

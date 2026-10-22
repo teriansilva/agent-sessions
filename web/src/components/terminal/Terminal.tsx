@@ -85,6 +85,8 @@ import { missionLink } from "../../lib/missionLink";
 import { shareLink } from "../../lib/shareLink";
 import { openTerminalLink } from "../../lib/terminalLink";
 import { stripHoverMouseReports } from "../../lib/hoverMouse";
+import { TermUplinkVeil } from "./TermUplinkVeil";
+import { useUplinkVeil } from "./useUplinkVeil";
 import {
   isAgent,
   repaintsOnWinch,
@@ -315,6 +317,8 @@ export function Terminal({
   // and one write is the honest shape anyway. The publish itself is the `setStatus` wrapper
   // by the onRole idiom below.
   const [status, setStatusRaw] = useState<TermStatus>({ kind: "connecting" });
+  // #1570: the uplink veil over the viewport, past its 3 s (connect) / 5 s (lost) grace.
+  const veil = useUplinkVeil(status);
   const [coarse] = useState(
     () => window.matchMedia?.("(pointer: coarse)")?.matches ?? false,
   );
@@ -2168,7 +2172,9 @@ export function Terminal({
         />
       )}
       <div className={styles.termArea}>
-        {text && (
+        {/* #1570: while the uplink veil is up, its heading is the one announcement — the chip
+            (also a live region) stands down rather than speak over it. */}
+        {text && !veil && (
           <div
             className={`${styles.status} ${status.kind === "rejected" ? styles.rejected : ""}`}
             role="status"
@@ -2181,7 +2187,15 @@ export function Terminal({
             {text}
           </div>
         )}
-        <div ref={hostRef} className={styles.term} data-term-scheme={scheme} />
+        {/* #1570: busy is the terminal content's own state — never an ancestor of the veil's live
+            heading, which assistive tech may otherwise hold back until the link is restored. */}
+        <div
+          ref={hostRef}
+          className={styles.term}
+          data-term-scheme={scheme}
+          aria-busy={veil && veil.phase !== "restored" ? true : undefined}
+        />
+        {veil && !cover && <TermUplinkVeil veil={veil} title={row?.title} />}
         {cover === "reopening" && <OpeningPanel overlay reload={reloadRoster} reloadOnMount />}
         {cover === "opening" && <OpeningPanel overlay />}
         {cover === "missing" && <NotFoundPanel overlay />}

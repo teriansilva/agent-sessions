@@ -183,11 +183,10 @@ function screenFor(key, cols) {
   );
 }
 
-/** `opts` (the NIGHTJAR sweep's `term`, #1568) puts the socket in a state the promo never needs:
- *  `silent` — never answers, so the pane stays "connecting"; `closeCode` — closes with that code
- *  (4403 is a refusal the pane shows as rejected; 4409 is busy, which it retries);
- *  `role` / `holder` — the viewer is a read-only secondary behind the take-over banner. */
+/** `opts.dropAfter` (#1570): the first terminal socket paints its screen, then the link is lost
+ *  that many ms later and every reconnect is accepted and refused at once — the uplink veil's state. */
 export async function routeTerminal(page, opts = {}) {
+  let dropped = false;
   await page.routeWebSocket(/\/ws\//, (ws) => {
     const url = new URL(ws.url());
     const m = /\/ws\/(?:term\/)?([^/?]+)/.exec(url.pathname);
@@ -198,6 +197,15 @@ export async function routeTerminal(page, opts = {}) {
       setTimeout(() => ws.close({ code: opts.closeCode, reason: opts.closeReason ?? "" }), 150);
       return;
     }
+    if (opts.dropAfter !== undefined && dropped) {
+      setTimeout(() => ws.close({ code: 4000, reason: "down" }), 50);
+      return;
+    }
+    if (opts.dropAfter !== undefined)
+      setTimeout(() => {
+        dropped = true;
+        ws.close({ code: 4000, reason: "down" });
+      }, opts.dropAfter);
     setTimeout(() => {
       ws.send(JSON.stringify({ t: "role", role: opts.role ?? "owner", ...(opts.holder ? { holder: opts.holder } : {}) }));
       const text = "\x1b[2J\x1b[H" + screenFor(key, Number(url.searchParams.get("cols"))).join("\r\n");

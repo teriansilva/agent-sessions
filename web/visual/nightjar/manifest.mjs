@@ -31,7 +31,7 @@
  *  `asPerson`: clear `navigator.webdriver` (the boot sequence stands down under automation);
  *  `at`: capture this many ms after load instead of waiting for the page to settle.
  *  `present`: a selector that must be visible at the moment of the shot, or the capture fails.
- *  `term`: the terminal socket's state (visual/promo/terminal.mjs: silent, closeCode, role, holder).
+ *  `term`: the terminal socket's state (visual/promo/terminal.mjs: silent, closeCode, role, holder, dropAfter).
  *  `api`: per-capture answers, `path → body` (a number answers that HTTP status), for a state the
  *  shared fixtures do not hold. `mock`: opt-in states of the shared mock (visual/promo: e.g.
  *  `archivedMission`, `bypassOffer`, `disabledAutomation`, `scratchFolder`). `storage`: localStorage
@@ -261,6 +261,9 @@ export const SWEEP = [
   { id: "route:error", path: "/library/skills", api: { "/api/library/skills": {} }, expect: "alert" },
   // The boot sequence (Phase 4), mid-boot: Full, as a person, 450 ms after load.
   { id: "route:boot", path: "/dashboard", motion: "full", asPerson: true, at: 450, present: "[data-testid='boot-sequence']" },
+  // #1570: the uplink veil over a terminal whose settled link (held > 750 ms) has been down past
+  // its 5 s grace; every retry is accepted and refused at once (a flap), which keeps the outage.
+  { id: "route:uplink-veil", path: S6, term: { dropAfter: 1500 }, at: 7600, present: "[data-testid='uplink-veil'][data-phase='lost']" },
   // Routes (Phases 4–11). The skeleton: the route itself in its default state; each phase adds its
   // states (loading, empty, error, opened popups, focus) as ids of its own.
   { id: "route:dashboard", path: "/dashboard" },

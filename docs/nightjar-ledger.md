@@ -106,6 +106,7 @@ the same list.
 | `components/terminal/RuntimeGate.module.css` | css | 6 | todo |  |  |
 | `components/terminal/SentMessagesModal.module.css` | css | 3 | done | popup:sent-messages | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/SessionRecapModal.module.css` | css | 3 | done | popup:session-brief | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
+| `components/terminal/TermUplinkVeil.module.css` | css | 6 | done | route:uplink-veil | veil fade in/out (--t-slow), log deploy (fade + 6 px rise), acquire bar; Reduced: 120 ms fade in and out via `.nj-fade-ok` + a Reduced exit rule; Off: none (#1570) |
 | `components/terminal/Terminal.module.css` | css | 6 | done | route:session-pane popup:head-menu popup:toast | head chip glitch on press (nj-glitch-step, Full only), connect-chip radar (nj-radar), history pill steps (nj-steps), copied toast opacity only — nothing over the terminal moves |
 | `components/ui/actionButton.module.css` | css | 2 | done | gallery:buttons | press glitch (filter), hover |
 | `components/updates/UpdateProgressPanel.module.css` | css | 11 | todo |  |  |

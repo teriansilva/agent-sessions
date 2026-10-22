@@ -88,6 +88,14 @@ const BACKOFF_MAX_MS = 10_000;
 // A hung WS handshake (network changed/died) can otherwise sit ~20–30s before the browser
 // gives up and fires onclose. Bound it: if we're not open within this, close and retry (#236).
 const CONNECT_TIMEOUT_MS = 8_000;
+// Receive watchdog (#1570). The server sends {"t":"p"} every 20 s on every attached socket
+// (webterm._HEARTBEAT_INTERVAL_S), so an OPEN socket that has received nothing for RX_STALL_MS has
+// silently died (laptop sleep, Wi-Fi change, a half-open TCP path) — without this it stays "open",
+// keystrokes vanish, and no reconnect starts until the browser's own TCP timeout. Before the first
+// frame the allowance is longer: the server's attach prep runs between accept and its first frame.
+export const RX_STALL_MS = 45_000;
+export const RX_FIRST_FRAME_MS = 90_000;
+const RX_CHECK_MS = 5_000;
 
 export type WsFactory = (url: string) => WebSocket;
 
@@ -113,6 +121,9 @@ export class TermSocket {
   private attempt = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
+  private rxTimer: ReturnType<typeof setInterval> | null = null;
+  private lastRx = 0;
+  private gotFrame = false;
   private stopped = false;
   // Monotonic id of the CURRENT underlying socket — bumped on every successful open. A caller that
   // sends a multi-frame message (Compose: clear → paste → deferred Enter) can capture this and tell
@@ -135,8 +146,12 @@ export class TermSocket {
     if (
       typeof document === "undefined" ||
       document.visibilityState === "visible"
-    )
+    ) {
+      // A hidden tab's timers are throttled, so the receive watchdog may not have run while the
+      // device slept; and wake() leaves an OPEN socket alone. Check staleness NOW (#1570).
+      this.dropIfStalled();
       this.wake();
+    }
   };
 
   constructor(
@@ -202,15 +217,19 @@ export class TermSocket {
       this.clearConnectTimer();
       this.attempt = 0; // a successful open resets the backoff
       this.connId += 1; // a new live socket — callers gate multi-frame sends on this (#287)
+      this.armRxWatchdog(ws);
       this.handlers.onStatus({ kind: "connected" });
     };
     ws.onmessage = (ev: MessageEvent) => {
       if (this.ws !== ws) return;
+      this.lastRx = Date.now();
+      this.gotFrame = true;
       this.onMessage(ev.data);
     };
     ws.onclose = (ev: CloseEvent) => {
       if (this.ws !== ws) return;
       this.clearConnectTimer();
+      this.clearRxWatchdog();
       this.onClose(ev.code, ev.reason);
     };
     ws.onerror = () => {
@@ -220,6 +239,45 @@ export class TermSocket {
         /* already closing */
       }
     };
+  }
+
+  /** Start the receive watchdog for a socket that just opened (#1570). A stalled socket is dropped
+   *  HERE rather than through `ws.close()` alone: on a dead path the close handshake never completes,
+   *  so onclose could wait out the very TCP timeout this exists to beat. The socket is detached
+   *  first (its late events fail the identity guard), then the normal transient-drop path runs. */
+  private armRxWatchdog(ws: WebSocket): void {
+    this.clearRxWatchdog();
+    this.lastRx = Date.now();
+    this.gotFrame = false;
+    this.rxTimer = setInterval(() => {
+      if (this.ws !== ws) {
+        this.clearRxWatchdog();
+        return;
+      }
+      this.dropIfStalled();
+    }, RX_CHECK_MS);
+  }
+
+  /** Drop the current socket if it is OPEN and has received nothing within its allowance. */
+  private dropIfStalled(): void {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== 1 || this.rxTimer === null) return;
+    const allowance = this.gotFrame ? RX_STALL_MS : RX_FIRST_FRAME_MS;
+    if (Date.now() - this.lastRx < allowance) return;
+    this.clearRxWatchdog();
+    try {
+      ws.close();
+    } catch {
+      /* already closing */
+    }
+    this.onClose(1006, "receive stalled");
+  }
+
+  private clearRxWatchdog(): void {
+    if (this.rxTimer) {
+      clearInterval(this.rxTimer);
+      this.rxTimer = null;
+    }
   }
 
   private clearConnectTimer(): void {
@@ -327,6 +385,7 @@ export class TermSocket {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     this.clearConnectTimer();
+    this.clearRxWatchdog();
     if (this.ws) {
       try {
         this.ws.close();

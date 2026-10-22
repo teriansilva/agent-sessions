@@ -1,0 +1,105 @@
+/* The uplink veil (#1570): over the terminal viewport while a session is slow to connect or has lost
+ * its link. The pane behind recedes — a blur plus a tint toward --ground, which is near-black in
+ * dark and pale in light, so one rule darkens or lightens by theme. The log is the boot sequence's
+ * idiom (BootSequence.module.css). Motion: the veil fades (--t-slow), the log deploys (fade + 6 px
+ * rise), the scan bar runs; Reduced shortens every fade to 120 ms via the timing tokens and freezes
+ * the bar; Off stops all of it (motion.css). Tokens only. */
+.veil {
+  /* The pane-overlay layer: above every other layer in .termArea — the touch-capture overlay (+5),
+   * the status chip (+4), the scroll FAB / read-only banner / retry (+6) — so it really blocks
+   * pointers on the viewport, phone included. Still a local layer (8) under the shell's dock (10). */
+  --z-veil: calc(var(--z-raised) + 7);
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-veil);
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--ground) 48%, transparent);
+  /* Unprefixed only: the build adds the vendor prefix itself, and writing both lets the minifier
+   * keep just the -webkit- one, which Chrome ignores (no blur at all). */
+  backdrop-filter: blur(3px) saturate(0.7);
+  animation: global(nj-fade-in) var(--t-slow) var(--ease-out) both;
+}
+.leaving {
+  animation: global(nj-fade-out) var(--t-slow) var(--ease-in) both;
+}
+/* Reduced: the veil arrives with `.nj-fade-ok` (one 120 ms fade, the log does not rise) and leaves
+ * with a 120 ms fade too — this selector outranks motion.css's Reduced `animation: none`. */
+:root[data-motion="reduced"] .veil.leaving {
+  animation: global(nj-fade-out) var(--t-fast) var(--ease-in) both !important;
+}
+/* ≤800px: mobile Chrome may not paint backdrop-filter, so the tint alone has to carry it. */
+@media (max-width: 800px) {
+  .veil {
+    background: color-mix(in srgb, var(--ground) 78%, transparent);
+    backdrop-filter: none;
+  }
+}
+.log {
+  composes: nj-frame-sm from global;
+  --nj-face: color-mix(in srgb, var(--bg-1) 94%, transparent);
+  min-width: min(360px, calc(100% - 32px));
+  max-width: calc(100% - 32px);
+  padding: var(--sp-3) var(--sp-4);
+  display: grid;
+  gap: var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  animation: global(nj-rise-in) var(--t-base) var(--ease-out) 80ms both;
+}
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-1);
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  color: var(--text-1);
+}
+.line {
+  display: flex;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+/* A label never wraps or shrinks; a long value (the session title) ellipsizes instead. */
+.key {
+  flex: none;
+  white-space: nowrap;
+}
+.val {
+  min-width: 0;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* Status colour is load-bearing (design §3): the link really is degraded; RESTORED really is up.
+ * As text they read the AA-holding --warn-text / --ok-text, never the raw status swatch. */
+.lost {
+  color: var(--warn-text);
+}
+.ok {
+  color: var(--ok-text);
+}
+.bar {
+  composes: nj-acquire from global;
+  margin-top: var(--sp-2);
+}
+.done::after {
+  animation: none;
+  transform: none;
+  width: 100%;
+  background: var(--status-up);
+}
+.note {
+  margin-top: var(--sp-1);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
