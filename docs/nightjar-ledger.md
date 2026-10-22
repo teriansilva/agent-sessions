@@ -183,7 +183,6 @@ the same list.
 | `routes/RenameProjectModal.tsx` | popup | 3 | done | popup:rename-project | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `whatsnew/WhatsNewDialog.tsx` | popup | 4 | done | popup:whats-new | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/pulse/MissionHeaderActions.tsx` | popup | 3 | done | popup:unarchive popup:mission-overflow | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
-| `components/hud/DataFlowCanvas.tsx` | canvas | 1 | done | gallery:all | canvas trails (Full, dark), still grid otherwise |
 | `components/overview/OverviewCanvas.tsx (React Flow)` | canvas | 9 | todo |  |  |
 | `components/memory/MemoryGraph.tsx (React Flow)` | canvas | 9 | todo |  |  |
 | `components/playbooks/PlaybookFlowCanvas.tsx (React Flow)` | canvas | 9 | todo |  |  |

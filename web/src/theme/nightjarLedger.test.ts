@@ -149,7 +149,7 @@ describe("every surface has a ledger row", () => {
     expect(uncovered(["docs/site/guide/new.md"], rows, "page")).toEqual([]); // under docs/site
     expect(discoverPages()).toContain("web/connect.html");
     expect(discoverPages()).toContain("src/agent_sessions/routes/shares.py");
-    expect(CANVASES).toContain("components/hud/DataFlowCanvas.tsx");
+    expect(CANVASES).toContain("components/overview/OverviewCanvas.tsx");
   });
 
   test("canvas rows, and page rows that name a repo file, name something that exists", () => {

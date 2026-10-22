@@ -522,39 +522,14 @@
 }
 
 /* ============================================================================
- * BattleLab tactical-HUD chassis (#211 Phase 4a). Ambient data-flow canvas +
+ * BattleLab tactical-HUD chassis (#211 Phase 4a, NIGHTJAR #1531). The atmosphere backdrop +
  * reusable primitives (corner-bracket frames, mono tags, status LEDs) + the
  * button glitch that replaces the old gold shine sweep. Mirrors the mockups
  * (docs/mockups) + the family design language. All motion honors reduced-motion.
  * ============================================================================ */
 
-/* Ambient backdrop: fixed behind everything, non-interactive. The DataFlowCanvas
- * component drives it on dark; on light (or reduced-motion) it's hidden and the body
- * shows a faint static grid instead (decision 4 in #211). */
-.hud-canvas {
-  position: fixed;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  z-index: var(--z-base);
-  pointer-events: none;
-  /* The 48px grid is the canvas's CSS background (#1531): static, so it never costs a frame; the
-     canvas paints only the drifting trails over it, and its radial mask fades both at the edges. */
-  background-image:
-    linear-gradient(var(--grid-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
-  background-size: 48px 48px;
-}
-:root[data-theme="light"] .hud-canvas {
-  display: none;
-}
-:root[data-theme="light"] body,
-body.hud-static-grid {
-  background-image:
-    linear-gradient(var(--line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--line) 1px, transparent 1px);
-  background-size: 48px 48px;
-}
+/* The backdrop is NIGHTJAR's one atmosphere (components/hud/Atmosphere.tsx, nightjar.css
+ * `.nj-atmo`): the #211 canvas and its 48px square grid are gone, on dark and light (#1531). */
 
 /* Light chrome (#473, #1531): the bars are opaque NIGHTJAR surfaces now, so they need no firming;
  * the mono telemetry tags lift one step (--text-3 → --text-2) on the paper-grey ground. */
@@ -668,8 +643,8 @@ body.hud-static-grid {
   content: none !important;
 }
 
-/* Reduced motion is the motion mode's job now (#1531, theme/motion.css + dataFlow.ts): the canvas
- * draws its still grid instead of disappearing, and LEDs are steady. */
+/* Reduced motion is the motion mode's job now (#1531, theme/motion.css): the atmosphere holds a
+ * still frame and LEDs are steady. */
 
 /* The mobile drawer takes focus itself on open (#940) — the panel, not a control inside it, so a
  * screen reader announces the dialog's name. It shows no close button: the scrim, Escape and a

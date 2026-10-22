@@ -35,7 +35,7 @@ import { WhatsNewDialog } from "../whatsnew/WhatsNewDialog";
 import { Settings } from "../routes/Settings";
 import { SessionView } from "../routes/SessionView";
 import { ButtonGlitch } from "../components/hud/ButtonGlitch";
-import { DataFlowCanvas } from "../components/hud/DataFlowCanvas";
+import { Atmosphere } from "../components/hud/Atmosphere";
 import { AccentProvider } from "../theme/AccentProvider";
 import { TermFontProvider } from "../theme/TermFontProvider";
 import { TermSchemeProvider } from "../theme/TermSchemeProvider";
@@ -543,7 +543,7 @@ function Layout() {
         {/* Canvas lives INSIDE .app so it's within the panels' backdrop scope: .app is a
           backdrop-root (overflow:hidden + stacking context), so a canvas outside it can't be
           blurred by the panels' backdrop-filter. Inside, the frosted panels blur it. (#211) */}
-        <DataFlowCanvas />
+        <Atmosphere />
         <header className="hud-topbar" ref={headerRef}>
           {/* No toggle on Settings (#1129): the surface it drives does not exist there in
               either viewport form, and a live hamburger on a settings page would only mutate

@@ -1,7 +1,7 @@
 // Framework-free core of the two ambient HUD effects (#211): the drifting data-flow backdrop
-// and the occasional button glitch. Extracted from DataFlowCanvas/ButtonGlitch so the standalone
-// Home Free connect shell (web/connect.html — plain DOM, no React until the SPA streams in) runs
-// the *same* effects as the app instead of a look-alike copy.
+// and the occasional button glitch. The app runs only the glitch (ButtonGlitch); its backdrop is
+// NIGHTJAR's atmosphere (Atmosphere.tsx, #1531). The data-flow trails remain for the standalone
+// Home Free connect shell (web/connect.html — plain DOM, no React) until its own NIGHTJAR pass.
 //
 // Both follow the ONE motion mode (#1531, theme/motion.ts): they run only while
 // `ambientAllowed()` (Full, not paused by a hidden tab or 10 idle minutes) and, for the canvas,
@@ -71,8 +71,8 @@ export function runDataFlow(canvas: HTMLCanvasElement): () => void {
     const n = Math.min(26, Math.round((window.innerWidth * window.innerHeight) / 52000));
     parts = Array.from({ length: n }, mk);
   };
-  /** The still frame Reduced / Off / paused leave behind: empty — the 48 px grid itself is CSS
-   *  behind the canvas (`.hud-canvas` background), so it never costs a frame. */
+  /** The still frame Reduced / Off / paused leave behind: empty — the connect shell's 48 px grid
+   *  is CSS behind the canvas (`.hud-canvas` background), so it never costs a frame. */
   const still = () => {
     ctx.clearRect(0, 0, W, H);
   };

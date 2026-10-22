@@ -1,10 +1,11 @@
 /** The motion modes in a real browser (#1531, docs/design.md v2 §8), desktop and mobile.
  *
- *  CSS checks alone cannot prove "Off means nothing moves": the atmosphere canvas runs a
- *  requestAnimationFrame loop, the button glitch a timer, and the HQ portrait a video. So these
- *  specs count those callbacks with a shim installed before the app boots, read
- *  `document.getAnimations()`, and switch modes LIVE (the gallery's own Motion control), on a
- *  device that does NOT ask to reduce motion — the case where only the setting can stop things. */
+ *  CSS checks alone cannot prove "Off means nothing moves": the button glitch runs a timer, the
+ *  HQ portrait a video, and any requestAnimationFrame loop would run too. So these specs count those
+ *  callbacks with a shim installed before the app boots, read `document.getAnimations()`, and
+ *  switch modes LIVE (the gallery's own Motion control), on a device that does NOT ask to reduce
+ *  motion — the case where only the setting can stop things. The atmosphere is CSS only (#1531:
+ *  the #211 trail canvas and its rAF loop are retired), so "alive" means its loops are running. */
 import { expect, test, type Page } from "@playwright/test";
 
 import { DASHBOARD_PATH, NIGHTJAR_GALLERY_PATH } from "../src/lib/routes";
@@ -52,6 +53,17 @@ async function rafOver(page: Page, ms: number): Promise<number> {
   return (await counters(page)).raf - a;
 }
 
+/** The atmosphere's infinite CSS loops that are running right now (scan drift, sweep, …). */
+async function atmoLoops(page: Page): Promise<number> {
+  return page.evaluate(
+    () =>
+      document
+        .getAnimations()
+        .filter((a) => a.playState === "running" && a.effect?.getComputedTiming().iterations === Infinity)
+        .filter((a) => (a.effect as KeyframeEffect).target?.closest?.(".nj-atmo")).length,
+  );
+}
+
 async function setGalleryMotion(page: Page, label: "Device" | "Full" | "Reduced" | "Off") {
   await page.getByTestId("gallery-motion").getByRole("radio", { name: label }).click();
 }
@@ -61,6 +73,31 @@ test.beforeEach(async ({ page }) => {
   await mockNightjarShell(page);
   await installShim(page);
 });
+
+for (const theme of ["dark", "light"] as const) {
+  test(`the backdrop is ONE atmosphere: hex grid, no trail canvas, no square grid (${theme}) (#1531)`, async ({ page }) => {
+    await storeMotionChoice(page, "full");
+    await page.addInitScript((t) => localStorage.setItem("tr-theme", t), theme);
+    await page.goto(DASHBOARD_PATH);
+    await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+    await expect(page.getByTestId("nj-atmo")).toBeAttached();
+    // The #211 data-flow canvas painted drifting trails over a 48 px square grid; NIGHTJAR's
+    // atmosphere replaced it, and both had kept painting, one over the other.
+    await expect.soft(page.locator("canvas")).toHaveCount(0);
+    const grids = await page.evaluate(() =>
+      [document.documentElement, document.body, ...document.querySelectorAll(".nj-atmo, .nj-atmo *")]
+        .map((el) => getComputedStyle(el))
+        .filter((st) => /48px 48px/.test(st.backgroundSize)).length,
+    );
+    expect.soft(grids, "no square 48 px grid behind the app").toBe(0);
+    const hex = await page.evaluate(() => {
+      const st = getComputedStyle(document.querySelector(".nj-atmo .nj-hex")!);
+      return { display: st.display, mask: st.webkitMaskImage || st.maskImage };
+    });
+    expect(hex.display).not.toBe("none");
+    expect(hex.mask).toContain("svg");
+  });
+}
 
 test("Off stored: the first frame already knows it, and nothing moves (#1531)", async ({ page }) => {
   await storeMotionChoice(page, "off");
@@ -108,8 +145,8 @@ test("a live switch Full → Off → Full tears the loops down and restores them
   await page.goto(NIGHTJAR_GALLERY_PATH);
   await expect(page.getByTestId("nightjar-gallery")).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("data-motion", "full");
-  // The canvas loop runs on dark in Full (desktop and phone alike).
-  expect(await rafOver(page, 1000), "the canvas loop is alive (a loaded runner paints few frames)").toBeGreaterThan(2);
+  // The atmosphere's loops run on dark in Full (desktop and phone alike).
+  expect(await atmoLoops(page), "the atmosphere is alive").toBeGreaterThan(0);
   expect((await counters(page)).glitchTimers, "the glitch timer is armed in Full").toBeGreaterThan(0);
   const loops = await page.evaluate(
     () => document.getAnimations().filter((a) => a.effect?.getComputedTiming().iterations === Infinity).length,
@@ -125,7 +162,7 @@ test("a live switch Full → Off → Full tears the loops down and restores them
 
   await setGalleryMotion(page, "Full");
   await expect(page.locator("html")).toHaveAttribute("data-motion", "full");
-  expect(await rafOver(page, 1000), "the canvas loop is alive (a loaded runner paints few frames)").toBeGreaterThan(2);
+  expect(await atmoLoops(page), "the atmosphere is alive again").toBeGreaterThan(0);
   expect((await counters(page)).glitchTimers, "the glitch timer is re-armed").toBeGreaterThan(armedBefore);
   info.annotations.push({ type: "motion", description: "Full → Off → Full verified" });
 });
@@ -134,7 +171,7 @@ test("a hidden tab pauses the ambient loops and a visible one resumes them (#153
   await storeMotionChoice(page, "full");
   await page.goto(NIGHTJAR_GALLERY_PATH);
   await expect(page.getByTestId("nightjar-gallery")).toBeVisible();
-  expect(await rafOver(page, 800), "the canvas loop is alive").toBeGreaterThan(2);
+  expect(await atmoLoops(page), "the atmosphere is alive").toBeGreaterThan(0);
 
   await page.evaluate(() => {
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
@@ -143,21 +180,14 @@ test("a hidden tab pauses the ambient loops and a visible one resumes them (#153
   await expect(page.locator("html")).toHaveAttribute("data-motion-paused", "hidden");
   await page.waitForTimeout(200);
   expect(await rafOver(page, 800)).toBe(0);
-  const playing = await page.evaluate(
-    () =>
-      document
-        .getAnimations()
-        .filter((a) => a.playState === "running" && a.effect?.getComputedTiming().iterations === Infinity)
-        .filter((a) => (a.effect as KeyframeEffect).target?.closest?.(".nj-atmo")).length,
-  );
-  expect(playing, "the atmosphere's loops are paused").toBe(0);
+  expect(await atmoLoops(page), "the atmosphere's loops are paused").toBe(0);
 
   await page.evaluate(() => {
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
     document.dispatchEvent(new Event("visibilitychange"));
   });
   await expect(page.locator("html")).not.toHaveAttribute("data-motion-paused", /.+/);
-  expect(await rafOver(page, 800), "the canvas loop is alive").toBeGreaterThan(2);
+  expect(await atmoLoops(page), "the atmosphere is alive again").toBeGreaterThan(0);
 });
 
 test("ten idle minutes stop the ambient loops; input resumes them (#1531)", async ({ page }) => {

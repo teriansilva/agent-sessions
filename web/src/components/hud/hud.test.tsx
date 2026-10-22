@@ -1,7 +1,7 @@
 import { render } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { ButtonGlitch } from "./ButtonGlitch";
-import { DataFlowCanvas } from "./DataFlowCanvas";
+import { Atmosphere } from "./Atmosphere";
 
 function mockReducedMotion(reduce: boolean) {
   vi.stubGlobal(
@@ -19,12 +19,18 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-test("DataFlowCanvas renders an aria-hidden #bg canvas and survives a null 2d context", () => {
-  // jsdom's getContext returns null → the effect must bail without throwing.
-  const { container } = render(<DataFlowCanvas />);
-  const cv = container.querySelector("canvas#bg");
-  expect(cv).toBeInTheDocument();
-  expect(cv).toHaveAttribute("aria-hidden", "true");
+test("Atmosphere is the app's one backdrop: the aria-hidden NIGHTJAR layers and no trail canvas (#1531)", () => {
+  const { container } = render(<Atmosphere />);
+  const atmo = container.querySelector(".nj-atmo");
+  expect(atmo).toHaveAttribute("aria-hidden", "true");
+  expect([...atmo!.children].map((c) => c.className)).toEqual([
+    "nj-hex",
+    "nj-scan",
+    "nj-noise",
+    "nj-sweep",
+    "nj-vig",
+  ]);
+  expect(container.querySelector("canvas")).toBeNull();
 });
 
 test("ButtonGlitch renders nothing", () => {
