@@ -1,8 +1,9 @@
 /** ASK (#878; a page since #1058, the right-hand sidebar since #1294, durable since #1443) — the
  *  box's behaviour and the conversation's lifecycle.
  *
- *  Since #1443 the conversation is the server's (`/api/ask/*`): the console reopens the latest one,
- *  creates a conversation on its first question, streams a turn the server owns, and — when a
+ *  Since #1443 the conversation is the server's (`/api/ask/*`): the console opens on an empty
+ *  thread (a kept conversation is a switcher pick away), deletes one after a confirm, creates a
+ *  conversation on its first question, streams a turn the server owns, and — when a
  *  stream ends early — reads the conversation again instead of declaring the turn lost. These tests
  *  drive that against a faked API: answers render with their matches, a refusal shows the server's
  *  detail, the head is the switcher + New conversation + Close, the switcher opens another
@@ -58,6 +59,7 @@ vi.mock("../../lib/api", async () => {
       askConversations: vi.fn(),
       askConversation: vi.fn(),
       askNewConversation: vi.fn(),
+      askDeleteConversation: vi.fn(),
       askMessageStream: vi.fn(),
       approveAction: vi.fn(),
       rejectAction: vi.fn(),
@@ -74,6 +76,21 @@ const OTHER = "ask_" + "2".repeat(32);
 /** The console needs a router: a match row renders a `<Link>` into the session. */
 function mount(ui: React.ReactNode) {
   return render(<MemoryRouter>{ui}</MemoryRouter>);
+}
+
+/** HQ opens on an empty conversation: mount, then open a kept one from the switcher, as the
+ *  operator does. `index` is its row, latest first. */
+async function mountAt(ui: React.ReactNode, index = 0) {
+  const r = mount(ui);
+  await pick(index);
+  return r;
+}
+
+/** Open the switcher and pick row `index` (latest first). */
+async function pick(index = 0) {
+  await userEvent.click(screen.getByTestId("ask-switcher"));
+  const items = await screen.findAllByTestId("ask-switcher-item");
+  await userEvent.click(items[index]);
 }
 
 /** The console's own mount/unmount, driven from a control. */
@@ -148,6 +165,7 @@ beforeEach(() => {
   vi.mocked(api.askConversations).mockReset();
   vi.mocked(api.askConversation).mockReset();
   vi.mocked(api.askNewConversation).mockReset();
+  vi.mocked(api.askDeleteConversation).mockReset();
   vi.mocked(api.approveAction).mockReset();
   vi.mocked(api.rejectAction).mockReset();
   vi.mocked(api.askConversations).mockResolvedValue({ conversations: [], configured: true });
@@ -283,7 +301,7 @@ test('the thread carries no "answers are not kept" notice (operator request)', a
   expect(screen.queryByText(/not kept/i)).toBeNull();
 });
 
-test("leaving never cancels the turn: coming back reopens the latest conversation, settled (#1443)", async () => {
+test("leaving never cancels the turn: coming back starts empty, and opening the conversation shows it settled (#1443)", async () => {
   let settle: ((t: AskConversationTurn) => void) | undefined;
   let watching: AbortSignal | undefined;
   vi.mocked(api.askMessageStream).mockImplementation(
@@ -306,13 +324,16 @@ test("leaving never cancels the turn: coming back reopens the latest conversatio
   const done = turnOf(body.text, body.turnId, { answer: "It settled while you were away." });
   settle?.(done);
 
-  // Coming back reads the server: the latest conversation, with the settled answer.
+  // Coming back starts on an empty conversation; the kept one is in the switcher, and reads the
+  // server: the settled answer.
   vi.mocked(api.askConversations).mockResolvedValue({
     conversations: [{ id: CID, title: "for this visit", created_at: 1, updated_at: 2 }],
     configured: true,
   });
   vi.mocked(api.askConversation).mockResolvedValue(conversation(CID, [done]));
   await userEvent.click(screen.getByRole("button", { name: "return" }));
+  expect(screen.queryByTestId("ask-turns")).toBeNull();
+  await pick(0);
   expect(await screen.findByText("It settled while you were away.")).toBeInTheDocument();
   expect(screen.getAllByTestId("ask-turn")).toHaveLength(1);
 });
@@ -435,22 +456,24 @@ test("a stream cut mid-turn reads the conversation again and waits for the turn 
   expect(screen.getAllByTestId("ask-turn")).toHaveLength(1);
 });
 
-test("the head is HQ, the switcher, New conversation and the sidebar's Close — nothing else (#1294, #1443, #1525)", async () => {
+test("the head is HQ, the switcher, Delete, New conversation and the sidebar's Close — nothing else (#1294, #1443, #1525)", async () => {
   answerWith({ answer: "ok" });
   const onClose = vi.fn();
   mount(<AskConsole configured onClose={onClose} />);
   const head = screen.getByTestId("ask-head");
   expect(within(head).getByRole("heading", { level: 2 })).toHaveTextContent("HQ");
   const switcher = within(head).getByTestId("ask-switcher");
+  const remove = within(head).getByRole("button", { name: "Delete this conversation" });
   const fresh = within(head).getByRole("button", { name: "New conversation" });
   const close = within(head).getByRole("button", { name: "Close HQ" });
-  expect(within(head).getAllByRole("button")).toEqual([switcher, fresh, close]);
+  expect(within(head).getAllByRole("button")).toEqual([switcher, remove, fresh, close]);
   // No way "back": Ask is not a page any more.
   expect(within(head).queryAllByRole("link")).toHaveLength(0);
   await userEvent.click(close);
   expect(onClose).toHaveBeenCalledTimes(1);
-  // Nothing to start over from yet.
+  // Nothing to start over from, or to delete, yet.
   expect(fresh).toBeDisabled();
+  expect(remove).toBeDisabled();
 
   await userEvent.type(screen.getByTestId("composer-input"), "x{Enter}");
   await screen.findByTestId("ask-answer");
@@ -538,17 +561,110 @@ test("a watch that settles LATE does not unlock the box under the next question"
 
 // --- the durable conversation (#1443) ---------------------------------------------------------
 
-test("opening Ask reopens the latest conversation", async () => {
+test("opening HQ starts on an empty conversation; the kept ones wait in the switcher", async () => {
   twoConversations();
   mount(<AskConsole configured />);
+  await waitFor(() => expect(api.askConversations).toHaveBeenCalled());
+  // Nothing is reopened on its own.
+  await new Promise((r) => setTimeout(r, 50));
+  expect(api.askConversation).not.toHaveBeenCalled();
+  expect(screen.queryByTestId("ask-turns")).toBeNull();
+  expect(screen.getByTestId("ask-switcher")).toHaveTextContent("New conversation");
+  // …and the latest is one pick away.
+  await pick(0);
   expect(await screen.findByText(`answer for ${CID}`)).toBeInTheDocument();
-  expect(api.askConversation).toHaveBeenCalledWith(CID);
   expect(screen.getByTestId("ask-switcher")).toHaveTextContent("the latest");
+});
+
+test("Delete asks first; confirmed, it removes the conversation on screen and HQ starts empty", async () => {
+  twoConversations();
+  vi.mocked(api.askDeleteConversation).mockResolvedValue({ deleted: true, id: CID });
+  await mountAt(<AskConsole configured />);
+  await screen.findByText(`answer for ${CID}`);
+  const remove = screen.getByRole("button", { name: "Delete this conversation" });
+  expect(remove).toBeEnabled();
+
+  // Cancel deletes nothing and hands focus back.
+  await userEvent.click(remove);
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText("DELETE CONVERSATION")).toBeInTheDocument();
+  expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
+  await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(api.askDeleteConversation).not.toHaveBeenCalled();
+  expect(screen.getByText(`answer for ${CID}`)).toBeInTheDocument();
+
+  // Confirmed: the server deletes THIS conversation; the thread is empty and the switcher no longer
+  // lists it.
+  vi.mocked(api.askConversations).mockResolvedValue({
+    conversations: [{ id: OTHER, title: "older", created_at: 1, updated_at: 2 }],
+    configured: true,
+  });
+  await userEvent.click(remove);
+  await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(api.askDeleteConversation).toHaveBeenCalledWith(CID);
+  expect(screen.queryByTestId("ask-turns")).toBeNull();
+  expect(screen.queryByText(`answer for ${CID}`)).toBeNull();
+  expect(remove).toBeDisabled();
+  await userEvent.click(screen.getByTestId("ask-switcher"));
+  const items = await screen.findAllByTestId("ask-switcher-item");
+  expect(items.map((i) => i.textContent)).toEqual([expect.stringContaining("older")]);
+});
+
+test("a list read that predates a delete never puts the deleted conversation back (Hermes on #1564)", async () => {
+  const both = {
+    conversations: [
+      { id: CID, title: "the latest", created_at: 1, updated_at: 3 },
+      { id: OTHER, title: "older", created_at: 1, updated_at: 2 },
+    ],
+    configured: true,
+  };
+  const slow = deferred<typeof both>();
+  vi.mocked(api.askConversations)
+    .mockResolvedValueOnce(both) // mount
+    .mockResolvedValueOnce(both) // the pick that opens CID
+    .mockReturnValueOnce(slow.promise as never) // a refresh still out when the delete lands
+    .mockResolvedValue({ conversations: [both.conversations[1]], configured: true });
+  vi.mocked(api.askConversation).mockImplementation(async (id) =>
+    conversation(id, [turnOf(id === CID ? "the latest" : "older", "t1", { answer: `answer for ${id}` })]),
+  );
+  vi.mocked(api.askDeleteConversation).mockResolvedValue({ deleted: true, id: CID });
+  await mountAt(<AskConsole configured />);
+  await screen.findByText(`answer for ${CID}`);
+  // Open and close the switcher: its refresh is the slow one.
+  await userEvent.click(screen.getByTestId("ask-switcher"));
+  await userEvent.keyboard("{Escape}");
+  await userEvent.click(screen.getByRole("button", { name: "Delete this conversation" }));
+  await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  // The pre-delete read lands last, with the deleted conversation still in it.
+  await act(async () => slow.resolve(both));
+  vi.mocked(api.askConversations).mockReturnValue(new Promise(() => {}) as never); // freeze the list
+  await userEvent.click(screen.getByTestId("ask-switcher"));
+  const items = screen.getAllByTestId("ask-switcher-item");
+  expect(items.map((i) => i.textContent)).toEqual([expect.stringContaining("older")]);
+});
+
+test("a refused delete says why in the dialog and keeps the conversation", async () => {
+  twoConversations();
+  vi.mocked(api.askDeleteConversation).mockRejectedValue(
+    new ApiError(409, "HQ is still answering in this conversation — try again once it settles"),
+  );
+  await mountAt(<AskConsole configured />);
+  await screen.findByText(`answer for ${CID}`);
+  await userEvent.click(screen.getByRole("button", { name: "Delete this conversation" }));
+  const dialog = await screen.findByRole("dialog");
+  await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+  expect(await within(dialog).findByTestId("ask-delete-error")).toHaveTextContent(
+    "still answering",
+  );
+  expect(screen.getByText(`answer for ${CID}`)).toBeInTheDocument();
 });
 
 test("the switcher lists latest first and opens the one picked — by keyboard", async () => {
   twoConversations();
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   await screen.findByText(`answer for ${CID}`);
   const trigger = screen.getByTestId("ask-switcher");
   await userEvent.click(trigger);
@@ -578,6 +694,7 @@ test("Escape closes the switcher, hands focus back, and goes no further", async 
       </div>
     </MemoryRouter>,
   );
+  await pick(0);
   await screen.findByText(`answer for ${CID}`);
   const trigger = screen.getByTestId("ask-switcher");
   await userEvent.click(trigger);
@@ -605,7 +722,7 @@ test("a late answer for a conversation the operator switched away from lands now
         finish = res;
       }),
   );
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   await waitFor(() => expect(api.askConversation).toHaveBeenCalledWith(CID));
   await userEvent.type(screen.getByTestId("composer-input"), "in the first{Enter}");
   await waitFor(() => expect(finish).toBeDefined());
@@ -736,7 +853,7 @@ test("an answer read back from the server shows at once; only one that arrives l
   try {
     twoConversations();
     answerWith({ answer: "a fresh answer that writes itself out" });
-    mount(<AskConsole configured />);
+    await mountAt(<AskConsole configured />);
     const stored = await screen.findByTestId("ask-answer");
     expect(stored).not.toHaveAttribute("data-revealing");
     await userEvent.type(screen.getByTestId("composer-input"), "and now?{Enter}");
@@ -755,14 +872,17 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-test("a question asked before the first selection settles waits for it and is never swept away", async () => {
+test("a question asked before the conversation list arrives goes to a NEW conversation, never a kept one", async () => {
   const list = deferred<{
     conversations: { id: string; title: string; created_at: number; updated_at: number }[];
     configured: boolean;
   }>();
   vi.mocked(api.askConversations).mockReturnValueOnce(list.promise as never);
   const earlier = turnOf("earlier", "t0", { answer: "the earlier answer" });
-  vi.mocked(api.askConversation).mockResolvedValue(conversation(CID, [earlier]));
+  vi.mocked(api.askConversation).mockImplementation(async (id) =>
+    id === CID ? conversation(CID, [earlier]) : conversation(id, []),
+  );
+  vi.mocked(api.askNewConversation).mockResolvedValue(conversation(OTHER));
   answerWith({ answer: "kept" });
   mount(<AskConsole configured />);
   await userEvent.type(screen.getByTestId("composer-input"), "first question{Enter}");
@@ -775,12 +895,12 @@ test("a question asked before the first selection settles waits for it and is ne
       configured: true,
     }),
   );
-  // …then it goes to the conversation that opened, beside that conversation's earlier turns.
+  // …then it goes to a conversation of its own: the kept one is never opened under it.
   expect(await screen.findByText("kept")).toBeInTheDocument();
-  expect(screen.getByText("the earlier answer")).toBeInTheDocument();
-  expect(vi.mocked(api.askMessageStream).mock.calls[0][0]).toBe(CID);
-  expect(api.askNewConversation).not.toHaveBeenCalled();
-  expect(screen.getAllByTestId("ask-turn")).toHaveLength(2);
+  expect(screen.queryByText("the earlier answer")).toBeNull();
+  expect(api.askNewConversation).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(api.askMessageStream).mock.calls[0][0]).toBe(OTHER);
+  expect(screen.getAllByTestId("ask-turn")).toHaveLength(1);
 });
 
 test("a slow read never lands over a newer one: A → B → A keeps the second A", async () => {
@@ -796,7 +916,7 @@ test("a slow read never lands over a newer one: A → B → A keeps the second A
     .mockReturnValueOnce(firstA.promise) // the initial open of A — slow
     .mockResolvedValueOnce(conversation(OTHER, [turnOf("b", "tb", { answer: "B answer" })]))
     .mockResolvedValueOnce(conversation(CID, [turnOf("a", "ta", { answer: "A, fresh" })]));
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   await waitFor(() => expect(api.askConversation).toHaveBeenCalledTimes(1));
   await userEvent.click(screen.getByTestId("ask-switcher"));
   await userEvent.click(screen.getAllByTestId("ask-switcher-item")[1]);
@@ -827,7 +947,7 @@ test("a question sent while the conversation's read is still out keeps its answe
       return conversation(OTHER, [earlier, turnOf(body.text, body.turnId, { answer: "new answer" })]);
     });
   answerWith({ answer: "new answer" });
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   await waitFor(() => expect(api.askConversation).toHaveBeenCalledWith(CID));
   await userEvent.click(screen.getByTestId("ask-switcher"));
   await userEvent.click(screen.getAllByTestId("ask-switcher-item")[1]);
@@ -843,7 +963,15 @@ test("a question sent while the conversation's read is still out keeps its answe
 });
 
 test("a refresh that reorders the open switcher: Enter opens the focused conversation", async () => {
+  // The mount's read and the open that picks A see A first; every later read has B first.
   vi.mocked(api.askConversations)
+    .mockResolvedValueOnce({
+      conversations: [
+        { id: CID, title: "a", created_at: 1, updated_at: 3 },
+        { id: OTHER, title: "b", created_at: 1, updated_at: 2 },
+      ],
+      configured: true,
+    })
     .mockResolvedValueOnce({
       conversations: [
         { id: CID, title: "a", created_at: 1, updated_at: 3 },
@@ -859,7 +987,7 @@ test("a refresh that reorders the open switcher: Enter opens the focused convers
       configured: true,
     });
   vi.mocked(api.askConversation).mockImplementation(async (id) => conversation(id, []));
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   await waitFor(() => expect(api.askConversation).toHaveBeenCalledWith(CID));
   await userEvent.click(screen.getByTestId("ask-switcher"));
   // The refresh opening triggered lands with B first; focus is on A's row, wherever it moved.
@@ -918,7 +1046,7 @@ function withConversation(turns: AskConversationTurn[]) {
 test("a question card answers by OPTION INDEX — the server sends the reply it stored", async () => {
   withConversation([askedTurn()]);
   answerWith({ answer: "ok, web" });
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   const card = await screen.findByTestId("ask-question");
   expect(within(card).getByText("Which project?", { selector: "p" })).toBeInTheDocument();
   await userEvent.click(within(card).getByRole("button", { name: "web" }));
@@ -934,7 +1062,7 @@ test("a question card answers by OPTION INDEX — the server sends the reply it 
 test("free text answers when the question allows it", async () => {
   withConversation([askedTurn()]);
   answerWith({ answer: "noted" });
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   const card = await screen.findByTestId("ask-question");
   await userEvent.type(within(card).getByTestId("ask-question-text"), "the docs one");
   await userEvent.click(within(card).getByRole("button", { name: "Answer" }));
@@ -948,7 +1076,7 @@ test("free text answers when the question allows it", async () => {
 
 test("an answered question offers nothing more, and a question without free text has no box", async () => {
   withConversation([askedTurn(true, false)]);
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   const card = await screen.findByTestId("ask-question");
   expect(within(card).getByText("Answered")).toBeInTheDocument();
   for (const b of within(card).getAllByTestId("ask-question-option")) expect(b).toBeDisabled();
@@ -958,7 +1086,7 @@ test("an answered question offers nothing more, and a question without free text
 test("a nudge card shows the exact text; Send posts the approve route and the card reads the outcome back", async () => {
   const turn = { ...turnOf("tell it to rebase", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
   withConversation([turn]);
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   const card = await screen.findByTestId("ask-nudge");
   expect(within(card).getByTestId("ask-nudge-text")).toHaveTextContent(
     "Rebase onto main, then run the tests.",
@@ -980,7 +1108,7 @@ test("a nudge card shows the exact text; Send posts the approve route and the ca
 test("a refused approve (409 out of date) is an outcome the card reads back, not an error", async () => {
   const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
   withConversation([turn]);
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   const card = await screen.findByTestId("ask-nudge");
   vi.mocked(api.approveAction).mockRejectedValue(new ApiError(409, "the screen moved"));
   vi.mocked(api.askConversation).mockResolvedValue(
@@ -999,7 +1127,7 @@ test("Dismiss posts the reject route", async () => {
   const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
   withConversation([turn]);
   vi.mocked(api.rejectAction).mockResolvedValue({} as never);
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   await userEvent.click(await screen.findByTestId("ask-nudge-dismiss"));
   expect(api.rejectAction).toHaveBeenCalledWith(AID);
   expect(api.approveAction).not.toHaveBeenCalled();
@@ -1011,7 +1139,7 @@ test("a card whose ledger could not be read offers no control and says why", asy
     proposals: [nudge({ state: null, projection: "unknown", can_approve: false, can_reject: false })],
   };
   withConversation([turn]);
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   expect(await screen.findByTestId("ask-nudge-outcome")).toHaveTextContent("Status unavailable");
   expect(screen.queryByTestId("ask-nudge-send")).toBeNull();
 });
@@ -1022,7 +1150,7 @@ test("an open card follows a decision taken elsewhere (the app's action-resolved
   const { ACTION_RESOLVED_EVENT } = await import("../../lib/actionEvents");
   const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
   withConversation([turn]);
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   await screen.findByTestId("ask-nudge-send");
   vi.mocked(api.askConversation).mockResolvedValue(
     conversation(CID, [
@@ -1044,7 +1172,7 @@ test("an open card is re-read on a timer, so an expiry reaches it", async () => 
   // faked clock too, which made this flaky on a loaded CI runner (#1489).
   const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
   withConversation([turn]);
-  mount(<AskConsole configured cardPollMs={40} />);
+  await mountAt(<AskConsole configured cardPollMs={40} />);
   await screen.findByTestId("ask-nudge-send");
   vi.mocked(api.askConversation).mockResolvedValue(
     conversation(CID, [
@@ -1062,7 +1190,7 @@ test.each(["dismissed", "expired"])("a decided card that earns no follow (%s) st
     proposals: [nudge({ state, projection: "settled", can_approve: false, can_reject: false })],
   };
   withConversation([turn]);
-  mount(<AskConsole configured cardPollMs={20} />);
+  await mountAt(<AskConsole configured cardPollMs={20} />);
   await screen.findByTestId("ask-nudge-outcome");
   const reads = vi.mocked(api.askConversation).mock.calls.length;
   await new Promise((r) => setTimeout(r, 200)); // ten intervals' worth
@@ -1075,7 +1203,7 @@ test("a delivered card reads only for the bounded window its follow may take (#1
     proposals: [nudge({ state: "delivered", projection: "settled", can_approve: false, can_reject: false })],
   };
   withConversation([turn]);
-  mount(<AskConsole configured cardPollMs={20} reconcileMs={120} />);
+  await mountAt(<AskConsole configured cardPollMs={20} reconcileMs={120} />);
   await screen.findByTestId("ask-nudge-outcome");
   await new Promise((r) => setTimeout(r, 300)); // past the window
   const reads = vi.mocked(api.askConversation).mock.calls.length;
@@ -1086,7 +1214,7 @@ test("a delivered card reads only for the bounded window its follow may take (#1
 test("an answer that failed leaves its question open to answer again", async () => {
   withConversation([askedTurn()]);
   answerWith({ answer: "", status: "failed", detail: "rate limited" });
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   const card = await screen.findByTestId("ask-question");
   await userEvent.click(within(card).getByRole("button", { name: "web" }));
   await screen.findByTestId("ask-error");
@@ -1111,7 +1239,7 @@ test("a decision that settles after a switch never blanks the conversation now o
     id === CID ? conversation(CID, [aTurn]) : bRead.promise,
   );
   vi.mocked(api.approveAction).mockReturnValue(approve.promise);
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   await userEvent.click(await screen.findByTestId("ask-nudge-send"));
   await userEvent.click(screen.getByTestId("ask-switcher"));
   await userEvent.click(screen.getAllByTestId("ask-switcher-item")[1]);
@@ -1132,7 +1260,7 @@ test("a card whose ledger could not be read keeps re-reading until it can", asyn
     proposals: [nudge({ state: null, projection: "unknown", can_approve: false, can_reject: false })],
   };
   withConversation([turn]);
-  mount(<AskConsole configured cardPollMs={40} />);
+  await mountAt(<AskConsole configured cardPollMs={40} />);
   expect(await screen.findByTestId("ask-nudge-outcome")).toHaveTextContent("Status unavailable");
   vi.mocked(api.askConversation).mockResolvedValue(
     conversation(CID, [{ ...turn, proposals: [nudge()] }]),
@@ -1147,7 +1275,7 @@ test("an approved-but-not-yet-sent message can still be dismissed", async () => 
   };
   withConversation([turn]);
   vi.mocked(api.rejectAction).mockResolvedValue({} as never);
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   expect(await screen.findByTestId("ask-nudge-outcome")).toHaveTextContent("Queued");
   expect(screen.queryByTestId("ask-nudge-send")).toBeNull();
   await userEvent.click(screen.getByTestId("ask-nudge-dismiss"));
@@ -1160,7 +1288,7 @@ test("a message being typed (claimed) offers nothing", async () => {
     proposals: [nudge({ state: "claimed", projection: "in_flight_locked", can_approve: false, can_reject: false })],
   };
   withConversation([turn]);
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   expect(await screen.findByTestId("ask-nudge-outcome")).toHaveTextContent("Sending");
   expect(screen.queryByTestId("ask-nudge-dismiss")).toBeNull();
 });
@@ -1173,7 +1301,7 @@ test("a turn that staged a proposal and then failed still shows the live card", 
     proposals: [nudge()],
   };
   withConversation([turn]);
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   expect(await screen.findByTestId("ask-error")).toHaveTextContent("the endpoint refused");
   expect(screen.getByTestId("ask-nudge-send")).toBeEnabled();
 });
@@ -1181,7 +1309,7 @@ test("a turn that staged a proposal and then failed still shows the live card", 
 test("a free-text answer that failed keeps its draft to retry", async () => {
   withConversation([askedTurn()]);
   answerWith({ answer: "", status: "failed", detail: "rate limited" });
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   const card = await screen.findByTestId("ask-question");
   await userEvent.type(within(card).getByTestId("ask-question-text"), "the docs one");
   await userEvent.click(within(card).getByRole("button", { name: "Answer" }));
@@ -1198,7 +1326,7 @@ test("a background re-read never pulls someone reading earlier turns to the bott
   const { ACTION_RESOLVED_EVENT } = await import("../../lib/actionEvents");
   const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
   withConversation([turn]);
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   await screen.findByTestId("ask-nudge-send");
   const pane = screen.getByTestId("ask-pane");
   geometry(pane, 1000, 200);
@@ -1221,7 +1349,7 @@ test("…while someone already at the bottom keeps following it", async () => {
   const { ACTION_RESOLVED_EVENT } = await import("../../lib/actionEvents");
   const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
   withConversation([turn]);
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   await screen.findByTestId("ask-nudge-send");
   const pane = screen.getByTestId("ask-pane");
   geometry(pane, 1000, 200);
@@ -1274,7 +1402,7 @@ const settled = (over: Partial<AskSessionCard>) =>
 
 test("a session card shows the project, agent and exact brief, and the bypass starts at the default", async () => {
   withConversation([sessionTurn(sessionCard({ bypass_default: true }))]);
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   const card = await screen.findByTestId("ask-session");
   expect(card).toHaveTextContent("api");
   expect(card).toHaveTextContent("Claude Code");
@@ -1294,7 +1422,7 @@ test("Start sends the decision and the bypass value the card shows — and nothi
   vi.mocked(api.decideAskProposal).mockResolvedValue({
     proposal: settled({ state: "deciding" }),
   });
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   const card = await screen.findByTestId("ask-session");
   await userEvent.click(within(card).getByRole("switch"));
   vi.mocked(api.askConversation).mockResolvedValue(
@@ -1315,7 +1443,7 @@ test("Start sends the decision and the bypass value the card shows — and nothi
 test("an untouched switch starts with the default it shows", async () => {
   withConversation([sessionTurn(sessionCard())]);
   vi.mocked(api.decideAskProposal).mockResolvedValue({ proposal: settled({ state: "deciding" }) });
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   await userEvent.click(await screen.findByTestId("ask-session-start"));
   expect(api.decideAskProposal).toHaveBeenCalledWith(PID, "start", false);
 });
@@ -1326,7 +1454,7 @@ test("a changed default asks again: the card shows the new starting value and a 
   vi.mocked(api.decideAskProposal).mockRejectedValue(
     new ApiError(409, "your default for permission bypass changed", { proposal: fresh }),
   );
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   const before = await screen.findByTestId("ask-session");
   expect(within(before).getByRole("switch")).not.toBeChecked();
   vi.mocked(api.askConversation).mockResolvedValue(conversation(CID, [sessionTurn(fresh)]));
@@ -1344,7 +1472,7 @@ test("a refusal that did not change the card is said under it", async () => {
   vi.mocked(api.decideAskProposal).mockRejectedValue(
     new ApiError(409, "another session from this conversation is still starting"),
   );
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   await userEvent.click(await screen.findByTestId("ask-session-start"));
   expect(await screen.findByTestId("ask-session-error")).toHaveTextContent(
     "still starting",
@@ -1355,7 +1483,7 @@ test("a refusal that did not change the card is said under it", async () => {
 test("Dismiss sends dismiss", async () => {
   withConversation([sessionTurn(sessionCard())]);
   vi.mocked(api.decideAskProposal).mockResolvedValue({ proposal: settled({ state: "dismissed" }) });
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   await userEvent.click(await screen.findByTestId("ask-session-dismiss"));
   expect(api.decideAskProposal).toHaveBeenCalledWith(PID, "dismiss", false);
 });
@@ -1383,7 +1511,7 @@ test.each([
   // it had started.
   const session_key = state === "unconfirmed" ? "claude:abc-9" : "";
   withConversation([sessionTurn(settled({ state, reason, session_key }))]);
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   const outcome = await screen.findByTestId("ask-session-outcome");
   expect(outcome).toHaveTextContent(word);
   expect(outcome).toHaveTextContent(detail);
@@ -1393,7 +1521,7 @@ test.each([
 
 test("a launch in flight is followed at the turn poll's pace, not the card timer's", async () => {
   withConversation([sessionTurn(settled({ state: "deciding", bypass: false }))]);
-  mount(<AskConsole configured cardPollMs={60_000} />);
+  await mountAt(<AskConsole configured cardPollMs={60_000} />);
   expect(await screen.findByTestId("ask-session-outcome")).toHaveTextContent("Starting");
   vi.mocked(api.askConversation).mockResolvedValue(
     conversation(CID, [sessionTurn(settled({ state: "started", session_key: "claude:abc-1" }))]),
@@ -1406,7 +1534,7 @@ test("a launch in flight is followed at the turn poll's pace, not the card timer
 
 test("a settled session card stops re-reading", async () => {
   withConversation([sessionTurn(settled({ state: "dismissed" }))]);
-  mount(<AskConsole configured cardPollMs={20} />);
+  await mountAt(<AskConsole configured cardPollMs={20} />);
   await screen.findByTestId("ask-session-outcome");
   const reads = vi.mocked(api.askConversation).mock.calls.length;
   await new Promise((r) => setTimeout(r, 200));
@@ -1416,7 +1544,7 @@ test("a settled session card stops re-reading", async () => {
 
 test("a session card that could not be read keeps re-reading until it can", async () => {
   withConversation([sessionTurn(settled({ state: "unknown" }))]);
-  mount(<AskConsole configured cardPollMs={40} />);
+  await mountAt(<AskConsole configured cardPollMs={40} />);
   expect(await screen.findByTestId("ask-session-outcome")).toHaveTextContent("Status unavailable");
   vi.mocked(api.askConversation).mockResolvedValue(conversation(CID, [sessionTurn(sessionCard())]));
   expect(await screen.findByTestId("ask-session-start", {}, { timeout: 5000 })).toBeEnabled();
@@ -1426,7 +1554,7 @@ test("a session card that could not be read keeps re-reading until it can", asyn
 
 test("an accepted Start shows Starting at once, even when the re-read fails", async () => {
   withConversation([sessionTurn(sessionCard())]);
-  mount(<AskConsole configured cardPollMs={60_000} />);
+  await mountAt(<AskConsole configured cardPollMs={60_000} />);
   const card = await screen.findByTestId("ask-session");
   vi.mocked(api.decideAskProposal).mockResolvedValue({
     proposal: settled({ state: "deciding", bypass: false }),
@@ -1439,7 +1567,7 @@ test("an accepted Start shows Starting at once, even when the re-read fails", as
 
 test("a changed default shows its notice and new value at once, even when the re-read fails", async () => {
   withConversation([sessionTurn(sessionCard())]);
-  mount(<AskConsole configured cardPollMs={60_000} />);
+  await mountAt(<AskConsole configured cardPollMs={60_000} />);
   const card = await screen.findByTestId("ask-session");
   vi.mocked(api.decideAskProposal).mockRejectedValue(
     new ApiError(409, "your default for permission bypass changed", {
@@ -1457,7 +1585,7 @@ test("a changed default shows its notice and new value at once, even when the re
 
 test("a start refused because the project was being changed says so and can be tapped again", async () => {
   withConversation([sessionTurn(sessionCard({ notice: "busy" }))]);
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   expect(await screen.findByTestId("ask-session-notice")).toHaveTextContent(
     "nothing started. Start it again.",
   );
@@ -1502,7 +1630,7 @@ test("an update sits between the turns asked before and after it, in authored wo
       update({ ts: 25, kind: "ended", following: false }),
     ],
   });
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   await screen.findAllByTestId("ask-update");
   const turns = screen.getAllByTestId("ask-turn");
   const rows = screen.getAllByTestId("ask-update");
@@ -1522,7 +1650,7 @@ test("an update sits between the turns asked before and after it, in authored wo
 
 test("Unfollow stops following and the row stops offering it", async () => {
   withUpdates({ updates: [update()] });
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   const row = await screen.findByTestId("ask-update");
   vi.mocked(api.askConversation).mockResolvedValue({
     ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
@@ -1538,7 +1666,7 @@ test("Unfollow stops following and the row stops offering it", async () => {
 test("an unreadable follow state keeps the last verified follows and keeps reading until it recovers", async () => {
   // Hermes on #1500: unknown is not "following nothing".
   withUpdates({ updates: [], follows: [{ key: FOLLOWED, title: "api rebase" }] });
-  mount(<AskConsole configured cardPollMs={20} />);
+  await mountAt(<AskConsole configured cardPollMs={20} />);
   await screen.findByTestId("ask-following-row");
   vi.mocked(api.askConversation).mockResolvedValue({
     ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
@@ -1569,7 +1697,7 @@ test("an unreadable follow state keeps the last verified follows and keeps readi
 test("an update still being delivered keeps the open screen reading until it lands", async () => {
   // Hermes on #1500: stored but not appended yet, with nothing followed and no live card.
   withUpdates({ updates: [], following: [], follows: [], unread: true, updates_pending: true });
-  mount(<AskConsole configured cardPollMs={20} />);
+  await mountAt(<AskConsole configured cardPollMs={20} />);
   await waitFor(() => expect(api.askConversation).toHaveBeenCalled());
   vi.mocked(api.askConversation).mockResolvedValue({
     ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
@@ -1588,7 +1716,7 @@ test("a nudge Ask could not follow reads as Not following, with Open and no Unfo
   withUpdates({
     updates: [update({ ts: 15, kind: "not_followed", title: "docs pass", following: true })],
   });
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   const row = await screen.findByTestId("ask-update");
   expect(row).toHaveAttribute("data-kind", "not_followed");
   expect(row).toHaveTextContent("Not following");
@@ -1600,7 +1728,7 @@ test("a nudge Ask could not follow reads as Not following, with Open and no Unfo
 
 test("a conversation whose update budget is spent says it no longer follows sessions (#1517)", async () => {
   withUpdates({ updates: [update({ ts: 15 })], follows_exhausted: true });
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   expect(await screen.findByTestId("ask-follow-exhausted")).toHaveTextContent(
     "This conversation no longer follows sessions. Start a new conversation to follow more.",
   );
@@ -1608,7 +1736,7 @@ test("a conversation whose update budget is spent says it no longer follows sess
 
 test("a followed session with no update yet can be unfollowed (Hermes on #1500)", async () => {
   withUpdates({ updates: [], follows: [{ key: FOLLOWED, title: "api rebase" }] });
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   const row = await screen.findByTestId("ask-following-row");
   expect(row).toHaveTextContent("Following");
   expect(row).toHaveTextContent("api rebase");
@@ -1630,7 +1758,7 @@ test("an unseen update is marked seen while the console is on screen, and says s
   const heard = vi.fn();
   window.addEventListener(ASK_SEEN_EVENT, heard);
   try {
-    mount(<AskConsole configured />);
+    await mountAt(<AskConsole configured />);
     // Through the newest update it has SHOWN — never "now".
     await waitFor(() => expect(api.askSeen).toHaveBeenCalledWith(CID, 15));
     await waitFor(() => expect(heard).toHaveBeenCalled());
@@ -1641,7 +1769,7 @@ test("an unseen update is marked seen while the console is on screen, and says s
 
 test("…but not while the sidebar is closed", async () => {
   withUpdates({ updates: [update()], unread: true });
-  mount(<AskConsole configured visible={false} />);
+  await mountAt(<AskConsole configured visible={false} />);
   await screen.findByTestId("ask-update");
   await new Promise((r) => setTimeout(r, 100));
   expect(api.askSeen).not.toHaveBeenCalled();
@@ -1649,7 +1777,7 @@ test("…but not while the sidebar is closed", async () => {
 
 test("a conversation that follows sessions keeps reading, so new updates arrive", async () => {
   withUpdates({ updates: [] });
-  mount(<AskConsole configured cardPollMs={40} />);
+  await mountAt(<AskConsole configured cardPollMs={40} />);
   await screen.findAllByTestId("ask-turn");
   vi.mocked(api.askConversation).mockResolvedValue({
     ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
@@ -1664,7 +1792,7 @@ test("a conversation that follows sessions keeps reading, so new updates arrive"
 
 test("a conversation that follows nothing and has nothing live stops reading", async () => {
   withUpdates({ updates: [], following: [] });
-  mount(<AskConsole configured cardPollMs={20} />);
+  await mountAt(<AskConsole configured cardPollMs={20} />);
   await screen.findAllByTestId("ask-turn");
   const reads = vi.mocked(api.askConversation).mock.calls.length;
   await new Promise((r) => setTimeout(r, 200));
@@ -1697,7 +1825,7 @@ test("the switcher marks a conversation with an unseen update, in words as well 
     ],
     configured: true,
   });
-  mount(<AskConsole configured />);
+  await mountAt(<AskConsole configured />);
   await screen.findAllByTestId("ask-turn");
   await userEvent.click(screen.getByTestId("ask-switcher"));
   const items = await screen.findAllByTestId("ask-switcher-item");
@@ -1712,7 +1840,7 @@ test("a session started elsewhere is read until the follow it earns arrives", as
   // follower's next pass is up to a minute away), and nothing else is live — it keeps reading.
   const turn = sessionTurn(sessionCard());
   withConversation([turn]);
-  mount(<AskConsole configured cardPollMs={40} />);
+  await mountAt(<AskConsole configured cardPollMs={40} />);
   await screen.findByTestId("ask-session-start");
   const started = {
     ...conversation(CID, [sessionTurn(settled({ state: "started", session_key: FOLLOWED }))]),
@@ -1746,7 +1874,7 @@ test.each(["delivered", "indeterminate"])(
       proposals: [card],
     });
     withConversation([nudgeTurn(nudge())]);
-    mount(<AskConsole configured cardPollMs={40} />);
+    await mountAt(<AskConsole configured cardPollMs={40} />);
     await screen.findByTestId("ask-nudge-send");
     const settledRead = {
       ...conversation(CID, [
@@ -1782,7 +1910,7 @@ test.each(["delivered", "indeterminate"])(
 
 test("the read after a start is bounded: it stops once the window ends", async () => {
   withConversation([sessionTurn(settled({ state: "started", session_key: FOLLOWED }))]);
-  mount(<AskConsole configured cardPollMs={20} reconcileMs={120} />);
+  await mountAt(<AskConsole configured cardPollMs={20} reconcileMs={120} />);
   await screen.findByTestId("ask-session-outcome");
   await new Promise((r) => setTimeout(r, 300)); // past the window
   const reads = vi.mocked(api.askConversation).mock.calls.length;
@@ -1796,7 +1924,7 @@ test("an older seen answer arriving late never brings 'unread' back", async () =
   vi.mocked(api.askSeen)
     .mockReturnValueOnce(first.promise)
     .mockResolvedValue({ unread: false });
-  mount(<AskConsole configured cardPollMs={40} />);
+  await mountAt(<AskConsole configured cardPollMs={40} />);
   await waitFor(() => expect(api.askSeen).toHaveBeenCalledTimes(1));
   // A newer update arrives and is shown; its mark answers first…
   vi.mocked(api.askConversation).mockResolvedValue({
@@ -1851,6 +1979,7 @@ test("the head shows the selected contact: portrait, HQ and the name over the pi
   expect(within(head).getByTestId("hq-head-name")).toHaveTextContent("General Valentina Cruz");
   expect(within(head).getAllByRole("button")).toEqual([
     within(head).getByTestId("ask-switcher"),
+    within(head).getByRole("button", { name: "Delete this conversation" }),
     within(head).getByRole("button", { name: "New conversation" }),
     within(head).getByRole("button", { name: "Close HQ" }),
   ]);
@@ -1896,6 +2025,7 @@ test("Off, an unknown contact and a turn from before HQ all answer as plain HQ",
     ]),
   );
   render(withContact("us-man", <AskConsole configured />));
+  await pick(0);
   await screen.findByText("removed contact");
   expect(screen.getAllByRole("article", { name: "Answer from HQ" })).toHaveLength(3);
 });

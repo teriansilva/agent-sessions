@@ -10,7 +10,7 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 
-import { openAsk } from "./askSidebar";
+import { openAsk, pickConversation } from "./askSidebar";
 import {
   ASK_STREAM,
   fulfillAsk,
@@ -130,6 +130,7 @@ test("a question is answered by option — pointer or keyboard — and the serve
   });
   await page.goto("/dashboard");
   const panel = await openAsk(page);
+  await pickConversation(panel);
   const card = panel.getByTestId("ask-question");
   await expect(card).toContainText("Which project?");
   await expect(card).toContainText("Waiting for you");
@@ -167,6 +168,7 @@ test("a nudge card sends through the approve route and shows what the ledger say
   });
   await page.goto("/dashboard");
   const panel = await openAsk(page);
+  await pickConversation(panel);
   const card = panel.getByTestId("ask-nudge");
   await expect(card.getByTestId("ask-nudge-text")).toHaveText(
     "Rebase onto main, resolve the conflicts in routes/sessions.py, then rerun the tests.",
@@ -199,6 +201,7 @@ test("a screen that moved: the refused approve reads back as Out of date, nothin
   });
   await page.goto("/dashboard");
   const panel = await openAsk(page);
+  await pickConversation(panel);
   await panel.getByTestId("ask-nudge-send").click();
   const outcome = panel.getByTestId("ask-nudge-outcome");
   await expect(outcome).toContainText("Out of date");
@@ -272,6 +275,7 @@ test("a session card starts with the bypass value it shows, by keyboard, and fol
   });
   await page.goto("/dashboard");
   const panel = await openAsk(page);
+  await pickConversation(panel);
   const card = panel.getByTestId("ask-session");
   await expect(card.getByTestId("ask-session-brief")).toHaveText(BRIEF);
   await expect(card).toContainText("Claude Code");
@@ -335,6 +339,7 @@ test("a changed bypass default asks again: the card shows the new starting value
   });
   await page.goto("/dashboard");
   const panel = await openAsk(page);
+  await pickConversation(panel);
   const card = panel.getByTestId("ask-session");
   await expect(card.getByRole("switch")).not.toBeChecked();
   await card.getByTestId("ask-session-start").click();

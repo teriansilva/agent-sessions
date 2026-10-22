@@ -9,7 +9,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { ASK_STREAM, fulfillAsk, mockAskConversations } from "./askStream";
-import { openAsk } from "./askSidebar";
+import { openAsk, pickConversation } from "./askSidebar";
 import { openMapFromNav } from "./mapNav";
 
 const ANSWER = {
@@ -251,10 +251,12 @@ test("the conversation outlives closing the panel, navigating AND a reload (#129
   panel = await openAsk(page);
   await expect(panel.getByTestId("ask-turn")).toHaveCount(1);
 
-  // …and it is the server's now: a reload reopens the latest conversation, answer and all. (Before
-  // #1443 a reload started clean; that transient behaviour is retired with the durable thread.)
+  // …and it is the server's now: a reload opens HQ empty, and the conversation is kept, answer
+  // and all, one pick away in the switcher.
   await page.reload();
   panel = await openAsk(page);
+  await expect(panel.getByTestId("ask-turn")).toHaveCount(0);
+  await pickConversation(panel);
   await expect(panel.getByTestId("ask-turn")).toHaveCount(1);
   await expect(panel.getByTestId("ask-turns")).toContainText("Two sessions touched the upload retry.");
   await expect(panel.getByTestId("ask-switcher")).toContainText("anything");

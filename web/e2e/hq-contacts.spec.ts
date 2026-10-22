@@ -3,6 +3,8 @@
  *  Random pick, the media rules (reduced motion, paused, failed) and answers labelled by speaker. */
 import { expect, test, type Page } from "@playwright/test";
 
+import { pickConversation } from "./askSidebar";
+
 import { CONTACTS, contactForDay } from "../src/components/hq/contacts";
 import { DASHBOARD_PATH, NEW_SESSION_PATH } from "../src/lib/routes";
 import { settingsPath } from "../src/routes/settingsTabs";
@@ -156,7 +158,7 @@ test("switching contacts relabels new answers only (#1525)", async ({ page }) =>
     "Roger.",
   );
 
-  // Switch in Settings; the conversation is kept (server-side) and reopens with HQ.
+  // Switch in Settings; the conversation is kept (server-side), one pick away in HQ's switcher.
   await page.goto(settingsPath("appearance"));
   const target = page.getByRole("radio").and(page.locator('[data-key="europe-woman"]'));
   await target.click();
@@ -165,7 +167,8 @@ test("switching contacts relabels new answers only (#1525)", async ({ page }) =>
 
   await page.goto(DASHBOARD_PATH);
   await page.getByTestId("hq-primary-contact").click();
-  // The kept conversation reopens first; a question sent before it lands would start a new one.
+  // HQ opens empty after a page load; the kept conversation is picked from the switcher.
+  await pickConversation(panel);
   await expect(panel.getByTestId("ask-turn")).toHaveCount(1);
   await panel.getByTestId("composer-input").fill("two");
   await panel.getByTestId("composer-send").click();

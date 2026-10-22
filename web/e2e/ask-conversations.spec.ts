@@ -4,12 +4,14 @@
  *  back, that Escape closes ONLY the list (on a desktop the panel's own Escape closes Ask; in the
  *  phone drawer the drawer's Escape would), that the focused row's ring is visible, that the thread
  *  is scrolled to its newest entry after a switch, and that a long title neither pushes the head
- *  past the panel nor scrolls the page sideways on a phone.
+ *  past the panel nor scrolls the page sideways on a phone. HQ opens on an EMPTY conversation, and
+ *  Delete removes the one on screen only after its confirm dialog, which is keyboard-operable and
+ *  hands focus back.
  */
 import { expect, test, type Page } from "@playwright/test";
 
-import { openAsk } from "./askSidebar";
-import { mockAskConversations, turnOf, type FakeConversation } from "./askStream";
+import { openAsk, pickConversation } from "./askSidebar";
+import { mockAskConversations, turnOf, type FakeAsk, type FakeConversation } from "./askStream";
 
 const LONG =
   "Why does the flaky upload retry spec in web/e2e keep timing out on the shared runner overnight";
@@ -41,7 +43,7 @@ function conversations(): FakeConversation[] {
   return [latest, older, oldest];
 }
 
-async function mockShell(page: Page) {
+async function mockShell(page: Page): Promise<FakeAsk> {
   await page.route("**/api/**", (r) => r.fulfill({ json: {} }));
   await page.route("**/api/config", (r) =>
     r.fulfill({
@@ -75,7 +77,7 @@ async function mockShell(page: Page) {
       json: { missions: [], total: 0, next_offset: null, facets: { projects: [], states: [] } },
     }),
   );
-  await mockAskConversations(page, conversations());
+  return mockAskConversations(page, conversations());
 }
 
 /** Is the thread scrolled to its newest entry? */
@@ -91,19 +93,29 @@ test("the switcher is keyboard-operable and a switch lands on the newest entry (
   await mockShell(page);
   await page.goto("/dashboard");
   const panel = await openAsk(page);
-  // Opening Ask reopens the latest conversation.
-  await expect(panel.getByTestId("ask-turns")).toContainText("5 s default timeout");
+  // HQ opens on an empty conversation; nothing kept is reopened on its own.
+  await expect(panel.getByTestId("ask-turns")).toHaveCount(0);
   const trigger = panel.getByTestId("ask-switcher");
-  await expect(trigger).toContainText("flaky upload retry");
+  await expect(trigger).toContainText("New conversation");
 
   // Focus the switcher from the keyboard's side and open it: focus moves INTO the list, onto the
-  // conversation on screen.
+  // first (latest) row; Enter opens it.
   await trigger.focus();
   await page.keyboard.press("Enter");
   const menu = panel.getByTestId("ask-switcher-menu");
   await expect(menu).toBeVisible();
   const items = menu.getByTestId("ask-switcher-item");
   await expect(items).toHaveCount(3);
+  await expect(items.nth(0)).toBeFocused();
+  await expect(items.nth(0)).toHaveAttribute("aria-selected", "false");
+  await page.keyboard.press("Enter");
+  await expect(menu).toHaveCount(0);
+  await expect(panel.getByTestId("ask-turns")).toContainText("5 s default timeout");
+  await expect(trigger).toContainText("flaky upload retry");
+
+  // Opened again, focus lands on the conversation on screen.
+  await page.keyboard.press("Enter");
+  await expect(menu).toBeVisible();
   await expect(items.nth(0)).toBeFocused();
   await expect(items.nth(0)).toHaveAttribute("aria-selected", "true");
   // The ring is visible on the focused row.
@@ -148,6 +160,7 @@ test("New conversation starts an empty thread and keeps the old one in the switc
   await mockShell(page);
   await page.goto("/dashboard");
   const panel = await openAsk(page);
+  await pickConversation(panel);
   await expect(panel.getByTestId("ask-turn")).toHaveCount(1);
   await panel.getByRole("button", { name: "New conversation" }).click();
   await expect(panel.getByTestId("ask-turn")).toHaveCount(0);
@@ -163,13 +176,14 @@ test("a long title stays inside the head; nothing scrolls sideways on a phone (#
   await mockShell(page);
   await page.goto("/dashboard");
   const panel = await openAsk(page);
+  await pickConversation(panel);
   const trigger = panel.getByTestId("ask-switcher");
   await expect(trigger).toContainText("flaky upload retry");
   const head = await panel.getByTestId("ask-head").boundingBox();
   const sw = await trigger.boundingBox();
   const close = await panel.getByRole("button", { name: "Close HQ" }).boundingBox();
   expect(sw && head && close).toBeTruthy();
-  // The switcher shrinks; New conversation and Close keep their place on the same row.
+  // The switcher shrinks; Delete, New conversation and Close keep their place on the same row.
   expect(sw!.x + sw!.width).toBeLessThanOrEqual(close!.x);
   expect(close!.x + close!.width).toBeLessThanOrEqual(head!.x + head!.width + 1);
   expect(sw!.height).toBeGreaterThanOrEqual(44);
@@ -183,4 +197,72 @@ test("a long title stays inside the head; nothing scrolls sideways on a phone (#
     inner: window.innerWidth,
   }));
   expect(scroll).toBeLessThanOrEqual(inner);
+});
+
+test("Delete asks first, by keyboard; confirmed, the conversation is gone and HQ is empty again", async ({
+  page,
+}) => {
+  const fake = await mockShell(page);
+  await page.goto("/dashboard");
+  const panel = await openAsk(page);
+  const remove = panel.getByRole("button", { name: "Delete this conversation" });
+  // Nothing open, nothing to delete.
+  await expect(remove).toBeDisabled();
+  await pickConversation(panel);
+  await expect(panel.getByTestId("ask-turns")).toContainText("5 s default timeout");
+  await expect(remove).toBeEnabled();
+  const head = await panel.getByTestId("ask-head").boundingBox();
+  const box = await remove.boundingBox();
+  // A real target on the head's row (§8: 44 px).
+  expect(box!.width).toBeGreaterThanOrEqual(44);
+  expect(box!.height).toBeGreaterThanOrEqual(44);
+  expect(box!.y).toBeGreaterThanOrEqual(head!.y - 1);
+  expect(box!.y + box!.height).toBeLessThanOrEqual(head!.y + head!.height + 1);
+
+  // Escape cancels: nothing deleted, focus back on Delete.
+  await remove.focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog", { name: /^Delete “/ });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("flaky upload retry");
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(remove).toBeFocused();
+  // The dialog's Escape went no further: HQ stays open with its conversation.
+  await expect(panel).toHaveAttribute("data-open", "true");
+  await expect(panel.getByTestId("ask-turns")).toContainText("5 s default timeout");
+  expect(fake.deleted ?? []).toEqual([]);
+
+  // Confirmed from the keyboard: Tab from Cancel to Delete, Enter.
+  await page.keyboard.press("Enter");
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByRole("button", { name: "Delete" })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(dialog).toHaveCount(0);
+  expect(fake.deleted).toEqual(["ask_" + "a".repeat(32)]);
+  await expect(panel.getByTestId("ask-turns")).toHaveCount(0);
+  await expect(panel.getByTestId("ask-switcher")).toContainText("New conversation");
+  await expect(remove).toBeDisabled();
+  await panel.getByTestId("ask-switcher").click();
+  const items = panel.getByTestId("ask-switcher-item");
+  await expect(items).toHaveCount(2);
+  await expect(items.first()).toContainText("older question 1");
+});
+
+test("a refused delete says why in the dialog and keeps the conversation", async ({ page }) => {
+  const fake = await mockShell(page);
+  fake.busy = new Set(["ask_" + "a".repeat(32)]);
+  await page.goto("/dashboard");
+  const panel = await openAsk(page);
+  await pickConversation(panel);
+  await panel.getByRole("button", { name: "Delete this conversation" }).click();
+  const dialog = page.getByRole("dialog", { name: /^Delete “/ });
+  await dialog.getByRole("button", { name: "Delete" }).click();
+  await expect(dialog.getByTestId("ask-delete-error")).toContainText("still answering");
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(panel.getByTestId("ask-turns")).toContainText("5 s default timeout");
+  expect(fake.deleted ?? []).toEqual([]);
 });

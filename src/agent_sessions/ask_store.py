@@ -43,6 +43,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import logging
 import os
 import re
 import stat
@@ -52,6 +53,8 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from . import hq_contacts, missions, template_secrets, template_suggest
+
+log = logging.getLogger(__name__)
 
 CID_RE = re.compile(r"^ask_[0-9a-f]{32}$")
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -1020,6 +1023,62 @@ def _still_expired(cid: str, cutoff: float) -> bool:
     return False
 
 
+class ConversationNotDeleted(Exception):
+    """The conversation's own file could not be removed; nothing was removed."""
+
+
+class ConversationBusy(Exception):
+    """The operator asked to delete a conversation that cannot go yet: a turn is running in it, or
+    a proposal in it is being decided (a launch whose record recovery may still need)."""
+
+
+def delete_conversation(cid: str) -> None:
+    """The operator deletes one conversation: the same locks and pins as retention's, decided
+    under them. Raises ConversationNotFound, or ConversationBusy while a turn runs in it or a
+    proposal in it is mid-decision. Blocking."""
+    if not exists(cid):
+        raise ConversationNotFound(cid)
+    with turn_lock(cid) as free:
+        if not free:
+            raise ConversationBusy("HQ is still answering in this conversation")
+        # Lock order: turn → proposals → follows, as retention takes them.
+        with proposals_lock(cid), follows_lock(cid):
+            if not exists(cid):
+                raise ConversationNotFound(cid)
+            if _pinned_by_proposals(cid):
+                raise ConversationBusy("a session from this conversation is still starting")
+            # The CONVERSATION goes first, in one unlink: until it is gone nothing else is
+            # touched, so a failure here leaves it whole (its cards and follows intact). The unlink
+            # is made DURABLE (the store directory fsynced) before any sidecar goes, so a power
+            # loss can never bring the conversation back without its cards and follows. If the
+            # sync fails, the sidecars are left: either the unlink survives and they are orphans,
+            # or it doesn't and the conversation comes back whole. Orphans are removed by
+            # retention's orphan pass (`sweep`), which takes no age into account. Retention's own
+            # `delete` runs the other way round because an EXPIRED conversation left half-deleted
+            # is still expired and the next sweep finishes it; a fresh one would not be.
+            try:
+                _path(cid).unlink()
+            except FileNotFoundError:
+                raise ConversationNotFound(cid) from None
+            except OSError as e:
+                raise ConversationNotDeleted(type(e).__name__) from None
+            try:
+                _sync_dir(root())
+            except OSError:
+                log.warning("ask conversation delete not yet durable; its sidecars stay for now")
+                return
+            for p in (
+                _proposals_path(cid),
+                _follows_path(cid),
+                _lock_path(cid),
+                _decide_lock_path(cid),
+                _proposals_lock_path(cid),
+                _follows_lock_path(cid),
+            ):
+                with contextlib.suppress(OSError):
+                    p.unlink(missing_ok=True)
+
+
 def sweep(now: float | None = None) -> list[str]:
     """Apply retention. Returns the ids removed."""
     now = time.time() if now is None else now
@@ -1044,18 +1103,31 @@ def sweep(now: float | None = None) -> list[str]:
                     continue
                 delete(cid)
         removed.append(cid)
-    # Sidecars whose conversation is gone (a crash between deletes) follow it.
+    # Sidecars whose conversation is gone (a crash between deletes, or an operator delete whose
+    # cleanup didn't finish) follow it — but only once that ABSENCE is durable. Under the
+    # sidecars' own locks (the order a delete takes them: proposals → follows), so this never
+    # runs between a delete's unlink and its directory sync; the conversation's absence is
+    # checked again there, and the store directory is synced before anything goes. A sync that
+    # fails leaves the orphans for a later sweep: a crash could still bring the conversation
+    # back, and it must come back whole (Hermes on #1564).
     for sub in ("proposals", "follows"):
         with contextlib.suppress(FileNotFoundError):
             for name in os.listdir(root() / sub):
                 cid = name[: -len(".json")] if name.endswith(".json") else ""
-                if valid_cid(cid) and not _path(cid).exists() and not _pinned_by_proposals(cid):
-                    if sub == "follows":
-                        # Under the follows lock, like every follows write; the lock file goes
-                        # with it.
-                        with follows_lock(cid):
-                            (root() / sub / name).unlink(missing_ok=True)
-                            _follows_lock_path(cid).unlink(missing_ok=True)
-                    else:
+                if not valid_cid(cid) or _path(cid).exists():
+                    continue
+                # Best effort, file by file: an orphan that can't go now is tried again at the
+                # next sweep, and never fails the list or create request running this.
+                try:
+                    with proposals_lock(cid), follows_lock(cid):
+                        if _path(cid).exists() or _pinned_by_proposals(cid):
+                            continue
+                        _sync_dir(root())
                         (root() / sub / name).unlink(missing_ok=True)
+                        if sub == "follows":
+                            _follows_lock_path(cid).unlink(missing_ok=True)
+                        else:
+                            _proposals_lock_path(cid).unlink(missing_ok=True)
+                except OSError as e:
+                    log.warning("ask orphan sidecar not removed yet (%s)", type(e).__name__)
     return removed

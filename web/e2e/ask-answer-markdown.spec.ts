@@ -9,7 +9,7 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 
-import { openAsk } from "./askSidebar";
+import { openAsk, pickConversation } from "./askSidebar";
 import { mockAskConversations, turnOf } from "./askStream";
 
 const ANSWER = [
@@ -95,6 +95,7 @@ test("an answer's bullets, bold, italic and code render as such — and nothing 
   await mockShell(page);
   await page.goto("/dashboard");
   const panel = await openAsk(page);
+  await pickConversation(panel);
   const answer = panel.getByTestId("ask-answer");
   await expect(answer).toContainText("I can look things up");
 

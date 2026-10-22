@@ -681,6 +681,92 @@ def test_new_conversation_never_deletes(app):
     assert set(_cids()) == {first, second}
 
 
+# ---- the operator deletes a conversation -----------------------------------------------------
+
+
+def test_delete_removes_the_conversation_its_sidecars_and_its_locks_and_nothing_else(app):
+    gone, kept = app.new(), app.new()
+    side = _sidecars(gone)
+    ask_store.try_decide_lock(gone)  # leaves its lock file behind, as a real decision does
+    r = app.c.delete(f"/api/ask/conversations/{gone}", headers=app.hdr)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"deleted": True, "id": gone}
+    assert _cids() == [kept]
+    assert not any(p.exists() for p in side)
+    assert not [p for p in ask_store.root().rglob("*") if gone in p.name]
+    assert app.c.get(f"/api/ask/conversations/{gone}").status_code == 404
+    # A second delete finds nothing.
+    assert app.c.delete(f"/api/ask/conversations/{gone}", headers=app.hdr).status_code == 404
+
+
+def test_delete_needs_csrf_and_origin(app):
+    cid = app.new()
+    assert app.c.delete(f"/api/ask/conversations/{cid}").status_code == 403
+    assert (
+        app.c.delete(
+            f"/api/ask/conversations/{cid}", headers={**app.hdr, "Origin": "https://evil.example"}
+        ).status_code
+        == 403
+    )
+    assert _cids() == [cid]
+
+
+def test_delete_refuses_a_malformed_or_unknown_id(app):
+    kept = app.new()
+    for bad in ("nope", "ask_" + "z" * 32, f"ask_{'0' * 32}"):
+        assert app.c.delete(f"/api/ask/conversations/{bad}", headers=app.hdr).status_code == 404
+    # A path that is not one id never reaches the route at all.
+    assert app.c.delete("/api/ask/conversations/..%2F..%2Fetc", headers=app.hdr).status_code >= 400
+    assert _cids() == [kept]
+
+
+def test_delete_refuses_while_a_turn_runs_and_keeps_everything(app):
+    cid = app.new()
+    fd = ask_store.try_turn_lock(cid)
+    try:
+        r = app.c.delete(f"/api/ask/conversations/{cid}", headers=app.hdr)
+        assert r.status_code == 409
+        assert "still answering" in r.json()["detail"]
+        assert _cids() == [cid]
+    finally:
+        os.close(fd)
+    assert app.c.delete(f"/api/ask/conversations/{cid}", headers=app.hdr).status_code == 200
+
+
+@pytest.mark.parametrize("state", ["deciding", "creating"])
+def test_delete_refuses_while_a_proposal_is_mid_decision(app, state):
+    """Retention's pin holds for the operator too: a launch's record may still be needed."""
+    cid = app.new()
+    side = _sidecars(cid, state)
+    r = app.c.delete(f"/api/ask/conversations/{cid}", headers=app.hdr)
+    assert r.status_code == 409
+    assert "still starting" in r.json()["detail"]
+    assert _cids() == [cid] and all(p.exists() for p in side)
+
+
+def test_delete_refuses_an_unreadable_proposal_sidecar(app):
+    cid = app.new()
+    _sidecars(cid)[0].write_text("{not json")
+    assert app.c.delete(f"/api/ask/conversations/{cid}", headers=app.hdr).status_code == 409
+    assert _cids() == [cid]
+
+
+def test_delete_decides_again_under_the_lock(monkeypatch, app):
+    """A proposal that starts deciding while the delete waits for the lock pins it after all."""
+    cid = app.new()
+    real = ask_store.turn_lock
+
+    @contextlib.contextmanager
+    def a_decision_starts_first(c):
+        _sidecars(c, "deciding")
+        with real(c) as free:
+            yield free
+
+    monkeypatch.setattr(ask_store, "turn_lock", a_decision_starts_first)
+    assert app.c.delete(f"/api/ask/conversations/{cid}", headers=app.hdr).status_code == 409
+    assert _cids() == [cid]
+
+
 # ---- the reload/disconnect regression --------------------------------------------------------
 
 
@@ -1040,3 +1126,113 @@ def test_the_store_boundary_admits_only_a_known_contact():
     for bad in ("random", "General Hana Seo", "asia_woman", "", 1, ["off"]):
         with pytest.raises(ValueError, match="unknown HQ contact"):
             ask_store._admit({**user, "contact": bad}, [])
+
+
+def test_a_conversation_that_cannot_be_removed_keeps_its_cards_and_follows(app, monkeypatch):
+    """Hermes on #1564: the conversation goes FIRST, so a failure there removes nothing."""
+    cid = app.new()
+    side = _sidecars(cid)
+    real = Path.unlink
+
+    def failing(self, *a, **kw):
+        if self == ask_store._path(cid):
+            raise PermissionError("read-only")
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "unlink", failing)
+    r = app.c.delete(f"/api/ask/conversations/{cid}", headers=app.hdr)
+    assert r.status_code == 503 and "nothing was removed" in r.json()["detail"]
+    assert _cids() == [cid] and all(p.exists() for p in side)
+
+
+def test_a_sidecar_that_cannot_be_removed_is_finished_by_retention(app, monkeypatch):
+    cid = app.new()
+    side = _sidecars(cid)
+    real = Path.unlink
+
+    def failing(self, *a, **kw):
+        if self == side[0]:
+            raise PermissionError("busy")
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "unlink", failing)
+    assert app.c.delete(f"/api/ask/conversations/{cid}", headers=app.hdr).status_code == 200
+    assert _cids() == [] and side[0].exists()
+    monkeypatch.setattr(Path, "unlink", real)
+    ask_store.sweep()
+    assert not side[0].exists()
+
+
+def test_a_sidecar_that_never_goes_never_breaks_listing_or_creating(app, monkeypatch):
+    """Hermes on #1564 (round 2): the orphan pass is best effort, file by file."""
+    cid = app.new()
+    side = _sidecars(cid)
+    real = Path.unlink
+
+    def failing(self, *a, **kw):
+        if self == side[1]:
+            raise PermissionError("stuck")
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "unlink", failing)
+    assert app.c.delete(f"/api/ask/conversations/{cid}", headers=app.hdr).status_code == 200
+    assert app.c.get("/api/ask/conversations").status_code == 200
+    assert app.c.post("/api/ask/conversations", headers=app.hdr).status_code == 201
+    assert side[1].exists()  # still there, tried again at every sweep
+
+
+def test_the_unlink_is_durable_before_any_sidecar_goes(app, monkeypatch):
+    cid = app.new()
+    side = _sidecars(cid)
+    events: list[str] = []
+    real_unlink, real_sync = Path.unlink, ask_store._sync_dir
+
+    def unlink(self, *a, **kw):
+        events.append(f"unlink:{self.name}")
+        return real_unlink(self, *a, **kw)
+
+    def sync(path):
+        events.append(f"sync:{Path(path).name}")
+        return real_sync(path)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    monkeypatch.setattr(ask_store, "_sync_dir", sync)
+    assert app.c.delete(f"/api/ask/conversations/{cid}", headers=app.hdr).status_code == 200
+    jsonl = events.index(f"unlink:{cid}.jsonl")
+    synced = events.index(f"sync:{ask_store.root().name}", jsonl)
+    first_side = min(events.index(f"unlink:{p.name}") for p in side)
+    assert jsonl < synced < first_side
+
+
+def test_a_failed_sync_keeps_the_sidecars_so_either_outcome_is_whole(app, monkeypatch):
+    cid = app.new()
+    side = _sidecars(cid)
+
+    def sync(path):
+        raise OSError("EIO")
+
+    monkeypatch.setattr(ask_store, "_sync_dir", sync)
+    assert app.c.delete(f"/api/ask/conversations/{cid}", headers=app.hdr).status_code == 200
+    assert _cids() == [] and all(p.exists() for p in side)
+
+
+def test_orphans_stay_until_the_conversations_absence_is_durable(app, monkeypatch):
+    """Hermes on #1564 (round 3): after a failed sync, a list (its sweep) must not remove the
+    sidecars — a crash could still restore the conversation, and it must come back whole."""
+    cid = app.new()
+    side = _sidecars(cid)
+    real_sync = ask_store._sync_dir
+    failing = {"on": True}
+
+    def sync(path):
+        if failing["on"]:
+            raise OSError("EIO")
+        return real_sync(path)
+
+    monkeypatch.setattr(ask_store, "_sync_dir", sync)
+    assert app.c.delete(f"/api/ask/conversations/{cid}", headers=app.hdr).status_code == 200
+    assert app.c.get("/api/ask/conversations").status_code == 200  # runs the sweep
+    assert all(p.exists() for p in side)
+    failing["on"] = False
+    assert app.c.get("/api/ask/conversations").status_code == 200
+    assert not any(p.exists() for p in side)

@@ -16,3 +16,13 @@ export async function openAsk(page: Page): Promise<Locator> {
   await expect(panel).toHaveAttribute("data-open", "true");
   return panel;
 }
+
+/** HQ opens on an empty conversation: open a kept one from the head's switcher, as the operator
+ *  does. `index` is its row, latest first. */
+export async function pickConversation(panel: Locator, index = 0): Promise<void> {
+  await panel.getByTestId("ask-switcher").click();
+  const items = panel.getByTestId("ask-switcher-item");
+  await expect(items.nth(index)).toBeVisible();
+  await items.nth(index).click();
+  await expect(panel.getByTestId("ask-switcher-menu")).toHaveCount(0);
+}

@@ -8,7 +8,7 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 
-import { openAsk } from "./askSidebar";
+import { openAsk, pickConversation } from "./askSidebar";
 import { mockAskConversations, turnOf, type FakeAsk, type FakeConversation } from "./askStream";
 
 const KEY = "claude:11111111-2222-4333-8444-555555555555";
@@ -85,6 +85,7 @@ test("updates sit between the turns, read as a word, and Unfollow works by keybo
   });
   await page.goto("/dashboard");
   const panel = await openAsk(page);
+  await pickConversation(panel);
   const turns = panel.getByTestId("ask-turn");
   const rows = panel.getByTestId("ask-update");
   await expect(rows).toHaveCount(2);
@@ -119,7 +120,7 @@ test("the Ask icon's dot says there is an unseen update, and clears once it is o
   const toggle = page.getByTestId("ask-toggle");
   await expect(page.getByTestId("ask-unread-dot")).toBeVisible();
   await expect(toggle).toHaveAccessibleName("HQ — new updates from sessions you follow");
-  await openAsk(page);
+  await pickConversation(await openAsk(page));
   await expect(page.getByTestId("ask-update").first()).toBeVisible();
   await expect(page.getByTestId("ask-unread-dot")).toHaveCount(0);
   await expect(toggle).toHaveAccessibleName("HQ");
@@ -141,6 +142,7 @@ test("a session followed before its first update is listed with Unfollow, by key
   });
   await page.goto("/dashboard");
   const panel = await openAsk(page);
+  await pickConversation(panel);
   await expect(panel.getByTestId("ask-update")).toHaveCount(0);
   const row = panel.getByTestId("ask-following-row");
   await expect(row).toHaveCount(1);
@@ -177,6 +179,7 @@ test("a nudge that could not be followed, and a spent budget, read as words (#15
   await mockShell(page, [conv]);
   await page.goto("/dashboard");
   const panel = await openAsk(page);
+  await pickConversation(panel);
   const row = panel.locator('[data-testid="ask-update"][data-kind="not_followed"]');
   await expect(row).toHaveCount(1);
   await expect(row).toContainText("Not following");
@@ -242,6 +245,7 @@ test("a nudge sent from the card is followed by THAT conversation once the follo
   });
   await page.goto("/dashboard");
   const panel = await openAsk(page);
+  await pickConversation(panel);
   await panel.getByTestId("ask-nudge-send").click();
   await expect(panel.getByTestId("ask-nudge")).toHaveAttribute("data-state", "delivered");
   await page.clock.runFor(20_000); // reads before the follower's pass find nothing followed yet

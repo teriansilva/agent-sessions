@@ -11,10 +11,11 @@
  * turn is the SERVER's: it runs as a task there, so closing the panel, navigating, reloading or a
  * dropped connection never cancels it. A stream that ends early is a statement about the
  * connection, so the console reads the conversation again and, while that turn is still
- * `pending`, polls until it settles. On open the panel reopens the latest conversation; the head's
- * switcher (`AskSwitcher`) opens an older one, and New conversation starts an empty thread whose
- * conversation is created on its first question. Nothing is ever deleted from here — retention
- * (30 days, 50 conversations) is the server's. `/api/pulse/ask[/stream]` stays the transient,
+ * `pending`, polls until it settles. The panel opens on an EMPTY thread whose conversation is
+ * created on its first question; the head's switcher (`AskSwitcher`) opens a kept one, and New
+ * conversation returns to an empty thread. Delete removes the conversation on screen, after a
+ * confirm (the server refuses while it is still answering or a session from it is starting);
+ * otherwise retention (30 days, 50 conversations) is the server's. `/api/pulse/ask[/stream]` stays the transient,
  * read-only seam for its other callers (#1397).
  *
  * Every late result is checked against the conversation it belongs to (`cidRef`), so an answer
@@ -59,7 +60,7 @@
  * composer already made for the session pane's Send (`terminal/Compose.module.css`). One box, drawn
  * one way, wherever it appears.
  */
-import { Info, Plus, X } from "lucide-react";
+import { Info, Plus, Trash2, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -99,6 +100,7 @@ import { AskComposer } from "./AskComposer";
 import { mapBatch, matchRoute, matchSeed } from "./askMatches";
 import a from "./AskConsole.module.css";
 import type { AskStep } from "./askStep";
+import { ConfirmDialog } from "../templates/ConfirmDialog";
 import { AskSwitcher } from "./AskSwitcher";
 import { AskWorking } from "./AskWorking";
 import { contactById } from "../hq/contacts";
@@ -371,10 +373,14 @@ export function AskConsole({
     setStreaming(false);
   };
 
+  /** Every read of the conversation LIST takes a generation; only the newest one applies. A read
+   *  sent before a delete must never put the deleted conversation back (Hermes on #1564). */
+  const listGen = useRef(0);
   const refreshList = useCallback(async () => {
+    const g = ++listGen.current;
     try {
       const r = await api.askConversations();
-      if (live.current) setConversations(r.conversations ?? []);
+      if (live.current && g === listGen.current) setConversations(r.conversations ?? []);
     } catch {
       /* the switcher keeps what it had */
     }
@@ -450,18 +456,68 @@ export function AskConsole({
     [load],
   );
 
-  // On first mount: the latest conversation, if there is one.
+  /** An empty thread: nothing on screen and no conversation chosen; the first question creates
+   *  one. What New conversation does, and where a deleted conversation leaves the operator. */
+  const startNew = useCallback(() => {
+    stopWatching();
+    cidRef.current = null;
+    setCid(null);
+    setTitle("");
+    setTurns([]);
+    setUpdates([]);
+    setFollowing([]);
+    setFollows([]);
+    setFollowsUnknown(false);
+    setUpdatesPending(false);
+    setFollowsExhausted(false);
+    setUnread(false);
+    startedSeen.current = new Map();
+    inputRef.current?.focus();
+  }, []);
+
+  /** Deleting the conversation on screen: confirmed first, then the server deletes it with
+   *  everything kept for it. A refusal (HQ still answering, a session still starting) is said in
+   *  the dialog and nothing changes. */
+  /** The button that opened the confirm (focus returns to it); `null` = no confirm open. */
+  const [confirmDelete, setConfirmDelete] = useState<HTMLElement | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const deleteCurrent = useCallback(async () => {
+    const id = cidRef.current;
+    if (!id) {
+      setConfirmDelete(null);
+      return;
+    }
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await api.askDeleteConversation(id);
+      if (!live.current) return;
+      setConfirmDelete(null);
+      listGen.current++; // a list read still in flight predates the delete: it lands nowhere
+      setConversations((rows) => (rows ? rows.filter((c) => c.id !== id) : rows));
+      if (cidRef.current === id) startNew();
+      void refreshList();
+    } catch (e) {
+      if (live.current)
+        setDeleteError(e instanceof Error && e.message ? e.message : "It could not be deleted.");
+    } finally {
+      if (live.current) setDeleting(false);
+    }
+  }, [refreshList, startNew]);
+
+  // On first mount: the switcher's list. HQ opens on an EMPTY conversation; the kept ones are a
+  // pick in the switcher away, and none is reopened on its own.
   useEffect(() => {
     let cancelled = false;
+    const g = ++listGen.current;
+    const newest = () => !cancelled && live.current && g === listGen.current;
     void (async () => {
       try {
         const r = await api.askConversations();
-        if (cancelled || !live.current) return;
-        const rows = r.conversations ?? [];
-        setConversations(rows);
-        if (rows.length && cidRef.current === null) openConversation(rows[0].id, true);
+        if (newest()) setConversations(r.conversations ?? []);
       } catch {
-        if (!cancelled && live.current) setConversations([]);
+        if (newest()) setConversations([]);
       } finally {
         if (!cancelled) selectedRef.current?.open();
       }
@@ -469,7 +525,7 @@ export function AskConsole({
     return () => {
       cancelled = true;
     };
-  }, [openConversation]);
+  }, []);
 
   // A turn still running on the server that this page is not streaming (a reload, a dropped
   // connection, another tab) is read again until it settles.
@@ -830,24 +886,23 @@ export function AskConsole({
         <button
           type="button"
           className={a.newBtn}
+          aria-label="Delete this conversation"
+          disabled={cid === null}
+          onClick={(e) => {
+            setDeleteError(null);
+            setConfirmDelete(e.currentTarget);
+          }}
+          data-testid="ask-delete"
+          title="Delete this conversation"
+        >
+          <Trash2 size={17} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className={a.newBtn}
           aria-label="New conversation"
           disabled={turns.length === 0}
-          onClick={() => {
-            stopWatching();
-            cidRef.current = null;
-            setCid(null);
-            setTitle("");
-            setTurns([]);
-            setUpdates([]);
-            setFollowing([]);
-            setFollows([]);
-            setFollowsUnknown(false);
-            setUpdatesPending(false);
-            setFollowsExhausted(false);
-            setUnread(false);
-            startedSeen.current = new Map();
-            inputRef.current?.focus();
-          }}
+          onClick={startNew}
           data-testid="ask-new"
           title="New conversation"
         >
@@ -868,6 +923,28 @@ export function AskConsole({
         </div>
         </div>
       </header>
+      {confirmDelete ? (
+        <ConfirmDialog
+          tag="DELETE CONVERSATION"
+          title={`Delete “${title || turns[0]?.question || "this conversation"}”?`}
+          confirmLabel={deleting ? "Deleting…" : "Delete"}
+          danger
+          busy={deleting}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={() => void deleteCurrent()}
+          returnFocusTo={confirmDelete}
+        >
+          <p>
+            Its questions, answers and cards are removed, and it stops following its sessions.
+            Sessions it started and messages already sent are not touched. This can't be undone.
+          </p>
+          {deleteError ? (
+            <p role="alert" data-testid="ask-delete-error">
+              {deleteError}
+            </p>
+          ) : null}
+        </ConfirmDialog>
+      ) : null}
       <div
         className={styles.pane}
         ref={paneRef}

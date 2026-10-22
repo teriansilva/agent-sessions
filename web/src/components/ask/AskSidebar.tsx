@@ -165,6 +165,9 @@ export function AskSidebar() {
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (drawer || e.key !== "Escape" || e.defaultPrevented) return;
+      // A dialog the console portals to <body> (Delete's confirm) still bubbles its keys through
+      // here in React's tree: its Escape is the dialog's own, never "close HQ".
+      if (!panelRef.current?.contains(e.target as Node)) return;
       e.preventDefault();
       close();
       triggerRef.current?.focus();

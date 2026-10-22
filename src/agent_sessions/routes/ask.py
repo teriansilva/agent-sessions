@@ -3,6 +3,9 @@
 * ``GET  /api/ask/conversations`` — the switcher's list, latest first (retention runs first).
 * ``POST /api/ask/conversations`` — a new, empty conversation. Never deletes anything.
 * ``GET  /api/ask/conversations/{id}`` — one conversation's turns.
+* ``DELETE /api/ask/conversations/{id}`` — the operator deletes one conversation and everything
+  keyed by it (``ask_store.delete_conversation``: retention's locks and pins). 409 while a turn
+  runs in it or a proposal in it is mid-decision.
 * ``POST /api/ask/conversations/{id}/message`` — ask; answers with the settled turn.
 * ``POST /api/ask/conversations/{id}/message/stream`` — the same turn as NDJSON: ``progress``
   lines while it runs, then exactly ONE ``{"type": "turn", "status", "turn"}`` or
@@ -143,6 +146,25 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return _refused(e)
         body = await asyncio.to_thread(_conversation_body, cid, records)
         return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+    @app.delete("/api/ask/conversations/{cid}")
+    async def delete_conversation(
+        cid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        if not ask_store.valid_cid(cid):
+            return _missing(cid)
+        try:
+            await asyncio.to_thread(ask_store.delete_conversation, cid)
+        except ask_store.ConversationNotFound:
+            return _missing(cid)
+        except ask_store.ConversationBusy as e:
+            return JSONResponse({"detail": f"{e} — try again once it settles"}, status_code=409)
+        except ask_store.ConversationNotDeleted:
+            return JSONResponse(
+                {"detail": "the conversation could not be deleted just now; nothing was removed"},
+                status_code=503,
+            )
+        return JSONResponse({"deleted": True, "id": cid})
 
     async def _message_body(request: Request) -> tuple | JSONResponse:
         body: object = None

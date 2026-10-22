@@ -6,7 +6,7 @@ import type { Page, Route } from "@playwright/test";
  *  for every spec about what an ANSWER looks like. What the stream adds over time (the steps) is
  *  pinned where time can be controlled: `AskConsole.test.tsx` and `tests/test_ask_orchestrator.py`.
  *
- *  `mockAskConversations` is a small fake of the conversation routes (list, create, read), and
+ *  `mockAskConversations` is a small fake of the conversation routes (list, create, read, delete), and
  *  `fulfillAsk` records each answered turn into it, so a reload or a switch reads back what was
  *  asked — as the real server does. */
 export const ASK_STREAM = "**/api/ask/conversations/*/message/stream";
@@ -52,6 +52,10 @@ export interface FakeConversation {
 
 export interface FakeAsk {
   conversations: FakeConversation[];
+  /** Conversations the server refuses to delete right now (409). */
+  busy?: Set<string>;
+  /** Ids deleted, in order. */
+  deleted?: string[];
 }
 
 const fakes = new WeakMap<Page, FakeAsk>();
@@ -147,9 +151,20 @@ export async function mockAskConversations(
   await page.route(/\/api\/ask\/conversations\/(ask_[0-9a-f]{32})$/, (r) => {
     const id = /\/(ask_[0-9a-f]{32})$/.exec(new URL(r.request().url()).pathname)![1];
     const c = fake.conversations.find((x) => x.id === id);
-    return c
-      ? r.fulfill({ json: body(c) })
-      : r.fulfill({ status: 404, json: { detail: "no such conversation" } });
+    if (!c) return r.fulfill({ status: 404, json: { detail: "no such conversation" } });
+    if (r.request().method() === "DELETE") {
+      // The operator deletes it (`ask_store.delete_conversation`); `busy` stands in for a running
+      // turn or a session still starting.
+      if (fake.busy?.has(id))
+        return r.fulfill({
+          status: 409,
+          json: { detail: "HQ is still answering in this conversation — try again once it settles" },
+        });
+      fake.conversations = fake.conversations.filter((x) => x.id !== id);
+      fake.deleted = [...(fake.deleted ?? []), id];
+      return r.fulfill({ json: { deleted: true, id } });
+    }
+    return r.fulfill({ json: body(c) });
   });
   return fake;
 }

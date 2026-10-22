@@ -77,9 +77,9 @@ The moment the screen changes, it can need you again. A dismissal is kept for **
 ## The sidebar
 
 Its header is your contact's looping **portrait**, then **HQ** with the contact's name under it,
-and a second row with the **conversation switcher**, **+** (New conversation) and **✕** (close
-HQ). With the contact **Off** there is no portrait and the header is one row: HQ, the switcher,
-**+** and **✕**. The portrait plays only while the sidebar is open and the tab is visible; with
+and a second row with the **conversation switcher**, **🗑** (Delete this conversation), **+** (New
+conversation) and **✕** (close HQ). With the contact **Off** there is no portrait and the header is
+one row: HQ, the switcher, **🗑**, **+** and **✕**. The portrait plays only while the sidebar is open and the tab is visible; with
 reduced motion it is a still picture, and so is a loop that fails to load.
 
 On a wide screen it sits beside the page, so you can keep working while it answers. **Escape**
@@ -130,8 +130,12 @@ with the sidebar open.
 
 Conversations are **kept** on your BattleLab server. Closing the sidebar, moving to another page,
 reloading the app or losing the connection never stops a question: its answer lands in the
-conversation, and opening HQ shows the latest one. **+** (New conversation) starts an empty one;
-the switcher opens an earlier one. HQ keeps the last **50** conversations for **30 days**. What it
+conversation. HQ opens on an **empty** conversation; the switcher opens an earlier one, and **+**
+(New conversation) goes back to an empty one. **🗑** deletes the conversation on screen after you
+confirm: its questions, answers and cards go, and it stops following its sessions. Sessions it
+started and messages already sent stay. HQ won't delete a conversation it is still answering in,
+or one with a session still starting; it tells you, and you can try again once that settles. HQ
+keeps the last **50** conversations for **30 days**. What it
 stores is your questions and its answers — never the screens or transcripts it read to answer —
 and any text that looks like a password or a token is stored as *withheld*.
 

@@ -1650,6 +1650,10 @@ export const api = {
   /** A new, empty conversation. Never deletes anything. */
   askNewConversation: () =>
     mutateJson<AskConversation>("POST", "/api/ask/conversations", {}),
+  /** Delete one conversation and everything kept for it. 409 while HQ is still answering in it
+   *  or a session from it is still starting. */
+  askDeleteConversation: (id: string) =>
+    mutateJson<{ deleted: boolean; id: string }>("DELETE", `/api/ask/conversations/${enc(id)}`),
   askMessageStream: streamAskTurn,
   /** Whether any conversation has an unseen update from a followed session (#1443 Phase 4). */
   askUnread: () =>

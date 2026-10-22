@@ -189,6 +189,11 @@ const rosterSection = (page: Page) =>
 test("roster: every state side by side, 44px targets, no overflow at 320–1440 (#1408)", async ({
   page,
 }) => {
+  // Three widths, and every target scrolled into view and measured at each: 14–18 s on an idle
+  // host, past the 30 s default on a loaded CI runner (it timed out in scrollIntoViewIfNeeded on
+  // #1564, desktop and mobile, with nothing in that PR touching this page). Its own budget, as
+  // #1159 gave the overview workspace spec.
+  test.setTimeout(90_000);
   await mockAgents(page);
   for (const width of WIDTHS) {
     await page.setViewportSize({ width, height: 900 });
