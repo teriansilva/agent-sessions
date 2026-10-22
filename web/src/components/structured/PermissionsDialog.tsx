@@ -57,7 +57,13 @@ export function PermissionsDialog({
         aria-labelledby={title}
         className={`${dialog.dialog} ${dialog.narrow}`}
       >
-        <h2 id={title}>Enable Skip permissions?</h2>
+        {/* THE dialog's callsign head (#1531). No ✕: Cancel and Escape close it, and every button
+            here holds the 44px floor (e2e/live-permissions.spec.ts). */}
+        <div className={dialog.head}>
+          <h2 id={title} className={dialog.tag}>
+            Enable Skip permissions?
+          </h2>
+        </div>
         <p className={dialog.muted}>This session will run tools without asking for permission.</p>
         <p className={styles.permissionNotice}>
           The current turn, queued messages, and pending approvals will stop. Your conversation

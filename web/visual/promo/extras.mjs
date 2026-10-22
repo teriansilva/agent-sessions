@@ -32,6 +32,31 @@ export function extraSession() {
 
 export async function answerExtra(path, q, method, req, state) {
   if (path === "/api/playbooks" && method === "GET") return json(PLAYBOOKS);
+  const pbm = /^\/api\/playbooks\/([a-z0-9-]+)(\/projects)?$/.exec(path);
+  if (pbm && method === "GET") {
+    const book = PLAYBOOKS.playbooks.find((b) => b.id === pbm[1]);
+    if (!book) return undefined;
+    if (pbm[2]) return json({ playbook_id: book.id, revision: book.revision, projects: [] });
+    return json({ ...book, recovery_total: 0 });
+  }
+  const nyd = /^\/api\/pulse\/needs-you\/([^/]+)\/details$/.exec(path);
+  if (nyd && method === "GET") {
+    const id = decodeURIComponent(nyd[1]);
+    const row = F.needsYou().rows.find((r) => r.id === id);
+    if (!row) return undefined;
+    return json({
+      id,
+      title: row.title,
+      engine: row.engine,
+      project: row.project,
+      reason: row.reason,
+      last_words: "Dry run is clean (4 statements). Run it on staging?",
+      screen: "▲ Allow command?\n  npm run db:migrate -- --env staging\n› 1. Yes\n  2. No",
+      prompt_class: "confirm",
+      menu: row.menu,
+      action: row.action,
+    });
+  }
   if (path.startsWith("/api/files/") || path.startsWith("/api/git/")) {
     const r = filesAnswer(path, q);
     if (r) return r;
@@ -39,7 +64,7 @@ export async function answerExtra(path, q, method, req, state) {
   const mi = /^\/api\/missions\/(msn_[0-9a-f]{32})(\/[a-z_]+)?$/.exec(path);
   if (mi && method === "GET") {
     const [, id, sub] = mi;
-    if (!sub) return json(missionDetail(id));
+    if (!sub) return json(id === ARCHIVED_MISSION ? archivedMissionDetail() : missionDetail(id));
     if (sub === "/objectives") return json({ objectives: missionObjectives(id) });
     if (sub === "/context") return json(missionContext(id));
     if (sub === "/now") return json(missionNow());
@@ -49,6 +74,8 @@ export async function answerExtra(path, q, method, req, state) {
   if (st) {
     const key = decodeURIComponent(st[1]);
     const snap = structuredSnapshot(key);
+    // `bypassOffer` (a sweep state): the session may switch Skip permissions on, which asks first.
+    if (state?.bypassOffer) Object.assign(snap, { can_enable_bypass: true, bypass: false, permission_change: {} });
     if (st[2] === "/events")
       return json({ session_key: key, revision: snap.revision, next_cursor: snap.event_cursor, events: [] });
     if (!st[2]) return json(snap);
@@ -422,4 +449,99 @@ export function filesAnswer(path, q) {
   if (path === "/api/git/push-target")
     return json({ ok: true, reason: null, branch: "feat/ingest-limits", remote: "origin", target: "origin/feat/ingest-limits", expect: "x", candidates: [], set_upstream: false });
   return undefined;
+}
+
+// ---- Sweep states (#1531): data the NIGHTJAR sweep needs to reach a popup, opt-in per capture ----
+export const ARCHIVED_MISSION = "msn_" + "0f1e2d3c".repeat(4);
+
+function archivedRow() {
+  return F.missionRow({
+    id: ARCHIVED_MISSION,
+    title: "Legacy ingest v1 sunset",
+    state: "done",
+    closed_at: F.NOW - 7200,
+    archived_at: F.NOW - 900,
+  });
+}
+
+export function archivedMissionsList() {
+  const row = archivedRow();
+  return { ...F.missionsList(new URLSearchParams()), missions: [row], total: 1 };
+}
+
+export function archivedMissionDetail() {
+  return { ...missionDetail(F.MISSIONS[0].id), ...archivedRow(), sessions: [], events: [] };
+}
+
+export function disabledAutomation() {
+  const now = F.NOW;
+  return {
+    id: "a-nightly-audit",
+    name: "Nightly dependency audit",
+    trigger: { kind: "schedule", cadence: { kind: "daily", time: "03:00" }, tz: "UTC" },
+    action: { kind: "start_mission", project_id: F.PROJECTS[0].id, instruction: { text: "Audit the dependencies and open one PR per risky bump." }, checklist_id: null, autonomy: "propose" },
+    policy: { concurrency: "skip", max_concurrent: 1, max_runs_per_day: 48, pause_after_failures: 3, expires_at: null },
+    revision: 1,
+    state: "off",
+    enabled: false,
+    paused: false,
+    paused_reason: "",
+    needs_reapproval: false,
+    reapproval_reason: "",
+    consented_at: null,
+    consented_scope: null,
+    scope: { version: 1 },
+    scope_digest: "digest-1",
+    scope_lines: [
+      "Starts a mission in orbital-api every day at 03:00 UTC.",
+      "The mission proposes its plan; nothing runs until you approve it.",
+      "At most 48 runs a day, one at a time; pauses after 3 failures.",
+    ],
+    consecutive_failures: 0,
+    check_note: "",
+    next_run: null,
+    last_run: null,
+    stats: { ok: 0, failed: 0, skipped: 0, pending: 0, runs: 0, success_rate: null },
+    strip: Array.from({ length: 14 }, (_, i) => ({ date: new Date((now - (13 - i) * 86400) * 1000).toISOString().slice(0, 10), worst: null })),
+    created_at: now - 3 * 86400,
+    updated_at: now - 86400,
+  };
+}
+
+export const TEMPLATES = {
+  templates: [
+    {
+      id: "tpl_release",
+      name: "Release checklist",
+      description: "Cut and verify a release",
+      tags: ["release"],
+      body: "Cut the release, run the smoke tests, post the notes.",
+      fields: [],
+      images: [],
+      created_at: F.NOW - 86400,
+      updated_at: F.NOW - 3600,
+      used_count: 4,
+      last_used_at: F.NOW - 7200,
+    },
+    {
+      id: "tpl_review",
+      name: "Security review",
+      description: "Review a file for security problems and propose a fix",
+      tags: ["review"],
+      body: "Review the changed files for security problems. Be specific and propose a fix.",
+      fields: [],
+      images: [],
+      created_at: F.NOW - 5 * 86400,
+      updated_at: F.NOW - 2 * 86400,
+      used_count: 9,
+      last_used_at: F.NOW - 3 * 3600,
+    },
+  ],
+  limits: { templates_max: 200, name_max: 80, description_max: 280, tags_max: 8, body_max: 20000, fields_max: 20, label_max: 60, default_max: 2000, images_max: 4, image_suffixes: [".png", ".jpg"] },
+};
+
+export function fsDirs(q) {
+  const path = q.get("path") || `${F.HOME}`;
+  const names = path === F.HOME ? ["orbital-api", "harbor-web", "atlas-cli"] : ["src", "docs", "tests"];
+  return { path, home: "/home/commander", dirs: names.map((n) => ({ name: n, path: `${path}/${n}` })) };
 }

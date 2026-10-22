@@ -46,8 +46,12 @@ async function answer(path, q, method, req, state) {
       return json({ engines: F.ROSTER.engines, problems: [] });
     case "/api/projects":
       return json(F.projectsList());
-    case "/api/folders":
-      return json({ folders: F.PROJECTS.map((p) => ({ cwd: p.folders[0], label: p.name })) });
+    case "/api/folders": {
+      const folders = F.PROJECTS.map((p) => ({ cwd: p.folders[0], label: p.name }));
+      // `scratchFolder` (a sweep state): one folder no project owns, which Settings offers to rename.
+      if (state.scratchFolder) folders.push({ cwd: `${F.HOME}/scratch`, label: "scratch" });
+      return json({ folders });
+    }
     case "/api/pulse/notifications":
       return json({ notifications: [], unread: 0, uncertain: 0, settled: [] });
     case "/api/pulse/needs-you":
@@ -89,7 +93,11 @@ async function answer(path, q, method, req, state) {
     case "/api/agents/usage":
       return json(F.USAGE);
     case "/api/missions":
-      if (method === "GET") return json(F.missionsList(q));
+      if (method === "GET") {
+        // `archivedMission` (a sweep state): the archived scope holds one mission to bring back.
+        if (state.archivedMission && q.get("archived") === "1") return json(X.archivedMissionsList());
+        return json(F.missionsList(q));
+      }
       break;
     case "/api/ask/unread":
       return json({ unread: false, conversations: 0 });
@@ -100,7 +108,8 @@ async function answer(path, q, method, req, state) {
     case "/api/automations":
       if (method === "GET")
         return json({
-          automations: [],
+          // `disabledAutomation` (a sweep state): one automation that is off, so Enable… asks consent.
+          automations: state.disabledAutomation ? [X.disabledAutomation()] : [],
           engines: [],
           loop: { enabled: true, owner: true },
           limits: {
@@ -117,6 +126,18 @@ async function answer(path, q, method, req, state) {
       break;
     case "/api/library/skills":
       return json({ skills: [] });
+    // The template library (#1531 sweep): the picker, the session chooser and their delete confirm.
+    case "/api/templates":
+      if (method === "GET") return json(X.TEMPLATES);
+      break;
+    case "/api/template-variables":
+      if (method === "GET") return json({ variables: [], limits: { secret_min: 8 } });
+      break;
+    case "/api/fs/dirs":
+      return json(X.fsDirs(q));
+    case "/api/shares":
+      if (method === "GET") return json({ available: true, reason: null, shares: [] });
+      break;
     case "/api/memory":
       if (method === "GET") return json({ projects: [] });
       break;

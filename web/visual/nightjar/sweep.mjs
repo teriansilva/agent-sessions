@@ -27,12 +27,12 @@ const ratios = FULL ? PIXEL_RATIOS : [1];
 const browser = await chromium.launch();
 const failures = [];
 for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
-  for (const width of widths)
+  for (const width of widths.filter((w) => !cap.widths || cap.widths.includes(w < 800 ? "phone" : "desktop")))
     for (const theme of THEMES)
       for (const dpr of ratios) {
         const phone = width < 800;
         const ctx = await browser.newContext({
-          viewport: { width, height: phone ? 844 : 960 },
+          viewport: { width, height: phone ? 844 : (cap.height ?? 960) },
           deviceScaleFactor: dpr,
           isMobile: phone,
           hasTouch: phone,
@@ -48,15 +48,49 @@ for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
           },
           [theme, cap.motion ?? MOTION],
         );
+        // Per-capture storage, applied after the defaults above (`null` removes a key).
+        if (cap.storage)
+          await ctx.addInitScript((entries) => {
+            for (const [k, v] of Object.entries(entries)) {
+              if (v === null) localStorage.removeItem(k);
+              else localStorage.setItem(k, typeof v === "string" ? v : JSON.stringify(v));
+            }
+          }, cap.storage);
+        if (cap.grant) await ctx.grantPermissions(cap.grant, { origin: BASE });
         if (cap.asPerson)
           await ctx.addInitScript(() => {
             Object.defineProperty(Navigator.prototype, "webdriver", { configurable: true, get: () => false });
           });
         const page = await ctx.newPage();
-        await routeApi(page, { theme, unhandled: new Set() });
+        const mockState = { theme, unhandled: new Set(), ...(cap.mock ?? {}) };
+        await routeApi(page, mockState);
         await routeTerminal(page, {});
+        // A held asset never answers: the route's chunk is "still loading" when the shot is taken.
+        if (cap.holdAsset) await page.route(new RegExp(cap.holdAsset), () => {});
+        // Per-capture answers, registered AFTER the shared handler so they win (the last route
+        // registered for a URL is asked first): a state the shared fixtures do not hold.
+        // A body `{ status, json }` answers that status; anything else is the JSON body. The path
+        // matches with or without a query string.
+        for (const [path, body] of Object.entries(cap.api ?? {})) {
+          const re = new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\?|$)`);
+          await page.route(re, (r) =>
+            body && typeof body === "object" && "status" in body && "json" in body
+              ? r.fulfill({ status: body.status, json: body.json })
+              : r.fulfill({ json: body }),
+          );
+        }
         const name = `${cap.id.replace(/[:/]/g, "_")}-${width}-${theme}-${dpr}x`;
         try {
+          // A peer tab first (the hand-off stub: another open tab takes the link).
+          if (cap.peerPath) {
+            const peer = await ctx.newPage();
+            await routeApi(peer, mockState);
+            await routeTerminal(peer, {});
+            await peer.goto(cap.peerPath);
+            await peer.waitForLoadState("networkidle").catch(() => {});
+            await peer.waitForTimeout(800);
+            await page.bringToFront();
+          }
           await page.goto(cap.path);
           if (cap.at !== undefined) {
             await page.waitForTimeout(cap.at);
@@ -65,11 +99,18 @@ for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
             await page.waitForLoadState("networkidle").catch(() => {});
             await page.waitForTimeout(cap.action ? 300 : 800);
           }
-          for (const step of [...(phone ? (cap.phoneFirst ?? []) : []), ...(cap.open ?? [])]) {
+          const steps = phone && cap.openPhone ? cap.openPhone : [...(phone ? (cap.phoneFirst ?? []) : []), ...(cap.open ?? [])];
+          for (const step of steps) {
             const target =
               "testId" in step
                 ? page.getByTestId(step.testId).first()
-                : page.getByRole(step.role, { name: step.name, exact: true }).first();
+                : "css" in step
+                  ? page.locator(step.css).first()
+                  : page.getByRole(step.role, { name: step.name, exact: !step.partial }).first();
+            if (step.upload) {
+              await target.setInputFiles({ name: step.upload, mimeType: "text/plain", buffer: Buffer.from("notes\n") });
+              continue;
+            }
             await target.click({ timeout: 10000 });
             // A drawer slides in before its rows can be pressed.
             await page.waitForTimeout(250);
