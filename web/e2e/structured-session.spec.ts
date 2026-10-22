@@ -324,8 +324,9 @@ async function targets(page: Page, scope: ReturnType<Page["getByTestId"]>) {
   }
 }
 
-/** The composer shares the terminal's square tool styling (#1348). The tools stay together;
- *  narrow panes put them above Send, with 44px touch targets on mobile (#1478). */
+/** The composer shares the terminal's square tool styling (#1348). The tools stay together, on
+ *  Send's row at EVERY width (operator 2026-10-22, #1586; this replaces #1478's narrow wrap above
+ *  Send), with 44px touch targets on mobile. */
 async function terminalChips(form: ReturnType<Page["getByTestId"]>) {
   await expect(form.locator("[data-key]").first()).toBeVisible(); // the chips follow the snapshot
   const chips = await form.locator("[data-key]").all();
@@ -339,10 +340,7 @@ async function terminalChips(form: ReturnType<Page["getByTestId"]>) {
     expect(b.y).toBe(toolRow.y);
     expect(await c.evaluate((el) => getComputedStyle(el).borderRadius)).toBe("0px");
   }
-  if ((await form.boundingBox())!.width <= 480)
-    expect(toolRow.y + toolRow.height).toBeLessThanOrEqual(row.y);
-  else
-    expect(Math.abs(toolRow.y + toolRow.height / 2 - (row.y + row.height / 2))).toBeLessThanOrEqual(1);
+  expect(Math.abs(toolRow.y + toolRow.height / 2 - (row.y + row.height / 2))).toBeLessThanOrEqual(1);
   // The text box sits ABOVE both tool and action rows.
   const ta = (await form.getByRole("textbox").boundingBox())!;
   expect(ta.y + ta.height).toBeLessThanOrEqual(toolRow.y);

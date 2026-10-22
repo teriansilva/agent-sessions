@@ -231,6 +231,15 @@ export const Compose = forwardRef<
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [note, setNote] = useState("");
+  // ONE pending clear for the note, cancelled on unmount (a 3 s timer outliving the composer set
+  // state on a torn-down tree — CI: "window is not defined" in React's update path) and replaced
+  // by a later note's (an older timer must not wipe a newer note early).
+  const noteTimer = useRef<number | undefined>(undefined);
+  const clearNoteAfter = (ms: number) => {
+    window.clearTimeout(noteTimer.current);
+    noteTimer.current = window.setTimeout(() => setNote(""), ms);
+  };
+  useEffect(() => () => window.clearTimeout(noteTimer.current), []);
   const fileRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   // #533: token guarding the fresh-launch readiness hold — a newer Send supersedes a pending one.
@@ -433,7 +442,7 @@ export const Compose = forwardRef<
       },
       note: (message) => {
         setNote(message);
-        setTimeout(() => setNote(""), 4000);
+        clearNoteAfter(4000);
       },
       onAnchor: () => applyPendingTokens(),
       onKeyHold: () => setOpen(true),
@@ -553,7 +562,7 @@ export const Compose = forwardRef<
     // instead of losing it (Hermes on #908, round 4 addendum).
     if (!sessionId) {
       setNote("Save as template needs a started session — this one has no id to keep the draft under yet");
-      setTimeout(() => setNote(""), 4000);
+      clearNoteAfter(4000);
       return;
     }
     // The composer's own content is flushed first so nothing is lost on the way to the editor.
@@ -568,7 +577,7 @@ export const Compose = forwardRef<
       // No id yet (a `new-…` placeholder): the flush would be a no-op and the navigation would
       // unmount the only copy. Stay, and say why (Hermes on #908, round 5).
       setNote("The gallery can wait until this session has started — leaving now would lose the draft, which has no id to live under yet");
-      setTimeout(() => setNote(""), 4000);
+      clearNoteAfter(4000);
       return;
     }
     flushDraft(text, attachments);
@@ -619,7 +628,7 @@ export const Compose = forwardRef<
         // is mid-reconnect (`sendInput` returns false) surface the same note instead of dropping it.
         if (!sendInput(KEYSEQ.enter)) {
           setNote("reconnecting — not sent, try again");
-          setTimeout(() => setNote(""), 3000);
+          clearNoteAfter(3000);
         }
         resolve("empty");
         return;
@@ -652,7 +661,7 @@ export const Compose = forwardRef<
           }
         }
         setNote(why);
-        setTimeout(() => setNote(""), 3000);
+        clearNoteAfter(3000);
         settle(outcome);
       };
       const deliver = () => {
@@ -897,7 +906,7 @@ export const Compose = forwardRef<
     if (id) confirmSent(id);
     setHistory(readSent());
     setNote("sent");
-    setTimeout(() => setNote(""), 2000);
+    clearNoteAfter(2000);
   };
 
   const uploadFiles = async (files: File[], forceAttachment = false) => {
@@ -920,14 +929,14 @@ export const Compose = forwardRef<
             dirtyRef.current = true;
             setAttachments((prev) => [...prev, { name: up.name, path: up.path }]);
             setNote("the console did not take the upload — kept as an attachment");
-            setTimeout(() => setNote(""), 4000);
+            clearNoteAfter(4000);
           });
         }
       }
       setNote("");
     } catch {
       setNote("upload failed");
-      setTimeout(() => setNote(""), 3000);
+      clearNoteAfter(3000);
     }
     if (fileRef.current) fileRef.current.value = "";
   };
@@ -1020,7 +1029,7 @@ export const Compose = forwardRef<
         // The event claimed to carry a file we couldn't read anywhere — say so instead of
         // leaving the paste a dead keystroke.
         setNote("couldn't read image from clipboard");
-        setTimeout(() => setNote(""), 3000);
+        clearNoteAfter(3000);
       }
     });
   };

@@ -7,7 +7,9 @@
 // for #1568: the structured pane wears the terminal's head classes (panelHead, headActions,
 // restartBtn → headChip) and the shared composer's Talk / Send / toggle, so NIGHTJAR's session
 // chrome changed exactly those elements — the head bar, its label and chips, and the three composer
-// controls — and nothing in the transcript, its layout, or the chat pane. Re-record only on purpose:
+// controls — and nothing in the transcript, its layout, or the chat pane. A third time for #1586:
+// Send's label gained its own <span> (so a 360 px composer can show the icon alone) — one added
+// element per structured case, no computed style changed. Re-record only on purpose:
 //   API_LOOK_BASELINE_WRITE=1 npx playwright test e2e/api-look-defaults.spec.ts --workers=1
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";

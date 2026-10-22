@@ -77,7 +77,10 @@ export function KeyBar({ actions }: { actions: KeyAction[] }) {
           fit++;
         } else break;
       }
-      setVisible(Math.max(1, fit));
+      // Zero keys is allowed: when even one key beside "…" does not fit (a phone composer whose row
+      // also holds Always send now, Talk and Send), a key kept anyway spilled under its neighbour.
+      // "…" alone still reaches every key.
+      setVisible(fit);
     };
     // Measure AFTER paint, not synchronously: when the action set has just grown (e.g. the collapse
     // chip appearing on open), a synchronous measure reads the pre-render partial DOM (only the

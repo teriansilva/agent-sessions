@@ -3140,7 +3140,7 @@ export function StructuredPane({
                 data-testid="structured-always-send-now"
               >
                 <Zap size={14} aria-hidden />
-                Always send now
+                <span className={styles.alwaysLabel}>Always send now</span>
               </button>
             )}
           </div>
@@ -3178,7 +3178,7 @@ export function StructuredPane({
               {...micHandlers}
             >
               <Mic size={16} aria-hidden />
-              <span className={compose.micLabel}>Talk</span>
+              <span className={`${compose.micLabel} ${styles.actionLabel}`}>Talk</span>
             </button>
           )}
           <button
@@ -3199,7 +3199,9 @@ export function StructuredPane({
             data-testid="structured-send"
           >
             <Send size={15} aria-hidden />
-            {uploading ? "Uploading" : launchStarting ? "Starting…" : "Send"}
+            <span className={styles.actionLabel}>
+              {uploading ? "Uploading" : launchStarting ? "Starting…" : "Send"}
+            </span>
           </button>
         </div>
         {snap?.native?.worker && snap.files === false && !readOnly && (

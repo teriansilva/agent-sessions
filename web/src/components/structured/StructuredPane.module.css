@@ -90,41 +90,81 @@
 .alwaysSendNow:disabled, .remove:disabled { opacity: 0.5; cursor: default; }
 /* Composer tools stay together on the left; at narrow pane widths they get their own row so
  * the preference never crowds Talk/Send. A container query also covers narrow map windows. */
-.composeRow { flex-wrap: wrap; }
+/* ONE ROW at every width (operator, 2026-10-22: "integrated with the other buttons and not a second
+ * line"; this replaces #1478's wrap above Send). The tools shrink — KeyBar folds its keys into "…" —
+ * and the note ellipsizes; Talk and Send never move. */
+.composeRow { flex-wrap: nowrap; }
 .composeTools { display: flex; flex: 1; min-width: 0; align-items: center; gap: 6px; }
 .composeTools > :first-child { flex: 0 1 auto; }
-.composeNote { margin-left: auto; }
-@container composer (max-width: 480px) {
-  .composeTools { flex-basis: 100%; }
-}
-/* A compact, persistent icon/text toggle beside the tools. Color and aria-pressed expose the
- * state without a second "Turn off" label; the same click switches it in either direction. */
-.alwaysChip {
-  flex: none;
-  height: 32px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 8px;
-  background: color-mix(in srgb, var(--bg-2) 55%, transparent);
-  border: 1px solid var(--line);
-  color: var(--text-2);
-  font: calc(11px * var(--api-scale, 1)) var(--font-mono);
+.composeNote {
+  /* The shared `.spacer` is `flex: none`. In the row the note is as wide as its words (an empty
+     note takes no room) and gives way first, to an ellipsis (Hermes 6763: the 357 px "starting"
+     note pushed Send off a 320 px composer). */
+  flex: 0 1 auto;
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: pointer;
 }
-.alwaysChip:hover { border-color: var(--accent); }
+/* Always send now is one of the row's buttons: the shared ghost plate at the row's compact size
+ * (32px on a fine pointer, the 44px floor on touch), its icon and label. aria-pressed and the lit
+ * edge show the state; the same click switches it either way. */
+.alwaysChip {
+  composes: ghost compact from "../ui/actionButton.module.css";
+  flex: none;
+  white-space: nowrap;
+}
 .alwaysChip[aria-pressed="true"] {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 15%, var(--panel));
-  color: var(--brand);
+  --nj-edge: var(--accent);
+  --nj-face: color-mix(in srgb, var(--accent) 15%, var(--bg-1));
+  color: var(--accent-text);
+}
+/* A narrow composer keeps the toggle IN the row as its icon: the label stays the accessible name
+ * (visually hidden), and the title still says what it does. */
+/* The narrowest composers (a 320 px phone): Talk and Send keep their icons too, still matched
+ * (#1478), so five controls fit one row even while Send reads "Starting…". */
+@container composer (max-width: 360px) {
+  .composeRow > button[type] {
+    min-width: 44px;
+    padding-inline: 0;
+  }
+  .actionLabel {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+@container composer (max-width: 560px) {
+  /* Narrow, a note with words takes its own line ABOVE the buttons — text may wrap a line, the
+     buttons never do (the tools shrink, KeyBar folds into "…"). */
+  .composeRow { flex-wrap: wrap; }
+  .composeNote:not(:empty) {
+    order: -1;
+    flex: 1 0 100%;
+    margin-left: 0;
+    text-align: left;
+  }
+  .alwaysLabel {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
 }
 @media (pointer: coarse), (max-width: 800px) {
   .alwaysChip,
   .composeTools button { height: 44px; }
 }
 .activity > summary:focus-visible, .sendNow:focus-visible, .alwaysSendNow:focus-visible,
-.remove:focus-visible, .alwaysChip:focus-visible {
+.remove:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }

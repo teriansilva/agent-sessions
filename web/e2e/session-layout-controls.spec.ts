@@ -59,12 +59,13 @@ for (const theme of ["dark", "light"]) {
   await expect(toggle).toHaveText("Always send now");
   await expect(toggle.locator("svg")).toHaveCount(1);
   await expect(toggle).toHaveAttribute("title", /into the current turn/);
-  const color = await toggle.evaluate(el => getComputedStyle(el).backgroundColor);
+  // A plate paints its face and edge on pseudo-elements (nj-plate): compare those and the ink.
+  const color = await toggle.evaluate(el => [getComputedStyle(el, "::before").backgroundColor, getComputedStyle(el, "::after").backgroundColor, getComputedStyle(el).color].join("|"));
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
   await expect(toggle).toHaveAttribute("title", /queue messages again/);
   await expect.poll(() => fixture.calls.length).toBe(1);
-  expect(await toggle.evaluate(el => getComputedStyle(el).backgroundColor)).not.toBe(color);
+  expect(await toggle.evaluate(el => [getComputedStyle(el, "::before").backgroundColor, getComputedStyle(el, "::after").backgroundColor, getComputedStyle(el).color].join("|"))).not.toBe(color);
   await matchedButtons(page);
   const form = page.getByRole("form", { name: "Compose message" });
   // An intrinsic-width tool group must not count a nonexistent trailing gap as overflow.
@@ -84,8 +85,23 @@ for (const theme of ["dark", "light"]) {
   else await page.setViewportSize({ width: 320, height: 640 });
   await matchedButtons(page);
   await expect(toggle).toBeInViewport();
+  // ONE ROW (operator, 2026-10-22): narrow, the toggle stays beside the tools, Talk and Send as its
+  // icon — never a second line — and keeps its name for a screen reader.
   const box = (await toggle.boundingBox())!, send = (await form.getByRole("button", { name: "Send", exact: true }).boundingBox())!;
-  expect(box.y + box.height).toBeLessThanOrEqual(send.y);
+  expect(Math.abs(box.y + box.height / 2 - (send.y + send.height / 2))).toBeLessThan(2);
+  expect(box.x + box.width).toBeLessThanOrEqual(send.x);
+  expect(box.width).toBeLessThanOrEqual(48);
+  await expect(toggle).toHaveAccessibleName("Always send now");
+  // …and no control in the row is painted over another (KeyBar used to keep a key it had no room
+  // for, which spilled under the toggle on a 320 px phone).
+  const row = await form.locator("button:visible").evaluateAll(els =>
+    els.map(e => e.getBoundingClientRect()).filter(r => r.width > 0 && r.top > 0).map(r => [r.left, r.right, r.top, r.bottom]));
+  for (let i = 0; i < row.length; i++)
+    for (let j = i + 1; j < row.length; j++) {
+      const [l1, r1, t1, b1] = row[i], [l2, r2, t2, b2] = row[j];
+      const overlapX = Math.min(r1, r2) - Math.max(l1, l2), overlapY = Math.min(b1, b2) - Math.max(t1, t2);
+      expect(overlapX > 1 && overlapY > 1, `buttons ${i} and ${j} overlap`).toBe(false);
+    }
   expect(await form.evaluate(el => el.scrollWidth - el.clientWidth)).toBe(0);
   await page.screenshot({ path: info.outputPath(`api-controls-${theme}.png`) });
  });
@@ -105,4 +121,32 @@ test("Missions comes before Sessions at desktop and mobile widths", async ({ pag
   await order();
   await page.setViewportSize({ width: 320, height: 640 });
   await order();
+});
+
+// Hermes 6763: the real "starting" note ("Type now — Send unlocks when the agent is ready.") is
+// 357 px of text; at 320 px it pushed Send off-screen once the row stopped wrapping. Narrow, the
+// note now takes its own line above the buttons, and the buttons stay one row.
+test("a populated status note never pushes Send off a 320 px composer (#1586)", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  const fixture = await mockStructuredGuidance(page, "codex-api", "steer");
+  (fixture.state as Record<string, unknown>).start_in_flight = true;
+  await page.goto(`/s/codex-api/${ID}`);
+  const form = page.getByRole("form", { name: "Compose message" });
+  await expect(form.getByRole("status").filter({ hasText: "Send unlocks" })).toHaveCount(1);
+  // While the launch is in flight the send button reads "Starting…": find it by its test id.
+  const send = form.getByTestId("structured-send");
+  await expect(send).toBeInViewport({ ratio: 1 });
+  const note = (await form.getByRole("status").filter({ hasText: "Send unlocks" }).boundingBox())!;
+  const s = (await send.boundingBox())!;
+  expect(note.y + note.height, "the note sits above the button row").toBeLessThanOrEqual(s.y + 1);
+  const row = await form.locator("button:visible").evaluateAll((els) =>
+    els.map((e) => e.getBoundingClientRect()).filter((r) => r.width > 0).map((r) => [r.left, r.right, r.top, r.bottom]));
+  const centres = new Set(row.map(([, , t, b]) => Math.round((t + b) / 2)));
+  expect(centres.size, "every button on one row").toBe(1);
+  for (let i = 0; i < row.length; i++)
+    for (let j = i + 1; j < row.length; j++) {
+      const ox = Math.min(row[i][1], row[j][1]) - Math.max(row[i][0], row[j][0]);
+      expect(ox > 1, `buttons ${i} and ${j} overlap`).toBe(false);
+    }
+  expect(await form.evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
 });
