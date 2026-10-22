@@ -52,6 +52,9 @@ import d from "./direction.module.css";
 import type { StartAgain } from "./useStartAgain";
 
 function Time({ at }: { at: number }) {
+  // A row without a usable time draws none rather than throwing (an Invalid Date's toISOString
+  // throws, and one row must never take the console down).
+  if (!Number.isFinite(at)) return null;
   const d = new Date(at * 1000);
   return (
     <time className={t.time} dateTime={d.toISOString()}>
@@ -95,8 +98,14 @@ function MessageRow({ event, who }: { event: MissionEvent; who: string }) {
   const matches = Array.isArray(meta.matches) ? meta.matches : [];
   const text = event.text?.trim() ? event.text : null;
   return (
-    <article className={styles.event} aria-label={who}>
-      <div className={styles.eventHead}>{who}</div>
+    <article
+      className={`${styles.event} ${who === "You" ? styles.eventOperator : ""}`}
+      aria-label={who}
+    >
+      <div className={styles.eventHead}>
+        <span>{who}</span>
+        <Time at={event.at} />
+      </div>
       {text ? <div className={styles.eventText}>{text}</div> : null}
       {matches.map((m) => (
         <div key={m.id} className={styles.matchRow} data-testid="ask-match">
@@ -504,6 +513,7 @@ export function MissionThreadEvent({
   objectiveCount = null,
   objectiveTitle = (key) => key ?? "an objective",
   autoOff = null,
+  arrive = false,
 }: {
   event: MissionEvent;
   /** Set only on the newest failed start of a mission that is still failed. */
@@ -515,6 +525,8 @@ export function MissionThreadEvent({
   objectiveTitle?: (key: string | null) => string;
   /** Set only while autonomous AI directions are on (#983 P4). */
   autoOff?: AutoOff | null;
+  /** The event arrived while the thread was on screen: it slides in and flashes once (#1573). */
+  arrive?: boolean;
 }) {
   const row = threadRow(event);
   let body;
@@ -689,7 +701,10 @@ export function MissionThreadEvent({
       // its name — the box it used to get held a label over nothing, which read as a rendering bug.
       body = row.text ? (
         <div className={styles.event}>
-          <div className={styles.eventHead}>{row.label}</div>
+          <div className={styles.eventHead}>
+            <span>{row.label}</span>
+            <Time at={event.at} />
+          </div>
           <div className={styles.eventText}>{row.text}</div>
         </div>
       ) : (
@@ -700,7 +715,12 @@ export function MissionThreadEvent({
       );
   }
   return (
-    <div data-testid="thread-event" data-kind={event.kind} data-seq={event.seq}>
+    <div
+      className={arrive ? t.arrive : undefined}
+      data-testid="thread-event"
+      data-kind={event.kind}
+      data-seq={event.seq}
+    >
       {body}
     </div>
   );
@@ -726,6 +746,29 @@ export function MissionThreadEvents({
   autoOff?: AutoOff | null;
 }) {
   const latestFailure = latestFailedStartSeq(events);
+  /* ARRIVAL (#1573, the PR 3 sidebar rule): an event newer than the newest one already on screen
+     arrives — slides in and flashes once — but never on the thread's first paint, never for older
+     events a Load older brings in, and never for a burst (more than three at once is a re-read, not
+     news). The marks persist for the element's life, so a re-render never replays the flash.
+     Derived during render (React's "adjust state when a prop changes"), guarded so it only moves
+     forward: a page of OLDER events never changes the newest seq. */
+  const top = events.reduce((m, e) => Math.max(m, e.seq), Number.NEGATIVE_INFINITY);
+  const [seen, setSeen] = useState<{ top: number | null; arrived: ReadonlySet<number> }>({
+    top: null,
+    arrived: new Set(),
+  });
+  if (Number.isFinite(top) && top > (seen.top ?? Number.NEGATIVE_INFINITY)) {
+    let arrived = seen.arrived;
+    if (seen.top !== null) {
+      const fresh = events.filter((e) => e.seq > seen.top!);
+      if (fresh.length > 0 && fresh.length <= 3) {
+        const next = new Set(arrived);
+        for (const e of fresh) next.add(e.seq);
+        arrived = next;
+      }
+    }
+    setSeen({ top, arrived });
+  }
   let latestPlan: number | null = null;
   for (const e of events)
     if (e.kind === "plan" && (latestPlan === null || e.seq > latestPlan))
@@ -756,6 +799,7 @@ export function MissionThreadEvents({
           objectiveCount={e.seq === latestPlan ? count : null}
           objectiveTitle={objectiveTitle}
           autoOff={autoOff}
+          arrive={seen.arrived.has(e.seq)}
         />
       ))}
     </>

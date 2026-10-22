@@ -1,3 +1,4 @@
+import { RotateCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useConfig } from "../app/config";
 import { MissionConsole } from "../components/pulse/MissionConsole";
@@ -8,6 +9,7 @@ import type {
   OrchestratorAction,
   PulseOverview,
 } from "../types/api";
+import action from "../components/ui/actionButton.module.css";
 import styles from "./Pulse.module.css";
 
 // DEPTHS lived here for the route's FAST/MED/SLOW selector, removed with the scan chrome
@@ -25,6 +27,9 @@ export default function Pulse() {
   const cfg = useConfig()?.pulse;
   const [overview, setOverview] = useState<PulseOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Bumped by Retry: the overview read runs again (#1573, board M3 — a failed read is a state with
+   *  a fix, not a dead end). */
+  const [attempt, setAttempt] = useState(0);
 
   // Bumped when an action is resolved from a card, so the orchestrator panel (which owns its
   // own pending/feed) re-reads rather than showing a count for something already decided.
@@ -95,12 +100,16 @@ export default function Pulse() {
     const gen = ++overviewGen.current;
     api
       .pulse()
-      .then((o) => live && applyOverview(gen, o))
-      .catch(() => live && setError("Couldn’t load the overview."))
+      .then((o) => {
+        if (!live) return;
+        setError(null);
+        applyOverview(gen, o);
+      })
+      .catch(() => live && setError("Couldn’t load the overview."));
     return () => {
       live = false;
     };
-  }, [applyOverview]);
+  }, [applyOverview, attempt]);
 
   // `changeDepth` and `scanNow` were the route's scan controls and went with the header
   // (#929). `routes/PulseSettings.tsx` retains both the depth/window configuration and the
@@ -127,7 +136,19 @@ export default function Pulse() {
         </div>
       </header>
 
-      {error && <p className={styles.err}>{error}</p>}
+      {error && (
+        <div className={styles.err} role="alert" data-testid="pulse-error">
+          <span className={styles.errText}>{error}</span>
+          <button
+            type="button"
+            className={`${action.ghost} ${action.compact}`}
+            onClick={() => setAttempt((n) => n + 1)}
+            data-testid="pulse-retry"
+          >
+            <RotateCw size={13} aria-hidden="true" /> Retry
+          </button>
+        </div>
+      )}
 
       {/* Narrow the whole list, not just the queue (#754) — the filters reach all sessions,
           including the ones the orchestrator has said nothing about, which is most of them. */}

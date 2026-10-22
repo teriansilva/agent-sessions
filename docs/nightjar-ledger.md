@@ -57,6 +57,7 @@ the same list.
 | `components/hq/PrimaryContact.module.css` | css | 5 | done | route:dashboard route:dashboard-acquiring | plate edge lights on hover (no movement); the portrait's own loop is HqPortrait's |
 | `components/hud/buttonGlitch.css` | css | 2 | done | gallery:buttons | glitch: filter only |
 | `components/HudDialog.module.css` | css | 3 | done | popup:hand-off popup:move-to-project popup:session-brief | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
+| `components/hud/reactFlow.css` | css | 9 | done | map:expanded canvas:memory-graph canvas:playbook-flow | none: the `--xy-*` tokens, 44 px Controls, panel margins, square handles; each canvas's motion lives with it |
 | `components/hud/nightjar.css` | css | 2 | done | gallery:all | atmosphere, power-on, rail pulse, LED breathe/blink/flash, pips, gauge pulse, readout flash, seg/tab marker, disclosure, loaders, arrival, stream |
 | `components/links/HandoffStub.module.css` | css | 4 | done | popup:handoff-stub | none (a static notice) |
 | `components/links/OpenLinkDialog.module.css` | css | 3 | done | popup:open-link | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
@@ -64,9 +65,9 @@ the same list.
 | `components/memory/importCard.module.css` | css | 10 | todo |  |  |
 | `components/memory/memoryGraph.module.css` | css | 10 | todo |  |  |
 | `components/newSession/NewSessionControls.module.css` | css | 6 | todo |  |  |
-| `components/overview/overview.css` | css | 9 | todo |  |  |
-| `components/overview/sessionWindow.module.css` | css | 9 | todo |  |  |
-| `components/overview/windowLayer.module.css` | css | 9 | todo |  |  |
+| `components/overview/overview.css` | css | 9 | done | route:map map:expanded map:folders-live map:chip-menu map:loading map:error map:empty map:empty-projects map:partial map:new-project-error map:group-error map:windows-refused map:toolbar-error map:empty-windows | radar sweep + crosshair drift (transform), live-edge data packets (transform/opacity), working-LED ping (decorative scale), minimap breathe (opacity) — Full only, compositor-only, paused with the page; chip hover tint transition |
+| `components/overview/sessionWindow.module.css` | css | 9 | done | map:windows map:window-files map:window-cap map:window-readonly | chrome-button hover tint transition (the window's deploy-in and flash live in the layer) |
+| `components/overview/windowLayer.module.css` | css | 9 | done | map:windows map:window-cap map:empty-windows | window deploy-in (fade only, on open and on restore), tray chip arrival, duplicate-open edge flash (opacity on a pseudo-element); the focused tether is lit, never animated |
 | `components/playbooks/playbookCanvas.module.css` | css | 10 | todo |  |  |
 | `components/playbooks/playbookEditor.module.css` | css | 10 | todo |  |  |
 | `components/playbooks/playbookPrompts.module.css` | css | 10 | todo |  |  |
@@ -75,12 +76,11 @@ the same list.
 | `components/plugins/PluginSetup.module.css` | css | 11 | todo |  |  |
 | `components/ProjectColorPicker.module.css` | css | 10 | todo |  |  |
 | `components/projects/ProjectSessionDefaults.module.css` | css | 10 | todo |  |  |
-| `components/pulse/direction.module.css` | css | 8 | todo |  |  |
-| `components/pulse/missionDrawer.module.css` | css | 8 | todo |  |  |
-| `components/pulse/mission.module.css` | css | 8 | todo |  |  |
-| `components/pulse/missionThread.module.css` | css | 8 | todo |  |  |
+| `components/pulse/direction.module.css` | css | 8 | done | mission:decisions mission:objective-evidence popup:objective-direction | the AI-drafted card deploys in (fade + 6 px rise; 120 ms fade in Reduced); fields and fact chips: edge transition on hover / focus |
+| `components/pulse/mission.module.css` | css | 8 | done | route:mission route:mission-needs-you route:mission-rail-loading mission:console popup:mission-template-picker route:mission-start-refused mission:objective-drag mission:objective-refused route:mission-rail-filtered-empty route:mission-rail-archived-empty route:mission-rail-more route:mission-needs-filtered route:mission-needs-loading route:mission-needs-error mission:objectives-unreadable mission:objectives-pending mission:objectives-unavailable mission:objectives-empty mission:objective-clamped mission:objective-unclamped mission:objective-rename mission:timeline-empty mission:pending | rail rows arrive and their LEDs flash on a change; thread events arrive; the state chip flashes on a transition; Details, objective evidence and Show brief expand; planning pips + Acquiring (see the note) |
+| `components/pulse/missionThread.module.css` | css | 8 | done | mission:thread mission:failed mission:console mission:pending | a thread event arriving while the console is open slides in and flashes the HUD tint once (≤3 at once, never on first paint; a fade in Reduced); Show brief / Show text fade in; chevrons turn |
 | `components/pulse/NotificationBell.module.css` | css | 4 | done | popup:bell | deploy-in, ≤800px drawer slide-in + scrim, row arrival flash, badge bump (filter) |
-| `components/pulse/Orchestrator.module.css` | css | 8 | todo |  |  |
+| `components/pulse/Orchestrator.module.css` | css | 8 | done | mission:decisions | a decision card deploys in (fade + 6 px rise; 120 ms fade in Reduced); option rows tint their edge on hover; the Run-now spinner is `nj-spin` (Full only) |
 | `components/sessions/AdoptToMissionModal.module.css` | css | 3 | done | popup:adopt | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/settings/AgentEndpointCard.module.css` | css | 11 | todo |  |  |
 | `components/settings/ResourceLimits.module.css` | css | 11 | todo |  |  |
@@ -116,14 +116,14 @@ the same list.
 | `routes/AgentsSettings.module.css` | css | 11 | todo |  |  |
 | `routes/Appearance.module.css` | css | 11 | todo |  |  |
 | `routes/Ask.module.css` | css | 4 | done | popup:hq | none (layout) |
-| `routes/Checklists.module.css` | css | 8 | todo |  |  |
+| `routes/Checklists.module.css` | css | 8 | done | route:checklists route:checklists-list route:checklists-editor popup:checklists-leave | step form fades open (Reduced: 120 ms fade; Off: none), plate and row hover tints |
 | `routes/Memory.module.css` | css | 10 | todo |  |  |
 | `routes/NewProject.module.css` | css | 10 | todo |  |  |
 | `routes/NewSessionLanding.module.css` | css | 6 | todo |  |  |
 | `routes/NightjarGallery.module.css` | css | 2 | done | gallery:all | none (layout) |
 | `routes/Onboarding.module.css` | css | 4 | done | popup:tour | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `routes/ProjectsManager.module.css` | css | 11 | todo |  |  |
-| `routes/Pulse.module.css` | css | 8 | todo |  |  |
+| `routes/Pulse.module.css` | css | 8 | done | route:mission route:mission-overview-error route:mission-health | none of its own: the route heading and its error line are static |
 | `routes/Settings.module.css` | css | 11 | todo |  |  |
 | `routes/Templates.module.css` | css | 10 | todo |  |  |
 | `routes/Variables.module.css` | css | 10 | todo |  |  |
@@ -156,16 +156,16 @@ the same list.
 | `components/newSession/NewSessionControls.tsx` | popup | 6 | todo |  |  |
 | `components/overview/SessionTextDialog.tsx` | popup | 3 | done | popup:session-text | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/playbooks/PlaybookDialog.tsx` | popup | 3 | done | popup:playbook-delete | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
-| `components/pulse/MissionConsole.tsx` | popup | 8 | todo |  |  |
-| `components/pulse/MissionOverflow.tsx` | popup | 3 | done | popup:mission-overflow | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
-| `components/pulse/MissionRail.tsx` | popup | 8 | todo |  |  |
+| `components/pulse/MissionConsole.tsx` | popup | 8 | done | mission:console mission:details-band mission:question | the details band fades in when opened (≤1399px); disclosures expand by grid rows; the header state chip flashes once on a change; the question card deploys in |
+| `components/pulse/MissionOverflow.tsx` | popup | 3 | done | popup:mission-overflow popup:mission-confirm-abandon popup:mission-confirm-archive popup:mission-confirm-failed | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
+| `components/pulse/MissionRail.tsx` | popup | 8 | done | route:mission-needs-you route:mission-rail-drawer route:mission-rail-loading route:mission-rail-error route:mission-rail-empty route:mission-rail-filtered-empty route:mission-rail-archived-empty route:mission-rail-more | rows arrive (`.rowArrived`, ≤3 at once; Reduced: one fade; Off: none), LEDs steady in the list and flash once on a state change, Acquiring scan bar + skeleton on the first read |
 | `components/pulse/MissionTitle.tsx` | popup | 3 | done | popup:mission-title | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/pulse/NotificationBell.tsx` | popup | 4 | done | popup:bell | deploy-in, drawer slide-in, row arrival flash |
 | `components/pulse/ObjectiveDirectionDialog.tsx` | popup | 3 | done | popup:objective-direction | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/sessions/AdoptToMissionModal.tsx` | popup | 3 | done | popup:adopt | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/shares/SharePubliclyModal.tsx` | popup | 3 | done | popup:share-publicly | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/sidebar/MoveToProjectModal.tsx` | popup | 3 | done | popup:move-to-project | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
-| `components/sidebar/RowMenu.tsx` | popup | 3 | done | popup:session-row-menu | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
+| `components/sidebar/RowMenu.tsx` | popup | 3 | done | popup:session-row-menu popup:objective-menu | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
 | `components/structured/PermissionsDialog.tsx` | popup | 3 | done | popup:permissions | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/structured/StructuredPane.tsx` | popup | 6 | todo |  |  |
 | `components/templates/ConfirmDialog.tsx` | popup | 3 | done | popup:confirm popup:git-confirm | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
@@ -183,10 +183,10 @@ the same list.
 | `routes/Onboarding.tsx` | popup | 4 | done | popup:tour | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `routes/RenameProjectModal.tsx` | popup | 3 | done | popup:rename-project | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `whatsnew/WhatsNewDialog.tsx` | popup | 4 | done | popup:whats-new | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
-| `components/pulse/MissionHeaderActions.tsx` | popup | 3 | done | popup:unarchive popup:mission-overflow | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
-| `components/overview/OverviewCanvas.tsx (React Flow)` | canvas | 9 | todo |  |  |
-| `components/memory/MemoryGraph.tsx (React Flow)` | canvas | 9 | todo |  |  |
-| `components/playbooks/PlaybookFlowCanvas.tsx (React Flow)` | canvas | 9 | todo |  |  |
+| `components/pulse/MissionHeaderActions.tsx` | popup | 3 | done | popup:unarchive popup:mission-overflow popup:mission-confirm-abandon popup:mission-confirm-archive popup:mission-confirm-failed | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
+| `components/overview/OverviewCanvas.tsx (React Flow)` | canvas | 9 | done | route:map map:expanded map:folders-live map:chip-menu map:loading map:error map:empty map:empty-projects map:partial map:new-project-error map:group-error map:windows map:toolbar-error map:empty-windows | the shared theme (hud/reactFlow.css), `colorMode` from the theme; tactical grid (fine + major) on `<Background>`; live-edge packets; pan and zoom React Flow's own |
+| `components/memory/MemoryGraph.tsx (React Flow)` | canvas | 9 | done | canvas:memory-graph | the shared theme (hud/reactFlow.css), `colorMode` from the theme; no motion of its own (its page, memoryGraph.module.css, is Phase 10) |
+| `components/playbooks/PlaybookFlowCanvas.tsx (React Flow)` | canvas | 9 | done | canvas:playbook-flow | the shared theme (hud/reactFlow.css), `colorMode` from the theme; no motion of its own (the editor page is Phase 10) |
 | `web/index.html (SPA shell, pre-paint script)` | page | 1 | todo |  |  |
 | `src/agent_sessions/templates/login.html` | page | 12 | todo |  |  |
 | `src/agent_sessions/templates/login_totp.html` | page | 12 | todo |  |  |
@@ -223,3 +223,23 @@ these is read by GitTab, BranchMenu, RowMenu or FileViewerModal. Motion: `nj-arr
 only). Captures: `popup:files`, `popup:upload-menu`, `popup:upload-collision`, `files:tree-open`,
 `files:tree-loading`, `files:tree-unavailable`, `files:tree-truncated`, `files:panel-unavailable`,
 `files:upload-queue`, `files:send-flash`.
+
+**Note: `components/pulse/mission.module.css` (Phase 8, #1573).** The sheet is shared by the rail,
+the new-mission page, the console, HQ's AskComposer / AskConsole and the dashboard, so PR 4a converted
+it in two halves. **Rail half:** the selectors only MissionRail, MissionLanding and NewMissionForm read —
+`.railLed` (+ `.railLedStarting`, `.railLedDone`; rows wear the shared `Led`, so `.dotNeedsYou`,
+`.railDot` and `.rail .dot` are deleted), `.railNotice*`, `.railLoading`, `.railSkeleton`, the landing
+(`.landing*`; NEEDS YOU as an `nj-frame-sm` section with steady `Led` rows, its error as `nj-error`, its
+read as the Acquiring loader) and the form's own `.newMission*`. **Console half:** the frame (head row,
+state chip with its one-shot flash), the state dots (7 px; the chip keeps its pinned 6 px), notices and
+empty states, the thread as hairline rows (scoped under `.console`, because HQ and the dashboard read
+`.pane`, `.event`, `.eventHead`, `.eventText` and the composer dock), the Now strip, the details column
+and band (grid-row disclosures), objectives, context, the plan card in every state, the question card,
+the supervisor's reading, the timeline and auto-choose; 27 dead classes deleted, plus the dead
+`.railList` / `.railWithSessions`. Every mission surface reads ONE state→light mapping
+(`missionLed`, missionState.ts). The composer box (`.composerBox`, `.composerFoot`, `.foot*`) is
+untouched: it is one composer with HQ's (#967), pinned by `mission-control-polish`; `.composerInput`'s
+16 px reads the new `--fs-input` token (a field a phone must not zoom into). HQ and the dashboard were
+diffed pixel for pixel against the base build: identical. `missionDrawer.module.css` was dead (#948)
+and is deleted. Captures: the manifest's PR4a rail and console blocks (`route:mission*`, `mission:*`,
+`popup:mission-template-picker`).

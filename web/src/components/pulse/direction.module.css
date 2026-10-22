@@ -19,9 +19,8 @@
 .label,
 .previewLabel,
 .sectionLabel {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.08em;
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--text-3);
 }
@@ -33,19 +32,23 @@
   width: 100%;
   min-height: 88px;
   resize: vertical;
-  padding: 8px 10px;
+  padding: var(--sp-2) var(--sp-3);
   background: var(--bg-2);
   color: var(--text-1);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--border);
   border-radius: 0;
-  font: inherit;
-  font-size: 13px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-row);
   line-height: 1.5;
+  transition: border-color var(--t-fast) var(--ease-out);
 }
 .textarea:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+  border-color: var(--hud);
+}
+.textarea:hover {
+  border-color: var(--hud-dim);
 }
 /* Frozen while its save is pending (#997): visibly not editable, like the dialog's other controls. */
 .textarea:disabled,
@@ -61,44 +64,61 @@
 }
 .chipsLabel {
   margin-right: 2px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-3);
 }
 .chip {
+  --c: 6px;
+  position: relative;
+  isolation: isolate;
   min-height: 36px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 0 10px;
+  padding: 0 var(--sp-3);
   background: transparent;
   color: var(--text-2);
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: 0;
   font: inherit;
   cursor: pointer;
 }
+.chip::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-under);
+  background: color-mix(in srgb, var(--text-1) 6%, var(--bg-1));
+  clip-path: polygon(var(--c) 0, 100% 0, 100% calc(100% - var(--c)), calc(100% - var(--c)) 100%, 0 100%, 0 var(--c));
+  pointer-events: none;
+}
+@media (pointer: coarse), (max-width: 800px) {
+  .chip {
+    min-height: 44px;
+  }
+}
 .chip:hover,
 .chip:focus-visible {
   color: var(--text-1);
-  border-color: var(--line-strong);
+  filter: brightness(1.2);
 }
 .chip:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .chipToken {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--brand);
+  font: 600 var(--fs-label) / 1 var(--font-mono);
+  letter-spacing: 0.1em;
+  color: var(--hud-text);
 }
 .chipHint {
-  font-size: 11px;
+  font-size: var(--fs-label);
   color: var(--text-3);
 }
 .noFacts,
 .hint {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1.45;
   color: var(--text-2);
 }
@@ -107,11 +127,12 @@
 }
 .preview {
   margin: 0;
-  padding: 9px 12px;
-  border-left: 3px solid var(--accent);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px dashed var(--line-strong);
+  border-left: 2px solid var(--hud);
   background: var(--bg-2);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1.55;
   color: var(--text-1);
   white-space: pre-wrap;
@@ -226,30 +247,29 @@
   gap: 8px;
 }
 .tag {
-  padding: 2px 6px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
+  padding: 3px 7px;
+  font: 600 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--text-1);
-  background: var(--glass-strong);
-  border: 1px solid var(--line-strong);
+  color: var(--hud-text);
+  background: transparent;
+  border: 1px solid var(--hud-dim);
 }
 .objective {
   flex: 1 1 12rem;
   min-width: 0;
-  font-size: 13.5px;
+  font-size: var(--fs-body);
   font-weight: 600;
   color: var(--text-1);
   overflow-wrap: anywhere;
 }
 .badge {
   padding: 2px 7px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--text-2);
-  border: 1px solid var(--border);
+  font: 400 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  border: 1px solid var(--line-strong);
   white-space: nowrap;
 }
 .sectionLabel {
@@ -262,14 +282,14 @@
 .aiFlag {
   padding: 1px 5px;
   font-weight: 600;
-  letter-spacing: 0.12em;
-  color: var(--text-1);
-  border: 1px dashed var(--text-3);
+  letter-spacing: 0.14em;
+  color: var(--hud-text);
+  border: 1px dashed var(--hud-dim);
 }
 .why,
 .staleLead {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-row);
   line-height: 1.45;
   color: var(--text-2);
   overflow-wrap: anywhere;
@@ -280,11 +300,11 @@
 }
 .willType {
   margin: 0;
-  padding: 9px 12px;
-  background: var(--bg-0);
-  border: 1px solid var(--line-strong);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--term-bg);
+  border: 1px solid var(--line);
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   line-height: 1.55;
   color: var(--text-1);
   white-space: pre-wrap;
@@ -306,11 +326,10 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 0 8px;
-  font-family: var(--font-mono);
-  font-size: 11px;
+  padding: 0 var(--sp-2);
+  font: 400 var(--fs-label) / 1 var(--font-mono);
   color: var(--text-2);
-  border: 1px solid var(--border);
+  border: 1px solid var(--line-strong);
 }
 .dot {
   flex: none;
@@ -330,7 +349,7 @@
 }
 .prov {
   margin: 6px 0 0;
-  font-size: 11.5px;
+  font-size: var(--fs-label);
   color: var(--text-3);
   overflow-wrap: anywhere;
 }
@@ -345,10 +364,9 @@
 /* The frame is DASHED all round: the words inside are the model's. Applied to ActionRow's frame, so
    the tone stripe on the left edge stays the decision's status colour. */
 .draftFrame.draftFrame {
-  /* Doubled for specificity: this has to win over the host row's own solid border, whichever of the
-     two stylesheets loads last. */
+  /* Doubled for specificity: this has to win over the host row's own solid edge, whichever of the
+  two stylesheets loads last. The AI-drafted direction is the ONLY dashed card (#1573). */
   border-style: dashed;
-  border-left-style: solid;
 }
 .draftBox {
   padding: 10px 12px;
@@ -360,7 +378,7 @@
   gap: 6px;
   padding: 2px 7px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -370,7 +388,7 @@
 }
 .draftHint {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1.5;
   color: var(--text-3);
 }
@@ -386,7 +404,7 @@
   align-items: center;
   gap: 4px;
   font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: var(--fs-label);
   letter-spacing: 0.04em;
   color: var(--text-2);
 }
@@ -400,7 +418,7 @@
   padding: 10px 12px;
   border-top: 1px solid var(--line);
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   line-height: 1.55;
   color: var(--text-1);
   white-space: pre-wrap;

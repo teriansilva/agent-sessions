@@ -1,5 +1,6 @@
 // Per-surface mocks beyond the shell: HQ conversations, missions, library, files, structured.
 import * as F from "./fixtures.mjs";
+import * as MS from "./missionStates.mjs";
 
 const json = (body, status = 200) => ({ status, body });
 
@@ -61,12 +62,15 @@ export async function answerExtra(path, q, method, req, state) {
     const r = filesAnswer(path, q);
     if (r) return r;
   }
+  if (/^\/api\/missions\/msn_[0-9a-f]{32}\/screen\/[^/]+$/.test(path)) return json(MS.missionScreen());
   const mi = /^\/api\/missions\/(msn_[0-9a-f]{32})(\/[a-z_]+)?$/.exec(path);
   if (mi && method === "GET") {
     const [, id, sub] = mi;
-    if (!sub) return json(id === ARCHIVED_MISSION ? archivedMissionDetail() : missionDetail(id));
-    if (sub === "/objectives") return json({ objectives: missionObjectives(id) });
-    if (sub === "/context") return json(missionContext(id));
+    // `mission` (a sweep state, visual/promo/missionStates.mjs): another state of the same mission.
+    const shown = id === ARCHIVED_MISSION ? archivedMissionDetail() : MS.missionVariant(missionDetail(id), state?.mission);
+    if (!sub) return json(shown);
+    if (sub === "/objectives") return json({ objectives: shown.objectives });
+    if (sub === "/context") return json(MS.contextVariant(missionContext(id), state?.missionContext));
     if (sub === "/now") return json(missionNow());
     return undefined;
   }
@@ -171,9 +175,14 @@ export function askStream(cid, req, state) {
     answer: HQ_ANSWER,
     detail: null,
     code: null,
-    matches: state.hqMatches === false ? [] : [
-      { id: codex.id, title: codex.title, why: "Waiting on your approval to run the staging migration." },
-    ],
+    // `hqMatches`: false = none; "several" = three terminal sessions (the map's "Open all" batch,
+    // #1573's refused-windows capture); otherwise the one session waiting on an approval.
+    matches:
+      state.hqMatches === false
+        ? []
+        : state.hqMatches === "several"
+          ? F.SESSIONS.slice(0, 3).map((s) => ({ id: s.id, title: s.title, why: "Working on the ingest launch." }))
+          : [{ id: codex.id, title: codex.title, why: "Waiting on your approval to run the staging migration." }],
     mission_matches: [],
     tools: [],
     proposals: [

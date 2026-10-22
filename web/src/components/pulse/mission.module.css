@@ -10,6 +10,14 @@
  *
  * The shell owns the rail breakpoint (800px). At 1400px the workspace shows conversation
  * beside collapsible details; narrower workspaces select Conversation or Details.
+ *
+ * NIGHTJAR (#1531, docs/design.md v2, #1573 Phase 8): tokens only (docs/nightjar-ledger.md). The
+ * console's thread is ROWS on hairlines, not boxed cards; a card is reserved for what asks the
+ * operator for something (the plan, a question, a decision). Panels clip, controls are plates
+ * (ui/actionButton.module.css), fields are square with the inset ring, LEDs are 7 px dots with a
+ * word. Selectors HQ (components/ask) and the dashboard also read — `.pane`, `.event`, `.eventHead`,
+ * `.eventText`, the composer box — are restyled under `.console` only, so those surfaces keep their
+ * own look.
  */
 
 /* The shell owns the rail. The console holds one centre column; `.split` lays out
@@ -47,21 +55,20 @@
 /* The state dot. Semantic tokens only. */
 .dot {
   flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   margin-top: 6px;
+  border-radius: 50%;
   background: var(--status-unknown);
 }
 .dotRunning {
   background: var(--status-up);
+  box-shadow: 0 0 var(--glow-led) var(--status-up);
 }
 /* STARTING is not running (#967): a neutral solid dot, as board A2 draws it. Green stays the claim that
  * work is underway (§3). */
 .dotStarting {
   background: var(--text-2);
-}
-.dotNeedsYou {
-  background: var(--status-degraded);
 }
 .dotDone {
   /* A hollow ring, not a filled dot — done is not a status light. */
@@ -70,28 +77,10 @@
 }
 .dotFailed {
   background: var(--status-down);
+  box-shadow: 0 0 var(--glow-led) var(--status-down);
 }
-
-.adopt {
-  flex: 0 0 auto;
-  min-height: 44px;
-  min-width: 76px;
-  padding: 4px 10px;
-  border: 1px solid var(--accent);
-  background: transparent;
-  color: var(--accent-text);
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
-  letter-spacing: 0.1em;
-  cursor: pointer;
-}
-.adopt:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.adopt[disabled] {
-  opacity: 0.55;
-  cursor: default;
+.dotDraft {
+  background: var(--status-draft);
 }
 
 /* --- centre column ------------------------------------------------------------- */
@@ -113,71 +102,24 @@
  * claim about the desktop, where the alternative was a title above a SECOND BAR of four buttons.
  * A title that wraps to its own line above its own controls is not that. */
 .topbar {
+  flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
   border-bottom: 1px solid var(--line);
-  min-height: 52px;
-}
-
-.drawerBtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 44px;
-  min-height: 44px;
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--text-2);
-  cursor: pointer;
-}
-.drawerBtn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-@media (min-width: 1100px) {
-  .drawerBtn {
-    display: none;
-  }
+  min-height: 56px;
 }
 
 .missionTitle {
-  overflow-wrap: anywhere;
-  font-size: 0.95rem;
-  font-weight: 600;
-  overflow-wrap: anywhere;
   min-width: 0;
-}
-
-/* --- mobile stops: THREAD · OBJECTIVES · TIMELINE ------------------------------- */
-
-.stops {
-  display: flex;
-  border-bottom: 1px solid var(--line);
-}
-.stop {
-  flex: 1 1 0;
-  min-height: 44px;
-  padding: 10px 6px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: var(--text-2);
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-  letter-spacing: 0.12em;
-  cursor: pointer;
-}
-.stop:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-.stopOn {
+  overflow-wrap: anywhere;
+  /* 22px lines: a title clamped at two lines is exactly the 44px of the controls it shares the head
+  row with (#967's one-row contract). */
+  font: 600 var(--fs-h2) / 22px var(--font-display);
+  letter-spacing: 0.01em;
   color: var(--text-1);
-  background: var(--row-hover);
-  border-bottom-color: var(--accent);
 }
 
 /* The viewport below the mission header owns the conversation and details (#944).
@@ -240,13 +182,13 @@
 .objStale {
   overflow-wrap: anywhere;
   display: block;
-  font-size: 0.68rem;
+  font-size: var(--fs-label);
   color: var(--git-mod-fg);
 }
 .objReason {
   overflow-wrap: anywhere;
   display: block;
-  font-size: 0.68rem;
+  font-size: var(--fs-label);
   color: var(--text-3);
 }
 
@@ -254,68 +196,75 @@
 
 .cwd {
   font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--text-2);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
   overflow-wrap: anywhere;
 }
 .gitLine {
   overflow-wrap: anywhere;
-  font-size: 0.74rem;
+  margin-top: var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
   color: var(--text-2);
-  margin-top: 4px;
 }
 .roster {
-  font-size: 0.72rem;
+  margin-top: var(--sp-2);
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
   color: var(--text-3);
-  margin-top: 4px;
   overflow-wrap: anywhere;
 }
 .jumpIn {
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  margin-top: 8px;
-  padding: 4px 12px;
-  border: 1px solid var(--accent);
-  background: transparent;
-  color: var(--accent-text);
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-  letter-spacing: 0.1em;
+  composes: ghost from "../ui/actionButton.module.css";
+  margin-top: var(--sp-3);
   text-decoration: none;
-  cursor: pointer;
-}
-.jumpIn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 /* --- timeline ------------------------------------------------------------------ */
 
 .tlRow {
   display: flex;
-  gap: 10px;
-  padding: 5px 0;
-  font-size: 0.75rem;
-  border-bottom: 1px solid var(--border-subtle);
+  align-items: baseline;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  font-size: var(--fs-meta);
+  border-bottom: 1px solid var(--line);
+}
+.tlRow::before {
+  content: "";
+  flex: none;
+  order: 1;
+  align-self: flex-start;
+  width: 6px;
+  height: 6px;
+  margin-top: 5px;
+  background: var(--hud);
 }
 .tlAt {
   flex: 0 0 auto;
   font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
   color: var(--text-3);
 }
 .tlKind {
   flex: 0 0 auto;
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-  letter-spacing: 0.06em;
+  order: 2;
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--text-3);
 }
 .tlText {
+  order: 3;
   min-width: 0;
-  color: var(--text-2);
+  color: var(--text-1);
   overflow-wrap: anywhere;
+}
+.tlRow > :not(.tlAt, .tlKind, .tlText) {
+  order: 4;
 }
 
 .more {
@@ -336,14 +285,14 @@
 .eventHead {
   overflow-wrap: anywhere;
   font-family: var(--font-mono);
-  font-size: 0.64rem;
+  font-size: var(--fs-micro);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-3);
   margin-bottom: 4px;
 }
 .eventText {
-  font-size: 0.82rem;
+  font-size: var(--fs-row);
   color: var(--text-1);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -356,15 +305,74 @@
 .turnProvisional .eventText {
   color: var(--text-2);
 }
+/* THE CONSOLE'S THREAD IS ROWS (#1573): a label line (who, and when, on the right) over the text, on
+ * a hairline, edge to edge. HQ draws the same `.event` as its own answer card, so this is scoped. */
+.console .pane {
+  padding: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+.console .event {
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: none;
+}
+.console .eventHead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-1);
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.16em;
+  color: var(--text-3);
+}
+.console .eventHead > time {
+  margin-left: auto;
+}
+.console .eventText {
+  font-size: var(--fs-body);
+  line-height: 1.5;
+}
+/* The commander's own turns carry the HUD edge, so the conversation reads at a glance. */
+.console .eventOperator {
+  box-shadow: inset 2px 0 0 var(--hud);
+}
+.console .eventOperator .eventHead {
+  color: var(--hud-text);
+}
+/* Everything above the conversation (the plan card, a question, the no-AI notice) and the thread's
+ * own non-row content keep the pane's inset; the rows do not. */
+.console .paneTop:not(:empty) {
+  padding: var(--sp-3) var(--sp-4) 0;
+}
+.console .paneInner > .empty {
+  padding: var(--sp-4);
+}
 
 /* --- composer ------------------------------------------------------------------ */
 
 .composer {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
   align-items: flex-end;
-  padding: 10px 14px;
-  border-top: 1px solid var(--line);
+}
+/* The mission composer's field is a NIGHTJAR field (square, the sunken ground, the inset ring).
+ * Scoped: the same class is HQ's and the new-mission form's box input. */
+.composer .composerInput {
+  border-color: var(--border);
+  background: var(--bg-2);
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.composer .composerInput:hover {
+  border-color: var(--hud-dim);
+}
+.composer .composerInput:focus,
+.composer .composerInput:focus-visible {
+  border-color: var(--hud);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .composerInput {
   flex: 1 1 auto;
@@ -375,7 +383,7 @@
   background: var(--surface-3);
   color: var(--text-1);
   font: inherit;
-  font-size: 0.82rem;
+  font-size: var(--fs-body);
   resize: vertical;
 }
 .composerInput:focus-visible {
@@ -392,99 +400,49 @@
 
 .empty {
   overflow-wrap: anywhere;
-  padding: 18px 4px;
+  padding: var(--sp-4) var(--sp-1);
   color: var(--text-2);
-  font-size: 0.84rem;
+  font-size: var(--fs-body);
   line-height: 1.5;
 }
 .emptyLead {
   overflow-wrap: anywhere;
-  color: var(--text-1);
-  font-size: 0.95rem;
-  margin-bottom: 6px;
+  margin-bottom: var(--sp-1);
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.emptyLead::before {
+  content: "// " / "";
 }
 
 /* A degraded surface names its cause. `--status-degraded` (amber) means "needs a human /
  * not current"; `--status-down` (red) stays reserved for errors and failure. */
 .notice {
   overflow-wrap: anywhere;
-  border: 1px solid var(--line-strong);
-  border-left: 3px solid var(--status-degraded);
-  background: var(--glass);
-  padding: 8px 10px;
-  margin-bottom: 10px;
-  font-size: 0.78rem;
+  border-left: 2px solid var(--status-degraded);
+  background: color-mix(in srgb, var(--status-degraded) 6%, var(--bg-1));
+  padding: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-3);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
   color: var(--text-2);
 }
 .noticeLead {
   overflow-wrap: anywhere;
-  color: var(--text-1);
-  margin-bottom: 3px;
+  margin-bottom: 2px;
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--warn-text);
 }
 
-/* The verb tag on an untracked row's last-action line. Mono, so it reads as a token rather than
- * as prose — the same treatment the card gave it. */
-.verb {
-  font-family: var(--font-mono);
-  font-size: 0.64rem;
-  letter-spacing: 0.08em;
-  color: var(--text-3);
-}
-
-/* Untracked rows are a real list — `<ul>`/`<li>` rather than a pile of divs, so the count and the
- * position are available to a screen reader as they were on the grid. */
-.railList {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-/* The session block in the UNTRACKED view. `position: relative` hosts the HUD corner brackets,
- * which are the repo's card treatment (docs/design.md) — the grid's cards carried them and this
- * is what replaced those cards. */
-.sessionBlock {
-  position: relative;
-  min-width: 0;
-}
 .openSession {
   composes: ghost tight from "../ui/actionButton.module.css";
   flex: none;
   /* Pushed to the row's right edge — and still right-aligned on the line it wraps to. */
   margin-left: auto;
-}
-
-.sessionList {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-/* ADOPT, on the session block in the UNTRACKED view. */
-.adoptInline {
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  min-width: 76px;
-  justify-content: center;
-  margin-top: 6px;
-  padding: 2px 10px;
-  border: 1px solid var(--accent);
-  background: transparent;
-  color: var(--accent-text);
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-  letter-spacing: 0.1em;
-  cursor: pointer;
-}
-.adoptInline:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.adoptInline[disabled] {
-  opacity: 0.55;
-  cursor: default;
-  border-color: var(--line-strong);
-  color: var(--text-3);
 }
 
 /* A matched session inside an Ask answer. Indented so it reads as evidence for the answer rather
@@ -531,17 +489,17 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.35rem 0.6rem;
-  margin-top: 0.3rem;
+  gap: var(--sp-1) var(--sp-2);
+  margin-top: var(--sp-1);
   min-width: 0;
 }
 
 .supBadge {
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  letter-spacing: 0.08em;
-  padding: 0.15rem 0.35rem;
+  padding: 2px 6px;
   border: 1px solid currentColor;
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   text-align: center;
   align-self: center;
 }
@@ -556,8 +514,8 @@
 .supSpent {
   color: var(--warn-text);
 }
-/* NEEDS YOU — the rail's own `needs you` hue, in its TEXT-SAFE form. `.dotNeedsYou` paints
-   `--status-degraded` as a background on a 6px dot, which has no contrast requirement; the same
+/* NEEDS YOU — the rail's own `needs you` hue, in its TEXT-SAFE form. The rail's LED paints
+   `--status-degraded` as a background on a 7px dot, which has no contrast requirement; the same
    raw hue as small text fails AA on the light ground, and `contrast.test.ts` refuses it. So this
    is `--warn-text`, which IS that hue mixed toward `--text-1` — one vocabulary across the two
    surfaces reporting one fact, without borrowing a signal colour for prose. The label carries the
@@ -583,18 +541,16 @@
 }
 
 .supGate {
-  font-family: var(--font-mono);
-  font-size: 0.6rem;
-  letter-spacing: 0.08em;
-  /* Text-safe amber, same reason as `.objStale` above — and this one is 0.6rem, the smallest
-     type on the surface, where the raw hue is least readable. */
+  margin-left: var(--sp-2);
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--git-mod-fg);
-  margin-left: 0.5rem;
 }
 
 .supBudget {
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: var(--fs-meta);
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -612,7 +568,8 @@
  * grid. `overflow-wrap` is what keeps a long path from widening the whole page (#494). */
 .supWhy {
   flex: 1 0 100%;
-  font-size: 0.78rem;
+  font-size: var(--fs-meta);
+  line-height: 1.45;
   color: var(--text-3);
   min-width: 0;
   overflow-wrap: anywhere;
@@ -621,21 +578,22 @@
 .supProposal,
 .supGates,
 .supEmpty {
-  padding: 0.6rem 0.75rem;
-  font-size: 0.82rem;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
   color: var(--text-2);
-  border-left: 3px solid var(--status-unknown);
-  background: var(--glass);
+  border-left: 2px solid var(--status-unknown);
+  background: var(--bg-2);
 }
 
 .supProposal {
   border-left-color: var(--status-up);
+  background: color-mix(in srgb, var(--status-up) 6%, var(--bg-2));
 }
 .supGates {
   border-left-color: var(--status-degraded);
   font-family: var(--font-mono);
-  font-size: 0.75rem;
-  color: var(--text-3);
+  color: var(--text-2);
 }
 
 /* ---------------------------------------------------------------------------------------------
@@ -650,53 +608,33 @@
    so nothing here uses a status token. No radius, no gradients.
    --------------------------------------------------------------------------------------------- */
 
-/* The mode control (#889): a segmented pair that rides first in the composer box's footer (#967).
-   The pressed mode carries the edge; the other is text on the box's ground. */
-.composerModes {
-  display: flex;
-  flex: none;
-  gap: 0;
-}
-.modeBtn {
-  min-height: 44px;
-  padding: 8px 10px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--text-2);
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-  letter-spacing: 0.12em;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.modeBtn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-.modeOn {
-  color: var(--text-1);
-  border-color: var(--accent);
-  background: var(--row-hover);
-}
-
 /* The project picker, in the footer: a ghost-looking select with the project's name in mono. It is
    the one control a mission cannot start without, so it holds the 44px floor like every other. */
+/* The pickers are NIGHTJAR fields (#1573): square, `--bg-2` on a 1px `--border`, the edge moving to
+ * the chrome on hover and focus, and the inset focus ring — the `nj-field` look at the footer's
+ * 44px row height. */
 .newMissionProject {
   flex: 0 1 180px;
   min-width: 96px;
   min-height: 44px;
-  padding: 0 10px;
+  padding: 0 var(--sp-3);
   border: 1px solid var(--border);
-  background: var(--bg-1);
+  border-radius: 0;
+  background: var(--bg-2);
   color: var(--text-1);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   /* A squeezed state clips — read as clipped, not chopped mid-glyph (#1133). */
   text-overflow: ellipsis;
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.newMissionProject:hover {
+  border-color: var(--hud-dim);
 }
 .newMissionProject:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
+  border-color: var(--hud);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 /* The checklist picker (#1061) takes the project picker's look but sizes to its longest option: a
    playbook label is the operator's own text, and "Checklist: Ship a P…" clipped at 180px. */
@@ -716,7 +654,7 @@
 /* The line under the box saying what the chosen checklist means (#1061). */
 .playbookNote {
   overflow-wrap: anywhere;
-  font-size: 0.8rem;
+  font-size: var(--fs-meta);
   line-height: 1.45;
   color: var(--text-2);
 }
@@ -727,6 +665,39 @@
 /* "No checklist" states its cost — attention, not failure — in the TEXT-SAFE amber. */
 .playbookNoteWarn {
   color: var(--warn-text);
+}
+/* What the form needs (no project to start in), and the brief's length near the server's cap: mono
+ * meta lines under the box. Over the cap the count turns the text-safe amber — it blocks Start. */
+.newMissionNote,
+.newMissionCount {
+  overflow-wrap: anywhere;
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.newMissionCount {
+  font-variant-numeric: tabular-nums;
+}
+.newMissionCountOver {
+  color: var(--warn-text);
+}
+/* A refused start: the NIGHTJAR error, with the server's own words. */
+.newMissionError {
+  composes: nj-error from global;
+  overflow-wrap: anywhere;
+  display: block;
+}
+/* The shortcut, as key caps: square, hairline, mono — chrome, never a control. */
+.newMissionKey {
+  display: inline-block;
+  padding: 0 var(--sp-1);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  font: inherit;
+  line-height: 1.6;
+  color: var(--text-1);
 }
 
 /* --- ONE COMPOSER BOX (#967) ----------------------------------------------------------------------
@@ -775,7 +746,7 @@
   flex: none;
   padding: 0 4px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-label);
   letter-spacing: 0.06em;
   color: var(--text-2);
   white-space: nowrap;
@@ -839,42 +810,6 @@
   }
 }
 
-/* A secondary control in mono: the ⋯ menu's items and the unarchive choice. The header's own buttons
-   are the shared action buttons (ui/actionButton.module.css, #967). */
-.missionBtn {
-  flex: 0 0 auto;
-  min-height: 44px;
-  min-width: 76px;
-  padding: 8px 12px;
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--text-1);
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  letter-spacing: 0.1em;
-  cursor: pointer;
-}
-.missionBtn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.missionBtn[disabled] {
-  opacity: 0.5;
-  cursor: default;
-}
-/* The destructive controls. `--danger-text`, NOT a raw status hue.
-   `--status-degraded` (#f59e0b) is a signal colour sized for LEDs and borders; as small text on
-   the light ground it measures ~1.93:1 on `--panel`, well under AA's 4.5:1 — and `tokens.css`
-   documents exactly that ("the raw status hues are unreadable as small text"). `--danger-text` is
-   the repo's existing text-safe destructive token, theme-aware and measured at 5.5:1 on `--panel`.
-   It also reads better: a control that terminates agents is DANGER, not "degraded".
-   The BORDER may stay a signal colour — a 1px edge is not text — but it uses the same token so the
-   control reads as one thing. */
-.missionBtnDanger {
-  border-color: var(--danger-text);
-  color: var(--danger-text);
-}
-
 /* The mission header's actions (#942, #967): ONE row of a state chip, at most one primary and ⋯,
  * drawn by one component. It renders inside the console's header row, so it carries no padding and
  * no rule of its own.
@@ -896,23 +831,29 @@
 .stateChip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 24px;
-  padding: 0 8px;
+  gap: 7px;
+  min-height: 26px;
+  padding: 0 var(--sp-2);
   border: 1px solid var(--line-strong);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
+  font: 600 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--text-2);
   white-space: nowrap;
+}
+.stateChip:has(.dotRunning) {
+  border-color: color-mix(in srgb, var(--status-up) 55%, transparent);
+  color: var(--ok-text);
+}
+/* A state the chip has just changed to flashes once (the arrival tint, `--t-arrive`; 0 in Off). */
+.stateChipChanged {
+  composes: nj-arrive from global;
 }
 /* A failed mission's label is the text-safe `--danger-text`, its edge the status hue — never the
  * accent (§3). */
 .stateChipFailed {
   color: var(--danger-text);
-  border-color: var(--status-down);
+  border-color: color-mix(in srgb, var(--status-down) 60%, transparent);
 }
 .chipDot {
   width: 6px;
@@ -920,32 +861,11 @@
   margin: 0;
   border-radius: 50%;
 }
-/* The unarchive choice. A sentence and two buttons do not belong in a header row, so they open under
- * it, against the right edge, and never wider than the viewport. */
-.headerConfirm {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: calc(var(--z-map) + 10);
-  width: min(340px, calc(100vw - 16px));
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid var(--line-strong);
-  background: var(--bg-2);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
-}
-.headerConfirmActions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
+
 .missionConfirm {
   flex: 1 1 100%;
   color: var(--text-2);
-  font-size: 0.76rem;
+  font-size: var(--fs-meta);
   line-height: 1.5;
 }
 
@@ -954,6 +874,9 @@
  * spawn controls that still use it. */
 .objEditBtn {
   composes: ghost from "../ui/actionButton.module.css";
+}
+.releaseBtn {
+  composes: danger from "../ui/actionButton.module.css";
 }
 
 .objAddRow {
@@ -967,39 +890,32 @@
   flex: 1 1 160px;
   min-width: 0;
   min-height: 44px;
-  padding: 10px;
-  border: 1px solid var(--line-strong);
-  background: var(--surface-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  background: var(--bg-2);
   color: var(--text-1);
   font: inherit;
-  font-size: 0.82rem;
+  font-size: var(--fs-row);
+  transition: border-color var(--t-fast) var(--ease-out);
 }
 .objAddInput:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
+  border-color: var(--hud);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.objAddInput:hover {
+  border-color: var(--hud-dim);
 }
 
-/* The session roster, now a list because each row carries a control (#889). */
-.rosterList {
-  list-style: none;
-  margin: 6px 0 0;
-  padding: 0;
-}
 .rosterRow {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
   align-items: center;
   flex-wrap: wrap;
-  padding: 4px 0;
+  padding: var(--sp-2) 0;
+  border-top: 1px solid var(--line);
 }
-.rosterKey {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--text-2);
-}
+
 /* A control inside a turn's own block — retry, dismiss, check again (#890). Sized to the 44px
    touch floor the rest of the console holds to, and inline rather than a bar, because it belongs
    to the one turn it is about rather than to the thread. */
@@ -1008,24 +924,24 @@
    Scrolls in BOTH axes rather than wrapping — a wrapped 120-column screen is unreadable in a way
    a scrolled one is not. */
 .screenBlock {
-  margin: 10px 0;
-  /* A visible seam between blocks, because on a mission holding two sessions the boundary is
-     what tells the operator that the SEND box below belongs to the heading above it and not to
-     the one before (#903 review 2, finding 2). */
-  border-left: 2px solid var(--border);
-  padding-left: 10px;
+  flex: 1 1 100%;
+  min-width: 0;
+  margin: var(--sp-1) 0;
+  border-left: 2px solid var(--hud-dim);
+  padding-left: var(--sp-3);
 }
 
 /* WHICH SESSION. Not decoration: these blocks are otherwise identical, and typing into the wrong
    one types into the wrong live agent. */
 .screenTarget {
-  font-size: 0.72rem;
-  color: var(--text-2);
-  overflow-wrap: anywhere;
-  margin-bottom: 6px;
   display: flex;
   align-items: center;
   gap: 6px;
+  margin-bottom: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
 }
 
 .screenBar {
@@ -1036,22 +952,24 @@
 }
 
 .screenNote {
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   color: var(--text-3);
   line-height: 1.4;
 }
 
 .screen {
-  margin: 8px 0 0;
-  padding: 10px;
+  margin: var(--sp-2) 0 0;
+  padding: var(--sp-2) var(--sp-3);
   max-height: 340px;
   overflow: auto;
   background: var(--term-bg);
   color: var(--text-1);
-  border: 1px solid var(--border);
-  font: 11.5px/1.35 var(--font-mono);
+  border: 1px solid var(--line);
+  font: 400 var(--fs-label) / 1.45 var(--font-mono);
   white-space: pre;
   tab-size: 8;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
 }
 
 /* A control inside a mission block — view, hide, retry (#894) — and inside a TURN's own block —
@@ -1074,15 +992,16 @@
   flex: 1;
   min-width: 0;
   min-height: 44px;
-  /* A textarea since #983 P3, so a prefilled AI draft keeps its line breaks. Sized to read as the
-     one-line field it was until it holds more. */
-  padding: 11px;
+  padding: var(--sp-2) var(--sp-3);
   line-height: 1.4;
   resize: vertical;
   background: var(--bg-2);
   color: var(--text-1);
   border: 1px solid var(--border);
   font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--fs-row);
+  transition: border-color var(--t-fast) var(--ease-out);
 }
 
 /* Editing an AI-drafted direction (#983 P3), STACKED: the note, a full-width field that grows with
@@ -1096,7 +1015,7 @@
 }
 .relayDraft {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1.45;
   color: var(--text-2);
 }
@@ -1121,8 +1040,12 @@
 }
 
 .relayInput:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  border-color: var(--hud);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.relayInput:hover {
+  border-color: var(--hud-dim);
 }
 
 /* What happened to a relayed message, beside the message (#894). Status colour is load-bearing
@@ -1135,15 +1058,20 @@
  * too. The gate is a test, so this is not a matter of remembering. */
 .tlRelay {
   overflow-wrap: anywhere;
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
+  padding: 1px 5px;
+  border: 1px solid var(--line-strong);
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
   color: var(--text-2);
 }
 .tlRelay[data-relay-kind="warn"] {
   color: var(--warn-text);
+  border-color: color-mix(in srgb, var(--status-degraded) 50%, transparent);
 }
 .tlRelay[data-relay-kind="bad"] {
   color: var(--danger-text);
+  border-color: color-mix(in srgb, var(--status-down) 55%, transparent);
 }
 
 /* --- the dispatch proposal (#893 Phase 4) --------------------------------------- */
@@ -1152,76 +1080,90 @@
  * they take it. Bordered on the accent so it reads as the thing asking for a choice, in a thread
  * whose other rows are history. */
 .planCard {
+  composes: nj-frame-sm from global;
+  --nj-face: color-mix(in srgb, var(--hud) 4%, var(--bg-1));
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  border: 1px solid var(--line-strong);
-  border-left: 3px solid var(--accent);
-  background: var(--glass);
-  padding: 10px;
-  margin-bottom: 10px;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-3);
 }
-.planLead {
-  overflow-wrap: anywhere;
-  color: var(--text-1);
-  font-size: 0.9rem;
+/* Could not plan: an active failure, so the alert edge (red is reserved for that, §7). */
+.planCard[data-plan-state="unplanned"] {
+  --nj-edge: color-mix(in srgb, var(--status-down) 55%, transparent);
+  --nj-face: color-mix(in srgb, var(--status-down) 5%, var(--bg-1));
+  border-top-color: var(--status-down);
 }
+/* Planning: the Acquiring scan bar under the lead line. */
+.planAcquire {
+  margin-top: var(--sp-1);
+}
+
 .planLabel {
-  color: var(--text-2);
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-  letter-spacing: 0.1em;
+  margin-top: var(--sp-1);
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  margin-top: 4px;
+  color: var(--text-3);
 }
 /* 44px, like every other control the operator taps — the picker is not a lesser control for
  * being a `<select>`, and it is the one a dispatch cannot happen without. */
 .planField {
   min-height: 44px;
   width: 100%;
-  border: 1px solid var(--line-strong);
-  background: var(--surface-3);
+  border: 1px solid var(--border);
+  background: var(--bg-2);
   color: var(--text-1);
   font: inherit;
-  font-size: 0.82rem;
-  padding: 8px;
+  font-size: var(--fs-row);
+  padding: var(--sp-2) var(--sp-3);
+  transition: border-color var(--t-fast) var(--ease-out);
 }
 .planField:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
+  border-color: var(--hud);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.planField:hover {
+  border-color: var(--hud-dim);
 }
 .planBrief {
   min-height: 44px;
   width: 100%;
-  resize: vertical;
-  border: 1px solid var(--line-strong);
-  background: var(--surface-3);
+  border: 1px solid var(--border);
+  background: var(--bg-2);
   color: var(--text-1);
   font: inherit;
-  font-size: 0.82rem;
-  padding: 8px;
+  font-size: var(--fs-row);
+  padding: var(--sp-2) var(--sp-3);
+  transition: border-color var(--t-fast) var(--ease-out);
+  resize: vertical;
 }
 .planBrief:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
+  border-color: var(--hud);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.planBrief:hover {
+  border-color: var(--hud-dim);
 }
 .planWhy {
   overflow-wrap: anywhere;
   color: var(--text-2);
-  font-size: 0.76rem;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
 }
 /* The consequence, in the operator's own terms, on the tap BEFORE the one that does it. */
 .planConfirm {
   overflow-wrap: anywhere;
-  border-left: 3px solid var(--status-degraded);
-  padding-left: 8px;
+  border-left: 2px solid var(--hud);
+  background: color-mix(in srgb, var(--hud) 6%, transparent);
+  padding: var(--sp-2) var(--sp-3);
   color: var(--text-1);
-  font-size: 0.78rem;
-  /* The warning above its Cancel (#967). It is armed from the fixed header while this card scrolls
-   * with the thread, so it is scrolled into view when it appears; the margin keeps it off the edge. */
+  font-size: var(--fs-meta);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--sp-2);
   scroll-margin: 12px;
 }
 /* It takes focus when armed. A pointer press shows no ring; a keyboard arrival shows the accent reticle. */
@@ -1229,7 +1171,7 @@
   outline: none;
 }
 .planConfirm:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: 2px;
 }
 .planConfirmText {
@@ -1237,49 +1179,11 @@
 }
 .planError {
   overflow-wrap: anywhere;
-  border-left: 3px solid var(--status-down);
-  padding-left: 8px;
-  color: var(--text-1);
-  font-size: 0.78rem;
-}
-
-/* The empty-checklist recovery, on the card itself (#904 review 7, finding 3). One row, because
-   it is one field and one button — and 44px on both, because a control that only appears when
-   the operator is already blocked is the last one to be reachable by accident. */
-.planAddObjective {
-  display: flex;
-  gap: 8px;
-  align-items: stretch;
-  margin: 6px 0 2px;
-}
-.planAddObjective .planField {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-.planAddObjective .planBtn {
-  flex: 0 0 auto;
-  min-height: 44px;
-  padding: 0 14px;
-}
-
-/* What done means, on the plan card (#893 Phase 4). A list rather than prose: the operator is
-   checking a set, and a sentence would make them parse one. */
-.planObjectives {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-size: 0.78rem;
-  color: var(--text-1);
-}
-.planObjGate {
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-2);
+  border-left: 2px solid var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 8%, transparent);
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--danger-text);
+  font-size: var(--fs-meta);
 }
 
 /* The mission's open question (#892). Framed in the attention accent because it is the one thing
@@ -1287,23 +1191,25 @@
    something on screen rather than at something to scroll for. A section, not a modal: the page's
    only focus trap is the rail drawer (#878) and this does not add a second. */
 .question {
-  border: 1px solid var(--accent);
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
-  padding: 12px;
+  composes: nj-frame-sm nj-deploy nj-fade-ok from global;
+  --nj-edge: var(--hud-dim);
+  --nj-face: color-mix(in srgb, var(--hud) 6%, var(--bg-1));
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-3);
 }
 
 .questionHead {
-  font-size: 10.5px;
-  letter-spacing: 0.11em;
+  margin-bottom: var(--sp-2);
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--accent-text);
-  margin-bottom: 7px;
+  color: var(--hud-text);
 }
 
 .questionText {
-  font-size: 13.5px;
-  line-height: 1.45;
-  margin: 0 0 11px;
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-body);
+  line-height: 1.5;
   color: var(--text-1);
 }
 
@@ -1311,9 +1217,9 @@
    choose safely, and on a phone three concrete options do not fit on one line. */
 .questionOptions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 10px;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
 }
 
 /* One option: the model's label on the button, the SERVER's consequence under it. Stacked rather
@@ -1322,13 +1228,14 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  max-width: 100%;
+  min-width: 0;
 }
 
 .questionConsequence {
-  font-size: 10.5px;
+  padding-left: var(--sp-3);
+  font-size: var(--fs-label);
+  line-height: 1.45;
   color: var(--text-3);
-  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
@@ -1339,50 +1246,52 @@
 
 .questionInput {
   flex: 1;
+  min-width: 0;
   min-height: 44px;
-  padding: 0 11px;
+  padding: 0 var(--sp-3);
   background: var(--bg-2);
   color: var(--text-1);
   border: 1px solid var(--border);
   font: inherit;
-  min-width: 0;
+  transition: border-color var(--t-fast) var(--ease-out);
 }
 
 .questionInput:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  border-color: var(--hud);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 
 .questionNote {
-  color: var(--text-3);
-  font-size: 10.5px;
-  margin: 9px 0 0;
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-label);
   line-height: 1.45;
+  color: var(--text-3);
 }
 
 /* The option buttons. >=44px because they are the primary control of a card whose whole job is to
    be tapped, and because #878's inventory already holds every other control on this page to it. */
 .questionBtn {
-  min-height: 44px;
-  padding: 0 13px;
-  background: var(--bg-2);
-  color: var(--text-1);
-  border: 1px solid var(--border);
-  font: inherit;
-  cursor: pointer;
-  display: inline-flex;
+  composes: nj-plate from global;
+  display: flex;
   align-items: center;
+  width: 100%;
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid transparent;
+  color: var(--text-1);
+  font: inherit;
   text-align: left;
-  max-width: 100%;
+  cursor: pointer;
 }
 
 .questionBtn:hover:not(:disabled) {
-  border-color: var(--accent);
+  --nj-edge: var(--hud);
 }
 
 .questionBtn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 
 .questionBtn:disabled {
@@ -1391,24 +1300,9 @@
 }
 
 .questionBtnPrimary {
-  background: var(--accent);
-  color: var(--on-accent);
-  border-color: var(--accent);
+  composes: primary from "../ui/actionButton.module.css";
   flex: none;
-}
-
-/* ONE COMPOSER, TWO POSITIONS (#930 review 1, finding 1).
- * The untracked pane shows the composer above the session list on a fresh install and below it
- * otherwise. Expressing that as two conditional mounts made it a REMOUNT rather than a move, and
- * a remount discards the operator's draft — which lands exactly when the mission list resolves
- * empty, i.e. while they are most likely to be typing. The mount is therefore fixed in the DOM
- * and only its ORDER changes, which needs the pane to be a flex column. */
-.untrackedPane {
-  display: flex;
-  flex-direction: column;
-}
-.composerBelow {
-  order: 1;
+  width: auto;
 }
 
 /* --- the thread column: a chat that fills, with its input on the bottom edge (#942) ---------
@@ -1432,7 +1326,11 @@
   flex: none;
   border-top: 1px solid var(--line);
   background: var(--bg-1);
-  padding: 8px 14px;
+  padding: var(--sp-2) 14px;
+}
+/* The console's dock lines up with its rows' inset (HQ keeps its own). */
+.console .composerDock {
+  padding: var(--sp-2) var(--sp-4);
 }
 
 /* --- the secondary-lifecycle overflow (#942) ------------------------------------------------ */
@@ -1506,10 +1404,6 @@
 .overflowMenu .overflowItems .menuDanger:focus .menuIcon {
   color: var(--danger-text);
 }
-.headerConfirm .missionConfirm {
-  flex: none;
-  margin: 0;
-}
 
 /* The header's action slot (#942), where `MissionHeaderActions` renders on the title's row (#967).
  * `margin-left: auto` makes it a right-hand cluster without a second grid, and on a wrap it starts the
@@ -1543,9 +1437,6 @@
   padding: 0;
 }
 
-.rail .dot {
-  border-radius: 50%;
-}
 .split {
   flex-direction: row;
   overflow: hidden;
@@ -1565,8 +1456,10 @@
   min-height: 0;
   min-width: 0;
   width: 100%;
-  padding: 0 18px;
+  padding: 0 var(--sp-4);
   scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
   overscroll-behavior: contain;
 }
 .disclosure {
@@ -1577,61 +1470,65 @@
   border: 0;
   background: transparent;
   color: var(--text-1);
-  min-height: 60px;
-  padding: 12px 0;
+  min-height: 56px;
+  padding: var(--sp-3) 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   text-align: left;
   cursor: pointer;
-  font: 600 11px var(--font-mono);
+  font: 600 var(--fs-label) / 1 var(--font-display);
+  letter-spacing: 0.18em;
   text-transform: uppercase;
 }
 .disclosureToggle > svg {
   flex: none;
+  color: var(--hud-text);
+  transition: transform var(--t-base) var(--ease-out);
 }
 .disclosureToggle[aria-expanded="true"] > svg {
   transform: rotate(90deg);
 }
 .disclosureToggle small {
   margin-left: auto;
-  color: var(--text-2);
-  font-size: 10px;
-  font-weight: 400;
-  text-transform: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
+  color: var(--text-3);
 }
 .disclosureToggle:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .disclosureContent {
-  padding-bottom: 20px;
+  display: grid;
+  grid-template-rows: 1fr;
   overflow-wrap: anywhere;
+  transition:
+  grid-template-rows var(--t-base) var(--ease-out),
+  visibility 0s linear 0s;
 }
 .disclosureContent[hidden] {
-  display: none;
+  display: grid;
+  grid-template-rows: 0fr;
+  visibility: hidden;
+  transition:
+  grid-template-rows var(--t-base) var(--ease-out),
+  visibility 0s linear var(--t-base);
 }
-.hideThread {
-  display: none;
+.disclosureInner {
+  min-height: 0;
+  overflow: hidden;
 }
+.disclosureInner > :last-child {
+  margin-bottom: var(--sp-4);
+}
+
 .hideDetails {
   display: none;
-}
-/* ONE HEADER ROW, VERTICALLY CENTRED (#967): the title on the left, the actions on the right, on one
- * line wherever they fit. The title's flex basis is 0, so it never pushes the actions onto a second
- * line by itself: the row wraps only when even the title's minimum width and the actions cannot share
- * a line (a 320px phone mid-confirmation), and then the actions start the next line, right-aligned. */
-.topbar {
-  flex: none;
-  gap: 12px;
-  align-items: center;
-  flex-wrap: wrap;
-  padding: 8px 14px;
-}
-.missionTitle {
-  padding-top: 8px;
-  font-size: 1.2rem;
-  line-height: 1.4;
 }
 .titleButton {
   display: flex;
@@ -1669,12 +1566,18 @@
   justify-content: flex-end;
   min-width: 0;
 }
+@media (max-width: 800px) {
+  .topbarActions {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+  }
+}
 /* The start reason and the armed launch, in the plan card beside the plan they describe (#967). They
  * used to sit in a 460px box under the header's buttons, which is what wrapped the header. */
 .planStatus {
   overflow-wrap: anywhere;
   color: var(--text-2);
-  font-size: 13px;
+  font-size: var(--fs-row);
   line-height: 1.5;
 }
 .planStatusActions {
@@ -1686,13 +1589,21 @@
   display: inline-block;
   background: transparent;
   border: 0;
-  color: var(--text-1);
+  color: var(--text-2);
   text-decoration: underline;
   text-underline-offset: 3px;
   min-height: 44px;
-  padding: 8px;
+  padding: var(--sp-2);
   cursor: pointer;
   font: inherit;
+}
+.linkButton:hover,
+.linkButton:focus-visible {
+  color: var(--text-1);
+}
+.linkButton:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .planFields {
   display: grid;
@@ -1702,15 +1613,11 @@
 .planFields select {
   margin-top: 6px;
 }
-.planCard {
-  margin-bottom: 20px;
-  padding: 16px;
-}
 .filterNotice {
   flex: none;
-  padding: 0 14px;
+  padding: 0 var(--sp-4);
   color: var(--text-2);
-  font-size: 12px;
+  font-size: var(--fs-meta);
 }
 .filterNotice button {
   min-height: 44px;
@@ -1720,9 +1627,7 @@
   text-decoration: underline;
 }
 @media (min-width: 1400px) {
-  .hasDetails {
-    display: none;
-  }
+
   .detailsWrap {
     flex: 0 0 330px;
     border-left: 1px solid var(--line);
@@ -1730,19 +1635,17 @@
   .hideDetails {
     display: flex;
   }
-  .hideThread {
-    display: flex;
-  }
+
 }
 @media (max-width: 800px) {
   .topbar {
-    padding: 10px 8px;
+    padding: var(--sp-2) var(--sp-3);
   }
   .planFields {
     grid-template-columns: 1fr;
   }
   .planCard {
-    padding: 12px;
+    padding: var(--sp-3);
   }
   .pane {
     padding: 12px 8px;
@@ -1750,7 +1653,7 @@
 }
 
 .disclosureContent .empty {
-  padding: 16px 0;
+  padding: var(--sp-3) 0;
 }
 
 @media (max-height: 680px) {
@@ -1761,14 +1664,6 @@
     flex: none;
     overflow: visible;
   }
-}
-
-.railWithSessions {
-  overflow-y: auto;
-}
-.railWithSessions .railScroll {
-  flex: none;
-  overflow: visible;
 }
 
 /* #948 P2 — a mission row is a <button> wearing the SESSION list's `.row` / `.active` classes, and
@@ -1805,15 +1700,66 @@
 .railText {
   display: block;
 }
-/* The session row's LED is 6px; the mission state dot matches it in the rail. */
-.railDot {
-  width: 6px;
-  height: 6px;
+/* THE ROW'S LED is the session rows' own `hud-led` (#1573) — the same 7px dot, the same tones —
+ * held STEADY in the list: a column of breathing dots is noise, and idle main-thread time (§8). A
+ * state CHANGE still flashes once (`Led`'s `is-changed`), and an arriving row flashes its LED with
+ * the row (SessionList's `.rowArrived`, which outranks this). */
+.railLed:not(:global(.is-changed)) {
+  animation: none;
+}
+/* STARTING is not running (#967): a neutral LED, never the green that claims work is underway. */
+.railLed:global(.hud-led).railLedStarting {
+  --led: var(--text-2);
+}
+/* Done / abandoned keep the hollow ring: done is not a status light. */
+.railLed:global(.hud-led).railLedDone {
+  --led: transparent;
+  box-shadow: inset 0 0 0 1px var(--text-3);
+}
+/* The store would not answer (#1573): the NIGHTJAR error, red because a read FAILED — not the
+ * amber of something waiting on the operator — with its retry as a plate under the words. */
+.railNotice {
+  display: grid;
+  gap: var(--sp-1);
+  justify-items: start;
+  margin: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 8%, transparent);
+  overflow-wrap: anywhere;
+}
+.railNoticeLead {
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  color: var(--danger-text);
+}
+.railNoticeText {
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-1);
+}
+.railNoticeRetry {
+  margin-top: var(--sp-1);
+}
+/* The first read: Acquiring in words over two skeleton rows (#1573, board M2). */
+.railLoading {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+}
+.railSkeleton {
+  display: grid;
+  gap: var(--sp-2);
+}
+.railSkeleton > :nth-child(2) {
+  width: 62%;
 }
 
 /* --- #948 P3: the new-mission page ------------------------------------------------ */
 /* Nothing selected = the section's front door. Centred, the composer as its centrepiece, prose at
- * the §4 body size. The composer keeps its own classes; only its box grows here. */
+ * the §4 body size. The composer keeps its own classes (it is one composer with HQ's, #967); only
+ * its box grows here. NIGHTJAR (#1573): a display heading, the adoption note as a quiet callout,
+ * and NEEDS YOU as a framed section with a callsign head and LED rows. */
 .landing {
   flex: 1 1 auto;
   min-height: 0;
@@ -1821,7 +1767,7 @@
   overflow-y: auto;
   display: flex;
   justify-content: center;
-  padding: 9vh 16px 24px;
+  padding: 9vh var(--sp-4) var(--sp-5);
 }
 .landingInner {
   width: 100%;
@@ -1830,27 +1776,36 @@
 .landingHeading {
   margin: 0;
   text-align: center;
-  font-family: inherit;
-  font-size: 26px;
+  font-family: var(--font-display);
+  font-size: var(--fs-h1);
   font-weight: 600;
+  letter-spacing: 0.01em;
   line-height: 1.25;
   color: var(--text-1);
 }
+/* Focus lands here after an action moves the console to this page (#1531); it is a heading, not a
+ * control, so it shows no ring. */
+.landingHeading:focus {
+  outline: none;
+}
 .landingSub {
-  margin: 8px 0 24px;
+  margin: var(--sp-2) 0 var(--sp-5);
   text-align: center;
-  font-size: 14px;
+  font-size: var(--fs-body);
   color: var(--text-2);
 }
 .landing .composerInput {
   min-height: 120px;
-  font-size: 16px;
+  font-size: var(--fs-input); /* the brief is the centrepiece (#948 §4), and iOS zooms a field under 16px */
   line-height: 1.5;
 }
+/* "Already have a session running?" — a hint, so a quiet callout with the chrome's dim edge. */
 .landingNote {
-  margin: 16px 0 0;
-  text-align: center;
-  font-size: 13px;
+  margin: var(--sp-4) 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--hud-dim);
+  background: var(--bg-1);
+  font-size: var(--fs-row);
   line-height: 1.55;
   color: var(--text-2);
 }
@@ -1859,56 +1814,95 @@
   font-weight: 600;
 }
 .landingNeeds {
-  margin-top: 40px;
-  padding-top: 14px;
-  border-top: 1px solid var(--line);
+  composes: nj-frame-sm from global;
+  --nj-edge: var(--line-strong);
+  margin-top: var(--sp-6);
+  padding: 0 var(--sp-3) var(--sp-3);
 }
 .landingNeedsHead {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
   min-height: 44px;
-  font-family: var(--font-mono);
-  font-size: 11px;
+  margin: 0 calc(var(--sp-3) * -1) var(--sp-1);
+  padding: var(--sp-1) var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.landingNeedsTitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
   font-weight: 600;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--text-2);
+  color: var(--text-1);
+}
+.landingNeedsCount {
+  font-family: var(--font-mono);
+  color: var(--hud-text);
+  font-weight: 600;
+}
+.landingNeedsScope {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
 }
 .landingClear {
-  composes: ghost from "../ui/actionButton.module.css";
   margin-left: auto;
 }
-
 .landingEmpty {
-  padding: 12px 0;
-  font-size: 14px;
+  padding: var(--sp-3) 0 var(--sp-1);
+  font-size: var(--fs-body);
   color: var(--text-2);
 }
+/* The read failed: the NIGHTJAR error line. No live region — the console announces the outage once. */
+.landingError {
+  composes: nj-error from global;
+  margin-top: var(--sp-2);
+}
+.landingLoading {
+  padding: var(--sp-3) 0 var(--sp-1);
+}
 .landingRow {
+  position: relative;
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--sp-2);
   width: 100%;
   min-height: 44px;
-  margin-top: 8px;
-  padding: 9px 12px;
+  margin-top: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--line);
   border-left: 2px solid transparent;
-  background: var(--glass);
+  border-radius: 0;
+  background: var(--bg-2);
   color: inherit;
   text-align: left;
   font: inherit;
   cursor: pointer;
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out);
 }
-.landingRow:hover,
-.landingRow:focus-visible {
-  border-left-color: var(--accent);
+.landingRow:hover {
+  border-left-color: var(--hud);
   background: var(--row-hover);
-  outline: none;
 }
-.landingRow .dot {
-  margin-top: 7px;
+.landingRow:focus-visible {
+  border-left-color: var(--hud);
+  background: var(--row-hover);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+/* The LED rides the title's first line; steady in a list, like the rail's. */
+.landingLed {
+  margin-top: 6px;
+}
+.landingLed:not(:global(.is-changed)) {
+  animation: none;
 }
 .landingRowBody {
   display: block;
@@ -1917,7 +1911,7 @@
 }
 .landingRowTitle {
   display: block;
-  font-size: 14px;
+  font-size: var(--fs-body);
   color: var(--text-1);
   white-space: nowrap;
   overflow: hidden;
@@ -1929,9 +1923,10 @@
   /* An unbroken project name or path must wrap, never widen the landing past a 360px phone. */
   overflow-wrap: anywhere;
   font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.03em;
-  color: var(--text-muted);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
 }
 
 /* --- #948 P3: details are ONE disclosure below 1400px, not a tab --------------------- */
@@ -1939,18 +1934,16 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-2);
   width: 100%;
   min-height: 44px;
-  padding: 0 14px;
+  padding: 0 var(--sp-4);
   border: 0;
   border-bottom: 1px solid var(--line);
-  background: var(--glass);
-  color: var(--text-2);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.16em;
+  background: var(--bg-1);
+  color: var(--text-1);
+  font: 600 var(--fs-label) / 1 var(--font-display);
+  letter-spacing: 0.18em;
   text-transform: uppercase;
   text-align: left;
   cursor: pointer;
@@ -1960,21 +1953,22 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
-  font-weight: 400;
-  letter-spacing: 0.06em;
-  text-transform: none;
+  font: 400 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
   color: var(--text-3);
 }
 .detailsToggle > svg {
   flex: none;
+  color: var(--hud-text);
+  transition: transform var(--t-base) var(--ease-out);
 }
 .detailsToggle[aria-expanded="true"] > svg {
   transform: rotate(90deg);
 }
 .detailsToggle:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 @media (max-width: 1399px) {
   /* The toggle, then the band, then the thread — by ORDER, so the DOM (and the thread's mount)
@@ -1991,6 +1985,7 @@
     max-height: 40%;
     overflow: hidden;
     border-bottom: 1px solid var(--line);
+    animation: global(nj-fade-in) var(--t-base) var(--ease-out) both;
   }
   .threadCol {
     flex: 1 1 auto;
@@ -2001,25 +1996,6 @@
   .detailsToggle {
     display: none;
   }
-}
-
-/* --- #948 P3: the workspace type scale, on the §4 specs ----------------------------- */
-/* Prose and the composer at the 14px body size; the mode control at 11px mono; the mission title at
- * 16px/600. These used to run at 0.66–0.84rem. The composer's Send is not in this sheet: it is the
- * session pane's Send (#967). The section navigation, which #944/#946 pinned to the old mono Send,
- * declares its own values in App.css. */
-.composerInput {
-  font-size: 14px;
-}
-.modeBtn {
-  font-size: 11px;
-}
-.empty {
-  font-size: 14px;
-}
-.missionTitle {
-  font-size: 16px;
-  font-weight: 600;
 }
 
 /* --- #967 P3: objective rows — handle, dot, title, ⋯; drag to reorder ---------------------------
@@ -2050,9 +2026,9 @@
  * status), above the rows it slides past. The others move aside to show where it will land. */
 .objRowDragging {
   position: relative;
-  z-index: calc(var(--z-raised) + 1);
-  background: var(--bg-2);
-  outline: 1px solid var(--accent);
+  z-index: var(--z-raised);
+  background: color-mix(in srgb, var(--hud) 10%, var(--bg-2));
+  outline: 1px dashed var(--hud);
   outline-offset: -1px;
 }
 .objHandle,
@@ -2089,8 +2065,8 @@
 }
 .objHandle:focus-visible,
 .objMenuBtn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 /* A row built from the assessment alone, in a list that can be reordered: it cannot be dragged, and
  * holds the handle's column so its dot and title line up with the rows above. */
@@ -2111,16 +2087,16 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   overflow: hidden;
-  font-size: 13px;
-  line-height: 1.35;
+  font-size: var(--fs-row);
+  line-height: 1.4;
   color: var(--text-1);
   overflow-wrap: anywhere;
 }
 /* The state word, where the dot draws a state (met, waived, failed): never colour alone (§8). */
 .objState {
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  letter-spacing: 0.04em;
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--text-2);
 }
 /* The neutral dot's state word, for screen readers only. */
@@ -2138,24 +2114,26 @@
 /* The supervisor's mission-level refusal, said once for the section (`sharedReason`). The server's
  * sentence starts in lower case because it is written to follow a title; here it opens a notice. */
 .objNotice {
-  margin: 0 0 4px;
-  padding: 0.6rem 0.75rem;
-  font-size: 13px;
+  margin: 0 0 var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
   color: var(--text-2);
-  border-left: 3px solid var(--text-3);
-  background: var(--glass);
+  border-left: 2px solid var(--line-strong);
+  background: var(--bg-2);
 }
 .objNotice::first-letter {
   text-transform: uppercase;
 }
 /* A refused reorder: a write that failed, so the failure edge and the text-safe red. */
 .objRefused {
-  margin: 0 0 4px;
-  padding: 0.5rem 0.75rem;
-  font-size: 13px;
+  margin: 0 0 var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
   color: var(--danger-text);
-  border-left: 3px solid var(--status-down);
-  background: var(--glass);
+  border-left: 2px solid var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 8%, transparent);
 }
 /* The title's own disclosure (#967 P3, Hermes on #985). Only a title that is actually clipped at two
  * lines is a control; the rest stay plain text. It keeps `touch-action` as it is: a swipe that starts
@@ -2167,7 +2145,7 @@
   cursor: pointer;
 }
 .objTitleToggle:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: 2px;
 }
 /* Open: the whole requirement, however many lines it takes. Same specificity as the clamp, later. */
@@ -2179,11 +2157,10 @@
 .objTitleMore {
   display: block;
   margin-top: 2px;
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  letter-spacing: 0.08em;
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--text-3);
+  color: var(--hud-text);
 }
 .objTitleToggle:hover .objTitleMore,
 .objTitleToggle:focus-visible .objTitleMore {
@@ -2215,7 +2192,7 @@
   min-width: 0;
   overflow-wrap: anywhere;
   color: var(--text-1);
-  font-size: 14px;
+  font-size: var(--fs-body);
   line-height: 1.5;
 }
 .planHead .linkButton {
@@ -2227,7 +2204,7 @@
 }
 .planMono {
   font-family: var(--font-mono);
-  font-size: 0.92em;
+  font-size: var(--fs-row);
 }
 /* The working indicator: three square pips stepping in opacity. Square because only LEDs and dots
  * round (§9); no gradient and no spinner; still under reduced motion (§8). Opacity only, never
@@ -2239,10 +2216,11 @@
   vertical-align: middle;
 }
 .planDots i {
-  width: 4px;
-  height: 4px;
-  background: var(--text-2);
-  animation: planPip 1.2s steps(1, end) infinite;
+  width: 6px;
+  height: 6px;
+  background: var(--hud);
+  opacity: 0.25;
+  animation: global(nj-step) 1.2s var(--ease-io) infinite;
 }
 .planDots i:nth-child(2) {
   animation-delay: 0.2s;
@@ -2250,17 +2228,10 @@
 .planDots i:nth-child(3) {
   animation-delay: 0.4s;
 }
-@keyframes planPip {
-  0% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.3;
-  }
-}
 /* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
 :root:not([data-motion="full"]) .planDots i {
   animation: none;
+  opacity: 0.6;
 }
 :root:not([data-motion="full"]) .planDots i:nth-child(2) {
   opacity: 0.6;
@@ -2285,6 +2256,11 @@
   flex: none;
   min-width: 0;
 }
+.paneInner {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
 
 /* --- #1064 P2: the live strip above the thread ---------------------------------------------------
  * Neutral by design. Green (`--status-up`) only for a session producing output right now; "at a
@@ -2294,20 +2270,19 @@
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 4px 10px;
-  padding: 8px 4px;
-  margin-bottom: 8px;
-  border-bottom: 1px solid var(--border);
-  font-size: 0.8rem;
+  gap: 4px var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--hud) 4%, transparent);
+  font-size: var(--fs-meta);
   color: var(--text-2);
   overflow-wrap: anywhere;
 }
 .nowHead {
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  letter-spacing: 0.08em;
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--text-3);
+  color: var(--hud-text);
 }
 .nowList {
   display: flex;
@@ -2332,9 +2307,11 @@
   height: 7px;
   align-self: center;
   box-sizing: border-box;
+  border-radius: 50%;
 }
 .nowProducing {
   background: var(--status-up);
+  box-shadow: 0 0 var(--glow-led) var(--status-up);
 }
 .nowAtPrompt {
   background: var(--text-2);
@@ -2348,6 +2325,7 @@
 }
 .nowWho {
   font-family: var(--font-mono);
+  font-size: var(--fs-meta);
   color: var(--text-1);
 }
 .nowWhat {
@@ -2368,33 +2346,31 @@
 .confirmObjectives {
   display: flex;
   flex-direction: column;
-  margin: 8px 0;
-  padding: 0;
+  margin: var(--sp-2) 0;
+  padding: 0 var(--sp-2) 0 0;
   list-style: none;
-  border-top: 1px solid var(--border);
-  padding-right: 8px;
+  border-top: 1px solid var(--line);
 }
 .confirmRow {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 4px 10px;
-  padding: 6px 0;
-  border-bottom: 1px solid var(--border);
+  gap: 4px var(--sp-3);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--line);
   min-width: 0;
 }
 .confirmGate,
 .confirmGoal {
   flex: 0 0 auto;
-  padding: 1px 6px;
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.14em;
   text-transform: uppercase;
 }
 .confirmGate {
-  border: 1px solid var(--line-strong);
-  color: var(--text-1);
+  border: 1px solid var(--hud-dim);
+  color: var(--hud-text);
 }
 .confirmGoal {
   border: 1px dashed var(--line-strong);
@@ -2413,14 +2389,17 @@
   min-width: 0;
   overflow-wrap: anywhere;
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: var(--fs-meta);
   color: var(--text-3);
 }
 .confirmWhy {
-  margin: 4px 0 8px;
+  margin: var(--sp-1) 0 var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--status-degraded);
+  background: color-mix(in srgb, var(--status-degraded) 6%, transparent);
   overflow-wrap: anywhere;
-  font-size: 0.8rem;
-  line-height: 1.45;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
   color: var(--warn-text);
 }
 
@@ -2431,11 +2410,11 @@
  * no gradient (design §3). Every control is ≥44px (§8). Quotes are plain text in the mono face on
  * the editor's ground, wrapped, never markup. */
 .objTag {
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  letter-spacing: 0.04em;
-  padding: 0.05rem 0.3rem;
+  padding: 2px 5px;
   border: 1px solid var(--line-strong);
+  font: 600 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--text-3);
 }
 .objTagJudged {
@@ -2451,7 +2430,7 @@
   background: none;
   color: var(--text-2);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-row);
   text-decoration: underline;
   text-underline-offset: 3px;
   cursor: pointer;
@@ -2461,7 +2440,7 @@
 }
 .judgedToggle:focus-visible,
 .judgedLink:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: 2px;
 }
 .judgedLink {
@@ -2470,19 +2449,26 @@
   text-underline-offset: 3px;
 }
 .judgedPanel {
-  margin: 2px 0 6px;
-  padding: 0.6rem 0.75rem;
-  border-left: 2px solid var(--git-mod-fg);
+  margin: 2px 0 var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--status-degraded);
   background: var(--bg-2);
   min-width: 0;
 }
+.judgedPanel[data-verdict="holds"] {
+  border-left-color: var(--status-up);
+  background: color-mix(in srgb, var(--status-up) 5%, var(--bg-2));
+}
+.judgedPanel[data-verdict="not-met"] {
+  border-left-color: var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 6%, var(--bg-2));
+}
 .judgedHead {
-  font-family: var(--font-mono);
-  font-size: 0.64rem;
-  letter-spacing: 0.08em;
+  margin-bottom: var(--sp-2);
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--text-3);
-  margin-bottom: 0.45rem;
+  color: var(--text-2);
   overflow-wrap: anywhere;
 }
 .judgedQuoteBox {
@@ -2490,24 +2476,25 @@
 }
 .judgedSource {
   font-family: var(--font-mono);
-  font-size: 0.66rem;
+  font-size: var(--fs-label);
   color: var(--text-3);
   margin-bottom: 0.2rem;
   overflow-wrap: anywhere;
 }
 .judgedQuote {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  background: var(--bg-1);
   font-family: var(--font-mono);
-  font-size: 12.5px;
-  line-height: 1.45;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
   color: var(--text-1);
-  background: var(--surface-3);
-  padding: 0.45rem 0.6rem;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .judgedWhy {
   margin: 0.4rem 0 0.2rem;
-  font-size: 13px;
+  font-size: var(--fs-row);
   line-height: 1.4;
   color: var(--text-2);
   overflow-wrap: anywhere;
@@ -2518,7 +2505,7 @@
 .judgedHolds {
   margin: 0 0 0.4rem;
   font-family: var(--font-mono);
-  font-size: 0.64rem;
+  font-size: var(--fs-micro);
   color: var(--text-3);
 }
 .judgedReject {
@@ -2529,17 +2516,17 @@
 .autoChoose {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 8px 0 10px;
-  margin-bottom: 8px;
-  border-bottom: 1px solid var(--border);
+  gap: var(--sp-1);
+  padding: var(--sp-2) 0 var(--sp-3);
+  margin-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--line);
 }
 .autoChooseRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   min-height: 44px;
-  font-size: 0.84rem;
+  font-size: var(--fs-row);
   color: var(--text-1);
   cursor: pointer;
 }
@@ -2552,7 +2539,7 @@
 .autoChooseHint {
   margin: 0;
   overflow-wrap: anywhere;
-  font-size: 0.74rem;
+  font-size: var(--fs-meta);
   line-height: 1.45;
   color: var(--text-3);
 }

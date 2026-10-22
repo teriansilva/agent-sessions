@@ -222,9 +222,6 @@ const KEYFRAME_PROPS = new Set([
 /** Keyframes that predate the budget, each pinned to the phase that redraws it. Keyed by file and
  *  keyframe name, so a new violation in the same file still fails. Remove an entry with its fix. */
 const KEYFRAME_PENDING: Record<string, readonly string[]> = {
-  // Phase 9: the map's pulse and window flash become opacity on a pseudo-element.
-  "components/overview/overview.css": ["tr-ov-pulse"],
-  "components/overview/windowLayer.module.css": ["window-flash"],
   // Phase 10: the suggestions caret blinks with opacity like `.nj-caret`.
   "components/templates/SuggestionsPanel.module.css": ["blink"],
 };
@@ -333,7 +330,6 @@ const PREEXISTING_HOOKS = new Set([
   "routes/AppearanceApi.tsx:chat.turn",
   "components/playbooks/ProjectPlaybook.tsx:styles.invalid",
   "components/pulse/ActionRow.tsx:styles.age",
-  "components/pulse/MissionConsole.tsx:styles.paneInner",
   "components/structured/Markdown.tsx:styles.lang",
   "components/structured/NotSent.tsx:styles.reason",
   "components/wizard/WizardShell.tsx:styles.stepLabel",

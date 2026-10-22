@@ -229,9 +229,24 @@ export function MissionHeaderActions({
     !archived &&
     (state === "draft" || state === "planned") &&
     mission.plan_state === "pending";
+  const chipLabel = archived
+    ? `${missionStateLabel(state)} · archived`
+    : planningNow
+      ? "planning"
+      : missionStateLabel(state);
+  /* Every change of label counts, compared with the PREVIOUS label (so running → failed → running
+     flashes twice); the label the console first painted with never flashes. Derived state set
+     during render — React re-renders at once with the new count, so the key below remounts. */
+  const [chipSeen, setChipSeen] = useState({ label: chipLabel, changes: 0 });
+  if (chipSeen.label !== chipLabel) setChipSeen({ label: chipLabel, changes: chipSeen.changes + 1 });
   const chip = (
+    /* A STATE THAT CHANGES FLASHES ONCE (#1573): keyed on the change count, so each change remounts
+       the chip and its one-shot arrival plays in Full; Reduced fades it once (`nj-fade-ok`). */
     <span
-      className={`${styles.stateChip} ${failed ? styles.stateChipFailed : ""}`}
+      key={`${chipLabel}:${chipSeen.changes}`}
+      className={`${styles.stateChip} ${failed ? styles.stateChipFailed : ""} ${
+        chipSeen.changes > 0 ? `${styles.stateChipChanged} nj-fade-ok` : ""
+      }`}
       data-testid="mission-state-chip"
     >
       <span
@@ -239,13 +254,7 @@ export function MissionHeaderActions({
         aria-hidden="true"
         data-testid="mission-state-dot"
       />
-      <span data-testid="mission-state">
-        {archived
-          ? `${missionStateLabel(state)} · archived`
-          : planningNow
-            ? "planning"
-            : missionStateLabel(state)}
-      </span>
+      <span data-testid="mission-state">{chipLabel}</span>
     </span>
   );
 

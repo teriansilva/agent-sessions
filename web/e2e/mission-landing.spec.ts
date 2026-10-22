@@ -338,10 +338,11 @@ test("the workspace type scale is the §4 one, not 0.66–0.84rem", async ({ pag
   expect((await type(page.getByTestId("new-mission-instruction")))[0]).toBe("16px");
   expect((await type(page.getByTestId("new-mission-hint")))[0]).toBe("11px");
 
-  // A selected mission: title 16px/600, the thread composer at the 14px body size.
+  // A selected mission: the console's heading on the v2 scale (#1573: `--fs-h2`, 18px/600 in the
+  // display face, as the PR 4a board draws it), the thread composer at the 14px body size.
   await page.goto(missionLink(OTHER));
   await expect(page.getByTestId("console-title")).toHaveText("Quiet mission");
-  expect(await type(page.getByTestId("console-title"))).toEqual(["16px", "600"]);
+  expect(await type(page.getByTestId("console-title"))).toEqual(["18px", "600"]);
   expect((await type(page.locator('[data-testid="split"] textarea').first()))[0]).toBe("14px");
 });
 

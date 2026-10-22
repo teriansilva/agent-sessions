@@ -412,6 +412,18 @@ function JudgedDetail({
           className={styles.judgedPanel}
           id={panelId}
           data-testid="objective-evidence"
+          // The edge says what the judgment amounts to NOW (#1573): it holds, it is a current "not
+          // met", or it does not count (stale, below the threshold, rejected) or is history only
+          // (waived: the operator's decision is the current state) — never painted as a failure.
+          data-verdict={
+            waived
+              ? "uncertain"
+              : v.counts
+                ? "holds"
+                : !v.met && !v.stale && !v.rejected
+                  ? "not-met"
+                  : "uncertain"
+          }
         >
           <div className={styles.judgedHead}>
             {waived ? "Earlier judgment — you marked this not required · " : ""}

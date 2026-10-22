@@ -251,6 +251,9 @@ test("waived AFTER a verdict: the waiver is the state; the judgment is history o
   expect(screen.getByTestId("objective-evidence")).toHaveTextContent(
     /Earlier judgment — you marked this not required/,
   );
+  // The operator's decision is the state: the old "not met" is history, never painted as a
+  // current failure (#1573, Hermes 6757).
+  expect(screen.getByTestId("objective-evidence")).toHaveAttribute("data-verdict", "uncertain");
   expect(screen.queryByTestId("objective-reject-judgment")).toBeNull();
 });
 

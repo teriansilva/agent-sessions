@@ -163,6 +163,9 @@
   --fs-h1: 24px;
   --fs-readout-sm: 20px;
   --fs-readout: 32px;
+  /* Not a visual step: iOS Safari zooms into any text field under 16 px on focus, so a field that
+     must not zoom on a phone (the new-mission brief) sets this floor (#1573). */
+  --fs-input: 16px;
   /* Spacing. */
   --sp-1: 4px;
   --sp-2: 8px;

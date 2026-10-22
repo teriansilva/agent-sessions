@@ -170,8 +170,8 @@ const LEGACY_VIEW_KEY = "tr-sidebar-view";
 /** App shell — tactical-HUD framework (#211 redux). Three grid rows: a full-width command
  *  TOPBAR (brand + SYS/MISSION telemetry + overview/settings actions, carrying the single
  *  collapse/drawer toggle), a floating-panel DECK (a session-list sidebar panel + the routed
- *  main/terminal panel — both bracket-framed with margins so they float on the ambient
- *  data-flow canvas), and a full-width CLASSIFICATION footer. The one command-bar toggle drives
+ *  main/terminal panel — both framed with margins so they float on the NIGHTJAR atmosphere,
+ *  #1531), and a full-width CLASSIFICATION footer. The one command-bar toggle drives
  *  whichever surface the viewport exposes:
  *  - Desktop (>800px): it collapses the 320px sidebar column (persisted in localStorage);
  *    collapsed → the pane spans full width (one affordance, #132).
@@ -540,9 +540,9 @@ function Layout() {
         className={booting ? `${cls} booting` : cls}
         style={{ "--sidebar-w": `${sidebarW}px` } as React.CSSProperties}
       >
-        {/* Canvas lives INSIDE .app so it's within the panels' backdrop scope: .app is a
-          backdrop-root (overflow:hidden + stacking context), so a canvas outside it can't be
-          blurred by the panels' backdrop-filter. Inside, the frosted panels blur it. (#211) */}
+        {/* The atmosphere lives INSIDE .app so it's within the panels' backdrop scope: .app is a
+          backdrop-root (overflow:hidden + stacking context), so a layer outside it can't be
+          blurred by the panels' backdrop-filter. Inside, the frosted chrome blurs it. (#211, #1531) */}
         <Atmosphere />
         <header className="hud-topbar" ref={headerRef}>
           {/* No toggle on Settings (#1129): the surface it drives does not exist there in

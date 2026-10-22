@@ -341,7 +341,8 @@ export function NewMissionForm({
               aria-hidden="true"
               data-testid="new-mission-hint"
             >
-              Ctrl + Enter
+              <kbd className={styles.newMissionKey}>Ctrl</kbd> +{" "}
+              <kbd className={styles.newMissionKey}>Enter</kbd>
             </span>
             <button
               type="submit"
@@ -421,7 +422,7 @@ export function NewMissionForm({
         <div
           id={noteId}
           className={
-            noteVisible ? `${styles.objReason} ${styles.boxNote}` : "sr-only"
+            noteVisible ? `${styles.newMissionNote} ${styles.boxNote}` : "sr-only"
           }
           data-testid="new-mission-draft-note"
         >
@@ -430,7 +431,7 @@ export function NewMissionForm({
       ) : null}
       {length > INSTRUCTION_MAX * 0.9 ? (
         <div
-          className={`${overCap ? styles.objStale : styles.objReason} ${styles.boxNote}`}
+          className={`${styles.newMissionCount} ${overCap ? styles.newMissionCountOver : ""} ${styles.boxNote}`}
           role="status"
           data-testid="new-mission-count"
         >
@@ -440,7 +441,7 @@ export function NewMissionForm({
       ) : null}
       {error ? (
         <div
-          className={`${styles.objStale} ${styles.boxNote}`}
+          className={`${styles.newMissionError} ${styles.boxNote}`}
           role="alert"
           data-testid="new-mission-error"
         >

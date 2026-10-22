@@ -58,10 +58,16 @@ export function ProjectGroupNode({ data }: NodeProps) {
       .finally(() => setBusy(false));
   };
 
+  // The sector frame's tag (#1531 Phase 9): drawn by CSS around the cluster (overview.css
+  // `[data-sector]`), so it pans and zooms with the canvas. Decorative — the header already names
+  // the cluster for assistive tech.
+  const sector = `${kind === "folder" ? "FOLDER" : kind === "agent" ? "AGENT" : "SECTOR"} // ${label}`;
+
   return (
     <div
       className={`tr-ov-group tr-ov-group--${kind}${collapsed ? " collapsed" : ""}${isEmptyProject ? " empty" : ""}${color ? " tinted" : ""}`}
       style={color ? ({ "--proj": color } as CSSProperties) : undefined}
+      data-sector={sector}
     >
       <HudFrame />
       <Handle

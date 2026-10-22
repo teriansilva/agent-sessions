@@ -89,7 +89,7 @@ export function SessionNode({ data }: NodeProps) {
       </button>
       <span className="tr-ov-chip-head">
         <span
-          className={`tr-ov-dot ${working ? "working" : active ? "active" : "idle"}`}
+          className={`tr-ov-dot ${working ? "working nj-ambient" : active ? "active" : "idle"}`}
           aria-label={working ? "agent working" : undefined}
           role={working ? "status" : undefined}
         />

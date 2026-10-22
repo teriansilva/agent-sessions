@@ -1,0 +1,112 @@
+/* NIGHTJAR's React Flow theme (#1531 Phase 9, docs/design.md v2 §6): ONE stylesheet that every
+ * canvas imports (the Overview map, MemoryGraph, PlaybookFlowCanvas), after React Flow's own
+ * base CSS. It maps React Flow's `--xy-*` variables to the design tokens, so a canvas is themed
+ * by what it imports, not by local overrides; each canvas also passes `colorMode` from the theme
+ * so React Flow's own `dark` / `light` defaults agree with ours underneath.
+ *
+ * Square corners, hairlines, mono labels; Controls are 44 px plates (a touch target at every
+ * width); panels sit one spacing step in from the edge. Nothing here animates: pan and zoom stay
+ * React Flow's own, and a canvas's ambient motion (the map's data-flow, pings) lives with it. */
+
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-background-pattern-color: var(--grid-line);
+  --xy-node-color: var(--text-1);
+  --xy-node-border: 1px solid var(--line-strong);
+  --xy-node-background-color: var(--bg-1);
+  --xy-node-group-background-color: transparent;
+  --xy-node-border-radius: 0;
+  --xy-node-boxshadow-hover: 0 0 0 1px var(--hud-dim);
+  --xy-node-boxshadow-selected: 0 0 0 1px var(--hud);
+  --xy-edge-stroke: var(--line-strong);
+  --xy-edge-stroke-selected: var(--hud);
+  --xy-edge-stroke-width: 1.5;
+  --xy-edge-label-color: var(--text-2);
+  --xy-edge-label-background-color: var(--bg-1);
+  --xy-connectionline-stroke: var(--hud);
+  --xy-handle-background-color: var(--bg-1);
+  --xy-handle-border-color: var(--hud-dim);
+  --xy-selection-background-color: var(--hud-tint);
+  --xy-selection-border: 1px dashed var(--hud-dim);
+  --xy-resize-background-color: var(--hud);
+  --xy-controls-box-shadow: none;
+  --xy-controls-button-background-color: var(--bg-1);
+  --xy-controls-button-background-color-hover: var(--row-hover);
+  --xy-controls-button-color: var(--text-2);
+  --xy-controls-button-color-hover: var(--hud-text);
+  --xy-controls-button-border-color: var(--line);
+  --xy-minimap-background-color: var(--bg-1);
+  --xy-minimap-mask-background-color: color-mix(in srgb, var(--bg-0) 62%, transparent);
+  --xy-minimap-mask-stroke-color: var(--hud-dim);
+  --xy-minimap-mask-stroke-width: 1;
+  --xy-minimap-node-background-color: var(--line-strong);
+  --xy-minimap-node-stroke-color: transparent;
+  --xy-attribution-background-color: transparent;
+}
+
+/* Panels (Controls, MiniMap, anything a canvas adds) sit one step in from the edge. */
+.react-flow__panel {
+  margin: var(--sp-3);
+}
+
+/* Controls: a column of square 44 px plates, framed by one hairline. */
+.react-flow__controls {
+  border: 1px solid var(--line-strong);
+  background: var(--bg-1);
+}
+.react-flow__controls-button {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border-radius: 0;
+  color: var(--text-2);
+}
+.react-flow__controls-button:last-child {
+  border-bottom: 0;
+}
+.react-flow__controls-button svg {
+  width: 14px;
+  height: 14px;
+  max-width: none;
+  max-height: none;
+  fill: currentColor;
+}
+.react-flow__controls-button:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.react-flow__controls-button:disabled {
+  opacity: 0.4;
+}
+
+/* The MiniMap: a framed panel; the viewport mask is a token (it was an rgba in the TSX). */
+.react-flow__minimap {
+  border: 1px solid var(--line-strong);
+}
+
+/* Handles: small squares on the line colour (the dot is reserved for LEDs). */
+.react-flow__handle {
+  border-radius: 0;
+}
+
+/* Edges and their labels on tokens; labels are mono like every other tag. */
+.react-flow__edge-text {
+  fill: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+}
+.react-flow__edge-textbg {
+  fill: var(--bg-1);
+}
+
+/* The library's attribution is hidden by every canvas (`proOptions.hideAttribution`); if one ever
+ * shows it, it reads as a quiet tag rather than a white label. */
+.react-flow__attribution {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}
+.react-flow__attribution a {
+  color: inherit;
+}

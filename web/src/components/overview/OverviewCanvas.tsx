@@ -2,15 +2,20 @@ import {
   Background,
   BackgroundVariant,
   Controls,
+  EdgeLabelRenderer,
+  type EdgeProps,
+  getSmoothStepPath,
   MiniMap,
   type Node,
   ReactFlow,
+  SmoothStepEdge,
   ReactFlowProvider,
   useNodesState,
   useReactFlow,
   useStoreApi,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import "../hud/reactFlow.css";
 import {
   Bot,
   Boxes,
@@ -24,6 +29,7 @@ import {
   SquareDashedBottom,
 } from "lucide-react";
 import {
+  type CSSProperties,
   type FormEvent,
   type MouseEvent,
   useCallback,
@@ -77,9 +83,39 @@ import {
 import "./overview.css";
 import action from "../ui/actionButton.module.css";
 import { useEngineRoster } from "../../app/engineRoster";
+import { useTheme } from "../../theme/themeStore";
 
-// Stable identity (module scope) so React Flow doesn't re-register node types each render.
+/** A hierarchy edge (#148). A LIVE one (an agent works under its target, `overviewGraph`) carries
+ *  the data-flow (#1531 Phase 9): one packet travelling its three segments, drawn in React Flow's
+ *  edge-label layer so they pan and zoom with the map. They move by `transform` alone — the
+ *  compositor runs them; a dash-offset flow kept the main thread painting every frame and cost
+ *  more than the map's whole idle budget, and a second packet per edge cost more than it showed
+ *  (#1573, e2e/map-nightjar.spec.ts). */
+function MapEdge(props: EdgeProps) {
+  const live = !!(props.data as { live?: boolean } | undefined)?.live;
+  const [, , centerY] = getSmoothStepPath(props);
+  const at = {
+    "--sx": `${props.sourceX}px`,
+    "--sy": `${props.sourceY}px`,
+    "--cy": `${centerY}px`,
+    "--tx": `${props.targetX}px`,
+    "--ty": `${props.targetY}px`,
+  } as CSSProperties;
+  return (
+    <>
+      <SmoothStepEdge {...props} />
+      {live && (
+        <EdgeLabelRenderer>
+          <span className="tr-ov-packet nj-ambient" style={at} aria-hidden="true" />
+        </EdgeLabelRenderer>
+      )}
+    </>
+  );
+}
+
+// Stable identity (module scope) so React Flow doesn't re-register node/edge types each render.
 const nodeTypes = { projectGroup: ProjectGroupNode, session: SessionNode };
+const edgeTypes = { smoothstep: MapEdge };
 /* The toolbar's actions: the shared ghost plate at row height (docs/design.md §6). */
 const TOOL = `${action.ghost} ${action.compact}`;
 
@@ -110,7 +146,7 @@ const seedOf = (s: Session): WindowSeed => ({
 const miniMapColor = (n: Node): string =>
   n.type === "session"
     ? engineColor((n.data as SessionNodeData).session.engine)
-    : "var(--border)";
+    : "var(--line-strong)";
 
 type OverviewCanvasProps = {
   sessions: Session[];
@@ -157,6 +193,9 @@ function OverviewCanvasInner({
   const rf = useReactFlow();
   // Drag-to-reassign is live in Projects layout only — folder/agent clusters aren't user-assignable.
   const draggable = groupBy === "project";
+  // React Flow's own dark / light defaults follow the theme in force (#1531 Phase 9); the tokens
+  // in hud/reactFlow.css sit on top of them.
+  const { theme } = useTheme();
 
   // ---- Window workspace (#208) -------------------------------------------------------------
   // Desktop, fullscreen map only: `compact` is the squeezed embed, and the ≤800px breakpoint is
@@ -1005,7 +1044,9 @@ function OverviewCanvasInner({
       <div
         ref={wrapRef}
         className={`tr-overview${dragging ? " tr-overview--dragging" : ""}`}
-        style={{ position: "relative" }}
+        // The toolbar's measured bottom (the window layer's top inset): the banners sit under it,
+        // however many rows the toolbar wraps to (overview.css).
+        style={{ position: "relative", "--ov-bar-bottom": `${box.top}px` } as CSSProperties}
         // Focus's fallback when the element that opened a menu is gone (#968).
         tabIndex={-1}
         data-overview-map=""
@@ -1207,11 +1248,22 @@ function OverviewCanvasInner({
             No sessions to map yet — the open windows below stay live.
           </div>
         )}
+        {/* The canvas's ambient decoration (#1531 Phase 9): a slow radar sweep and a drifting
+            crosshair UNDER React Flow, in screen space (they never pan or zoom, and never sit in
+            the window overlay). Text-free, pointer-transparent, Full only (overview.css). */}
+        {!emptyMap && !compact && (
+          <div className="tr-ov-deco" aria-hidden="true" data-map-deco="">
+            <i className="tr-ov-radar nj-ambient" />
+            <i className="tr-ov-cross-x nj-ambient" />
+            <i className="tr-ov-cross-y nj-ambient" />
+          </div>
+        )}
         {!emptyMap && (
         <ReactFlow
           nodes={rfNodes}
           edges={edges}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           onNodeClick={onNodeClick}
           onNodeContextMenu={onNodeContextMenu}
           onNodesChange={onNodesChange}
@@ -1225,12 +1277,21 @@ function OverviewCanvasInner({
           nodesConnectable={false}
           elementsSelectable={false}
           proOptions={{ hideAttribution: true }}
+          colorMode={theme}
         >
+          {/* The tactical grid: a fine grid plus a major line every 5 cells, on tokens
+              (overview.css), panning and zooming with the canvas. */}
           <Background
-            variant={BackgroundVariant.Dots}
-            gap={22}
-            size={1}
-            color="var(--border)"
+            id="tr-ov-grid-fine"
+            className="tr-ov-grid-fine"
+            variant={BackgroundVariant.Lines}
+            gap={32}
+          />
+          <Background
+            id="tr-ov-grid-major"
+            className="tr-ov-grid-major"
+            variant={BackgroundVariant.Lines}
+            gap={160}
           />
           <Controls
             showInteractive={false}
@@ -1241,7 +1302,7 @@ function OverviewCanvasInner({
               pannable
               zoomable
               nodeColor={miniMapColor}
-              maskColor="rgba(0,0,0,0.45)"
+              className="tr-ov-minimap nj-ambient"
             />
           )}
         </ReactFlow>

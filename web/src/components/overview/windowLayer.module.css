@@ -1,8 +1,13 @@
-/* The floating window layer over the Overview map (#208).
+/* The floating window layer over the Overview map (#208), in NIGHTJAR (#1531 Phase 9).
  *
  * `pointer-events: none` on the layer with `auto` back on each window is what lets the canvas
  * keep panning between windows — the overlay covers the whole map, so without it the map would
- * become undraggable the moment one window opened. */
+ * become undraggable the moment one window opened.
+ *
+ * Motion (Full only): a window deploys in (a fade, never a rise — the terminal inside must not
+ * move) when it opens and again when it is restored from the tray; a parked window's tray chip
+ * arrives; a duplicate open flashes the window's edge (opacity on a pseudo-element). The focused
+ * window's tether is lit, never animated. Nothing decorative is drawn in this layer. */
 
 .layer {
   position: absolute;
@@ -23,23 +28,23 @@
 .line,
 .lineFocused {
   fill: none;
-  stroke: var(--accent);
+  stroke-dasharray: 6 5;
 }
 
 .line {
+  stroke: var(--hud-dim);
   stroke-width: 1.2;
-  stroke-dasharray: 5 4;
-  opacity: 0.55;
 }
 
+/* The focused window's tether is the live relay: lit. Static — a dash-offset flow here would keep
+ * the main thread painting every frame (see the map's live edges in overview.css). */
 .lineFocused {
+  stroke: var(--hud);
   stroke-width: 1.6;
-  opacity: 0.9;
 }
 
 .dot {
-  fill: var(--accent);
-  opacity: 0.8;
+  fill: var(--hud);
 }
 
 .slot {
@@ -48,10 +53,20 @@
   pointer-events: none;
 }
 
+/* A window deploys in: on open, and again on restore (the animation is re-applied when `.parked`
+ * comes off). Opacity only, so the terminal inside never moves. */
+.slot > * {
+  animation: global(nj-fade-in) var(--t-slow) var(--ease-out) both;
+}
+
 /* Minimized (parked in the tray): hidden but mounted, so the socket stays live, and `visibility`
  * keeps the pane's layout box so un-parking needs no refit. Hidden elements take no pointer events. */
 .parked {
   visibility: hidden;
+}
+
+.parked > * {
+  animation: none;
 }
 
 /* The tray of parked windows, bottom-centre over the map — above the map's hint line, which sits
@@ -70,32 +85,49 @@
   transform: translateX(-50%);
 }
 
+/* A parked window's chip: a plate with the window's LED; it arrives when the window minimises. */
 .trayChip {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   max-width: 220px;
   min-height: 32px;
-  padding: 0 12px;
-  font-size: 12px;
+  padding: 0 var(--sp-3);
+  font: 500 var(--fs-label) / 1 var(--font-mono);
+  letter-spacing: 0.06em;
   color: var(--text-2);
   cursor: pointer;
-  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  background: var(--bg-1);
   border: 1px solid var(--line-strong);
+  animation: global(nj-arrive) var(--t-arrive) var(--ease-out) both;
+  transition:
+    color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
 }
 
 .trayChip:hover,
 .trayChip:focus-visible {
-  color: var(--text);
-  border-color: var(--accent);
+  color: var(--text-1);
+  border-color: var(--hud);
   outline: none;
+}
+
+.trayChip:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent-text);
+}
+
+@media (pointer: coarse), (max-width: 800px) {
+  .trayChip {
+    min-height: 44px;
+  }
 }
 
 .trayDot {
   flex: none;
-  width: 6px;
-  height: 6px;
-  background: var(--accent);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--hud);
 }
 
 .trayTitle {
@@ -104,38 +136,37 @@
   white-space: nowrap;
 }
 
-/* Duplicate open: the window already exists, so say where it went. */
-.flash > * {
-  animation: window-flash 0.9s ease-out;
+/* Duplicate open: the window already exists, so say where it went — its edge flashes once (an
+ * overlay ring's opacity; the window itself never changes). */
+.flash > *::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: calc(var(--z-raised) + 8);
+  box-shadow: inset 0 0 0 2px var(--hud);
+  pointer-events: none;
+  opacity: 0;
+  animation: global(nj-flash) 0.9s var(--ease-out) both;
 }
 
-@keyframes window-flash {
-  0%,
-  40% {
-    box-shadow: 0 0 0 2px var(--accent);
-  }
-
-  100% {
-    box-shadow: 0 26px 70px rgb(0 0 0 / 60%);
-  }
+/* Reduced and Off (the motion mode, #1531): the ring holds while the flash lasts. */
+:root:not([data-motion="full"]) .flash > *::after {
+  opacity: 1;
 }
 
-/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
-:root:not([data-motion="full"]) .flash > * {
-  animation: none;
-  box-shadow: 0 0 0 2px var(--accent);
-}
-
+/* A window notice (refused, capped): a toast over the tray. */
 .notice {
   position: absolute;
   bottom: 84px;
   left: 50%;
   z-index: var(--z-pane-overlay);
-  padding: 6px 10px;
-  font-size: 11.5px;
-  color: var(--text);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
   pointer-events: auto;
-  background: color-mix(in srgb, var(--panel) 94%, transparent);
-  border: 1px solid var(--accent-soft);
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-left: 2px solid var(--hud);
+  box-shadow: var(--shadow-menu);
   transform: translateX(-50%);
 }

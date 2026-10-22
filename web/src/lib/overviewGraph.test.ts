@@ -225,6 +225,24 @@ test("links to the NEAREST present ancestor, skipping absent intermediates", () 
   ]);
 });
 
+test("an edge is LIVE only when an agent works somewhere under its target (#1531 Phase 9)", () => {
+  // /a → /a/b → /a/b/c (working, two levels down) and /a → /a/d (idle): /a→/a/b and /a/b→/a/b/c are
+  // live (the data-flow motion), /a→/a/d is not.
+  const input = [
+    s({ id: "claude:a", cwd: "/a" }),
+    s({ id: "claude:b", cwd: "/a/b" }),
+    s({ id: "claude:c", cwd: "/a/b/c", working: true }),
+    s({ id: "claude:d", cwd: "/a/d" }),
+  ];
+  const { edges } = buildOverview(input, { nowS: NOW, ...FOLDER });
+  const live = Object.fromEntries(edges.map((e) => [`${e.source}->${e.target}`, e.className ?? ""]));
+  expect(live).toEqual({
+    "group:/a->group:/a/b": "tr-ov-edge-live",
+    "group:/a/b->group:/a/b/c": "tr-ov-edge-live",
+    "group:/a->group:/a/d": "",
+  });
+});
+
 test("multiple roots, no edges between unrelated trees", () => {
   const input = [
     s({ id: "claude:a", cwd: "/a" }),

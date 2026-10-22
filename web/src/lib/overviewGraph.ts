@@ -404,6 +404,19 @@ export function buildOverview(
 
   const nodes: Node[] = [];
   const edges: Edge[] = [];
+  // A hierarchy edge is LIVE when an agent is working anywhere under the group it points at
+  // (#1531 Phase 9): only a live edge carries the data-flow motion (overview.css), so an idle map
+  // costs nothing.
+  const liveMemo = new Map<string, boolean>();
+  const liveUnder = (key: string): boolean => {
+    const known = liveMemo.get(key);
+    if (known !== undefined) return known;
+    const live =
+      groups.get(key)!.items.some((s) => !!s.working) ||
+      (children.get(key) ?? []).some(liveUnder);
+    liveMemo.set(key, live);
+    return live;
+  };
   // DFS emit: each group node immediately followed by its chips; parent before children.
   const emit = (key: string) => {
     const g = groups.get(key)!;
@@ -483,6 +496,7 @@ export function buildOverview(
         source: groupId,
         target: `group:${kid}`,
         type: "smoothstep",
+        ...(liveUnder(kid) ? { className: "tr-ov-edge-live", data: { live: true } } : {}),
         selectable: false,
         focusable: false,
         deletable: false,

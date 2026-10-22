@@ -89,7 +89,9 @@ export function MissionDetails({
             aria-labelledby={`${id}-${s.key}-label`}
             hidden={!expanded[s.key]}
           >
-            {s.content}
+            {/* The clipping box of the grid-row expansion (#1573): the region eases its one row
+                0fr → 1fr and this clips while it does. */}
+            <div className={styles.disclosureInner}>{s.content}</div>
           </div>
         </section>
       ))}

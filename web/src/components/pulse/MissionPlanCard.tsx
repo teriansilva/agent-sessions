@@ -379,7 +379,7 @@ export function MissionPlanCard({
         {phase === "ready" && start.planComplete ? (
           <button
             type="button"
-            className={styles.linkButton}
+            className={action.ghost}
             aria-expanded={start.fieldsOpen}
             onClick={start.fieldsOpen ? start.hidePlan : start.reviewPlan}
             data-testid="mission-plan-review"
@@ -388,6 +388,10 @@ export function MissionPlanCard({
           </button>
         ) : null}
       </div>
+      {/* Planning: the Acquiring scan bar under the lead (#1573; a still half track in Reduced/Off). */}
+      {planning ? (
+        <div className={`nj-acquire ${styles.planAcquire}`} aria-hidden="true" />
+      ) : null}
       {start.keptNote ? (
         <p className={styles.planWhy} data-testid="mission-plan-kept">
           {start.keptNote}

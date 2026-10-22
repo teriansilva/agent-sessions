@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { animationsSettled } from "./nightjarShell";
 
 import {
   MISSION,
@@ -367,6 +368,8 @@ test("a session's own menu is answered from the card, and answering never attach
   await expect(menu).toContainText("Which migration strategy should I use?");
   const opts = menu.getByTestId("menu-option");
   await expect(opts).toHaveText(["1. Online, batched", "2. Offline, in one transaction"]);
+  // The decision card deploys in (#1573): measured mid-transform a 44 px option reads 43.99997 px.
+  await animationsSettled(page);
   for (const i of [0, 1]) expect((await opts.nth(i).boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
 
   // The first tap arms and sends nothing; the second sends the number AND the label shown.

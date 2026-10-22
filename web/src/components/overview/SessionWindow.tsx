@@ -494,7 +494,7 @@ export const SessionWindow = memo(function SessionWindow({
           }}
         />
       )}
-      <div ref={bodyRef} className={styles.body}>
+      <div ref={bodyRef} className={styles.body} data-window-body="">
         {/* RuntimeGate (#1132): a REMOVED engine renders its attach-only retirement notice
             instead of the pane — and with the pane gone, its portaled chips (and therefore
             the Files toggle) never render either, so the drawer below stays unreachable for

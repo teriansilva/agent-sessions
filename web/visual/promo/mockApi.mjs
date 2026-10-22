@@ -2,6 +2,7 @@
 // shadows them — the last registered wins). Unknown paths answer `{}` and are reported.
 import * as F from "./fixtures.mjs";
 import * as X from "./extras.mjs";
+import * as MS from "./missionStates.mjs";
 
 const json = (body, status = 200) => ({ status, body });
 
@@ -59,7 +60,8 @@ async function answer(path, q, method, req, state) {
     case "/api/pulse/recap":
       return json(F.RECAP);
     case "/api/pulse":
-      return json({ cards: [], generated_at: F.NOW - 60, window_days: 1 });
+      // `missionDecisions` (a sweep state): the decisions waiting on the mission ride their sessions' cards.
+      return json({ cards: state.missionDecisions ? MS.decisionCards() : [], generated_at: F.NOW - 60, window_days: 1 });
     case "/api/pulse/orchestrator":
       // A healthy, quiet orchestrator: suggest tier, nothing pending, the last pass succeeded.
       return json({
@@ -171,6 +173,15 @@ async function answer(path, q, method, req, state) {
       const engine = q.get("engine");
       if (engine) rows = rows.filter((r) => r.engine === engine);
       if (q.get("archived") === "1") rows = [];
+      // `nestedFolders` (a sweep state, #1531 Phase 9): two sessions in sub-folders of a project
+      // folder, one of them working — the map's Folders layout draws hierarchy edges, one live.
+      if (state.nestedFolders && !project && !engine && !running) rows = [...rows, ...F.nestedSessions()];
+      // `partialMap` (a sweep state): the walk never says "done", so the map stops at its page cap
+      // and shows the partial-results banner. Later pages carry no rows (no duplicate ids).
+      if (state.partialMap) {
+        const offset = Number(q.get("offset") ?? 0);
+        return json({ ...F.sessionsPage(offset ? [] : rows), next_offset: offset + 1 });
+      }
       return json(F.sessionsPage(rows));
     }
   }

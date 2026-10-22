@@ -76,15 +76,24 @@ for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
         // registered for a URL is asked first): a state the shared fixtures do not hold.
         // A body `{ status, json }` answers that status; anything else is the JSON body. The path
         // matches with or without a query string.
-        for (const [path, body] of Object.entries(cap.api ?? {})) {
-          const re = new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\?|$)`);
-          await page.route(re, (r) =>
-            body && typeof body === "object" && "status" in body && "json" in body
-              ? r.fulfill({ status: body.status, json: body.json })
-              : r.fulfill({ json: body }),
-          );
-        }
+        // A `{ status, json, method }` body answers only that method; any other falls through to
+        // the shared handler (a refused PATCH on a path whose GET still reads the list).
+        const answer = async (apiMap) => {
+          for (const [path, body] of Object.entries(apiMap ?? {})) {
+            // `re:` keys are a raw regex (a path with an id in it); any other key is a literal path.
+            const re = path.startsWith("re:")
+              ? new RegExp(path.slice(3))
+              : new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\?|$)`);
+            await page.route(re, (r) => {
+              const shaped = body && typeof body === "object" && "status" in body && "json" in body;
+              if (shaped && body.method && r.request().method() !== body.method) return r.fallback();
+              return shaped ? r.fulfill({ status: body.status, json: body.json }) : r.fulfill({ json: body });
+            });
+          }
+        };
+        await answer(cap.api);
         const name = `${cap.id.replace(/[:/]/g, "_")}-${width}-${theme}-${dpr}x`;
+        let held = false; // a `drag` step holds the pointer down across the shot
         try {
           // A peer tab first (the hand-off stub: another open tab takes the link).
           if (cap.peerPath) {
@@ -106,12 +115,55 @@ for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
           }
           const steps = phone && cap.openPhone ? cap.openPhone : [...(phone ? (cap.phoneFirst ?? []) : []), ...(cap.open ?? [])];
           for (const step of steps) {
+            // `{ api: {...} }` mid-sequence: answer these paths differently FROM HERE ON (a later
+            // route wins), for a state that a re-read produces (the list emptied under a window).
+            if (step.api) {
+              await answer(step.api);
+              continue;
+            }
+            if (step.press) {
+              await page.keyboard.press(step.press);
+              await page.waitForTimeout(300);
+              continue;
+            }
+            if (step.viewport) {
+              await page.setViewportSize({ width: step.viewport[0], height: step.viewport[1] });
+              await page.waitForTimeout(300);
+              continue;
+            }
             const target =
               "testId" in step
                 ? page.getByTestId(step.testId).first()
                 : "css" in step
                   ? page.locator(step.css).first()
                   : page.getByRole(step.role, { name: step.name, exact: !step.partial }).first();
+            if (step.wait) {
+              await target.waitFor({ state: step.wait, timeout: 15000 });
+              continue;
+            }
+            if (step.fill !== undefined) {
+              await target.fill(step.fill);
+              continue;
+            }
+            if (step.select !== undefined) {
+              await target.selectOption({ label: step.select });
+              continue;
+            }
+            if (step.drag) {
+              // Press on the target's centre and move in small steps (past any activation
+              // distance), then HOLD: the shot is the drag in flight; released after it.
+              await target.scrollIntoViewIfNeeded();
+              const box = await target.boundingBox();
+              if (!box) throw new Error("drag target has no box");
+              const x = box.x + box.width / 2;
+              const y = box.y + box.height / 2;
+              await page.mouse.move(x, y);
+              await page.mouse.down();
+              held = true;
+              await page.mouse.move(x + step.drag[0], y + step.drag[1], { steps: 12 });
+              await page.waitForTimeout(300);
+              continue;
+            }
             if (step.upload) {
               await target.setInputFiles({ name: step.upload, mimeType: "text/plain", buffer: Buffer.from("notes\n") });
               continue;
@@ -137,8 +189,34 @@ for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
           }
           // The state the capture names must be ON SCREEN at the moment of the shot (a fixed delay
           // alone proves nothing: the boot is once per visit and dismissable).
+          // A state reached through a read (a filter's refetch, a refused write) lands a beat after
+          // the last step: wait for it, briefly, before calling it absent.
+          if (cap.present) await page.locator(cap.present).first().waitFor({ state: "visible", timeout: 5000 }).catch(() => {});
+          // `present` names what the shot is evidence of: bring it into view (a no-op when it is),
+          // including inside a scrolling band such as the console's details.
+          if (cap.present) await page.locator(cap.present).first().scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
           if (cap.present && !(await page.locator(cap.present).first().isVisible()))
             throw new Error(`${cap.present} is not on screen at capture time`);
+          // …and IN the shot: isVisible() passes a state below the fold, which the PNG would not
+          // show. A full-page capture takes the whole page, so there the box only has to exist.
+          if (cap.present && !cap.fullPage) {
+            const box = await page.locator(cap.present).first().boundingBox();
+            const vp = page.viewportSize();
+            if (!box || !vp || box.y >= vp.height || box.y + box.height <= 0 || box.x >= vp.width || box.x + box.width <= 0)
+              throw new Error(`${cap.present} is outside the shot at capture time`);
+            // Not clipped away by a scrolling or clipping ancestor either.
+            const unclipped = await page.locator(cap.present).first().evaluate((el) => {
+              const r = el.getBoundingClientRect();
+              for (let p = el.parentElement; p; p = p.parentElement) {
+                const st = getComputedStyle(p);
+                if (!/(hidden|auto|scroll|clip)/.test(st.overflowX + st.overflowY)) continue;
+                const q = p.getBoundingClientRect();
+                if (r.bottom <= q.top || r.top >= q.bottom || r.right <= q.left || r.left >= q.right) return false;
+              }
+              return true;
+            });
+            if (!unclipped) throw new Error(`${cap.present} is clipped out of the shot by a scrolling ancestor`);
+          }
           if (cap.action === "power-on") {
             // The power-on is one-shot (320 ms): replay it, and photograph it WHILE it runs — the
             // panel's own animations must be running at the moment of the shot, or the capture is
@@ -170,6 +248,8 @@ for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
           console.log(`  wrote ${name}`);
         } catch (e) {
           failures.push(`${name}: ${String(e).slice(0, 200)}`);
+        } finally {
+          if (held) await page.mouse.up().catch(() => {});
         }
         await ctx.close();
       }

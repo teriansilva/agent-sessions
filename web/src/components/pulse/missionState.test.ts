@@ -10,7 +10,7 @@ import { resolve } from "node:path";
 import { expect, test } from "vitest";
 
 import styles from "./mission.module.css";
-import { missionDotClass, missionStateLabel } from "./missionState";
+import { missionDotClass, missionLed, missionStateLabel } from "./missionState";
 
 const CSS = readFileSync(
   resolve(process.cwd(), "src/components/pulse/mission.module.css"),
@@ -42,5 +42,19 @@ test("the other states keep their dots", () => {
   expect(missionDotClass("done")).toBe(styles.dotDone);
   expect(missionDotClass("abandoned")).toBe(styles.dotDone);
   expect(missionDotClass("planned")).toBe(styles.dot);
-  expect(missionDotClass("draft")).toBe(styles.dot);
+  // A draft is the session rows' draft (#477, #1573): the shared `--status-draft` tone, as the rail.
+  expect(missionDotClass("draft")).toBe(styles.dotDraft);
+});
+
+test("one mapping for every mission light: the rail's Led and the dots read missionLed (#1573)", () => {
+  expect(missionLed("running")).toEqual({ tone: "up", shape: null });
+  expect(missionLed("failed")).toEqual({ tone: "down", shape: null });
+  expect(missionLed("draft")).toEqual({ tone: "draft", shape: null });
+  // Starting is never green, and done is a ring, not a light.
+  expect(missionLed("dispatching")).toEqual({ tone: "idle", shape: "starting" });
+  expect(missionLed("done")).toEqual({ tone: "idle", shape: "done" });
+  expect(missionLed("abandoned")).toEqual({ tone: "idle", shape: "done" });
+  expect(missionLed("planned")).toEqual({ tone: "idle", shape: null });
+  // Needs-you outranks the state where a surface shows it.
+  expect(missionLed("running", true)).toEqual({ tone: "att", shape: null });
 });

@@ -151,7 +151,7 @@ export function MissionQuestionCard({
         />
         <button
           type="button"
-          className={`${styles.questionBtn} ${styles.questionBtnPrimary}`}
+          className={styles.questionBtnPrimary}
           disabled={busy || !text.trim()}
           onClick={() => void send({ text: text.trim() })}
           data-testid="mission-question-send"

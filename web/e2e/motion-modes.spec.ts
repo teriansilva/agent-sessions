@@ -9,7 +9,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { DASHBOARD_PATH, NIGHTJAR_GALLERY_PATH } from "../src/lib/routes";
-import { mockNightjarShell, storeMotionChoice } from "./nightjarShell";
+import { MISSION, missionList, missionRow, mockMissions, openMissionRail } from "./mission-console";
+import { expectIdleBudget, mockNightjarShell, storeMotionChoice } from "./nightjarShell";
 
 declare global {
   interface Window {
@@ -218,26 +219,104 @@ test("streamed text is in the DOM as it arrives and moves nothing above it (#153
   expect((await page.getByTestId("g-panel-default").boundingBox())?.y).toBe(above?.y);
 });
 
-test("the dashboard idles cheaply in Full (main-thread busy < 2% over 5 s) (#1531)", async ({ page, browserName }, info) => {
+test("the dashboard idles cheaply in Full (< 2% busy on an idle host; recalcs and layouts per second everywhere) (#1531)", async ({ page, browserName }, info) => {
   test.skip(browserName !== "chromium", "CDP metrics");
   test.skip(info.project.name !== "desktop", "one measurement is enough");
   await storeMotionChoice(page, "full");
   await page.goto(DASHBOARD_PATH);
   await expect(page.getByTestId("nj-atmo")).toBeAttached();
   await page.waitForTimeout(1500);
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send("Performance.enable");
-  const read = async () => {
-    const { metrics } = await cdp.send("Performance.getMetrics");
-    return Object.fromEntries(metrics.map((m) => [m.name, m.value])) as Record<string, number>;
-  };
-  const a = await read();
-  await page.waitForTimeout(5000);
-  const b = await read();
-  const busy = (b.TaskDuration - a.TaskDuration) / (b.Timestamp - a.Timestamp);
-  info.annotations.push({ type: "idle-busy", description: `${(busy * 100).toFixed(2)}%` });
-  console.log(`### dashboard idle main-thread busy in Full: ${(busy * 100).toFixed(2)}%`);
-  // docs/design.md v2 §8: under 2%. A CPU-starved shared CI runner stretches every task it runs
-  // (the same work measures longer there), so CI gets headroom; locally the budget is the design's.
-  expect(busy).toBeLessThan(process.env.CI ? 0.04 : 0.02);
+  await expectIdleBudget(page, "dashboard", info);
+});
+
+/** A RUNNING mission console with something in every part (#1573): a thread of turns and state
+ *  changes, judged and open objectives, two held sessions with a live Now strip. At 1440 the details
+ *  column (Context, Objectives) stands beside the thread. */
+async function mockRunningConsole(page: Page) {
+  const at = 1_700_000_000;
+  const keys = ["claude:7c1e1a00-5b2d-4c8e-9f31-0a6d2e8b4001", "codex:7c1e2a00-5b2d-4c8e-9f31-0a6d2e8b4002"];
+  const ev = (seq: number, kind: string, text: string | null, meta: Record<string, unknown> | null = null) => ({
+    seq, mission_id: "msn_1", at: at + seq * 60, kind, session_key: null, action_id: null, text, meta, settlement: null,
+  });
+  const objectives = [
+    ["limit", "Over-quota keys get 429 + Retry-After", "met"],
+    ["load", "Load test holds 2k rps with p95 under 50 ms", "met"],
+    ["webhooks", "Billing webhooks write v2 events on staging", "pending"],
+    ["docs", "Limits documented for partners", "pending"],
+  ].map(([key, title, state], ord) => ({
+    mission_id: "msn_1", key, ord, title, probe: "supervisor_judged", probe_args: null, gate: true, state,
+    met_at: state === "met" ? at : null, source: "playbook",
+    observed: state === "met"
+      ? { at, value: true, judged: { met: true, confidence: 0.94, threshold: 0.9, fingerprint: "f", checked_at: at, evidence: [{ source: `transcript:${keys[0]}`, quote: "✓ 12 passed" }] } }
+      : null,
+  }));
+  await mockMissions(page, {
+    missions: missionList([missionRow({ session_keys: keys })]),
+    mission: {
+      ...MISSION,
+      sessions: keys.map((k) => ({ mission_id: "msn_1", session_key: k, role: null, added_at: at, removed_at: null })),
+      objectives,
+      objectives_state: "done",
+      events: [
+        ev(1, "operator_msg", "Harden the public ingest API before the partner launch."),
+        ev(2, "assistant_msg", "Plan ready. Claude takes the limiter; Codex migrates the webhooks."),
+        ev(3, "state", "Mission launched — 2 sessions", { from: "planned", to: "running" }),
+        ev(4, "assistant_msg", "Limiter is in and its tests are green. Objective 1 met."),
+        ev(5, "assistant_msg", "Load test held 2,031 rps with p95 at 41.7 ms. Objective 2 met."),
+        ev(6, "operator_msg", "Good. Codex can run the migration on staging once the dry run is clean."),
+      ],
+      events_next_seq: null,
+    },
+    objectives: { objectives },
+    context: { id: "msn_1", project_id: "agent-sessions", cwd: "/repo", sessions: keys.map((k) => ({ mission_id: "msn_1", session_key: k, role: null, added_at: at, removed_at: null })), git: null, git_error: null },
+    now: {
+      sessions: [
+        { session_key: keys[0], status: "producing", seconds_since_output: 2, prompt_class: null, recap_age_s: 60, recap_older_than_output: false },
+        { session_key: keys[1], status: "at_prompt", seconds_since_output: 210, prompt_class: "confirm", recap_age_s: 120, recap_older_than_output: false },
+      ],
+      checked_at: at,
+    },
+  });
+}
+
+test("a running mission console idles cheaply in Full (< 2% busy on an idle host; recalcs and layouts per second everywhere) (#1573)", async ({ page, browserName }, info) => {
+  test.skip(browserName !== "chromium", "CDP metrics");
+  test.skip(info.project.name !== "desktop", "one measurement is enough");
+  await mockRunningConsole(page);
+  await storeMotionChoice(page, "full");
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await page.goto("/mission");
+  await page.getByRole("button", { name: /Kimi transcript adapter/ }).click();
+  await expect(page.getByTestId("mission-details")).toBeVisible();
+  await expect(page.getByTestId("objectives")).toBeVisible();
+  await expect(page.getByTestId("thread-event")).toHaveCount(6);
+  await page.waitForTimeout(1500);
+  await expectIdleBudget(page, "mission console", info);
+  // Nothing on the console's own surface loops: the lights are steady, only the atmosphere moves.
+  const loops = await page.evaluate(
+    () =>
+      document
+        .getAnimations()
+        .filter((x) => x.effect?.getComputedTiming().iterations === Infinity)
+        .filter((x) => (x.effect as KeyframeEffect).target?.closest?.('[data-testid="mission-console"]')).length,
+  );
+  expect(loops, "no infinite animation inside the console").toBe(0);
+});
+
+test("the mission console in Reduced and Off: no loop, no rAF, nothing moving in Off (#1573)", async ({ page }) => {
+  await mockRunningConsole(page);
+  for (const mode of ["reduced", "off"] as const) {
+    await storeMotionChoice(page, mode);
+    await page.goto("/mission");
+    await openMissionRail(page); // a phone's rail is a drawer; a no-op where it is docked
+    await page.getByRole("button", { name: /Kimi transcript adapter/ }).click();
+    await expect(page.getByTestId("thread-event").first()).toBeVisible();
+    await page.waitForTimeout(800);
+    expect(await rafOver(page, 1200), `no rAF loop in ${mode}`).toBe(0);
+    const infinite = await page.evaluate(
+      () => document.getAnimations().filter((x) => x.effect?.getComputedTiming().iterations === Infinity).length,
+    );
+    expect(infinite, `no infinite animation in ${mode}`).toBe(0);
+    if (mode === "off") expect(await page.evaluate(() => document.getAnimations().length)).toBe(0);
+  }
 });

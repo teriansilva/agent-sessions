@@ -1,6 +1,15 @@
-/* Session Overview canvas (#139). React Flow base CSS is imported by OverviewCanvas; these
- * rules theme it to our tokens and style the custom nodes. Everything is scoped under
- * .tr-overview so it can't leak into the rest of the app. */
+/* Session Overview canvas (#139), in NIGHTJAR (#1531 Phase 9, docs/design.md v2). React Flow's base
+ * CSS and the shared theme (`components/hud/reactFlow.css`, the `--xy-*` tokens and the 44 px
+ * Controls) are imported by OverviewCanvas; these rules style the map's own pieces: the tactical
+ * grid and its decoration, the sector-framed clusters, the session chips, the toolbar, the route
+ * states and the banners. Everything is scoped under .tr-overview so it can't leak into the rest
+ * of the app.
+ *
+ * Motion (Full only; Reduced and Off hold a still frame, motion.css): the radar sweeps and the
+ * crosshair drifts in screen space under the canvas; data packets travel a live hierarchy edge; a
+ * working agent's LED pings; the minimap's frame breathes. All of it is CSS on transform and
+ * opacity — the compositor's, so an idle map leaves the main thread idle — with no JS loop; the
+ * ambient loops pause with the page (`nj-ambient`), and pan and zoom stay React Flow's own. */
 
 .tr-overview {
   width: 100%;
@@ -8,205 +17,149 @@
   background: var(--bg);
 }
 
-/* React Flow chrome → our tokens. */
-.tr-overview .react-flow__background {
-  background: var(--bg);
+/* ---- the tactical grid (React Flow <Background>s, so it pans and zooms with the map) ---- */
+.tr-overview .tr-ov-grid-fine {
+  --xy-background-pattern-color: var(--line);
 }
-/* No rounded corners on the node wrappers — the HUD square-corner language (#211 4d). React
- * Flow's base style.css rounds default node types; our custom nodes carry their own square
- * frames, so flatten the wrapper defensively. */
+.tr-overview .tr-ov-grid-major {
+  --xy-background-pattern-color: var(--line-strong);
+}
+
+/* ---- the canvas decoration: under React Flow, in screen space, never interactive ---- */
+.tr-ov-deco {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.tr-ov-deco > i {
+  position: absolute;
+  display: block;
+}
+/* The radar: two rings and a sweep (the sweep is the only thing that turns). */
+.tr-ov-radar {
+  left: 50%;
+  top: 64%;
+  width: min(34vh, 320px);
+  aspect-ratio: 1;
+  border: 1px solid var(--hud-faint);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+.tr-ov-radar::before,
+.tr-ov-radar::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+}
+.tr-ov-radar::before {
+  inset: 28%;
+  border: 1px solid var(--hud-faint);
+}
+.tr-ov-radar::after {
+  inset: 0;
+  background: conic-gradient(from 0deg, var(--hud-tint), transparent 64deg);
+  animation: nj-spin 14s linear infinite;
+}
+/* The crosshair: one vertical and one horizontal hairline drifting slowly across the map. */
+.tr-ov-cross-x,
+.tr-ov-cross-y {
+  inset: 0;
+}
+.tr-ov-cross-x {
+  border-left: 1px solid var(--hud-faint);
+  transform: translateX(38%);
+  animation: tr-ov-cross-x 64s var(--ease-io) infinite alternate;
+}
+.tr-ov-cross-y {
+  border-top: 1px solid var(--hud-faint);
+  transform: translateY(42%);
+  animation: tr-ov-cross-y 52s var(--ease-io) infinite alternate;
+}
+@keyframes tr-ov-cross-x {
+  from {
+    transform: translateX(12%);
+  }
+  to {
+    transform: translateX(88%);
+  }
+}
+@keyframes tr-ov-cross-y {
+  from {
+    transform: translateY(14%);
+  }
+  to {
+    transform: translateY(86%);
+  }
+}
+/* Daylight: the decoration is quieter still. */
+:root[data-theme="light"] .tr-ov-deco {
+  opacity: 0.6;
+}
+
+/* The minimap's frame breathes (an overlay ring, so the map inside never repaints for it). */
+.tr-overview .tr-ov-minimap::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border: 1px solid var(--hud-dim);
+  opacity: 0.35;
+  pointer-events: none;
+  animation: nj-breathe 6s var(--ease-io) infinite;
+}
+
+/* No rounded corners on the node wrappers: our custom nodes carry their own square frames. */
 .tr-overview .react-flow__node {
   border-radius: 0;
 }
-.tr-overview .react-flow__controls {
-  border: 1px solid var(--border);
-  border-radius: 0;
-  overflow: hidden;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
-}
-.tr-overview .react-flow__controls-button {
-  background: var(--panel);
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--text-muted);
-  fill: currentColor;
-}
-.tr-overview .react-flow__controls-button:hover {
-  background: var(--row-hover);
-  color: var(--text);
-}
-.tr-overview .react-flow__minimap {
-  background: color-mix(in srgb, var(--panel) 82%, transparent);
-  border: 1px solid var(--border);
-  border-radius: 0;
-}
-.tr-overview .react-flow__attribution {
-  background: transparent;
-  color: var(--text-muted);
-  opacity: 0.55;
-}
-.tr-overview .react-flow__attribution a {
-  color: var(--text-muted);
-}
 
-/* Project cluster container. The node wrapper keeps pointer events ENABLED (default) so the
- * header toggle <button> is hit-testable; chips are separate React Flow nodes on top and stay
- * clickable. (We deliberately don't disable the wrapper — that would also disable the header
- * button. The minor cost: dragging on a cluster's empty body doesn't pan the canvas; users
- * pan over the background / between clusters instead.) (#144) */
-.tr-ov-group {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
-  border: 1px solid var(--border);
-  border-radius: 0;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.32);
+/* ---- hierarchy edges (#148) and their hidden handles ---- */
+.tr-overview .react-flow__edge-path {
+  stroke: var(--line-strong);
+  stroke-width: 1.5;
 }
-/* An empty project cluster (#447): a dashed, muted drop target with no sessions yet. */
-.tr-ov-group.empty {
-  border-style: dashed;
-  background: color-mix(in srgb, var(--panel) 70%, transparent);
+/* A LIVE edge (an agent works under the cluster it points at): a lit dashed line, and the
+ * data-flow — one packet (OverviewCanvas `MapEdge`) travelling down, across and down its three
+ * segments. Transform and opacity only, so the compositor runs them: a dash-offset flow kept the
+ * main thread painting every frame and cost more than the map's 2% idle budget on its own (#1573,
+ * measured in e2e/map-nightjar.spec.ts). */
+.tr-overview .react-flow__edge.tr-ov-edge-live .react-flow__edge-path {
+  stroke: var(--hud-dim);
+  stroke-dasharray: 6 6;
 }
-.tr-ov-group.empty .tr-ov-cwd {
-  font-style: italic;
-  opacity: 0.85;
-}
-/* The cluster header is a collapse/expand toggle (button reset). */
-.tr-ov-group-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  height: 44px;
-  padding: 0 12px;
-  border: 0;
-  border-bottom: 1px solid var(--border-subtle);
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: 12.5px;
-  text-align: left;
-  cursor: pointer;
-}
-.tr-ov-group-head:hover .tr-ov-path {
-  color: var(--accent-text);
-}
-.tr-ov-group.collapsed .tr-ov-group-head {
-  border-bottom: 0; /* header-only box */
-}
-.tr-ov-chev {
-  flex: none;
-  color: var(--text-muted);
-}
-.tr-ov-group-head .tr-ov-meta {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-.tr-ov-path {
-  color: var(--text);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-/* Real path shown under a custom name, to disambiguate duplicate friendly names (#148). */
-.tr-ov-cwd {
-  font-size: 10px;
-  color: var(--text-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.tr-ov-count {
-  margin-left: auto;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-3, var(--text-muted));
-  flex: none;
-}
-/* Owning-project badge on a folder node (#445, Folders layout) — folders read as a
-   sub-property of their project. A small pill above the folder path. */
-.tr-ov-owner {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  align-self: flex-start;
-  max-width: 100%;
-  margin-bottom: 2px;
-  padding: 1px 6px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.tr-ov-owner-dot {
+.tr-ov-packet {
+  position: absolute;
+  top: 0;
+  left: 0;
   width: 6px;
   height: 6px;
-  flex: none;
-  border-radius: 50%;
-  background: var(--owner, var(--text-muted));
+  margin: -3px 0 0 -3px;
+  background: var(--hud);
+  opacity: 0;
+  pointer-events: none;
+  animation: tr-ov-packet 2.8s linear infinite;
 }
-/* Project color marker (#361 Phase 4 / #285) — the group/chip sets --proj (explicit entity
- * color, else the stable key hash); the tinted top border + dots just consume the var. */
-.tr-ov-group.tinted {
-  border-top: 2px solid var(--proj);
-}
-.tr-ov-proj-dot {
-  width: 8px;
-  height: 8px;
-  flex: none;
-  border-radius: 50%;
-  background: var(--proj);
-}
-/* Inline create-project failure (409 detail) in the header's subtitle slot (#361 Phase 4). */
-.tr-ov-err {
-  font-size: 10px;
-  color: var(--status-down);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-/* "Make this a project" on a folder-fallback cluster (#361 Phase 4). Owns its click
- * (stopPropagation) so it never doubles as the header's collapse toggle. */
-.tr-ov-mkproj {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 0;
-  background: transparent;
-  color: var(--text-3, var(--text-muted));
-  cursor: pointer;
-}
-.tr-ov-mkproj:hover {
-  color: var(--accent-text);
-  border-color: var(--border);
-  background: var(--row-hover);
-}
-.tr-ov-mkproj:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-/* Folder-hierarchy edges + their (hidden, non-interactive) handles (#148). */
-.tr-overview .react-flow__edge-path {
-  stroke: var(--border);
-  stroke-width: 1.5;
+@keyframes tr-ov-packet {
+  0% {
+    opacity: 0;
+    transform: translate(var(--sx), var(--sy));
+  }
+  8% {
+    opacity: 1;
+  }
+  35% {
+    transform: translate(var(--sx), var(--cy));
+  }
+  65% {
+    transform: translate(var(--tx), var(--cy));
+  }
+  92% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--tx), var(--ty));
+  }
 }
 .tr-ov-handle {
   opacity: 0;
@@ -218,11 +171,210 @@
   height: 1px;
 }
 
-/* Session chip — at information parity with the sidebar list row (#424 Phase 4): a head line
- * (LED + title + intervention badge + engine), the AI summary, and a project/folder/time foot.
- * Fixed size so the tidy-tree layout stays deterministic; content centres when a line is absent.
- * Framed by the HudFrame corner brackets only (#476) — no engine left rail, so the bracketed
- * left edge never doubles up. Engine identity reads off the coloured node dot + handles below. */
+/* ---- project cluster: a sector-framed panel ----
+ * The node wrapper keeps pointer events ENABLED (default) so the header toggle is hit-testable;
+ * chips are separate React Flow nodes on top and stay clickable. (#144) */
+.tr-ov-group {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+}
+/* The sector frame and its tag, a step outside the cluster (the layout leaves 28 px between
+ * siblings and 64 px between rows). Decorative: it never takes a pointer. */
+.tr-ov-group[data-sector]::before {
+  content: "";
+  position: absolute;
+  inset: -9px;
+  border: 1px solid var(--line);
+  pointer-events: none;
+}
+.tr-ov-group[data-sector]::after {
+  content: attr(data-sector) / "";
+  position: absolute;
+  left: -9px;
+  top: -12px;
+  max-width: calc(100% + 18px);
+  padding-right: var(--sp-2);
+  overflow: hidden;
+  font: 500 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+  background: var(--bg);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+/* A folder's path keeps its case. */
+.tr-ov-group--folder[data-sector]::after {
+  text-transform: none;
+  letter-spacing: 0.08em;
+}
+/* An empty project cluster (#447): a dashed, muted drop target with no sessions yet. */
+.tr-ov-group.empty {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--bg-1) 70%, transparent);
+}
+.tr-ov-group.empty .tr-ov-cwd {
+  font-style: normal;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+/* The cluster header is a collapse/expand toggle and the cluster's drag handle. */
+.tr-ov-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  height: 44px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--fs-meta);
+  text-align: left;
+  cursor: pointer;
+}
+.tr-ov-group-head:hover .tr-ov-path {
+  color: var(--hud-text);
+}
+.tr-ov-group.collapsed .tr-ov-group-head {
+  border-bottom: 0; /* header-only box */
+}
+.tr-ov-chev {
+  flex: none;
+  color: var(--text-3);
+}
+.tr-ov-group-head .tr-ov-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+/* The cluster's callsign: mono, bold; a project or agent name reads in capitals, a folder path
+ * keeps its case. */
+.tr-ov-path {
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tr-ov-group--project .tr-ov-path,
+.tr-ov-group--agent .tr-ov-path {
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+/* Real path shown under a custom name, to disambiguate duplicate friendly names (#148). */
+.tr-ov-cwd {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tr-ov-count {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+/* Owning-project tag on a folder node (#445, Folders layout): a square mono tag above the path. */
+.tr-ov-owner {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  align-self: flex-start;
+  max-width: 100%;
+  margin-bottom: 2px;
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tr-ov-owner-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 0;
+  background: var(--owner, var(--text-3));
+}
+/* Project colour marker (#361 Phase 4 / #285): the group/chip sets --proj; a lit top rail and a
+ * square swatch consume it. */
+.tr-ov-group.tinted {
+  border-top: 2px solid var(--proj);
+}
+.tr-ov-proj-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 0;
+  background: var(--proj);
+}
+/* Inline create-project failure (409 detail) in the header's subtitle slot (#361 Phase 4). */
+.tr-ov-err {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--danger-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* "Make this a project" on a folder-fallback cluster (#361 Phase 4). Owns its click
+ * (stopPropagation) so it never doubles as the header's collapse toggle. */
+.tr-ov-mkproj {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.tr-ov-mkproj:hover {
+  color: var(--hud-text);
+  border-color: var(--hud-dim);
+  background: var(--hud-tint);
+}
+.tr-ov-mkproj:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.tr-ov-mkproj:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ---- session chip: at information parity with the sidebar list row (#424 Phase 4) ----
+ * A head line (LED + title + intervention badge + engine), the AI summary, and a project/folder/
+ * time foot. Fixed size so the tidy-tree layout stays deterministic. Framed by the HudFrame
+ * corner brackets on a uniform hairline (#476): no left rail. */
 .tr-ov-chip {
   position: relative;
   display: flex;
@@ -231,43 +383,39 @@
   gap: 3px;
   width: 240px;
   height: 80px;
-  padding: 8px 11px;
-  background: var(--row-hover);
-  border: 1px solid var(--border);
+  padding: var(--sp-2) 11px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
   border-radius: 0;
   cursor: pointer;
   text-align: left;
-  color: var(--text);
+  color: var(--text-1);
   overflow: hidden;
-  transition:
-    border-color 0.12s,
-    transform 0.12s;
+  transition: border-color var(--t-fast) var(--ease-out);
 }
+/* Hover brightens the edge; nothing moves (docs/design.md §8). */
 .tr-ov-chip:hover {
-  border-color: var(--accent);
-  transform: translateY(-1px);
+  border-color: var(--hud-dim);
 }
 .tr-ov-chip:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: 2px;
 }
 .tr-ov-chip.archived {
   opacity: 0.45;
 }
-/* The currently-open session — highlighted in sync with the sidebar's active row (#149). */
+/* The currently-open session, in sync with the sidebar's active row (#149). */
 .tr-ov-chip.selected {
-  border-color: var(--accent);
-  background: var(--row-hover);
-  box-shadow: 0 0 0 1px var(--accent);
+  border-color: var(--hud);
+  box-shadow: inset 0 0 0 1px var(--hud);
 }
-/* Head line: LED + title (grows + ellipsises) + intervention badge + engine badge. */
 .tr-ov-chip-head {
   display: flex;
   align-items: center;
   gap: 7px;
   min-width: 0;
 }
-/* Intervention "!" badge — mirrors the list row's amber alertBadge (#356). */
+/* Intervention "!" badge — the list row's needs-you mark (#356): the attention colour. */
 .tr-ov-alert {
   flex: none;
   width: 14px;
@@ -275,30 +423,30 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
   font-weight: 700;
-  color: var(--bg, #000);
-  background: var(--accent, #ffb000);
+  color: var(--on-accent);
+  background: var(--status-degraded);
 }
 /* AI summary (or the exclusion marker) — one ellipsised line, like the list row. */
 .tr-ov-summary {
-  font-size: 10.5px;
-  color: var(--text-2, var(--text-muted));
+  font-size: var(--fs-label);
+  color: var(--text-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .tr-ov-summary.excluded {
   font-style: italic;
-  color: var(--text-3, var(--text-muted));
+  color: var(--text-3);
 }
-/* Foot line: project chip + folder chip + relative time, as one ellipsised mono line. */
+/* Foot line: project + folder + relative time, as one ellipsised mono line. */
 .tr-ov-chip-foot {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
-  letter-spacing: 0.02em;
-  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.04em;
+  color: var(--text-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -311,14 +459,16 @@
   vertical-align: middle;
 }
 .tr-ov-foot-sep {
-  margin: 0 4px;
+  margin: 0 var(--sp-1);
   opacity: 0.6;
 }
 .tr-ov-folder-mark {
-  font-style: italic;
-  color: var(--text-3, var(--text-muted));
+  color: var(--text-3);
 }
+/* The chip's LED, in the engine's colour. A working agent's LED pings (a ring on a pseudo-element:
+ * opacity and a decorative scale, never the LED itself). */
 .tr-ov-dot {
+  position: relative;
   width: 8px;
   height: 8px;
   flex: none;
@@ -327,36 +477,40 @@
 }
 .tr-ov-dot.active {
   background: var(--eng, var(--accent));
-  box-shadow: 0 0 0 3px
-    color-mix(in srgb, var(--eng, var(--accent)) 25%, transparent);
 }
 .tr-ov-dot.idle {
   background: transparent;
 }
-/* Agent currently emitting output (#156). Stronger signal than `active` — pulses to
- * draw the eye. Reduced-motion users get a steady ring instead of the animation. */
 .tr-ov-dot.working {
   background: var(--eng, var(--accent));
-  box-shadow: 0 0 0 3px
-    color-mix(in srgb, var(--eng, var(--accent)) 35%, transparent);
-  animation: tr-ov-pulse 1.4s ease-in-out infinite;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--eng, var(--accent)) 30%, transparent);
 }
-@keyframes tr-ov-pulse {
-  0%,
+.tr-ov-dot.working::after {
+  content: "";
+  position: absolute;
+  inset: -1.5px;
+  border-radius: 50%;
+  border: 1.5px solid var(--eng, var(--accent));
+  opacity: 0;
+  animation: tr-ov-ping 6s linear infinite;
+}
+/* ONE ping every 6 s (#1573): the 1.8 s ring, then quiet. A continuous ping on every working dot
+ * cost about a third of the map's idle budget; a beat says "engaged" as clearly. */
+@keyframes tr-ov-ping {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.8;
+    animation-timing-function: var(--ease-out);
+  }
+  30%,
   100% {
-    box-shadow: 0 0 0 3px
-      color-mix(in srgb, var(--eng, var(--accent)) 35%, transparent);
-  }
-  50% {
-    box-shadow: 0 0 0 6px
-      color-mix(in srgb, var(--eng, var(--accent)) 12%, transparent);
+    transform: scale(2.2);
+    opacity: 0;
   }
 }
-/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+/* Reduced and Off (the motion mode, #1531): a steady, wider ring says "working" without moving. */
 :root:not([data-motion="full"]) .tr-ov-dot.working {
-  animation: none;
-  box-shadow: 0 0 0 4px
-    color-mix(in srgb, var(--eng, var(--accent)) 45%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--eng, var(--accent)) 45%, transparent);
 }
 .tr-ov-meta {
   min-width: 0;
@@ -366,7 +520,7 @@
 .tr-ov-ttl {
   flex: 1;
   min-width: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-row);
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -374,10 +528,11 @@
 }
 .tr-ov-eng {
   flex: none;
-  font-size: 9.5px;
-  font-weight: 800;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.1em;
   color: var(--eng, var(--accent-text));
 }
 
@@ -402,7 +557,7 @@
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: var(--text-3, var(--text-muted));
+  color: var(--text-3);
   cursor: pointer;
 }
 .tr-ov-kebab-glyph {
@@ -414,18 +569,18 @@
 }
 .tr-ov-chip:hover .tr-ov-kebab,
 .tr-ov-kebab:focus-visible {
-  color: var(--accent-text);
+  color: var(--hud-text);
 }
 .tr-ov-kebab:hover .tr-ov-kebab-glyph,
 .tr-ov-kebab[aria-expanded="true"] .tr-ov-kebab-glyph {
-  background: var(--bg-2);
-  border-color: var(--border);
+  background: var(--bg-1);
+  border-color: var(--line-strong);
 }
 .tr-ov-kebab:focus-visible {
   outline: none;
 }
 .tr-ov-kebab:focus-visible .tr-ov-kebab-glyph {
-  box-shadow: 0 0 0 2px var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-text);
 }
 /* Touch: the hit square is measured in SCREEN pixels after zoom. The canvas writes the viewport
  * zoom to --ov-zoom, so 44px / zoom flow px is 44 screen px at any zoom. At 0.55 that square is
@@ -450,7 +605,7 @@
   cursor: grabbing;
 }
 
-/* Empty / loading / error states. */
+/* ---- route states: first read (Acquiring), error + Retry, empty — over the tactical grid ---- */
 .tr-ov-state {
   width: 100%;
   height: 100%;
@@ -458,12 +613,33 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  color: var(--text-muted);
-  font-size: 13px;
-  background: var(--bg);
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+  color: var(--text-2);
+  font-size: var(--fs-row);
+  text-align: center;
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(var(--line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--line) 1px, transparent 1px);
+  background-size: 32px 32px;
 }
-/* Expand-all / Collapse-all toolbar (#144), top-right over the canvas. */
+.tr-ov-loader {
+  width: min(320px, 80%);
+}
+.tr-ov-state-error {
+  margin: 0;
+  max-width: min(420px, 100%);
+  padding: var(--sp-2) var(--sp-3);
+  font: 400 var(--fs-meta) / 1.5 var(--font-mono);
+  text-align: left;
+  color: var(--danger-text);
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-left: 2px solid var(--status-down);
+}
+
+/* ---- the toolbar (#144), top-right over the canvas ---- */
 .tr-ov-toolbar {
   position: absolute;
   top: 10px;
@@ -475,21 +651,23 @@
   max-width: calc(100% - 20px);
   gap: 6px;
 }
-/* Map layout selector (#424 Phase 2) — a segmented Folders / Projects / Agents control. The
- * member buttons inherit the toolbar button look; here we collapse them into one strip and
- * mark the active segment. */
+/* The group-by selector (#424 Phase 2): one segmented frame (the `nj-seg` look); the selected
+ * segment wears the lit underline. Its members are segments of one control, not buttons of their
+ * own, so they stay here rather than composing the shared plates. */
 .tr-ov-groupby {
   display: inline-flex;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
 }
 .tr-ov-groupby button + button {
-  margin-left: -1px;
+  border-left: 1px solid var(--line);
 }
 .tr-ov-toolbar .tr-ov-groupby button.on {
   position: relative;
   z-index: var(--z-raised);
-  color: var(--text);
-  background: var(--row-hover);
-  border-color: var(--accent);
+  color: var(--hud-text);
+  background: var(--hud-tint);
+  box-shadow: inset 0 -2px 0 var(--hud);
 }
 /* Narrow canvases (mobile / squeezed): drop the labels to icons so the selector + actions
  * still fit the top-right toolbar. The aria-label keeps each control named for a11y/tests. */
@@ -499,74 +677,99 @@
   }
 }
 /* The toolbar's ACTIONS are the shared ghost plates (actionButton.module.css `ghost compact`,
- * docs/design.md §6). What stays here is the two composite controls — the group-by strip and the
- * window stepper — whose members are segments of one frame, not buttons of their own. */
+ * docs/design.md §6). The two composite controls — the group-by strip and the window stepper —
+ * share their row height: 32 px on a fine pointer, the 44 px floor on touch or ≤800px. */
 .tr-ov-groupby button,
 .tr-ov-wins-step button {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  color: var(--text-muted);
-  background: color-mix(in srgb, var(--panel) 90%, transparent);
-  border: 1px solid var(--border);
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  min-width: 32px;
+  padding: 0 var(--sp-3);
+  border: 0;
   border-radius: 0;
-  padding: 5px 9px;
+  background: transparent;
+  color: var(--text-2);
+  font: 500 var(--fs-label) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   cursor: pointer;
+  transition:
+    color var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out);
 }
 .tr-ov-groupby button:hover,
-.tr-ov-wins-step button:hover {
-  color: var(--text);
+.tr-ov-wins-step button:hover:not(:disabled) {
+  color: var(--text-1);
   background: var(--row-hover);
-  border-color: var(--accent);
 }
-/* Inline "+ New project" name input (#361 Phase 4). */
+.tr-ov-groupby button:focus-visible,
+.tr-ov-wins-step button:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+/* Inline "+ New project" name input (#361 Phase 4): the square field at the toolbar's height. */
 .tr-ov-newproj {
   display: inline-flex;
   gap: 6px;
 }
 .tr-ov-newproj input {
-  width: 140px;
-  font-size: 11px;
-  color: var(--text);
-  background: color-mix(in srgb, var(--panel) 90%, transparent);
-  border: 1px solid var(--border);
+  width: 160px;
+  min-height: 32px;
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
   border-radius: 0;
-  padding: 5px 8px;
+}
+.tr-ov-newproj input:hover {
+  border-color: var(--hud-dim);
 }
 .tr-ov-newproj input:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: 0;
+  outline: none;
+  border-color: var(--hud);
+  box-shadow: inset 0 0 0 1px var(--hud);
 }
+
+/* ---- banners over the canvas ---- */
+/* The banners sit under the toolbar's measured bottom (`--ov-bar-bottom`, set by the canvas), so
+ * a toolbar that wraps to two rows never covers them. A toolbar / create / drag failure: the error
+ * banner, on the toolbar's side. */
 .tr-ov-toolbar-err {
   position: absolute;
-  top: 42px;
+  top: var(--ov-bar-bottom, 52px);
   right: 10px;
   z-index: calc(var(--z-raised) + 5);
-  max-width: 320px;
-  font-size: 11px;
-  color: var(--status-down);
-  background: color-mix(in srgb, var(--panel) 90%, transparent);
-  border: 1px solid var(--border);
-  padding: 4px 9px;
+  max-width: 360px;
+  padding: var(--sp-2) var(--sp-3);
+  font: 400 var(--fs-meta) / 1.4 var(--font-mono);
+  color: var(--danger-text);
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-left: 2px solid var(--status-down);
 }
 /* A refused batch (Hermes on #1320): every session that could not open as a window, each with its
- * own full-screen way in — nothing a batch asked for is dropped silently. */
+ * own full-screen way in — nothing a batch asked for is dropped silently. The attention rail. */
 .tr-ov-refused {
   position: absolute;
-  top: 52px;
+  top: var(--ov-bar-bottom, 52px);
   left: 50%;
   z-index: calc(var(--z-raised) + 6);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 12px;
+  gap: var(--sp-2) var(--sp-3);
   max-width: min(92%, 720px);
   padding: 10px 14px;
-  font-size: 13px;
-  color: var(--text);
+  font-size: var(--fs-row);
+  color: var(--text-1);
   background: var(--bg-1);
-  border: 1px solid var(--status-degraded);
+  border: 1px solid var(--line-strong);
+  border-left: 2px solid var(--status-degraded);
+  box-shadow: var(--shadow-menu);
   transform: translateX(-50%);
 }
 .tr-ov-refused a {
@@ -574,33 +777,40 @@
   align-items: center;
   min-height: 32px;
   padding: 0 10px;
-  color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.06em;
+  color: var(--hud-text);
   border: 1px solid var(--line-strong);
   text-decoration: none;
 }
 .tr-ov-refused a:hover,
 .tr-ov-refused a:focus-visible {
-  border-color: var(--accent);
+  border-color: var(--hud);
+  background: var(--hud-tint);
 }
 /* The dismiss is the shared icon plate; only its place on the line is set here. */
 .tr-ov-refused button {
   margin-left: auto;
 }
+/* Partial results: the map shows only the most recent sessions. The hud rail, top-left under the
+ * toolbar. */
 .tr-ov-partial {
   position: absolute;
-  top: 10px;
-  left: 50%;
-  transform: translateX(-50%);
+  top: var(--ov-bar-bottom, 52px);
+  left: 10px;
+  max-width: calc(100% - 20px);
   z-index: calc(var(--z-raised) + 5);
-  font-size: 11px;
-  color: var(--text-muted);
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
-  border: 1px solid var(--border);
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-left: 2px solid var(--hud);
   border-radius: 0;
-  padding: 4px 12px;
 }
 /* Drag-to-reassign (#424 Phase 5). A hint in Projects layout, a "grabbing" cursor while a chip
- * is in flight, and a dashed accent outline marking the project clusters that are valid drop
+ * is in flight, and a dashed hud outline marking the project clusters that are valid drop
  * targets (folder/agent groups aren't user-assignable, so they're never highlighted). */
 .tr-ov-hint {
   position: absolute;
@@ -608,19 +818,30 @@
   left: 50%;
   transform: translateX(-50%);
   z-index: calc(var(--z-raised) + 5);
-  font-size: 10.5px;
-  color: var(--text-muted);
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
-  border: 1px solid var(--border-subtle);
+  padding: var(--sp-1) var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--text-3);
+  background: var(--bg-1);
+  border: 1px solid var(--line);
   border-radius: 0;
-  padding: 3px 10px;
   pointer-events: none;
+}
+@media (max-width: 800px) {
+  .tr-ov-hint {
+    max-width: calc(100% - 20px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 }
 .tr-overview--dragging .tr-ov-chip {
   cursor: grabbing;
 }
 .tr-overview--dragging .tr-ov-group--project {
-  outline: 1px dashed var(--accent);
+  outline: 1px dashed var(--hud);
   outline-offset: 2px;
 }
 
@@ -628,7 +849,7 @@
  * top-right corner, over the HUD frame — deliberately a shape, not a colour, so it survives the
  * archived/selected variants and reads without relying on hue. */
 .tr-ov-chip.opened {
-  box-shadow: 0 0 0 1px var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--hud-dim);
 }
 .tr-ov-opened {
   position: absolute;
@@ -638,34 +859,33 @@
   place-items: center;
   width: 18px;
   height: 18px;
-  font-size: 10px;
+  font-size: var(--fs-micro);
   line-height: 1;
-  color: var(--accent-text);
+  color: var(--hud-text);
   background: var(--bg);
-  border: 1px solid var(--accent-soft);
+  border: 1px solid var(--hud-dim);
 }
 
-/* Workspace readout in the map toolbar (#208): how many windows are open, and the way out. */
-/* The windows readout + the operator's cap stepper (#936). One bordered control, not a readout
+/* The windows readout + the operator's cap stepper (#936). One framed control, not a readout
  * beside two buttons: the count and the limit it is measured against belong together, and the
- * shared frame is what says the steps act on the number to their left. Chrome matches
- * the group-by strip exactly — no radius, no gradient (docs/design.md). */
+ * shared frame says the steps act on the number to their left. */
 .tr-ov-wins {
   display: inline-flex;
   align-items: stretch;
-  font-size: 11px;
-  color: var(--text-muted);
-  background: color-mix(in srgb, var(--panel) 90%, transparent);
-  border: 1px solid var(--border);
+  font: 500 var(--fs-label) / 1 var(--font-mono);
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
 }
 .tr-ov-wins-label {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 5px 9px;
+  gap: 6px;
+  padding: 0 var(--sp-3);
 }
 .tr-ov-wins b {
-  color: var(--accent-text);
+  color: var(--hud-text);
   font-weight: 700;
   /* Tabular, so the count stepping 9 → 10 doesn't shift the toolbar under the pointer. */
   font-variant-numeric: tabular-nums;
@@ -674,19 +894,27 @@
   display: inline-flex;
 }
 .tr-ov-toolbar .tr-ov-wins-step button {
-  border: 0;
-  border-left: 1px solid var(--border);
-  padding: 5px 7px;
-  background: transparent;
-}
-.tr-ov-toolbar .tr-ov-wins-step button:hover:not(:disabled) {
-  color: var(--text);
-  background: var(--row-hover);
+  padding: 0;
+  border-left: 1px solid var(--line);
 }
 /* Dimmed, not hidden, at the clamp ends: a control that vanishes takes the range with it. */
 .tr-ov-toolbar .tr-ov-wins-step button:disabled {
   opacity: 0.35;
   cursor: default;
+}
+
+/* The touch floor: every toolbar control is 44 px where a finger is the pointer. */
+@media (pointer: coarse), (max-width: 800px) {
+  .tr-ov-groupby button,
+  .tr-ov-wins-step button,
+  .tr-ov-newproj input,
+  .tr-ov-refused a {
+    min-height: 44px;
+  }
+  .tr-ov-groupby button,
+  .tr-ov-wins-step button {
+    min-width: 44px;
+  }
 }
 
 /* The empty-map message while windows are still open (#208): the canvas is gone, the workspace
@@ -695,5 +923,10 @@
   position: absolute;
   top: 50%;
   left: 50%;
+  width: auto;
+  height: auto;
+  background: var(--bg-1);
+  background-image: none;
+  border: 1px solid var(--line-strong);
   transform: translate(-50%, -50%);
 }

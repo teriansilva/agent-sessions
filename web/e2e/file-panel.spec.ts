@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { animationsSettled } from "./nightjarShell";
 import {
   actionsMenuTrigger,
   clickHeadAction,
@@ -343,6 +344,8 @@ test.describe("file panel — touch", () => {
     const trigger = await openSession(page);
     await trigger.tap();
     await expect(page.locator("[data-file-panel='sheet']")).toBeVisible();
+    // The phone sheet slides up (#1560): measured mid-transform a 44 px tab reads 43.99999 px.
+    await animationsSettled(page);
 
     // Scope to the panel: the sidebar drawer also has role="tab" filters and they are still in
     // the DOM behind the sheet, so an unscoped `.first()` measures the wrong element entirely.

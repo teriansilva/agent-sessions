@@ -1,8 +1,9 @@
-/* Floating session window on the Overview map (#208).
+/* Floating session window on the Overview map (#208), in NIGHTJAR (#1531 Phase 9).
  *
  * The whole point of the overlay architecture is that NOTHING here scales the terminal: this is
  * chrome around the unmodified session pane, positioned in overlay-local pixels, outside React
- * Flow's zoom transform. Square corners + hairline rules per the HUD language. */
+ * Flow's zoom transform. Square corners, hairlines, the mono chrome bar (the window's ONLY bar,
+ * #1109), plate-feedback controls and a ticked resize grip. */
 
 .win {
   position: absolute;
@@ -11,17 +12,17 @@
   overflow: hidden;
   background: var(--bg-1);
   border: 1px solid var(--line-strong);
-  box-shadow: 0 18px 48px rgb(0 0 0 / 50%);
+  box-shadow: var(--shadow-dialog);
   /* The layer is pointer-events:none so the canvas pans between windows; each window takes
      its own events back. */
   pointer-events: auto;
 }
 
 .focused {
-  border-color: var(--accent-soft);
+  border-color: var(--hud-dim);
   box-shadow:
-    0 26px 70px rgb(0 0 0 / 60%),
-    0 0 0 1px var(--accent-glow);
+    var(--shadow-dialog),
+    0 0 0 1px var(--hud-faint);
 }
 
 .head {
@@ -32,7 +33,7 @@
   height: 30px;
   padding: 0 6px 0 8px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   font-weight: 600;
   line-height: 1;
   color: var(--text-2);
@@ -69,9 +70,13 @@
 }
 
 .grip {
-  font-size: 13px;
+  font-size: var(--fs-row);
   letter-spacing: -1px;
   color: var(--text-3);
+}
+
+.focused .grip {
+  color: var(--hud-dim);
 }
 
 /* The facts run (HeadFacts, #1109): fixed, measured — the fold's `reservePx` reads its width,
@@ -103,11 +108,15 @@
   min-width: 0;
 }
 
-/* Inherited from the pane's own #184/#293 role frame — the window only mirrors it. */
+/* Inherited from the pane's own #184/#293 role frame — the window only mirrors it: an attention
+   tag in the bar. */
 .lock {
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  color: var(--status-degraded);
+  flex: none;
+  padding: 2px 6px;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  color: var(--warn-text);
+  border: 1px solid color-mix(in srgb, var(--status-degraded) 55%, transparent);
 }
 
 .btns {
@@ -116,14 +125,19 @@
 }
 
 .btns button {
+  display: inline-grid;
+  place-items: center;
   width: 24px;
   height: 24px;
-  font-size: 13px;
+  padding: 0;
   line-height: 1;
   color: var(--text-3);
   cursor: pointer;
   background: transparent;
   border: 0;
+  transition:
+    color var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out);
 }
 
 .focused .btns button {
@@ -131,13 +145,14 @@
 }
 
 .btns button:hover {
-  color: var(--accent-text);
+  color: var(--hud-text);
+  background: var(--hud-tint);
 }
 
 .btns button:focus-visible,
 .resize:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
 }
 
 .body {
@@ -193,6 +208,7 @@
   min-height: 0;
 }
 
+/* The resize grip: two nested corner ticks (borders, no gradient) in the bottom-right corner. */
 .resize {
   position: absolute;
   right: 1px;
@@ -201,17 +217,30 @@
   height: 14px;
   padding: 0;
   cursor: nwse-resize;
-  background: linear-gradient(
-    135deg,
-    transparent 46%,
-    var(--line-strong) 46%,
-    var(--line-strong) 58%,
-    transparent 58%,
-    transparent 72%,
-    var(--line-strong) 72%,
-    var(--line-strong) 84%,
-    transparent 84%
-  );
+  background: transparent;
   border: 0;
+  border-right: 2px solid var(--line-strong);
+  border-bottom: 2px solid var(--line-strong);
   touch-action: none;
+}
+
+.resize::before {
+  content: "";
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 6px;
+  height: 6px;
+  border-right: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.resize:hover,
+.focused .resize {
+  border-color: var(--hud-dim);
+}
+
+.resize:hover::before,
+.focused .resize::before {
+  border-color: var(--hud-dim);
 }

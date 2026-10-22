@@ -515,3 +515,29 @@ test("the UNARCHIVE choice is a dialog: focus on the safe option, Esc and outsid
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(api.unarchiveMission).not.toHaveBeenCalled();
 });
+
+test("the state chip flashes on EVERY change, compared with the previous label; Reduced fades it (#1573)", () => {
+  const props = { onChanged: () => {}, onNote: () => {} };
+  const { rerender } = render(<MissionHeaderActions mission={mission({ state: "running" })} {...props} />);
+  const chip = () => screen.getByTestId("mission-state-chip");
+  // The label the console first painted with never flashes.
+  expect(chip().className).not.toMatch(/stateChipChanged/);
+  const first = chip();
+
+  rerender(<MissionHeaderActions mission={mission({ state: "failed" })} {...props} />);
+  expect(chip(), "a change remounts the chip, so its one-shot plays").not.toBe(first);
+  expect(chip().className).toMatch(/stateChipChanged/);
+  expect(chip(), "Reduced keeps it perceptible as one fade").toHaveClass("nj-fade-ok");
+  const second = chip();
+
+  // Back to the label it opened with: still a change (compared with the PREVIOUS label).
+  rerender(<MissionHeaderActions mission={mission({ state: "running" })} {...props} />);
+  expect(chip()).not.toBe(second);
+  expect(chip().className).toMatch(/stateChipChanged/);
+  expect(chip()).toHaveClass("nj-fade-ok");
+
+  // A re-render with the same state is not a change.
+  const third = chip();
+  rerender(<MissionHeaderActions mission={mission({ state: "running" })} {...props} />);
+  expect(chip()).toBe(third);
+});

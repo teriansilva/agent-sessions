@@ -140,6 +140,16 @@ export function sessionRow(f, i) {
 
 export const SESSIONS = FLEET.map(sessionRow);
 
+/** Two sessions in sub-folders of orbital-api (the `nestedFolders` sweep state): the map's Folders
+ *  layout nests them under the project folder, and the working one makes its edge live. */
+export function nestedSessions() {
+  const base = proj("p-orbital").folders[0];
+  return [
+    { ...sessionRow({ engine: "codex", n: 10, project: "p-orbital", state: "working", title: "Ingest worker back-pressure", summary: "Bounded the worker queue; measuring drop rate under burst." }, 0), cwd: `${base}/services/ingest` },
+    { ...sessionRow({ engine: "claude", n: 11, project: "p-orbital", state: "idle", title: "Docs: rate-limit headers", summary: "Documented Retry-After and the bucket headers." }, 3), cwd: `${base}/docs` },
+  ];
+}
+
 export const SESSIONS_FACETS = {
   projects: PROJECTS.map((p) => ({ ...projRef(p.id), count: FLEET.filter((f) => f.project === p.id).length })),
   engines: [...new Set(FLEET.map((f) => f.engine))],

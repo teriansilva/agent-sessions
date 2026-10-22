@@ -208,7 +208,8 @@ for (const [name, selector, ground] of [
 test("no console stylesheet paints TEXT in a raw status hue", () => {
   const files = [
     "src/components/pulse/mission.module.css",
-    "src/components/pulse/missionDrawer.module.css",
+    "src/routes/Pulse.module.css",
+    "src/routes/Checklists.module.css",
   ];
   const offenders: string[] = [];
   for (const rel of files) {

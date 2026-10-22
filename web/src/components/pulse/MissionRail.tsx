@@ -6,11 +6,12 @@
  * and restating them is exactly how the two sidebars drifted apart; sharing the classes is what
  * keeps them aligned. Only what a `<button>` brings with it is reset locally.
  */
-import { Plus } from "lucide-react";
+import { Plus, RotateCw } from "lucide-react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { relTime } from "../../lib/format";
+import { motionMode } from "../../theme/motion";
 import {
   missionOriginKey,
   noteKeys,
@@ -18,18 +19,33 @@ import {
   useAutomationOrigins,
 } from "../../app/automationOrigins";
 import { OriginBadge } from "../automations/OriginBadge";
+import { Loader } from "../hud/Loader";
+import { Led, type LedTone } from "../hud/Meters";
 import type { MissionListRow } from "../../types/api";
+import action from "../ui/actionButton.module.css";
 import filterStyles from "../sidebar/Filters.module.css";
 import listStyles from "../sidebar/SessionList.module.css";
 
 import styles from "./mission.module.css";
-import { missionDotClass, missionStateLabel } from "./missionState";
+import { missionLed, missionStateLabel } from "./missionState";
 
-/** The state dot's class. Needs-you outranks the state; the state's own colour is the one the
- *  header's chip uses too (#967). */
-function dotClass(m: MissionListRow): string {
-  if (m.needs_you) return styles.dotNeedsYou;
-  return missionDotClass(m.state);
+/** A row ARRIVES (#1573, the session sidebar's rule from #1568) when it joins a list that had
+ *  already loaded. More than this at once is a different list — a filter, the other scope, a page
+ *  of Load more — and a whole list sliding in would be noise. */
+const ROW_ARRIVAL_MAX = 3;
+/** The arrival's length (`--t-arrive`) plus slack before the class comes off. */
+const ROW_ARRIVAL_CLEAR_MS = 700;
+
+/** The row's LED (#1573: the shared `Led`, the session rows' own primitive). Needs-you outranks
+ *  the state. SEMANTIC hues only (#967) — a draft takes the session rows' draft hue; green is the claim that
+ *  work is underway, so STARTING is neutral (`.railLedStarting`), and done / abandoned keep the
+ *  hollow ring (`.railLedDone`) — done is not a status light. The words beside it carry the state. */
+/** The row's light: THE mapping in missionState.ts (shared with the header and the thread),
+ *  plus the rail's own class for the two shapes that are not a plain light. */
+function ledOf(m: MissionListRow): { tone: LedTone; cls: string } {
+  const { tone, shape } = missionLed(m.state, m.needs_you);
+  const cls = shape === "starting" ? styles.railLedStarting : shape === "done" ? styles.railLedDone : "";
+  return { tone, cls };
 }
 
 function stateLabel(m: MissionListRow): string {
@@ -150,6 +166,49 @@ export function MissionRail({
   const rowClass = (on: boolean) =>
     `${listStyles.row} ${styles.railButton} ${on ? listStyles.active : ""}`;
 
+  // Arrivals (#1573): a mission that joins the rail after it loaded slides in with a one-shot tint
+  // and its LED flashes, in Full; Reduced fades it once; Off does nothing (motion.css). The first
+  // load never counts, and neither does a set larger than ROW_ARRIVAL_MAX.
+  const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+  const seen = useRef<Set<string> | null>(null);
+  const arrivalTimers = useRef<number[]>([]);
+  const idsSig = missions.map((m) => m.id).join("\n");
+  // Whether the rail offered another page before this change: a page appended by Load more is
+  // more of the same list, not new work, and never "arrives" (Hermes 6757).
+  const hadMore = useRef(hasMore);
+  useLayoutEffect(() => {
+    const ids = idsSig ? idsSig.split("\n") : [];
+    const before = seen.current;
+    const pagedBefore = hadMore.current;
+    seen.current = new Set(ids);
+    hadMore.current = hasMore;
+    if (before === null || before.size === 0) return;
+    const mode = motionMode();
+    const arrived = ids.filter((id) => !before.has(id));
+    if (mode === "off" || arrived.length === 0 || arrived.length > ROW_ARRIVAL_MAX) return;
+    // A page append: the list offered more, and every new id sits after every id it already had.
+    const appended =
+      pagedBefore && ids.slice(0, ids.length - arrived.length).every((id) => before.has(id));
+    if (appended) return;
+    const cls = mode === "full" ? listStyles.rowArrived : "nj-fade-ok";
+    for (const id of arrived) {
+      const el = rowRefs.current.get(id);
+      if (!el) continue;
+      el.classList.add(cls);
+      const timer = window.setTimeout(() => {
+        el.classList.remove(cls);
+        arrivalTimers.current = arrivalTimers.current.filter((t) => t !== timer);
+      }, ROW_ARRIVAL_CLEAR_MS);
+      arrivalTimers.current.push(timer);
+    }
+  }, [idsSig, hasMore]);
+  useEffect(
+    () => () => {
+      for (const t of arrivalTimers.current) window.clearTimeout(t);
+    },
+    [],
+  );
+
   return (
     <nav
       className={styles.rail}
@@ -170,24 +229,28 @@ export function MissionRail({
         // A store that would not answer is NOT "you have no missions". Saying the second when
         // the first is true is the lie this notice exists to prevent.
         <div
-          className={styles.notice}
+          className={styles.railNotice}
           role="status"
           data-testid="rail-store-error"
         >
-          <div className={styles.noticeLead}>
+          <div className={styles.railNoticeLead}>
             The mission store could not be read.
           </div>
-          <div>
+          <div className={styles.railNoticeText}>
             {storeError}.{" "}
             {missions.length
               ? "Showing the last available result."
               : "Missions are unavailable."}
-            {onReRead ? (
-              <button type="button" className={styles.more} onClick={onReRead}>
-                Retry missions
-              </button>
-            ) : null}
           </div>
+          {onReRead ? (
+            <button
+              type="button"
+              className={`${action.ghost} ${action.compact} ${styles.railNoticeRetry}`}
+              onClick={onReRead}
+            >
+              <RotateCw size={13} aria-hidden="true" /> Retry missions
+            </button>
+          ) : null}
         </div>
       ) : null}
 
@@ -243,8 +306,13 @@ export function MissionRail({
 
       <div className={styles.railScroll} data-testid="mission-list-scroll">
         {loading ? (
-          <div className={listStyles.empty} role="status">
-            Loading missions…
+          // The first read (#1573): Acquiring, in words, over two skeleton rows — never a blank rail.
+          <div className={styles.railLoading} data-testid="rail-loading">
+            <Loader kind="acquire" label="Loading missions…" />
+            <div className={styles.railSkeleton} aria-hidden="true">
+              <span className="nj-skeleton" />
+              <span className="nj-skeleton" />
+            </div>
           </div>
         ) : null}
         {missions.length === 0 && !storeError && !loading ? (
@@ -260,15 +328,20 @@ export function MissionRail({
           <div key={m.id} className={listStyles.rowWrap}>
             <button
               type="button"
+              ref={(el) => {
+                if (el) rowRefs.current.set(m.id, el);
+                else rowRefs.current.delete(m.id);
+              }}
               className={rowClass(m.id === selectedId)}
               aria-current={m.id === selectedId ? "true" : undefined}
               onClick={() => onSelect(m.id)}
               data-testid="rail-mission"
+              data-mission-state={m.needs_you ? "needs_you" : m.state}
             >
-              <span
-                className={`${listStyles.led} ${styles.dot} ${styles.railDot} ${dotClass(m)}`}
-                role="img"
-                aria-label={m.needs_you ? "Needs you" : m.state}
+              <Led
+                tone={ledOf(m).tone}
+                label={m.needs_you ? "Needs you" : m.state}
+                className={`${listStyles.led} ${styles.railLed} ${ledOf(m).cls}`}
               />
               <span className={listStyles.body}>
                 <span className={`${listStyles.title} ${styles.railText}`}>

@@ -18,7 +18,9 @@ import {
   type XYPosition,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import "../hud/reactFlow.css";
 import { useIsMobile } from "../../lib/useIsMobile";
+import { useTheme } from "../../theme/themeStore";
 import type { Step } from "./playbookDraft";
 import { PlaybookActor } from "./PlaybookCard";
 import { dependencyError, graphLayout, isNote } from "./playbookGraph";
@@ -143,6 +145,7 @@ function Canvas({
 }: Props) {
   const rf = useReactFlow<StepNode>();
   const mobile = useIsMobile();
+  const { theme } = useTheme(); // React Flow's colorMode follows the theme in force (#1531)
   const [navigationStep, setNavigationStep] = useState(steps[0]?.id ?? "");
   const [positions, setPositions] = useState<Record<string, XYPosition>>({});
   const [sizes, setSizes] = useState<
@@ -299,6 +302,7 @@ function Canvas({
       >
         {steps.length ? (
           <ReactFlow<StepNode>
+            colorMode={theme}
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}

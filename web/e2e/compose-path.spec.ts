@@ -1,5 +1,6 @@
 import { type Page, expect, test } from "@playwright/test";
 import { clickHeadAction, FILES_ACTION, headActionsReady } from "./headActions";
+import { animationsSettled } from "./nightjarShell";
 import { TOUCH_FLOOR } from "./touchTarget";
 
 /** Sending a path from the file panel into the compose draft (#792) — desktop AND mobile.
@@ -208,6 +209,8 @@ test.describe("touch", () => {
     // A coarse pointer never hovers, so an opacity-on-hover control would exist and never be
     // reachable. It must be visible on its own.
     await expect(send).toBeVisible();
+    // Tree rows arrive (nj-arrive, #1568): measured mid-transform the box reads 43.99997 px.
+    await animationsSettled(page);
     const box = await send.boundingBox();
     expect(box?.width).toBeGreaterThanOrEqual(TOUCH_FLOOR);
     expect(box?.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);

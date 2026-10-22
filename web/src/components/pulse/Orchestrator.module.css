@@ -4,7 +4,12 @@
  *
  * Status colour is load-bearing (docs/design.md): `--status-degraded` (amber) is the
  * "needs a human" signal, `--status-down` (red) is reserved for errors and failure. An
- * escalation wants a DECISION — it must never render as an incident. */
+ * escalation wants a DECISION — it must never render as an incident.
+ *
+ * NIGHTJAR (#1573): a decision in the mission console is a small chamfered frame that deploys in,
+ * its edge and rail in the decision's tone; the verb is a stamp; the session's own menu and the
+ * permission dialog's options are 44 px row plates; text never reads a raw status hue (`--warn-text`).
+ * Tokens only (docs/nightjar-ledger.md). */
 
 .wrap {
   position: relative;
@@ -26,13 +31,13 @@
 .h2 {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--fs-label);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-2);
 }
 .sub {
-  font-size: 0.72rem;
+  font-size: var(--fs-meta);
   color: var(--text-3);
 }
 .seg {
@@ -42,7 +47,7 @@
 }
 .segBtn {
   font-family: var(--font-mono);
-  font-size: 0.64rem;
+  font-size: var(--fs-micro);
   letter-spacing: 0.08em;
   padding: 6px 11px;
   min-height: 30px;
@@ -61,7 +66,7 @@
 }
 /* YOLO reads as the deliberate act it is, without reading as an error. */
 .segYolo {
-  color: var(--status-degraded);
+  color: var(--warn-text);
 }
 .segOn {
   background: var(--accent);
@@ -79,7 +84,7 @@
   gap: 8px;
   flex-wrap: wrap;
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: var(--fs-micro);
   color: var(--text-3);
 }
 .meterLabel {
@@ -106,12 +111,7 @@
 }
 
 .spin {
-  animation: orch-spin 0.9s linear infinite;
-}
-@keyframes orch-spin {
-  to {
-    transform: rotate(360deg);
-  }
+  animation: global(nj-spin) 0.9s linear infinite;
 }
 /* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
 :root:not([data-motion="full"]) .spin {
@@ -124,7 +124,7 @@
  * wraps it as prose at every width; the icon is aligned inline instead of by `align-items`. */
 .ceiling {
   margin: 8px 0 0;
-  font-size: 0.72rem;
+  font-size: var(--fs-meta);
   line-height: 1.5;
   color: var(--text-3);
 }
@@ -140,7 +140,7 @@
 .note,
 .empty {
   margin: 8px 0 0;
-  font-size: 0.75rem;
+  font-size: var(--fs-meta);
   color: var(--text-3);
 }
 .note {
@@ -161,7 +161,7 @@
 .blockHead h3 {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: var(--fs-label);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--text-2);
@@ -179,14 +179,14 @@
 }
 .groupHead b {
   font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: var(--fs-label);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--accent-text);
 }
 .groupHead span {
   font-family: var(--font-mono);
-  font-size: 0.62rem;
+  font-size: var(--fs-micro);
   color: var(--text-3);
 }
 /* The feed flows into as many columns as the panel affords (#754). It was `display: block` —
@@ -206,15 +206,12 @@
 
 /* --- action rows ---------------------------------------------------------------- */
 .act {
-  border: 1px solid var(--line);
-  border-left: 2px solid var(--line-strong);
-  background: var(--bg-1);
-  padding: 9px 11px;
-  /* The grid `gap` spaces these now; a margin here would double it. */
+  composes: nj-frame-sm nj-deploy nj-fade-ok from global;
+  --nj-face: var(--bg-1);
+  padding: var(--sp-3) var(--sp-4);
+  margin: var(--sp-3) var(--sp-4) 0;
   display: flex;
   flex-direction: column;
-  /* As a grid item, let the row shrink below its content's min-content so a long title cannot
-   * force the track — and the panel — wider than the viewport (#494's rule, same reason). */
   min-width: 0;
 }
 /* Embedded in a session card (#781): NO box. The border, left stripe, background and padding
@@ -229,7 +226,10 @@
 .actEmbedded {
   border: 0;
   background: none;
+  clip-path: none;
   padding: 0;
+  margin: 0;
+  animation: none;
 }
 /* Evidence disclosure + decision controls share one row (#781) — the ✕ on a line of its own was
  * pure vertical waste. The controls sit beside the RECAP *head*; the disclosure BODY still
@@ -248,7 +248,8 @@
   margin-top: 0;
 }
 .toneDegraded {
-  border-left-color: var(--status-degraded);
+  --nj-edge: color-mix(in srgb, var(--status-degraded) 45%, transparent);
+  border-top-color: var(--status-degraded);
 }
 /* The tone stripe is the box's left edge; with no box there is nothing to tint. */
 .actEmbedded.toneDegraded,
@@ -258,59 +259,59 @@
   border-left-color: transparent;
 }
 .toneUp {
-  border-left-color: var(--status-up);
+  --nj-edge: color-mix(in srgb, var(--status-up) 45%, transparent);
+  border-top-color: var(--status-up);
 }
 .toneDown {
-  border-left-color: var(--status-down);
+  --nj-edge: color-mix(in srgb, var(--status-down) 50%, transparent);
+  border-top-color: var(--status-down);
 }
 .toneIdle {
-  border-left-color: var(--status-unknown);
+  --nj-edge: var(--line-strong);
+  border-top-color: var(--status-unknown);
 }
 
 .actTop {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
 }
 .verb {
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  letter-spacing: 0.1em;
-  padding: 2px 6px;
-  background: var(--glass-strong);
-  border: 1px solid var(--line-strong);
-  color: var(--text-1);
+  padding: 3px 7px;
+  border: 1px solid var(--hud-dim);
+  font: 600 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.16em;
+  color: var(--hud-text);
 }
 .verbEsc {
-  color: var(--status-degraded);
-  border-color: var(--status-degraded);
-  background: transparent;
+  color: var(--warn-text);
+  border-color: color-mix(in srgb, var(--status-degraded) 60%, transparent);
 }
 .sname {
-  font-size: 0.85rem;
+  font-size: var(--fs-body);
   font-weight: 600;
   color: var(--text-1);
   overflow-wrap: anywhere;
 }
 .eng {
   font-family: var(--font-mono);
-  font-size: 0.58rem;
+  font-size: var(--fs-micro);
   color: var(--text-3);
   border: 1px solid var(--line);
   padding: 1px 4px;
 }
 .conf {
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  color: var(--text-2);
+  font: 400 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.1em;
+  color: var(--text-3);
   margin-left: auto;
 }
 .why {
-  margin: 5px 0 0;
-  font-size: 0.76rem;
-  line-height: 1.45;
-  color: var(--text-2);
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  color: var(--text-1);
   overflow-wrap: anywhere;
 }
 
@@ -328,13 +329,13 @@
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 5px 7px;
+  padding: var(--sp-1) var(--sp-2);
   min-height: 30px;
-  background: var(--bg-0);
+  background: var(--bg-2);
   border: 1px solid var(--line);
-  font-family: var(--font-mono);
-  font-size: 0.58rem;
-  letter-spacing: 0.1em;
+  font: 600 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--text-3);
   cursor: pointer;
 }
@@ -346,15 +347,15 @@
 }
 /* Stacks under the head as one box: the head keeps its border, the body drops the shared edge. */
 .evdBody {
-  padding: 7px 9px;
+  padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--line);
   border-top: 0;
-  background: var(--bg-0);
+  background: var(--term-bg);
 }
 .pre {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: var(--fs-label);
   line-height: 1.5;
   color: var(--text-2);
   white-space: pre-wrap;
@@ -364,7 +365,7 @@
   overflow-y: auto;
 }
 .muted {
-  font-size: 0.72rem;
+  font-size: var(--fs-meta);
   color: var(--text-3);
 }
 
@@ -387,11 +388,13 @@
 .actFoot {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
-  margin-top: 8px;
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--line);
+  font: 400 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.08em;
   color: var(--text-3);
 }
 .state {
@@ -410,6 +413,9 @@
   min-height: 30px;
   display: inline-flex;
   align-items: center;
+  font-family: var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 .jump:hover {
   text-decoration: underline;
@@ -469,9 +475,9 @@
 
 /* A stale verdict is information, not an incident — degraded, never `--status-down`. */
 .stale {
-  margin: 7px 0 0;
-  font-size: 0.72rem;
-  color: var(--status-degraded);
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-meta);
+  color: var(--warn-text);
 }
 
 @media (max-width: 800px) {
@@ -495,7 +501,7 @@
   border: 1px solid var(--status-degraded);
   background: color-mix(in srgb, var(--status-degraded) 8%, transparent);
   color: var(--text-1);
-  font-size: 0.78rem;
+  font-size: var(--fs-meta);
   line-height: 1.45;
 }
 .degraded svg {
@@ -515,7 +521,7 @@
 }
 .menuQ {
   margin: 0 0 6px;
-  font-size: 0.78rem;
+  font-size: var(--fs-meta);
   line-height: 1.45;
   color: var(--text-1);
   overflow-wrap: anywhere;
@@ -525,26 +531,30 @@
 }
 .menuBtns {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-direction: column;
+  gap: var(--sp-2);
 }
 .menuOpt {
-  display: inline-flex;
+  composes: nj-plate from global;
+  display: flex;
   align-items: center;
+  width: 100%;
   min-height: 44px;
-  max-width: 100%;
-  padding: 6px 12px;
-  border: 1px solid var(--line-strong);
-  background: transparent;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid transparent;
   color: var(--text-1);
   font: inherit;
-  font-size: 0.78rem;
+  font-size: var(--fs-row);
   text-align: left;
   overflow-wrap: anywhere;
   cursor: pointer;
 }
 .menuOpt:hover:not(:disabled) {
-  background: var(--glass-strong);
+  --nj-edge: var(--hud);
+}
+.menuOpt:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .menuOpt:disabled {
   opacity: 0.6;
@@ -552,10 +562,11 @@
 }
 .menuBtns .approve {
   min-height: 44px;
+  align-self: flex-start;
 }
 .menuHint {
   margin: 6px 0 0;
-  font-size: 0.72rem;
+  font-size: var(--fs-meta);
   color: var(--text-2);
 }
 
@@ -564,40 +575,37 @@
  * path in mono (wrapping, never overflowing), then one button per option in the menu's quiet shape.
  * An option that grants more than this call is dashed; armed, it adds a degraded-tone warning. */
 .perm {
-  margin: 8px 0 0;
-  border: 1px solid var(--line-strong);
-  background: var(--glass-strong);
+  margin: var(--sp-2) 0 0;
+  border: 1px dashed color-mix(in srgb, var(--status-degraded) 60%, transparent);
+  background: color-mix(in srgb, var(--status-degraded) 5%, transparent);
   min-width: 0;
 }
 .permHead {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 4px 8px;
-  padding: 7px 9px 0;
+  gap: 4px var(--sp-2);
+  padding: var(--sp-2) var(--sp-3) 0;
 }
 .permKind {
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  letter-spacing: 0.12em;
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  /* Text tone, not the status amber: amber text on the light ground fails contrast. The row's
-   * left stripe and the escalate chip already carry the degraded tone. */
   color: var(--text-2);
 }
 .permTool {
-  font-size: 0.82rem;
+  font-size: var(--fs-row);
   font-weight: 600;
   color: var(--text-1);
   overflow-wrap: anywhere;
 }
 .permDetail {
-  margin: 6px 9px 8px;
-  padding: 6px 8px;
-  background: var(--surface-3);
+  margin: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--term-bg);
   border: 1px solid var(--line);
   font-family: var(--font-mono);
-  font-size: 0.74rem;
+  font-size: var(--fs-meta);
   line-height: 1.5;
   color: var(--text-1);
   white-space: pre-wrap;
@@ -606,15 +614,15 @@
   overflow-y: auto;
 }
 .permQ {
-  margin: 0 9px 6px;
-  font-size: 0.78rem;
+  margin: 0 var(--sp-3) var(--sp-2);
+  font-size: var(--fs-meta);
   color: var(--text-2);
 }
 .permBtns {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  padding: 0 9px 9px;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3) var(--sp-3);
 }
 .permBtns .approve {
   min-height: 44px;
@@ -624,14 +632,14 @@
 }
 .perm .menuHint,
 .perm .stale {
-  margin: 0 9px 8px;
+  margin: 0 var(--sp-3) var(--sp-2);
 }
 .permWarn {
-  margin: 0 9px 8px;
-  padding: 6px 8px;
-  border: 1px solid var(--status-degraded);
+  margin: 0 var(--sp-3) var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--status-degraded);
   background: color-mix(in srgb, var(--status-degraded) 8%, transparent);
-  font-size: 0.74rem;
+  font-size: var(--fs-meta);
   line-height: 1.45;
   color: var(--text-1);
 }
@@ -640,7 +648,7 @@
 }
 .permDone {
   margin: 0 9px 9px;
-  font-size: 0.76rem;
+  font-size: var(--fs-meta);
   color: var(--text-2);
 }
 .permDone strong {

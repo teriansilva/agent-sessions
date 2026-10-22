@@ -41,7 +41,6 @@ import {
 } from "lucide-react";
 
 import { DirectionField } from "../components/pulse/DirectionField";
-import styles from "./Settings.module.css";
 import cl from "./Checklists.module.css";
 import { probeLabel } from "../components/pulse/judgment";
 import { probeIcon, probeSettler } from "../components/pulse/probeIcons";
@@ -420,7 +419,7 @@ export function MissionPlaybooks({
         <label className={cl.defaultLabel}>
           <span className={cl.lab}>New missions start with</span>
           <select
-            className={`${styles.aiInput} ${cl.defaultSelect}`}
+            className={`nj-field ${cl.defaultSelect}`}
             value={block.default_id}
             onChange={(e) =>
               edit((b) => ({ ...b, default_id: e.target.value }))
@@ -593,7 +592,7 @@ export function MissionPlaybooks({
                 playbook is new and static afterwards. */}
             {isNew ? (
               <input
-                className={`${styles.aiInput} ${cl.idInput}`}
+                className={`nj-field is-mono ${cl.idInput}`}
                 value={open.id}
                 placeholder="id (lowercase, no spaces)"
                 aria-label="Checklist id"
@@ -608,13 +607,13 @@ export function MissionPlaybooks({
                 title="A saved checklist keeps its id: missions name it"
               >
                 <Lock size={11} aria-hidden="true" />
-                <code className={styles.playbookId}>{open.id}</code>
+                <code>{open.id}</code>
                 <span>fixed once saved</span>
               </span>
             )}
           </div>
           <div className={cl.detailActions}>
-            <label className={`${styles.aiToggle} ${cl.toggle}`}>
+            <label className={`${cl.check} ${cl.toggle}`}>
               <input
                 type="checkbox"
                 checked={isDefault}
@@ -711,7 +710,7 @@ export function MissionPlaybooks({
                       <label className={cl.field}>
                         <span className={cl.lab}>What has to be true</span>
                         <input
-                          className={styles.aiInput}
+                          className="nj-field"
                           value={o.title}
                           placeholder="What has to be true"
                           aria-label="Objective title"
@@ -727,7 +726,7 @@ export function MissionPlaybooks({
                       <label className={cl.field}>
                         <span className={cl.lab}>Key</span>
                         <input
-                          className={`${styles.aiInput} ${cl.mono}`}
+                          className="nj-field is-mono"
                           value={o.key}
                           placeholder="key"
                           aria-label="Objective key"
@@ -743,7 +742,7 @@ export function MissionPlaybooks({
                       <label className={cl.field}>
                         <span className={cl.lab}>How it is checked</span>
                         <select
-                          className={styles.aiInput}
+                          className="nj-field"
                           value={o.probe}
                           aria-label="How it is checked"
                           onChange={(e) => {
@@ -777,7 +776,7 @@ export function MissionPlaybooks({
                               {name} · {required ? "required" : "optional"}
                             </span>
                             <input
-                              className={`${styles.aiInput} ${cl.mono}`}
+                              className="nj-field is-mono"
                               value={String(args[name] ?? "")}
                               // THE ARGUMENT'S OWN TYPE, from the server's schema. Every input
                               // yields a string, and `http_status.expect_status` strictly requires
@@ -828,7 +827,7 @@ export function MissionPlaybooks({
                         );
                       })}
                       <label
-                        className={`${styles.aiToggle} ${cl.toggle} ${cl.full}`}
+                        className={`${cl.check} ${cl.toggle} ${cl.full}`}
                         data-testid="objective-gate-label"
                       >
                         <input
@@ -924,8 +923,8 @@ export function MissionPlaybooks({
           <header className={cl.head}>
             <div className={cl.headText}>
               <span className={cl.kicker}>
-                <ListChecks size={13} aria-hidden="true" /> Missions /
-                Checklists
+                <ListChecks size={13} aria-hidden="true" /> Library /{" "}
+                <b>Checklists</b>
               </span>
               <Heading className={cl.title}>Checklists</Heading>
               <p className={cl.lede}>
@@ -982,13 +981,13 @@ export function MissionPlaybooks({
       )}
 
       {block.playbooks.some((p) => p.id && !ID_RE.test(p.id)) ? (
-        <p className={styles.warn}>
+        <p className={cl.warn}>
           A checklist id is lowercase letters, digits, <code>-</code> and{" "}
           <code>_</code>, starting with a letter or digit.
         </p>
       ) : null}
       {error ? (
-        <p className={styles.err} role="alert" data-testid="playbook-error">
+        <p className={cl.err} role="alert" data-testid="playbook-error">
           {error}
         </p>
       ) : null}
@@ -1004,7 +1003,7 @@ export function MissionPlaybooks({
               <span className={cl.dirtySq} aria-hidden="true" /> Unsaved changes
             </span>
           ) : saved ? (
-            <span className={styles.ok}>Saved.</span>
+            <span className={cl.ok}>Saved.</span>
           ) : null}
           <span className={cl.hint}>All checklists save together.</span>
           <button

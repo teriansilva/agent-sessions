@@ -173,7 +173,7 @@ export function MissionContextPanel({
               {onDetach ? (
                 <button
                   type="button"
-                  className={styles.objEditBtn}
+                  className={styles.releaseBtn}
                   disabled={busy}
                   onClick={() => onDetach(s.session_key)}
                   data-testid="session-detach"

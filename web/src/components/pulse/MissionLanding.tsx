@@ -1,6 +1,9 @@
 import type { ReactNode } from "react";
 import { relTime } from "../../lib/format";
 import type { MissionListRow } from "../../types/api";
+import { Loader } from "../hud/Loader";
+import { Led } from "../hud/Meters";
+import action from "../ui/actionButton.module.css";
 import styles from "./mission.module.css";
 
 /** How many needs-you missions the landing previews. The rail lists the rest. */
@@ -106,15 +109,26 @@ export function MissionLanding({
             data-testid="landing-needs-you"
           >
             <div className={styles.landingNeedsHead}>
-              <span className={`${styles.dot} ${styles.dotNeedsYou} ${styles.railDot}`} aria-hidden="true" />
-              <span>
-                Needs you{answered ? ` · ${needy.length}` : ""}
-                {scope ? <span data-testid="landing-needs-scope"> · {scope}</span> : null}
+              <span className="nj-notch" aria-hidden="true" />
+              <span className={styles.landingNeedsTitle}>
+                Needs you
+                {answered ? (
+                  <>
+                    {" · "}
+                    <b className={styles.landingNeedsCount}>{needy.length}</b>
+                  </>
+                ) : null}
+                {scope ? (
+                  <span className={styles.landingNeedsScope} data-testid="landing-needs-scope">
+                    {" · "}
+                    {scope}
+                  </span>
+                ) : null}
               </span>
               {filtered ? (
                 <button
                   type="button"
-                  className={styles.landingClear}
+                  className={`${action.ghost} ${action.compact} ${styles.landingClear}`}
                   onClick={onClearFilters}
                   data-testid="landing-clear-filters"
                 >
@@ -124,13 +138,16 @@ export function MissionLanding({
             </div>
             {needy.length === 0 && unavailable ? (
               // No `role="status"`: the console already announces the store outage once.
-              <div className={styles.landingEmpty} data-testid="landing-needs-error">
+              <div className={styles.landingError} data-testid="landing-needs-error">
                 Missions could not be read, so nothing is known about what needs you here.
               </div>
             ) : needy.length === 0 && !loaded ? (
-              <div className={styles.landingEmpty} data-testid="landing-needs-loading">
-                Reading missions…
-              </div>
+              <Loader
+                kind="acquire"
+                label="Reading missions…"
+                className={styles.landingLoading}
+                testId="landing-needs-loading"
+              />
             ) : needy.length === 0 ? (
               <div className={styles.landingEmpty} data-testid="landing-needs-empty">
                 {emptyText}
@@ -144,7 +161,7 @@ export function MissionLanding({
                   onClick={() => onSelect(m.id)}
                   data-testid="landing-needs-row"
                 >
-                  <span className={`${styles.dot} ${styles.dotNeedsYou} ${styles.railDot}`} role="img" aria-label="Needs you" />
+                  <Led tone="att" label="Needs you" className={styles.landingLed} />
                   <span className={styles.landingRowBody}>
                     <span className={styles.landingRowTitle}>{m.title}</span>
                     <span className={styles.landingRowMeta}>

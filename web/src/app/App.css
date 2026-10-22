@@ -1,7 +1,7 @@
 /* App shell — tactical-HUD framework (#211 redux). Three full-width rows: a command TOPBAR
  * (brand + SYS/MISSION telemetry + actions), the floating-panel DECK (a session-list sidebar
- * panel + a routed main/terminal panel, both with corner-bracket frames + margins so they
- * float on the ambient data-flow canvas), and a CLASSIFICATION footer bar.
+ * panel + a routed main/terminal panel, both framed with margins so they float on the
+ * NIGHTJAR atmosphere, #1531), and a CLASSIFICATION footer bar.
  * Desktop (>800px): 320px sidebar column; the single command-bar toggle collapses it
  *   (.app.collapsed → pane full-width). Mobile (≤800px): the sidebar is an off-canvas drawer;
  *   the command bar carries the hamburger. No rounded corners anywhere — the brackets are the
@@ -19,8 +19,8 @@
    * pinned (fixed track sizes, not `auto`) so the deck row gets all the remaining height. The
    * deck row is minmax(0, 1fr) so its grid items can't grow past the viewport — the compose bar
    * shrinks the terminal instead of overflowing it (#7) and window-resize reflow works (#8).
-   * The deck panels take margins (below) so they float on the ambient canvas with their corner
-   * brackets fully visible. */
+   * The deck panels take margins (below) so they float on the atmosphere with their frames
+   * fully visible. */
   grid-template-rows: var(--app-header-height) minmax(0, 1fr) 28px;
   grid-template-areas:
     "topbar   topbar"
@@ -28,8 +28,8 @@
     "classbar classbar";
   height: 100dvh;
   overflow: hidden;
-  /* Sit above the fixed ambient data-flow canvas (#211 Phase 4); transparent so it shows
-   * through the frosted-glass chrome. */
+  /* Sit above the fixed atmosphere (Atmosphere.tsx, #1531); transparent so it shows through
+   * the frosted-glass chrome. */
   position: relative;
   z-index: var(--z-raised);
   background: transparent;
@@ -39,7 +39,7 @@
    * which a position:fixed drawer can't sample across, so the drawer's blur had nothing to
    * frost (terminal text showed through sharp). isolation:isolate forces everything inside
    * .app to flatten into the backdrop image the chrome samples, so the drawer (and panels)
-   * blur the terminal/canvas reliably. Same class of fix as keeping the canvas inside .app. */
+   * blur the terminal and atmosphere reliably. Same class of fix as keeping the atmosphere inside .app. */
   isolation: isolate;
 }
 /* Settings (#1129): the utility surface renders WITHOUT the session sidebar at EVERY width —

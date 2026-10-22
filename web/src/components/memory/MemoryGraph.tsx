@@ -17,12 +17,14 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import "../hud/reactFlow.css";
 import { useNavigate } from "react-router-dom";
 import { engineColor, engineName, useEngineRoster } from "../../app/engineRoster";
 import { relTime, sessionPathFromKey } from "../../lib/format";
 import type { MemoryNote } from "../../types/memory";
 import { memoryGraph, TYPE_TAG, type GraphSession } from "./memoryGraph";
 import styles from "./memoryGraph.module.css";
+import { useTheme } from "../../theme/themeStore";
 
 type NoteData = { note: MemoryNote; selected: boolean };
 type SessionData = { session: GraphSession };
@@ -75,6 +77,7 @@ export default function MemoryGraph(props: Props) {
 function Canvas({ notes, selected, onSelect }: Props) {
   useEngineRoster(); // re-render once the roster (engine names and accents) arrives
   const navigate = useNavigate();
+  const { theme } = useTheme(); // React Flow's colorMode follows the theme in force (#1531)
   const graph = useMemo(() => memoryGraph(notes), [notes]);
   const built = useMemo<(NoteNode | SessionNode)[]>(
     () =>
@@ -113,6 +116,7 @@ function Canvas({ notes, selected, onSelect }: Props) {
   return (
     <div className={styles.canvas} data-testid="memory-graph" aria-label="Memory graph">
       <ReactFlow<NoteNode | SessionNode>
+        colorMode={theme}
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
