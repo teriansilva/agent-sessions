@@ -38,6 +38,7 @@ import type {
   AskConversation,
   AskConversationTurn,
   AskNudgeCard,
+  AskOperationCard,
   AskSessionCard,
   AskUpdate,
   AskStoredMatch,
@@ -46,6 +47,7 @@ import type {
 } from "../../types/api";
 
 import { ConfigCtx } from "../../app/config";
+import { OperationCard } from "./AskCards";
 import { AskConsole } from "./AskConsole";
 import { ASK_SEEN_EVENT, placeUpdates } from "./askUpdates";
 import { mapBatch } from "./askMatches";
@@ -64,6 +66,7 @@ vi.mock("../../lib/api", async () => {
       approveAction: vi.fn(),
       rejectAction: vi.fn(),
       decideAskProposal: vi.fn(),
+      decideAskOperation: vi.fn(),
       askSeen: vi.fn(),
       askUnfollow: vi.fn(),
     },
@@ -2028,4 +2031,272 @@ test("Off, an unknown contact and a turn from before HQ all answer as plain HQ",
   await pick(0);
   await screen.findByText("removed contact");
   expect(screen.getAllByRole("article", { name: "Answer from HQ" })).toHaveLength(3);
+});
+
+// --- #1559: HQ operations, confirmed on a card ------------------------------------------------
+
+function opCard(over: Partial<AskOperationCard> = {}): AskOperationCard {
+  return {
+    action_id: PID,
+    kind: "operation",
+    op: "session.archive",
+    risk: "reversible",
+    label: "Archive",
+    verb: "Archive",
+    title: "docs-site: rewrite the install guide",
+    text: "Stops its agent and moves it to the archive.",
+    needs: [],
+    state: "pending",
+    summary: "",
+    reason: "",
+    can_confirm: true,
+    can_dismiss: true,
+    ...over,
+  };
+}
+
+function opTurn(card: AskOperationCard): AskConversationTurn {
+  return {
+    ...turnOf("archive the docs session", "t-o", { answer: "Proposed." }),
+    proposals: [card],
+  };
+}
+
+test("an operation card shows the server's wording and confirms with nothing but the decision", async () => {
+  withConversation([opTurn(opCard())]);
+  vi.mocked(api.decideAskOperation).mockImplementation(async () => {
+    // The server now holds it as running; the console's re-read says so too.
+    vi.mocked(api.askConversation).mockResolvedValue(
+      conversation(CID, [
+        opTurn(
+          opCard({ state: "deciding", can_confirm: false, can_dismiss: false }),
+        ),
+      ]),
+    );
+    return {
+      proposal: {
+        state: "deciding",
+        summary: "",
+        reason: "",
+        can_confirm: false,
+        can_dismiss: false,
+      },
+    };
+  });
+  await mountAt(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-operation");
+  expect(card).toHaveTextContent("Archive");
+  expect(card).toHaveTextContent("docs-site: rewrite the install guide");
+  expect(within(card).getByTestId("ask-operation-text")).toHaveTextContent(
+    "Stops its agent and moves it to the archive.",
+  );
+  expect(card).toHaveTextContent("Reversible");
+  await userEvent.click(within(card).getByTestId("ask-operation-confirm"));
+  expect(api.decideAskOperation).toHaveBeenCalledWith(
+    PID,
+    "confirm",
+    undefined,
+  );
+  expect(
+    await within(card).findByTestId("ask-operation-outcome"),
+  ).toHaveTextContent("Running");
+});
+
+test("a destructive card says so and uses the danger confirm", async () => {
+  withConversation([
+    opTurn(
+      opCard({
+        op: "project.delete",
+        risk: "destructive",
+        label: "Delete project",
+        verb: "Delete project",
+      }),
+    ),
+  ]);
+  await mountAt(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-operation");
+  expect(card).toHaveTextContent("Can't be undone");
+  expect(within(card).getByTestId("ask-operation-danger")).toHaveTextContent(
+    "can't be undone",
+  );
+  expect(
+    within(card).getByRole("button", { name: "Delete project" }),
+  ).toBeEnabled();
+});
+
+test("a card that needs a folder can't be confirmed until the operator picks one; the mkdir note is shown", async () => {
+  withConversation([
+    opTurn(
+      opCard({
+        op: "project.create",
+        label: "Create project",
+        verb: "Create project",
+        needs: ["folder"],
+        title: "",
+      }),
+    ),
+  ]);
+  await mountAt(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-operation");
+  expect(within(card).getByTestId("ask-operation-confirm")).toBeDisabled();
+  expect(
+    within(card).getByTestId("ask-operation-mkdir-note"),
+  ).toHaveTextContent("creates the folder now");
+  expect(within(card).getByTestId("ask-operation-pick")).toBeEnabled();
+});
+
+test("a project-folder choice is a radio group from the server's list; the confirm carries the pick", async () => {
+  withConversation([
+    opTurn(
+      opCard({
+        op: "project.remove_folder",
+        label: "Release a folder",
+        verb: "Release folder",
+        needs: ["folder"],
+        choices: { folder: ["/home/u/web", "/home/u/web-old"] },
+      }),
+    ),
+  ]);
+  vi.mocked(api.decideAskOperation).mockResolvedValue({
+    proposal: {
+      state: "deciding",
+      summary: "",
+      reason: "",
+      can_confirm: false,
+      can_dismiss: false,
+    },
+  });
+  await mountAt(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-operation");
+  const confirm = within(card).getByTestId("ask-operation-confirm");
+  expect(confirm).toBeDisabled();
+  await userEvent.click(
+    within(card).getByRole("radio", { name: "/home/u/web-old" }),
+  );
+  expect(
+    within(card).getByRole("radio", { name: "/home/u/web-old" }),
+  ).toHaveAttribute("aria-checked", "true");
+  await userEvent.click(confirm);
+  expect(api.decideAskOperation).toHaveBeenCalledWith(PID, "confirm", {
+    folder: "/home/u/web-old",
+  });
+});
+
+test.each([
+  ["done", "Done", "Renamed."],
+  ["partly_done", "Partly done", "12 archived; 2 could not be."],
+  ["failed", "Failed", "Not archived: refused."],
+  [
+    "stale",
+    "Out of date",
+    "it was renamed since this was proposed; nothing ran",
+  ],
+  ["interrupted", "Interrupted", "It may have run"],
+  ["dismissed", "Dismissed", "Nothing ran."],
+  ["unconfirmed", "Ran, unconfirmed", "HQ can't say what changed."],
+] as const)(
+  "a %s operation reads %s with the route's own words and offers nothing",
+  async (state, word, detail) => {
+    const reason =
+      state === "stale"
+        ? detail
+        : state === "interrupted"
+          ? "BattleLab stopped while this ran. It may have run; check the target."
+          : "";
+    const summary = ["done", "partly_done", "failed", "unconfirmed"].includes(state)
+      ? detail
+      : "";
+    withConversation([
+      opTurn(
+        opCard({
+          state,
+          summary,
+          reason,
+          can_confirm: false,
+          can_dismiss: false,
+        }),
+      ),
+    ]);
+    await mountAt(<AskConsole configured />);
+    const outcome = await screen.findByTestId("ask-operation-outcome");
+    expect(outcome).toHaveTextContent(word);
+    expect(outcome).toHaveTextContent(detail);
+    expect(screen.queryByTestId("ask-operation-confirm")).toBeNull();
+  },
+);
+
+test("a refused confirm that left the card pending is said under it", async () => {
+  withConversation([opTurn(opCard())]);
+  vi.mocked(api.decideAskOperation).mockRejectedValue(
+    new ApiError(422, "choose a folder on the card first"),
+  );
+  await mountAt(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-operation");
+  await userEvent.click(within(card).getByTestId("ask-operation-confirm"));
+  expect(
+    await within(card).findByTestId("ask-operation-error"),
+  ).toHaveTextContent("choose a folder");
+});
+
+test("a picked project folder the refreshed card no longer offers is dropped, never confirmed", async () => {
+  const card = (folders: string[]) =>
+    opCard({
+      op: "project.default_folder",
+      label: "Default launch folder",
+      verb: "Set default folder",
+      needs: ["folder"],
+      choices: { folder: folders },
+    });
+  const onConfirm = vi.fn();
+  const view = (folders: string[]) => (
+    <OperationCard
+      p={card(folders)}
+      deciding={false}
+      error={null}
+      onConfirm={onConfirm}
+      onDismiss={() => {}}
+    />
+  );
+  const { rerender } = render(view(["/srv/a", "/srv/x"]));
+  await userEvent.click(screen.getByRole("radio", { name: "/srv/a" }));
+  expect(screen.getByTestId("ask-operation-confirm")).toBeEnabled();
+  rerender(view(["/srv/b", "/srv/x"])); // A was replaced by B meanwhile
+  expect(screen.getByTestId("ask-operation-folder")).toHaveTextContent("Choose below");
+  expect(screen.getByTestId("ask-operation-confirm")).toBeDisabled();
+  for (const r of screen.getAllByRole("radio")) {
+    expect(r).toHaveAttribute("aria-checked", "false");
+  }
+  expect(onConfirm).not.toHaveBeenCalled();
+});
+
+test("the folder radio group is one Tab stop and arrow keys move and select (#1571 review)", async () => {
+  const onConfirm = vi.fn();
+  render(
+    <OperationCard
+      p={opCard({
+        op: "project.remove_folder",
+        label: "Release a folder",
+        verb: "Release folder",
+        needs: ["folder"],
+        choices: { folder: ["/srv/a", "/srv/b", "/srv/c"] },
+      })}
+      deciding={false}
+      error={null}
+      onConfirm={onConfirm}
+      onDismiss={() => {}}
+    />,
+  );
+  const radios = screen.getAllByRole("radio");
+  expect(radios.map((r) => r.tabIndex)).toEqual([0, -1, -1]);
+  radios[0].focus();
+  await userEvent.keyboard("{ArrowDown}");
+  expect(screen.getByRole("radio", { name: "/srv/a" })).toHaveAttribute("aria-checked", "true");
+  await userEvent.keyboard("{ArrowDown}");
+  const b = screen.getByRole("radio", { name: "/srv/b" });
+  expect(b).toHaveAttribute("aria-checked", "true");
+  expect(b).toHaveFocus();
+  expect(screen.getAllByRole("radio").map((r) => r.tabIndex)).toEqual([-1, 0, -1]);
+  await userEvent.keyboard("{ArrowUp}{ArrowUp}");
+  expect(screen.getByRole("radio", { name: "/srv/c" })).toHaveAttribute("aria-checked", "true");
+  expect(screen.getByRole("radio", { name: "/srv/c" })).toHaveFocus();
 });

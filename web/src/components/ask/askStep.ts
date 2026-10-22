@@ -23,6 +23,12 @@ const TOOL_WORDS: Record<string, string> = {
   agent_usage: "Reading agent usage…",
   fleet_status: "Counting your sessions and missions…",
   read_settings: "Reading your settings…",
+  // #1559: the session and project reads, and staging a change for the operator to confirm.
+  list_sessions: "Listing your sessions…",
+  session_brief: "Reading a session's brief…",
+  list_folders: "Listing your folders…",
+  propose_session_change: "Preparing the change for you to confirm…",
+  propose_project_change: "Preparing the change for you to confirm…",
 };
 
 const plural = (n: number, one: string, many: string) =>

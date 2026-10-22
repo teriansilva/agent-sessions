@@ -12,9 +12,11 @@
   ``{"type": "error", "status", "detail"}``.
 
 * ``POST /api/ask/proposals/{id}/decide`` — ``{"decision": "start" | "dismiss", "bypass": bool}``
-  for a session proposal (#1443 Phase 3a). ``start`` answers 202 while the launch runs and the card
-  follows it on the next read; a repeat returns the entry as it is, never a second launch. An
-  absent ``bypass`` is ``false``. The client names the proposal, never what it starts.
+  for a session proposal (#1443 Phase 3a); ``{"decision": "confirm" | "dismiss"}`` for an HQ
+  operation (#1559), which answers 202 and runs as a server task (``ask_operations``).
+  ``start`` answers 202 while the launch runs and the card follows it on the next read; a
+  repeat returns the entry as it is, never a second launch. An absent ``bypass`` is ``false``.
+  The client names the proposal, never what it starts.
 
 * ``POST /api/ask/conversations/{id}/seen`` — everything in it so far has been seen (the unread
   marker, #1443 Phase 4). ``GET /api/ask/unread`` — whether any conversation has an unseen update
@@ -42,6 +44,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import (
     actuator,
+    asgi_call,
     ask_follow,
     ask_orchestrator,
     ask_proposals,
@@ -214,6 +217,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 answers=answers,
                 option=option,
                 contact=contact,
+                operator=asgi_call.Operator.from_scope(request.scope),
+                app=request.app,
             )
         except ask_store.ConversationNotFound:
             return _missing(cid)
@@ -308,17 +313,31 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         if not isinstance(body, dict):
             return JSONResponse({"detail": "body must be a JSON object"}, status_code=422)
         decision, bypass = body.get("decision"), body.get("bypass", False)
-        if decision not in ("start", "dismiss"):
-            return JSONResponse({"detail": "decision must be start or dismiss"}, status_code=422)
+        if decision not in ("start", "dismiss", "confirm"):
+            return JSONResponse(
+                {"detail": "decision must be start, confirm or dismiss"}, status_code=422
+            )
         if not isinstance(bypass, bool):
             return JSONResponse({"detail": "bypass must be true or false"}, status_code=422)
-        if registry is None:
+        # An HQ operation's card inputs (#1559): what the OPERATOR picked on it, e.g. a folder.
+        inputs = body.get("inputs")
+        if inputs is not None and not isinstance(inputs, dict):
+            return JSONResponse({"detail": "inputs must be an object"}, status_code=422)
+        if registry is None and decision == "start":
             return JSONResponse(
                 {"detail": "the session runner isn't available in this process"}, status_code=503
             )
         try:
             status, view = await ask_proposals.decide(
-                pid, decision, bypass=bypass, registry=registry
+                pid,
+                decision,
+                bypass=bypass,
+                registry=registry,
+                # An HQ operation (#1559) runs the UI's own route as THIS operator: their cookie,
+                # CSRF token and Origin, as this already-guarded request carried them.
+                operator=asgi_call.Operator.from_scope(request.scope),
+                app=request.app,
+                inputs=inputs,
             )
         except ask_proposals.ProposalError as e:
             extra = {"proposal": e.view} if e.view is not None else {}

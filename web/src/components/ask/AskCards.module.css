@@ -138,6 +138,11 @@
 .cta {
   composes: primary from "../ui/actionButton.module.css";
 }
+/* A destructive operation's confirm (#1559): the shared danger fill — red only where the tap
+ * destroys (design.md §6, §7). */
+.ctaDanger {
+  composes: dangerFilled from "../ui/actionButton.module.css";
+}
 .ghost {
   composes: ghost from "../ui/actionButton.module.css";
 }
@@ -163,6 +168,7 @@
   --nj-edge: var(--hud);
 }
 .cta:disabled,
+.ctaDanger:disabled,
 .ghost:disabled,
 .opt:disabled {
   opacity: 0.5;

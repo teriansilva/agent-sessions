@@ -16,12 +16,19 @@
  *  form's default; the tap carries what it shows. "Started" means the agent's own store has the
  *  session and it received the brief; anything less proved says so, and nothing is retried.
  */
-import { Eye, Play, Send } from "lucide-react";
+import { Eye, FolderOpen, Play, Send } from "lucide-react";
 import { type ReactNode, useState } from "react";
 
-import type { AskNudgeCard, AskQuestionCard, AskSessionCard, AskUpdate } from "../../types/api";
+import type {
+  AskNudgeCard,
+  AskOperationCard,
+  AskQuestionCard,
+  AskSessionCard,
+  AskUpdate,
+} from "../../types/api";
 
-import { Led, type LedTone } from "../hud/Meters";
+import { FolderPickerModal } from "../FolderPickerModal";
+import { Led, type LedTone, Stamp } from "../hud/Meters";
 import c from "./AskCards.module.css";
 
 export function QuestionCard({
@@ -505,6 +512,224 @@ export function UpdateRow({
           </button>
         ) : null}
       </span>
+    </div>
+  );
+}
+
+/** A change HQ proposed to a session or project (#1559). The wording is the server's: the Action
+ *  row, the Target, and the sentence for what the tap does. The risk is a stamp; a destructive one
+ *  gets the danger CTA and a note naming the loss. A folder is the OPERATOR's pick, made here with
+ *  the shared folder picker — the model never names one — and "New folder" in it creates the
+ *  folder at once, which the card says plainly. Once decided, the controls give way to an LED and
+ *  a WORD; the detail is the route's own sentence. */
+const OPERATION_OUTCOMES: Record<
+  string,
+  { word: string; tone: Tone; detail: (p: AskOperationCard) => string }
+> = {
+  deciding: { word: "Running", tone: "neutral", detail: () => "Running it now." },
+  done: { word: "Done", tone: "ok", detail: (p) => p.summary },
+  partly_done: { word: "Partly done", tone: "warn", detail: (p) => p.summary },
+  failed: { word: "Failed", tone: "bad", detail: (p) => p.summary || "It did not go through." },
+  stale: {
+    word: "Out of date",
+    tone: "warn",
+    detail: (p) => (p.reason ? `${p.reason}.`.replace(/\.\.$/, ".") : "Nothing ran."),
+  },
+  dismissed: { word: "Dismissed", tone: "neutral", detail: () => "Nothing ran." },
+  interrupted: { word: "Interrupted", tone: "warn", detail: (p) => p.reason },
+  unconfirmed: { word: "Ran, unconfirmed", tone: "warn", detail: (p) => p.summary },
+  unknown: {
+    word: "Status unavailable",
+    tone: "neutral",
+    detail: () => "Its state could not be read just now; it keeps checking.",
+  },
+  gone: { word: "No longer tracked", tone: "neutral", detail: () => "Nothing can be done here." },
+};
+
+const RISK_STAMP: Record<AskOperationCard["risk"], { label: string; tone?: "down" | "hud" }> = {
+  reversible: { label: "Reversible" },
+  destructive: { label: "Can't be undone", tone: "down" },
+  external: { label: "External", tone: "hud" },
+};
+
+export function OperationCard({
+  p,
+  deciding,
+  error,
+  onConfirm,
+  onDismiss,
+}: {
+  p: AskOperationCard;
+  deciding: boolean;
+  /** Why the last tap was refused, when the card itself did not change. */
+  error: string | null;
+  onConfirm: (inputs?: { folder: string }) => void;
+  onDismiss: () => void;
+}) {
+  const [picked, setFolder] = useState("");
+  const [picking, setPicking] = useState<HTMLElement | null>(null);
+  const out = p.state === "pending" ? null : OPERATION_OUTCOMES[p.state];
+  const needsFolder = p.needs.includes("folder");
+  const choices = p.choices?.folder;
+  const fromProject = Array.isArray(choices);
+  // A pick from the project's own folders holds only while the server still offers it: a refresh
+  // that drops the folder clears the pick, never confirms a folder the project no longer has.
+  const folder = fromProject && !choices.includes(picked) ? "" : picked;
+  const stamp = RISK_STAMP[p.risk];
+  const danger = p.risk === "destructive";
+  const ready = !needsFolder || folder !== "";
+  const off = deciding || !p.can_confirm;
+  const edge = out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
+  return (
+    <div className={`${c.card} ${edge}`} data-testid="ask-operation" data-state={p.state}>
+      <div className={c.head}>
+        <span className={c.k}>Proposal</span>
+        {p.op.startsWith("project") ? "Project" : "Session"}
+        <span className={c.st}>
+          {out ? out.word : <Stamp tone={stamp.tone}>{stamp.label}</Stamp>}
+        </span>
+      </div>
+      <div className={`${c.body} ${out && p.state !== "deciding" ? c.muted : ""}`}>
+        <dl className={c.kv}>
+          <dt>Action</dt>
+          <dd>{p.label}</dd>
+          {p.title ? (
+            <>
+              <dt>Target</dt>
+              <dd>{p.title}</dd>
+            </>
+          ) : null}
+          {needsFolder && !out ? (
+            <>
+              <dt>Folder</dt>
+              <dd data-testid="ask-operation-folder">{folder || "Choose below"}</dd>
+            </>
+          ) : null}
+        </dl>
+        <p className={c.lead} data-testid="ask-operation-text">
+          {p.text}
+        </p>
+        {danger && !out ? (
+          <div className={c.note} role="note" data-testid="ask-operation-danger">
+            <span>This can&apos;t be undone.</span>
+          </div>
+        ) : null}
+        {needsFolder && !out ? (
+          fromProject ? (
+            <div
+              className={c.opts}
+              role="radiogroup"
+              aria-label="Folder"
+              onKeyDown={(e) => {
+                // WAI-ARIA radio group, as `Seg`: one Tab stop, arrow keys move AND select.
+                const delta =
+                  e.key === "ArrowDown" || e.key === "ArrowRight"
+                    ? 1
+                    : e.key === "ArrowUp" || e.key === "ArrowLeft"
+                      ? -1
+                      : 0;
+                if (!delta || off || choices.length === 0) return;
+                e.preventDefault();
+                const at = choices.indexOf(folder);
+                const next =
+                  choices[
+                    at < 0
+                      ? delta > 0
+                        ? 0
+                        : choices.length - 1
+                      : (at + delta + choices.length) % choices.length
+                  ];
+                setFolder(next);
+                e.currentTarget
+                  .querySelector<HTMLElement>(`[data-value="${CSS.escape(next)}"]`)
+                  ?.focus();
+              }}
+            >
+              {choices.map((f, i) => (
+                <button
+                  key={f}
+                  type="button"
+                  role="radio"
+                  aria-checked={folder === f}
+                  tabIndex={folder === f || (folder === "" && i === 0) ? 0 : -1}
+                  className={c.opt}
+                  disabled={off}
+                  onClick={() => setFolder(f)}
+                  data-value={f}
+                  data-testid="ask-operation-choice"
+                >
+                  {f}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <>
+              <div className={c.opts}>
+                <button
+                  type="button"
+                  className={c.ghost}
+                  disabled={off}
+                  onClick={(e) => setPicking(e.currentTarget)}
+                  data-testid="ask-operation-pick"
+                >
+                  <FolderOpen size={15} aria-hidden="true" />
+                  {folder ? "Choose another folder…" : "Choose folder…"}
+                </button>
+              </div>
+              <div className={c.note} role="note" data-testid="ask-operation-mkdir-note">
+                <span>
+                  New folder in the picker creates the folder now. It stays even if you dismiss
+                  this card or the project isn&apos;t created.
+                </span>
+              </div>
+            </>
+          )
+        ) : null}
+        {error ? (
+          <div className={c.note} role="alert" data-testid="ask-operation-error">
+            <span>{error}</span>
+          </div>
+        ) : null}
+      </div>
+      {!out ? (
+        <div className={c.actions}>
+          <button
+            type="button"
+            className={danger ? c.ctaDanger : c.cta}
+            disabled={off || !ready}
+            onClick={() => onConfirm(needsFolder ? { folder } : undefined)}
+            data-testid="ask-operation-confirm"
+          >
+            {p.verb}
+          </button>
+          <button
+            type="button"
+            className={c.ghost}
+            disabled={deciding || !p.can_dismiss}
+            onClick={onDismiss}
+            data-testid="ask-operation-dismiss"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : (
+        <div className={c.outcome} role="status" data-testid="ask-operation-outcome">
+          <Led tone={LED[out.tone]} />
+          <span className={`${c.ow} ${c[`ow_${out.tone}`]}`}>{out.word}</span>
+          <span className={c.od}>{out.detail(p)}</span>
+        </div>
+      )}
+      {picking ? (
+        <FolderPickerModal
+          title="Choose the folder"
+          onPick={(path) => {
+            setFolder(path);
+            setPicking(null);
+          }}
+          onCancel={() => setPicking(null)}
+          returnFocusTo={picking}
+        />
+      ) : null}
     </div>
   );
 }

@@ -83,18 +83,26 @@ import { settingsPath } from "../../routes/settingsTabs";
 import type {
   AskConversationSummary,
   AskConversationTurn,
-  AskProposalCard,
-  AskSessionDecision,
   AskFollow,
-  AskUpdate,
+  AskOperationDecision,
+  AskProposalCard,
   AskQuestionCard,
+  AskSessionDecision,
   AskStoredMatch,
   AskStoredMissionMatch,
   AskTurnEvent,
+  AskUpdate,
 } from "../../types/api";
 
 import styles from "../pulse/mission.module.css";
-import { FollowingRow, NudgeCard, QuestionCard, SessionCard, UpdateRow } from "./AskCards";
+import {
+  FollowingRow,
+  NudgeCard,
+  OperationCard,
+  QuestionCard,
+  SessionCard,
+  UpdateRow,
+} from "./AskCards";
 import { ASK_SEEN_EVENT, placeUpdates } from "./askUpdates";
 import { AskComposer } from "./AskComposer";
 import { mapBatch, matchRoute, matchSeed } from "./askMatches";
@@ -160,7 +168,8 @@ const NUDGE_FOLLOWS = new Set(["delivered", "indeterminate"]);
 const LIVE_SESSION_STATES = new Set(["pending", "deciding", "unknown"]);
 
 function cardLive(p: AskProposalCard): boolean {
-  return p.kind === "session" ? LIVE_SESSION_STATES.has(p.state) : LIVE_PROJECTIONS.has(p.projection);
+  if (p.kind === "session" || p.kind === "operation") return LIVE_SESSION_STATES.has(p.state);
+  return LIVE_PROJECTIONS.has(p.projection);
 }
 
 function fromServer(t: AskConversationTurn): AskTurn {
@@ -421,6 +430,8 @@ export function AskConsole({
           const state = p.state ?? "";
           const before = was.get(p.action_id);
           was.set(p.action_id, state);
+          // An HQ operation (#1559) earns no follow: it changes something, it starts nothing.
+          if (p.kind === "operation") continue;
           const key = p.kind === "session" ? p.session_key : p.key;
           const earns = p.kind === "session" ? state === "started" : NUDGE_FOLLOWS.has(state);
           if (earns && before !== state && key && !(c.following ?? []).includes(key))
@@ -552,8 +563,11 @@ export function AskConsole({
     followsUnknown ||
     updatesPending;
   // A session being started settles in seconds, not minutes: follow it at the turn poll's pace.
+  // A session starting, or an operation running (#1559), settles in seconds: follow it closely.
   const launching = turns.some((t) =>
-    t.proposals.some((p) => p.kind === "session" && p.state === "deciding"),
+    t.proposals.some(
+      (p) => (p.kind === "session" || p.kind === "operation") && p.state === "deciding",
+    ),
   );
   const every = launching ? Math.min(POLL_MS, cardPollMs) : cardPollMs;
   useEffect(() => {
@@ -756,6 +770,54 @@ export function AskConsole({
       }
     },
     [load, reconcile],
+  );
+
+  /** An operation card's tap (#1559): the decision and what the card asked the operator for (a
+   *  picked folder) — never what to run. 202 = running; the re-read and the poll follow it. A
+   *  refusal that did not change the card (a 422 for a missing folder) is said under it. */
+  const decideOperation = useCallback(
+    async (pid: string, decision: "confirm" | "dismiss", inputs?: { folder: string }) => {
+      const id = cidRef.current;
+      setDeciding((s) => new Set(s).add(pid));
+      let error: string | null = null;
+      let decided: AskOperationDecision | null = null;
+      try {
+        decided = (await api.decideAskOperation(pid, decision, inputs)).proposal;
+      } catch (e) {
+        const carried =
+          e instanceof ApiError
+            ? ((e.record as { proposal?: AskOperationDecision } | undefined)?.proposal ?? null)
+            : null;
+        if (carried) decided = carried;
+        else error = e instanceof Error && e.message ? e.message : "That did not go through.";
+      } finally {
+        if (decided && id && cidRef.current === id) {
+          const view = decided;
+          gen.current++; // a read already in flight must not land over this answer
+          setTurns((prev) =>
+            prev.map((t) => ({
+              ...t,
+              proposals: t.proposals.map((p) =>
+                p.kind === "operation" && p.action_id === pid ? { ...p, ...view } : p,
+              ),
+            })),
+          );
+        }
+        setDeciding((s) => {
+          const n = new Set(s);
+          n.delete(pid);
+          return n;
+        });
+        setCardErrors((m) => {
+          const n = new Map(m);
+          if (error) n.set(pid, error);
+          else n.delete(pid);
+          return n;
+        });
+        if (id && cidRef.current === id) void load(id);
+      }
+    },
+    [load],
   );
 
   /** #1443 Phase 4: an update is SEEN once this conversation is on screen with it — the sidebar
@@ -1202,6 +1264,15 @@ export function AskConsole({
                             </>
                           ) : null
                         }
+                      />
+                    ) : p.kind === "operation" ? (
+                      <OperationCard
+                        key={p.action_id}
+                        p={p}
+                        deciding={deciding.has(p.action_id)}
+                        error={cardErrors.get(p.action_id) ?? null}
+                        onConfirm={(inputs) => void decideOperation(p.action_id, "confirm", inputs)}
+                        onDismiss={() => void decideOperation(p.action_id, "dismiss")}
                       />
                     ) : (
                       <NudgeCard

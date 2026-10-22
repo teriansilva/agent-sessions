@@ -24,6 +24,7 @@ Two layers, so adding an engine is cheap:
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
@@ -98,8 +99,20 @@ def _when(value: object) -> float | None:
     return None
 
 
+#: A guard run over a value's FULL text before :func:`_short` cuts it — set only by a reader that
+#: sends history on to a model (HQ's `session_brief`, #1571 review 6754): a cut then splits a
+#: redaction marker, never a secret. Unset (the terminal's own scroll-up) a value is shown as it is.
+#: A ContextVar, so it holds for exactly the read that set it, on that read's thread.
+PRE_CUT_GUARD: contextvars.ContextVar[Callable[[str], str] | None] = contextvars.ContextVar(
+    "transcript_pre_cut_guard", default=None
+)
+
+
 def _short(value: object, limit: int = _ARG_MAX) -> str:
     s = value if isinstance(value, str) else json.dumps(value, default=str)
+    guard = PRE_CUT_GUARD.get()
+    if guard is not None:
+        s = guard(s)  # BEFORE the collapse and the cut: the whole value, as written
     s = " ".join(s.split())  # collapse whitespace/newlines to one line
     return s if len(s) <= limit else s[: limit - 1] + "…"
 

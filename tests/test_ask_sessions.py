@@ -273,7 +273,9 @@ def test_a_session_proposal_is_a_card_and_a_pending_entry_and_nothing_starts(app
     assert world["launches"] == []
     # The model never saw a path: list_projects and list_agents answer names by index.
     listed = [json.loads(m["content"]) for m in got["script"].tool_results(1)]
-    assert listed[0] == {"projects": [{"index": 0, "name": "api"}]}
+    assert listed[0] == {
+        "projects": [{"index": 0, "name": "api", "archived": False, "can_start_session": True}]
+    }
     assert listed[1] == {"agents": [{"index": 0, "name": "Claude Code", "can_start": True}]}
 
 

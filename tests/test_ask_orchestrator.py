@@ -250,9 +250,9 @@ def test_the_store_is_private():
 
 
 def test_the_tool_list_and_each_tools_kind_are_pinned():
-    """Phase 2 (#1443) adds asking back and a nudge; Phase 3a a session to start. Both proposals
-    only stage a card — nothing here launches, dispatches or sends; a new tool or kind has to say
-    so here."""
+    """Phase 2 (#1443) adds asking back and a nudge; Phase 3a a session to start; #1559 session and
+    project operations. Every proposal only stages a card — nothing here launches, dispatches,
+    sends or changes anything; a new tool or kind has to say so here."""
     assert {n: t.kind for n, t in ask_orchestrator.TOOLS.items()} == {
         "find_sessions": "read",
         "session_status": "read",
@@ -267,6 +267,11 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "agent_usage": "read",
         "fleet_status": "read",
         "read_settings": "read",
+        "list_sessions": "read",
+        "session_brief": "read",
+        "list_folders": "read",
+        "propose_session_change": "proposal",
+        "propose_project_change": "proposal",
     }
     names = [s["function"]["name"] for s in ask_orchestrator.tool_specs()]
     assert names == list(ask_orchestrator.TOOLS)
@@ -419,7 +424,10 @@ def test_projects_and_agents_are_names_by_index_never_paths(app, ai, monkeypatch
     script = ai(call("list_projects"), answer("api"))
     app.ask(app.new(), "projects?")
     result = json.loads(script.tool_results(1)[0]["content"])
-    assert result == {"projects": [{"index": 0, "name": "api"}]}
+    assert result == {
+        "projects": [{"index": 0, "name": "api", "archived": False, "can_start_session": True}]
+    }
+    assert "/srv" not in script.tool_results(1)[0]["content"]
 
 
 def test_a_truncated_completion_is_never_stored_as_an_answer(app, ai):

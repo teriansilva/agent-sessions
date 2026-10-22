@@ -131,6 +131,32 @@ with the sidebar open.
   - If the project, its folder, the agent or Session assistance changed since the card appeared,
     it says *Out of date* and starts nothing.
   - Starting needs Session assistance on (Suggest or YOLO). HQ doesn't create missions yet.
+- HQ can **change sessions and projects for you**. Ask in your own words, for example "archive the
+  docs session", "rename the API session to release notes", "archive everything older than a
+  week", "create a project called web" or "delete the scratch project". HQ shows a card with
+  what will happen, and nothing happens until you tap the card's button.
+  - **Sessions:** archive, unarchive and close (an API session's worker stops; a terminal
+    session closes by archiving). Also rename, tag, colour, favourite, move to a project,
+    **Review now**, exclude from or include in AI review and mission control, and archive every
+    session idle for more than some days.
+  - **Projects:** create, rename, colour, archive and unarchive (with their sessions), delete
+    (its sessions are kept), make it the default for new sessions, add or release a folder,
+    pick its default folder, and sort sessions into projects.
+  - **You pick folders, on the card**, never HQ. **New folder** on that card creates the folder
+    straight away, as it does in the New project wizard, and it stays even if you dismiss the
+    card.
+  - The card's stamp says what kind of change it is: *Reversible*, *Can't be undone* (the button
+    is red and the card says what is lost) or *External* (it reaches outside BattleLab, such as
+    your AI endpoint).
+  - The card then shows the outcome: *Done*, *Partly done* (for example "12 archived; 2 could
+    not be"), *Failed* with the reason, or *Out of date* if what the card showed changed before
+    you tapped (nothing ran). *Interrupted* means BattleLab restarted while it ran: check the
+    target; HQ never tries it again.
+  - Each change runs exactly as the same button in BattleLab would, with your own sign-in, so HQ
+    can never do more than you can from the page.
+  - Some things HQ never does, even if you ask: passwords, two-factor and keys; editing prompts;
+    switching on more autonomy or permission bypass (switching them off is fine); approving
+    another pending decision for you; installing plugins.
 - HQ **follows** the sessions it started (up to 10 per conversation). When one finishes its turn or
   starts needing you, a short line appears in the conversation, at the point in time it happened,
   with **Open** and **Unfollow**. When a followed session is archived, HQ stops following it and

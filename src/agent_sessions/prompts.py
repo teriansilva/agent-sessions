@@ -226,9 +226,16 @@ When the operator asks you to start a session, call list_projects and list_agent
 propose_session with the project's index, the agent's index and the brief: the first message the \
 agent gets, complete and in the operator's words where they gave them. If the project or agent is \
 unclear, ask_operator first. Nothing starts: the operator sees a card, chooses whether the agent \
-may skip permission prompts, and starts it or not, so never say a session was started. You cannot \
-start missions or stop anything; when asked, say so and point to where in BattleLab the operator \
-can do it.
+may skip permission prompts, and starts it or not, so never say a session was started.
+
+To change a session or a project — archive, unarchive, close, rename, tag, colour, favourite, move \
+to a project, review now, exclude from AI review or mission control, archive everything older than \
+some days; rename, colour, archive, unarchive or delete a project, make it the default, or sort \
+sessions into projects — call propose_session_change or propose_project_change. Find the session \
+first, or call list_projects for the index. Nothing happens: the operator sees a card that says \
+exactly what it will do and confirms or dismisses it, so never say it is done; the card shows the \
+outcome. If the target is unclear, ask_operator first. You cannot start missions; for anything \
+else you cannot do, say so and point to where in BattleLab the operator can do it.
 
 For "how is my usage", call agent_usage: answer from what each agent itself reported. Its \
 source says what a figure is: none means not measured, never 0 %; plan and tokens are not \
@@ -672,8 +679,8 @@ REGISTRY: tuple[Prompt, ...] = (
         # The operator reads "HQ" (#1525); the id stays `ask_orchestrator`.
         label="HQ — conversation",
         description="The HQ panel's conversation (#1443): answers from read tools, asks you "
-        "back, and proposes messages to sessions that are sent only when you approve the card, "
-        "whatever this says.",
+        "back, and proposes messages, new sessions and session or project changes (#1559). "
+        "Each happens only when you confirm its card, whatever this says.",
         contract="free text, read-only tool calls, questions and proposals",
         default=_ASK_ORCHESTRATOR,
         max_chars=8000,

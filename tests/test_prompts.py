@@ -124,9 +124,10 @@ EXPECTED_DEFAULT_SHA = {
     "mission_plan": "a4d0cb1003a79e45",
     # #1088: the objective judge — quotes verified verbatim, confidence against the floor.
     "mission_judge": "604e82e9d100c1dc",
-    # #1443: the Ask conversation — read-only tools, guarded.
-    # Re-pinned by #1554: the paragraph on usage, the fleet and the read-only settings view.
-    "ask_orchestrator": "412d876f255cc4f1",
+    # #1443: the Ask conversation — read-only tools, guarded. Re-pinned by #1554 (usage, the fleet
+    # and the read-only settings view) and #1559 (proposing session and project operations,
+    # confirmed on a card).
+    "ask_orchestrator": "9b7d403bcb3fef5f",
     # #1525: the HQ contacts' voices — archetypes, the no-stereotype rules written into each.
     "hq_persona_asia_woman": "3ab034163472b139",
     "hq_persona_asia_man": "e98526534b590f1d",

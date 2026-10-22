@@ -111,7 +111,29 @@ NUDGE_MAX = 800
 #: identifying line always fits beside it.
 BRIEF_MAX = 2_000
 _ACTION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
-PROPOSAL_KINDS = frozenset({"nudge", "session"})
+#: An HQ operation (#1559): a catalog id, its risk class, and the caps of what the card shows.
+_OP_RE = re.compile(r"^[a-z]{1,20}\.[a-z_]{1,40}$")
+OPERATION_RISKS = frozenset({"reversible", "destructive", "external"})
+OPERATION_STATES = frozenset(
+    {
+        "pending",
+        "deciding",
+        "done",
+        "partly_done",
+        "failed",
+        "stale",
+        "dismissed",
+        "interrupted",
+        "unconfirmed",
+    }
+)
+OP_VERB_MAX = 40
+#: What an operation card may ask the OPERATOR for (never the model): a folder they pick.
+OPERATION_INPUTS = frozenset({"folder"})
+OP_SUMMARY_MAX = 400
+_OP_FIELD_RE = re.compile(r"^[a-z_]{1,40}$")
+OP_FIELDS_MAX = 8
+PROPOSAL_KINDS = frozenset({"nudge", "session", "operation"})
 # Follows (#1443 Phase 4): what a followed session's update says, as a kind — the words are the
 # client's, authored, so no model text is ever shown as an update.
 UPDATE_KINDS = frozenset({"finished", "needs_you", "ended", "not_followed"})
@@ -316,6 +338,25 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
             out.update(action_id=aid, key=key, kind=pkind)
             out["title"] = text(rec.get("title"), TITLE_MAX)
             out["text"] = text(rec.get("text"), NUDGE_MAX)
+        elif pkind == "operation":
+            # An operation HQ proposed (#1559): the card's server-authored wording. What a tap
+            # runs is the sidecar's entry, bound to this card by `binding` (`ask_operations`).
+            op, risk, bind = rec.get("op"), rec.get("risk"), rec.get("binding")
+            if not (isinstance(op, str) and _OP_RE.match(op)):
+                raise ValueError("malformed operation id")
+            if risk not in OPERATION_RISKS:
+                raise ValueError("unknown operation risk")
+            if not (isinstance(bind, str) and _DIGEST_RE.match(bind)):
+                raise ValueError("an operation card needs its binding")
+            out.update(action_id=aid, kind=pkind, op=op, risk=risk, binding=bind)
+            out["title"] = text(rec.get("title"), TITLE_MAX)
+            out["label"] = text(rec.get("label"), TITLE_MAX)
+            out["verb"] = text(rec.get("verb"), OP_VERB_MAX)
+            out["text"] = text(rec.get("text"), OP_SUMMARY_MAX)
+            needs = rec.get("needs") or []
+            if not isinstance(needs, list) or not set(needs) <= OPERATION_INPUTS:
+                raise ValueError("unknown operation input")
+            out["needs"] = list(needs)
         else:
             # A session to start: the project's name, the agent's name and the brief, for the
             # card. What a tap launches is the sidecar's entry (``ask_proposals``), never this.
@@ -729,6 +770,8 @@ def _admit_entry(e: dict, secrets: list[str], *, fresh: bool) -> dict:
         raise ValueError("malformed proposal id")
     if not valid_turn_id(tid):
         raise ValueError("malformed turn id")
+    if e.get("kind") == "operation":
+        return _admit_operation(e, pid, tid, secrets, fresh=fresh)
     if e.get("kind") != "session":
         raise ValueError("unknown proposal kind")
     state = e.get("state")
@@ -803,6 +846,63 @@ def _admit_entry(e: dict, secrets: list[str], *, fresh: bool) -> dict:
         if out["state"] == "pending":
             out["state"], out["reason"] = "stale", BRIEF_NOW_SECRET
     out["brief"] = guarded
+    return out
+
+
+def _admit_values(raw: object, secrets: list[str], *, fresh: bool, what: str) -> dict:
+    """An operation's typed fields or facts: short keys; str (guarded), int, bool or None values.
+    A NEW entry whose text the boundary would change is refused (Withheld), never stored altered."""
+    if not isinstance(raw, dict) or len(raw) > OP_FIELDS_MAX:
+        raise ValueError(f"malformed operation {what}")
+    out: dict = {}
+    for k, v in raw.items():
+        if not (isinstance(k, str) and _OP_FIELD_RE.match(k)):
+            raise ValueError(f"malformed operation {what} name")
+        if isinstance(v, str):
+            guarded = guard_text(v, OP_SUMMARY_MAX, secrets=secrets)
+            if guarded != v and fresh:
+                raise Withheld(f"the operation's {what} contain a secret or look like a credential")
+            out[k] = guarded
+        elif v is None or isinstance(v, bool) or (isinstance(v, int) and abs(v) < 10**12):
+            out[k] = v
+        else:
+            raise ValueError(f"malformed operation {what} value")
+    return out
+
+
+def _admit_operation(e: dict, pid: str, tid: str, secrets: list[str], *, fresh: bool) -> dict:
+    """One HQ operation entry (#1559). Method, path and body are never stored: the catalog rebuilds
+    them at the tap, so this shape cannot name a route."""
+    state, op, target, bind = e.get("state"), e.get("op"), e.get("target"), e.get("binding")
+    if state not in OPERATION_STATES:
+        raise ValueError("unknown operation state")
+    if not (isinstance(op, str) and _OP_RE.match(op)):
+        raise ValueError("malformed operation id")
+    if not (
+        isinstance(target, str)
+        and (target == "" or _KEY_RE.match(target) or _PROJECT_ID_RE.match(target))
+    ):
+        raise ValueError("malformed operation target")
+    if not (isinstance(bind, str) and _DIGEST_RE.match(bind)):
+        raise ValueError("an operation needs its binding")
+    out = {
+        "id": pid,
+        "turn_id": tid,
+        "kind": "operation",
+        "state": state,
+        "op": op,
+        "target": target,
+        "binding": bind,
+        "fields": _admit_values(e.get("fields") or {}, secrets, fresh=fresh, what="fields"),
+        "facts": _admit_values(e.get("facts") or {}, secrets, fresh=fresh, what="facts"),
+        "title": guard_text(e.get("title") or "", TITLE_MAX, secrets=secrets),
+        "outcome": guard_text(e.get("outcome") or "", OP_SUMMARY_MAX, secrets=secrets),
+        "reason": guard_text(e.get("reason") or "", DETAIL_MAX, secrets=secrets),
+    }
+    for k in ("ts", "decided_at", "settled_at"):
+        v = e.get(k)
+        if isinstance(v, int | float) and not isinstance(v, bool):
+            out[k] = float(v)
     return out
 
 

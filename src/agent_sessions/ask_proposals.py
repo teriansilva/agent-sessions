@@ -223,7 +223,12 @@ def recover(cid: str) -> None:
             changed = False
             for r in rows:
                 if r.get("state") == DECIDING:
-                    r.update(state=INTERRUPTED, reason=INTERRUPTED_REASON, settled_at=time.time())
+                    reason = INTERRUPTED_REASON
+                    if r.get("kind") == "operation":
+                        from . import ask_operations
+
+                        reason = ask_operations.INTERRUPTED_REASON
+                    r.update(state=INTERRUPTED, reason=reason, settled_at=time.time())
                     changed = True
             if changed:
                 ask_store.write_proposals(cid, rows)
@@ -255,7 +260,13 @@ def views(cid: str) -> tuple[str, dict[str, dict]]:
         rows = ask_store.read_proposals(cid)
     except (ask_store.SidecarUnreadable, ask_store.ConversationNotFound):
         return "unknown", {}
-    return "ok", {r["id"]: view(r) for r in rows if isinstance(r.get("id"), str)}
+    from . import ask_operations
+
+    return "ok", {
+        r["id"]: ask_operations.view(r) if r.get("kind") == "operation" else view(r)
+        for r in rows
+        if isinstance(r.get("id"), str)
+    }
 
 
 # ---- the decision ------------------------------------------------------------------------------
@@ -285,10 +296,17 @@ def _states(cid: str) -> set[str]:
         return set()
 
 
-async def decide(pid: str, decision: str, *, bypass: bool, registry) -> tuple[int, dict]:
-    """Decide one proposal. Returns ``(HTTP status, view)``; raises ProposalError."""
-    if decision not in ("start", "dismiss"):
-        raise ProposalError(422, "decision must be start or dismiss")
+async def decide(
+    pid: str, decision: str, *, bypass: bool, registry, operator=None, app=None, inputs=None
+) -> tuple[int, dict]:
+    """Decide one proposal. Returns ``(HTTP status, view)``; raises ProposalError.
+
+    An HQ operation (#1559, ``kind: "operation"``) is handed to ``ask_operations`` with the decide
+    lock, the tapping ``operator`` (``asgi_call.Operator``) and the ``app`` it runs through."""
+    from . import ask_operations
+
+    if decision not in ("start", "dismiss", "confirm"):
+        raise ProposalError(422, "decision must be start, confirm or dismiss")
     cid = await asyncio.to_thread(locate, pid)
     if cid is None:
         raise ProposalError(404, "no such proposal")
@@ -298,7 +316,8 @@ async def decide(pid: str, decision: str, *, bypass: bool, registry) -> tuple[in
         if row is None:
             raise ProposalError(404, "no such proposal")
         if row.get("state") != PENDING:
-            return 200, view(row)  # the same tap again, while it runs or after
+            # The same tap again, while it runs or after.
+            return 200, ask_operations.view(row) if row.get("kind") == "operation" else view(row)
         raise ProposalError(
             409, "another session from this conversation is still starting — try again shortly"
         )
@@ -307,8 +326,19 @@ async def decide(pid: str, decision: str, *, bypass: bool, registry) -> tuple[in
         row = await asyncio.to_thread(_row, cid, pid)
         if row is None:
             raise ProposalError(404, "no such proposal")
+        if row.get("kind") == "operation":
+            if row.get("state") != PENDING:
+                return 200, ask_operations.view(row)
+            if operator is None or app is None:
+                raise ProposalError(503, "operations can't run in this process")
+            handed = True  # `decide_locked` owns the lock from here, whatever happens
+            return await ask_operations.decide_locked(
+                cid, row, fd, decision, operator=operator, app=app, inputs=inputs
+            )
         if row.get("state") != PENDING:
             return 200, view(row)
+        if decision == "confirm":
+            raise ProposalError(422, "a session proposal is started or dismissed")
         if decision == "dismiss":
             row = await asyncio.to_thread(
                 _update, cid, pid, state=DISMISSED, notice="", settled_at=time.time()

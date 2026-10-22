@@ -269,6 +269,30 @@ def _reserve_or_refuse(session_key: str) -> str:
         raise HTTPException(status_code=e.status, detail=str(e)) from None
 
 
+def project_members(pid: str, index: dict) -> list[tuple[object, str, metadata.SessionMeta]]:
+    """THE membership a project archive / unarchive acts on: every session the resolver places in
+    ``pid`` — explicitly assigned or folder-resolved — over a FRESH, unscoped ``scan_all()``.
+    Shared with HQ's card preview (#1559), so the card counts and binds exactly what the route will
+    walk. Blocking."""
+    meta_index = metadata.load()
+    aliases = metadata.load_aliases()
+    out = []
+    for s in engines.scan_all():
+        key = engines.session_key(s)
+        phys = engines.physical_key(key, aliases)
+        m = meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
+        ref = projects.resolve(s.cwd, m.project_id, index, alias=m.project_alias)
+        if ref.kind == "project" and ref.id == pid:
+            out.append((s, key, m))
+    return out
+
+
+def archive_older_candidates(cutoff: float) -> list:
+    """The sessions archive-older sweeps: active ones last active before ``cutoff``, over a FRESH
+    ``scan_all()``. Shared with HQ's card preview (#1559). Blocking."""
+    return [s for s in engines.scan_all() if not s.archived and (s.last_mtime or 0) < cutoff]
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     def _row(
         s,
@@ -1124,7 +1148,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             raise HTTPException(status_code=422, detail="invalid JSON") from None
         if not isinstance(payload, dict):
             raise HTTPException(status_code=422, detail="expected a JSON object")
-        unknown = set(payload) - {"name", "color", "folders", "default_folder", "launch_defaults"}
+        unknown = set(payload) - {
+            "name",
+            "color",
+            "folders",
+            "default_folder",
+            "launch_defaults",
+            "if_folders",
+        }
         if unknown:
             raise HTTPException(status_code=422, detail=f"unknown fields: {sorted(unknown)}")
         try:
@@ -1137,6 +1168,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     folders=payload.get("folders"),
                     default_folder=payload.get("default_folder"),  # #448
                     launch_defaults=payload.get("launch_defaults"),  # #1508: a preselection only
+                    # #1559: a precondition, checked under the store's lock — a caller that read
+                    # the folders and builds a whole new list gets 409, never a lost update.
+                    expect_folders=payload.get("if_folders"),
                 )
             )
         except projects.ProjectError as e:
@@ -1164,21 +1198,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         except projects.ProjectError as e:  # store vanished between load and write
             raise HTTPException(status_code=e.status, detail=str(e)) from None
 
-        meta_index = metadata.load()
-        aliases = metadata.load_aliases()
         done, already, failed = (
             ("archived", "already_archived", "failed")
             if archive_members
             else ("unarchived", "already_unarchived", "failed")
         )
         results: list[dict] = []
-        for s in engines.scan_all():
-            key = engines.session_key(s)
-            phys = engines.physical_key(key, aliases)
-            m = meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
-            ref = projects.resolve(s.cwd, m.project_id, index, alias=m.project_alias)
-            if ref.kind != "project" or ref.id != pid:
-                continue
+        for s, key, m in project_members(pid, index):
             effective = m.archived if m.archived is not None else s.archived
             if effective == archive_members:
                 results.append({"id": key, "result": already})
@@ -1710,9 +1736,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         cutoff = time.time() - hours * 3600.0
         archived = 0
         skipped = 0
-        for s in engines.scan_all():
-            if s.archived or (s.last_mtime or 0) >= cutoff:
-                continue
+        for s in archive_older_candidates(cutoff):
             try:
                 key = engines.session_key(s)
                 prov, native = engines.parse_key(key)

@@ -500,10 +500,15 @@ def update(
     default_folder: object = None,
     archived: object = None,
     launch_defaults: object = None,
+    expect_folders: object = None,
     path: Path | None = None,
 ) -> Project:
     """Patch an entity: rename / recolor / adopt+release folders / set the default launch folder /
     set the archive flag.
+
+    ``expect_folders`` (#1559) is a precondition: when given, the project's folder set must equal
+    it UNDER the store's lock, else 409 and nothing is written — so a caller that read the folders
+    and sends a whole new list never silently drops a concurrent change.
 
     ``None`` means "leave unchanged" for every field (clear color with ``""``). The default folder
     (#448) is reconciled with the (possibly patched) folder set: setting one auto-adopts it; a
@@ -524,6 +529,18 @@ def update(
         raw = data["projects"].get(pid)
         if not isinstance(raw, dict):
             raise ProjectError("unknown project", status=404)
+        if expect_folders is not None:
+            if not isinstance(expect_folders, list) or not all(
+                isinstance(f, str) for f in expect_folders
+            ):
+                raise ProjectError("if_folders must be a list of folders", status=422)
+            stored = sorted(
+                f
+                for f in (_safe_folder(x) for x in raw.get("folders") or [] if isinstance(x, str))
+                if f
+            )
+            if sorted(_normalize_folder(f) for f in expect_folders) != stored:
+                raise ProjectError("its folders changed since they were read", status=409)
         if name is not None:
             raw["name"] = _validate_name(name)
         if color is not None:

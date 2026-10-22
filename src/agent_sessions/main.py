@@ -31,6 +31,7 @@ from . import (
     agent_catalog_refresh,
     ai_review_loop,
     ask_follow,
+    ask_operations,
     ask_orchestrator,
     ask_proposals,
     automation_loop,
@@ -447,6 +448,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             # …and Ask's launches in flight (#1443 Phase 3a): one cut short reads `interrupted`.
             with contextlib.suppress(Exception):
                 await ask_proposals.drain()
+            # …and HQ's confirmed operations (#1559): one cut short reads `interrupted`.
+            with contextlib.suppress(Exception):
+                await ask_operations.drain()
             # …and API sessions' background readiness waiters (#1505): cancelled WITHOUT settling.
             # A worker is its own unit and may still come up; the next start reconciles it.
             with contextlib.suppress(Exception):

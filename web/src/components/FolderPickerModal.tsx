@@ -117,7 +117,9 @@ export function FolderPickerModal({
 
   const titleId = "folder-picker-title";
   return createPortal(
-    <div className={dlg.backdrop} onMouseDown={onCancel}>
+    // `data-modal-inside`: the picker opens from inside drawers (HQ's folder card, #1571 review);
+    // a press on its backdrop cancels the PICKER and must not read as outside the drawer beneath.
+    <div className={dlg.backdrop} onMouseDown={onCancel} data-modal-inside="">
       <div
         ref={dialogRef}
         tabIndex={-1}

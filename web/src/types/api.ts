@@ -997,7 +997,50 @@ export type AskSessionDecision = Pick<
   | "can_dismiss"
 >;
 
-export type AskProposalCard = AskNudgeCard | AskSessionCard;
+/** A change HQ proposed to a session or project (#1559): the server's own wording. What a tap runs
+ *  is the server's catalog entry, bound to this card — never anything the client sends but the
+ *  decision and the inputs the card asks the OPERATOR for (`needs`, e.g. a folder). */
+export interface AskOperationCard {
+  action_id: string;
+  kind: "operation";
+  /** The catalog id, e.g. `session.archive`. */
+  op: string;
+  risk: "reversible" | "destructive" | "external";
+  /** The card's Action row and its button. */
+  label: string;
+  verb: string;
+  /** The target's title or name, as the card was shown. */
+  title: string;
+  /** The server's sentence for what it will do. */
+  text: string;
+  needs: "folder"[];
+  state:
+    | "pending"
+    | "deciding"
+    | "done"
+    | "partly_done"
+    | "failed"
+    | "stale"
+    | "dismissed"
+    | "interrupted"
+    | "unconfirmed"
+    | "unknown"
+    | "gone";
+  /** The outcome sentence, once settled. */
+  summary: string;
+  reason: string;
+  can_confirm: boolean;
+  can_dismiss: boolean;
+  /** For a folder the operator picks from the project's own folders. */
+  choices?: { folder?: string[] };
+}
+
+export type AskOperationDecision = Pick<
+  AskOperationCard,
+  "state" | "summary" | "reason" | "can_confirm" | "can_dismiss" | "choices"
+>;
+
+export type AskProposalCard = AskNudgeCard | AskSessionCard | AskOperationCard;
 
 /** One question and what became of it. `status` is the server's: a `pending` turn is still
  *  running there (or in another tab), whatever this page is doing. */
