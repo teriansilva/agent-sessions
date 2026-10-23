@@ -744,7 +744,7 @@ def _nudge_refusal(turn: _Turn, key: str, card: dict | None) -> tuple[str, str, 
             {},
         )
     if card.get("engine") not in engines.orchestrator_input_engines():
-        return ("that agent does not take input from Ask", "not_actuable", {})
+        return ("that agent does not take input from HQ", "not_actuable", {})
     held = None
     with contextlib.suppress(Exception):
         held = missions.all_active_memberships().get(key)
@@ -850,7 +850,7 @@ async def _propose_nudge(turn: _Turn, args: dict) -> tuple[dict, dict]:
         "verb": "answer",
         "answer": text,
         "confidence": 1.0,
-        "rationale": "Proposed from Ask",
+        "rationale": "Proposed from HQ",
         "evidence": "none",
         "authority": facts["grant"],
         "precondition": facts["precondition"],
@@ -983,7 +983,7 @@ async def _propose_session(turn: _Turn, args: dict) -> tuple[dict, dict]:
         )
     ok, why = await asyncio.to_thread(automation_runner.engine_state, agent["id"])
     if not ok:
-        raise _ToolRefused(f"refused: {agent['name']} cannot be started from Ask — {why}", "agent")
+        raise _ToolRefused(f"refused: {agent['name']} cannot be started from HQ — {why}", "agent")
     ok, why = await asyncio.to_thread(automation_runner.folder_ok, project["cwd"])
     if not ok:
         raise _ToolRefused(f"refused: {why}", "folder")

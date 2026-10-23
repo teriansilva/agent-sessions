@@ -183,7 +183,7 @@ for; it never changes *where* the request goes (that is **Settings → AI → En
 | Handoff brief | The state / open items / next steps document seeded into a handoff target. |
 | Project classifier | Auto-sort's session → project assignment. |
 | Session line | The one line per session in mission control's Sessions-without-a-mission list — state plus next step. Written only by a `slow` scan. |
-| Ask — catalog · Ask — verify | The session finder's two retrieval stages: pick candidate sessions from the catalog, then re-rank them against their real transcripts. |
+| HQ — search catalog · HQ — search verify | The session finder's two retrieval stages: pick candidate sessions from the catalog, then re-rank them against their real transcripts. |
 | Scheduled pass | The orchestrator's continue / choose / answer / escalate decision. |
 | Chat router · Chat instruct | Mission chat: whether a message is a find, an instruction or a history question, and turning an instruction into actions on the sessions it names. |
 | Mission objectives | A mission's checklist, **selected** from your checklist templates — it never chooses what an objective checks. On a mission started with **No checklist** (and an AI endpoint) it writes the objectives instead, each judged by the supervisor and nothing else. |

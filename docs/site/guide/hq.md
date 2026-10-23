@@ -185,40 +185,42 @@ and any text that looks like a password or a token is stored as *withheld*.
 ## HQ contacts
 
 Your **HQ contact** is the General who answers in HQ: the portrait in the header and on the
-Dashboard, the name on each answer, and the voice it is written in. Pick one in
+Dashboard, the name on each answer, and the person who answers. Pick one in
 [Settings](/guide/settings) → Appearance → Interface → **Select your primary HQ contact**, a
 gallery of cards: **Random** first, then the thirteen contacts, then **Off**. Arrow keys move
 through the gallery and select; it is one Tab stop. The choice is saved on the server, so it
 follows you to every device.
 
-| Contact | Region | Voice |
+| Contact | Region | Who they are |
 |---|---|---|
-| General Hana Seo | Asia | The calm strategist: crisp briefings, a one-line aphorism to close. |
-| General Kenji Mori | Asia | The silent tactician: few words, chess metaphors. |
-| General Claire Vidal | Europe | The intelligence chief: elegant, dry wit. |
-| General Lukas Brandt | Europe | The precision engineer-general: numbers, timetables, "on schedule". |
-| General Irina Volkova | Russia | The ice queen: terse orders, perfect composure. |
-| General Dmitri Sokolov | Russia | The gruff old bear: booming, deadpan, theatrical. |
-| General Jessica Hale | US | The gung-ho briefing officer: "Outstanding, Commander!" |
-| General Jack Harlan | US | The war-movie general: swagger, folksy one-liners. |
-| General Amara Okafor | Africa | The rallying field commander: warm, firm. |
-| General Kwame Mensah | Africa | The veteran: unhurried, wise, a wry remark. |
-| General Valentina Cruz | South America | The firebrand: passionate, decisive. |
-| General Mateo Ríos | South America | The smooth operator: charming, never in a hurry. |
-| General Ileana Lupu | Romania | *The outlaw*: sardonic, teasing, answers to the Commander alone. |
+| General Hana Seo | Asia | An operations planner who sees a problem as a circuit; briefs in order, closes on one quiet line. |
+| General Kenji Mori | Asia | An engineer turned tactician who sees positions, not pieces; says little and means all of it. |
+| General Claire Vidal | Europe | A translator turned intelligence chief; separates what she knows from what she suspects, with dry understatement. |
+| General Lukas Brandt | Europe | A railway engineer's son who ran maintenance depots; figures before adjectives, a schedule is a promise. |
+| General Irina Volkova | Russia | A former mountain-rescue pilot; composed, economical, a joke so dry you might miss it. |
+| General Dmitri Sokolov | Russia | Forty years from sergeant to academy head; a big voice, a deadpan face, "Excellent. HQ is pleased." |
+| General Jessica Hale | US | The briefing officer who keeps a tired room awake; names every real win, never dresses up a loss. |
+| General Jack Harlan | US | A ranch kid who fixes things first; easy swagger, plain one-liners, "Let's roll." |
+| General Amara Okafor | Africa | A field medic who came to run a field hospital's logistics; warm, firm, always names the next step. |
+| General Kwame Mensah | Africa | A military historian between commands; unhurried, sees how the pieces connect, a wry remark. |
+| General Valentina Cruz | South America | A logistician from a Pacific port city; readiness over brilliance, bad news early, urgent only when it is. |
+| General Mateo Ríos | South America | A former liaison officer; relaxed and charming, never glib about bad news. |
+| General Ileana Lupu | Romania | *The outlaw*: walked out of a command, came back for the Commander alone; sardonic, secretly devoted. |
 
 - **Random** (the default) is *a new contact every day*: a fixed 13-day cycle, so every contact
   comes up once in 13 days and never on two days running. It is the same contact all day on every
   device in one timezone, and it changes at local midnight.
 - **Off** shows no portrait, and HQ answers as plain **HQ**.
-- **The voice is tone only.** Facts, the tools HQ uses, what it proposes and what it reports
-  happened are the same whoever answers. Each voice is a prompt you can edit in Settings → AI →
-  Prompts, under **HQ contacts**.
+- **Each General is a person, not a costume.** They have their own history, convictions and way of
+  speaking, and they bring their own judgement. Facts, the tools HQ uses, what it proposes and what
+  it reports happened are the same whoever answers: a General never invents events, people or
+  results, and never mixes their own past into your work. Each character is a prompt you can edit
+  in Settings → AI → Prompts, under **HQ contacts**.
 - **Each answer is labelled with who gave it**: the contact's name and a small portrait at the head
   of the answer. The speaker is stored with the answer, so earlier answers keep their name after
   you switch. Answers with the contact Off, from a contact that no longer exists, or from before
   HQ read **HQ**. If your AI endpoint refuses tool calls and HQ falls back to a plain search, the
-  answer still carries the contact's name but not its voice.
+  answer still carries the contact's name but not their character.
 - Only the chosen contact's loop is downloaded, and the installed app doesn't keep the loops for
   offline use.
 

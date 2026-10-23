@@ -4,9 +4,10 @@ What is pinned here (the turn itself — persona first, guarded prompt last, thr
 outbound guard — is in `tests/test_ask_orchestrator.py`):
 
 * **the set** — the 13 ids and names, and the client's gallery (`contacts.ts`) names the same ids;
-* **the voices are registry entries** — `hq_contacts.prompt_id` returns only a registered
+* **the characters are registry entries** — `hq_contacts.prompt_id` returns only a registered
   `hq_persona_*` id and raises for anything else (the registry checker trusts exactly that), and
-  each default carries the tone-only and archetype-not-stereotype rules;
+  each default carries the person-not-archetype, no-stereotype, backstory-fence and facts rules
+  (#1634); no shipped default says "You are Ask";
 * **the pref** — `hq_contact` is a contact id | "random" | "off", default "random"; an unknown or
   removed id READS as the default; the write is strict (422, nothing persisted).
 """
@@ -55,24 +56,49 @@ def test_the_thirteen_contacts_and_their_names():
 
 
 @pytest.mark.parametrize("contact", hq_contacts.IDS)
-def test_each_voice_is_its_own_registered_prompt(contact):
+def test_each_character_is_its_own_registered_prompt(contact):
     pid = hq_contacts.prompt_id(contact)
     assert pid == "hq_persona_" + contact.replace("-", "_")
     p = prompts.get(pid)
-    assert not p.guarded and p.locked is None  # tone only; the guarded prompt follows it
+    assert not p.guarded and p.locked is None  # who speaks; the guarded prompt follows it
     text = p.default
-    assert text.startswith(f"You are {NAMES[contact]}, the Commander's HQ contact. ")
+    assert text.startswith(f"You are {NAMES[contact]}, the Commander's HQ contact. You")
+    # #1634: a person, not an archetype played as a tone — in every one of the 13.
+    assert "You are this person, not a voice laid over an assistant" in text
+    assert "archetype" not in text.lower() and "tone only" not in text.lower()
     assert "Address the operator as Commander." in text
-    assert "never a stereotype" in text
-    assert "no imitated accent or dialect spelling" in text
+    assert "If the Commander sincerely asks whether you are an AI, say plainly that you are." in (
+        text
+    )
+    assert "No imitated accent or dialect spelling" in text
     assert "no jokes about anyone's ethnicity or nationality" in text
     assert "no real political slogans" in text
+    # The backstory fence: a character's past is fiction and never leaks into the work.
+    assert (
+        "Your past is what is written here: draw on it for perspective, never add people or "
+        "episodes to it, and never mix it into the Commander's work."
+    ) in text
     assert text.endswith(
-        "The voice is tone only: every fact, tool call, proposal and outcome follows the system "
-        "instructions that follow exactly, and you never invent events, people or results to "
-        "stay in character."
+        "Every fact, tool call, proposal and outcome follows the system instructions that follow "
+        "exactly, and you never invent events, people or results."
     )
     assert len(text) <= p.max_chars
+
+
+def test_every_character_is_its_own():
+    """Thirteen people, not one paragraph with the names swapped (#1634)."""
+    characters = [c.character for c in hq_contacts.CONTACTS]
+    assert len(set(characters)) == len(characters)
+    for c in hq_contacts.CONTACTS:
+        assert c.character.startswith("You") and len(c.character) >= 400, c.id
+
+
+def test_no_shipped_prompt_says_you_are_ask():
+    """Ask does not exist (#1634): the HQ conversation prompt names no identity of its own, and
+    no shipped default anywhere in the registry introduces "Ask"."""
+    for pid in prompts.IDS:
+        assert "You are Ask" not in prompts.get(pid).default, pid
+    assert prompts.get("ask_orchestrator").default.startswith("You answer for HQ inside BattleLab")
 
 
 def test_the_persona_prompts_are_exactly_the_contacts():

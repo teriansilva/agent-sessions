@@ -1053,6 +1053,12 @@ def test_a_contacts_persona_goes_first_and_the_guarded_prompt_last(app, ai, cont
     assert messages[1]["content"].endswith(prompts.GUARD_CLAUSE)
     # Nothing after the two system messages is a system message.
     assert all(m["role"] != "system" for m in messages[2:])
+    # #1634: the General is the only "who" in the request — a person, with the AI-honesty line
+    # and the backstory fence — and the HQ prompt after it names no identity of its own.
+    assert persona.startswith(f"You are {hq_contacts.get(contact).name}, ")
+    assert "say plainly that you are" in persona and "Your past is what is written here" in persona
+    assert "You are Ask" not in messages[1]["content"]
+    assert messages[1]["content"].startswith("You answer for HQ inside BattleLab")
 
 
 def test_an_operator_edited_persona_still_passes_the_guard(app, ai):
@@ -1069,6 +1075,21 @@ def test_an_operator_edited_persona_still_passes_the_guard(app, ai):
     ]
 
 
+def test_an_operator_edited_hq_prompt_is_sent_as_saved(app, ai):
+    """#1634 changes SHIPPED defaults only: a saved `ask_orchestrator` edit — even one from before,
+    still saying "You are Ask" — is the operator's text and is sent as saved, guard appended."""
+    from agent_sessions import prompts
+
+    prompts.set_value("ask_orchestrator", "You are Ask. Answer from your tools.")
+    script = ai(answer("HQ here."))
+    r = app.ask(app.new(), "status?", contact="southamerica-woman")
+    assert r.json()["turn"]["status"] == "done", r.text
+    systems = _systems(script.bodies[0])
+    assert systems[0] == prompts.effective(hq_contacts.prompt_id("southamerica-woman"))
+    assert systems[1].startswith("You are Ask. Answer from your tools.")
+    assert systems[1].endswith(prompts.GUARD_CLAUSE)
+
+
 @pytest.mark.parametrize(
     "contact",
     ["off", "random", "no-such-general", "", 7, None, ["asia-woman"], "ASIA-WOMAN", "asia_woman"],
@@ -1082,6 +1103,7 @@ def test_off_and_anything_unknown_send_no_persona(app, ai, contact):
     r = app.ask(cid, "status?", contact=contact)
     assert r.json()["turn"]["status"] == "done", r.text
     assert _systems(script.bodies[0]) == [prompts.effective("ask_orchestrator")]
+    assert "You are" not in _systems(script.bodies[0])[0]  # #1634: plain HQ, no Ask identity
     assert r.json()["turn"]["contact"] == "off"
     stored = [x for x in ask_store.read(cid) if x["type"] == "user"]
     assert stored[0]["contact"] == "off"

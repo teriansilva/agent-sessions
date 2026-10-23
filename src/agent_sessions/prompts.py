@@ -201,8 +201,8 @@ _ASK_VERIFY = (
     'max 140 chars>"}]}.'
 )
 
-_ASK_ORCHESTRATOR = """You are Ask, the operator's assistant inside BattleLab, the place where \
-they run and organise their AI-coding sessions and missions. Answer their questions about that \
+_ASK_ORCHESTRATOR = """You answer for HQ inside BattleLab, the place where the Commander runs \
+and organises their AI-coding sessions and missions. Answer the Commander's questions about that \
 work from what your tools return.
 
 Most of your tools only read. find_sessions searches sessions and missions by topic and is the \
@@ -668,7 +668,7 @@ REGISTRY: tuple[Prompt, ...] = (
         group="Mission control",
         label="Recent work",
         description=(
-            "The chronological summary above Ask: what you did across sessions in the recent-work "
+            "The chronological summary above HQ: what you did across sessions in the recent-work "
             "window, one entry per step, each tied to its session."
         ),
         contract='{"entries": [{"session_key": str, "ts": number, "text": str}]}',
@@ -680,7 +680,7 @@ REGISTRY: tuple[Prompt, ...] = (
     Prompt(
         id="ask_catalog",
         group="Mission control",
-        label="Ask — catalog",
+        label="HQ — search catalog",
         description="Stage 1: picks candidate sessions and missions out of the catalog.",
         contract='{"answer": str, "matches": [{"id": str, "why": str}]}',
         default=_ASK_CATALOG,
@@ -691,7 +691,7 @@ REGISTRY: tuple[Prompt, ...] = (
     Prompt(
         id="ask_verify",
         group="Mission control",
-        label="Ask — verify",
+        label="HQ — search verify",
         description="Stage 2: re-ranks candidates against their transcripts or mission briefs.",
         contract='{"answer": str, "matches": [{"id": str, "why": str}]}',
         default=_ASK_VERIFY,
@@ -721,8 +721,8 @@ REGISTRY: tuple[Prompt, ...] = (
         group="Mission control",
         label="HQ — on a call",
         description="Sent with each question asked on a call (#1397), between the contact's "
-        "voice and the HQ conversation prompt: answers are spoken aloud, so they are short and "
-        "plain. Tone only — what HQ may do is unchanged.",
+        "character and the HQ conversation prompt: answers are spoken aloud, so they are short "
+        "and plain. How answers sound only — what HQ may do is unchanged.",
         contract="free text, spoken aloud",
         default=_HQ_CALL,
         max_chars=2000,
@@ -734,8 +734,8 @@ REGISTRY: tuple[Prompt, ...] = (
         group="Mission control",
         label="HQ — on a call (detailed answers)",
         description='Sent instead of "HQ — on a call" when Settings → HQ calls → answers is '
-        "Detailed (#1397): fuller spoken answers, the same plain speech. Tone only — what HQ may "
-        "do is unchanged.",
+        "Detailed (#1397): fuller spoken answers, the same plain speech. How answers sound only — "
+        "what HQ may do is unchanged.",
         contract="free text, spoken aloud",
         default=_HQ_CALL_DETAILED,
         max_chars=2000,
@@ -950,15 +950,17 @@ REGISTRY: tuple[Prompt, ...] = (
     # HQ contacts (#1525): one persona per contact, each its OWN entry, so a persona is an exact
     # registry string and can never be spliced into another prompt at runtime. Sent as a separate
     # system message BEFORE the guarded `ask_orchestrator`, which stays last, guard and all.
-    # Unguarded: the persona is tone only, and the guarded prompt after it is the last word.
+    # Unguarded: a persona is who speaks, never what HQ may do (#1634), and the guarded prompt
+    # after it is the last word.
     *(
         Prompt(
             id=c.prompt_id,
             group="HQ contacts",
             label=c.name,
-            description=f"How {c.name} speaks in HQ. Tone only: facts, tools and proposals follow "
+            description=f"Who {c.name} is: history, convictions, judgement and way of speaking. "
+            "The character never changes facts, tools or proposals: those follow "
             "the HQ conversation prompt, which is always sent after this one.",
-            contract="free text — a voice, sent before the HQ conversation prompt",
+            contract="free text — a character, sent before the HQ conversation prompt",
             default=c.persona,
             max_chars=2000,
             block=BLOCK,

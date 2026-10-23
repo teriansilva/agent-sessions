@@ -56,7 +56,7 @@ def _patch(c, cfg, csrf, pid, body):
 def test_registry_covers_every_system_prompt():
     # #956 removed pulse_banner; #1088 added mission_judge; #1086 added pulse_recap;
     # #1090 added template_suggest + template_write; #1209 added chat_agent; #1222 chat_agent_tools
-    # #1443 added ask_orchestrator; #1525 the 13 HQ contact personas (unguarded: tone only, sent
+    # #1443 added ask_orchestrator; #1525 the 13 HQ contact personas (unguarded: who speaks, sent
     # BEFORE the guarded ask_orchestrator, whose guard stays the last word)
     assert len(prompts.REGISTRY) == 37
     assert len(prompts.IDS) == len(set(prompts.IDS))
@@ -126,22 +126,22 @@ EXPECTED_DEFAULT_SHA = {
     "mission_judge": "604e82e9d100c1dc",
     # #1443: the Ask conversation — read-only tools, guarded. Re-pinned by #1554 (usage, the fleet
     # and the read-only settings view) and #1559 (proposing session and project operations,
-    # confirmed on a card).
-    "ask_orchestrator": "ab81840cdd8f9797",
-    # #1525: the HQ contacts' voices — archetypes, the no-stereotype rules written into each.
-    "hq_persona_asia_woman": "3ab034163472b139",
-    "hq_persona_asia_man": "e98526534b590f1d",
-    "hq_persona_europe_woman": "f0e2690b4e1d5b42",
-    "hq_persona_europe_man": "ca7910c7d67c0386",
-    "hq_persona_russia_woman": "d7ab24c23e2aa74b",
-    "hq_persona_russia_man": "87120dd4c13faa0e",
-    "hq_persona_us_woman": "a4318efe7e6a6898",
-    "hq_persona_us_man": "d2902cf1b6fe3636",
-    "hq_persona_africa_woman": "f42d457316e80fde",
-    "hq_persona_africa_man": "deff0125712af712",
-    "hq_persona_southamerica_woman": "5c36be44f26eb5d6",
-    "hq_persona_southamerica_man": "8ebd20290941c65d",
-    "hq_persona_romania_woman": "5ceabcc8049fa2d7",
+    # confirmed on a card). #1634: it names no identity of its own — "You are Ask" is gone.
+    "ask_orchestrator": "2ad555cac1d8ca31",
+    # #1525: the HQ contacts; #1634: each a character, not an archetype, with the rules in each.
+    "hq_persona_asia_woman": "376c34c3cf99c0c4",
+    "hq_persona_asia_man": "35dddc73b8ca9e3c",
+    "hq_persona_europe_woman": "eb3e01fd6f7d2474",
+    "hq_persona_europe_man": "9b6c4b692b461423",
+    "hq_persona_russia_woman": "ace874edae1cad98",
+    "hq_persona_russia_man": "83faafc1ee1f473c",
+    "hq_persona_us_woman": "c379f96c1867c4e5",
+    "hq_persona_us_man": "540afe49981cba02",
+    "hq_persona_africa_woman": "ecefeaae40e545bd",
+    "hq_persona_africa_man": "846028eb6ece73f5",
+    "hq_persona_southamerica_woman": "0a0d2b9278d9cf9b",
+    "hq_persona_southamerica_man": "965ffa5b9e0e0e84",
+    "hq_persona_romania_woman": "e87849be173ee7b0",
     "hq_call": "2a2d38ffdfc7bd9b",  # #1397
     "hq_call_detailed": "bdfdfb789725e801",  # #1397 (#1626 review: the answers setting)
 }
