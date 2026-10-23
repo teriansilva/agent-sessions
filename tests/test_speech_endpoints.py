@@ -563,3 +563,51 @@ def test_a_long_multichannel_wav_survives_the_resampling_slices(monkeypatch, cha
     out = _speak_parts(monkeypatch, [wav])
     assert len(out) == frames * 2
     assert out == struct.pack("<" + "h" * frames, *mono)
+
+
+# --- after a sized WAV `data` chunk (second review, follow-up) --------------------------------
+
+
+def _understated(pcm: bytes, rate: int, claimed: int) -> bytes:
+    wav = _wav(pcm, rate)
+    off = wav.index(b"data") + 4
+    return wav[:off] + struct.pack("<I", claimed) + wav[off + 4 :]
+
+
+@pytest.mark.parametrize("bytewise", [False, True])
+def test_an_understated_wav_length_plays_to_the_end(monkeypatch, bytewise):
+    """Python's `wave` writing to a pipe puts the FIRST chunk's length in the header."""
+    pcm = _tone(0.3, 24000)
+    wav = _understated(pcm, 24000, 200)
+    parts = [wav[i : i + 1] for i in range(len(wav))] if bytewise else [wav]
+    assert _speak_parts(monkeypatch, parts) == pcm
+
+
+@pytest.mark.parametrize("bytewise", [False, True])
+def test_one_wav_per_sentence_plays_every_sentence(monkeypatch, bytewise):
+    a, b = _tone(0.2, 24000), _tone(0.3, 24000)[::-1]
+    body = _wav(a, 24000) + _wav(b, 24000)
+    parts = [body[i : i + 1] for i in range(len(body))] if bytewise else [body]
+    assert _speak_parts(monkeypatch, parts) == a + b
+
+
+def test_a_second_wav_in_another_format_ends_the_audio(monkeypatch):
+    a = _tone(0.2, 24000)
+    assert _speak_parts(monkeypatch, [_wav(a, 24000) + _wav(_tone(0.2, 16000), 16000)]) == a
+
+
+def test_a_metadata_chunk_still_ends_the_audio_bytewise(monkeypatch):
+    pcm = _tone(0.1, 24000)
+    body = _wav(pcm, 24000) + b"LIST" + struct.pack("<I", 12) + b"INFOISFT\x00\x00\x00\x00"
+    assert _speak_parts(monkeypatch, [body[i : i + 1] for i in range(len(body))]) == pcm
+
+
+@pytest.mark.parametrize(
+    "addr", ["fd20:ce::254", "fd00:c1::a9fe:a9fe", "64:ff9b::7f00:1", "2002:7f00:1::"]
+)
+def test_more_metadata_and_translated_loopback_are_refused(monkeypatch, addr):
+    _resolving(monkeypatch, addr)
+    seen = _mount(monkeypatch, lambda r: httpx.Response(200, json={"data": []}))
+    with pytest.raises(se.SpeechError) as e:
+        run(se.list_models(se.Endpoint("http://speech.example/v1")))
+    assert e.value.code == "refused_destination" and seen == []

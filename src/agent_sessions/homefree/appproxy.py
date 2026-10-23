@@ -43,6 +43,9 @@ import websockets
 
 from .mux import Stream, StreamReset
 
+#: Marks a request that arrived through this proxy (#1397). Set here, stripped from input.
+HOME_FREE_HEADER = "X-BattleLab-Home-Free"
+
 # Hop-by-hop headers must not be forwarded across a proxy (RFC 7230 §6.1).
 #: Hard ceiling on one proxied request body, with headroom over the app's own 25 MiB per-file
 #: upload cap for multipart framing (#807). Env-overridable for an operator with a larger need.
@@ -134,9 +137,19 @@ class AppProxyTarget:
         pairs = headers.items() if isinstance(headers, dict) else (headers or [])
         out: dict[str, str] = {}
         for k, v in pairs:
-            if k.lower() in _HOP:
-                continue
+            if (
+                not isinstance(k, str)
+                or not isinstance(v, str)
+                or any(c in k or c in v for c in "\r\n\0")
+            ):
+                continue  # a CR/LF/NUL would smuggle extra header lines onto the WS hop (#1626)
+            if k.lower() in _HOP or k.lower() == HOME_FREE_HEADER.lower():
+                continue  # the marker below is ours alone; a client cannot set or clear it
             out[k] = v
+        # Every request this proxy forwards says it came over Home Free (#1397: calls are not
+        # offered on this path until its audio budget is measured). It can only RESTRICT: a
+        # direct request that forges it merely makes its own calls unavailable.
+        out[HOME_FREE_HEADER] = "1"
         # Normalize Origin/Referer to the app's own origin for the loopback hop;
         # Cookie + X-CSRF-Token pass through untouched so auth still works.
         out["Origin"] = self.origin

@@ -58,7 +58,7 @@ def test_registry_covers_every_system_prompt():
     # #1090 added template_suggest + template_write; #1209 added chat_agent; #1222 chat_agent_tools
     # #1443 added ask_orchestrator; #1525 the 13 HQ contact personas (unguarded: tone only, sent
     # BEFORE the guarded ask_orchestrator, whose guard stays the last word)
-    assert len(prompts.REGISTRY) == 35
+    assert len(prompts.REGISTRY) == 37
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -142,6 +142,8 @@ EXPECTED_DEFAULT_SHA = {
     "hq_persona_southamerica_woman": "5c36be44f26eb5d6",
     "hq_persona_southamerica_man": "8ebd20290941c65d",
     "hq_persona_romania_woman": "5ceabcc8049fa2d7",
+    "hq_call": "2a2d38ffdfc7bd9b",  # #1397
+    "hq_call_detailed": "bdfdfb789725e801",  # #1397 (#1626 review: the answers setting)
 }
 
 

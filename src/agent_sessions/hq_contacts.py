@@ -44,6 +44,9 @@ class Contact:
     #: The archetype and voice: one or two sentences, a draft editable here (and, per install,
     #: on the Prompts page).
     voice: str
+    #: Which of the two call voices speaks for this contact (#1397 P1): ``woman`` or ``man``,
+    #: chosen per contact here and never parsed from the id. Per-contact voices come in P3.
+    voice_group: str = ""
 
     @property
     def prompt_id(self) -> str:
@@ -61,71 +64,83 @@ CONTACTS: tuple[Contact, ...] = (
         "General Hana Seo",
         "Your archetype is the calm strategist: crisp, precise briefings that close on a "
         "measured one-line aphorism.",
+        voice_group="woman",
     ),
     Contact(
         "asia-man",
         "General Kenji Mori",
         "Your archetype is the silent tactician: few words, chess metaphors, always one move "
         "ahead.",
+        voice_group="man",
     ),
     Contact(
         "europe-woman",
         "General Claire Vidal",
         "Your archetype is the intelligence chief: elegant, with dry wit and the occasional "
         "raised-eyebrow aside.",
+        voice_group="woman",
     ),
     Contact(
         "europe-man",
         "General Lukas Brandt",
         "Your archetype is the precision engineer-general: numbers, timetables, and quiet pride "
         'in "on schedule".',
+        voice_group="man",
     ),
     Contact(
         "russia-woman",
         "General Irina Volkova",
         "Your archetype is the ice queen: terse orders, perfect composure, the occasional "
         "chilling joke.",
+        voice_group="woman",
     ),
     Contact(
         "russia-man",
         "General Dmitri Sokolov",
         "Your archetype is the gruff old bear: booming, deadpan and theatrical — "
         '"Excellent. HQ is pleased."',
+        voice_group="man",
     ),
     Contact(
         "us-woman",
         "General Jessica Hale",
         'Your archetype is the gung-ho briefing officer: "Outstanding, Commander!" — every win '
         "gets a salute.",
+        voice_group="woman",
     ),
     Contact(
         "us-man",
         "General Jack Harlan",
         'Your archetype is the war-movie general: swagger, folksy one-liners, "Let\'s roll."',
+        voice_group="man",
     ),
     Contact(
         "africa-woman",
         "General Amara Okafor",
         "Your archetype is the rallying field commander: warm and firm, and you get the troops "
         "moving.",
+        voice_group="woman",
     ),
     Contact(
         "africa-man",
         "General Kwame Mensah",
         "Your archetype is the veteran: unhurried and wise, you see the whole battlefield, and "
         "you add a wry remark.",
+        voice_group="man",
     ),
     Contact(
         "southamerica-woman",
         "General Valentina Cruz",
         "Your archetype is the firebrand: passionate, dramatic and decisive — "
         '"This cannot wait!"',
+        voice_group="woman",
     ),
     Contact(
         "southamerica-man",
         "General Mateo Ríos",
         "Your archetype is the smooth operator: charming and relaxed, always a step ahead and "
         "never in a hurry.",
+        voice_group="man",
     ),
     # The outlaw, the deliberate exception (named by the operator, #1525).
     Contact(
@@ -134,6 +149,7 @@ CONTACTS: tuple[Contact, ...] = (
         "Your archetype is the rebel with a smirk: a Romanian outlaw who answers to the "
         'Commander alone — sardonic, teasing ("Miss me, Commander?"), secretly devoted. Lupu '
         'means "wolf".',
+        voice_group="woman",
     ),
 )
 
@@ -142,6 +158,8 @@ _BY_ID: dict[str, Contact] = {c.id: c for c in CONTACTS}
 IDS: tuple[str, ...] = tuple(c.id for c in CONTACTS)
 #: Every registered persona prompt id, in the same order.
 PROMPT_IDS: tuple[str, ...] = tuple(c.prompt_id for c in CONTACTS)
+#: The two call voices (#1397 P1); every contact names one.
+VOICE_GROUPS: tuple[str, ...] = ("woman", "man")
 #: What the ``hq_contact`` pref may hold.
 PREF_VALUES: tuple[str, ...] = (*IDS, RANDOM, OFF)
 

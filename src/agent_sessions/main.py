@@ -62,6 +62,7 @@ from . import (
     shares,
     update_loop,
     usage_loop,
+    voice_calls,
 )
 from . import (
     handoff as handoff_mod,
@@ -103,6 +104,7 @@ from .routes import terminal as terminal_routes
 from .routes import upload as upload_routes
 from .routes import usage as usage_routes
 from .routes import variables as variables_routes
+from .routes import voice as voice_routes
 
 # Re-export the post-login redirect sanitizer (now owned by routes/auth.py) under its
 # historical name here, so tests that call main._safe_next still resolve it (#265).
@@ -442,6 +444,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             # everything it uses is still up.
             with contextlib.suppress(Exception):
                 await missions_routes.drain_turns()
+            # A call in progress ends first (#1397): its worker is a child process of this one.
+            with contextlib.suppress(Exception):
+                await voice_calls.REGISTRY.end_all("server_stopping")
             # …and Ask's (#1443), for the same reason: a turn whose reader left has no request.
             with contextlib.suppress(Exception):
                 await ask_orchestrator.drain_turns()
@@ -703,6 +708,16 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     pulse_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
     # Ask's durable conversations (#1443): the sidebar's turns, owned by the server.
     ask_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
+    # Calling HQ (#1397): speech endpoints, the call admission and the call socket. A call is an
+    # HQ conversation spoken aloud, so it gets the same registry snapshot HQ turns get.
+    voice_routes.register(
+        app,
+        cfg=cfg,
+        logged_in=_logged_in,
+        csrf_guard=_csrf_guard,
+        must_change=_must_change,
+        registry=registry,
+    )
     # MISSION CONTROL (#846, Phase 1 of #840): the mission record — list/get/create/adopt/detach/
     # state/archive/objectives. No new decision endpoint; approve/reject stay on the pulse routes.
     missions_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)

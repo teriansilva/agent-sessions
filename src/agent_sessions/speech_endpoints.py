@@ -124,8 +124,14 @@ def classify_host(url: str) -> str:
 
 # Cloud metadata endpoints outside the link-local ranges (AWS IPv6, Alibaba's CGNAT address).
 _METADATA = frozenset(
-    ipaddress.ip_address(a) for a in ("fd00:ec2::254", "100.100.100.200", "169.254.169.254")
-)
+    ipaddress.ip_address(a)
+    for a in (
+        "169.254.169.254", "fd00:ec2::254",  # AWS (IPv4, IPv6)
+        "100.100.100.200",  # Alibaba Cloud
+        "fd20:ce::254",  # Google Cloud IPv6
+        "fd00:c1::a9fe:a9fe",  # Oracle Cloud IPv6
+    )
+)  # fmt: skip
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
 
 
@@ -139,6 +145,10 @@ def _unsafe_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         if embedded is None and ip in _NAT64:
             embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
         if embedded is not None:
+            # Loopback reached through a translator (NAT64, 6to4) is the GATEWAY's loopback, not
+            # ours: only the plain mapped form (::ffff:127.x) counts as this host.
+            if embedded.is_loopback and ip.ipv4_mapped is None:
+                return True
             return _unsafe_ip(embedded)
     if ip.is_loopback:
         return False
@@ -488,6 +498,7 @@ async def synthesize(
         carry = b""
         resampler: Resampler | None = None
         remaining: int | None = None  # bytes of WAV `data` still to play (None: to the end)
+        after = b""  # bytes past a sized `data` chunk, held until they are understood
 
         def decide(head: bytes, final: bool) -> tuple[tuple[int, int, int], bytes] | None:
             """The stream's format and its first audio bytes, once enough has arrived to tell a
@@ -510,8 +521,9 @@ async def synthesize(
             return (OPENAI_PCM_RATE, 1, 16), head
 
         def produce(chunk: bytes) -> list[bytes]:
-            nonlocal carry, produced, remaining, resampler
+            nonlocal carry, produced, remaining, resampler, after
             if remaining is not None:
+                after += chunk[remaining:]
                 chunk = chunk[:remaining]
                 remaining -= len(chunk)
             if resampler is None:
@@ -532,6 +544,38 @@ async def synthesize(
                     outs.append(out)
             return outs
 
+        def drain(final: bool) -> tuple[list[bytes], bool]:
+            """What follows a sized WAV `data` chunk, as `(audio, stop)`:
+            * another `RIFF` header (a server sending one WAV per sentence) plays on, in the same
+              format, or stops if the format changed;
+            * a metadata chunk (an ASCII id such as `LIST`) ends the audio;
+            * anything else means the header understated the length (Python's `wave` writing to
+              a pipe does), so it plays to the end."""
+            nonlocal after, remaining
+            outs: list[bytes] = []
+            while remaining == 0 and after:
+                buf = bytes(after)
+                if len(buf) < 8 and not final:
+                    return outs, False  # a chunk id and its size first, then judge
+                if buf[:4] == b"RIFF":
+                    parsed = parse_wav_header(buf)
+                    if parsed is None:
+                        if final or len(buf) > 64 * 1024:
+                            return outs, True
+                        return outs, False  # wait for the rest of the header
+                    rate, channels, bits, off = parsed
+                    if (rate, channels, bits) != fmt:
+                        return outs, True
+                    size = struct.unpack("<I", buf[off - 4 : off])[0]
+                    after, remaining = b"", None if size in (0, 0xFFFFFFFF) else size
+                    outs += produce(buf[off:])
+                    continue
+                if len(buf) >= 4 and all(0x20 <= c < 0x7F for c in buf[:4]):
+                    return outs, True  # a metadata chunk: the audio is over
+                after, remaining = b"", None  # an understated header: play to the end
+                outs += produce(buf)
+            return outs, False
+
         async for chunk in resp.aiter_bytes():
             total += len(chunk)
             if total > SPEECH_MAX_BYTES:
@@ -542,14 +586,24 @@ async def synthesize(
                 if got is None:
                     continue
                 fmt, chunk = got
-            for out in produce(chunk):
+            elif remaining == 0:
+                after += chunk
+                chunk = b""
+            for out in produce(chunk) if chunk else []:
                 yield out
                 await asyncio.sleep(0)
-            if remaining == 0:
-                break  # the WAV `data` chunk is complete; trailing chunks are not audio
-        if fmt is None and head:
-            fmt, first = decide(bytes(head), final=True)
-            for out in produce(first):
+            outs, stop = drain(final=False)
+            for out in outs:
+                yield out
+            if stop:
+                break
+        else:
+            if fmt is None and head:
+                fmt, first = decide(bytes(head), final=True)
+                for out in produce(first):
+                    yield out
+            outs, _ = drain(final=True)
+            for out in outs:
                 yield out
         if resampler is not None:
             tail = resampler.flush()

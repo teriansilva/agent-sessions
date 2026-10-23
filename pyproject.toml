@@ -32,6 +32,12 @@ dependencies = [
 agent-sessions = "agent_sessions.cli:main"
 
 [project.optional-dependencies]
+# Calling HQ (#1397): the voice worker's conversation engine (VAD, Smart Turn end-of-turn,
+# interruptions). Optional — without it calls are simply unavailable, with the reason shown.
+# Pinned: its frame/turn APIs moved between minors (docs/voice/adr-p0.md §5).
+voice = [
+    "pipecat-ai==1.13.0",
+]
 dev = [
     "pytest==8.3.4",
     "pytest-xdist==3.8.0",  # pr-validate runs `pytest -n 8 --dist loadfile` (#1098)

@@ -10,6 +10,7 @@ the ws handler, and ``/api/config`` also read.
 
 from __future__ import annotations
 
+import contextlib
 import hmac
 import json
 import os
@@ -337,7 +338,12 @@ def register(
         return redirect
 
     @app.post("/logout")
-    async def logout(_: None = Depends(csrf_guard)) -> Response:
+    async def logout(request: Request, _: None = Depends(csrf_guard)) -> Response:
+        # Sessions are stateless, so what a sign-out must stop is stopped here: a running call
+        # (#1397) ends whichever device it is on.
+        for hook in getattr(request.app.state, "logout_hooks", []):
+            with contextlib.suppress(Exception):
+                await hook()
         resp = RedirectResponse("/login", status_code=303)
         clear_session(resp)
         return resp

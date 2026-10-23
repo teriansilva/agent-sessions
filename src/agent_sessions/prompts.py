@@ -550,6 +550,21 @@ explanations proportional to the question. If something is uncertain, say so and
 settle it."""
 
 
+_HQ_CALL = """The Commander is on a voice call with you: every answer is spoken aloud by a \
+speech engine and heard, not read. Answer in two or three short spoken sentences. No markdown, no \
+tables, no lists, no code, no URLs, no emoji; say numbers the way a person would and round them. \
+Name a session by its title, never its key. If there is more to say, give the headline and offer \
+the detail. When you propose something, say in one sentence what the card does; the Commander \
+confirms it on the card. Answer in the language the Commander speaks."""
+
+_HQ_CALL_DETAILED = """The Commander is on a voice call with you: every answer is spoken aloud by \
+a speech engine and heard, not read. The Commander asked for detailed answers: give the full \
+picture in up to six spoken sentences, most important first. No markdown, no tables, no lists, \
+no code, no URLs, no emoji; say numbers the way a person would and round them. Name a session by \
+its title, never its key. When you propose something, say in one sentence what the card does; \
+the Commander confirms it on the card. Answer in the language the Commander speaks."""
+
+
 REGISTRY: tuple[Prompt, ...] = (
     Prompt(
         id="tail_review",
@@ -700,6 +715,32 @@ REGISTRY: tuple[Prompt, ...] = (
         # GUARDED. Its tool results carry agents' screens and transcripts verbatim, so session
         # content is in front of it on every turn — the condition the guard clause is for.
         guarded=True,
+    ),
+    Prompt(
+        id="hq_call",
+        group="Mission control",
+        label="HQ — on a call",
+        description="Sent with each question asked on a call (#1397), between the contact's "
+        "voice and the HQ conversation prompt: answers are spoken aloud, so they are short and "
+        "plain. Tone only — what HQ may do is unchanged.",
+        contract="free text, spoken aloud",
+        default=_HQ_CALL,
+        max_chars=2000,
+        block=BLOCK,
+        field="hq_call",
+    ),
+    Prompt(
+        id="hq_call_detailed",
+        group="Mission control",
+        label="HQ — on a call (detailed answers)",
+        description='Sent instead of "HQ — on a call" when Settings → HQ calls → answers is '
+        "Detailed (#1397): fuller spoken answers, the same plain speech. Tone only — what HQ may "
+        "do is unchanged.",
+        contract="free text, spoken aloud",
+        default=_HQ_CALL_DETAILED,
+        max_chars=2000,
+        block=BLOCK,
+        field="hq_call_detailed",
     ),
     Prompt(
         id="orchestrator_pass",

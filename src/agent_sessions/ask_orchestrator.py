@@ -151,6 +151,11 @@ class _Turn:
     proposals: int = 0
     #: Who answers (#1525): a known HQ contact id, or ``off`` for plain HQ (no persona).
     contact: str = hq_contacts.OFF
+    #: How the question arrived (#1397): ``None`` typed, ``"call"`` spoken on a call. A call turn
+    #: adds the registered ``hq_call`` prompt (spoken-style answers); nothing else changes.
+    via: str | None = None
+    #: On a call: "brief" (``hq_call``) or "detailed" (``hq_call_detailed``), Settings → HQ calls.
+    call_answers: str = "brief"
     #: Sessions VISIBLY working right now (`actuator.busy_keys`), snapshotted when the turn began.
     busy_keys: set[str] = field(default_factory=set)
     #: The question this turn answers (`ask_operator`, #1443 Phase 2): ``{"question", ...}``.
@@ -2046,6 +2051,16 @@ def _asked_records(turn: _Turn) -> list[dict]:
     ]
 
 
+def _call_style(turn: _Turn) -> list[dict]:
+    """On a call (#1397) the answer is spoken: ``hq_call`` asks for short, plain sentences. It
+    goes after the persona and BEFORE the guarded prompt, whose guard stays the last word."""
+    if turn.via is None:
+        return []
+    if turn.call_answers == "detailed":
+        return [{"role": "system", "content": prompts.effective("hq_call_detailed")}]
+    return [{"role": "system", "content": prompts.effective("hq_call")}]
+
+
 def _persona(turn: _Turn) -> list[dict]:
     """The contact's persona as its own system message, or nothing for ``off`` (#1525). An exact
     registry string: the outbound check holds as it is, and it goes BEFORE the guarded prompt."""
@@ -2070,6 +2085,7 @@ async def run_turn(turn: _Turn) -> list[dict]:
         # The persona first, the guarded prompt LAST of the system messages: its guard is then
         # the final instruction the model reads, whatever the voice says (`prompt-registry.md`).
         *_persona(turn),
+        *_call_style(turn),
         {"role": "system", "content": prompts.effective("ask_orchestrator")},
         # Stored user/assistant text only; the pinned sanitizer gates the role at the sink.
         *pulse_chat.bound_history(history),
@@ -2243,6 +2259,8 @@ def turn_views(records: list[dict]) -> list[dict]:
                 # #1525: who answered this turn — its own, kept when the operator switches.
                 # A turn from before HQ contacts (or with a contact since removed) is plain HQ.
                 "contact": hq_contacts.resolve(r.get("contact")),
+                # #1397: how it was asked — absent (typed) or a channel such as "call".
+                "via": r.get("via") if r.get("via") in ask_store.VIAS else None,
             }
             order.append(tid)
             continue
@@ -2473,6 +2491,8 @@ async def begin(
     answers: str | None = None,
     option: int | None = None,
     contact: str = hq_contacts.OFF,
+    via: str | None = None,
+    call_answers: str = "brief",
     operator=None,
     app=None,
 ) -> tuple[asyncio.Task | None, dict | None]:
@@ -2489,8 +2509,11 @@ async def begin(
     between.
 
     ``contact`` is who answers (#1525): resolved here to a known id or ``off`` and stored on the
-    turn's own record."""
+    turn's own record. ``via`` is how the question arrived (#1397): ``None`` typed, or one of
+    ``ask_store.VIAS``; anything else is refused before anything is written."""
     contact = hq_contacts.resolve(contact)
+    if via is not None and via not in ask_store.VIAS:
+        raise TurnError(422, "unknown channel")
     answering = None
     if answers is not None or option is not None:
         # A question record never changes once written, so resolving outside the lock is exact.
@@ -2541,6 +2564,8 @@ async def begin(
                 "qd": qd,
                 "contact": contact,
             }
+            if via is not None:
+                user["via"] = via
             if answering is not None:
                 user["answers"] = answering["question_id"]
             await _append(cid, user, {"type": "status", "turn_id": turn_id, "status": "pending"})
@@ -2556,6 +2581,8 @@ async def begin(
             busy_keys=set(busy_keys or ()),
             answering=answering,
             contact=contact,
+            via=via,
+            call_answers=call_answers if call_answers in ("brief", "detailed") else "brief",
             progress=lambda ev: _broadcast(cid, ev),
             operator=operator,
             app=app,

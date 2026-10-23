@@ -98,6 +98,10 @@ META_IDS_MAX = 20
 PINNING_PROPOSAL_STATES = frozenset({"deciding", "creating"})
 
 TURN_STATUSES = frozenset({"pending", "done", "failed"})
+#: How a question may arrive besides typing (#1397). `call` = spoken on an in-app call; the
+#: phone and WhatsApp channels (#1397 P5) add theirs here when they exist.
+VIAS = frozenset({"call"})
+
 RECORD_TYPES = frozenset(
     {"conversation", "user", "assistant", "tool", "status", "question", "proposal", "update"}
 )
@@ -314,6 +318,13 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
             if not isinstance(contact, str) or contact not in (*hq_contacts.IDS, hq_contacts.OFF):
                 raise ValueError("unknown HQ contact")
             out["contact"] = contact
+        # How the question arrived (#1397): absent = typed; a call turn says so. Only known
+        # channels are kept — a record carrying anything else is refused, never repaired.
+        via = rec.get("via")
+        if via is not None:
+            if via not in VIAS:
+                raise ValueError("unknown channel")
+            out["via"] = via
     elif kind == "question":
         out["turn_id"] = _turn_id(rec)
         qid = rec.get("question_id")

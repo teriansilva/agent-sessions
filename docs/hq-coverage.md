@@ -553,6 +553,15 @@ GET    /p/{token}                                                               
 GET    /{spa_path:path}                                                           n/a  # SPA shell
 WS     /ws/term/{sid}                                                             P7  # terminal input; text nudges: have (propose_nudge)
 WS     /ws/plugins/signin/{operation_id}                                          never  # interactive vendor login
+GET    /api/voice/settings                                                        never  # speech endpoints + tokens decide where call audio goes (voice-calls.md)
+POST   /api/voice/settings                                                        never  # same: credentials and destinations
+POST   /api/voice/test                                                            never  # tests a draft speech endpoint with a token
+POST   /api/voice/voices                                                          never  # reads a draft speech endpoint's lists
+POST   /api/voice/preview                                                         n/a  # a fixed line the operator listens to
+GET    /api/voice/capabilities                                                    n/a  # whether a call can start: calling HQ is HQ
+POST   /api/voice/calls                                                           n/a  # calling HQ is HQ (#1397)
+DELETE /api/voice/calls/{call_id}                                                 n/a  # hanging up on HQ
+WS     /ws/voice/{call_id}                                                        n/a  # the call itself: speech for HQ's own turns
 ```
 
 ## Prefs map (`POST /api/prefs`)

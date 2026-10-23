@@ -41,6 +41,8 @@ EXPECTED_SITES = {
     ("pulse_chat.py", "ask_catalog"),
     ("pulse_chat.py", "ask_verify"),
     ("ask_orchestrator.py", "ask_orchestrator"),  # #1443: the durable Ask conversation
+    ("ask_orchestrator.py", "hq_call"),  # #1397: a turn asked on a call — spoken-style answers
+    ("ask_orchestrator.py", "hq_call_detailed"),  # #1397: the same, Settings → answers: Detailed
     ("review.py", "tail_review"),
     ("review.py", "session_recap"),
     ("mission_objectives.py", "mission_objectives"),
