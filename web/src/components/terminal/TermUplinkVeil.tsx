@@ -14,7 +14,19 @@ function clock(ms: number): string {
   return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
 
-export function TermUplinkVeil({ veil, title }: { veil: UplinkVeil; title?: string | null }) {
+/** What happens to input while the link is down (#1570 follow-up): a terminal refuses keys; an API
+ *  session's outbox holds sent messages and posts them, in order, once the link is back. */
+export type VeilInput = "keys" | "outbox";
+
+export function TermUplinkVeil({
+  veil,
+  title,
+  input = "keys",
+}: {
+  veil: UplinkVeil;
+  title?: string | null;
+  input?: VeilInput;
+}) {
   // A 1 s ticker for the elapsed readout, only while an outage is on screen.
   const [now, setNow] = useState(() => Date.now());
   const ticking = veil.phase !== "restored";
@@ -81,9 +93,11 @@ export function TermUplinkVeil({ veil, title }: { veil: UplinkVeil; title?: stri
         <div className={s.note}>
           {veil.phase === "restored"
             ? "Input is live again."
-            : veil.phase === "lost"
-              ? "Input is paused — keys typed now are not sent."
-              : "Input is paused until the link is up."}
+            : input === "outbox"
+              ? "Messages you send now wait in the outbox and go out when the link is back."
+              : veil.phase === "lost"
+                ? "Input is paused — keys typed now are not sent."
+                : "Input is paused until the link is up."}
         </div>
       </div>
     </div>

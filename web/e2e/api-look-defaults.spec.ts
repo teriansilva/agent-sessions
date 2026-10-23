@@ -9,7 +9,11 @@
 // chrome changed exactly those elements — the head bar, its label and chips, and the three composer
 // controls — and nothing in the transcript, its layout, or the chat pane. A third time for #1586:
 // Send's label gained its own <span> (so a 360 px composer can show the icon alone) — one added
-// element per structured case, no computed style changed. Re-record only on purpose:
+// element per structured case, no computed style changed. A fourth time for the #1570 follow-up (the
+// uplink veil on API sessions): the log moved into a conversation-area wrapper (`.logArea`, which the
+// veil overlays) — one inserted element per case at the log's old position, and every one of the
+// existing elements (24 chat, 87–124 structured) computes exactly the recorded styles, checked by
+// mapping each old path under the wrapper. Re-record only on purpose:
 //   API_LOOK_BASELINE_WRITE=1 npx playwright test e2e/api-look-defaults.spec.ts --workers=1
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";

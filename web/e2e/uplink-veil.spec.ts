@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { CHAT_PATH, CHAT_SID, STRUCTURED_ID, STRUCTURED_PATH, mockApiPanes } from "./apiLookFixture";
 
 // #1570: the uplink veil over the terminal while a session is slow to connect (> 3 s) or has lost
 // its link (> 5 s), never for a shorter blip. Real browser, desktop + mobile projects: layering,
@@ -421,4 +422,104 @@ test.describe("uplink veil (#1570)", () => {
       await page.screenshot({ path: info.outputPath(`uplink-veil-${theme}-${info.project.name}.png`) });
     });
   }
+});
+
+// ---- #1570 follow-up: one veil, every session — API sessions (structured + chat) too ----------
+
+
+const STRUCTURED_READS = new RegExp(`/api/structured/sessions/codex-api(?::|%3A)${STRUCTURED_ID}(/events)?(\\?.*)?$`);
+const CHAT_READS = new RegExp(`/api/chat/${encodeURIComponent(`apichat:${CHAT_SID}`)}(\\?.*)?$`);
+
+/** Make the pane's reads fail (the server is gone) until the returned `up()` restores them. The
+ *  newest route wins, so this sits over the fixture's own answers and falls back to them when up. */
+async function linkDown(page: Page, reads: RegExp) {
+  let down = true;
+  await page.route(reads, (r) => (down ? r.abort("failed") : r.fallback()));
+  return { up: () => void (down = false) };
+}
+
+test.describe("uplink veil on API sessions (#1570 follow-up)", () => {
+  test.describe.configure({ timeout: 60_000 }); // real idle polls: 10 s, then the 5 s grace
+
+  test("structured (codex-api): a lost link shows the same veil, saying sends wait in the outbox; it clears", async ({ page }, info) => {
+    await mockApiPanes(page);
+    await page.goto(STRUCTURED_PATH);
+    await expect(page.getByTestId("structured-pane")).toBeVisible();
+    await expect(page.getByTestId("api-log")).toBeVisible();
+    await page.waitForTimeout(900); // a settled link
+    const link = await linkDown(page, STRUCTURED_READS);
+    await expect(veil(page)).toHaveAttribute("data-phase", "lost", { timeout: 20_000 });
+    await expect(veil(page)).toContainText(/uplink \/\/ re-establishing/i);
+    await expect(veil(page)).toContainText("wait in the outbox");
+    const rel = await page.evaluate(() => {
+      const v = document.querySelector('[data-testid="uplink-veil"]')!;
+      const log = document.querySelector('[data-testid="api-log"]')!;
+      const head = document.querySelector('[data-testid="uplink-head"]')!;
+      const r = v.getBoundingClientRect(), l = log.getBoundingClientRect();
+      return {
+        inLog: log.contains(v),
+        logBusy: log.getAttribute("aria-busy"),
+        headBusy: head.closest('[aria-busy="true"]') !== null,
+        covers: Math.abs(r.top - l.top) < 2 && Math.abs(r.height - l.height) < 2,
+        blur: getComputedStyle(v).backdropFilter,
+      };
+    });
+    expect(rel).toMatchObject({ inLog: false, logBusy: "true", headBusy: false, covers: true });
+    expect(rel.blur).toBe(info.project.name === "mobile" ? "none" : "blur(3px) saturate(0.7)");
+    // The composer stays usable; a message sent now waits instead of being posted into the dead link.
+    link.up();
+    await expect(veil(page)).toHaveCount(0, { timeout: 30_000 });
+  });
+
+  test("structured: a first read that never answers shows ESTABLISHING at ~3 s", async ({ page }) => {
+    await mockApiPanes(page);
+    await page.route(STRUCTURED_READS, () => {}); // never answers
+    const t0 = Date.now();
+    await page.goto(STRUCTURED_PATH);
+    await expect(veil(page)).toHaveAttribute("data-phase", "establishing", { timeout: 8_000 });
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(2900);
+  });
+
+  test("chat (apichat): an idle pane notices a lost link and shows the same veil; it clears", async ({ page }) => {
+    await mockApiPanes(page);
+    await page.goto(CHAT_PATH);
+    await expect(page.getByTestId("chat-pane")).toBeVisible();
+    await expect(page.getByTestId("chat-turn").first()).toBeVisible();
+    await page.waitForTimeout(900);
+    const link = await linkDown(page, CHAT_READS);
+    await expect(veil(page)).toHaveAttribute("data-phase", "lost", { timeout: 20_000 });
+    await expect(veil(page)).toContainText("wait in the outbox");
+    expect(await page.getByTestId("api-log").evaluate((log) => log.getAttribute("aria-busy"))).toBe("true");
+    link.up();
+    await expect(veil(page)).toHaveCount(0, { timeout: 20_000 });
+  });
+
+  test("chat: a first read that fails transiently (503) shows ESTABLISHING, not an error, then opens", async ({ page }) => {
+    await mockApiPanes(page);
+    let failing = true;
+    await page.route(CHAT_READS, (r) =>
+      failing ? r.fulfill({ status: 503, json: { detail: "unavailable" } }) : r.fallback(),
+    );
+    await page.goto(CHAT_PATH);
+    await expect(veil(page)).toHaveAttribute("data-phase", "establishing", { timeout: 8_000 });
+    await expect(page.getByText("Couldn’t load this conversation.")).toHaveCount(0);
+    failing = false;
+    await expect(page.getByTestId("chat-turn").first()).toBeVisible({ timeout: 10_000 });
+    await expect(veil(page)).toHaveCount(0, { timeout: 10_000 });
+  });
+
+  test(`captures the API veil (PR screenshots)`, async ({ page }, info) => {
+    for (const theme of ["dark", "light"] as const) {
+      await mockApiPanes(page, { theme });
+      await page.goto(STRUCTURED_PATH);
+      await expect(page.getByTestId("api-log")).toBeVisible();
+      await page.waitForTimeout(900);
+      const link = await linkDown(page, STRUCTURED_READS);
+      await expect(veil(page)).toHaveAttribute("data-phase", "lost", { timeout: 20_000 });
+      await page.waitForTimeout(600);
+      await page.screenshot({ path: info.outputPath(`uplink-veil-api-${theme}-${info.project.name}.png`) });
+      link.up();
+      await page.unrouteAll({ behavior: "ignoreErrors" });
+    }
+  });
 });

@@ -198,7 +198,7 @@ test("refused → Edit puts the words back and releases the queue; the edit is a
   await expect(pending(page)).toHaveCount(0);
 });
 
-test("unknown → no Edit; Retry resends the same turn_id and the server keeps it once", async ({ page }, testInfo) => {
+test("unknown → no Edit; a Retry during the outage waits, and the first good read shows the turn once — nothing re-sent", async ({ page }, testInfo) => {
   const fx = await app(page);
   fx.plan.push("lost");
   await open(page);
@@ -218,11 +218,16 @@ test("unknown → no Edit; Retry resends the same turn_id and the server keeps i
     expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await page.screenshot({ path: testInfo.outputPath("unknown.png") });
   await entry.getByRole("button", { name: "Retry" }).click();
-  await expect.poll(() => fx.sends.length).toBe(2);
-  expect(fx.sends[1].body.turn_id).toBe(fx.sends[0].body.turn_id);
-  expect(fx.replays).toBe(1); // the server recognised it: one turn, not two
+  // #1591: while reads fail the Retry waits in the outbox rather than posting into a dead link…
+  await expect(entry).toHaveAttribute("data-phase", "waiting");
+  expect(fx.sends.length).toBe(1);
+  // …and the first good read shows the server already has the turn (only its response was lost):
+  // the entry settles by the turn's id and nothing is re-sent — one turn, never two. (A Retry the
+  // server answers with the same id is pinned in ChatPane.test.tsx's 409-in_flight case.)
   failing = false;
-  await expect(pending(page)).toHaveCount(0);
+  await expect(pending(page)).toHaveCount(0, { timeout: 15_000 });
+  expect(fx.sends.length).toBe(1);
+  expect(fx.replays).toBe(0);
   await expect(turnRow(page, "Now look at the idle timeout too.")).toHaveCount(1);
   await expect(page.getByTestId("chat-turn")).toHaveCount(1);
 });

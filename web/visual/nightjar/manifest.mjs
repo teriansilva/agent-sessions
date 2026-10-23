@@ -395,6 +395,18 @@ export const SWEEP = [
   // #1570: the uplink veil over a terminal whose settled link (held > 750 ms) has been down past
   // its 5 s grace; every retry is accepted and refused at once (a flap), which keeps the outage.
   { id: "route:uplink-veil", path: S6, term: { dropAfter: 1500 }, at: 7600, present: "[data-testid='uplink-veil'][data-phase='lost']" },
+  // #1570 follow-up: the same veil on an API session — its first read never succeeds, so after 3 s
+  // the conversation area shows ESTABLISHING (reads answer 503, raw and encoded key forms).
+  {
+    id: "route:uplink-veil-api",
+    path: SAPI,
+    api: {
+      "/api/structured/sessions/claude-api%3A7c1e9a00-5b2d-4c8e-9f31-0a6d2e8b4009": { status: 503, json: { detail: "down" } },
+      "/api/structured/sessions/claude-api:7c1e9a00-5b2d-4c8e-9f31-0a6d2e8b4009": { status: 503, json: { detail: "down" } },
+    },
+    at: 4500,
+    present: "[data-testid='uplink-veil'][data-phase='establishing']",
+  },
   // Routes (Phases 4–11). The skeleton: the route itself in its default state; each phase adds its
   // states (loading, empty, error, opened popups, focus) as ids of its own.
   { id: "route:dashboard", path: "/dashboard" },

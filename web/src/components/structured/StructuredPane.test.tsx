@@ -1604,3 +1604,120 @@ test("a Codex MCP tool approval names the tool, its server and its arguments, an
   const [, body] = vi.mocked(api.structuredDecide).mock.calls[0];
   expect(body).toMatchObject({ request_id: "i:78", turn_id: t.turn_id, decision: "approve" });
 });
+
+// ---- #1570 follow-up: the uplink veil covers API sessions too — one veil, every session ----
+
+test("a lost link shows the terminal's uplink veil after 5 s of failed reads, saying sends wait in the outbox", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  renderPane();
+  await screen.findByRole("textbox");
+  vi.mocked(api.structuredEvents).mockRejectedValue(new TypeError("offline"));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_500); // the idle poll fails: the outage starts here
+  });
+  expect(await screen.findByTestId("structured-reconnecting")).toBeInTheDocument();
+  expect(screen.queryByTestId("uplink-veil")).toBeNull(); // inside the 5 s grace
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5_000);
+  });
+  const veil = await screen.findByTestId("uplink-veil");
+  expect(veil).toHaveAttribute("data-phase", "lost");
+  expect(veil).toHaveTextContent(/uplink \/\/ re-establishing/i);
+  expect(veil).toHaveTextContent("wait in the outbox");
+  // Over the conversation, never inside the log's own live region; the log is busy, the head is not.
+  const log = screen.getByTestId("api-log");
+  expect(log.contains(veil)).toBe(false);
+  expect(log).toHaveAttribute("aria-busy", "true");
+  expect(screen.getByTestId("uplink-head").closest('[aria-busy="true"]')).toBeNull();
+  // One announcement source: the worker chip keeps its text but stands down as a live region.
+  expect(screen.getByTestId("structured-worker")).not.toHaveAttribute("role");
+  // Reads recover: the veil says RESTORED once the link has held, then goes.
+  vi.mocked(api.structuredEvents).mockResolvedValue({ session_key: KEY, revision: 4, next_cursor: 4, events: [] });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(16_000); // the backed-off reads reach a good one
+  });
+  await waitFor(() => expect(screen.queryByTestId("structured-reconnecting")).toBeNull());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3_000); // the 750 ms hold, RESTORED, the fade
+  });
+  expect(screen.queryByTestId("uplink-veil")).toBeNull();
+  expect(screen.getByTestId("structured-worker")).toHaveAttribute("role", "status");
+});
+
+test("while reads fail the outbox holds a sent message instead of posting it into the dead link; it goes on recovery", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.mocked(api.structuredSubmit).mockResolvedValue({} as never);
+  renderPane();
+  await screen.findByRole("textbox");
+  vi.mocked(api.structuredEvents).mockRejectedValue(new TypeError("offline"));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_500);
+  });
+  await screen.findByTestId("structured-reconnecting");
+  await sendText("held while the link is down");
+  const pending = await screen.findByTestId("structured-pending");
+  expect(pending).toHaveAttribute("data-phase", "waiting"); // held, not "unknown"
+  expect(api.structuredSubmit).not.toHaveBeenCalled();
+  vi.mocked(api.structuredEvents).mockResolvedValue({ session_key: KEY, revision: 4, next_cursor: 4, events: [] });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5_000); // the next (backed-off) read succeeds
+  });
+  await waitFor(() => expect(api.structuredSubmit).toHaveBeenCalledTimes(1));
+});
+
+test("after an outage a healthy cursor alone does not release the outbox: it waits for a fresh snapshot (Hermes on #1592)", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.mocked(api.structuredSubmit).mockResolvedValue({} as never);
+  renderPane();
+  await screen.findByRole("textbox");
+  vi.mocked(api.structuredEvents).mockRejectedValue(new TypeError("offline"));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_500); // the outage
+  });
+  await screen.findByTestId("structured-reconnecting");
+  await sendText("held until a fresh read");
+  // The cursor comes back, the snapshot does not answer: the conversation is not re-read yet.
+  let release!: (s: StructuredSnapshot) => void;
+  vi.mocked(api.structuredSnapshot).mockImplementation(() => new Promise((r) => (release = r)));
+  vi.mocked(api.structuredEvents).mockResolvedValue({ session_key: KEY, revision: 4, next_cursor: 4, events: [] });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5_000);
+  });
+  expect(api.structuredSnapshot).toHaveBeenCalled(); // the good cursor read forced a snapshot re-read
+  expect(api.structuredSubmit).not.toHaveBeenCalled(); // and nothing was posted against the old one
+  await act(async () => release(snap()));
+  await waitFor(() => expect(api.structuredSubmit).toHaveBeenCalledTimes(1));
+});
+
+test("the veil stays in its outage until a fresh snapshot is applied — a healthy cursor alone never says RESTORED (Hermes on #1592)", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  renderPane();
+  await screen.findByRole("textbox");
+  vi.mocked(api.structuredEvents).mockRejectedValue(new TypeError("offline"));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_500); // the idle read fails: the outage starts
+  });
+  await screen.findByTestId("structured-reconnecting");
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5_000); // past the 5 s grace
+  });
+  expect(await screen.findByTestId("uplink-veil")).toHaveAttribute("data-phase", "lost");
+  // The cursor recovers; the snapshot does not answer.
+  let release!: (s: StructuredSnapshot) => void;
+  vi.mocked(api.structuredSnapshot).mockImplementation(() => new Promise((r) => (release = r)));
+  vi.mocked(api.structuredEvents).mockResolvedValue({ session_key: KEY, revision: 4, next_cursor: 4, events: [] });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(20_000); // the backed-off reads reach a good cursor
+  });
+  expect(api.structuredSnapshot).toHaveBeenCalled();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3_000); // where the 750 ms hold, RESTORED and the fade would run
+  });
+  expect(screen.getByTestId("uplink-veil")).toHaveAttribute("data-phase", "lost"); // never "restored"
+  await act(async () => release(snap()));
+  await waitFor(() => expect(screen.getByTestId("uplink-veil")).toHaveAttribute("data-phase", "restored"));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3_000);
+  });
+  expect(screen.queryByTestId("uplink-veil")).toBeNull();
+});

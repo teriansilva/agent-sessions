@@ -134,6 +134,8 @@ import {
   notSentState,
 } from "./notSent";
 import { useAlive, useLeaveGuard, useOutbox } from "./useOutbox";
+import { TermUplinkVeil } from "../terminal/TermUplinkVeil";
+import { useUplinkVeil } from "../terminal/useUplinkVeil";
 
 /** While a turn runs, the event cursor is read this often; a change re-reads the snapshot. */
 export const STRUCTURED_ACTIVE_POLL_MS = 1_000;
@@ -1255,6 +1257,18 @@ export function StructuredPane({
   snapRef.current = snap;
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
+  // Consecutive failed reads: the uplink veil's try count, as the socket's backoff counter is the
+  // terminal's (#1570 follow-up — one veil, every session).
+  const [failures, setFailures] = useState(0);
+  // A read failed since the last APPLIED snapshot (#1591, Hermes on #1592). Only a fresh snapshot
+  // clears it — a healthy `/events` cursor alone does not — so the outbox never posts against a
+  // conversation it has not re-read since the outage.
+  const [needFresh, setNeedFresh] = useState(false);
+  // The poll loop's view of it: after an outage the next good cursor read re-reads the snapshot.
+  const needFreshRef = useRef(false);
+  useEffect(() => {
+    needFreshRef.current = needFresh;
+  }, [needFresh]);
   const [draft, setDraft] = useState("");
   // Files and pictures this send carries, by their server-owned upload identities.
   const [attachments, setAttachments] = useState<{ name: string; stored: string }[]>([]);
@@ -1415,6 +1429,8 @@ export function StructuredPane({
     )));
     setLoadError(null);
     setReconnecting(false);
+    setFailures(0);
+    setNeedFresh(false);
     return true;
   }, [setOutbox]);
   /** A state-changing request: sequenced when sent; when it settles (either way) nothing sent
@@ -1436,7 +1452,11 @@ export function StructuredPane({
   const failed = useCallback((e: unknown) => {
     if (e instanceof ApiError && e.status === 404)
       setLoadError("This conversation does not exist.");
-    else setReconnecting(true);
+    else {
+      setReconnecting(true);
+      setFailures((n) => n + 1);
+      setNeedFresh(true);
+    }
   }, []);
   const load = useCallback(async (): Promise<StructuredSnapshot | null> => {
     const sent = ++sentSeq.current;
@@ -1541,16 +1561,25 @@ export function StructuredPane({
           if (!alive) return;
           backoff = 0;
           setReconnecting(false);
+          setFailures(0);
           // A changed journal re-reads at once. Lifecycle facts that write no journal record — a
           // worker's idle exit, the client turning read only — are picked up by a full re-read
           // every idle tick and every 5th active tick (Hermes on #1315).
-          if (page.revision !== cursor.current || !pollingActive || ticks % 5 === 0) await load();
+          if (
+            page.revision !== cursor.current ||
+            !pollingActive ||
+            ticks % 5 === 0 ||
+            needFreshRef.current
+          )
+            await load();
         }
       } catch (e) {
         if (!alive) return;
         if (e instanceof ApiError && e.status === 409) await load();
         else {
           setReconnecting(true);
+          setFailures((n) => n + 1);
+          setNeedFresh(true);
           backoff = Math.min(MAX_BACKOFF_MS, (backoff || 1_000) * 2);
         }
       }
@@ -1744,12 +1773,16 @@ export function StructuredPane({
   // stops the queue. A native worker queues turns itself, so a busy agent does not hold the head
   // (the HTTP chat client, which takes one reply at a time, is ChatPane's: it waits for idle).
   const blocked = readOnly || permissionPending || notStarted;
+  // While reads are failing the head waits instead of being posted into a dead link (where it would
+  // land as "unknown" and stop the queue): the outbox holds it and the pump resumes on the first good
+  // read. What the uplink veil promises an API session (#1570 follow-up).
+  const holdQueue = blocked || reconnecting || needFresh;
   useEffect(() => {
-    const head = nextToPost(outboxRef.current, !!snap && !blocked);
+    const head = nextToPost(outboxRef.current, !!snap && !holdQueue);
     if (head) void post(head);
     // `post` reads the latest snapshot itself; the outbox, the snapshot and the guards are the triggers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [outbox, snap, blocked]);
+  }, [outbox, snap, holdQueue]);
 
   // Anything the server does not have yet is lost on a reload or close: ask first.
   useLeaveGuard(unrecorded(outbox));
@@ -2361,11 +2394,17 @@ export function StructuredPane({
     ? { kind: "connecting" }
     : loadError
     ? { kind: "rejected", reason: loadError }
-    : reconnecting
-      ? { kind: "reconnecting", attempt: 1 }
+    : // Still down until a fresh snapshot is APPLIED, not merely once the cursor answers (Hermes on
+      // #1592): the veil and the outbox hold on the same condition, so RESTORED is never announced
+      // over a conversation that cannot be read yet.
+      reconnecting || needFresh
+      ? { kind: "reconnecting", attempt: Math.max(1, failures) }
       : snap
         ? { kind: "connected" }
         : { kind: "connecting" };
+  // #1570 follow-up: the same uplink veil as a terminal, from the same status, with the same rules.
+  const veil = useUplinkVeil(status);
+  const veilUp = !!veil && veil.phase !== "restored";
   const onTermStatus = host.onTermStatus;
   const statusKind = status.kind;
   const statusReason = status.kind === "rejected" ? status.reason : "";
@@ -2928,133 +2967,139 @@ export function StructuredPane({
           the client is available again.
         </p>
       )}
-      <div
-        className={chat.log}
-        ref={logRef}
-        aria-live="polite"
-        data-testid="api-log"
-        {...logLook}
-        {...earlier.handlers}
-      >
-        {snap && turns.length === 0 && (
-          <div className={chat.center} data-testid="structured-empty">
-            {launchStarting && (
-              <div className={styles.starting} role="status" data-testid="structured-starting">
-                <p>
-                  Starting {agent} API… <span>the agent is getting ready</span>
-                </p>
-                <div className={styles.startingBar} aria-hidden="true" />
-              </div>
-            )}
-            <section className={styles.info} aria-label="Session info">
-              <p className={styles.infoTag}>{agent} · API</p>
-              <dl className={styles.infoFacts}>
-                <div>
-                  <dt>Agent</dt>
-                  <dd>{agent}</dd>
+      {/* The conversation area: the log, and the uplink veil over it (a sibling, so the veil's
+          heading is never inside the log's own live region or its busy state). */}
+      <div className={styles.logArea}>
+        <div
+          className={chat.log}
+          ref={logRef}
+          aria-live="polite"
+          aria-busy={veilUp ? true : undefined}
+          data-testid="api-log"
+          {...logLook}
+          {...earlier.handlers}
+        >
+          {snap && turns.length === 0 && (
+            <div className={chat.center} data-testid="structured-empty">
+              {launchStarting && (
+                <div className={styles.starting} role="status" data-testid="structured-starting">
+                  <p>
+                    Starting {agent} API… <span>the agent is getting ready</span>
+                  </p>
+                  <div className={styles.startingBar} aria-hidden="true" />
                 </div>
-                <div>
-                  <dt>Client</dt>
-                  <dd>{engineLabel(engine)}</dd>
-                </div>
-                <div>
-                  <dt>Model</dt>
-                  <dd data-testid="structured-model">
-                    {/* One inline run: `dd` is a flex row, which would gap every fragment. */}
-                    <span>
-                      {running.model ? (
-                        <>
-                          {running.model} · {running.effort}
-                          {running.agentDefault && (
-                            <span className={styles.infoMuted}> · agent default</span>
-                          )}
-                        </>
-                      ) : (
-                        "agent default"
-                      )}
-                    </span>
-                  </dd>
-                </div>
-                <div>
-                  <dt>Folder</dt>
-                  <dd>
-                    <code title={snap.cwd}>{snap.cwd}</code>
-                  </dd>
-                </div>
-                <div>
-                  <dt>Worker</dt>
-                  <dd data-testid="structured-worker" role="status">
-                    <span className={`${styles.led} ${workerChip.cls}`} aria-hidden="true" />
-                    {workerChip.text}
-                  </dd>
-                </div>
-              </dl>
-            </section>
-          </div>
-        )}
-        <HistoryTop status={earlier.status} onRetry={earlier.retry} />
-        {conversation.map((group) => {
-          if (group === null) return (
-            <BackgroundWork key="background" native={snap?.native} />
-          );
-          const { turn: t, additions } = group;
-          return (
-            <Fragment key={t.turn_id}>
-              {t.turn_id === seam && (
-                <p className={styles.historySeam} data-history-row="" data-testid="api-history-seam">
-                  {earlier.catchingUp ? "catching up on newer turns…" : "earlier turns ↑"}
-                </p>
               )}
-              {isAgentTurn(t) ? (
-                <AgentTurnView
-                  beforeReply={additions.map((added) => renderTurn(added))}
-                  turn={t}
-                  agent={agent}
-                  interruptible={ownTurnInterruptible(snap, t)}
-                  ahead={waitingBehindOwnTurn(snap)}
-                  readOnly={readOnly}
-                  live={!!snap?.native?.worker}
-                  stopping={interrupting || stoppingNow === t.turn_id}
-                  onInterrupt={(tid) => void interrupt(tid)}
-                  question={questionFor(t)}
-                />
-              ) : renderTurn(t, additions.map((added) => renderTurn(added)))}
-            </Fragment>
-          );
-        })}
-        <OutboxBlock
-          entries={outbox}
-          agent={agent}
-          headHold={
-            readOnly
-              ? "Can’t go out while this conversation is read only."
-              : permissionPending
-                ? "Goes out once the permission change has finished."
-                : null
-          }
-          editBlocked={composerHolds}
-          onRetry={retryEntry}
-          onEdit={editEntry}
-          onDrop={dropEntry}
-        />
-        {recoveringSendNow && (
-          <div className={styles.queued} data-testid="structured-send-now-recovery">
-            <div className={styles.queueRow}>
-              <span role="alert">Send now status is unknown.</span>
-              <button type="button" className={styles.sendNow} disabled={!!sendingNow}
-                onClick={() => void sendNow(recoveringSendNow.queuedTurnId)}>
-                {sendingNow ? "Checking…" : "Retry Send now"}
-              </button>
+              <section className={styles.info} aria-label="Session info">
+                <p className={styles.infoTag}>{agent} · API</p>
+                <dl className={styles.infoFacts}>
+                  <div>
+                    <dt>Agent</dt>
+                    <dd>{agent}</dd>
+                  </div>
+                  <div>
+                    <dt>Client</dt>
+                    <dd>{engineLabel(engine)}</dd>
+                  </div>
+                  <div>
+                    <dt>Model</dt>
+                    <dd data-testid="structured-model">
+                      {/* One inline run: `dd` is a flex row, which would gap every fragment. */}
+                      <span>
+                        {running.model ? (
+                          <>
+                            {running.model} · {running.effort}
+                            {running.agentDefault && (
+                              <span className={styles.infoMuted}> · agent default</span>
+                            )}
+                          </>
+                        ) : (
+                          "agent default"
+                        )}
+                      </span>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Folder</dt>
+                    <dd>
+                      <code title={snap.cwd}>{snap.cwd}</code>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Worker</dt>
+                    <dd data-testid="structured-worker" role={veil ? undefined : "status"}>
+                      <span className={`${styles.led} ${workerChip.cls}`} aria-hidden="true" />
+                      {workerChip.text}
+                    </dd>
+                  </div>
+                </dl>
+              </section>
             </div>
-            <p className={styles.queueHint}>Checks the original request without sending it twice.</p>
-          </div>
-        )}
-        {reconnecting && snap && (
-          <p className={chat.notice} data-testid="structured-reconnecting">
-            Connection to BattleLab lost. The turn keeps running on the server; this view resumes
-            from event {snap.event_cursor} when it reconnects. Nothing was cancelled or re-sent.
-          </p>
-        )}
+          )}
+          <HistoryTop status={earlier.status} onRetry={earlier.retry} />
+          {conversation.map((group) => {
+            if (group === null) return (
+              <BackgroundWork key="background" native={snap?.native} />
+            );
+            const { turn: t, additions } = group;
+            return (
+              <Fragment key={t.turn_id}>
+                {t.turn_id === seam && (
+                  <p className={styles.historySeam} data-history-row="" data-testid="api-history-seam">
+                    {earlier.catchingUp ? "catching up on newer turns…" : "earlier turns ↑"}
+                  </p>
+                )}
+                {isAgentTurn(t) ? (
+                  <AgentTurnView
+                    beforeReply={additions.map((added) => renderTurn(added))}
+                    turn={t}
+                    agent={agent}
+                    interruptible={ownTurnInterruptible(snap, t)}
+                    ahead={waitingBehindOwnTurn(snap)}
+                    readOnly={readOnly}
+                    live={!!snap?.native?.worker}
+                    stopping={interrupting || stoppingNow === t.turn_id}
+                    onInterrupt={(tid) => void interrupt(tid)}
+                    question={questionFor(t)}
+                  />
+                ) : renderTurn(t, additions.map((added) => renderTurn(added)))}
+              </Fragment>
+            );
+          })}
+          <OutboxBlock
+            entries={outbox}
+            agent={agent}
+            headHold={
+              readOnly
+                ? "Can’t go out while this conversation is read only."
+                : permissionPending
+                  ? "Goes out once the permission change has finished."
+                  : null
+            }
+            editBlocked={composerHolds}
+            onRetry={retryEntry}
+            onEdit={editEntry}
+            onDrop={dropEntry}
+          />
+          {recoveringSendNow && (
+            <div className={styles.queued} data-testid="structured-send-now-recovery">
+              <div className={styles.queueRow}>
+                <span role="alert">Send now status is unknown.</span>
+                <button type="button" className={styles.sendNow} disabled={!!sendingNow}
+                  onClick={() => void sendNow(recoveringSendNow.queuedTurnId)}>
+                  {sendingNow ? "Checking…" : "Retry Send now"}
+                </button>
+              </div>
+              <p className={styles.queueHint}>Checks the original request without sending it twice.</p>
+            </div>
+          )}
+          {reconnecting && snap && (
+            <p className={chat.notice} data-testid="structured-reconnecting">
+              Connection to BattleLab lost. The turn keeps running on the server; this view resumes
+              from event {snap.event_cursor} when it reconnects. Nothing was cancelled or re-sent.
+            </p>
+          )}
+        </div>
+        {veil && <TermUplinkVeil veil={veil} title={row?.title} input="outbox" />}
       </div>
       {(sendError || actionError) && (
         <p className={chat.sendError} role="alert" data-testid="structured-error">

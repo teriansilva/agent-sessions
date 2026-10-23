@@ -10,6 +10,9 @@ import { OpeningPanel } from "../terminal/SessionOpening";
 import type { AgentEndpoint, ChatSession, ChatToolCall, ChatTurn } from "../../types/api";
 import { OutboxBlock } from "../structured/Outbox";
 import { useAlive, useLeaveGuard, useOutbox } from "../structured/useOutbox";
+import { TermUplinkVeil } from "../terminal/TermUplinkVeil";
+import { useUplinkVeil } from "../terminal/useUplinkVeil";
+import type { TermStatus } from "../../lib/termSocket";
 import {
   nextToPost,
   outboxEntry,
@@ -26,6 +29,9 @@ import { EditProposal } from "./EditProposal";
 /** How often a pending turn is re-read. The server owns the request (#1209): the pane only READS,
  *  so a reload, a lost response or a dropped connection recovers by polling, never by resending. */
 export const CHAT_POLL_MS = 2_000;
+/** An idle pane re-reads this often too, so a lost link is noticed (and veiled) even when nothing
+ *  is running — the structured pane's idle cadence (#1570 follow-up: one veil, every session). */
+export const CHAT_IDLE_POLL_MS = 10_000;
 /** After a busy refusal (409), the first fresh read waits this long, doubling per busy answer in a
  *  row up to BUSY_BACKOFF_MAX_MS: a send never hammers a conversation another worker holds. */
 export const BUSY_BACKOFF_MS = 1_000;
@@ -166,6 +172,8 @@ export function ChatPane({
   // A re-read that fails once the conversation is showing keeps it (and every pending entry) in
   // view and says so; only a first read or a 404 replaces the pane with an error.
   const [stale, setStale] = useState(false);
+  // Consecutive failed re-reads: the uplink veil's try count (#1570 follow-up).
+  const [failures, setFailures] = useState(0);
   const shown = useRef(false);
   // After a busy 409 nothing is posted again until a read that SUCCEEDED after the backoff
   // (`until`) shows the conversation idle — never against an older idle read, which would re-POST
@@ -188,6 +196,7 @@ export function ChatPane({
     setSession(s);
     setLoadError(null);
     setStale(false);
+    setFailures(0);
     if (holdRef.current && Date.now() >= holdRef.current.until) setHold(null); // a fresh read
     // Turns are keyed by the id the browser minted, so a recorded message replaces its entry.
     setOutbox((list) => reconcile(list, s.turns.map((t) => t.turn_id)));
@@ -196,6 +205,17 @@ export function ChatPane({
     const gone = e instanceof ApiError && e.status === 404;
     if (shown.current && !gone) {
       setStale(true);
+      setFailures((n) => n + 1);
+      return;
+    }
+    // A FIRST read that failed for a transient reason (no answer, a 5xx, 408/429) is a link not up
+    // yet, not an answer: the pane keeps connecting — the uplink veil's ESTABLISHING after 3 s — and
+    // re-reads (#1591, Hermes on #1592). A definite 4xx (404 gone, 409 not a chat session, …) is
+    // the server's answer and still replaces the pane with it.
+    const transient =
+      !(e instanceof ApiError) || e.status >= 500 || e.status === 408 || e.status === 429;
+    if (transient) {
+      setFailures((n) => n + 1);
       return;
     }
     setLoadError(
@@ -255,6 +275,14 @@ export function ChatPane({
       clearInterval(tick);
     };
   }, [inFlight, settling, load]);
+  // Idle: a slow re-read, so a dead link shows as one (#1570 follow-up). A hold has its own re-read.
+  // Before the first good read (a first read failed transiently) it retries at the active cadence.
+  const firstRead = !session;
+  useEffect(() => {
+    if (inFlight || settling || hold) return;
+    const poll = setInterval(() => void load(), firstRead ? CHAT_POLL_MS : CHAT_IDLE_POLL_MS);
+    return () => clearInterval(poll);
+  }, [inFlight, settling, hold, load, firstRead]);
 
   useEffect(() => {
     const el = logRef.current;
@@ -330,7 +358,22 @@ export function ChatPane({
   // shows nothing in flight (`in_flight` covers both), and a recorded POST alone never advances
   // the queue: the read that shows its turn also shows it running. The chat route carries no
   // expected revision; admission is read fresh from the conversation instead.
-  const admitted = !!session && configured && !session.in_flight && !hold;
+  // While re-reads fail the head waits rather than being posted into a dead link; the first good
+  // read releases it (the uplink veil's promise to an API session, #1570 follow-up).
+  const admitted = !!session && configured && !session.in_flight && !hold && !stale;
+
+  // The connection status, as a terminal's socket reports it, driving the same uplink veil.
+  const status: TermStatus = loadError
+    ? { kind: "rejected", reason: loadError }
+    : !session
+      ? failures > 0
+        ? { kind: "reconnecting", attempt: failures } // first reads failing: still ESTABLISHING
+        : { kind: "connecting" }
+      : stale
+        ? { kind: "reconnecting", attempt: Math.max(1, failures) }
+        : { kind: "connected" };
+  const veil = useUplinkVeil(status);
+  const veilUp = !!veil && veil.phase !== "restored";
   // The hold's re-read: at `until`, read; a failed read backs off again, so a waiting message is
   // never stranded once the other worker lets go, and reads stay bounded while the server is down.
   useEffect(() => {
@@ -436,114 +479,126 @@ export function ChatPane({
   return (
     <div className={styles.pane} data-testid="chat-pane">
       {header}
-      <div className={styles.log} ref={logRef} aria-live="polite" data-testid="api-log" {...logLook}>
-        {session && turns.length === 0 && (
-          <div className={styles.center} data-testid="chat-empty">
-            <p className={styles.note}>
-              No terminal and no CLI: BattleLab sends your messages to the endpoint configured for
-              this agent and keeps the conversation itself.{" "}
-              {endpoint?.tools === "write"
-                ? "It can read files and propose edits to existing text files in this conversation’s folder. You review and approve each change before it is saved. Hidden and credential-shaped files are refused."
-                : endpoint?.tools === "read"
-                ? "It can list and read files in this conversation’s folder — never write, delete or run anything. Hidden and credential-shaped files are refused."
-                : "It has no tools — it can only reply."}
-            </p>
-            {endpoint?.model && (
-              <span className={styles.chip}>
-                <span className={styles.sq} aria-hidden="true" />
-                {endpoint.model}
-              </span>
-            )}
-          </div>
-        )}
-        {turns.map((t) => (
-          <div key={t.turn_id} className={styles.exchange} data-testid="chat-turn">
-            {t.dropped > 0 && (
-              <p className={styles.notice} data-testid="chat-dropped">
-                {t.dropped} earlier {t.dropped === 1 ? "turn was" : "turns were"} not sent — the
-                conversation is longer than this endpoint’s context window.
+      {/* The conversation area: the log, and the uplink veil over it (a sibling, so the veil's
+          heading is never inside the log's own live region or its busy state). */}
+      <div className={styles.logArea}>
+        <div
+          className={styles.log}
+          ref={logRef}
+          aria-live="polite"
+          aria-busy={veilUp ? true : undefined}
+          data-testid="api-log"
+          {...logLook}
+        >
+          {session && turns.length === 0 && (
+            <div className={styles.center} data-testid="chat-empty">
+              <p className={styles.note}>
+                No terminal and no CLI: BattleLab sends your messages to the endpoint configured for
+                this agent and keeps the conversation itself.{" "}
+                {endpoint?.tools === "write"
+                  ? "It can read files and propose edits to existing text files in this conversation’s folder. You review and approve each change before it is saved. Hidden and credential-shaped files are refused."
+                  : endpoint?.tools === "read"
+                  ? "It can list and read files in this conversation’s folder — never write, delete or run anything. Hidden and credential-shaped files are refused."
+                  : "It has no tools — it can only reply."}
               </p>
-            )}
-            <div className={`${styles.turn} ${styles.user}`}>
-              <div className={styles.who}>
-                you <span className={styles.ts}>{clock(t.ts)}</span>
-              </div>
-              <div className={styles.txt}>{t.text}</div>
-            </div>
-            <ToolRows calls={t.tools ?? []} />
-            {(t.proposals ?? []).map((p) => <EditProposal key={p.id} sid={sid} proposal={p} reload={load} />)}
-            {t.status === "awaiting_approval" && <p className={styles.notice}>
-              The agent is waiting for your decision. You can leave and return to review this change.
-            </p>}
-            {t.status === "done" && t.reply !== null && (
-              <div className={`${styles.turn} ${styles.asst}`}>
-                <div className={styles.who}>
-                  {engineLabel(engine)}{" "}
-                  <span className={styles.ts}>
-                    {clock(t.reply_ts)}
-                    {t.usage?.total_tokens ? ` · ${tokens(t.usage.total_tokens)}` : ""}
-                  </span>
-                </div>
-                <div className={styles.txt}>
-                  <ReplyText text={t.reply} />
-                </div>
-                {t.truncated && (
-                  <p className={styles.notice} data-testid="chat-truncated">
-                    The reply stopped at the output limit — ask it to continue.
-                  </p>
-                )}
-              </div>
-            )}
-            {t.status === "pending" && (
-              <div className={styles.wait} data-testid="chat-waiting">
-                <span className={styles.bars} aria-hidden="true">
-                  <span />
-                  <span />
-                  <span />
+              {endpoint?.model && (
+                <span className={styles.chip}>
+                  <span className={styles.sq} aria-hidden="true" />
+                  {endpoint.model}
                 </span>
-                {runningCall(t) ?? "waiting for the endpoint"} ·{" "}
-                {Math.max(0, Math.round(now / 1000 - t.ts))}s
-              </div>
-            )}
-            {t.status === "failed" && (
-              <div className={styles.failed}>
-                <div className={styles.err} role="alert" data-testid="chat-failed">
-                  {t.reason ?? "The request failed."} Your message was kept; nothing was lost.
+              )}
+            </div>
+          )}
+          {turns.map((t) => (
+            <div key={t.turn_id} className={styles.exchange} data-testid="chat-turn">
+              {t.dropped > 0 && (
+                <p className={styles.notice} data-testid="chat-dropped">
+                  {t.dropped} earlier {t.dropped === 1 ? "turn was" : "turns were"} not sent — the
+                  conversation is longer than this endpoint’s context window.
+                </p>
+              )}
+              <div className={`${styles.turn} ${styles.user}`}>
+                <div className={styles.who}>
+                  you <span className={styles.ts}>{clock(t.ts)}</span>
                 </div>
-                <button
-                  type="button"
-                  className={styles.ghost}
-                  onClick={() => void retry(t)}
-                  disabled={Boolean(inFlight)}
-                >
-                  Retry
-                </button>
+                <div className={styles.txt}>{t.text}</div>
               </div>
-            )}
-          </div>
-        ))}
-        <OutboxBlock
-          entries={outbox}
-          agent={engineLabel(engine)}
-          headHold={
-            !configured
-              ? "Can’t go out until this agent has an endpoint."
-              : turns.some((t) => t.status === "awaiting_approval")
-                ? "Goes out once you have decided the proposed change."
-                : inFlight
-                  ? "Goes out when the current reply has finished."
-                  : null
-          }
-          editBlocked={composerHolds}
-          onRetry={(id) => setOutbox((list) => retried(list, id))}
-          onEdit={editEntry}
-          onDrop={dropEntry}
-        />
-        {stale && (
-          <p className={styles.notice} role="status" data-testid="chat-reconnecting">
-            Couldn’t re-read this conversation. Showing what was last read; nothing was re-sent.
-          </p>
-        )}
+              <ToolRows calls={t.tools ?? []} />
+              {(t.proposals ?? []).map((p) => <EditProposal key={p.id} sid={sid} proposal={p} reload={load} />)}
+              {t.status === "awaiting_approval" && <p className={styles.notice}>
+                The agent is waiting for your decision. You can leave and return to review this change.
+              </p>}
+              {t.status === "done" && t.reply !== null && (
+                <div className={`${styles.turn} ${styles.asst}`}>
+                  <div className={styles.who}>
+                    {engineLabel(engine)}{" "}
+                    <span className={styles.ts}>
+                      {clock(t.reply_ts)}
+                      {t.usage?.total_tokens ? ` · ${tokens(t.usage.total_tokens)}` : ""}
+                    </span>
+                  </div>
+                  <div className={styles.txt}>
+                    <ReplyText text={t.reply} />
+                  </div>
+                  {t.truncated && (
+                    <p className={styles.notice} data-testid="chat-truncated">
+                      The reply stopped at the output limit — ask it to continue.
+                    </p>
+                  )}
+                </div>
+              )}
+              {t.status === "pending" && (
+                <div className={styles.wait} data-testid="chat-waiting">
+                  <span className={styles.bars} aria-hidden="true">
+                    <span />
+                    <span />
+                    <span />
+                  </span>
+                  {runningCall(t) ?? "waiting for the endpoint"} ·{" "}
+                  {Math.max(0, Math.round(now / 1000 - t.ts))}s
+                </div>
+              )}
+              {t.status === "failed" && (
+                <div className={styles.failed}>
+                  <div className={styles.err} role="alert" data-testid="chat-failed">
+                    {t.reason ?? "The request failed."} Your message was kept; nothing was lost.
+                  </div>
+                  <button
+                    type="button"
+                    className={styles.ghost}
+                    onClick={() => void retry(t)}
+                    disabled={Boolean(inFlight)}
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+          <OutboxBlock
+            entries={outbox}
+            agent={engineLabel(engine)}
+            headHold={
+              !configured
+                ? "Can’t go out until this agent has an endpoint."
+                : turns.some((t) => t.status === "awaiting_approval")
+                  ? "Goes out once you have decided the proposed change."
+                  : inFlight
+                    ? "Goes out when the current reply has finished."
+                    : null
+            }
+            editBlocked={composerHolds}
+            onRetry={(id) => setOutbox((list) => retried(list, id))}
+            onEdit={editEntry}
+            onDrop={dropEntry}
+          />
+          {stale && (
+            <p className={styles.notice} role={veil ? undefined : "status"} data-testid="chat-reconnecting">
+              Couldn’t re-read this conversation. Showing what was last read; nothing was re-sent.
+            </p>
+          )}
+        </div>
+        {veil && <TermUplinkVeil veil={veil} input="outbox" />}
       </div>
       {sendError && (
         <p className={styles.sendError} role="alert" data-testid="chat-send-error">

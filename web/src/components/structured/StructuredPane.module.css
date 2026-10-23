@@ -791,3 +791,12 @@
   flex: 1;
   border-top: 1px solid var(--line-strong);
 }
+/* #1570 follow-up: the conversation area — the log plus the uplink veil over it, as a terminal's
+   veil covers its viewport. The log keeps its own flex sizing and scrolling inside. */
+.logArea {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}

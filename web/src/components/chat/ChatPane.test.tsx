@@ -7,7 +7,7 @@ import { ApiError, api } from "../../lib/api";
 import fixture from "../../test/roster.fixture.json";
 import type { AgentEndpoint, ChatSession, ChatTurn, EngineInfo } from "../../types/api";
 import { RuntimeGate } from "../terminal/RuntimeGate";
-import { BUSY_BACKOFF_MAX_MS, BUSY_BACKOFF_MS, CHAT_POLL_MS, ChatPane } from "./ChatPane";
+import { BUSY_BACKOFF_MAX_MS, BUSY_BACKOFF_MS, CHAT_IDLE_POLL_MS, CHAT_POLL_MS, ChatPane } from "./ChatPane";
 
 vi.mock("../../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
@@ -337,6 +337,7 @@ test("a 409 because another reply started meanwhile is not a refusal: the messag
 });
 
 test("a Retry the server answers 409 in_flight is recorded, never refused (it holds that turn)", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.mocked(api.chatSend)
     .mockRejectedValueOnce(new TypeError("Failed to fetch"))
     .mockRejectedValueOnce(new ApiError(409, "in_flight"));
@@ -347,6 +348,14 @@ test("a Retry the server answers 409 in_flight is recorded, never refused (it ho
   const pending = await screen.findByTestId("structured-pending");
   await waitFor(() => expect(pending).toHaveAttribute("data-phase", "unknown"));
   await userEvent.click(within(pending).getByRole("button", { name: "Retry" }));
+  // #1570 follow-up: while reads fail the Retry waits in the outbox rather than posting into a dead
+  // link; the first good read releases it.
+  await waitFor(() => expect(pending).toHaveAttribute("data-phase", "waiting"));
+  expect(api.chatSend).toHaveBeenCalledTimes(1);
+  vi.mocked(api.chatGet).mockResolvedValue(session([]));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(CHAT_IDLE_POLL_MS + 10);
+  });
   await waitFor(() => expect(pending).toHaveTextContent("Recorded by BattleLab"));
   expect(pending).toHaveAttribute("data-phase", "sending");
   expect(within(pending).queryByRole("button", { name: "Edit" })).toBeNull();
@@ -561,4 +570,91 @@ test("a busy 409 while reads fail never loops: POSTs stay bounded, then it is de
   await waitFor(() => expect(screen.queryByTestId("structured-pending")).toBeNull());
   expect(vi.mocked(api.chatSend).mock.calls.length).toBe(2);
   expect(server.turns.filter((t) => t.text === "mine")).toHaveLength(1);
+});
+
+// ---- #1570 follow-up: the uplink veil covers chat sessions too — one veil, every session ----
+
+test("an idle chat pane re-reads, so a lost link shows the uplink veil after 5 s; it clears on recovery", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.mocked(api.chatGet).mockResolvedValue(session([]));
+  renderPane();
+  await screen.findByTestId("chat-empty");
+  vi.mocked(api.chatGet).mockClear();
+  vi.mocked(api.chatGet).mockRejectedValue(new TypeError("offline"));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(CHAT_IDLE_POLL_MS + 10); // the idle re-read fails
+  });
+  expect(api.chatGet).toHaveBeenCalledTimes(1); // nothing running, yet it read
+  expect(await screen.findByTestId("chat-reconnecting")).toBeInTheDocument();
+  expect(screen.queryByTestId("uplink-veil")).toBeNull(); // inside the 5 s grace
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5_000);
+  });
+  const veil = await screen.findByTestId("uplink-veil");
+  expect(veil).toHaveAttribute("data-phase", "lost");
+  expect(veil).toHaveTextContent("wait in the outbox");
+  expect(screen.getByTestId("api-log").contains(veil)).toBe(false);
+  expect(screen.getByTestId("api-log")).toHaveAttribute("aria-busy", "true");
+  expect(screen.getByTestId("chat-reconnecting")).not.toHaveAttribute("role"); // one announcement source
+  vi.mocked(api.chatGet).mockResolvedValue(session([]));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(CHAT_IDLE_POLL_MS + 10);
+  });
+  await waitFor(() => expect(screen.queryByTestId("chat-reconnecting")).toBeNull());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3_000); // the 750 ms hold, RESTORED, the fade
+  });
+  expect(screen.queryByTestId("uplink-veil")).toBeNull();
+});
+
+test("while chat re-reads fail a new message waits in the outbox; the first good read sends it", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  chatServer();
+  renderPane();
+  await screen.findByTestId("chat-empty");
+  const good = vi.mocked(api.chatGet).getMockImplementation()!;
+  vi.mocked(api.chatGet).mockRejectedValue(new TypeError("offline"));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(CHAT_IDLE_POLL_MS + 10);
+  });
+  await screen.findByTestId("chat-reconnecting");
+  await userEvent.type(screen.getByLabelText("Message the agent"), "held{Enter}");
+  const pending = await screen.findByTestId("structured-pending");
+  expect(pending).toHaveAttribute("data-phase", "waiting");
+  expect(api.chatSend).not.toHaveBeenCalled();
+  vi.mocked(api.chatGet).mockImplementation(good);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(CHAT_IDLE_POLL_MS + 10);
+  });
+  await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(api.chatSend).mock.calls[0][2]).toBe("held");
+});
+
+test("a new chat pane whose first read fails transiently shows ESTABLISHING, retries, and opens when the link is up (Hermes on #1592)", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.mocked(api.chatGet).mockRejectedValue(new ApiError(503, "unavailable"));
+  renderPane();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3_100);
+  });
+  const veil = await screen.findByTestId("uplink-veil");
+  expect(veil).toHaveAttribute("data-phase", "establishing");
+  expect(screen.queryByText("Couldn’t load this conversation.")).toBeNull(); // not an answer
+  expect(vi.mocked(api.chatGet).mock.calls.length).toBeGreaterThan(1); // it re-reads
+  vi.mocked(api.chatGet).mockResolvedValue(session([]));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(CHAT_POLL_MS + 10);
+  });
+  expect(await screen.findByTestId("chat-empty")).toBeInTheDocument();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3_000); // the hold, RESTORED, the fade
+  });
+  expect(screen.queryByTestId("uplink-veil")).toBeNull();
+});
+
+test("a definite refusal on the first read is still the server's answer, never a veil", async () => {
+  vi.mocked(api.chatGet).mockRejectedValue(new ApiError(404, "no such chat"));
+  renderPane();
+  expect(await screen.findByText("This conversation does not exist (or was never started).")).toBeInTheDocument();
+  expect(screen.queryByTestId("uplink-veil")).toBeNull();
 });
