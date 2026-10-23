@@ -34,11 +34,12 @@ import asyncio
 import contextlib
 import io
 import ipaddress
+import re
 import socket
 import struct
 import time
 import wave
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -422,10 +423,23 @@ class Transcript:
     text: str
     language: str | None
     seconds: float
+    #: The reply was a JSON object (not a `response_format=text` body or an error page).
+    structured: bool = True
+    #: The reply carried a non-empty `language` — even one `language_code` cannot map.
+    reported_language: bool = False
+    #: The reply had a `language` KEY at all (even empty or null): only its ABSENCE shows an
+    #: endpoint that does not report languages.
+    language_key: bool = False
 
 
 async def transcribe(
-    ep: Endpoint, pcm: bytes, rate: int, *, language: str | None = None, prompt: str | None = None
+    ep: Endpoint,
+    pcm: bytes,
+    rate: int,
+    *,
+    language: str | None = None,
+    prompt: str | None = None,
+    detect: bool = False,
 ) -> Transcript:
     """Transcribe one utterance of 16-bit mono PCM."""
     if not pcm:
@@ -433,7 +447,12 @@ async def transcribe(
     wav = pcm16_to_wav(pcm, rate)
     if len(wav) > AUDIO_MAX_BYTES:
         raise SpeechError("too_large", "the utterance is too long to transcribe")
-    data = {"model": ep.model or "whisper-1", "response_format": "json"}
+    # `verbose_json` carries the detected language (#1397 P3); asked for only when the endpoint was
+    # found to support it, so a strict server never gets a format it refuses.
+    data = {
+        "model": ep.model or "whisper-1",
+        "response_format": "verbose_json" if detect else "json",
+    }
     if language:
         data["language"] = language
     if prompt:
@@ -455,11 +474,50 @@ async def transcribe(
         parsed = _json.loads(body)
         text = parsed.get("text") if isinstance(parsed, dict) else None
         lang = parsed.get("language") if isinstance(parsed, dict) else None
+        structured = isinstance(parsed, dict)
+        reported = structured and isinstance(lang, str) and bool(lang.strip())
+        keyed = structured and "language" in parsed
     except ValueError:
         text, lang = body.decode("utf-8", "replace"), None  # response_format=text servers
+        structured = reported = keyed = False
     if not isinstance(text, str):
         raise SpeechError("malformed", "the transcription reply has no text")
-    return Transcript(text.strip(), lang if isinstance(lang, str) else None, seconds)
+    return Transcript(text.strip(), language_code(lang), seconds, structured, reported, keyed)
+
+
+# Whisper's language names (what OpenAI's `verbose_json` reports, e.g. "english"), to ISO 639-1.
+_WHISPER_LANGUAGES = {
+    "afrikaans": "af", "albanian": "sq", "amharic": "am", "arabic": "ar", "armenian": "hy",
+    "assamese": "as", "azerbaijani": "az", "bashkir": "ba", "basque": "eu", "belarusian": "be",
+    "bengali": "bn", "bosnian": "bs", "breton": "br", "bulgarian": "bg", "catalan": "ca",
+    "chinese": "zh", "croatian": "hr", "czech": "cs", "danish": "da", "dutch": "nl",
+    "english": "en", "estonian": "et", "faroese": "fo", "finnish": "fi", "french": "fr",
+    "galician": "gl", "georgian": "ka", "german": "de", "greek": "el", "gujarati": "gu",
+    "haitian creole": "ht", "hausa": "ha", "hawaiian": "haw", "hebrew": "he", "hindi": "hi",
+    "hungarian": "hu", "icelandic": "is", "indonesian": "id", "italian": "it", "japanese": "ja",
+    "javanese": "jw", "kannada": "kn", "kazakh": "kk", "khmer": "km", "korean": "ko", "lao": "lo",
+    "latin": "la", "latvian": "lv", "lingala": "ln", "lithuanian": "lt", "luxembourgish": "lb",
+    "macedonian": "mk", "malagasy": "mg", "malay": "ms", "malayalam": "ml", "maltese": "mt",
+    "maori": "mi", "marathi": "mr", "mongolian": "mn", "myanmar": "my", "nepali": "ne",
+    "norwegian": "no", "nynorsk": "nn", "occitan": "oc", "pashto": "ps", "persian": "fa",
+    "polish": "pl", "portuguese": "pt", "punjabi": "pa", "romanian": "ro", "russian": "ru",
+    "sanskrit": "sa", "serbian": "sr", "shona": "sn", "sindhi": "sd", "sinhala": "si",
+    "slovak": "sk", "slovenian": "sl", "somali": "so", "spanish": "es", "sundanese": "su",
+    "swahili": "sw", "swedish": "sv", "tagalog": "tl", "tajik": "tg", "tamil": "ta", "tatar": "tt",
+    "telugu": "te", "thai": "th", "tibetan": "bo", "turkish": "tr", "turkmen": "tk",
+    "ukrainian": "uk", "urdu": "ur", "uzbek": "uz", "vietnamese": "vi", "welsh": "cy",
+    "yiddish": "yi", "yoruba": "yo", "cantonese": "yue",
+}  # fmt: skip
+
+
+def language_code(value: object) -> str | None:
+    """A reported language as a two-letter code, or None (unknown: never guessed)."""
+    if not isinstance(value, str):
+        return None
+    if re.fullmatch(r"[a-z]{2}", value):
+        return value
+    code = _WHISPER_LANGUAGES.get(value.strip().lower())
+    return code if code is not None and re.fullmatch(r"[a-z]{2}", code) else None
 
 
 async def synthesize(
@@ -471,9 +529,46 @@ async def synthesize(
     speed: float | None = None,
     language: str | None = None,
     extra: dict | None = None,
+    plain_fallback: Callable[[], None] | None = None,
 ) -> AsyncIterator[bytes]:
     """Synthesize `text` and yield 16-bit mono PCM at `out_rate`, chunk by chunk as the endpoint
-    delivers it. Raw PCM (OpenAI `pcm`) and WAV replies are both handled; anything else fails."""
+    delivers it. Raw PCM (OpenAI `pcm`) and WAV replies are both handled; anything else fails.
+
+    `plain_fallback` (#1635 review): a server that REFUSES the request (400/422, before any audio)
+    while optional fields were sent — `speed`, `language`, `extra` — is asked once more without
+    them, and the callback is told so the caller stops sending them. Never for a conformance
+    probe, which must see the refusal."""
+    optional = speed is not None or bool(language) or bool(extra)
+    got = False
+    try:
+        async with contextlib.aclosing(
+            _synthesize(ep, text, voice=voice, out_rate=out_rate, speed=speed,
+                        language=language, extra=extra)
+        ) as chunks:  # fmt: skip
+            async for chunk in chunks:
+                got = True
+                yield chunk
+    except SpeechError as e:
+        if got or not optional or plain_fallback is None or e.status not in (400, 422):
+            raise
+        plain_fallback()
+        async with contextlib.aclosing(
+            _synthesize(ep, text, voice=voice, out_rate=out_rate)
+        ) as chunks:
+            async for chunk in chunks:
+                yield chunk
+
+
+async def _synthesize(
+    ep: Endpoint,
+    text: str,
+    *,
+    voice: str,
+    out_rate: int,
+    speed: float | None = None,
+    language: str | None = None,
+    extra: dict | None = None,
+) -> AsyncIterator[bytes]:
     text = text.strip()[:TEXT_MAX]
     if not text:
         return
@@ -631,26 +726,53 @@ async def list_models(ep: Endpoint) -> list[str]:
 
 async def list_voices(ep: Endpoint) -> list[str] | None:
     """The TTS endpoint's voices, or None when it publishes no list (enter the voice by hand)."""
+    return (await discover(ep))["voices"]
+
+
+def _names(items: object) -> list[str] | None:
+    if not isinstance(items, list):
+        return None
+    names = [
+        v if isinstance(v, str) else v.get("id") or v.get("name")
+        for v in items
+        if isinstance(v, str) or isinstance(v, dict)
+    ]
+    return [n for n in names if isinstance(n, str) and len(n) <= 120][:200]
+
+
+def _languages(value: object) -> list[str] | None:
+    """A server's languages as ISO 639-1 codes: a list, or a string such as "en,de + 28 others"
+    (only the codes it names are taken)."""
+    if isinstance(value, list):
+        out = [v for v in value if isinstance(v, str)]
+    elif isinstance(value, str):
+        out = re.findall(r"\b([a-z]{2})\b", value.split("(")[0])
+    else:
+        return None
+    return [c for c in dict.fromkeys(out) if re.fullmatch(r"[a-z]{2}", c)][:100] or None
+
+
+async def discover(ep: Endpoint) -> dict:
+    """What a TTS endpoint publishes about itself: `{voices, styles, languages}`, each a list or
+    None (not published — enter by hand, and never send that field)."""
     import json as _json
 
+    out: dict = {"voices": None, "styles": None, "languages": None}
     for path in ("/audio/voices", "/health"):
         try:
             async with _request(ep, "GET", path, timeout=LIST_TIMEOUT_S) as resp:
                 body = await _read_bounded(resp, LIST_MAX_BYTES)
         except SpeechError as e:
-            if e.code in ("unsupported", "failed"):
-                continue
+            if e.code in ("unsupported", "failed") or any(v is not None for v in out.values()):
+                continue  # not offered — or a second, optional lookup failed: keep what was found
             raise
         try:
             parsed = _json.loads(body)
         except ValueError:
             continue
-        voices = parsed.get("voices") if isinstance(parsed, dict) else None
-        if isinstance(voices, list):
-            names = [
-                v if isinstance(v, str) else v.get("id") or v.get("name")
-                for v in voices
-                if isinstance(v, str) or isinstance(v, dict)
-            ]
-            return [n for n in names if isinstance(n, str)][:200]
-    return None
+        if not isinstance(parsed, dict):
+            continue
+        out["voices"] = out["voices"] or _names(parsed.get("voices"))
+        out["styles"] = out["styles"] or _names(parsed.get("styles"))
+        out["languages"] = out["languages"] or _languages(parsed.get("languages"))
+    return out

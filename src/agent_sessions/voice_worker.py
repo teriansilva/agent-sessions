@@ -30,6 +30,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import dataclass
 
 from fastapi import FastAPI, WebSocket
 
@@ -97,6 +98,11 @@ class Bus:
         #: Which transcript belongs to which turn (`voice_turns`): segments sent at VAD stops,
         #: results counted in order, a late result delivered on its own.
         self.turns = Turns()
+        #: P3: ask STT for the language (where supported) / pass a fixed one; the call's language
+        #: as last detected (a turn heard in one language, of 3+ words).
+        self.detect_language = False
+        self.language_hint: str | None = None
+        self.detected: str | None = None
         self.segment_done = asyncio.Event()
 
     async def send(self, msg: dict) -> None:
@@ -146,7 +152,10 @@ class EndpointSTT(SegmentedSTTService):
 
     async def run_stt(self, audio: bytes):
         try:
-            tr = await se.transcribe(self._ep, audio, self.sample_rate)
+            tr = await se.transcribe(
+                self._ep, audio, self.sample_rate, language=self._bus.language_hint,
+                detect=self._bus.detect_language,
+            )  # fmt: skip
         except se.SpeechError as e:
             self._done()
             await self._bus.send(
@@ -158,10 +167,13 @@ class EndpointSTT(SegmentedSTTService):
             # turn bookkeeping stays in step (Pipecat would swallow it and the count would lag)
             self._done()
             return
+        # The language rides WITH this segment's words, so the turn's language is judged from
+        # all of its segments (`Turns`), never from whichever result came back last.
         if tr.text:
             yield TranscriptionFrame(
-                text=tr.text, user_id="commander", timestamp=str(time.time()), finalized=True
-            )
+                text=tr.text, user_id="commander", timestamp=str(time.time()), finalized=True,
+                result={"language": tr.language},
+            )  # fmt: skip
         else:
             self._done()
 
@@ -170,20 +182,35 @@ class EndpointSTT(SegmentedSTTService):
         self._bus.segment_done.set()
 
 
+@dataclass(frozen=True)
+class SayParams:
+    """How one say is spoken (#1397 P3), fixed when it arrives."""
+
+    voice: str
+    language: str | None
+    speed: float | None
+    style: str | None
+
+
 class _Synth:
     """One sentence being synthesized: chunks arrive on a queue as the endpoint sends them."""
 
-    def __init__(self, tts: EndpointTTS, text: str) -> None:
+    def __init__(self, tts: EndpointTTS, key: tuple) -> None:
         self.queue: asyncio.Queue = asyncio.Queue()
-        self.task = asyncio.create_task(self._run(tts, text))
+        self.task = asyncio.create_task(self._run(tts, *key))
 
-    async def _run(self, tts: EndpointTTS, text: str) -> None:
+    async def _run(self, tts: EndpointTTS, text: str, p: SayParams) -> None:
+        if tts.plain:  # the server refused an optional field once this call: none are sent
+            p = SayParams(p.voice, None, None, None)
         try:
             # aclosing: an interrupted say (cancelled mid-stream) closes its HTTP stream now, not
-            # whenever the abandoned generator is collected.
-            async with contextlib.aclosing(
-                se.synthesize(tts._ep, text, voice=tts._voice, out_rate=tts.sample_rate)
-            ) as chunks:
+            # whenever the abandoned generator is collected. `p`: its say's parameters, taken
+            # when the say arrived — never the next say's.
+            async with contextlib.aclosing(se.synthesize(
+                tts._ep, text, voice=p.voice, out_rate=tts.sample_rate, speed=p.speed,
+                language=p.language, extra={"style": p.style} if p.style else None,
+                plain_fallback=tts.go_plain,
+            )) as chunks:  # fmt: skip
                 async for chunk in chunks:
                     await self.queue.put(chunk)
             await self.queue.put(None)
@@ -207,20 +234,37 @@ class EndpointTTS(TTSService):
         self._ep = ep
         self._voice = voice
         self._bus = bus
-        self._synths = Synths(lambda text: _Synth(self, text), lookahead)
+        self._synths = Synths(lambda key: _Synth(self, key), lookahead)
+        #: P3: the contact's style (only when the server advertised it), speed and the language
+        #: of the say being spoken.
+        self.style: str | None = None
+        self.speed: float | None = None
+        self.language: str | None = None
+        #: A voice for this say's language (#1397 P3), else the contact's voice.
+        self.say_voice: str | None = None
+        #: Set once the server refused a say carrying speed/language/style (#1635 review): from
+        #: then on this call sends none of them, rather than failing every sentence.
+        self.plain = False
+
+    def go_plain(self) -> None:
+        self.plain = True
 
     def can_generate_metrics(self) -> bool:
         return False
 
+    def params(self) -> SayParams:
+        """The parameters a say arriving NOW is spoken with."""
+        return SayParams(self.say_voice or self._voice, self.language, self.speed, self.style)
+
     def prefetch(self, texts: list[str]) -> None:
-        self._synths.prefetch(texts)
+        self._synths.say(texts, self.params())
 
     def drop_prefetch(self) -> None:
         """Barge-in: the sentence playing and the look-ahead stop synthesizing now."""
         self._synths.drop()
 
     async def run_tts(self, text: str, context_id: str):
-        synth = self._synths.start(text)
+        synth = self._synths.begin(text, self.params())
         step = self.sample_rate // 5 * 2  # 200 ms per frame
         try:
             async with contextlib.aclosing(self._frames(synth, step, context_id)) as frames:
@@ -271,7 +315,18 @@ class Bridge(FrameProcessor):
     async def _flush(self, target: int, turn: int) -> None:
         text = self._bus.turns.flush(target)
         if text and not self.muted:
-            await self._bus.send({"t": "utterance", "text": text, "turn": turn})
+            heard = self._bus.turns.flushed_language
+            await self._bus.send(
+                {"t": "utterance", "text": text, "turn": turn,
+                 "language": self._detect(heard, text), "heard_language": heard}
+            )  # fmt: skip
+
+    def _detect(self, heard: str | None, text: str) -> str | None:
+        """The call's language: only a turn heard in one language, of 3+ words, may change it.
+        The turn's own language (`heard_language`, any length) gates spoken confirmation."""
+        if heard and len(text.split()) >= 3:
+            self._bus.detected = heard
+        return self._bus.detected
 
     async def _when_transcribed(
         self, target: int, previous: asyncio.Task | None, turn: int
@@ -296,10 +351,16 @@ class Bridge(FrameProcessor):
         if isinstance(frame, VADUserStoppedSpeakingFrame):
             self._bus.turns.segment_sent()
         if isinstance(frame, TranscriptionFrame):
-            late = self._bus.turns.transcript(frame.text)
+            res = frame.result if isinstance(frame.result, dict) else {}
+            lang = res.get("language") if isinstance(res.get("language"), str) else None
+            late = self._bus.turns.transcript(frame.text, lang)
             self._bus.segment_done.set()
             if late and not self.muted:
-                await self._bus.send({"t": "utterance", "text": late, "late": True})
+                heard = self._bus.turns.late_language
+                await self._bus.send(
+                    {"t": "utterance", "text": late, "late": True,
+                     "language": self._detect(heard, late), "heard_language": heard}
+                )  # fmt: skip
             return  # transcripts go to the app, not to TTS
         if isinstance(frame, UserStartedSpeakingFrame):
             self._turn += 1
@@ -324,6 +385,10 @@ class Bridge(FrameProcessor):
     async def _on_app(self, msg: dict) -> None:
         t = msg.get("t")
         if t == "say":
+            lang = msg.get("language")
+            self._tts.language = lang if isinstance(lang, str) and len(lang) == 2 else None
+            v = msg.get("voice")
+            self._tts.say_voice = v if isinstance(v, str) and 0 < len(v) <= 120 else None
             chunks = split_speech(str(msg.get("text") or ""), first_max=FIRST_WORDS)
             self._tts.prefetch(chunks)
             for c in chunks:
@@ -384,6 +449,12 @@ async def run_call(websocket) -> None:
             stop=[TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3())],
         )
     )
+    tts.style = cfg["tts"].get("style") or None
+    sp = cfg["tts"].get("speed")
+    tts.speed = float(sp) if isinstance(sp, int | float) and sp != 1.0 else None
+    bus.detect_language = bool(cfg.get("detect_language"))
+    bus.language_hint = cfg.get("language") or None
+    tts.language = bus.language_hint if cfg.get("tts_language_ok") else None
     bridge = Bridge(bus, tts)
     pipeline = Pipeline([transport.input(), vad, stt, turns, bridge, tts, transport.output()])
     task = PipelineWorker(

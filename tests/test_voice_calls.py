@@ -1103,6 +1103,8 @@ def test_a_hang_up_while_the_socket_sets_up_never_frees_the_slot_early(ready, wo
 
     monkeypatch.setattr(hq_calls_settings, "get", slow_get)
     monkeypatch.setattr(voice_calls, "start_worker", no_start)
+    # No admission snapshot: the socket falls back to reading the settings, the await held here.
+    voice_calls.REGISTRY.current.settings = None
     with c.websocket_connect(f"/ws/voice/{call['id']}", headers=_ws(c, cfg)) as ws:
         ws.send_text(json.dumps({"t": "hello", "csrf": hdr["X-CSRF-Token"]}))
         assert entered.wait(10)
@@ -1119,3 +1121,21 @@ def test_a_hang_up_while_the_socket_sets_up_never_frees_the_slot_early(ready, wo
     cur = voice_calls.REGISTRY.current
     assert cur.torn_down.is_set()
     _admit(c, hdr)
+
+
+def test_the_worker_is_configured_from_the_settings_the_call_was_admitted_with(ready, worker):
+    """Second review of #1635: the call's language gate and the worker's STT config come from ONE
+    read — a settings save between admission and the socket must not split them."""
+    c, hdr, cfg = ready
+    fw, _ = worker
+    call = _admit(c, hdr)  # admitted on Auto
+    r = c.post("/api/voice/settings", json={"language": "de"}, headers=hdr)
+    assert r.status_code == 200, r.text
+    with c.websocket_connect(f"/ws/voice/{call['id']}", headers=_ws(c, cfg)) as ws:
+        ws.send_text(json.dumps({"t": "hello", "csrf": hdr["X-CSRF-Token"]}))
+        for _ in range(50):
+            m = ws.receive()
+            if m.get("text") and json.loads(m["text"]).get("t") == "connected":
+                break
+        ws.send_text(json.dumps({"t": "end"}))
+    assert fw.config["language"] is None  # Auto, as admitted — not the later "de" hint

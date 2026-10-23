@@ -63,6 +63,9 @@ class Rig:
 
         self.call._to_client = to_client
         self.call._to_worker = to_worker
+        # The Rig's STT was TESTED and reports no language: English is assumed (a None — never
+        # tested — fails spoken confirmation closed; see the language-gate tests).
+        self.call.detects_language = False
 
     def says(self) -> list[dict]:
         return [m for m in self.to_worker if isinstance(m, dict) and m.get("t") == "say"]
@@ -927,3 +930,124 @@ def test_an_utterance_without_a_turn_number_never_confirms(monkeypatch):
 
     run(go())
     assert not any(m == "POST" for m, _, _ in r.routes)
+
+
+# --- #1397 P3: the language gate --------------------------------------------------------------
+
+
+def test_a_call_in_another_language_never_arms_a_spoken_confirmation(monkeypatch):
+    """The matcher is English-only: a German call reads the card for the screen and arms nothing,
+    so "bestätigen" — or a misheard English word — cannot settle it."""
+    r = Rig(monkeypatch, NUDGE)
+    r.call.language = "de"
+
+    async def go():
+        await r.ask("Starte die Tests neu")
+        assert r.call.challenge is None
+        assert r.said_text()[-1].endswith("Confirm it on your screen.")
+        await r.ask("confirm")
+
+    run(go())
+    assert not any(p.endswith("/approve") for _, p, _ in r.routes)
+
+
+@pytest.mark.parametrize(
+    "heard,ok",
+    [("en", True), ("de", False), (None, False)],  # detection on: unknown fails closed
+)
+def test_with_detection_only_an_english_confirmation_settles(monkeypatch, heard, ok):
+    r = Rig(monkeypatch, NUDGE)
+    r.call.detects_language = True
+
+    async def go():
+        await r.ask("Rerun the tests")
+        await r.readback_played()
+        await r.ev(t="user_started")
+        await r.ev(t="utterance", text="confirm", heard_language=heard)
+        if r.call.turn_task is not None:
+            await r.call.turn_task
+        await r.side()
+
+    run(go())
+    approved = any(p.endswith("/approve") for _, p, _ in r.routes)
+    assert approved is ok
+
+
+def test_auto_without_detection_counts_as_english(monkeypatch):
+    r = Rig(monkeypatch, NUDGE)
+    r.call.detects_language = False
+
+    async def go():
+        await r.ask("Rerun the tests")
+        await r.readback_played()
+        await r.ask("confirm")
+
+    run(go())
+    posts = [p for m, p, _ in r.routes if m == "POST"]
+    assert posts == ["/api/pulse/actions/act-1/approve"]
+    assert any(p.endswith("/approve") for _, p, _ in r.routes)
+
+
+@pytest.mark.parametrize(
+    "heard,ok",
+    [("en", True), ("de", False), (None, False)],
+)
+def test_a_fixed_english_call_still_checks_what_was_heard(monkeypatch, heard, ok):
+    """Review 103975: on a fixed-English call whose endpoint detects language, a "confirm" heard
+    as German or unknown fails closed too — fixed English is not a licence to skip the check."""
+    r = Rig(monkeypatch, NUDGE)
+    r.call.fixed_language = r.call.language = "en"
+    r.call.detects_language = True
+
+    async def go():
+        await r.ask("Rerun the tests")
+        await r.readback_played()
+        await r.ev(t="user_started")
+        await r.ev(t="utterance", text="confirm", heard_language=heard, language="en")
+        if r.call.turn_task is not None:
+            await r.call.turn_task
+
+    run(go())
+    assert any(p.endswith("/approve") for _, p, _ in r.routes) is ok
+
+
+def test_a_fixed_english_call_without_detection_counts_as_english(monkeypatch):
+    r = Rig(monkeypatch, NUDGE)
+    r.call.fixed_language = r.call.language = "en"
+    r.call.detects_language = False
+
+    async def go():
+        await r.ask("Rerun the tests")
+        await r.readback_played()
+        await r.ask("confirm")
+
+    run(go())
+    assert any(p.endswith("/approve") for _, p, _ in r.routes)
+
+
+def test_a_superseded_offer_on_another_language_call_says_nothing(monkeypatch):
+    """Second review of #1635: the screen-only read-back is fenced by the generation too."""
+    r = Rig(monkeypatch)
+    r.call.language = "de"
+    r.call.generation = 5
+
+    async def go():
+        await r.call.offer(voice_calls.confirmable_cards(NUDGE), gen=4)
+
+    run(go())
+    assert r.says() == []
+
+
+def test_an_untested_stt_endpoint_fails_spoken_confirmation_closed(monkeypatch):
+    """Review 6887: detection unknown (never tested, or its endpoint changed) is not "assume
+    English" — a "confirm" settles nothing."""
+    r = Rig(monkeypatch, NUDGE)
+    r.call.detects_language = None
+
+    async def go():
+        await r.ask("Rerun the tests")
+        await r.readback_played()
+        await r.ask("confirm")
+
+    run(go())
+    assert not any(p.endswith("/approve") for _, p, _ in r.routes)

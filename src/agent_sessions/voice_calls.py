@@ -65,6 +65,7 @@ OUTCOME_EVERY_S = 1.5
 NEEDS_YOU_ASK = re.compile(
     r"\b(what|who|anything)\b.*\bneeds?\b.*\b(me|you|my attention|attention)\b"
 )
+LANG = re.compile(r"^[a-z]{2}\Z")  # `$` would also match "de\n"
 #: Say something if HQ has not answered by then, so silence never reads as a dropped call.
 ACK_AFTER_S = 1.2
 
@@ -107,6 +108,7 @@ from .voice_text import (  # noqa: E402,F401
     classify_confirmation,
     pick_option,
     readback,
+    readback_screen_only,
     speakable,
     split_speech,
     verbatim,
@@ -147,6 +149,21 @@ class Call:
     side_tasks: set = field(default_factory=set, repr=False)
     #: Cards tapped on screen during this call: a voice settlement already under way skips them.
     tapped: set = field(default_factory=set, repr=False)
+    #: The contact's resolved voice profile (#1397 P3): voice, style (only if advertised), speed.
+    profile: dict | None = None
+    #: The call's language (#1397 P3): the operator's fixed choice, else the last one detected.
+    language: str | None = None
+    fixed_language: str | None = None
+    #: Does the STT endpoint report languages on this call (#1397 P3)? True: a confirmation must
+    #: itself be heard as English. False (TESTED, it cannot): English is assumed. None (untested,
+    #: or its endpoint changed since): unknown — spoken confirmation fails closed.
+    detects_language: bool | None = None
+    #: Did the TTS server accept a `language` field (conformance `tts.language`)? Else none is sent.
+    tts_takes_language: bool = False
+    heard_language: str | None = None
+    #: The settings this call was admitted with: the worker is configured from THESE, so the
+    #: call's language gate and the worker's STT config can never come from two reads (#1635).
+    settings: dict | None = field(default=None, repr=False)
     #: When the latest utterance STARTED (the worker's `user_started`): a confirmation must begin
     #: after its challenge armed, so HQ's own read-back echoing into the mic cannot confirm it.
     user_started_at: float = 0.0
@@ -208,7 +225,12 @@ class Call:
         sid = sid or uuid.uuid4().hex[:12]
         await self.client({"t": "caption", "who": "hq", "id": sid, "text": text, "kind": kind,
                            "turn_id": turn_id})  # fmt: skip
-        await self.worker({"t": "say", "id": sid, "text": text})
+        lang = self.language if self.tts_takes_language else None
+        # A voice per language (#1397 P3): the contact's voice for the call's language, if set.
+        voice = (self.profile or {}).get("language_voices", {}).get(self.language or "")
+        await self.worker(
+            {"t": "say", "id": sid, "text": text, "language": lang, "voice": voice}
+        )  # fmt: skip
         return sid
 
     # -- events from the worker -----------------------------------------------------------------
@@ -256,6 +278,11 @@ class Call:
             if self.state == "speaking":
                 await self.set_state("thinking" if self._turn_running() else "listening")
         elif t == "utterance":
+            heard = ev.get("heard_language")
+            self.heard_language = heard if isinstance(heard, str) and LANG.match(heard) else None
+            lang = ev.get("language")
+            if self.fixed_language is None and isinstance(lang, str) and LANG.match(lang):
+                self.language = lang
             text = str(ev.get("text") or "").strip()[: ask_orchestrator.QUERY_MAX]
             if text:
                 # `late`: its turn already went out; it began before anything now armed.
@@ -419,10 +446,17 @@ class Call:
         """Read the cards back; the challenge arms once that read-back has played. `gen`: the
         question this offer answers — checked with no await between it and installing the
         challenge, which keeps that generation: a slower, older offer can never displace a newer
-        one, and a challenge outlived by its generation never arms or confirms (#1631 reviews)."""
+        one, and a challenge outlived by its generation never arms or confirms (#1631 reviews).
+
+        The confirmation matcher is English-only (#1397 P3): on a call in any other language the
+        cards are read back for the SCREEN and no challenge is armed, so a translated or
+        misdetected command can never settle one."""
         await self.void_challenge()
         cards = cards[:4]
         if gen is not None and gen != self.generation:
+            return
+        if self.language not in (None, "en"):
+            await self.say(readback_screen_only(cards), kind="readback", turn_id=turn_id)
             return
         # The PENDING challenge exists before its read-back is sent: the worker's `said`, the
         # browser's `played` — and an interruption, mute, tap or new question, which void it —
@@ -457,6 +491,10 @@ class Call:
         ):
             # Not armed yet, superseded, expired, late, or its turn began before arming or while
             # HQ was still reading it back: a new question (the caller voids the challenge).
+            return False
+        if not self._confirmation_language_ok():
+            # Fail closed: a turn not known to be English never confirms (the matcher is
+            # English-only), whatever its words were transcribed as. The caller voids it.
             return False
         verdict, idx = classify_confirmation(text, len(ch["cards"]))
         if verdict == "other":
@@ -496,6 +534,20 @@ class Call:
         if self.state == "ended" or self.muted or card["id"] in self.tapped:
             return
         await self.settle(card)
+
+    def _confirmation_language_ok(self) -> bool:
+        """English is KNOWN for this utterance. Where the endpoint detects language — on Auto AND
+        on a fixed-English call — THIS utterance must have been heard as English; German, mixed or
+        unknown fails closed. Only where the endpoint was TESTED and cannot detect is a
+        fixed-English or Auto call taken as English (Settings says so: there is nothing to check
+        against); an untested endpoint fails closed (#1635 review)."""
+        if self.fixed_language not in (None, "en"):
+            return False
+        if self.detects_language is None:
+            return False  # never tested (or its endpoint changed): unknown fails closed
+        if self.detects_language:
+            return self.heard_language == "en" and self.language in (None, "en")
+        return True
 
     async def settle(self, card: dict) -> None:
         """The card's OWN route, in-process, as the operator (the #1559 mechanism): every guard and
@@ -977,9 +1029,11 @@ async def start_worker(settings: dict) -> Worker:
     return Worker(proc, sock, d)
 
 
-def worker_config(settings: dict, voice: str) -> dict:
+def worker_config(settings: dict, voice: str, profile: dict | None = None) -> dict:
     """What the worker is told at start: endpoints WITHOUT tokens (those are in its env)."""
     tt = settings["turn_taking"]
+    lang = settings.get("language", "auto")
+    detect = settings.get("stt_detects_language") is True and lang in ("auto", "en")
     return {
         "t": "config",
         "stt": {"base_url": settings["stt"]["base_url"], "model": settings["stt"]["model"]},
@@ -987,13 +1041,26 @@ def worker_config(settings: dict, voice: str) -> dict:
             "base_url": settings["tts"]["base_url"],
             "model": settings["tts"]["model"],
             "voice": voice,
-        },  # fmt: skip
+            "style": (profile or {}).get("style"),
+            "speed": (profile or {}).get("speed"),
+        },
+        # P3: ask STT for the language only where the endpoint was found to report it.
+        # Detection also runs on a fixed-ENGLISH call, where it gates spoken confirmation only;
+        # the STT language hint is then left off so the detection is real, not echoed back.
+        "detect_language": detect,
+        "language": None if detect or lang == "auto" else lang,
+        # TTS gets a language only where the conformance probe proved the field is accepted.
+        "tts_language_ok": bool(settings.get("tts_accepts_language")),
         "in_rate": IN_RATE,
         "out_rate": OUT_RATE,
         # Silence after speech before the turn may end (VAD stop), per the turn-taking setting.
         "stop_secs": {"quick": 0.2, "natural": 0.35, "patient": 0.6}[tt],
         "interrupt": bool(settings["interrupt"]),
     }
+
+
+def profile_for(settings: dict, contact: str) -> dict:
+    return hq_calls_settings.profile(settings, contact)
 
 
 def voice_for(settings: dict, contact: str) -> str:

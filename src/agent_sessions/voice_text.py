@@ -236,3 +236,13 @@ def readback(cards: list[dict]) -> str:
         return f"{c['line']} Say confirm to {c['verb']}, or cancel."
     parts = [f"{_ORDINAL_WORDS[i].capitalize()}: {c['line']}" for i, c in enumerate(cards)]
     return " ".join(parts) + " Say confirm and the number, or cancel."
+
+
+def readback_screen_only(cards: list[dict]) -> str:
+    """The read-back on a call whose language the confirmation matcher does not cover: what each
+    card does, confirmed on the screen only. (English: HQ answers in the call's language, but this
+    fixed line stays short and plain.)"""
+    if not cards:
+        return ""
+    parts = [c["line"] for c in cards]
+    return " ".join(parts) + " Confirm it on your screen."

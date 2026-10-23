@@ -116,6 +116,24 @@ async def check(stt: se.Endpoint, tts: se.Endpoint, voice: str) -> Report:
                 False,
                 "" if streamed else "no streaming: first audio waits for the whole sentence",
             )
+            # Optional (#1397 P3): does the server ACCEPT a `language` field? Advertised languages
+            # alone don't prove it; a strict server may refuse the unknown field. Only a probe that
+            # comes back with audio lets a call send one.
+            try:
+                n = 0
+                async for chunk in se.synthesize(
+                    tts, "Ready.", voice=voice, out_rate=PROBE_RATE, language="en"
+                ):
+                    n += len(chunk)
+                took = n > 0
+            except se.SpeechError:
+                took = False
+            rep.add(
+                "tts.language",
+                took,
+                False,
+                "" if took else "no language field: HQ speaks every language in the voice's own",
+            )
             if (first or total) > SLOW_FIRST_AUDIO_S:
                 rep.add(
                     "tts.first_audio",
@@ -134,6 +152,7 @@ async def check(stt: se.Endpoint, tts: se.Endpoint, voice: str) -> Report:
 
     # Transcription (required): the synthesized phrase must come back recognisable.
     if pcm:
+        ok = False
         try:
             tr = await se.transcribe(stt, bytes(pcm), PROBE_RATE, language="en")
         except se.SpeechError as e:
@@ -157,4 +176,46 @@ async def check(stt: se.Endpoint, tts: se.Endpoint, voice: str) -> Report:
                     "seconds": round(tr.seconds, 2),
                 },
             )
+        # Optional (#1397 P3): does the endpoint report the language it heard? Then a call can
+        # follow the Commander's language; otherwise it stays in the chosen one.
+        if ok:
+            # The verdict must be PROVEN either way (#1635 reviews): `detects` — it reported a
+            # language, even one we cannot map (then every utterance must still be heard as
+            # English: strict); `no_language` — ONLY a successful JSON reply with no `language`
+            # KEY at all (an empty or null one proves nothing about other utterances). Any
+            # refusal (its reason is unknown), timeout, 5xx, unreachable or malformed reply is
+            # `unknown`: never evidence that it cannot detect, which would relax the
+            # spoken-confirmation gate.
+            try:
+                det = await se.transcribe(stt, bytes(pcm), PROBE_RATE, detect=True)
+                verdict = (
+                    "detects"
+                    if det.reported_language
+                    else "no_language"
+                    if det.structured and not det.language_key
+                    else "unknown"
+                )
+            except se.SpeechError:
+                verdict = "unknown"
+            rep.add(
+                "stt.language",
+                verdict == "detects",
+                False,
+                {
+                    "detects": "",
+                    "no_language": "no language detection: calls stay in the language you choose",
+                    "unknown": "language detection could not be checked: test again (until then "
+                    "a spoken confirm is refused)",
+                }[verdict],
+                value={"verdict": verdict},
+            )
     return rep
+
+
+def detects_language(rep: Report) -> bool | None:
+    """The STT language verdict of a report: True / False only when proven, else None."""
+    for c in rep.checks:
+        if c.id == "stt.language":
+            verdict = c.value.get("verdict") if isinstance(c.value, dict) else None
+            return {"detects": True, "no_language": False}.get(verdict)
+    return None

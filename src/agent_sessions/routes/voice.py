@@ -176,6 +176,16 @@ def register(
         if not isinstance(voice, str) or not voice.strip() or len(voice) > 120:
             return JSONResponse({"detail": "voice (a short string) is required"}, status_code=422)
         report = await speech_conformance.check(stt, tts, voice.strip())
+        # What THIS server saw of these endpoints is all a later save may claim (#1635 review).
+        ok = {c.id: c.ok for c in report.checks}
+        hq_calls_settings.observe(
+            "stt", stt.base_url, stt.model, stt.api_key,
+            stt_detects_language=speech_conformance.detects_language(report),  # None: unproven
+        )  # fmt: skip
+        hq_calls_settings.observe(
+            "tts", tts.base_url, tts.model, tts.api_key,
+            tts_accepts_language=ok.get("tts.language") is True,
+        )  # fmt: skip
         return JSONResponse(report.as_dict())
 
     @app.post("/api/voice/voices")
@@ -191,12 +201,16 @@ def register(
                          body.get("endpoint"))  # fmt: skip
         if isinstance(ep, str):
             return JSONResponse({"detail": ep}, status_code=422)
-        out: dict = {"models": None, "voices": None}
+        out: dict = {"models": None, "voices": None, "styles": None, "languages": None}
         with contextlib.suppress(speech_endpoints.SpeechError):
             out["models"] = await speech_endpoints.list_models(ep)
         if body.get("side", "tts") == "tts":
             with contextlib.suppress(speech_endpoints.SpeechError):
-                out["voices"] = await speech_endpoints.list_voices(ep)
+                out.update(await speech_endpoints.discover(ep))
+            hq_calls_settings.observe(
+                "tts", ep.base_url, ep.model, ep.api_key, tts_voices=out.get("voices") or [],
+                tts_styles=out.get("styles") or [], tts_languages=out.get("languages") or [],
+            )  # fmt: skip
         return JSONResponse(out)
 
     @app.post("/api/voice/preview")
@@ -210,9 +224,24 @@ def register(
             return body
         group = body.get("group")
         voice = body.get("voice")
+        contact = body.get("contact")
+        block = await asyncio.to_thread(hq_calls_settings.get)
+        extra: dict = {}
+        speed = None
+        line = None
+        if contact is not None:
+            # A contact's own profile (#1397 P3), in a FIXED line naming them.
+            if contact not in hq_contacts.IDS:
+                return JSONResponse({"detail": "unknown contact"}, status_code=422)
+            prof = hq_calls_settings.profile(block, contact)
+            group = hq_contacts.get(contact).voice_group or "woman"
+            voice = voice if isinstance(voice, str) and voice.strip() else prof["voice"]
+            if prof.get("style"):
+                extra["style"] = prof["style"]
+            speed = prof.get("speed")
+            line = f"Commander, this is {hq_contacts.get(contact).name}. All units report ready."
         if group not in hq_contacts.VOICE_GROUPS:
             return JSONResponse({"detail": "group must be woman or man"}, status_code=422)
-        block = await asyncio.to_thread(hq_calls_settings.get)
         if not hq_calls_settings.side_configured(block["tts"]):
             return JSONResponse({"detail": "save a text-to-speech endpoint first"}, 409)
         if not isinstance(voice, str) or not voice.strip():
@@ -224,7 +253,14 @@ def register(
         pcm = bytearray()
         try:
             async for chunk in speech_endpoints.synthesize(
-                ep, PREVIEW_LINES[group], voice=voice.strip(), out_rate=voice_calls.OUT_RATE
+                ep,
+                line or PREVIEW_LINES[group],
+                voice=voice.strip(),
+                out_rate=voice_calls.OUT_RATE,
+                speed=speed,
+                extra=extra or None,
+                # A server refusing speed/style still previews the voice, as a call would speak.
+                plain_fallback=lambda: None,
             ):
                 pcm += chunk
         except speech_endpoints.SpeechError as e:
@@ -290,6 +326,7 @@ def register(
         if cid is not None:
             if not ask_store.valid_cid(cid) or not await asyncio.to_thread(ask_store.exists, cid):
                 return JSONResponse({"detail": "conversation not found"}, status_code=404)
+        profile = voice_calls.profile_for(block, contact)
         # Reserve the one call slot FIRST: a refused (busy) call must not leave an empty
         # conversation behind (each one counts against the store's retention).
         new_cid = ask_store.new_cid() if cid is None else None
@@ -298,7 +335,8 @@ def register(
                 cid=cid or new_cid,
                 answers=block.get("answers", "brief"),
                 contact=contact,
-                voice=voice_calls.voice_for(block, contact),
+                voice=profile["voice"],
+                profile=profile,
                 operator=asgi_call.Operator.from_scope(request.scope),
                 app=request.app,
                 registry=registry,
@@ -322,6 +360,13 @@ def register(
                 # once it settles (it may still land).
                 _keep(asyncio.ensure_future(_abandon(call, write, new_cid)))
                 raise
+        if block.get("language", "auto") != "auto":
+            call.fixed_language = call.language = block["language"]
+        call.settings = block
+        call.tts_takes_language = bool(block.get("tts_accepts_language"))
+        det = block.get("stt_detects_language")
+        # Tri-state: True / False once tested, None (unknown: spoken confirmation fails closed).
+        call.detects_language = det if isinstance(det, bool) else None
         call.dial_timer = asyncio.create_task(voice_calls.end_if_never_joined(call))
         return JSONResponse(call.public(), status_code=201)
 
@@ -498,7 +543,8 @@ def register(
         call.worker_started = True
         try:
             await call.client({"t": "state", "state": "dialing"})
-            block = await asyncio.to_thread(hq_calls_settings.get)
+            # The settings the call was admitted with (its language gate came from them too).
+            block = call.settings or await asyncio.to_thread(hq_calls_settings.get)
             if call.state == "ended":
                 return  # hung up meanwhile: no worker for an ended call (teardown frees the slot)
             try:
@@ -507,7 +553,7 @@ def register(
                     str(worker.sock), "ws://worker/call", max_size=voice_calls.MAX_AUDIO_FRAME * 2
                 )
                 call._to_worker = to_worker
-                await to_worker(voice_calls.worker_config(block, call.voice))
+                await to_worker(voice_calls.worker_config(block, call.voice, call.profile))
             except Exception as e:  # noqa: BLE001 — ANY failure here ends the call
                 detail = e.detail if isinstance(e, voice_calls.CallError) else type(e).__name__
                 await call.end("worker_failed", detail=str(detail)[:160])

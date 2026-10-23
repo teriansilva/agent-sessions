@@ -611,3 +611,115 @@ def test_more_metadata_and_translated_loopback_are_refused(monkeypatch, addr):
     with pytest.raises(se.SpeechError) as e:
         run(se.list_models(se.Endpoint("http://speech.example/v1")))
     assert e.value.code == "refused_destination" and seen == []
+
+
+@pytest.mark.parametrize("strict", [True, False])
+def test_check_probes_whether_tts_accepts_a_language(monkeypatch, strict):
+    """Advertised languages don't prove the request field is accepted (#1623): a strict server
+    that refuses `language` must leave the capability off."""
+    base = _speech_server()
+
+    def handler(r: httpx.Request):
+        if strict and r.url.path.endswith("/audio/speech") and "language" in json.loads(r.content):
+            return httpx.Response(400, json={"error": "unknown field language"})
+        return base(r)
+
+    _mount(monkeypatch, handler)
+    rep = run(sc.check(se.Endpoint(BASE), se.Endpoint(BASE), "nova"))
+    assert rep.usable
+    assert {c.id: c.ok for c in rep.checks}["tts.language"] is (not strict)
+
+
+@pytest.mark.parametrize(
+    "reported,code",
+    [("en", "en"), ("english", "en"), ("English", "en"), ("german", "de"), ("klingon", None),
+     ("de\n", None), ("", None), (3, None)],
+)  # fmt: skip
+def test_transcribe_reports_the_language_as_a_two_letter_code(monkeypatch, reported, code):
+    """OpenAI's `verbose_json` names the language ("english"); others send the code. Anything
+    else is no language at all (the spoken-confirmation gate fails closed on it)."""
+    _mount(monkeypatch, lambda r: httpx.Response(200, json={"text": "hi", "language": reported}))
+    tr = run(se.transcribe(se.Endpoint(BASE), _tone(0.2, 16000), 16000, detect=True))
+    assert tr.language == code
+
+
+def test_a_refused_optional_field_is_retried_plain_once(monkeypatch):
+    """Review 6887: a strict TTS refusing `speed` / `language` / `style` (422, before any audio)
+    is asked once more without them — where the caller allows it; a probe never does."""
+    bodies: list[dict] = []
+
+    def handler(r: httpx.Request):
+        b = json.loads(r.content)
+        bodies.append(b)
+        if any(k in b for k in ("speed", "language", "style")):
+            return httpx.Response(422, json={"detail": "extra fields not permitted"})
+        return httpx.Response(
+            200, content=b"\x00\x00" * 2400, headers={"content-type": "audio/pcm"}
+        )
+
+    _mount(monkeypatch, handler)
+    told: list[int] = []
+
+    async def go(fallback):
+        out = b""
+        async for c in se.synthesize(se.Endpoint(BASE), "Hello.", voice="aria", out_rate=24000,
+                                     speed=0.95, language="de", extra={"style": "calm"},
+                                     plain_fallback=fallback):  # fmt: skip
+            out += c
+        return out
+
+    assert run(go(lambda: told.append(1)))
+    assert told == [1] and len(bodies) == 2
+    assert set(bodies[1]) == {"model", "input", "voice", "response_format"}
+    with pytest.raises(se.SpeechError):
+        run(go(None))
+
+
+def test_discovery_keeps_what_it_found_when_health_is_unreachable(monkeypatch):
+    """Review 6887: `/audio/voices` answered; the optional `/health` lookup failing must not
+    throw the voices away."""
+
+    def handler(r: httpx.Request):
+        if r.url.path.endswith("/audio/voices"):
+            return httpx.Response(200, json={"voices": ["aria", "atlas"]})
+        raise httpx.ConnectError("down")
+
+    _mount(monkeypatch, handler)
+    got = run(se.discover(se.Endpoint(BASE)))
+    assert got["voices"] == ["aria", "atlas"]
+
+
+@pytest.mark.parametrize(
+    "detect_reply,verdict",
+    [
+        (lambda: httpx.Response(200, json={"text": "x", "language": "en"}), True),
+        # A language we cannot map is still detection (strict: never heard as English).
+        (lambda: httpx.Response(200, json={"text": "x", "language": "cantonese"}), True),
+        (lambda: httpx.Response(200, json={"text": "x"}), False),  # answered: no language field
+        # A language KEY that is empty or null proves nothing about other utterances.
+        (lambda: httpx.Response(200, json={"text": "x", "language": ""}), None),
+        (lambda: httpx.Response(200, json={"text": "x", "language": None}), None),
+        (lambda: httpx.Response(200, json={"text": "x", "language": 7}), None),
+        (lambda: httpx.Response(422, json={"detail": "bad audio"}), None),  # reason unknown
+        (lambda: httpx.Response(400, json={"detail": "response_format"}), None),
+        (lambda: httpx.Response(500, json={"detail": "busy"}), None),  # proves nothing
+        (lambda: httpx.Response(200, content=b"<html>"), None),  # malformed: proves nothing
+        ("timeout", None),
+    ],
+)
+def test_detection_is_proven_or_unknown_never_assumed_absent(monkeypatch, detect_reply, verdict):
+    """Review 6890: a FAILED detect request is not evidence the endpoint cannot detect — only an
+    answer without a language, or a refusal of the format, is. Anything else is unknown."""
+    base = _speech_server()
+
+    def handler(r: httpx.Request):
+        if r.url.path.endswith("/audio/transcriptions") and b"verbose_json" in r.content:
+            if detect_reply == "timeout":
+                raise httpx.ReadTimeout("slow")
+            return detect_reply()
+        return base(r)
+
+    _mount(monkeypatch, handler)
+    rep = run(sc.check(se.Endpoint(BASE), se.Endpoint(BASE), "nova"))
+    assert rep.usable
+    assert sc.detects_language(rep) is verdict

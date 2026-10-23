@@ -3,6 +3,10 @@
 No Pipecat imports, so CI tests it. A barge-in (`drop`) cancels ALL of them — the look-ahead and
 the sentence playing right now — because an interruption clears playback without closing the TTS
 generator that is still pulling audio from the endpoint.
+
+Each sentence is synthesized with the parameters (voice, language, …) of the SAY it came from,
+taken when that say arrived (`say` / `begin`): a later say switching voice or language never
+reaches the sentences still queued from an earlier one (#1635 review).
 """
 
 from __future__ import annotations
@@ -15,10 +19,26 @@ class Synths:
         self._make = make  # text → a synth with a `.task` (an asyncio task)
         self._lookahead = lookahead
         self.ahead: dict[str, object] = {}
-        self.pending: list[str] = []
+        self.pending: list = []
         self.active: object | None = None
+        self._queued: list[tuple] = []  # (text, params) of each sentence not yet started, in order
 
-    def prefetch(self, texts: list[str]) -> None:
+    def say(self, texts: list[str], params: object) -> None:
+        """Queue one say's sentences with the parameters they are to be spoken with."""
+        keys = [(t, params) for t in texts]
+        self._queued.extend(keys)
+        self.prefetch(keys)
+
+    def begin(self, text: str, current: object):
+        """The synth for the next queued sentence with this text, made with ITS say's
+        parameters (`current` only for a sentence that was never queued)."""
+        for i, key in enumerate(self._queued):
+            if key[0] == text:
+                del self._queued[i]
+                return self.start(key)
+        return self.start((text, current))
+
+    def prefetch(self, texts: list) -> None:
         self.pending.extend(texts)
         self._top_up(started=None)
 
@@ -46,4 +66,5 @@ class Synths:
             synth.task.cancel()
         self.ahead.clear()
         self.pending.clear()
+        self._queued.clear()
         self.active = None
