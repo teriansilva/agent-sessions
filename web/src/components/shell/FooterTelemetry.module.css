@@ -59,3 +59,16 @@
     width: 24px;
   }
 }
+.cpuPips {
+  display: inline-flex;
+}
+/* The one line has to hold CPU, RAM and HQ CTX at 320px, even at 100% and ≈9.99M: the CPU pips
+   give way and the stripe halves, the values stay. */
+@media (max-width: 440px) {
+  .cpuPips {
+    display: none;
+  }
+  .stripe {
+    width: 12px;
+  }
+}

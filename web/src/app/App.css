@@ -589,8 +589,9 @@
   margin-left: auto;
 }
 @media (max-width: 800px) {
-  /* A phone keeps CPU · RAM · HQ CTX and the version; the host name goes (#1531). */
-  .hud-footer-left .hud-tag:not(.hud-version) {
+  /* A phone keeps CPU · RAM · HQ CTX on ONE line; the host name and the version go (the version is
+     in Settings → About and the operator menu's What's new). */
+  .hud-footer-left {
     display: none;
   }
 }
@@ -624,6 +625,8 @@
     flex-wrap: wrap;
     height: auto;
     min-height: 28px;
+    /* The top bar's inset, so both bars' edges line up and the telemetry has room at 320px. */
+    padding-inline: 10px;
   }
   .hud-update-chip {
     flex: 1 0 100%;
@@ -829,7 +832,14 @@
   .app {
     grid-template-rows: var(--app-header-height) minmax(0, 1fr) 28px;
   }
+  /* ONE TILE on a phone: every control in the row — the four sections, HQ, the bell and the
+     operator — is the same plate, --tb-tile wide and 44px tall; a sub-menu's chevron adds
+     --tb-chev; one gap between them all. Sized here, read by SectionNav, NotificationBell and
+     OperatorMenu, so no control drifts to its own width again. */
   .hud-topbar {
+    --tb-tile: 38px;
+    --tb-chev: 24px;
+    --tb-gap: 4px;
     flex-wrap: nowrap;
     gap: 6px;
     padding-inline: 10px;
@@ -849,7 +859,7 @@
   }
   .section-nav {
     margin: 0 0 0 auto;
-    gap: 4px;
+    gap: var(--tb-gap);
   }
   .section-nav a {
     padding: 0 8px;
@@ -857,6 +867,7 @@
   .hud-topbar-actions {
     margin-left: 0;
     flex: none;
+    gap: var(--tb-gap);
   }
   .sidebar,
   .backdrop {
@@ -880,7 +891,7 @@
 @media (max-width: 800px) {
   .section-nav a {
     min-width: 0;
-    width: 40px;
+    width: var(--tb-tile);
     /* The 44px coarse-pointer floor is NOT negotiable at the width where fingers are the input
        device — the entries lose their labels and their padding, never their height. */
     min-height: 44px;
@@ -918,8 +929,12 @@
   .section-nav-beta-short {
     display: inline;
   }
+  /* The tag sits UNDER the glyph, so a tile that carries one lifts its icon clear of it. */
+  .section-nav a:has(.section-nav-beta) svg {
+    margin-bottom: 12px;
+  }
   .section-nav-chevron {
-    width: 24px;
+    width: var(--tb-chev);
   }
   /* Scoped to the bar's own labels. */
   .section-nav .section-nav-label {
@@ -955,8 +970,11 @@
   .hud-topbar.hud-topbar {
     padding-inline: 4px;
   }
-  .section-nav .section-nav-chevron {
-    width: 16px;
+  /* Three classes: this block sits above the ≤440px one in the file, and must still win at 320. */
+  .hud-topbar.hud-topbar.hud-topbar {
+    --tb-tile: 30px;
+    --tb-chev: 16px;
+    --tb-gap: 2px;
   }
   /* 320px is the narrowest supported screen and the one width where five entries do NOT fit at
      40px: 5×40 + gaps needs 172px against the 170px between the wordmark and the corner, and the
@@ -978,17 +996,12 @@
     width: 20px;
     height: 20px;
   }
-  .section-nav {
-    gap: 2px;
+  /* Two classes: outranks the ≤800px sizes above, and the ≤380px block outranks this. */
+  .hud-topbar.hud-topbar {
+    --tb-tile: 32px;
+    --tb-chev: 18px;
   }
   .section-nav a {
-    width: 28px;
     padding-inline: 0;
-  }
-  .section-nav-chevron {
-    width: 18px;
-  }
-  .hud-topbar-actions {
-    gap: 2px;
   }
 }

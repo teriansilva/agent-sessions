@@ -362,3 +362,85 @@ test.describe("the session head on a touch tablet (#1589)", () => {
     await ctx.close();
   });
 });
+
+/** THE PHONE ROW (≤800px): every control in the bar is ONE tile — the four sections (a sub-menu's
+ *  chevron rides beside its link), HQ, the bell and the operator — the same width and the same
+ *  44px height; the operator's initials ARE that tile, not a smaller box inside it; and the footer
+ *  is ONE line with no version. Before this, at 412px the sections were 28px, HQ and the bell 32px,
+ *  the operator a 34px plate around a 32px square, and the footer wrapped the version to a second
+ *  line under the telemetry. */
+test.describe("the phone row: one tile, one footer line", () => {
+  // The widest the strip can get: three-digit CPU and RAM, and an estimated CTX in its longest
+  // form ("≈9.99M"). At 320px this once pushed the emptied host/version wrapper onto a second row.
+  const TELEMETRY = {
+    cpu_pct: 100,
+    mem: { used: 64e9, total: 64e9, pct: 100 },
+    hq: { ctx_tokens: 9_990_000, ctx_estimated: true, today_tokens: 99_900_000, today_estimated: true, at: 1 },
+    as_of: 1,
+  };
+
+  for (const width of [320, 360, 380, 381, 412, 440, 441, 600, 800]) {
+    test(`${width}px: one tile size, the initials fill theirs, a one-line footer without the version`, async ({
+      browser,
+    }) => {
+      onceOnDesktop();
+      const { ctx, page } = await device(browser, width, true);
+      await page.route(/\/api\/telemetry/, (r) => r.fulfill({ json: TELEMETRY }));
+      await openTerminalSession(page);
+      await expect(page.getByTestId("footer-telemetry")).toHaveAttribute("data-state", "ok");
+      await expect(page.getByTestId("tm-ctx")).toHaveText("≈9.99M");
+
+      const boxes = async (sel: string) =>
+        page.locator(sel).evaluateAll((els) =>
+          els.map((e) => {
+            const r = e.getBoundingClientRect();
+            return { x: r.x, w: r.width, h: r.height };
+          }),
+        );
+      const tiles = [
+        ...(await boxes(".section-nav > a.nj-plate, .section-nav-split > a")),
+        ...(await boxes(".hud-topbar-actions .nj-plate")),
+      ];
+      expect(tiles, `seven tiles at ${width}`).toHaveLength(7);
+      for (const t of tiles) {
+        expect(t.w, `every tile one width at ${width}`).toBeCloseTo(tiles[0].w, 0);
+        expect(t.h, `every tile 44px tall at ${width}`).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+        expect(t.h).toBeCloseTo(tiles[0].h, 0);
+      }
+      const chevrons = await boxes(".section-nav-chevron");
+      expect(chevrons).toHaveLength(2);
+      expect(chevrons[1].w).toBeCloseTo(chevrons[0].w, 0);
+
+      // The operator's initials fill its plate: one box, not a square inside a frame.
+      const op = page.locator(".operator-slot .nj-plate");
+      const ob = (await op.boundingBox())!;
+      const sb = (await op.locator(':scope > span[aria-hidden="true"]').first().boundingBox())!;
+      expect(Math.abs(sb.width - ob.width), `initials fill the tile at ${width}`).toBeLessThanOrEqual(2);
+      expect(Math.abs(sb.height - ob.height), `initials fill the tile at ${width}`).toBeLessThanOrEqual(2);
+
+      // Nothing overlaps along the row.
+      const row = [...tiles, ...chevrons].sort((a, b) => a.x - b.x);
+      for (let i = 1; i < row.length; i++) {
+        expect(row[i].x, `no overlap at ${width}`).toBeGreaterThanOrEqual(row[i - 1].x + row[i - 1].w - 0.5);
+      }
+
+      // The footer: one 28px line, the telemetry readable to its end, and no version.
+      const bar = (await page.locator(".hud-classbar").boundingBox())!;
+      expect(bar.height, `one footer line at ${width}`).toBeLessThanOrEqual(28.5);
+      await expect(page.locator(".hud-version")).toBeHidden();
+      // The strip clips its overflow, so the last value must end inside the strip, not just the page.
+      const strip = (await page.getByTestId("footer-telemetry").boundingBox())!;
+      const ctxv = (await page.getByTestId("tm-ctx").boundingBox())!;
+      expect(ctxv.x + ctxv.width, `HQ CTX not clipped at ${width}`).toBeLessThanOrEqual(strip.x + strip.width + 0.5);
+      await ctx.close();
+    });
+  }
+
+  test("a desktop footer still names the version", async ({ browser }) => {
+    onceOnDesktop();
+    const { ctx, page } = await device(browser, 1280, false);
+    await openTerminalSession(page);
+    await expect(page.locator(".hud-version")).toBeVisible();
+    await ctx.close();
+  });
+});

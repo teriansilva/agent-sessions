@@ -112,12 +112,23 @@
 @media (max-width: 800px) {
   /* The 44px touch floor is the plate itself (#1589): a plate paints with ::before/::after, so the
      old invisible ::after hit-area halo is gone and the box is the target. */
+  /* The row's one gap separates it from the bell, like every other tile. */
+  .wrap {
+    margin-left: 0;
+  }
   .tile {
+    width: var(--tb-tile, 44px);
     height: 44px;
+    justify-content: center;
+    /* The initials ARE the tile on a phone: the accent tint moves from an inner square onto the
+       plate's own face, so the corner is one plate the size of its neighbours, not a box in a box. */
+    --nj-face: color-mix(in srgb, var(--hud) 20%, var(--bg-1));
+    --nj-edge: var(--hud-dim);
   }
   .square {
-    width: 32px;
-    height: 32px;
+    width: 100%;
+    height: 100%;
+    background: transparent;
   }
 }
 

@@ -60,7 +60,11 @@ export function FooterTelemetry() {
       <span className={s.stripe} aria-hidden="true" />
       <span className={s.tm}>
         CPU <Value text={cpu === null ? "—" : `${Math.round(cpu)}%`} testId="tm-cpu" />
-        {cpu !== null && <Pips value={pipsFor(cpu)} max={8} tone={tone(cpu)} label={`CPU ${Math.round(cpu)}%`} />}
+        {cpu !== null && (
+          <span className={s.cpuPips}>
+            <Pips value={pipsFor(cpu)} max={8} tone={tone(cpu)} label={`CPU ${Math.round(cpu)}%`} />
+          </span>
+        )}
       </span>
       <span className={s.sep} aria-hidden="true" />
       <span className={s.tm}>
