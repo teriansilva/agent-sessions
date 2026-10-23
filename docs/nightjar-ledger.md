@@ -210,8 +210,8 @@ the same list.
 | `battlelab-cloud catalog gallery.html` | page | 12d | n/a: restyled in its own repo by battlelab-cloud#81 (PR battlelab-cloud#82), with its captures there | — | — |
 | `battlelab-cloud catalog admin.html` | page | 12d | n/a: restyled in its own repo by battlelab-cloud#81 (PR battlelab-cloud#82), with its captures there | — | — |
 | `battlelab-cloud catalog edge 403` | page | 12d | n/a: restyled in its own repo by battlelab-cloud#81 (PR battlelab-cloud#82), with its captures there | — | — |
-| `web/public/og-image.svg + og-image.png` | page | 13 | todo |  |  |
-| `web/public/onboarding/* (tour slides)` | page | 13 | todo |  |  |
+| `web/public/og-image.svg + og-image.png` | page | 13 | n/a: a still generated from the brand kit by `web/scripts/render-brand-assets.mjs`; already the NIGHTJAR card since #1590 (PR #1595), pinned by `brandAssets.test.ts` | — | — |
+| `web/public/onboarding/* (tour slides)` | page | 13 | done | popup:tour | none: still images (re-captured from the NIGHTJAR UI with `web/visual/promo/capture.mjs`; the Home Free and Settings slides redrawn) |
 
 **Note: Settings B (#1574, Phase 11 part: agents, system, about).** `routes/AgentsSettings.module.css`
 stays `todo`: its remaining literal sizes sit in selectors the fenced agent page (`AgentDetail`,

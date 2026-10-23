@@ -79,6 +79,14 @@ async function answer(path, q, method, req, state) {
       return json({ ...F.CONFIG, theme: state.theme ?? "dark", ...(state.config ?? {}) });
     case "/api/version":
       return json({ version: "0.19.4" });
+    case "/api/telemetry":
+      // The NIGHTJAR footer's live readouts (#1531): invented, steady values.
+      return json({
+        cpu_pct: 23,
+        mem: { used: 19.6 * 2 ** 30, total: 32 * 2 ** 30, pct: 61.3 },
+        hq: { ctx_tokens: 18200, ctx_estimated: false, today_tokens: 412000, today_estimated: false, at: F.NOW - 120 },
+        as_of: F.NOW,
+      });
     case "/api/engines":
       return json({ engines: F.ROSTER.engines, problems: [] });
     case "/api/projects":

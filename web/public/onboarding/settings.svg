@@ -1,11 +1,25 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-label="Settings and AI">
-  <rect width="640" height="360" fill="#131418"/>
-  <rect x="24" y="28" width="120" height="304" fill="#0d0e10" stroke="#25282e"/>
-  <rect x="40" y="52" width="88" height="24" fill="#1a1c21"/>
-  <rect x="40" y="84" width="88" height="24" fill="#ffb000"/>
-  <rect x="168" y="56" width="448" height="36" fill="#0d0e10" stroke="#25282e"/>
-  <rect x="168" y="108" width="448" height="36" fill="#0d0e10" stroke="#25282e"/>
-  <rect x="168" y="160" width="200" height="32" fill="#0d0e10" stroke="#ffb000"/>
-  <g stroke="#ffb000" stroke-width="2" fill="none"><path d="M8 20V8h12"/><path d="M620 8h12v12"/><path d="M8 340v12h12"/><path d="M632 340v12h-12"/></g>
-  <text x="392" y="260" fill="#6f747d" font-family="monospace" font-size="18" text-anchor="middle">SETTINGS // AI endpoint</text>
+  <rect width="640" height="360" fill="#0d0e10"/><g stroke="#ffffff" stroke-opacity=".03"><path d="M40 0V360" /><path d="M80 0V360" /><path d="M120 0V360" /><path d="M160 0V360" /><path d="M200 0V360" /><path d="M240 0V360" /><path d="M280 0V360" /><path d="M320 0V360" /><path d="M360 0V360" /><path d="M400 0V360" /><path d="M440 0V360" /><path d="M480 0V360" /><path d="M520 0V360" /><path d="M560 0V360" /><path d="M600 0V360" /><path d="M0 40H640" /><path d="M0 80H640" /><path d="M0 120H640" /><path d="M0 160H640" /><path d="M0 200H640" /><path d="M0 240H640" /><path d="M0 280H640" /><path d="M0 320H640" /></g>
+  <path d="M34 20H620V326L606 340H20V34Z" fill="#131418" stroke="#ffb000" stroke-opacity=".45"/><path d="M34 21h586" stroke="#ffb000" stroke-width="2"/>
+  <path d="M40 48l5 -8h3l-5 8z" fill="#ffb000"/><path d="M46 48l5 -8h3l-5 8z" fill="#ffb000"/><path d="M52 48l5 -8h3l-5 8z" fill="#ffb000"/><text x="68" y="48" fill="#ffb000" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="12" letter-spacing="3" text-anchor="start" font-weight="700">SETTINGS</text><text x="164" y="48" fill="#6f747d" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="10" letter-spacing="2" text-anchor="start">// AI // LOCAL OR HOSTED</text>
+  <path d="M48 72H160V90L152 98H40V80Z" fill="#1a1c21" stroke="#25282e"/>
+  <text x="56" y="89" fill="#a7abb3" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="10" letter-spacing="2" text-anchor="start">GENERAL</text>
+  <path d="M48 106H160V124L152 132H40V114Z" fill="#ffb000"/>
+  <text x="56" y="123" fill="#120c00" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="10" letter-spacing="2" text-anchor="start" font-weight="700">AI</text>
+  <path d="M48 140H160V158L152 166H40V148Z" fill="#1a1c21" stroke="#25282e"/>
+  <text x="56" y="157" fill="#a7abb3" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="10" letter-spacing="2" text-anchor="start">AGENTS</text>
+  <path d="M48 174H160V192L152 200H40V182Z" fill="#1a1c21" stroke="#25282e"/>
+  <text x="56" y="191" fill="#a7abb3" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="10" letter-spacing="2" text-anchor="start">SYSTEM</text>
+  <path d="M48 208H160V226L152 234H40V216Z" fill="#1a1c21" stroke="#25282e"/>
+  <text x="56" y="225" fill="#a7abb3" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="10" letter-spacing="2" text-anchor="start">ABOUT</text>
+  <text x="184" y="76" fill="#6f747d" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="9" letter-spacing="2" text-anchor="start">ENDPOINT</text>
+  <rect x="184" y="84" width="420" height="32" fill="#1a1c21" stroke="#25282e"/>
+  <text x="196" y="105" fill="#a7abb3" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="11" letter-spacing="0" text-anchor="start">https://ai.example.internal/v1</text>
+  <text x="184" y="140" fill="#6f747d" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="9" letter-spacing="2" text-anchor="start">MODEL</text>
+  <rect x="184" y="148" width="420" height="32" fill="#1a1c21" stroke="#25282e"/>
+  <text x="196" y="169" fill="#a7abb3" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="11" letter-spacing="0" text-anchor="start">local-model</text>
+  <circle cx="190" cy="215" r="3.5" fill="#3fbf6f"/><text x="200" y="219" fill="#a7abb3" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="10" letter-spacing="2" text-anchor="start">REACHABLE // 212 MS</text>
+  <path d="M192 240H352V268L344 276H184V248Z" fill="#ffb000"/><text x="268" y="263" fill="#120c00" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="11" letter-spacing="1" text-anchor="middle" font-weight="700">SAVE &amp; VALIDATE</text>
+  <path d="M372 240H460V268L452 276H364V248Z" fill="#1a1c21" stroke="#25282e"/><text x="412" y="263" fill="#a7abb3" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="11" letter-spacing="2" text-anchor="middle">TEST</text>
+  <text x="320" y="318" fill="#6f747d" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="14" letter-spacing="1" text-anchor="middle">SETTINGS // AI endpoint</text>
 </svg>
