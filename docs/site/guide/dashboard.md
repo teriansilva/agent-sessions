@@ -9,6 +9,17 @@ Beside it are **New**, the page's primary action (a menu with **New session**, *
 Apart from those two, it adds no new actions. Every number is a count of something you can open, and every tile reads on
 its own schedule, so one slow or failing read never blanks the rest.
 
+## The start-up sequence
+
+The first time BattleLab opens in a browser tab, a short uplink log runs over it for about a
+second: *Uplink // establishing*, then a ✓ line for each of **Host**, **Operator** and
+**BattleLab** (the version) as those reads arrive, while the panels power on one after another.
+It shows real reads only; one that has not arrived yet has no line, and it never waits for one.
+It never blocks: the app is live underneath and any key, click, tap or scroll ends it at once. It
+runs once per visit, so reloading or moving between pages in the same tab does not repeat it, and
+only in the **Full** motion mode; in Reduced and Off it never runs
+([Settings → Appearance](/guide/settings)).
+
 ## The strip across the top
 
 Four numbers, each a link to the tile or section it counts:
@@ -94,8 +105,19 @@ while the tab is visible (a hidden tab reads nothing):
 
 Only real numbers: a value the host cannot report shows **—**, and a token count the AI endpoint
 did not report exactly is an estimate marked **≈**. If the read fails, the bar says
-*TELEMETRY // UNAVAILABLE*. Only token counts are kept for HQ, never what was asked or answered.
-On a phone the bar keeps CPU, RAM and HQ's context and drops the rest.
+*TELEMETRY // UNAVAILABLE*. Only token counts are kept for HQ, never what was asked or answered
+(see [HQ token use](/guide/hq#hq-token-use)). CPU and RAM carry small pip meters that turn amber
+from 75 % and red from 90 %. In the Full motion mode a value that changes flashes briefly; in
+Reduced and Off it just changes.
+
+At the right end the bar names the host (`HOST // <name>`) and the version the page is running
+(`V` and the number). When the server runs a newer version than the open page, a
+**⟳ V… READY — TAP TO RELOAD** button joins them; nothing reloads until you tap it.
+
+On a phone (800 px wide or less) the bar is one line: CPU, RAM and HQ's context. The GB
+figures, the RAM pips, TODAY, the host name and the version drop (the version is in Settings →
+About), and at 440 px or less the CPU pips go too. The reload button takes a full-width row of its
+own.
 
 ## What it does not do
 

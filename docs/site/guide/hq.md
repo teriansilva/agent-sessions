@@ -79,8 +79,11 @@ The moment the screen changes, it can need you again. A dismissal is kept for **
 Its header is your contact's looping **portrait**, then **HQ** with the contact's name under it,
 and a second row with the **conversation switcher**, **🗑** (Delete this conversation), **+** (New
 conversation) and **✕** (close HQ). With the contact **Off** there is no portrait and the header is
-one row: HQ, the switcher, **🗑**, **+** and **✕**. The portrait plays only while the sidebar is open and the tab is visible; with
-reduced motion it is a still picture, and so is a loop that fails to load.
+one row: HQ, the switcher, **🗑**, **+** and **✕**. The portrait loops only in the **Full** motion
+mode, while the sidebar is open and the tab is visible; it pauses on its frame while the tab is
+hidden or after ten minutes without input. It is still in **Reduced** and **Off** (no video is
+loaded at all), and so is a loop that fails to load. Motion is set in
+[Settings → Appearance](/guide/settings) and follows the device until you choose.
 
 On a wide screen it sits beside the page, so you can keep working while it answers. **Escape**
 closes it, and so does the icon that opened it. On a phone or a window 800px wide or less it covers
@@ -219,6 +222,27 @@ follows you to every device.
 - Only the chosen contact's loop is downloaded, and the installed app doesn't keep the loops for
   offline use.
 
+## HQ token use
+
+The bar along the bottom of every page shows how much HQ is using your AI endpoint
+([the footer readout](/guide/dashboard#the-footer-readout-every-page)):
+
+- **HQ // CTX**: the prompt size of HQ's most recent model call, in tokens: how large HQ's
+  context is right now. It keeps that figure across midnight.
+- **TODAY**: every token (prompt and answer) of every HQ call since local midnight, when it starts
+  again from zero.
+
+Every call HQ makes to answer you counts, including the rounds where it looks things up and the
+search stages that pick sessions; other features' calls to the same endpoint (session review,
+mission turns) do not. The figures come from the usage the endpoint reports with each answer, so
+counting adds no request; a call that fails is not counted. When the endpoint reports no usage,
+or only the prompt's, the missing part is estimated at about four characters per token (tool
+definitions and tool calls included) and the footer marks the figure **≈**.
+
+Only the numbers are kept, never a question, an answer, a model name or a session: two counts, the
+day, and whether either was estimated, in `~/.config/agent-sessions/hq-usage.json`
+(`AGENT_SESSIONS_HQ_USAGE`). A count that cannot be stored never fails the answer.
+
 ## Notifications
 
 A session that starts needing you raises **one** notification, in the bell and as a push if you
@@ -246,5 +270,5 @@ Settings → **Session review**:
 The Recent work window is set from the page itself (**1 day | 2 | 3**).
 
 ::: info Verified against
-`src/agent_sessions/needs_you.py § ROWS_MAX, KINDS, build`; `src/agent_sessions/work_recap.py § SESSIONS_MAX, INPUT_MAX, ENTRY_TEXT_MAX, ENTRIES_MAX`; `src/agent_sessions/routes/pulse.py § EDIT_TEXT_MAX, build_needs_you`; `src/agent_sessions/needs_you_dismissals.py § KEEP_S`; `src/agent_sessions/prefs.py § PULSE_WINDOW_*, _SESSION_REVIEW_DEFAULTS`; `src/agent_sessions/needs_you_notify.py`; `web/src/components/ask/` (`AskSidebar.tsx`), `web/src/routes/Dashboard.tsx`; `src/agent_sessions/hq_contacts.py § CONTACTS`; `web/src/components/hq/` (`contacts.ts`, `useHqContact.ts`, `HqPortrait.tsx`); `src/agent_sessions/pulse_chat.py § ask_events`.
+`src/agent_sessions/needs_you.py § ROWS_MAX, KINDS, build`; `src/agent_sessions/work_recap.py § SESSIONS_MAX, INPUT_MAX, ENTRY_TEXT_MAX, ENTRIES_MAX`; `src/agent_sessions/routes/pulse.py § EDIT_TEXT_MAX, build_needs_you`; `src/agent_sessions/needs_you_dismissals.py § KEEP_S`; `src/agent_sessions/prefs.py § PULSE_WINDOW_*, _SESSION_REVIEW_DEFAULTS`; `src/agent_sessions/needs_you_notify.py`; `web/src/components/ask/` (`AskSidebar.tsx`), `web/src/routes/Dashboard.tsx`; `src/agent_sessions/hq_contacts.py § CONTACTS`; `web/src/components/hq/` (`contacts.ts`, `useHqContact.ts`, `HqPortrait.tsx`); `src/agent_sessions/pulse_chat.py § ask_events`; `src/agent_sessions/hq_usage.py § usage_from, record, snapshot`; `src/agent_sessions/review.py § _post_chat`.
 :::

@@ -105,7 +105,8 @@ CSRF token. Template and upload responses are `no-store`.
 | `GET /api/engines` | Every provider + `present` + `supports_new` + resolved `bin`. |
 | `GET /api/config` | SPA bootstrap: CSRF, `new_session_engines`, `terminal_backend`, theme, `two_factor_enabled`, … |
 | `GET /api/system` | Host/system info (best-effort). |
-| `POST /api/prefs` `{theme}` | Per-user UI prefs. |
+| `GET /api/telemetry` | The footer readout (#1531), signed-in only, `no-store`: `{cpu_pct, mem:{used,total,pct}, hq:{ctx_tokens, ctx_estimated, today_tokens, today_estimated, at}, as_of}`. `cpu_pct` is the busy share of a `/proc/stat` delta sampled at most every 2 s however many tabs poll; `mem` is `MemTotal − MemAvailable`; either is `null` where the host cannot say (non-Linux). `hq` is HQ's token use (numbers only, `AGENT_SESSIONS_HQ_USAGE`); `today_tokens` restarts at local midnight. The SPA polls it every 5 s, only while the tab is visible. |
+| `POST /api/prefs` `{theme}` | Per-user UI prefs. The **Motion** setting (Settings → Appearance → Interface) is not a server pref: it is stored per device in the browser as `localStorage["tr-motion"]` (`system` · `full` · `reduced` · `off`, default `system`), beside `tr-theme` and `tr-accent`. The atmosphere and the start-up sequence follow Motion and have no key of their own. |
 | `GET /api/prompts` · `PATCH /api/prompts/{id}` | The AI prompt catalog and its single write route (`{value}` or `{reset:true}`). Kept off `/api/config` — it is Settings-only weight, not boot-path weight. |
 
 ### Auth
@@ -253,6 +254,7 @@ Storage: the three prompts that predate the catalog keep their existing prefs fi
 | `AGENT_SESSIONS_SCROLLBACK_DIR` | On-disk scrollback mirror. |
 | `AGENT_SESSIONS_SCROLLBACK_BYTES` | Per-session raw-byte replay-ring cap (live scroll-up depth). Default 8 MiB; floored at 256 KiB (smaller values are ignored). |
 | `AGENT_SESSIONS_METADATA` / `_PREFS` / `_ENV_FILE` / `_LOCK_DIR` | Sidecar JSON, per-user prefs, env-file path, single-writer locks. |
+| `AGENT_SESSIONS_HQ_USAGE` | HQ's token counter for the footer readout (`~/.config/agent-sessions/hq-usage.json`): two counts, the day and whether each was estimated; never prompt or answer text. |
 | `AGENT_SESSIONS_WEB_DIST` | Built SPA dir (`current/src/web/dist`). |
 | `AGENT_SESSIONS_TRANSCRIPT_SCROLLBACK` | Enable the semantic console-style scroll-up. |
 | `AGENT_SESSIONS_TRANSCRIPT_MAX_LINES` | Transcript scroll-up render cap in lines (#348). Default `20000`; non-numeric/garbage falls back to the default, values are floored at `1`. |

@@ -106,6 +106,27 @@ model).
 - Update the docs (`README.md` / `CLAUDE.md` / `docs/`) when you change behavior.
 - For UI changes, include before/after screenshots — see [`docs/visual-review.md`](docs/visual-review.md).
 
+## UI changes — NIGHTJAR
+
+The visual language is NIGHTJAR // OPS, [`docs/design.md`](docs/design.md) v2. New or changed UI:
+
+- **Uses the NIGHTJAR primitives** from `web/src/components/hud/` and `nightjar.css` (panels,
+  plates, callsign headers, LEDs, pips and gauges, chips and tags) and the tokens in
+  `web/src/tokens.css`. No literal colour, radius, shadow, `z-index` or off-scale font size; never
+  copy v1 chrome. The unlinked `/__nightjar` route (behind the normal login) renders every
+  primitive in its states, in whichever mode, motion mode and viewport you open it.
+- **Adds its ledger rows.** Every stylesheet under `web/src`, every component that renders a
+  dialog, menu, listbox or portal, and every page has a row in
+  [`docs/nightjar-ledger.md`](docs/nightjar-ledger.md); a new one without a row fails
+  `nightjarLedger.test.ts`. A `done` row names its sweep captures and its motion.
+- **Runs its sweep rows.** Add the states it introduces as capture ids in
+  `web/visual/nightjar/manifest.mjs` and photograph them with `web/visual/nightjar/sweep.mjs
+  --only <ids>` (how to run it is in `docs/visual-review.md`); those shots are the PR's evidence.
+- **Honours the motion modes** (Full / Reduced / Off): animate only through `motion.css` and
+  `theme/motion.ts`, never read `prefers-reduced-motion` directly, and never move a work surface
+  (the terminal, the editor, a focused field) — see
+  [`docs/invariants/nightjar-motion.md`](docs/invariants/nightjar-motion.md).
+
 ## Licensing of contributions
 
 BattleLab is licensed **AGPL-3.0-or-later** (see [`LICENSE`](LICENSE)).

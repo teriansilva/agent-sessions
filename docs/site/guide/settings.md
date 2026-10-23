@@ -53,8 +53,17 @@ How BattleLab itself looks: the frame, menus, buttons and panels.
   the terminal, the editor or the text you are typing, and never delays input. Saved on this
   device. Ambient motion also pauses on its own while the tab is hidden and after ten minutes
   without input.
-- **Accent**: the brand colour on buttons, highlights, selection and the terminal cursor. Amber
-  (`#ffb000`) by default. Pick one of 16 presets, or a custom colour from the colour well or a hex
+
+  The **atmosphere** (the hex grid, scanlines, grain and slow sweep behind the panels) and the
+  **start-up sequence** have no switches of their own: Motion decides both. The atmosphere moves
+  only in Full and on the dark mode; Reduced and Off keep it as a still frame without the sweep, and
+  Light shows only a static hex grid. The start-up sequence runs only in Full.
+- **Accent**: the brand colour on buttons, highlights, selection and the terminal cursor, and the
+  colour of the frame itself: the lit rail along each panel's top edge, the hazard notches, ticks
+  and panel edges all take it, so a new accent recolours the whole frame at once. Where an accent
+  would not read on a mode's ground (Yellow or Ice on light), those lines and accent-coloured text
+  are mixed toward the text colour just enough to stay readable. Status lights keep their own
+  colours whatever the accent. Amber (`#ffb000`) by default. Pick one of 16 presets, or a custom colour from the colour well or a hex
   value. **Reset** returns to amber.
 - **Opening links**: how a session link from outside the app opens on this device: *Ask each
   time*, *Full screen* or *In map*. Desktop only; *Ask each time* resets a remembered choice. See
@@ -274,5 +283,5 @@ disk. Reloading the page shows the true state.
 :::
 
 ::: info Verified against
-Commit `8b1c66b` — `web/src/routes/settingsTabs.ts § SETTINGS_GROUPS, SETTINGS_SECTIONS, legacySettingsTarget`; `web/src/routes/Settings.tsx`; `web/src/routes/{AiEndpointSetup,AiReviewSettings,AutoSortSettings,OrchestratorSettings,PulseSettings,ForgeSettings,MissionPlaybooks,PromptsSettings,AiActivityPanel}.tsx`; `src/agent_sessions/prefs.py § THEMES, DEFAULT_ACCENT, COMPOSE_DEFAULTS, store path`.
+Commit `8b1c66b` — `web/src/routes/settingsTabs.ts § SETTINGS_GROUPS, SETTINGS_SECTIONS, legacySettingsTarget`; `web/src/routes/Settings.tsx`; `web/src/routes/{AiEndpointSetup,AiReviewSettings,AutoSortSettings,OrchestratorSettings,PulseSettings,ForgeSettings,MissionPlaybooks,PromptsSettings,AiActivityPanel}.tsx`; `src/agent_sessions/prefs.py § THEMES, DEFAULT_ACCENT, COMPOSE_DEFAULTS, store path`; `web/src/routes/AppearanceInterface.tsx § MOTIONS`; `web/src/theme/motion.ts`; `web/src/theme/accent.ts § hudLineFor, accentTextFor`; `web/src/components/hud/nightjar.css § .nj-atmo`; `web/src/components/shell/useBoot.ts`.
 :::

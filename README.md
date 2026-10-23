@@ -325,7 +325,8 @@ This is acceptable **only** because BattleLab is a single-admin tool, on the ope
 - `GET/POST/PATCH/DELETE /api/projects` — project ENTITIES (#361): `{id, name, color, folders, archived, session_count}`; session → project assignment via `PATCH /api/sessions/{sid}/metadata` `{project_id}`
 - `POST /api/sessions/{uuid}/rename` `{title}` — persists to the sidecar
 - `POST /api/sessions/{uuid}/archive` · `/unarchive` — record the archive (Claude moves its JSONL between `projects/` and `projects-archive/`; other engines flip the sidecar flag) and, on archive, reap the session's live runtime footprint — `dtach` master, scrollback, owner lease, socket (#523)
-- `GET /api/config` — SPA bootstrap (CSRF, `new_session_engines`, `terminal_backend`, theme, `two_factor_enabled`); `POST /api/prefs` `{theme}`
+- `GET /api/config` — SPA bootstrap (CSRF, `new_session_engines`, `terminal_backend`, theme, `two_factor_enabled`); `POST /api/prefs` `{theme}` (the Motion setting is per device in the browser, `localStorage["tr-motion"]`, not a server pref)
+- `GET /api/telemetry` — the footer readout: host CPU % (cached `/proc/stat` sample), RAM, and HQ's token use (`ctx_tokens`, `today_tokens`, each with an `…_estimated` flag); signed-in only, polled every 5 s while the tab is visible
 - `POST /api/2fa/enroll` → `{secret, otpauth_uri, recovery_codes}` (shown once) · `POST /api/2fa/confirm` `{code}` (enable) · `POST /api/2fa/disable` · `POST /api/2fa/recovery-codes` (regenerate) — the last two need a fresh proof (`{code}` or `{password}`). Login second step: `POST /login` → pre-auth → `POST /login/totp` (form field `code`). N/A under `AUTH_MODE=none`.
 - `WS /ws/term/{sid}` — the terminal: attach to (or, with `?new=1&cwd=&bypass=`, launch) a session's dtach PTY
 - `GET /api/auth-check` — 204/401 for nginx `auth_request`; `POST /login` · `/logout`
