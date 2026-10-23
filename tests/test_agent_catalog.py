@@ -178,6 +178,41 @@ def test_daily_checks_rate_limit_failures_across_restart_and_preserve_opt_out(bu
     assert len(calls) == 2 and refresh.status()["automatic"] is False
 
 
+def test_a_failed_check_retries_after_an_hour_and_a_success_waits_a_day(bundle, monkeypatch):
+    # #1604: a failure (e.g. GitHub's shared rate limit) no longer parks the daily check for 24 h.
+    calls = []
+    outcome = {"fail": True}
+
+    async def fetch():
+        calls.append(int(feed.time.time()))
+        if outcome["fail"]:
+            raise feed.FeedError("offline")
+
+    monkeypatch.setattr(refresh.feed_client, "refresh", fetch)
+    clock = lambda at: monkeypatch.setattr(feed.time, "time", lambda: NOW + at)  # noqa: E731
+    with pytest.raises(feed.FeedError):
+        asyncio.run(refresh.refresh(automatic=True))
+    clock(refresh.RETRY - 1)
+    assert asyncio.run(refresh.refresh(automatic=True)) is None  # still inside the retry floor
+    outcome["fail"] = False
+    clock(refresh.RETRY)
+    asyncio.run(refresh.refresh(automatic=True))
+    assert calls == [NOW, NOW + refresh.RETRY] and refresh.status()["error"] is None
+    clock(refresh.RETRY + refresh.INTERVAL - 1)
+    assert asyncio.run(refresh.refresh(automatic=True)) is None  # success keeps the daily cadence
+    clock(refresh.RETRY + refresh.INTERVAL)
+    asyncio.run(refresh.refresh(automatic=True))
+    assert len(calls) == 3
+    outcome["fail"] = True
+    clock(refresh.RETRY + refresh.INTERVAL + 1)
+    with pytest.raises(feed.FeedError):
+        asyncio.run(refresh.refresh())  # a manual check ignores both windows
+    assert len(calls) == 4
+    assert refresh.status()["error"] == (
+        "The update could not be verified or fetched. Previous catalog retained."
+    )
+
+
 def test_manual_and_background_attempts_share_fence_and_keep_concurrent_preferences(
     bundle, monkeypatch
 ):

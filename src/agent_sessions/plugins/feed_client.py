@@ -1,7 +1,9 @@
 """Fetch only the public first-party release feed, anonymously and with total bounds (#1259).
 
-Release metadata selects a closed tag, never a URL, authority or trust key. All three responses
-are bounded inside one deadline. The signed feed verifier, not HTTPS metadata, grants authority.
+The latest release's redirect selects a closed tag, never a URL, authority or trust key. All three
+responses are bounded inside one deadline. The signed feed verifier, not HTTPS metadata, grants
+authority. The tag comes from github.com's `releases/latest` redirect, not the REST API, whose
+anonymous 60-per-hour budget is shared by everything behind the operator's address (#1604).
 """
 
 from __future__ import annotations
@@ -15,19 +17,21 @@ import httpx
 from . import feed, process
 
 REPOSITORY = "teriansilva/agent-sessions"
-LATEST = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
-MAX_METADATA = 256 * 1024
+LATEST = f"https://github.com/{REPOSITORY}/releases/latest"
+_TAG = re.compile(
+    rf"https://github\.com/{re.escape(REPOSITORY)}/releases/tag/(v[0-9]+\.[0-9]+\.[0-9]+)"
+)
+_REDIRECTS = (301, 302, 303, 307, 308)
 DEADLINE = 30
 _TRANSPORT = None  # deterministic test seam, never a runtime configuration
 
 
-def _url(url: str, *, initial: str, asset: bool) -> str:
+def _url(url: str, *, initial: str) -> str:
     if url == initial:
         return url
     value = urlsplit(url)
     if (
-        not asset
-        or value.scheme != "https"
+        value.scheme != "https"
         or value.hostname != "release-assets.githubusercontent.com"
         or value.port not in (None, 443)
         or value.username is not None
@@ -39,17 +43,38 @@ def _url(url: str, *, initial: str, asset: bool) -> str:
     return url
 
 
-async def _get(client, url: str, limit: int, *, asset: bool = False) -> bytes:
+def _unavailable(status: int, step: str) -> feed.FeedError:
+    # Fixed text plus an integer: response bodies and headers never reach the operator.
+    return feed.FeedError(f"GitHub answered HTTP {status} for the catalog's {step}")
+
+
+async def _latest(client) -> str:
+    """The latest release's tag, read from the `Location` of one never-followed redirect."""
+    client.cookies.clear()
+    async with client.stream("GET", LATEST) as response:
+        if response.status_code in _REDIRECTS:
+            target = response.headers.get("location", "")
+        elif response.status_code == 200:
+            target = ""
+        else:
+            raise _unavailable(response.status_code, "latest-release lookup")
+    match = _TAG.fullmatch(target)
+    if match is None:
+        raise feed.FeedError("the catalog release has an invalid version")
+    return match.group(1)
+
+
+async def _get(client, url: str, limit: int, *, step: str) -> bytes:
     initial = url
     for _ in range(4):
-        _url(url, initial=initial, asset=asset)
+        _url(url, initial=initial)
         client.cookies.clear()
         async with client.stream("GET", url) as response:
-            if response.status_code in (301, 302, 303, 307, 308):
+            if response.status_code in _REDIRECTS:
                 url = str(response.url.join(response.headers.get("location", "")))
                 continue
             if response.status_code != 200:
-                raise feed.FeedError("the first-party catalog is unavailable")
+                raise _unavailable(response.status_code, step)
             body = bytearray()
             async for chunk in response.aiter_bytes():
                 body.extend(chunk)
@@ -65,17 +90,10 @@ async def refresh() -> feed.Feed:
             async with httpx.AsyncClient(
                 timeout=10, follow_redirects=False, trust_env=False, transport=_TRANSPORT
             ) as client:
-                import json
-
-                metadata = json.loads(
-                    await _get(client, LATEST, MAX_METADATA), object_pairs_hook=feed._pairs
-                )
-                tag = metadata.get("tag_name") if isinstance(metadata, dict) else None
-                if not isinstance(tag, str) or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
-                    raise feed.FeedError("the catalog release has an invalid version")
+                tag = await _latest(client)
                 base = f"https://github.com/{REPOSITORY}/releases/download/{tag}/plugin-feed.json"
-                data = await _get(client, base, feed.MAX_BYTES, asset=True)
-                signature = await _get(client, base + ".sig", 16 * 1024, asset=True)
+                data = await _get(client, base, feed.MAX_BYTES, step="feed")
+                signature = await _get(client, base + ".sig", 16 * 1024, step="feed signature")
         # Acceptance owns its lock and finite SSH verifier; no background writes outlive it.
         accepting = asyncio.create_task(asyncio.to_thread(feed.accept, data, signature))
         try:

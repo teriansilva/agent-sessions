@@ -16,9 +16,11 @@ def selected(data):
     return {"sequence": parsed.sequence, "digest": parsed.digest}
 
 
-def transport(monkeypatch, data, signature, *, metadata=None, fault=None):
+TAG_URL = f"https://github.com/{feed_client.REPOSITORY}/releases/tag/v0.19.3"
+
+
+def transport(monkeypatch, data, signature, *, location=TAG_URL, fault=None):
     urls = []
-    value = {"tag_name": "v0.19.3"} if metadata is None else metadata
 
     def respond(request):
         assert "authorization" not in request.headers and "cookie" not in request.headers
@@ -29,8 +31,11 @@ def transport(monkeypatch, data, signature, *, metadata=None, fault=None):
             response = fault(index, request)
             if response is not None:
                 return response
-        content = feed.canonical(value) if index == 0 else signature if index == 2 else data
-        return httpx.Response(200, content=content, headers={"set-cookie": "leak=secret; Path=/"})
+        cookie = {"set-cookie": "leak=secret; Path=/"}
+        if index == 0:
+            headers = cookie if location is None else {**cookie, "location": location}
+            return httpx.Response(302, headers=headers, content=b"<html>body is never read")
+        return httpx.Response(200, content=signature if index == 2 else data, headers=cookie)
 
     monkeypatch.setattr(feed_client, "_TRANSPORT", httpx.MockTransport(respond))
     return urls
@@ -70,7 +75,9 @@ def test_transport_failure_at_each_stage_retains_all_evidence(signer, monkeypatc
             return httpx.Response(500)
         if failure == "timeout":
             raise httpx.ReadTimeout("test", request=request)
-        limit = [feed_client.MAX_METADATA, feed.MAX_BYTES, 16384][index]
+        if index == 0:  # the lookup reads no body, so its "large" failure is a refused target
+            return httpx.Response(302, headers={"location": TAG_URL + "x" * 10_000})
+        limit = [None, feed.MAX_BYTES, 16384][index]
         return httpx.Response(200, content=b"x" * (limit + 1))
 
     urls = transport(monkeypatch, new, signer(new), fault=fault)
@@ -80,21 +87,34 @@ def test_transport_failure_at_each_stage_retains_all_evidence(signer, monkeypatc
     assert len(urls) == stage + 1 and all("evil" not in url for url in urls)
 
 
+RELEASES = f"https://github.com/{feed_client.REPOSITORY}/releases"
+
+
 @pytest.mark.parametrize(
-    "value",
+    "location",
     [
-        {"tag_name": "../../evil"},
-        {"tag_name": "v1.2.3?bad"},
-        {"tag_name": True},
-        {"tag_name": "https://evil.test/feed"},
-        {},
-        [],
+        None,  # a 302 without a target
+        "",
+        f"{RELEASES}",  # no release published yet
+        f"{RELEASES}/tag/../../evil",
+        f"{RELEASES}/tag/v1.2.3?bad",
+        f"{RELEASES}/tag/v1.2.3#bad",
+        f"{RELEASES}/tag/v1.2.3/",
+        f"{RELEASES}/tag/v1.2",
+        f"{RELEASES}/tag/1.2.3",
+        f"{RELEASES}/tag/v1.2.3-rc1",
+        "/teriansilva/agent-sessions/releases/tag/v1.2.3",  # relative
+        "http://github.com/teriansilva/agent-sessions/releases/tag/v1.2.3",
+        "https://evil.test/teriansilva/agent-sessions/releases/tag/v1.2.3",
+        "https://github.com.evil.test/teriansilva/agent-sessions/releases/tag/v1.2.3",
+        "https://github.com/someone/agent-sessions/releases/tag/v1.2.3",
+        "https://github.com/teriansilva/agent-sessions/releases/download/v1.2.3/plugin-feed.json",
     ],
 )
-def test_invalid_release_tag_refused_before_fetching_assets(signer, monkeypatch, value):
+def test_invalid_release_tag_refused_before_fetching_assets(signer, monkeypatch, location):
     monkeypatch.setattr(feed.time, "time", lambda: test_plugin_feed.NOW)
     data = feed.canonical(test_plugin_feed.document())
-    urls = transport(monkeypatch, data, signer(data), metadata=value)
+    urls = transport(monkeypatch, data, signer(data), location=location)
     with pytest.raises(feed.FeedError, match="invalid version"):
         asyncio.run(feed_client.refresh())
     assert urls == [feed_client.LATEST]
@@ -146,11 +166,9 @@ def test_github_asset_redirect_is_bounded_and_anonymous(signer, monkeypatch):
         url = str(request.url)
         urls.append(url)
         if url == feed_client.LATEST:
-            # Metadata-supplied asset URLs are ignored; coordinates come from the fixed repo.
-            payload = (
-                b'{"tag_name":"v0.19.3","assets":[{"browser_download_url":"https://evil.test"}]}'
-            )
-            return httpx.Response(200, content=payload)
+            # Body-supplied asset URLs are never read; coordinates come from the fixed repo.
+            payload = b'<a href="https://evil.test/plugin-feed.json">plugin-feed.json</a>'
+            return httpx.Response(302, headers={"location": TAG_URL}, content=payload)
         if request.url.host == "github.com":
             target = "https://release-assets.githubusercontent.com/file"
             if url.endswith(".sig"):
@@ -163,3 +181,55 @@ def test_github_asset_redirect_is_bounded_and_anonymous(signer, monkeypatch):
     monkeypatch.setattr(feed_client, "_TRANSPORT", httpx.MockTransport(respond))
     assert asyncio.run(feed_client.refresh()).sequence == 1
     assert len(urls) == 5 and not any("evil" in url for url in urls)
+
+
+def test_latest_release_lookup_does_not_use_the_rate_limited_api():
+    # #1604: the anonymous REST API allows 60 requests an hour per address, shared by every
+    # tool behind it; the web redirect names the same tag without spending that budget.
+    assert feed_client.LATEST == f"https://github.com/{feed_client.REPOSITORY}/releases/latest"
+    assert "api.github.com" not in feed_client.LATEST
+
+
+def test_latest_release_lookup_never_follows_its_redirect(signer, monkeypatch):
+    monkeypatch.setattr(feed.time, "time", lambda: test_plugin_feed.NOW)
+    data = feed.canonical(test_plugin_feed.document())
+    urls = transport(monkeypatch, data, signer(data))
+    asyncio.run(feed_client.refresh())
+    assert TAG_URL not in urls and len(urls) == 3
+
+
+def test_a_200_lookup_is_an_invalid_version_not_a_body_read(signer, monkeypatch):
+    def fault(index, request):
+        if index == 0:
+            return httpx.Response(200, content=b'{"tag_name":"v0.19.3"}')
+        return None
+
+    data = feed.canonical(test_plugin_feed.document())
+    urls = transport(monkeypatch, data, signer(data), fault=fault)
+    with pytest.raises(feed.FeedError, match="invalid version"):
+        asyncio.run(feed_client.refresh())
+    assert urls == [feed_client.LATEST]
+
+
+@pytest.mark.parametrize(
+    ("stage", "status", "step"),
+    [
+        (0, 403, "latest-release lookup"),
+        (0, 429, "latest-release lookup"),
+        (1, 404, "feed"),
+        (2, 500, "feed signature"),
+    ],
+)
+def test_http_failure_names_the_step_and_status_but_no_response_content(
+    signer, monkeypatch, stage, status, step
+):
+    def fault(index, request):
+        if index == stage:
+            return httpx.Response(status, content=b"<script>leak</script> rate limit exceeded")
+        return None
+
+    data = feed.canonical(test_plugin_feed.document())
+    transport(monkeypatch, data, signer(data), fault=fault)
+    with pytest.raises(feed.FeedError) as caught:
+        asyncio.run(feed_client.refresh())
+    assert str(caught.value) == f"GitHub answered HTTP {status} for the catalog's {step}"

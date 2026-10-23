@@ -116,6 +116,9 @@ HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "request", "str
 POST_SITES = {
     ("gallery_client", "_get"): 1,  # public signed content; fixed origin, anonymous bounded GET
     ("feed_client", "_get"): 1,  # #1259 fixed public GitHub feed, anonymous bounded GET
+    # #1604 the latest tag from github.com's never-followed `releases/latest` redirect: anonymous,
+    # fixed URL, no body read; replaces the REST API lookup whose hourly budget is shared.
+    ("feed_client", "_latest"): 1,
     # Plugin artifacts (#1259): one streamed GET, no credentials/prompts, recipe-bound HTTPS
     # authorities checked before every redirect; digest checked before any extraction.
     ("artifacts", "_fetch"): 1,

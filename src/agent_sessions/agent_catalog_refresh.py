@@ -16,6 +16,7 @@ from .plugins import feed, feed_client, process, storage
 
 SETTINGS = "agent-catalog-settings.json"
 INTERVAL = 86400
+RETRY = 3600  # a failed attempt is retried sooner, still recorded before networking (#1604)
 log = logging.getLogger(__name__)
 
 
@@ -64,9 +65,10 @@ def _refresh(*, automatic: bool) -> feed.Feed | None:
         with storage.locked(SETTINGS) as path:
             value = _read(path)
             now = int(time.time())
+            wait = RETRY if value["error"] else INTERVAL
             if automatic and (
                 not value["automatic"]
-                or (value["last_attempt"] is not None and now - value["last_attempt"] < INTERVAL)
+                or (value["last_attempt"] is not None and now - value["last_attempt"] < wait)
             ):
                 return None
             value["last_attempt"] = now
