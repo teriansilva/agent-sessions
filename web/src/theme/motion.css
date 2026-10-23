@@ -250,15 +250,6 @@
     transform: translateY(120vh);
   }
 }
-/* A horizontal sweep across a small stage (Settings → Appearance → Motion's Full preview, #1574). */
-@keyframes nj-stage-sweep {
-  from {
-    transform: translateX(-100%);
-  }
-  to {
-    transform: translateX(340%);
-  }
-}
 /* Ten 3 px scanline periods per iteration (run as steps(30) over 9 s: the 0.9 s, 3-step drift,
  * one wake-up in ten, see above); the layer starts 30 px up so the drift never uncovers an edge. */
 @keyframes nj-scan-drift {

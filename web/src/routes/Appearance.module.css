@@ -193,17 +193,66 @@
 .motionStage .bar {
   flex: 1;
 }
-/* Full: the sweep runs across the stage and the light breathes. */
+/* Full: the sweep runs across the stage and the light breathes.
+   Both beats repeat INSIDE one 19.2 s iteration — six 3.2 s sweeps, eight 2.4 s breaths. React
+   listens for `animationiteration` at its root, so every iteration of every CSS animation wakes the
+   main thread; the short loops made this page read 2.2% idle CPU on CI against the 2% budget. Same
+   motion, a sixth / an eighth of the wake-ups (the rule #1600 set for the map). */
 .motion_full .motionStage::after {
   content: "";
   position: absolute;
   inset: 0 auto 0 0;
   width: 30%;
   background: linear-gradient(90deg, transparent, var(--hud-tint), transparent);
-  animation: global(nj-stage-sweep) 3.2s linear infinite;
+  animation: stageSweep6 19.2s linear infinite;
 }
 .motion_full .motionLed {
-  animation: global(nj-breathe) 2.4s var(--ease-io) infinite;
+  animation: stageBreathe8 19.2s var(--ease-io) infinite;
+}
+/* One sweep is -100% → 340% of its own width (off the stage on both sides, so the jump back is
+   never seen); each starts 0.0001% (0.02 ms) after the last ends. */
+@keyframes stageSweep6 {
+  0%,
+  16.6667%,
+  33.3334%,
+  50.0001%,
+  66.6668%,
+  83.3334% {
+    transform: translateX(-100%);
+  }
+  16.6666%,
+  33.3333%,
+  50%,
+  66.6667%,
+  83.3333%,
+  100% {
+    transform: translateX(340%);
+  }
+}
+/* nj-breathe's beat eight times; --ease-io runs between each keyframe pair, so every half-beat has
+   the single beat's curve. */
+@keyframes stageBreathe8 {
+  0%,
+  12.5%,
+  25%,
+  37.5%,
+  50%,
+  62.5%,
+  75%,
+  87.5%,
+  100% {
+    opacity: 1;
+  }
+  6.25%,
+  18.75%,
+  31.25%,
+  43.75%,
+  56.25%,
+  68.75%,
+  81.25%,
+  93.75% {
+    opacity: 0.55;
+  }
 }
 /* Reduced: one short fade on a change — drawn as the row that just arrived, steady. */
 .motion_reduced .motionRow:last-child {

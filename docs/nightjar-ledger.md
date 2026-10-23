@@ -284,7 +284,7 @@ the API-sessions selectors at its end belong to `AppearanceApi.tsx`, fenced for 
 A converted the rest: the mode, scheme and new motion cards as plates (the lit rail and `--hud` edge for
 the choice), the MiniApp reading the canonical tokens through `[data-theme-scope]` (tokens.css; the
 custom accent re-applied for the preview's mode by `accentVars`) — no `--m-*` palette — the Motion
-control's stages (Full: a compositor sweep `nj-stage-sweep` and a breathing light, paused with the
-ambient loops), the swatches, `.hex` as `nj-field`, and the scheme samples (their palettes stay
+control's stages (Full: a compositor sweep and a breathing light, each folded into one 19.2 s iteration
+— `stageSweep6`, `stageBreathe8` — so the idle page wakes rarely; paused with the ambient loops), the swatches, `.hex` as `nj-field`, and the scheme samples (their palettes stay
 allowlisted content). The shared `.radio`, `.reset`, `.schemeLabel`, `.schemeName` and `.tag` keep their
 look for the fenced page. Captures: `route:settings-interface*`, `route:settings-terminal`.
