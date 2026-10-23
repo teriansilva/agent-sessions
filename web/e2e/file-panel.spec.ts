@@ -266,8 +266,11 @@ test.describe("file panel", () => {
     const link = row.locator("button").first();
     await expect(link).toHaveAttribute("aria-disabled", "true");
     // Playwright's actionability check already refuses an aria-disabled target, which is half the
-    // proof. Force past it to show the handler is inert too, not merely unreachable.
-    await link.click({ force: true });
+    // proof. The other half is that the handler is inert, not merely unreachable: the click is
+    // dispatched ON the element. A forced click aims at screen coordinates, and under CI load the
+    // list could shift between the aim and the press — the press then opened whichever row moved
+    // under it (a viewer showed up on the retry), or missed the viewport entirely.
+    await link.dispatchEvent("click");
     await expect(page.locator("[data-file-viewer]")).toHaveCount(0);
   });
 
