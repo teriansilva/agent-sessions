@@ -101,6 +101,7 @@ HTTP_MODULES = frozenset(
         "artifacts",
         "feed_client",
         "gallery_client",
+        "speech_endpoints",
     }
 )
 
@@ -165,6 +166,12 @@ POST_SITES = {
     # (`kimi web`), host and path constants, only the port taken from its banner. It carries no
     # prompt; kimi's own handler asks the vendor. One site: a second read beside it is a mismatch.
     ("agent_usage", "_kimi_usage_get"): 1,
+    # CALLING HQ (#1397): the operator-configured, OpenAI-compatible STT/TTS endpoints. One
+    # streamed send per call through `_request`: transcription, synthesis and the model/voice
+    # lists all pass it, so the destination check (no link-local/metadata, no redirects, no
+    # ambient proxy) and the origin-bound token are applied in one place. It carries the
+    # operator's audio and HQ's STORED answer text, never a prompt and never tool output.
+    ("speech_endpoints", "_request"): 1,
 }
 
 # Layer 3 — a module that never imports a client can still be handed one. `.post(` / `.request(`
