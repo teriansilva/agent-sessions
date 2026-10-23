@@ -1,9 +1,8 @@
 /* Gallery/setup additions (#1261): shared HUD tokens and action buttons; no separate theme. */
 .stack { display: grid; gap: 16px; min-width: 0; }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; }
-.actions > * { min-width: max-content; overflow-wrap: normal; }
 .field { display: grid; gap: 7px; min-width: 0; flex: 1 1 180px; }
-.field > span, .tag { font: 600 var(--fs-label) var(--font-mono); text-transform: uppercase; letter-spacing: .1em; color: var(--text-2); }
+.field > span { font: 600 var(--fs-label) var(--font-mono); text-transform: uppercase; letter-spacing: .1em; color: var(--text-2); }
 /* The nj-field look: --bg-2, the edge lights on hover/focus, the focus ring inset (design.md §6). */
 .input { width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; background: var(--bg-2); color: var(--text); border: 1px solid var(--border); font: var(--fs-row) var(--font-mono); border-radius: 0; }
 .input:hover { border-color: var(--hud-dim); }
@@ -28,7 +27,6 @@ textarea.input { min-height: 180px; resize: vertical; }
 .checks li { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); padding: 8px 0; min-width: 0; overflow-wrap: anywhere; }
 .checks small { display: block; color: var(--text-2); margin-top: 4px; }
 .terminal { height: 320px; max-width: 100%; min-width: 0; overflow: hidden; background: var(--term-bg); border: 1px solid var(--border); padding: 8px; }
-.catalogBar { margin: 16px 0; display: grid; gap: 12px; min-width: 0; }
 .filter[aria-pressed="true"] { border-color: var(--accent); color: var(--text); background: var(--surface-2); }
 @media (max-width: 800px) {
   .kv { grid-template-columns: minmax(0, 1fr); gap: 4px; }

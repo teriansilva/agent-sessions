@@ -535,47 +535,6 @@
   color: var(--text-2);
 }
 
-/* Corner-bracket frame: wrap a positioned element, drop four <span class="hud-cnr tl|tr|bl|br">.
- * Accent brackets by default; `.hero` brackets are white + larger (at most one hero per view). */
-.hud-cnr {
-  position: absolute;
-  width: 16px;
-  height: 16px;
-  border: 0 solid var(--accent);
-  pointer-events: none;
-  z-index: calc(var(--z-raised) + 2);
-}
-.hud-cnr.tl {
-  top: -1px;
-  left: -1px;
-  border-top-width: 2px;
-  border-left-width: 2px;
-}
-.hud-cnr.tr {
-  top: -1px;
-  right: -1px;
-  border-top-width: 2px;
-  border-right-width: 2px;
-}
-.hud-cnr.bl {
-  bottom: -1px;
-  left: -1px;
-  border-bottom-width: 2px;
-  border-left-width: 2px;
-}
-.hud-cnr.br {
-  bottom: -1px;
-  right: -1px;
-  border-bottom-width: 2px;
-  border-right-width: 2px;
-}
-/* Hero frame — white + larger; at most one per view (the terminal pane). */
-.hud-cnr.hero {
-  width: 20px;
-  height: 20px;
-  border-color: var(--text-1);
-}
-
 /* `.hud-tag` and `.hud-led` moved to components/hud/nightjar.css, their one home (#1531). */
 /* Footer version surface (#661): the host + version cluster on the classbar's left, and the
  * update chip. The chip is a flat accent-bordered button in the same HUD voice as .hud-tag —

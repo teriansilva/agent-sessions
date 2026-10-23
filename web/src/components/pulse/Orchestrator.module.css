@@ -1,4 +1,5 @@
-/* Pulse orchestrator surface (#726 Phase 1). Tactical-HUD vocabulary (#211): 1px borders, no
+/* Pulse orchestrator decisions (#726): the decision row, its evidence, the session's menu and
+ * the permission dialog, and the health line (#772). Tactical-HUD vocabulary (#211): 1px borders, no
  * radii, mono tags, semantic-colour state. Every colour comes from the shared tokens so theme
  * + custom accent cascade.
  *
@@ -10,199 +11,6 @@
  * its edge and rail in the decision's tone; the verb is a stamp; the session's own menu and the
  * permission dialog's options are 44 px row plates; text never reads a raw status hue (`--warn-text`).
  * Tokens only (docs/nightjar-ledger.md). */
-
-.wrap {
-  position: relative;
-  border: 1px solid var(--line-strong);
-  background: var(--glass);
-  padding: 12px 14px;
-  margin-bottom: 14px;
-}
-
-/* --- autonomy header ---------------------------------------------------------- */
-.head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 10px;
-  color: var(--text-2);
-}
-.h2 {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-label);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--text-2);
-}
-.sub {
-  font-size: var(--fs-meta);
-  color: var(--text-3);
-}
-.seg {
-  display: inline-flex;
-  border: 1px solid var(--line-strong);
-  margin-left: auto;
-}
-.segBtn {
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  letter-spacing: 0.08em;
-  padding: 6px 11px;
-  min-height: 30px;
-  background: transparent;
-  color: var(--text-2);
-  border: 0;
-  border-right: 1px solid var(--line);
-  cursor: pointer;
-}
-.segBtn:last-child {
-  border-right: 0;
-}
-.segBtn:hover {
-  background: var(--glass-strong);
-  color: var(--text-1);
-}
-/* YOLO reads as the deliberate act it is, without reading as an error. */
-.segYolo {
-  color: var(--warn-text);
-}
-.segOn {
-  background: var(--accent);
-  color: var(--on-accent);
-  font-weight: 700;
-}
-.segOn.segYolo {
-  color: var(--on-accent);
-}
-
-/* --- threshold meter ---------------------------------------------------------- */
-.meterRow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  color: var(--text-3);
-}
-.meterLabel {
-  letter-spacing: 0.1em;
-}
-.bar {
-  position: relative;
-  width: 110px;
-  height: 5px;
-  background: var(--glass-strong);
-  border: 1px solid var(--line);
-}
-.bar i {
-  position: absolute;
-  inset: 0 auto 0 0;
-  background: var(--accent);
-}
-.meterText {
-  color: var(--text-3);
-}
-.runBtn {
-  composes: primary compact from "../ui/actionButton.module.css";
-  margin-left: auto;
-}
-
-.spin {
-  animation: global(nj-spin) 0.9s linear infinite;
-}
-/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
-:root:not([data-motion="full"]) .spin {
-  animation: none;
-}
-
-/* A SENTENCE with an inline icon — not a row of boxes (#750). As a flex container each text
- * run became its own flex item, so on a phone the one sentence wrapped into three columns that
- * broke independently ("Acts on its own:" / "continue" / "only. Everything else…"). Normal flow
- * wraps it as prose at every width; the icon is aligned inline instead of by `align-items`. */
-.ceiling {
-  margin: 8px 0 0;
-  font-size: var(--fs-meta);
-  line-height: 1.5;
-  color: var(--text-3);
-}
-.ceiling svg {
-  vertical-align: -1px;
-  margin-right: 3px;
-}
-.ceiling b {
-  color: var(--text-2);
-  font-family: var(--font-mono);
-}
-.hint,
-.note,
-.empty {
-  margin: 8px 0 0;
-  font-size: var(--fs-meta);
-  color: var(--text-3);
-}
-.note {
-  color: var(--text-2);
-}
-
-/* --- blocks + project groups --------------------------------------------------- */
-.block {
-  margin-top: 12px;
-}
-.blockHead {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin-bottom: 8px;
-  color: var(--status-degraded);
-}
-.blockHead h3 {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-label);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--text-2);
-}
-.group {
-  margin-bottom: 10px;
-}
-.groupHead {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-bottom: 5px;
-  margin-bottom: 6px;
-  border-bottom: 1px solid var(--line);
-}
-.groupHead b {
-  font-family: var(--font-mono);
-  font-size: var(--fs-label);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--accent-text);
-}
-.groupHead span {
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  color: var(--text-3);
-}
-/* The feed flows into as many columns as the panel affords (#754). It was `display: block` —
- * a single column of full-width rows, measured at 1490px on a 1900px viewport with the content
- * ending around 1000px and `conf` and `Open session` marooned at the right edge. That is the
- * screenshot this issue opened with: the queue above it was removed, and the feed underneath
- * inherited the defect verbatim. Same `auto-fill` rule the session cards use, so the track
- * count follows the container with no breakpoint arithmetic. */
-.list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 8px;
-}
 
 /* --- action rows ---------------------------------------------------------------- */
 .act {
@@ -401,10 +209,6 @@
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
-.wouldSend {
-  color: var(--text-3);
-  font-style: italic;
-}
 .jump {
   margin-left: auto;
   color: var(--accent-text);
@@ -421,32 +225,8 @@
   text-decoration: underline;
 }
 
-/* Mobile: the segmented control goes full-width and touch targets reach 44px. */
+/* Mobile: touch targets reach 44px. */
 @media (max-width: 800px) {
-  .seg {
-    margin-left: 0;
-    width: 100%;
-  }
-  .segBtn {
-    flex: 1;
-    text-align: center;
-    min-height: 44px;
-  }
-  /* `Run now` gets its own full-width row (#750). On desktop `margin-left: auto` parks it at
-   * the far right of the meter row; dropping that on mobile left an 86×44 CTA sitting INLINE
-   * beside "conf ≥ 0.75 · below → escalate" on the wrapped second line — a button the size of
-   * the surrounding sentence, jammed against it with an 8px gap. `width: 100%` forces its own
-   * flex line instead, which is also the only way it reaches a comfortable tap target. */
-  .runBtn {
-    margin-left: 0;
-    width: 100%;
-  }
-  /* …and the meter itself takes the slack on its line rather than sitting at 110px with a
-   * ragged gap where the button used to be. */
-  .bar {
-    flex: 1 1 90px;
-    width: auto;
-  }
   .conf {
     margin-left: 0;
   }

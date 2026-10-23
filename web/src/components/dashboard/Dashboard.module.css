@@ -7,10 +7,6 @@
  * `--accent` only for the primary action. Tokens only (nightjarLedger.test.ts). Every control is
  * ≥ 44px tall (§8), and every focus ring is inset: a section clips its corners. */
 
-.layout {
-  width: 100%;
-}
-
 /* The KPI strip's columns, shared with the headline row (#1525): the contact card in the row's last
  * column is the Plan quota tile's column by construction, never by measuring it. */
 .grid4 {

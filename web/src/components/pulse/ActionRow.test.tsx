@@ -1,11 +1,11 @@
-/** Pulse orchestrator strip (#726 Phases 1–2).
+/** The decision row (`ActionRow`, #726 Phases 1–2), as a mission's console renders it.
  *
- * Pinned: the ceiling is SHOWN (the tier alone must never imply more than it grants); only a
- * DELIVERING verb offers approve/reject, so the UI never implies an escalation would be sent;
- * a 409 from compare-and-execute reads as "nothing was sent", distinguishable from an error;
- * evidence is fetched from the server on expand rather than rendered from anything the model
- * said; every feed row names its project; and a failing endpoint degrades to no strip, not a blank
- * page.
+ * Pinned: only a DELIVERING verb offers approve/reject, so the UI never implies an escalation would
+ * be sent; a 409 from compare-and-execute reads as "nothing was sent", distinguishable from an
+ * error; evidence is fetched from the server on expand rather than rendered from anything the model
+ * said; and every row names its project. The autonomy strip these tests once rendered beside the
+ * rows (`Orchestrator.tsx`) was unmounted by #930 and deleted in #1531 Phase 14; its health line
+ * lives on as `OrchestratorHealth` (its own tests), and the tier as Settings → Orchestrator.
  */
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -16,7 +16,6 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { api, ApiError } from "../../lib/api";
 import { ACTION_RESOLVED_EVENT } from "../../lib/actionEvents";
 import type { OrchestratorAction, OrchestratorConfig } from "../../types/api";
-import { Orchestrator } from "./Orchestrator";
 
 vi.mock("../../lib/api", async () => {
   const actual =
@@ -25,7 +24,6 @@ vi.mock("../../lib/api", async () => {
     ...actual,
     api: {
       orchestrator: vi.fn(),
-      orchestrate: vi.fn(),
       evidence: vi.fn(),
       setPrefs: vi.fn(),
       approveAction: vi.fn(),
@@ -93,7 +91,6 @@ function PanelAndCards() {
   }, []);
   return (
     <>
-      <Orchestrator />
       {pending.map((a) => (
         <ActionRow
           key={a.id}
@@ -128,31 +125,10 @@ function renderIt() {
 
 beforeEach(() => {
   vi.mocked(api.orchestrator).mockReset();
-  vi.mocked(api.orchestrate).mockReset();
   vi.mocked(api.evidence).mockReset();
   vi.mocked(api.setPrefs).mockReset().mockResolvedValue({});
   vi.mocked(api.approveAction).mockReset();
   vi.mocked(api.rejectAction).mockReset();
-});
-
-test("shows the server-owned autonomy ceiling, not just the tier (#726)", async () => {
-  vi.mocked(api.orchestrator).mockResolvedValue({
-    config: config({ autonomy: "yolo" }),
-    pending: [],
-    feed: [],
-    expired_now: 0,
-  });
-  renderIt();
-  // YOLO is selected — but the copy must still say what it can actually deliver on its own,
-  // because the tier name alone reads as "does everything".
-  expect(await screen.findByRole("button", { name: "YOLO" })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-  expect(screen.getByText(/acts on its own:/i)).toHaveTextContent("continue");
-  expect(
-    screen.getByText(/everything else always waits for you/i),
-  ).toBeInTheDocument();
 });
 
 test("a deliverable proposal offers approve/reject; a decision-only one does not", async () => {
@@ -166,7 +142,7 @@ test("a deliverable proposal offers approve/reject; a decision-only one does not
     expired_now: 0,
   });
   renderIt();
-  expect(await screen.findByText(/2 actions need you/i)).toBeInTheDocument();
+  expect(await screen.findAllByRole("listitem")).toHaveLength(2);
   // `continue` delivers, so it can be approved; `escalate` never reaches a session, so it
   // must NOT offer a button that implies it would.
   expect(screen.getAllByRole("button", { name: /^approve$/i })).toHaveLength(1);
@@ -323,33 +299,6 @@ test("a non-embedded row names its project", async () => {
   expect(screen.getByText("agent-sessions")).toBeInTheDocument();
 });
 
-test("a failing endpoint degrades to no strip, never a blank Pulse page", async () => {
-  vi.mocked(api.orchestrator).mockRejectedValue(new Error("down"));
-  const { container } = renderIt();
-  await waitFor(() => expect(container.querySelector("section")).toBeNull());
-});
-
-test("changing the tier persists it and refreshes the shared config", async () => {
-  vi.mocked(api.orchestrator).mockResolvedValue({
-    config: config(),
-    pending: [],
-    feed: [],
-    expired_now: 0,
-  });
-  const onTierChange = vi.fn();
-  render(
-    <MemoryRouter>
-      <Orchestrator onTierChange={onTierChange} />
-    </MemoryRouter>,
-  );
-  await userEvent.click(await screen.findByRole("button", { name: "OFF" }));
-  expect(api.setPrefs).toHaveBeenCalledWith({
-    orchestrator: { autonomy: "off" },
-  });
-  // Without the refresh the Settings panel would show pre-save values on remount (#667).
-  await waitFor(() => expect(onTierChange).toHaveBeenCalled());
-});
-
 test("evidence is re-fetched on every open — 'live' must not mean 'cached once'", async () => {
   // The server serves evidence uncached so the operator always reads the CURRENT screen.
   // Caching the first snapshot client-side quietly defeats that, and shows a screen the
@@ -462,155 +411,6 @@ test("an embedded row is not a list item — a Pulse card already is one", async
     </MemoryRouter>,
   );
   expect(container.querySelectorAll("li")).toHaveLength(1);
-});
-
-// --- a dead endpoint must not look like a quiet day (#772) -----------------------------------
-
-function withHealth(last: Record<string, unknown> | undefined) {
-  vi.mocked(api.orchestrator).mockResolvedValue({
-    config: config(),
-    pending: [],
-    feed: [],
-    expired_now: 0,
-    ...(last ? { last } : {}),
-  } as never);
-}
-
-test("a run of failed passes says so, with how long it has been failing", async () => {
-  // The 11-hour outage: every pass threw `ReviewError: endpoint returned HTTP 500`, and this
-  // panel rendered exactly as it does on a quiet day. "Nothing needs you" and "nothing has
-  // been looked at since yesterday evening" have to be distinguishable.
-  withHealth({
-    orchestrator: {
-      finished_at: Date.now() / 1000,
-      ok: false,
-      error: "ReviewError: endpoint returned HTTP 500",
-      consecutive_failures: 4,
-      last_ok: Date.now() / 1000 - 11 * 3600,
-    },
-  });
-  renderIt();
-  const line = await screen.findByRole("status");
-  expect(line).toHaveTextContent(/can’t reach its AI endpoint/i);
-  expect(line).toHaveTextContent(/HTTP 500/);
-  expect(line).toHaveTextContent(/11 hours ago/i);
-});
-
-test("a single failure stays silent — one blip is not an outage", async () => {
-  withHealth({
-    orchestrator: {
-      finished_at: Date.now() / 1000,
-      ok: false,
-      error: "ReviewError: endpoint returned HTTP 502",
-      consecutive_failures: 1,
-      last_ok: Date.now() / 1000 - 600,
-    },
-  });
-  renderIt();
-  await screen.findByText(/autonomy/i);
-  expect(screen.queryByRole("status")).toBeNull();
-});
-
-test("a healthy last run says nothing at all", async () => {
-  withHealth({
-    orchestrator: {
-      finished_at: Date.now() / 1000,
-      ok: true,
-      error: null,
-      consecutive_failures: 0,
-      last_ok: Date.now() / 1000,
-    },
-  });
-  renderIt();
-  await screen.findByText(/autonomy/i);
-  expect(screen.queryByRole("status")).toBeNull();
-});
-
-test("an older server with no health record renders unchanged", async () => {
-  // `last` is absent from a server that predates this — the panel must not decide that means
-  // "failing" and paint a warning over a perfectly working install.
-  withHealth(undefined);
-  renderIt();
-  await screen.findByText(/autonomy/i);
-  expect(screen.queryByRole("status")).toBeNull();
-});
-
-test("the endpoint's message is TEXT, never markup", async () => {
-  // It is a remote server's response body. React escapes it like any other string; this pins
-  // that nobody later reaches for dangerouslySetInnerHTML to make it look nicer.
-  withHealth({
-    orchestrator: {
-      finished_at: Date.now() / 1000,
-      ok: false,
-      error: "ReviewError: <img src=x onerror=alert(1)>",
-      consecutive_failures: 3,
-      last_ok: Date.now() / 1000 - 3600,
-    },
-  });
-  renderIt();
-  const line = await screen.findByRole("status");
-  expect(line.querySelector("img")).toBeNull();
-  expect(line).toHaveTextContent(/<img src=x onerror=alert\(1\)>/);
-});
-
-test("a successful Run now clears the degraded line it was told to fix", async () => {
-  // The regression Hermes caught. `health` was only ever set by the mount effect, so the pass
-  // the operator ran to FIX the outage left the outage warning on screen until a remount —
-  // and "Run now" is precisely what the guidance says to click. The response carries the
-  // health record now, so the pass that ran is the evidence that clears it.
-  withHealth({
-    orchestrator: {
-      finished_at: Date.now() / 1000 - 300,
-      ok: false,
-      error: "ReviewError: endpoint returned HTTP 500",
-      consecutive_failures: 5,
-      last_ok: Date.now() / 1000 - 11 * 3600,
-    },
-  });
-  vi.mocked(api.orchestrate).mockResolvedValue({
-    assessment: "",
-    config: config(),
-    pending: [],
-    feed: [],
-    expired_now: 0,
-    last: {
-      orchestrator: {
-        finished_at: Date.now() / 1000,
-        ok: true,
-        error: null,
-        consecutive_failures: 0,
-        last_ok: Date.now() / 1000,
-      },
-    },
-  } as never);
-
-  renderIt();
-  expect(await screen.findByRole("status")).toHaveTextContent(/HTTP 500/);
-
-  await userEvent.click(screen.getByRole("button", { name: /run now/i }));
-
-  await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
-});
-
-test("a Run now that also fails leaves the line, with the newer count", async () => {
-  // The other half: a manual pass is health evidence whichever way it goes.
-  withHealth({
-    orchestrator: {
-      finished_at: Date.now() / 1000 - 300,
-      ok: false,
-      error: "ReviewError: endpoint returned HTTP 500",
-      consecutive_failures: 2,
-      last_ok: Date.now() / 1000 - 3600,
-    },
-  });
-  vi.mocked(api.orchestrate).mockRejectedValue(
-    new ApiError(502, "endpoint failure"),
-  );
-  renderIt();
-  expect(await screen.findByRole("status")).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: /run now/i }));
-  // Still degraded — the mount record stands, because the failed call carried no newer one.
-  await waitFor(() => expect(screen.getByRole("status")).toBeInTheDocument());
 });
 
 test("a collapsed row says how many actions it stands for", async () => {

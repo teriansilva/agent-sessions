@@ -1,10 +1,10 @@
 /** #930 review 1, completion note — the health badge is tested against ITSELF.
  *
- *  `Orchestrator.test.tsx` still passes, but it exercises a component this PR unmounts, so it
- *  says nothing about what the console now renders. These cover the three answers that matter:
- *  silence when healthy, silence on ONE failure (a blip that shouts is a badge people learn to
- *  ignore), and — the one #772 exists for — recovery clearing the warning when newer evidence
- *  arrives, rather than the badge outliving the outage it describes. */
+ *  The strip it replaced (`Orchestrator.tsx`) is deleted (#1531 Phase 14). These cover the three
+ *  answers that matter: silence when healthy, silence on ONE failure (a blip that shouts is a badge
+ *  people learn to ignore), and — the one #772 exists for — recovery clearing the warning when newer
+ *  evidence arrives, rather than the badge outliving the outage it describes. The outage's own
+ *  message is a remote body, so it renders as text. */
 import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -91,6 +91,23 @@ describe("OrchestratorHealth", () => {
       expect(screen.queryByTestId("orch-degraded")).toBeNull(),
     );
     expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("renders the endpoint's message as TEXT, never markup", async () => {
+    // It is a remote server's response body. React escapes it like any other string; this pins
+    // that nobody later reaches for dangerouslySetInnerHTML to make it look nicer.
+    vi.spyOn(api, "orchestrator").mockResolvedValue(
+      state({
+        ok: false,
+        consecutive_failures: 3,
+        last_ok: NOW - 3600,
+        error: "ReviewError: <img src=x onerror=alert(1)>",
+      }),
+    );
+    mount();
+    const badge = await screen.findByTestId("orch-degraded");
+    expect(badge.querySelector("img")).toBeNull();
+    expect(badge).toHaveTextContent(/<img src=x onerror=alert\(1\)>/);
   });
 
   it("degrades to no badge when the endpoint throws, never to a crash", async () => {

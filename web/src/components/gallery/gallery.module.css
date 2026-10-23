@@ -116,10 +116,6 @@
 .page .searchBox input[type="search"] {
   padding-left: 36px;
 }
-.count {
-  margin-left: auto;
-  min-height: 44px;
-}
 
 /* One joined row of ghost buttons; the pressed one is lit in the chrome (`nj-seg`'s voice): a
  * selection, so never the accent. The plate's edge and face are its custom properties. */
@@ -705,9 +701,6 @@
   }
   .compare {
     grid-template-columns: minmax(0, 1fr);
-  }
-  .count {
-    margin-left: 0;
   }
   .fact {
     grid-template-columns: minmax(0, 1fr);
