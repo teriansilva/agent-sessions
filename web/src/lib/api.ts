@@ -87,6 +87,7 @@ import type {
   PulseAskEvent,
   AskConversation,
   AskSessionDecision,
+  AskLibraryContent,
   AskOperationDecision,
   AskConversationSummary,
   AskConversationTurn,
@@ -1684,6 +1685,10 @@ export const api = {
       `/api/ask/proposals/${enc(id)}/decide`,
       inputs ? { decision, inputs } : { decision },
     ),
+  /** A Library card's draft (#1611): the files, the diff or the automation's scope lines. 409 when
+   *  the draft no longer matches its card. */
+  askProposalContent: (id: string) =>
+    getJsonWithDetail<AskLibraryContent>(`/api/ask/proposals/${enc(id)}/content`),
   decideAskProposal: (id: string, decision: "start" | "dismiss", bypass = false) =>
     mutateJson<{ proposal: AskSessionDecision }>(
       "POST",

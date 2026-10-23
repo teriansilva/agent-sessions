@@ -272,6 +272,15 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "list_folders": "read",
         "propose_session_change": "proposal",
         "propose_project_change": "proposal",
+        # #1611: the Library — reads, and one proposal tool whose card the operator confirms.
+        "list_playbooks": "read",
+        "playbook_detail": "read",
+        "playbook_schema": "read",
+        "list_skills": "read",
+        "skill_detail": "read",
+        "list_automations": "read",
+        "automation_detail": "read",
+        "propose_library": "proposal",
     }
     names = [s["function"]["name"] for s in ask_orchestrator.tool_specs()]
     assert names == list(ask_orchestrator.TOOLS)

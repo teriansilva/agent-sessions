@@ -170,8 +170,10 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Checklists: view; edit and save the whole block | GET /api/config `mission_playbooks`, POST /api/prefs `mission_playbooks` | P3 R/W (revision-checked) |
 | Memory: projects, notes, inbox, quarantine; export | GET /api/memory*, …/export | P3 R |
 | Memory: on/off, edit / delete note, clear all, quarantine rewrite / delete, import preview and import, ingest | PUT/PATCH/DELETE/POST /api/memory/{pid}/* | P3 W (clear is destructive) |
-| Playbooks: list, detail, projects using one, verify a deployment, authoring schema | GET /api/playbooks*, /api/projects/{p}/playbook/verify | P4 R |
-| Playbooks: create, edit (files), duplicate, delete, set / clear default, save as new | POST/PUT/DELETE /api/playbooks*, …/authoring/copy, …/default | P4 W (revision-checked; the file diff on the card) |
+| Playbooks: list, detail, authoring schema | GET /api/playbooks, /api/playbooks/{pid}, …/authoring/schema | have (`list_playbooks`, `playbook_detail`, `playbook_schema`, #1611) |
+| Playbooks: projects using one, verify a deployment | GET /api/playbooks/{pid}/projects, /api/projects/{p}/playbook/verify | P4 R |
+| Playbooks: create, edit (files), duplicate | POST /api/playbooks, PUT /api/playbooks/{pid}, …/duplicate | have (`propose_library`, revision-checked, the files or diff on the card, #1611) |
+| Playbooks: delete, set / clear default, save as new | DELETE /api/playbooks/{pid}, …/default, …/authoring/copy | P4 W |
 | Playbook step prompts: import a template, compare | POST /api/playbooks/authoring/prompts/import, …/compare | P4 R/W |
 | Deploy a playbook to a project: review → confirm → (create target) → bind → apply → verify | POST …/review, …/review/confirm, …/review/create-target, /api/projects/{p}/playbook/bind, …/apply | P4 W (external: writes into the project folder; secrets on the card) |
 | Remove a deployment (plan, remove) | POST /api/projects/{p}/playbook/remove/plan, …/remove | P4 W (destructive) |
@@ -179,11 +181,13 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Playbook git: clone, seed, remote, publish (API-only today) | /api/playbooks/clone, /api/projects/{p}/playbook/git/* | P4 W (external: network clone, git push, forge PR) |
 | Gallery: browse, look inside, refresh | GET /api/gallery*, POST /api/gallery/refresh | P4 R/W (external: relay fetch) |
 | Gallery: add to my playbooks / skills; compare and add an updated copy | POST /api/gallery/import, …/compare, …/update | P4 W |
-| Skills: list, read; save an edited copy | GET /api/library/skills*, POST …/copies | P4 R/W |
-| Automations: list, detail, runs, run detail, origins | GET /api/automations* | P4 R |
-| Automations: create, edit, duplicate, delete | POST/PATCH/DELETE /api/automations* | P4 W |
+| Skills: list, read; save an edited copy; create a new one | GET /api/library/skills*, POST …/copies, POST /api/library/skills | have (`list_skills`, `skill_detail`, `propose_library`, #1611) |
+| Automations: list, detail | GET /api/automations, /api/automations/{aid} | have (`list_automations`, `automation_detail`, #1611) |
+| Automations: runs, run detail, origins | GET /api/automations/{aid}/runs, …/runs/{run_id}, …/origins | P4 R |
+| Automations: create, edit | POST /api/automations, PATCH /api/automations/{aid} | have (`propose_library`: saved off; an enabled one's widening edit is a consent card; never bypass on or auto-choose, #1611) |
+| Automations: duplicate, delete | POST/DELETE /api/automations* | P4 W |
 | Automations: pause, resume, turn off, run now | POST …/pause, …/resume, …/disable, …/run | P4 W (run now starts agents) |
-| Automations: enable (consent to its scope) | POST …/enable `consent, scope_digest` | P4 W (the card shows the server's own scope lines and digest; the tap is the consent) |
+| Automations: enable (consent to its scope) | POST …/enable `revision, consent, scope_digest` | have (`propose_library`: the card shows the server's own scope lines; the tap is the consent, #1611) |
 
 #### Files and git (Files drawer)
 | Capability | Route(s) | HQ |
@@ -254,19 +258,20 @@ DELETE /api/ask/conversations/{cid}/follow/{key:path}                           
 POST   /api/ask/conversations/{cid}/message                                       n/a  # HQ itself
 POST   /api/ask/conversations/{cid}/message/stream                                n/a  # HQ itself
 POST   /api/ask/conversations/{cid}/seen                                          n/a  # HQ itself
+GET    /api/ask/proposals/{pid}/content                                           n/a  # HQ itself (a library card's draft, #1611)
 POST   /api/ask/proposals/{pid}/decide                                            n/a  # HQ itself
 GET    /api/ask/unread                                                            n/a  # HQ itself
 GET    /api/auth-check                                                            n/a  # diagnostics
 PATCH  /api/automation/{scope}                                                    P2  # down/off only; widening never
-GET    /api/automations                                                           P4
-POST   /api/automations                                                           P4
+GET    /api/automations                                                           have  # list_automations
+POST   /api/automations                                                           have  # propose_library automation create
 GET    /api/automations/origins                                                   P4
 GET    /api/automations/runs/{run_id}                                             P4
 DELETE /api/automations/{aid}                                                     P4
-GET    /api/automations/{aid}                                                     P4
-PATCH  /api/automations/{aid}                                                     P4
+GET    /api/automations/{aid}                                                     have  # automation_detail
+PATCH  /api/automations/{aid}                                                     have  # propose_library automation edit (#1611)
 POST   /api/automations/{aid}/disable                                             P4
-POST   /api/automations/{aid}/enable                                              P4
+POST   /api/automations/{aid}/enable                                              have  # propose_library automation enable (#1611)
 POST   /api/automations/{aid}/pause                                               P4
 POST   /api/automations/{aid}/resume                                              P4
 POST   /api/automations/{aid}/run                                                 P4
@@ -317,9 +322,10 @@ GET    /api/git/status                                                          
 POST   /api/git/switch                                                            P6
 POST   /api/handoff                                                               P7
 POST   /api/handoff/prepare                                                       P7
-GET    /api/library/skills                                                        P4
-GET    /api/library/skills/{id}                                                   P4
-POST   /api/library/skills/{id}/copies                                            P4
+GET    /api/library/skills                                                        have  # list_skills
+POST   /api/library/skills                                                        have  # propose_library skill create (#1611)
+GET    /api/library/skills/{id}                                                   have  # skill_detail
+POST   /api/library/skills/{id}/copies                                            have  # propose_library skill edit (#1611)
 GET    /api/maintenance/compact                                                   P6
 POST   /api/maintenance/compact                                                   P6
 GET    /api/maintenance/prune                                                     P6
@@ -365,19 +371,19 @@ POST   /api/missions/{mission_id}/turns/{turn_id}/ack                           
 POST   /api/missions/{mission_id}/unarchive                                       P5
 POST   /api/password                                                              never  # credentials
 GET    /api/perf                                                                  n/a  # diagnostics
-GET    /api/playbooks                                                             P4
-POST   /api/playbooks                                                             P4
+GET    /api/playbooks                                                             have  # list_playbooks
+POST   /api/playbooks                                                             have  # propose_library playbook create (#1611)
 POST   /api/playbooks/authoring/copy                                              P4
 POST   /api/playbooks/authoring/prompts/compare                                   P4
 POST   /api/playbooks/authoring/prompts/import                                    P4
-GET    /api/playbooks/authoring/schema                                            P4
+GET    /api/playbooks/authoring/schema                                            have  # playbook_schema
 POST   /api/playbooks/clone                                                       P4
 DELETE /api/playbooks/{pid}                                                       P4
-GET    /api/playbooks/{pid}                                                       P4
-PUT    /api/playbooks/{pid}                                                       P4
+GET    /api/playbooks/{pid}                                                       have  # playbook_detail
+PUT    /api/playbooks/{pid}                                                       have  # propose_library playbook edit (#1611)
 DELETE /api/playbooks/{pid}/default                                               P4
 PUT    /api/playbooks/{pid}/default                                               P4
-POST   /api/playbooks/{pid}/duplicate                                             P4
+POST   /api/playbooks/{pid}/duplicate                                             have  # propose_library playbook duplicate (#1611)
 POST   /api/playbooks/{pid}/fleet/review                                          P4
 POST   /api/playbooks/{pid}/fleet/update                                          P4
 GET    /api/playbooks/{pid}/fleet/{operation}                                     P4

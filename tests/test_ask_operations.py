@@ -95,13 +95,28 @@ def _resolves(app, method: str, path: str) -> bool:
 
 def test_every_catalog_operation_names_a_route_the_app_registers(app, monkeypatch):
     monkeypatch.setattr(ask_operations, "_folder_patch", lambda pid, facts, **kw: {})
-    facts = {"runtime": "terminal", "name": "p", "sessions": 1, "matched": 1}
+    facts = {"runtime": "terminal", "name": "p", "sessions": 1, "matched": 1, "revision": 2}
     fields = {"title": "t", "tag": "t", "color": "", "name": "n", "days": 3, "folder": "/x"}
-    fields.update(project_id="p1", project_name="p")
+    fields.update(project_id="p1", project_name="p", new_id="copy", enabled=True)
+    # A library save (#1611) builds its body from its bound draft, injected at the tap.
+    fields["_content"] = {
+        "files": {"playbook.toml": ""},
+        "revision": "r",
+        "origin": None,
+        "new_id": "copy",
+        "operation": "0" * 32,
+        "config": {},
+        "body": {"name": "n"},
+        "scope_digest": "d",
+    }
     for op in ask_operations.CATALOG.values():
-        target = {"session": "claude:00000000-0000-4000-8000-0000000000a1", "project": "p1"}.get(
-            op.target, ""
-        )
+        target = {
+            "session": "claude:00000000-0000-4000-8000-0000000000a1",
+            "project": "p1",
+            "playbook": "release-train",
+            "skill": "changelog-writer",
+            "automation": "aut1",
+        }.get(op.target, "")
         for runtime in ("terminal", "api"):
             method, path, _body = op.route(target, fields, dict(facts, runtime=runtime))
             assert _resolves(app.app, method, path), (op.id, method, path)

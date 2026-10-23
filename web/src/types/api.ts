@@ -1033,11 +1033,42 @@ export interface AskOperationCard {
   can_dismiss: boolean;
   /** For a folder the operator picks from the project's own folders. */
   choices?: { folder?: string[] };
+  /** A Library save (#1611): what it saves is fetched from `askProposalContent`, never polled. */
+  content?: boolean;
+  /** A done (or unconfirmed) Library save: what it saved, for the card's Open in Library link. An
+   *  empty id (a new automation, whose id the route chose) opens the list. */
+  library?: { kind: "playbook" | "skill" | "automation"; id: string };
 }
+
+/** What a Library card shows of its draft (#1611): the files, the diff against what HQ read, or an
+ *  automation's scope lines as the server renders them. Text, rendered as text — never markup. */
+export type AskLibraryContent =
+  | { kind: "files"; files: { path: string; text: string | null }[] }
+  | {
+      kind: "diff";
+      diff: {
+        path: string;
+        status: "added" | "removed" | "changed";
+        added: number;
+        removed: number;
+        diff: string;
+      }[];
+    }
+  | {
+      kind: "automation";
+      /** The name it is saved under; `changed` lists the settings an edit changes. */
+      name: string | null;
+      changed: string[];
+      scope_lines: string[];
+      instruction: string | null;
+      /** `off` (saved switched off), `enabled` (an edit of one that is on), `enable`. */
+      status: "off" | "enabled" | "enable" | "";
+      widened: string[];
+    };
 
 export type AskOperationDecision = Pick<
   AskOperationCard,
-  "state" | "summary" | "reason" | "can_confirm" | "can_dismiss" | "choices"
+  "state" | "summary" | "reason" | "can_confirm" | "can_dismiss" | "choices" | "library"
 >;
 
 export type AskProposalCard = AskNudgeCard | AskSessionCard | AskOperationCard;

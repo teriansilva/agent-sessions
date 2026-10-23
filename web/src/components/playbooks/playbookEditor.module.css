@@ -146,6 +146,24 @@
   font-size: 12px;
   margin: 8px 0;
 }
+/* "Ask HQ" in the toolbar hint (#1611): a link-styled button (it opens the HQ panel, no route),
+ * the toolbar link's accent, with the 44px touch target the hint's line can't give it. */
+.linkButton {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.linkButton:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
 .warning,
 .editor .warning {
   color: var(--warn-text);

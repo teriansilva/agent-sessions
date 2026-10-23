@@ -17,7 +17,7 @@
  *  session and it received the brief; anything less proved says so, and nothing is retried.
  */
 import { Eye, FolderOpen, Play, Send } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useCallback, useState } from "react";
 
 import type {
   AskNudgeCard,
@@ -28,6 +28,7 @@ import type {
 } from "../../types/api";
 
 import { FolderPickerModal } from "../FolderPickerModal";
+import { LibraryContent, OpenInLibrary } from "./LibraryContent";
 import { Led, type LedTone, Stamp } from "../hud/Meters";
 import c from "./AskCards.module.css";
 
@@ -546,6 +547,17 @@ const OPERATION_OUTCOMES: Record<
   gone: { word: "No longer tracked", tone: "neutral", detail: () => "Nothing can be done here." },
 };
 
+/** The card head's noun, by catalog group (`sessions.archive_older` reads Session). */
+const OPERATION_GROUP: Record<string, string> = {
+  project: "Project",
+  playbook: "Playbook",
+  skill: "Skill",
+  automation: "Automation",
+};
+
+/** An automation the tap lets run unattended reads as such, not as a bare "External". */
+const UNATTENDED = new Set(["automation.enable", "automation.widen"]);
+
 const RISK_STAMP: Record<AskOperationCard["risk"], { label: string; tone?: "down" | "hud" }> = {
   reversible: { label: "Reversible" },
   destructive: { label: "Can't be undone", tone: "down" },
@@ -567,6 +579,9 @@ export function OperationCard({
   onDismiss: () => void;
 }) {
   const [picked, setFolder] = useState("");
+  // A Library card (#1611) offers Confirm only once its content is on screen.
+  const [shown, setShown] = useState(false);
+  const onShown = useCallback((v: boolean) => setShown(v), []);
   const [picking, setPicking] = useState<HTMLElement | null>(null);
   const out = p.state === "pending" ? null : OPERATION_OUTCOMES[p.state];
   const needsFolder = p.needs.includes("folder");
@@ -575,16 +590,18 @@ export function OperationCard({
   // A pick from the project's own folders holds only while the server still offers it: a refresh
   // that drops the folder clears the pick, never confirms a folder the project no longer has.
   const folder = fromProject && !choices.includes(picked) ? "" : picked;
-  const stamp = RISK_STAMP[p.risk];
+  const stamp = UNATTENDED.has(p.op)
+    ? { label: "Runs agents unattended", tone: "hud" as const }
+    : RISK_STAMP[p.risk];
   const danger = p.risk === "destructive";
-  const ready = !needsFolder || folder !== "";
+  const ready = (!needsFolder || folder !== "") && (!p.content || shown);
   const off = deciding || !p.can_confirm;
   const edge = out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
   return (
     <div className={`${c.card} ${edge}`} data-testid="ask-operation" data-state={p.state}>
       <div className={c.head}>
         <span className={c.k}>Proposal</span>
-        {p.op.startsWith("project") ? "Project" : "Session"}
+        {OPERATION_GROUP[p.op.split(".")[0]] ?? "Session"}
         <span className={c.st}>
           {out ? out.word : <Stamp tone={stamp.tone}>{stamp.label}</Stamp>}
         </span>
@@ -609,6 +626,7 @@ export function OperationCard({
         <p className={c.lead} data-testid="ask-operation-text">
           {p.text}
         </p>
+        {p.content ? <LibraryContent id={p.action_id} onShown={onShown} /> : null}
         {danger && !out ? (
           <div className={c.note} role="note" data-testid="ask-operation-danger">
             <span>This can&apos;t be undone.</span>
@@ -717,6 +735,9 @@ export function OperationCard({
           <Led tone={LED[out.tone]} />
           <span className={`${c.ow} ${c[`ow_${out.tone}`]}`}>{out.word}</span>
           <span className={c.od}>{out.detail(p)}</span>
+          {(p.state === "done" || p.state === "unconfirmed") && p.library ? (
+            <OpenInLibrary saved={p.library} />
+          ) : null}
         </div>
       )}
       {picking ? (

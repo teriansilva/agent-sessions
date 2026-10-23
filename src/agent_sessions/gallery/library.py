@@ -377,3 +377,9 @@ def edit_skill_copy(local_id, new_id, revision, origin, files, operation_id):
             source_origin=pointer,
         )
         return _complete(operation_id, skills.save(new_id, files, publication=publication))
+
+
+def create_skill(new_id, files):
+    """A new local skill from scratch (#1611): no source, no origin. Existing ids are refused."""
+    store.playbook_id(new_id)
+    return skills.save(new_id, files)

@@ -148,6 +148,13 @@ def register(app, *, logged_in, csrf_guard):
     async def skill_list(request: Request):
         return response(await call(skills.listing))
 
+    @app.post("/api/library/skills", dependencies=[Depends(csrf_guard)])
+    async def skill_create(request: Request):
+        # A new local skill from scratch (#1611): HQ's "write me a skill". NOREPLACE, inert, no
+        # origin — `skills.save` refuses an id that exists (409) and runs the shared tree checks.
+        value = await body(request, {"new_id", "files"})
+        return response(await call(library.create_skill, value["new_id"], value["files"]), 201)
+
     @app.get("/api/library/skills/{id}", dependencies=[Depends(logged_in)])
     async def skill_detail(request: Request):
         return response(await call(skills.get, request.path_params["id"]))

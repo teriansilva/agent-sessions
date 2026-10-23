@@ -15,6 +15,7 @@ import {
 } from "react-router-dom";
 import { ApiError, api } from "../lib/api";
 import { PLAYBOOKS_PATH, playbookEditPath } from "../lib/routes";
+import { useAskPanel } from "../components/ask/askPanel";
 import { PlaybookValidation } from "../components/playbooks/playbookValidation";
 import { PlaybookDialog } from "../components/playbooks/PlaybookDialog";
 import {
@@ -105,6 +106,7 @@ function Editor({
 }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const ask = useAskPanel();
   const [baseline, setBaseline] = useState<Draft>(() =>
     original ? fromDetail(original) : newDraft(),
   );
@@ -379,21 +381,16 @@ function Editor({
             {dirty ? "Unsaved changes" : "Local library"} · Saving defines the
             workflow; it does not run it.
           </p>
+          {/* AI authoring lives in HQ (#1611): HQ drafts or changes a playbook on a card the
+              operator confirms, through this editor's own save route. */}
+          <p className={styles.hint} data-testid="playbook-ask-hq">
+            Want a draft or a change written for you?{" "}
+            <button type="button" className={styles.linkButton} onClick={ask.openAsk}>
+              Ask HQ
+            </button>
+          </p>
         </div>
         <div className={styles.actions}>
-          <div>
-            <button
-              type="button"
-              className={buttons.ghost}
-              disabled
-              aria-describedby="ai-unavailable"
-            >
-              Create workflow with AI
-            </button>
-            <p id="ai-unavailable" className={styles.hint}>
-              AI creation is not available yet.
-            </p>
-          </div>
           <button
             type="button"
             className={buttons.primary}

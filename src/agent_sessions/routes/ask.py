@@ -18,6 +18,9 @@
   repeat returns the entry as it is, never a second launch. An absent ``bypass`` is ``false``.
   The client names the proposal, never what it starts.
 
+* ``GET /api/ask/proposals/{id}/content`` — a library card's draft (#1611): the files, the
+  diff, or an automation's scope lines; 409 when the draft no longer matches its card.
+
 * ``POST /api/ask/conversations/{id}/seen`` — everything in it so far has been seen (the unread
   marker, #1443 Phase 4). ``GET /api/ask/unread`` — whether any conversation has an unseen update
   (the Ask icon's dot). ``DELETE /api/ask/conversations/{id}/follow/{key}`` — stop following a
@@ -46,6 +49,7 @@ from .. import (
     actuator,
     asgi_call,
     ask_follow,
+    ask_operations,
     ask_orchestrator,
     ask_proposals,
     ask_store,
@@ -297,6 +301,22 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             media_type="application/x-ndjson",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
+
+    @app.get("/api/ask/proposals/{pid}/content")
+    async def proposal_content(pid: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        """A library card's draft (#1611): the files, the diff or the automation's scope lines,
+        served only while the draft still matches the card's binding."""
+        if not ask_proposals.valid_pid(pid):
+            return JSONResponse({"detail": "no such proposal"}, status_code=404)
+        try:
+            status, body = await asyncio.to_thread(ask_operations.content, pid)
+        except ask_store.StoreRefused as e:
+            return _refused(e)
+        except ask_store.SidecarUnreadable:
+            return JSONResponse(
+                {"detail": "the proposal could not be read just now"}, status_code=503
+            )
+        return JSONResponse(body, status_code=status, headers={"Cache-Control": "no-store"})
 
     @app.post("/api/ask/proposals/{pid}/decide")
     async def decide_proposal(

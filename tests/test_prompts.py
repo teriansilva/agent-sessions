@@ -127,7 +127,7 @@ EXPECTED_DEFAULT_SHA = {
     # #1443: the Ask conversation — read-only tools, guarded. Re-pinned by #1554 (usage, the fleet
     # and the read-only settings view) and #1559 (proposing session and project operations,
     # confirmed on a card).
-    "ask_orchestrator": "9b7d403bcb3fef5f",
+    "ask_orchestrator": "ab81840cdd8f9797",
     # #1525: the HQ contacts' voices — archetypes, the no-stereotype rules written into each.
     "hq_persona_asia_woman": "3ab034163472b139",
     "hq_persona_asia_man": "e98526534b590f1d",

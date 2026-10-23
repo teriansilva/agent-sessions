@@ -58,6 +58,7 @@ log = logging.getLogger(__name__)
 
 CID_RE = re.compile(r"^ask_[0-9a-f]{32}$")
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_UUID_HEX_RE = re.compile(r"^[0-9a-f]{32}$")
 #: A session key's SHAPE (`<engine>:<native id>`). The roster is not consulted: a key whose engine
 #: was removed is still a fact about what an answer named.
 _KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}:[A-Za-z0-9._:@-]{1,200}$")
@@ -939,6 +940,115 @@ def write_proposals(cid: str, rows: list[dict], *, fresh: str | None = None) -> 
     return admitted
 
 
+# ---- library drafts (#1611) ---------------------------------------------------------------------
+#
+# What HQ drafted for a library card (a playbook's files, a skill's files, an automation's
+# config) is far larger than a card record may hold, so it lives in ONE file per proposal,
+# ``drafts/<cid>/<pid>.json``, written once through this boundary and never rewritten. Only its
+# sha256 travels with the card: it is part of the card's keyed binding, so a draft changed on disk
+# after staging makes the tap ``stale`` and nothing runs. It goes with its conversation.
+
+#: The most a draft may hold, whatever the target store would take.
+DRAFT_MAX_BYTES = 512 * 1024
+
+
+def _drafts_dir(cid: str) -> Path:
+    return root() / "drafts" / cid
+
+
+def _draft_path(cid: str, pid: str) -> Path:
+    return _drafts_dir(cid) / f"{pid}.json"
+
+
+def _draft_texts(
+    value: object, trusted: frozenset[tuple[str, ...]], at: tuple[str, ...] = ()
+) -> Iterator[str]:
+    """Every string a draft holds, keys included: each one goes through the boundary — except
+    the value at a ``trusted`` PATH (e.g. ``("config", "action", "project_id")``), which the SERVER
+    issued and which reads as credential-shaped only because it is random. A path, never a bare
+    key name: a model-authored file called ``revision`` inside ``files`` is still guarded."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            yield str(k)
+            if (*at, k) not in trusted:
+                yield from _draft_texts(v, trusted, (*at, str(k)))
+    elif isinstance(value, list):
+        for v in value:
+            yield from _draft_texts(v, trusted, at)
+
+
+def draft_digest(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
+
+
+def write_draft(
+    cid: str, pid: str, content: dict, *, trusted: frozenset[tuple[str, ...]] = frozenset()
+) -> str:
+    """Store a NEW draft and return its sha256. Every text in it goes through the boundary
+    WHOLE, before anything is cut: a text the boundary would change (a known secret, a
+    credential-shaped value) refuses the whole draft (Withheld) — it is never stored altered.
+    ``trusted`` names the PATHS whose values the server issued (never model text); they are skipped.
+    Raises StoreRefused when redaction is unavailable or the draft is too large. Blocking."""
+    if not valid_cid(cid) or not _UUID_HEX_RE.fullmatch(pid):
+        raise ConversationNotFound(cid)
+    data = json.dumps(content, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    if len(data) > DRAFT_MAX_BYTES:
+        raise StoreRefused(f"the draft is larger than {DRAFT_MAX_BYTES // 1024} KiB")
+    with template_secrets.registration_fence():
+        try:
+            secrets = template_secrets.redaction_values()
+        except template_secrets.RedactionUnavailable as e:
+            raise StoreRefused(f"{e} — nothing was stored") from None
+        for text in _draft_texts(content, trusted):
+            if guard_text(text, max(len(text), 1), secrets=secrets) != text:
+                raise Withheld("the draft contains a secret or looks like a credential")
+        _ensure_root()
+        _ensure_dir(root() / "drafts")
+        d = _drafts_dir(cid)
+        _ensure_dir(d)
+        fd = os.open(
+            _draft_path(cid, pid),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600,
+        )
+        try:
+            _write_all(fd, data)
+        finally:
+            os.close(fd)
+    _sync_dir(d)
+    return draft_digest(data)
+
+
+def read_draft(cid: str, pid: str) -> tuple[dict, str]:
+    """``(content, sha256 of the bytes read)``. Raises FileNotFoundError when there is none, and
+    ValueError when it is not one bounded JSON object. Blocking."""
+    if not valid_cid(cid) or not _UUID_HEX_RE.fullmatch(pid):
+        raise FileNotFoundError(pid)
+    fd = os.open(_draft_path(cid, pid), os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        data = os.read(fd, DRAFT_MAX_BYTES + 1)
+    finally:
+        os.close(fd)
+    if len(data) > DRAFT_MAX_BYTES:
+        raise ValueError("draft too large")
+    content = json.loads(data)
+    if not isinstance(content, dict):
+        raise ValueError("malformed draft")
+    return content, draft_digest(data)
+
+
+def _delete_drafts(cid: str) -> None:
+    d = _drafts_dir(cid)
+    with contextlib.suppress(FileNotFoundError):
+        for name in os.listdir(d):
+            (d / name).unlink(missing_ok=True)
+        d.rmdir()
+
+
 # ---- the follows sidecar (#1443 Phase 4) --------------------------------------------------------
 
 
@@ -1103,6 +1213,7 @@ def _pinned_by_proposals(cid: str) -> bool:
 def delete(cid: str) -> None:
     """Remove a conversation and everything keyed by its id. The sidecars go first and the JSONL
     last, so a crash part-way leaves the conversation listed and the next sweep finishes it."""
+    _delete_drafts(cid)
     for p in (_proposals_path(cid), _follows_path(cid)):
         p.unlink(missing_ok=True)
     _path(cid).unlink(missing_ok=True)
@@ -1177,6 +1288,10 @@ def delete_conversation(cid: str) -> None:
             ):
                 with contextlib.suppress(OSError):
                     p.unlink(missing_ok=True)
+            # Its library drafts (#1611) go with it: authored content never outlives an explicit
+            # delete. One that can't go now is an orphan the next sweep removes.
+            with contextlib.suppress(OSError):
+                _delete_drafts(cid)
 
 
 def sweep(now: float | None = None) -> list[str]:
@@ -1230,4 +1345,17 @@ def sweep(now: float | None = None) -> list[str]:
                             _proposals_lock_path(cid).unlink(missing_ok=True)
                 except OSError as e:
                     log.warning("ask orphan sidecar not removed yet (%s)", type(e).__name__)
+    # Library drafts (#1611) whose conversation is gone, on the same terms.
+    with contextlib.suppress(FileNotFoundError):
+        for cid in os.listdir(root() / "drafts"):
+            if not valid_cid(cid) or _path(cid).exists():
+                continue
+            try:
+                with proposals_lock(cid), follows_lock(cid):
+                    if _path(cid).exists():
+                        continue
+                    _sync_dir(root())
+                    _delete_drafts(cid)
+            except OSError as e:
+                log.warning("ask orphan draft not removed yet (%s)", type(e).__name__)
     return removed

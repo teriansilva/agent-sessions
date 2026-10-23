@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { commonMocks } from "./mission-directions";
+import { TOUCH_FLOOR } from "./touchTarget";
 import { PLAYBOOKS_PATH, playbookEditPath } from "../src/lib/routes";
 import { readFileSync } from "node:fs";
 const roster = JSON.parse(
@@ -618,6 +619,20 @@ test("validation and navigation cancellation retain a draft, then discard loads 
   await expect(page.getByLabel("Step title", { exact: true })).toHaveValue(
     "Build",
   );
+});
+
+test("AI authoring lives in HQ: no dead AI button, and Ask HQ opens HQ (#1611)", async ({
+  page,
+}) => {
+  await setup(page);
+  await page.goto(playbookEditPath("team-flow"));
+  await expect(page.getByRole("button", { name: "Save playbook" })).toBeVisible();
+  await expect(page.getByText("Create workflow with AI")).toHaveCount(0);
+  await expect(page.getByText("AI creation is not available yet.")).toHaveCount(0);
+  const ask = page.getByTestId("playbook-ask-hq").getByRole("button", { name: "Ask HQ" });
+  expect((await ask.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  await ask.click();
+  await expect(page.getByTestId("ask-sidebar")).toHaveAttribute("data-open", "true");
 });
 
 test("read-only source cannot enter the editor", async ({ page }) => {

@@ -275,12 +275,12 @@ def _older(status: int, body: object) -> tuple[str, str]:
 @dataclass(frozen=True)
 class Operation:
     id: str
-    group: str  # "session" | "project"
+    group: str  # "session" | "project" | "playbook" | "skill" | "automation"
     action: str  # the propose tool's `action` value
     label: str  # the card's Action row
     verb: str  # the card's button
     risk: str
-    target: str  # "session" | "project" | "none"
+    target: str  # "session" | "project" | "playbook" | "skill" | "automation" | "none"
     fields: tuple[str, ...]
     #: (target, fields, facts) → (method, path, body)
     route: Callable[[str, dict, dict], tuple[str, str, dict | None]]
@@ -295,6 +295,10 @@ class Operation:
     )
     #: What only the operator supplies, on the card, with the confirm (e.g. a picked folder).
     inputs: tuple[str, ...] = ()
+    #: The operation saves a DRAFT HQ wrote (#1611): its content lives in its own file
+    #: (`ask_store.write_draft`), bound to the card by its sha256, and reaches the route as
+    #: `fields["_content"]` only after that sha256 matched again at the tap.
+    draft: bool = False
 
 
 class _Moved(Exception):
@@ -746,7 +750,13 @@ def _ops() -> tuple[Operation, ...]:
     )
 
 
-CATALOG: dict[str, Operation] = {op.id: op for op in _ops()}
+def _all_ops() -> tuple[Operation, ...]:
+    from .ask_library import library_ops
+
+    return (*_ops(), *library_ops())
+
+
+CATALOG: dict[str, Operation] = {op.id: op for op in _all_ops()}
 
 
 def by_action(group: str, action: str) -> Operation | None:
@@ -775,18 +785,22 @@ async def facts_for(op: Operation, target: str, fields: dict, app, operator) -> 
         return await _project_facts(app, operator, target)
     if op.id == "sessions.archive_older":
         return await asyncio.to_thread(_older_facts, int(fields["days"]))
+    if op.group in ("playbook", "skill", "automation"):
+        from . import ask_library
+
+        return await ask_library.facts(op, target, app, operator)
     return {}
 
 
-def binding(op_id: str, target: str, fields: dict, facts: dict) -> str:
-    """The keyed digest that ties a card to its entry. Fails closed (StoreRefused)."""
+def binding(op_id: str, target: str, fields: dict, facts: dict, draft: str = "") -> str:
+    """The keyed digest that ties a card to its entry — and, for a library save, to the sha256 of
+    the draft it saves (#1611). Fails closed (StoreRefused)."""
     from . import template_secrets
 
-    canon = json.dumps(
-        {"op": op_id, "target": target, "fields": fields, "facts": facts},
-        sort_keys=True,
-        ensure_ascii=False,
-    )
+    bound: dict = {"op": op_id, "target": target, "fields": fields, "facts": facts}
+    if draft:
+        bound["draft"] = draft
+    canon = json.dumps(bound, sort_keys=True, ensure_ascii=False)
     try:
         return template_secrets.keyed_digest("ask-operation", canon)
     except template_secrets.SecretKeyUnavailable as e:
@@ -818,6 +832,14 @@ def changed(before: dict, now: dict | None) -> str:
         return "its folders changed"
     if "folder_set" in before and before["folder_set"] != now.get("folder_set"):
         return "its folders changed"
+    # A library target (#1611): saved elsewhere, switched on or off, or its scope moved.
+    # Switching on or off also moves the revision: name the more specific change first.
+    if "enabled" in before and before["enabled"] != now.get("enabled"):
+        return "it was switched on" if now.get("enabled") else "it was switched off"
+    if "revision" in before and before["revision"] != now.get("revision"):
+        return "it was saved elsewhere after HQ read it"
+    if "scope" in before and before["scope"] != now.get("scope"):
+        return "what it would do changed"
     return ""
 
 
@@ -862,7 +884,23 @@ def view(row: dict) -> dict:
     }
     if state == PENDING and row.get("op") in _PICK_FROM_PROJECT:
         out["choices"] = {"folder": _folder_choices(row)}
+    op = CATALOG.get(row.get("op") or "")
+    if op is not None and op.draft:
+        # The card fetches what it shows from the content route (#1611), never from this poll.
+        out["content"] = True
+    if (
+        op is not None
+        and op.group in ("playbook", "skill", "automation")
+        and state in (DONE, UNCONFIRMED)
+    ):
+        out["library"] = {"kind": op.group, "id": _saved_id(op, row)}
     return out
+
+
+def _saved_id(op: Operation, row: dict) -> str:
+    """What a done library save names in the Library: the new id, or the target it changed."""
+    fields = row.get("fields") or {}
+    return str(fields.get("new_id") or row.get("target") or fields.get("saved_id") or "")
 
 
 def running(pid: str) -> bool:
@@ -894,10 +932,12 @@ async def stage(
     app,
     operator: asgi_call.Operator,
     append_card: Callable,
+    draft: dict | None = None,
 ) -> dict:
-    """Stage one operation: facts read as the operator, the card written FIRST, the entry SECOND
-    (a card whose entry never landed reads "no longer tracked" and offers nothing). Returns the
-    card's summary for the model. Raises :class:`Refused`."""
+    """Stage one operation: facts read as the operator, the draft (a library save, #1611) written
+    through the store boundary, the card written FIRST, the entry SECOND (a card whose entry never
+    landed reads "no longer tracked" and offers nothing). Returns the card's summary for the
+    model. Raises :class:`Refused`."""
     import uuid
 
     from . import ask_proposals
@@ -916,8 +956,24 @@ async def stage(
     if facts is None:
         raise Refused("refused: that is no longer available", "not_available")
     shown = facts.get("title") or facts.get("name") or title
-    bind = await asyncio.to_thread(binding, op.id, target, fields, facts)
     pid = uuid.uuid4().hex
+    sha = ""
+    if op.draft:
+        if not isinstance(draft, dict):
+            raise Refused("refused: this save needs its draft", "bad_arguments")
+        try:
+            from .ask_library import TRUSTED_DRAFT_PATHS
+
+            sha = await asyncio.to_thread(
+                lambda: ask_store.write_draft(cid, pid, draft, trusted=TRUSTED_DRAFT_PATHS)
+            )
+        except ask_store.Withheld:
+            raise Refused(
+                "refused: the draft contains a secret or looks like a credential", "credential"
+            ) from None
+        except ask_store.StoreRefused as e:
+            raise Refused(f"refused: {e}", "not_recorded") from None
+    bind = await asyncio.to_thread(binding, op.id, target, fields, facts, sha)
     summary = op.describe(fields, facts)
     try:
         await append_card(
@@ -965,6 +1021,30 @@ async def stage(
             "refused: the proposal could not be recorded; nothing will run", "not_recorded"
         ) from None
     return {"summary": summary, "target": shown}
+
+
+# ---- the card's content (#1611) -----------------------------------------------------------------
+
+
+def content(pid: str) -> tuple[int, dict]:
+    """What a library card shows of its draft, for the operator's browser — never the model.
+    Served only while the draft still hashes to what the card is bound to: a draft changed on
+    disk is a 409, never shown altered. Blocking."""
+    from . import ask_library, ask_proposals
+
+    cid = ask_proposals.locate(pid)
+    row = ask_proposals._row(cid, pid) if cid else None
+    op = CATALOG.get((row or {}).get("op") or "")
+    if row is None or op is None or not op.draft:
+        return 404, {"detail": "no such card content"}
+    try:
+        draft, sha = ask_store.read_draft(cid, pid)
+    except (OSError, ValueError):
+        return 404, {"detail": "this card's content is no longer kept"}
+    expected = binding(op.id, row["target"], row["fields"], row["facts"], sha)
+    if not (_card_binding(cid, pid) == row.get("binding") == expected):
+        return 409, {"detail": "this card's content changed after it was proposed"}
+    return 200, ask_library.content_view(op.id, draft)
 
 
 # ---- the tap ------------------------------------------------------------------------------------
@@ -1024,9 +1104,15 @@ async def decide_locked(
             raise ask_proposals.ProposalError(422, "an operation is confirmed or dismissed")
         op = CATALOG.get(row.get("op") or "")
         card = await asyncio.to_thread(_card_binding, cid, pid)
+        content, sha = None, ""
+        if op is not None and op.draft:
+            # The draft this card shows, re-read and re-hashed: changed on disk → the binding
+            # below cannot match, and nothing runs (#1611).
+            with contextlib.suppress(OSError, ValueError):
+                content, sha = await asyncio.to_thread(ask_store.read_draft, cid, pid)
         expected = (
-            await asyncio.to_thread(binding, op.id, row["target"], row["fields"], row["facts"])
-            if op
+            await asyncio.to_thread(binding, op.id, row["target"], row["fields"], row["facts"], sha)
+            if op and (content is not None or not op.draft)
             else None
         )
         if op is None or card is None or not (card == row.get("binding") == expected):
@@ -1040,6 +1126,8 @@ async def decide_locked(
             )
             return 200, view(row or {})
         extras = gate_inputs(op, inputs)  # before `deciding`: a bad input leaves it pending
+        if content is not None:
+            extras["_content"] = content
         row = await asyncio.to_thread(
             ask_proposals._update, cid, pid, state=DECIDING, decided_at=time.time()
         )

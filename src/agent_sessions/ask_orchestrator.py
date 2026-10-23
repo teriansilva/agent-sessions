@@ -165,6 +165,9 @@ class _Turn:
     #: operation card shows are read as THEY would read them. Memory only, never stored.
     operator: object | None = None
     app: object | None = None
+    #: Library ids THIS turn's read tools returned (#1611), by group: what `propose_library` may
+    #: name. ``{"playbook": {id: {...}}, "skill": {...}, "automation": {...}}``.
+    library: dict = field(default_factory=lambda: {"playbook": {}, "skill": {}, "automation": {}})
     _catalog: list[dict] | None = None
 
     async def catalog(self) -> list[dict]:
@@ -1050,7 +1053,9 @@ def _operator(turn: _Turn):
     return turn.operator, turn.app
 
 
-async def _stage(turn: _Turn, op, target: str, title: str, fields: dict) -> tuple[dict, dict]:
+async def _stage(
+    turn: _Turn, op, target: str, title: str, fields: dict, draft: dict | None = None
+) -> tuple[dict, dict]:
     from . import ask_operations
 
     operator, app = _operator(turn)
@@ -1065,6 +1070,7 @@ async def _stage(turn: _Turn, op, target: str, title: str, fields: dict) -> tupl
             app=app,
             operator=operator,
             append_card=_append,
+            draft=draft,
         )
     except ask_operations.Refused as e:
         raise _ToolRefused(str(e), e.code) from None
@@ -1364,6 +1370,125 @@ async def _propose_project_change(turn: _Turn, args: dict) -> tuple[dict, dict]:
     return await _stage(turn, op, pid, title, fields)
 
 
+# ---- the Library (#1611) ------------------------------------------------------------------------
+
+
+#: A Library id as it may appear in a read's path: no separator, no dot-leading segment.
+_LIBRARY_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+
+
+async def _library_read(turn: _Turn, fn, *args) -> tuple:
+    from . import ask_library
+
+    operator, app = _operator(turn)
+    try:
+        return await fn(app, operator, *args)
+    except ask_library.Refused as e:
+        raise _ToolRefused(str(e), e.code) from None
+
+
+def _library_id(turn: _Turn, group: str, args: dict) -> str:
+    """An id for a detail read: one this turn listed, or any well-formed id (a detail read is
+    a read; acting on it still needs the id to come back from a tool this turn)."""
+    v = args.get("id")
+    if not isinstance(v, str) or not _LIBRARY_ID_RE.fullmatch(v):
+        raise _ToolRefused(f"id must be a {group} id list_{group}s returned", "bad_arguments")
+    return v
+
+
+async def _list_playbooks(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    from . import ask_library
+
+    rows, known = await _library_read(turn, ask_library.list_playbooks)
+    for rid, seen in known.items():
+        ask_library.remember(turn.library["playbook"], rid, seen)
+    return {"playbooks": rows}, {"count": len(rows)}
+
+
+async def _playbook_detail(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    from . import ask_library
+
+    pid = _library_id(turn, "playbook", args)
+    path = _str_arg(args, "path", 300, required=False)
+    out, known = await _library_read(turn, ask_library.playbook_detail, pid, path)
+    ask_library.remember(turn.library["playbook"], pid, known)
+    return out, {"count": 1}
+
+
+async def _playbook_schema(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    from . import ask_library
+
+    return await _library_read(turn, ask_library.playbook_schema), {"count": 1}
+
+
+async def _list_skills(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    from . import ask_library
+
+    rows, known = await _library_read(turn, ask_library.list_skills)
+    for rid, seen in known.items():
+        ask_library.remember(turn.library["skill"], rid, seen)
+    return {"skills": rows}, {"count": len(rows)}
+
+
+async def _skill_detail(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    from . import ask_library
+
+    sid = _library_id(turn, "skill", args)
+    path = _str_arg(args, "path", 300, required=False)
+    out, known = await _library_read(turn, ask_library.skill_detail, sid, path)
+    ask_library.remember(turn.library["skill"], sid, known)
+    return out, {"count": 1}
+
+
+async def _list_automations(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    from . import ask_library
+
+    rows, known = await _library_read(turn, ask_library.list_automations)
+    for rid, seen in known.items():
+        ask_library.remember(turn.library["automation"], rid, seen)
+    return {"automations": rows}, {"count": len(rows)}
+
+
+async def _automation_detail(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    from . import ask_library
+
+    aid = _library_id(turn, "automation", args)
+    out, known = await _library_read(turn, ask_library.automation_detail, aid)
+    ask_library.remember(turn.library["automation"], aid, known)
+    return out, {"count": 1}
+
+
+async def _propose_library(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """Stage a Library save (#1611): the draft validated by its store without writing, bound to
+    a card the operator confirms. Targets, projects, agents and sessions are this turn's."""
+    from . import ask_library
+
+    operator, app = _operator(turn)
+    group, action = args.get("group"), args.get("action")
+    if not isinstance(group, str) or not isinstance(action, str):
+        raise _ToolRefused("group and action are required", "bad_arguments")
+    lists = {
+        "projects": turn.projects,
+        "agents": turn.agents,
+        "keys": turn.keys,
+        "folder_of": lambda p: str(p.get("cwd") or ""),
+    }
+    try:
+        staged = await ask_library.prepare(
+            group, action, args, known=turn.library, lists=lists, app=app, operator=operator
+        )
+    except ask_library.Refused as e:
+        raise _ToolRefused(str(e), e.code) from None
+    return await _stage(
+        turn,
+        staged["op"],
+        staged["target"],
+        staged["title"],
+        staged["fields"],
+        staged["draft"],
+    )
+
+
 _KEY_PROP = {"key": {"type": "string", "description": "a session key a tool returned"}}
 
 TOOLS: dict[str, Tool] = {
@@ -1589,6 +1714,133 @@ TOOLS: dict[str, Tool] = {
             _propose_project_change,
         ),
         Tool(
+            "list_playbooks",
+            "read",
+            _spec(
+                "list_playbooks",
+                "The Library's playbooks (how a project's work flows: steps, agents, evidence): "
+                "id, name, domain, source, whether it is editable (local) and the default.",
+                {},
+                [],
+            ),
+            _list_playbooks,
+        ),
+        Tool(
+            "playbook_detail",
+            "read",
+            _spec(
+                "playbook_detail",
+                "One playbook's files as text (playbook.toml, flows/*.toml, README.md, …) by the "
+                "id list_playbooks returned. Files past the size budget are cut (listed in "
+                "`cut`): read one of those whole with `path`.",
+                {"id": {"type": "string"}, "path": {"type": "string"}},
+                ["id"],
+            ),
+            _playbook_detail,
+        ),
+        Tool(
+            "playbook_schema",
+            "read",
+            _spec(
+                "playbook_schema",
+                "The playbook authoring vocabulary: agents, actor kinds, completion-rule probes "
+                "and their arguments, variable types and limits. Read it before writing a "
+                "playbook, and copy the shape of an existing one (playbook_detail).",
+                {},
+                [],
+            ),
+            _playbook_schema,
+        ),
+        Tool(
+            "list_skills",
+            "read",
+            _spec("list_skills", "The Library's local skills: id and name.", {}, []),
+            _list_skills,
+        ),
+        Tool(
+            "skill_detail",
+            "read",
+            _spec(
+                "skill_detail",
+                "One skill's files as text (SKILL.md, …) by the id list_skills returned; "
+                "`path` reads one file whole.",
+                {"id": {"type": "string"}, "path": {"type": "string"}},
+                ["id"],
+            ),
+            _skill_detail,
+        ),
+        Tool(
+            "list_automations",
+            "read",
+            _spec(
+                "list_automations",
+                "The operator's automations: id, name, state, enabled, paused, trigger kind and "
+                "action kind.",
+                {},
+                [],
+            ),
+            _list_automations,
+        ),
+        Tool(
+            "automation_detail",
+            "read",
+            _spec(
+                "automation_detail",
+                "One automation by the id list_automations returned: its trigger, policy, action "
+                "kind and the scope lines the operator consented to.",
+                {"id": {"type": "string"}},
+                ["id"],
+            ),
+            _automation_detail,
+        ),
+        Tool(
+            "propose_library",
+            "proposal",
+            _spec(
+                "propose_library",
+                "Propose a Library save. Nothing is saved: the operator sees a card with the "
+                "exact files or settings and confirms or dismisses it. "
+                "playbook: create (files: the WHOLE bundle, path → full text, with "
+                "playbook.toml), edit (id; files: only the files that change, path → full new "
+                "text; remove: paths to delete), duplicate (id, new_id, name). "
+                "skill: create (new_id, files with SKILL.md), edit (id, new_id — an edit is "
+                "saved as a new copy; files; remove). "
+                "automation: create (name, trigger, optional policy, action_kind "
+                "start_mission | start_session | send_to_session, message: the instruction "
+                "text; start_mission takes project_index and autonomy propose | dispatch; "
+                "start_session takes project_index and engine_index; send_to_session takes a "
+                "session key — indexes from list_projects / list_agents in this turn), edit "
+                "(id and only what changes), enable (id). A new automation is saved switched "
+                "off; enabling is a separate card. Never ask for permission bypass or for "
+                "answering the agents' menus automatically: those are the operator's alone.",
+                {
+                    "group": {"type": "string", "enum": ["playbook", "skill", "automation"]},
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "edit", "duplicate", "enable"],
+                    },
+                    "id": {"type": "string"},
+                    "new_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "files": {"type": "object", "additionalProperties": {"type": "string"}},
+                    "remove": {"type": "array", "items": {"type": "string"}},
+                    "trigger": {"type": "object"},
+                    "policy": {"type": "object"},
+                    "action_kind": {
+                        "type": "string",
+                        "enum": ["start_mission", "start_session", "send_to_session"],
+                    },
+                    "message": {"type": "string"},
+                    "autonomy": {"type": "string", "enum": ["propose", "dispatch"]},
+                    "project_index": {"type": "integer"},
+                    "engine_index": {"type": "integer"},
+                    **_KEY_PROP,
+                },
+                ["group", "action"],
+            ),
+            _propose_library,
+        ),
+        Tool(
             "agent_usage",
             "read",
             _spec(
@@ -1721,7 +1973,10 @@ def _tools_rejected(r) -> bool:
 def _sanitize(calls: list) -> list[dict] | None:
     from .chat_runtime import _sanitize_calls
 
-    return _sanitize_calls(calls)
+    # A library draft (#1611) is a whole playbook bundle in one call: its cap is the draft
+    # store's own, which refuses anything larger at staging. A cut draft is invalid JSON, which
+    # the tool refuses — never a truncated save.
+    return _sanitize_calls(calls, arg_caps={"propose_library": ask_store.DRAFT_MAX_BYTES})
 
 
 async def _fallback_find(turn: _Turn, history: list[dict]) -> list[dict]:

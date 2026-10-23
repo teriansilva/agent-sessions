@@ -1164,9 +1164,10 @@ def _add_usage(total: dict[str, int], usage: object) -> None:
             total[k] = total.get(k, 0) + v
 
 
-def _sanitize_calls(calls: list) -> list[dict] | None:
+def _sanitize_calls(calls: list, *, arg_caps: dict[str, int] | None = None) -> list[dict] | None:
     """The model's tool calls rebuilt field by field — nothing it sent is echoed back unread.
-    None when the shape is not a list of function calls."""
+    None when the shape is not a list of function calls. ``arg_caps`` lets a caller give a named
+    tool a larger argument cap than ``_ARGS_MAX`` (HQ's library drafts, #1611)."""
     out: list[dict] = []
     seen: set[str] = set()
     for i, c in enumerate(calls):
@@ -1194,7 +1195,13 @@ def _sanitize_calls(calls: list) -> list[dict] | None:
                 "function": {
                     "name": name[:64],
                     "arguments": chat_tools.printable(
-                        args[: (8 * chat_edits.MAX_BYTES if name == "propose_edit" else _ARGS_MAX)]
+                        args[
+                            : (
+                                8 * chat_edits.MAX_BYTES
+                                if name == "propose_edit"
+                                else (arg_caps or {}).get(name, _ARGS_MAX)
+                            )
+                        ]
                     ),
                 },
             }

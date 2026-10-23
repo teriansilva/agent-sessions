@@ -340,3 +340,116 @@
   flex: none;
   background: var(--hud);
 }
+
+/* A Library card's content (#1611): each file a framed block under a mono path head, the text in
+ * the verbatim well, folded after 12 lines behind a full-width "Show all" row (44px). A diff keeps
+ * its + and − signs: added and removed differ by sign first, tone second. */
+.file {
+  margin-top: var(--sp-2);
+  border: 1px solid var(--line);
+}
+.file .verbatim {
+  border: 0;
+  border-left: 2px solid var(--hud-dim);
+}
+.fileHead {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  padding: 6px var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.fileLines {
+  margin-left: auto;
+  flex: none;
+  color: var(--text-3);
+}
+.more {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+}
+.more:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.diff {
+  background: var(--surface-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.diff > div {
+  padding: 0 var(--sp-3);
+  color: var(--text-1);
+}
+.diff > .hunk {
+  color: var(--text-3);
+}
+.diff > .add {
+  color: var(--ok-text);
+  background: color-mix(in srgb, var(--status-up) 10%, transparent);
+}
+.diff > .del {
+  color: var(--danger-text);
+  background: color-mix(in srgb, var(--status-down) 10%, transparent);
+}
+.scope {
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+}
+.scope li {
+  padding: 7px var(--sp-3);
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.scope li:first-child {
+  border-top: 0;
+}
+.statusLine {
+  margin-top: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--hud-dim);
+  font-size: var(--fs-label);
+  color: var(--text-2);
+}
+.libraryLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}
+.libraryLink:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
