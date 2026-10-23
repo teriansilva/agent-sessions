@@ -1,19 +1,18 @@
 .card {
-  border: 1px solid var(--line-strong);
-  background: var(--panel);
-  padding: 20px;
-  margin-top: 20px;
+  composes: nj-frame-sm from global;
+  padding: var(--sp-5);
+  margin-top: var(--sp-5);
   min-width: 0;
 }
 .card h2 {
   margin: 0;
-  font: 700 14px var(--font-mono);
+  font: 700 var(--fs-body) var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
 .hint {
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--fs-row);
   line-height: 1.6;
 }
 .fields {
@@ -34,11 +33,17 @@
   min-height: 44px;
   min-width: 0;
   width: 100%;
-  background: var(--bg);
+  /* The nj-field look (square, --bg-2, the edge lights on focus with an inset ring). */
+  background: var(--bg-2);
   color: var(--text);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--border);
   padding: 10px 12px;
-  font: 15px var(--font-mono);
+  font: var(--fs-title) var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.fields input:hover,
+.memory input:hover {
+  border-color: var(--hud-dim);
 }
 .fields small,
 .memory small {
@@ -53,8 +58,9 @@
   composes: ghost from "../ui/actionButton.module.css";
 }
 .card :is(input, summary):focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+  border-color: var(--hud);
 }
 .actions {
   display: flex;
@@ -69,7 +75,7 @@
   padding: 12px;
   background: var(--bg);
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-row);
   line-height: 1.6;
   overflow-wrap: anywhere;
 }

@@ -212,6 +212,15 @@
     transform: translateY(120vh);
   }
 }
+/* A horizontal sweep across a small stage (Settings → Appearance → Motion's Full preview, #1574). */
+@keyframes nj-stage-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
 @keyframes nj-scan-drift {
   from {
     transform: translateY(0);

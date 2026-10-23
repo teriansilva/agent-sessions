@@ -13,7 +13,7 @@ import {
 import { useAccent } from "../theme/accentStore";
 import type { ThemeChoice, ThemeId } from "../theme/themes";
 import { useTheme } from "../theme/themeStore";
-import { Seg } from "../components/hud/Controls";
+import { accentVars } from "../theme/applyAccent";
 import type { MotionChoice } from "../theme/motion";
 import { useMotion } from "../theme/motionStore";
 import a from "./Appearance.module.css";
@@ -48,12 +48,20 @@ const MOTIONS: { value: MotionChoice; label: string; description: string }[] = [
 ];
 const MODE_WORD = { full: "Full", reduced: "Reduced", off: "Off" } as const;
 
-/** A miniature of the app in one mode: sidebar, title, a panel with a CTA (no status LED — a preview is not a state, design §3). The
- *  ground is the mode's own (fixed — a card must show ITS mode, not the one in force), while the
- *  brand bits take the live accent, so the preview is what you would actually get. */
-function MiniApp({ mode }: { mode: ThemeId }) {
+/** A miniature of the app in one mode: sidebar, title, a panel with a CTA (no status LED — a
+ *  preview is not a state, design §3). Its ground is the mode's OWN, read from the canonical tokens
+ *  through `data-theme-scope` (tokens.css, #1574) — a card shows ITS mode, not the one in force —
+ *  and a custom accent is re-applied for that mode (`accentVars`), so the preview is what you
+ *  would actually get. */
+function MiniApp({ mode, accent }: { mode: ThemeId; accent: string }) {
   return (
-    <span className={`${a.mini} ${a[`mini_${mode}`]}`} aria-hidden="true">
+    <span
+      className={a.mini}
+      data-theme-scope={mode}
+      data-testid="mini-app"
+      style={(accentVars(accent, mode) ?? undefined) as CSSProperties | undefined}
+      aria-hidden="true"
+    >
       <span className={a.miniSide}>
         <span className={`${a.bar} ${a.barAccent}`} style={{ width: "70%" }} />
         <span className={a.bar} style={{ width: "85%" }} />
@@ -70,6 +78,23 @@ function MiniApp({ mode }: { mode: ThemeId }) {
             <span className={a.miniCta} />
           </span>
         </span>
+      </span>
+    </span>
+  );
+}
+
+/** A small stage for a Motion card (#1574): a light and two rows. Each card's class decides what
+ *  moves on it — Full sweeps and breathes, Reduced holds a just-arrived row dim, Off is still — and
+ *  nothing moves past what the PAGE's mode allows (motion.css). Decorative: the card is the radio. */
+function MotionStage() {
+  return (
+    <span className={`${a.motionStage} nj-ambient`} aria-hidden="true">
+      <span className={a.motionRow}>
+        <span className={`${a.motionLed} nj-ambient`} />
+        <span className={`${a.bar} ${a.barStrong}`} />
+      </span>
+      <span className={a.motionRow}>
+        <span className={a.bar} />
       </span>
     </span>
   );
@@ -133,11 +158,11 @@ export function AppearanceInterface() {
               <span className={a.modePreview}>
                 {m.id === "system" ? (
                   <>
-                    <MiniApp mode="dark" />
-                    <MiniApp mode="light" />
+                    <MiniApp mode="dark" accent={accent} />
+                    <MiniApp mode="light" accent={accent} />
                   </>
                 ) : (
-                  <MiniApp mode={m.id} />
+                  <MiniApp mode={m.id} accent={accent} />
                 )}
               </span>
               <span className={a.modeLabel}>
@@ -159,13 +184,36 @@ export function AppearanceInterface() {
         Animation in the frame: never on the terminal, the editor or text you are typing, and never
         delaying input. Saved on this device.
       </p>
-      <Seg
-        label="Motion"
-        options={MOTIONS.map(({ value, label }) => ({ value, label }))}
-        value={motion.choice}
-        onChange={motion.setMotion}
-        testId="motion-seg"
-      />
+      <div
+        className={a.motions}
+        role="radiogroup"
+        aria-labelledby="motion-h"
+        onKeyDown={onRadioGroupKeyDown}
+        data-testid="motion-seg"
+      >
+        {MOTIONS.map((m, i) => {
+          const on = motion.choice === m.value;
+          return (
+            <button
+              key={m.value}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              tabIndex={rovingTabIndex(on, i, true)}
+              className={`${a.motion} ${a[`motion_${m.value}`] ?? ""} ${on ? a.on : ""}`}
+              onClick={() => motion.setMotion(m.value)}
+            >
+              <MotionStage />
+              <span className={a.modeLabel}>
+                <span className={a.radio} aria-hidden="true" />
+                <span className={a.modeText}>
+                  <span className={a.modeName}>{m.label}</span>
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
       <p className={styles.hint} data-testid="motion-desc" aria-live="polite">
         {motionDesc}
         {motion.choice === "system" ? ` Now: ${MODE_WORD[motion.mode]}.` : ""}

@@ -26,6 +26,8 @@ export function ShareRow({
 }) {
   return (
     <li className={styles.row} data-share-row={share.share_id}>
+      {/* A listed link is live (#1574): the row's light says so; its words are in the meta line. */}
+      <span className="hud-led up" aria-hidden="true" />
       <div className={styles.rowMain}>
         {showTitle && <span className={styles.rowTitle}>{share.title || share.session_key}</span>}
         <span className={styles.chips}>

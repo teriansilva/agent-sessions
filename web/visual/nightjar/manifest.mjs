@@ -1,3 +1,4 @@
+import * as SB from "../promo/settingsStates.mjs";
 // The NIGHTJAR screenshot sweep's manifest (#1531): every capture id a ledger row may name
 // (docs/nightjar-ledger.md "Captures"), and how to put the app into that state. The ledger test
 // fails when a `done` row names an id this list does not have. Phases add ids with their rows;
@@ -614,8 +615,133 @@ export const SWEEP = [
   { id: "route:variables", path: "/library/variables" },
   { id: "route:new-project", path: "/projects/new" },
   { id: "route:settings-interface", path: "/settings/appearance" },
-  { id: "route:settings-agents", path: "/settings/agents" },
+  // ---- PR4b settings A ---- (#1574 Phase 11: the shell, Appearance and AI pages)
+  // Motion: the Interface page in each mode (Off is the sweep's default above).
+  { id: "route:settings-interface-full", path: "/settings/appearance", motion: "full" },
+  { id: "route:settings-interface-reduced", path: "/settings/appearance", motion: "reduced" },
+  // The phone grouped index (chevrons, the endpoint's model + LED); a desktop lands on a section.
+  { id: "route:settings-index", path: "/settings", widths: ["phone"], present: "a[href$='/settings/ai-endpoint']" },
+  { id: "route:settings-terminal", path: "/settings/terminal-appearance" },
+  { id: "route:settings-session-defaults", path: "/settings/session-defaults" },
+  { id: "route:settings-endpoint", path: "/settings/ai-endpoint" },
+  // A failed check: a new key (masked — a fake fixture value) and the endpoint refusing it.
+  {
+    id: "route:settings-endpoint-failed",
+    path: "/settings/ai-endpoint",
+    open: [
+      { role: "button", name: "Replace key" },
+      { css: "input[type='password']", fill: "sk-FAKE-fixture-0000000000000000" },
+      { role: "button", name: "Test", partial: false },
+    ],
+    api: { "/api/ai-review/endpoint/test": { status: 502, json: { detail: "The endpoint refused the key (HTTP 401)." } } },
+    present: "input[type='password']",
+  },
+  { id: "route:settings-mission-control", path: "/settings/ai-mission-control" },
+  // Prompts: the catalog with an edited row open, a guarded row and a default one…
+  {
+    id: "route:settings-prompts",
+    path: "/settings/ai-prompts",
+    api: { "/api/prompts": { prompts: [
+        {
+          id: "ai-review-prompt",
+          group: "Session review",
+          label: "Session review",
+          description: "Summarises a session and flags it when it needs you.",
+          contract: '{ "title": string, "summary": string, "needs_you": boolean }',
+          max_chars: 4000,
+          guarded: false,
+          guard_suffix: null,
+          value: "Review the session. Quote its own words for anything you flag.",
+          default: "Review the session.",
+          is_default: false,
+        },
+        {
+          id: "mission-judge",
+          group: "Mission control",
+          label: "Mission judge",
+          description: "Settles an objective on evidence quoted verbatim from the session.",
+          contract: '{ "met": boolean, "confidence": number, "evidence": [{ "quote": string }] }',
+          max_chars: 4000,
+          guarded: true,
+          guard_suffix: "Answer only from quotes; never invent evidence.",
+          value: "Settle the gate only with verbatim quotes from the session.",
+          default: "Settle the gate only with verbatim quotes from the session.",
+          is_default: true,
+        },
+        {
+          id: "auto-sort",
+          group: "Auto-sort",
+          label: "Project classifier",
+          description: "Assigns an unassigned session to a project.",
+          contract: '{ "project_id": string | null, "confidence": number }',
+          max_chars: 2000,
+          guarded: false,
+          guard_suffix: null,
+          value: "Pick the project this session belongs to.",
+          default: "Pick the project this session belongs to.",
+          is_default: true,
+        },
+      ] } },
+    open: [{ role: "button", name: "Session review", partial: true }],
+    present: "textarea",
+  },
+  // …and the catalog that would not load (Retry).
+  { id: "route:settings-prompts-error", path: "/settings/ai-prompts" },
+  { id: "route:settings-ai-review", path: "/settings/ai-session-review" },
+  { id: "route:settings-auto-sort", path: "/settings/ai-auto-sort" },
+  { id: "route:settings-activity", path: "/settings/ai-activity" },
+  // ---- /PR4b settings A ----
+
+  { id: "route:settings-agents", path: "/settings/agents", api: { "/api/plugins": SB.PLUGINS } },
   { id: "route:settings-security", path: "/settings/security" },
+  // ---- PR4b settings B ---- (#1574 Phase 11: agents, system and about; FAKE secrets only,
+  // visual/promo/settingsStates.mjs)
+  { id: "route:settings-agents-defaults", path: "/settings/agents/defaults", api: { "/api/plugins": SB.PLUGINS } },
+  {
+    id: "route:agent-add",
+    path: "/settings/agents/setup/new",
+    api: { "/api/plugins": SB.PLUGINS },
+  },
+  // The gallery lives on Appearance (Settings A's page): the shot is scrolled to it (`present`), not a
+  // section crop — a phone's crop is taller than the screen and stitches the sticky top bar in.
+  {
+    id: "route:settings-hq-gallery",
+    path: "/settings/appearance",
+    present: "[data-testid='hq-gallery']",
+  },
+  {
+    id: "route:settings-2fa-setup",
+    path: "/settings/security",
+    mock: { config: { two_factor_enabled: false } },
+    api: { "/api/2fa/enroll": SB.TWOFA_ENROLL },
+    open: [{ role: "button", name: "Enable two-factor auth" }],
+    present: "[data-testid='twofa-enroll'], code",
+  },
+  {
+    id: "route:settings-loginoff",
+    path: "/settings/security",
+    mock: { config: { auth_mode: "none" } },
+  },
+  { id: "route:settings-sharing", path: "/settings/sharing", api: { "/api/shares": SB.SHARES } },
+  {
+    id: "route:settings-sharing-revoke-all",
+    path: "/settings/sharing",
+    api: { "/api/shares": SB.SHARES },
+    open: [{ role: "button", name: "Revoke all" }],
+  },
+  {
+    id: "route:settings-updates",
+    path: "/settings/updates",
+    api: { "/api/update/settings": SB.UPDATE_SETTINGS, "/api/update/progress": SB.UPDATE_RUNNING },
+  },
+  { id: "route:settings-host", path: "/settings/system", api: { "/api/system": SB.SYSTEM } },
+  {
+    id: "route:settings-resources",
+    path: "/settings/resources",
+    api: { "/api/system": SB.SYSTEM, "/api/system/resources": SB.RESOURCES },
+  },
+  { id: "route:settings-analytics", path: "/settings/analytics" },
+  // ---- /PR4b settings B ----
   // ---- brand (#1590) ---- the kit's lockup with its tagline on Settings → About.
   { id: "route:settings-about", path: "/settings/about", expectCss: "[data-brand-lockup]" },
   // ---- /brand ----

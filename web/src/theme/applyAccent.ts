@@ -12,26 +12,36 @@ import { resolveTheme, type ThemeId } from "./themes";
 
 export const ACCENT_STORAGE_KEY = "tr-accent";
 
-/** Set the inline `--accent`, `--on-accent`, `--accent-text` and `--hud` overrides on <html>. The default
- *  accent is left to tokens.css (clear the inline props) so the unmodified app stays
- *  pixel-identical to the static stylesheet; a custom accent sets all three. `--accent-text` is
- *  mode-dependent (#1494), so `mode` is the RESOLVED mode in force. */
-export function applyAccent(hex: string, mode: ThemeId = "dark"): void {
+/** The custom properties a custom accent overrides in one mode: `--accent`, `--on-accent`,
+ *  `--accent-text` (mode-dependent, #1494) and `--hud` (#1531). `null` for the default accent,
+ *  which tokens.css already carries. ONE helper for `<html>` (`applyAccent`) and for any element
+ *  that shows another mode through `[data-theme-scope]` (#1574): both mode blocks reset these
+ *  tokens, so a scoped preview re-applies them for its own mode. */
+export function accentVars(hex: string, mode: ThemeId): Record<string, string> | null {
   const accent = coerceAccent(hex);
+  if (accent === DEFAULT_ACCENT) return null;
+  return {
+    "--accent": accent,
+    "--on-accent": onAccentFor(accent),
+    "--accent-text": accentTextFor(accent, mode),
+    // The chrome line colour (#1531): the accent where it reads on the mode's grounds, else mixed
+    // toward the text colour — a pale accent still draws a visible frame on light.
+    "--hud": hudLineFor(accent, mode),
+  };
+}
+
+const ACCENT_PROPS = ["--accent", "--on-accent", "--accent-text", "--hud"] as const;
+
+/** Set the inline accent overrides on <html> (`accentVars`). The default accent is left to
+ *  tokens.css (the inline props are cleared) so the unmodified app stays pixel-identical to the
+ *  static stylesheet. `mode` is the RESOLVED mode in force. */
+export function applyAccent(hex: string, mode: ThemeId = "dark"): void {
   const root = document.documentElement;
-  if (accent === DEFAULT_ACCENT) {
-    root.style.removeProperty("--accent");
-    root.style.removeProperty("--on-accent");
-    root.style.removeProperty("--accent-text");
-    root.style.removeProperty("--hud");
-    return;
+  const vars = accentVars(hex, mode);
+  for (const k of ACCENT_PROPS) {
+    if (vars) root.style.setProperty(k, vars[k]);
+    else root.style.removeProperty(k);
   }
-  root.style.setProperty("--accent", accent);
-  root.style.setProperty("--on-accent", onAccentFor(accent));
-  root.style.setProperty("--accent-text", accentTextFor(accent, mode));
-  // The chrome line colour (#1531): the accent where it reads on the mode's grounds, else mixed
-  // toward the text colour — a pale accent still draws a visible frame on light.
-  root.style.setProperty("--hud", hudLineFor(accent, mode));
 }
 
 /** The accent cached on this device, or the default. Never throws. */

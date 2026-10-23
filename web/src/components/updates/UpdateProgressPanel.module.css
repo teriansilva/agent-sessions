@@ -1,11 +1,11 @@
-/* The Updates card's progress panel (#1085). HUD vocabulary: hairline box, flat accent fill, no
- * radius, no gradient. Green and red here are STATUS (finished / failed), as docs/design.md §3
- * reserves them; the running bar is the brand accent. */
+/* The Updates card's progress panel (#1085; NIGHTJAR #1574). A small frame; the bar is the HUD
+ * fill, and while the installer runs the shared Acquiring strip scans under it. Green and red are
+ * STATUS (finished / failed), as docs/design.md §3 reserves them. */
 
 .panel {
-  margin: 12px 0;
-  padding: 12px 14px;
-  border: 1px solid var(--line-strong);
+  composes: nj-frame-sm from global;
+  margin: var(--sp-3) 0;
+  padding: var(--sp-3) var(--sp-4);
 }
 
 .head {
@@ -14,7 +14,7 @@
   justify-content: space-between;
   gap: 6px 16px;
   margin-bottom: 8px;
-  font: 400 0.7rem var(--font-mono);
+  font: 400 var(--fs-label) var(--font-mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-2);
@@ -45,8 +45,12 @@
 
 .fill {
   height: 100%;
-  background: var(--accent);
-  transition: width 400ms ease;
+  background: var(--hud);
+  transition: width var(--t-slow) var(--ease-out);
+}
+.acquire {
+  composes: nj-acquire from global;
+  margin-top: var(--sp-1);
 }
 
 .fillBad {
@@ -66,16 +70,16 @@
 }
 
 .steps .stepDone {
-  background: var(--accent);
+  background: var(--hud);
 }
 
 .steps .stepNow {
-  background: color-mix(in srgb, var(--accent) 45%, var(--line-strong));
+  background: color-mix(in srgb, var(--hud) 45%, var(--line-strong));
 }
 
 .hint {
   margin: 8px 0 0;
-  font-size: 0.8rem;
+  font-size: var(--fs-row);
   color: var(--text-2);
 }
 
@@ -85,13 +89,7 @@
 }
 
 .spin {
-  animation: spin 1.2s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+  animation: global(nj-spin) 1.2s linear infinite;
 }
 
 /* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */

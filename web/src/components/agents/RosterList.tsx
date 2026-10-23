@@ -12,6 +12,7 @@ import button from "../ui/actionButton.module.css";
 import { pluginError, setupPath } from "../plugins/model";
 import { api } from "../../lib/api";
 import type { RosterRow, Status } from "./agentStatus";
+import { Gauge } from "../hud/Meters";
 import r from "./Roster.module.css";
 
 const LED = { up: "up", idle: "idle", deg: "attention", down: "down" } as const;
@@ -35,8 +36,8 @@ function Usage({ row }: { row: AgentUsageRow | undefined }) {
   const window = row.windows?.[0]?.label;
   return (
     <span className={r.state} title={`${pct}% used`}>
-      <span className={r.meter} aria-hidden="true">
-        <i style={{ width: `${Math.max(0, Math.min(100, pct))}%` }} />
+      <span className={r.usageGauge}>
+        <Gauge value={pct / 100} segments={14} low={-1} label={`${pct}% of the plan used`} />
       </span>
       {pct}%{window ? ` · ${window}` : ""} {row.source}
     </span>

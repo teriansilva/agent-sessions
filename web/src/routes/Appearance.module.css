@@ -1,49 +1,68 @@
-/* Settings → Appearance pages (#1494). Shared shell classes (section, hint, subhead) stay in
-   Settings.module.css; this file holds the pickers the three appearance pages add. */
+/* Settings → Appearance pages (#1494; NIGHTJAR #1574). Shared shell classes (section, hint, subhead)
+   stay in Settings.module.css; this file holds the pickers the appearance pages add. Tokens only.
+   The API-sessions selectors at the end belong to AppearanceApi.tsx, fenced for #1311 / #1313. */
 
-/* ---- Mode cards: a miniature of the app per mode ---------------------------------------- */
-.modes {
+/* ---- Choice cards: mode, motion, scheme --------------------------------------------------- */
+/* A card is a CONTROL (a radio), so it is a painted plate: the chamfer is drawn behind it and the
+   whole rectangle stays the hit area (design.md §6). Selected = the lit rail and the --hud edge. */
+.modes,
+.motions,
+.schemes {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 8px;
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
 }
-.mode {
+.motions {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.mode,
+.scheme,
+.motion {
+  composes: nj-plate from global;
+  --c: var(--cut-sm);
+  --nj-face: var(--bg-0);
+  --nj-edge: var(--line-strong);
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
-  padding: 0;
+  padding: 1px;
   text-align: left;
-  border: 1px solid var(--border);
-  border-radius: 0;
-  background: var(--bg);
-  color: var(--text);
+  color: var(--text-1);
+  font: inherit;
   cursor: pointer;
 }
-.mode:hover {
-  border-color: var(--accent);
+.mode:hover,
+.scheme:hover,
+.motion:hover {
+  --nj-edge: var(--hud-dim);
 }
-.mode.on {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent) inset;
+.mode.on,
+.scheme.on,
+.motion.on {
+  --nj-edge: var(--hud);
+  --nj-rail: var(--hud);
 }
 .mode:focus-visible,
+.scheme:focus-visible,
+.motion:focus-visible,
 .swatch:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .modePreview {
   display: flex;
   height: 96px;
   overflow: hidden;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--line);
 }
 .modeLabel {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-2);
   min-height: 44px;
-  padding: 8px 10px;
+  padding: var(--sp-2) var(--sp-3);
 }
 .modeText {
   display: flex;
@@ -51,14 +70,19 @@
   min-width: 0;
 }
 .modeName {
-  font-weight: 700;
-  font-size: 13px;
+  font: 600 var(--fs-label) / 1.3 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.on .modeName {
+  color: var(--accent-text);
 }
 .modeDesc {
-  font-size: 11.5px;
-  color: var(--text-muted);
+  font-size: var(--fs-meta);
+  color: var(--text-3);
 }
-/* The radio dot is a dot, so it may be round (design: only LEDs/dots are). */
+/* The radio dot is a dot, so it may be round (design: only LEDs/dots are). Shared with the API
+   sessions page. */
 .radio {
   flex: none;
   display: grid;
@@ -79,36 +103,23 @@
   background: var(--accent);
 }
 
-/* The miniature. Its ground is the card's OWN mode (fixed values mirroring tokens.css), so a
-   card shows its mode whichever is in force; the accent bits follow the live accent. */
+/* The miniature (#1574): its ground is the card's OWN mode, read from the canonical tokens
+   through `[data-theme-scope]` (tokens.css) — no preview palette. A custom accent is re-applied
+   on the scope for that mode (applyAccent `accentVars`), so the bits show the live accent. */
 .mini {
-  --m-bg: #0d0e10;
-  --m-side: #131418;
-  --m-panel: #131418;
-  --m-line: #25282e;
-  --m-strong: #e8e9ec;
-  --m-mute: #6f747d;
   flex: 1;
   display: flex;
   min-width: 0;
-  background: var(--m-bg);
-}
-.mini_light {
-  --m-bg: #e7e8ea;
-  --m-side: #f2f3f5;
-  --m-panel: #ffffff;
-  --m-line: #c9ccd2;
-  --m-strong: #14161a;
-  --m-mute: #9a9ea6;
+  background: var(--bg-0);
 }
 .miniSide {
   display: flex;
   flex-direction: column;
   gap: 5px;
   width: 26%;
-  padding: 8px 6px;
-  background: var(--m-side);
-  border-right: 1px solid var(--m-line);
+  padding: var(--sp-2) 6px;
+  background: var(--bg-1);
+  border-right: 1px solid var(--border);
 }
 .miniMain {
   flex: 1;
@@ -116,7 +127,7 @@
   flex-direction: column;
   gap: 6px;
   min-width: 0;
-  padding: 8px;
+  padding: var(--sp-2);
 }
 .miniPanel {
   flex: 1;
@@ -124,8 +135,9 @@
   flex-direction: column;
   gap: 5px;
   padding: 7px;
-  background: var(--m-panel);
-  border: 1px solid var(--m-line);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-top: 2px solid var(--hud);
 }
 .miniFoot {
   display: flex;
@@ -136,10 +148,10 @@
 .bar {
   display: block;
   height: 4px;
-  background: var(--m-mute);
+  background: var(--text-3);
 }
 .barStrong {
-  background: var(--m-strong);
+  background: var(--text-1);
 }
 .barAccent {
   background: var(--accent);
@@ -151,12 +163,63 @@
   background: var(--accent);
 }
 
+/* ---- Motion (#1574): each mode at work on a small stage --------------------------------- */
+/* Decorative (aria-hidden): the control is the radio group. The stage only moves in the mode the
+   PAGE is in — Off still stops everything (motion.css) — so it never costs more than the page. */
+.motionStage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  height: 64px;
+  padding: var(--sp-2) var(--sp-3);
+  overflow: hidden;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--line);
+}
+.motionRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.motionLed {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-up);
+}
+.motionStage .bar {
+  flex: 1;
+}
+/* Full: the sweep runs across the stage and the light breathes. */
+.motion_full .motionStage::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 30%;
+  background: linear-gradient(90deg, transparent, var(--hud-tint), transparent);
+  animation: global(nj-stage-sweep) 3.2s linear infinite;
+}
+.motion_full .motionLed {
+  animation: global(nj-breathe) 2.4s var(--ease-io) infinite;
+}
+/* Reduced: one short fade on a change — drawn as the row that just arrived, steady. */
+.motion_reduced .motionRow:last-child {
+  opacity: 0.55;
+}
+/* Off: nothing moves; the look stays complete. */
+.motion_off .motionStage {
+  background: var(--bg-0);
+}
+
 /* ---- Accent swatches -------------------------------------------------------------------- */
 .swatches {
   display: grid;
-  grid-template-columns: repeat(8, 44px);
-  gap: 8px;
-  margin-top: 8px;
+  grid-template-columns: repeat(auto-fill, 44px);
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
 }
 .swatch {
   display: grid;
@@ -165,28 +228,27 @@
   height: 44px;
   padding: 0;
   border: 1px solid var(--line-strong);
-  border-radius: 0;
   background: var(--dot);
   cursor: pointer;
 }
 .swatch.on {
   box-shadow:
-    0 0 0 2px var(--panel),
-    0 0 0 4px var(--text);
+    0 0 0 2px var(--bg-1),
+    0 0 0 4px var(--hud);
 }
 /* The check takes the ink computed for THIS swatch (onAccentFor), so it reads on every colour. */
 .swatch.on::after {
   content: "\2713";
   font-weight: 700;
-  font-size: 16px;
+  font-size: var(--fs-title);
   color: var(--dot-ink);
 }
 .customRow {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin-top: 12px;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
 }
 .well {
   display: grid;
@@ -207,43 +269,35 @@
   background: none;
   cursor: pointer;
 }
-/* Sized for the whole value: `#rrggbb` is 7 characters of mono plus padding. The old 9ch box
-   with 8px padding clipped the last digit (#1494). */
+/* Sized for the whole value: `#rrggbb` is 7 characters of mono plus padding (#1494). */
 .hex {
+  composes: nj-field from global;
   box-sizing: border-box;
   width: calc(7ch + 28px);
   height: 44px;
-  padding: 0 12px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 13px;
+  padding: 0 var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-row);
   text-transform: lowercase;
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 0;
-}
-.hex:focus-visible {
-  outline: none;
-  border-color: var(--accent);
 }
 .reset {
   composes: ghost from "../components/ui/actionButton.module.css";
 }
 
 .chosen {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  letter-spacing: 0.08em;
+  font: 400 var(--fs-label) / 1.3 var(--font-mono);
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--text-2);
 }
 
 .moved {
-  margin: 20px 0 0;
-  padding: 10px 12px;
-  font-size: 12.5px;
-  color: var(--text-muted);
+  margin: var(--sp-5) 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
   border: 1px solid var(--line);
+  border-left: 2px solid var(--hud-dim);
 }
 /* A link is TEXT, so it takes the AA-safe accent (#1494) — the raw accent is a fill colour. */
 .moved a {
@@ -257,6 +311,9 @@
   .modeDesc {
     display: none;
   }
+  .motions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .swatches {
     grid-template-columns: repeat(auto-fill, 44px);
     gap: 10px;
@@ -264,41 +321,13 @@
 }
 
 /* ---- Terminal colour schemes (#1494 P2) ------------------------------------------------- */
-.schemes {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 8px;
-}
-.scheme {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  padding: 0;
-  text-align: left;
-  border: 1px solid var(--border);
-  border-radius: 0;
-  background: var(--bg);
-  color: var(--text);
-  cursor: pointer;
-}
-.scheme:hover {
-  border-color: var(--accent);
-}
-.scheme.on {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent) inset;
-}
-.scheme:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-/* The sample paints in the SCHEME's colours (inline), in the terminal's own mono stack. */
+/* The sample paints in the SCHEME's colours (inline, the scheme's published palette — allowlisted
+   content), in the terminal's own mono stack. */
 .schemeSample {
   display: flex;
   flex-direction: column;
-  padding: 8px 10px;
-  font: 11px/1.45 var(--font-mono, ui-monospace, monospace);
+  padding: var(--sp-2) 10px;
+  font: var(--fs-label) / 1.45 var(--font-mono);
   white-space: nowrap;
   overflow: hidden;
 }
@@ -314,31 +343,33 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   min-height: 44px;
   padding: 6px 10px;
   border-top: 1px solid var(--border);
 }
 .schemeName {
   font-weight: 700;
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   min-width: 0;
+}
+.on .schemeName {
+  color: var(--accent-text);
 }
 .tag {
   margin-left: auto;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 9.5px;
+  font: var(--fs-micro) var(--font-mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--text-3);
   white-space: nowrap;
 }
 /* A measured fact about the scheme, not a state of the app — so plain muted text, never a
    status colour (design §3). */
 .schemeNote {
-  padding: 0 10px 8px 32px;
-  font-size: 11px;
-  color: var(--text-muted);
+  padding: 0 10px var(--sp-2) 32px;
+  font-size: var(--fs-label);
+  color: var(--text-3);
 }
 
 @media (max-width: 800px) {

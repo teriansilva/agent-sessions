@@ -193,6 +193,8 @@ export function UpdateProgressPanel({
           style={{ width: `${pct}%` }}
         />
       </div>
+      {/* Acquiring (#1574): the installer is working — the shared scan strip under the bar. */}
+      {p.state === "running" && <div className={styles.acquire} aria-hidden="true" data-testid="update-acquire" />}
       <div className={styles.steps} aria-hidden="true">
         {Array.from({ length: steps }, (_, i) => (
           <span

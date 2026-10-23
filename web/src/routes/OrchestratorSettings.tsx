@@ -304,7 +304,7 @@ export function OrchestratorSettings() {
         {/* The tier alone doesn't tell the whole story, and implying it does would be the
             dangerous reading. Say plainly what YOLO can type on its own (#983): only operator
             text, the objective's direction or the default nudge, never words the AI wrote. */}
-        <p className={styles.hint} data-testid="orchestrator-yolo-copy">
+        <p className={`${styles.hint} ${styles.callout}`} data-testid="orchestrator-yolo-copy">
           Even on <strong>YOLO</strong>, mission control only ever types text{" "}
           <strong>you wrote</strong>: an objective&rsquo;s direction, filled with
           facts it checked itself, or your default nudge below. The AI decides
@@ -426,7 +426,7 @@ export function OrchestratorSettings() {
           />
           <span>Let mission control send AI-written directions on its own</span>
         </label>
-        <p className={styles.hint} data-testid="auto-ai-warning">
+        <p className={`${styles.hint} ${styles.callout} ${styles.calloutWarn}`} data-testid="auto-ai-warning">
           <strong>
             This is the one thing the AI writes that gets typed into a session for you.
           </strong>{" "}

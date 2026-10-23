@@ -2,6 +2,7 @@ import { beforeEach, expect, test } from "vitest";
 import { accentTextFor, DEFAULT_ACCENT } from "./accent";
 import {
   ACCENT_STORAGE_KEY,
+  accentVars,
   applyAccent,
   bootAccent,
   readStoredAccent,
@@ -69,4 +70,26 @@ test("--accent-text follows the mode for a custom accent, and clears with the de
   expect(s.getPropertyValue("--accent-text")).toBe("#dbe4ee");
   applyAccent(DEFAULT_ACCENT, "light");
   expect(s.getPropertyValue("--accent-text")).toBe(""); // tokens.css carries the default per mode
+});
+
+// One helper for <html> and for a [data-theme-scope] preview (#1574): the default accent carries
+// nothing (tokens.css has it), a custom one carries all four mode-dependent tokens.
+test("accentVars is null for the default accent and carries all four tokens for a custom one", () => {
+  expect(accentVars(DEFAULT_ACCENT, "dark")).toBeNull();
+  const dark = accentVars("#c02020", "dark")!;
+  const light = accentVars("#c02020", "light")!;
+  expect(Object.keys(dark).sort()).toEqual(["--accent", "--accent-text", "--hud", "--on-accent"]);
+  expect(dark["--accent"]).toBe("#c02020");
+  // --accent-text is mode-dependent: what reads on dark grounds is not what reads on light.
+  expect(dark["--accent-text"]).toBe(accentTextFor("#c02020", "dark"));
+  expect(light["--accent-text"]).toBe(accentTextFor("#c02020", "light"));
+});
+
+test("applyAccent sets exactly what accentVars returns", () => {
+  applyAccent("#3aa0ff", "light");
+  const want = accentVars("#3aa0ff", "light")!;
+  for (const [k, v] of Object.entries(want))
+    expect(document.documentElement.style.getPropertyValue(k)).toBe(v);
+  applyAccent(DEFAULT_ACCENT, "light");
+  for (const k of Object.keys(want)) expect(document.documentElement.style.getPropertyValue(k)).toBe("");
 });

@@ -37,7 +37,7 @@ the same list.
 |---|---|---|---|---|---|
 | `app/App.css` | css | 4 | done | route:dashboard route:new-session route:boot popup:session-row-menu | sector fade-in (Full), boot power-on, ≤800px drawer slide-in + backdrop |
 | `components/brand/Brand.module.css` | css | 4 | done | route:settings-about popup:whats-new popup:tour | none: the brand kit's logo (#1590) is a still image |
-| `components/agents/Roster.module.css` | css | 11 | todo |  |  |
+| `components/agents/Roster.module.css` | css | 11 | done | route:settings-agents route:settings-agents-defaults | the filter Seg lights its segment; status LEDs steady; the usage Gauge is lit at read, no loop |
 | `components/agents/SessionDefaults.module.css` | css | 11 | todo |  |  |
 | `components/ask/AskCards.module.css` | css | 4 | done | popup:hq | card deploy-in, LED change flash |
 | `components/ask/AskConsole.module.css` | css | 4 | done | popup:hq | answer word fade + caret, match-row arrival, portrait scan (Full, ambient), acquire bar |
@@ -47,13 +47,13 @@ the same list.
 | `components/chat/ChatPane.module.css` | css | 6 | todo |  |  |
 | `components/chat/EditProposal.module.css` | css | 6 | todo |  |  |
 | `components/dashboard/Dashboard.module.css` | css | 5 | done | route:dashboard route:dashboard-acquiring route:dashboard-unread route:dashboard-recent | readouts flash on change (filter step), LEDs flash on a state change, new rows arrive (slide + tint flash), first read Acquiring (radar / scan bar), re-read keeps its data under the refresh bar (scan, static in Reduced/Off), Recent work grows its row (grid-rows) |
-| `components/EnableLoginDetails.module.css` | css | 11 | todo |  |  |
+| `components/EnableLoginDetails.module.css` | css | 11 | done | route:settings-loginoff | the disclosure marker turns (transform, --t-fast); Reduced/Off still |
 | `components/files/filePanel.module.css` | css | 7 | todo |  |  |
 | `components/files/mediaPreview.module.css` | css | 7 | todo |  |  |
 | `components/FolderPickerModal.module.css` | css | 3 | done | popup:folder-picker | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/gallery/gallery.module.css` | css | 10 | todo |  |  |
 | `components/gallery/viewTabs.module.css` | css | 10 | todo |  |  |
-| `components/hq/HqContactGallery.module.css` | css | 11 | todo |  |  |
+| `components/hq/HqContactGallery.module.css` | css | 11 | done | route:settings-hq-gallery | none of its own: the selection is an edge, never motion; portraits are posters off Full |
 | `components/hq/hq.module.css` | css | 4 | done | popup:hq | portrait loop (Full only, paused with the ambient pause) |
 | `components/hq/PrimaryContact.module.css` | css | 5 | done | route:dashboard route:dashboard-acquiring | plate edge lights on hover (no movement); the portrait's own loop is HqPortrait's |
 | `components/hud/buttonGlitch.css` | css | 2 | done | gallery:buttons | glitch: filter only |
@@ -74,7 +74,7 @@ the same list.
 | `components/playbooks/playbookPrompts.module.css` | css | 10 | todo |  |  |
 | `components/playbooks/playbooks.module.css` | css | 10 | todo |  |  |
 | `components/playbooks/ProjectPlaybook.module.css` | css | 10 | todo |  |  |
-| `components/plugins/PluginSetup.module.css` | css | 11 | todo |  |  |
+| `components/plugins/PluginSetup.module.css` | css | 11 | done | route:agent-add | none of its own (the wizard rail is Phase 4's WizardShell) |
 | `components/ProjectColorPicker.module.css` | css | 10 | todo |  |  |
 | `components/projects/ProjectSessionDefaults.module.css` | css | 10 | todo |  |  |
 | `components/pulse/direction.module.css` | css | 8 | done | mission:decisions mission:objective-evidence popup:objective-direction | the AI-drafted card deploys in (fade + 6 px rise; 120 ms fade in Reduced); fields and fact chips: edge transition on hover / focus |
@@ -84,8 +84,8 @@ the same list.
 | `components/pulse/Orchestrator.module.css` | css | 8 | done | mission:decisions | a decision card deploys in (fade + 6 px rise; 120 ms fade in Reduced); option rows tint their edge on hover; the Run-now spinner is `nj-spin` (Full only) |
 | `components/sessions/AdoptToMissionModal.module.css` | css | 3 | done | popup:adopt | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/settings/AgentEndpointCard.module.css` | css | 11 | todo |  |  |
-| `components/settings/ResourceLimits.module.css` | css | 11 | todo |  |  |
-| `components/shares/Shares.module.css` | css | 11 | todo |  |  |
+| `components/settings/ResourceLimits.module.css` | css | 11 | done | route:settings-resources | none: fields light their edge on focus |
+| `components/shares/Shares.module.css` | css | 11 | done | route:settings-sharing route:settings-sharing-revoke-all | none: a live link's LED is steady |
 | `components/shell/HelpMenu.module.css` | css | 4 | done | popup:operator-menu | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
 | `components/shell/OperatorMenu.module.css` | css | 4 | done | popup:operator-menu | tile hover transition |
 | `components/shell/SectionNav.module.css` | css | 4 | done | route:dashboard route:mission | tab tint transition |
@@ -110,8 +110,8 @@ the same list.
 | `components/terminal/TermUplinkVeil.module.css` | css | 6 | done | route:uplink-veil route:uplink-veil-api | veil fade in/out (--t-slow), log deploy (fade + 6 px rise), acquire bar; Reduced: 120 ms fade in and out via `.nj-fade-ok` + a Reduced exit rule; Off: none (#1570) |
 | `components/terminal/Terminal.module.css` | css | 6 | done | route:session-pane popup:head-menu popup:toast | head chip glitch on press (nj-glitch-step, Full only), connect-chip radar (nj-radar), history pill steps (nj-steps), copied toast opacity only — nothing over the terminal moves |
 | `components/ui/actionButton.module.css` | css | 2 | done | gallery:buttons | press glitch (filter), hover |
-| `components/updates/UpdateProgressPanel.module.css` | css | 11 | todo |  |  |
-| `components/updates/UpdateWhatsNew.module.css` | css | 11 | todo |  |  |
+| `components/updates/UpdateProgressPanel.module.css` | css | 11 | done | route:settings-updates | the Acquiring strip scans while the installer runs; the fill widens (--t-slow); Reduced/Off hold a still strip |
+| `components/updates/UpdateWhatsNew.module.css` | css | 11 | done | route:settings-updates | none |
 | `components/wizard/WizardShell.module.css` | css | 4 | done | route:new-project | progress fill, rail tint |
 | `index.css` | css | 1 | todo |  |  |
 | `routes/AgentsSettings.module.css` | css | 11 | todo |  |  |
@@ -212,6 +212,23 @@ the same list.
 | `web/public/og-image.svg + og-image.png` | page | 13 | todo |  |  |
 | `web/public/onboarding/* (tour slides)` | page | 13 | todo |  |  |
 
+**Note: Settings B (#1574, Phase 11 part: agents, system, about).** `routes/AgentsSettings.module.css`
+stays `todo`: its remaining literal sizes sit in selectors the fenced agent page (`AgentDetail`,
+`AddedModels`, #1311 / #1313) reads (`badge`, `kvRow`, `empty`, `stale`, `models`, …), left
+byte-identical. Converted for the Defaults page only: `opt` (the chosen card on the accent edge and
+tint), `optLabel`, `warn` (the degraded callout), `tog` / `switch` (the thumb slides by transform
+onto the HUD fill), `where`, `label`, `saved`, `headLink`, `badgeSm`, `summary`. In
+`components/agents/Roster.module.css` the selectors the fenced page shares (`disclosure`,
+`summary`, `checks`, `muted`, `inlineError`, `heroMeta`, `techSummary`) took tokens of the SAME
+value only (13 px → `--fs-row`, 12 px → `--fs-meta`), so their computed style is unchanged. In
+`routes/Settings.module.css` (Settings A's row) this slice converted only the selectors its sections
+alone read: the 2FA enrollment (`enrollPanel` as `nj-frame-sm`, `manualKey`, `codeInput` as the
+nj-field look, `twofaBadge` / `twofaOn` / `twofaOff` as a mono tag), About's links (`aboutLink`
+on the shared ghost compact plate) and support CTA (`coffee` on the primary compact plate),
+`updateActions`, `meta` (dt as mono caps), `blurb`; the About brand line (`brandLine`) is left for
+the logo PR (#1590), and `.qr` keeps its literal white ground — a scanner needs it in both themes.
+Captures: the manifest's PR4b settings B block (FAKE secrets, `visual/promo/settingsStates.mjs`).
+
 **Note: `components/files/filePanel.module.css` (Phase 7, partial, #1568).** The row stays `todo`
 because the sheet is shared with #950 (the git tab and the viewer/editor are out of this slice). PR 3
 converted the shell, tree and upload selectors only: `.gutter` / `.grip`, `.head`, `.headName`,
@@ -244,3 +261,29 @@ untouched: it is one composer with HQ's (#967), pinned by `mission-control-polis
 diffed pixel for pixel against the base build: identical. `missionDrawer.module.css` was dead (#948)
 and is deleted. Captures: the manifest's PR4a rail and console blocks (`route:mission*`, `mission:*`,
 `popup:mission-template-picker`).
+
+**Note: `routes/Settings.module.css` (Phase 11, partial, #1574 — Settings A).** The row stays `todo`:
+the sheet is shared with the Agents, System and About pages (Settings B) and with the fenced Projects
+and Maintenance selectors (#1575). Settings A converted every selector the shell, General → Session
+defaults, Appearance and AI pages read: the shell (`.wrap`, `.head`, `.back` as the compact icon
+plate, `.split`, `.sidebar`, `.page`, `.crumb` in the kicker's voice, the sentence-case `.nav` with the
+accent fill, the phone `.index` as framed lists), `.section` as THE panel (`nj-frame`, the callsign
+behind the hazard notch; `.section .subhead` the small notched callsign, outranking Maintenance's later
+`.subhead`), `.hint` / `.blurb`, the radio cards `.themeCard` and the font cards `.fontCard` as plates,
+the fields (`.aiInput`, `.fontCustomInput` as `nj-field`; `.aiSecretReadout`; `.aiKeyBadge` and
+`.promptBadge` as stamps), the size stepper (`.termSizeStep` as icon plates), the endpoint strip as a
+quiet frame, `.cardFoot > .err` as an alert block, the prompts rows (`.promptRow` quiet frames,
+`.promptNote` / `.lockBand` hud-edged callouts, `.promptError` as `nj-error`), the new `.callout` /
+`.calloutWarn` (YOLO and the AI-written directions heads-up) and the activity rows; every dead fallback
+and px font size in those selectors is a token. Captures: the manifest's PR4b settings A block
+(`route:settings-*`).
+
+**Note: `routes/Appearance.module.css` (Phase 11, partial, #1574 — Settings A).** The row stays `todo`:
+the API-sessions selectors at its end belong to `AppearanceApi.tsx`, fenced for #1311 / #1313. Settings
+A converted the rest: the mode, scheme and new motion cards as plates (the lit rail and `--hud` edge for
+the choice), the MiniApp reading the canonical tokens through `[data-theme-scope]` (tokens.css; the
+custom accent re-applied for the preview's mode by `accentVars`) — no `--m-*` palette — the Motion
+control's stages (Full: a compositor sweep `nj-stage-sweep` and a breathing light, paused with the
+ambient loops), the swatches, `.hex` as `nj-field`, and the scheme samples (their palettes stay
+allowlisted content). The shared `.radio`, `.reset`, `.schemeLabel`, `.schemeName` and `.tag` keep their
+look for the fenced page. Captures: `route:settings-interface*`, `route:settings-terminal`.

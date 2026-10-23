@@ -114,6 +114,10 @@ export function AgentMenu({ id, label, data, onChange }: {
       triggerTestId="agent-menu"
       menuTestId="agent-menu-items"
       focus="first-item"
+      // Portalled (#1574): the agent hero and the roster sit in NIGHTJAR panels, and a panel clips
+      // (`nj-frame`'s chamfer clip-path) — the in-tree panel drew but its rows outside the frame
+      // could not be clicked (plugin-setup "Disable…" landed on the detail underneath).
+      portal
       classes={{ wrap: r.menuWrap, panel: r.menuPanel, items: r.menuItems }}
     >
       {(close, menuTrigger) => {

@@ -70,6 +70,20 @@ test("explicit dark never diverges from the bare :root default", () => {
   expect(diverged, "every :root[data-theme=dark] declaration matches the bare :root").toEqual([]);
 });
 
+// A dark-SCOPED element on a light page (`[data-theme-scope="dark"]`, the Interface page's mode
+// previews, #1574) reads the dark block's values; a token only the light block declared would leak
+// the page's light value into it. So the two mode blocks declare exactly the same set.
+test("the dark and light mode blocks declare the same token set", () => {
+  const onlyLight = [...light.keys()].filter((k) => !dark.has(k));
+  const onlyDark = [...dark.keys()].filter((k) => !light.has(k));
+  expect({ onlyLight, onlyDark }).toEqual({ onlyLight: [], onlyDark: [] });
+});
+
+test("each mode block also answers to its theme scope", () => {
+  expect(css).toMatch(/:root\[data-theme="dark"\],\s*\[data-theme-scope="dark"\]\s*\{/);
+  expect(css).toMatch(/:root\[data-theme="light"\],\s*\[data-theme-scope="light"\]\s*\{/);
+});
+
 // A token that only light declares would have no dark value at all: on dark it would resolve to
 // whatever the browser inherits (usually nothing), so the surface using it renders unstyled.
 test("every token light overrides exists in the bare :root", () => {

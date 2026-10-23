@@ -1,98 +1,92 @@
+/* Settings (#956; NIGHTJAR Phase 11, #1574). Tokens only for the shell, the section frame and
+ * every selector the shell, Appearance and AI pages own. Selectors only the Agents, System and
+ * About pages read, and the fenced Projects / Maintenance selectors, are the other slices' and
+ * the follow-up's (#1575) — see docs/nightjar-ledger.md. */
 .wrap {
   height: 100%;
   overflow-y: auto;
-  padding: 16px clamp(16px, 5vw, 40px) 48px;
-  background: var(--bg);
-  color: var(--text);
+  padding: var(--sp-4) clamp(16px, 5vw, 40px) var(--sp-6);
+  background: var(--bg-0);
+  color: var(--text-1);
 }
 .head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: 4px 0 18px;
+  gap: var(--sp-3);
+  margin: var(--sp-1) 0 var(--sp-4);
 }
 .head h1 {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
   margin: 0;
-  color: var(--text-1, var(--brand-soft));
+  font: 600 var(--fs-title) / 1.2 var(--font-display);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-1);
 }
 .back {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 0;
-  color: var(--text);
-  border: 1px solid var(--border);
-  background: var(--panel);
-}
-.back:hover {
-  border-color: var(--accent);
+  composes: icon compact from "../components/ui/actionButton.module.css";
 }
 
 /* Settings navigation (#956). Desktop: a fixed sidebar of grouped section links beside the
  * page, each scrolling on its own so the last section stays reachable on a short viewport.
- * Phone (<=800px): `/settings` is a grouped index and each section opens full-width. The old
- * horizontally scrolling tab bar held seven tabs; sixteen sections do not fit that shape. */
+ * Phone (<=800px): `/settings` is a grouped index and each section opens full-width. */
 .split {
   display: grid;
   grid-template-columns: 236px minmax(0, 1fr);
   height: 100%;
   min-height: 0;
-  background: var(--bg);
-  color: var(--text);
+  background: var(--bg-0);
+  color: var(--text-1);
 }
 .sidebar {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  padding: 16px 10px 32px;
-  background: var(--panel);
-  border-right: 1px solid var(--border);
+  padding: var(--sp-4) var(--sp-2) var(--sp-6);
+  background: var(--bg-1);
+  border-right: 1px solid var(--hud-dim);
 }
 .sidebar .head {
-  margin: 4px 6px 16px;
+  margin: var(--sp-1) 6px var(--sp-4);
 }
+/* The board's content column: left-aligned under the crumb and as wide as a reading column
+ * allows, not a narrow column centred in the pane. */
 .page {
+  --settings-col: 880px;
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  padding: 18px clamp(16px, 4vw, 40px) 48px;
+  padding: var(--sp-4) clamp(16px, 4vw, 40px) var(--sp-6);
 }
+/* SETTINGS // GROUP // SECTION: where you are, in the kicker's voice. */
 .crumb {
-  max-width: 640px;
-  margin: 0 auto 14px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
-  letter-spacing: 0.16em;
+  max-width: var(--settings-col, 640px);
+  margin: 0 0 var(--sp-3);
+  font: 400 var(--fs-label) / 1.5 var(--font-mono);
+  letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: var(--text-3, var(--text-muted));
+  color: var(--text-3);
 }
 /* The AGENTS pages are wider than a settings column (#1128); the crumb lines up with them. */
 .crumbWide {
   max-width: 1100px;
 }
 .crumb b {
-  color: var(--text-2, var(--text));
+  color: var(--text-1);
   font-weight: 600;
 }
 .nav {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--sp-3);
 }
-.navGroupLabel {
+.navGroupLabel,
+.indexGroupLabel {
+  display: block;
   margin: 0 10px 6px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
-  letter-spacing: 0.16em;
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--text-3, var(--text-muted));
+  color: var(--text-3);
 }
 .navList,
 .indexList {
@@ -100,68 +94,70 @@
   margin: 0;
   padding: 0;
 }
+/* A section link: sentence case on the body face (the board's sidebar), the active one on the
+ * accent fill. Links, not tabs: each section is its own URL. */
 .navLink {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 38px;
+  gap: var(--sp-2);
+  min-height: 36px;
   padding: 0 10px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-2, var(--text));
+  font-size: var(--fs-row);
+  color: var(--text-2);
   text-decoration: none;
   border-left: 2px solid transparent;
+  transition:
+    color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
 }
 /* An agent's own page (#1128), listed under All agents while it is the page on screen. */
 .navSub {
   padding-left: 22px;
-  text-transform: none;
 }
 .navLink:hover {
-  color: var(--text);
-  border-left-color: var(--accent);
+  color: var(--text-1);
+  border-left-color: var(--hud-dim);
 }
 .navLink[aria-current="page"] {
-  color: var(--on-accent, #14161a);
+  color: var(--on-accent);
   background: var(--accent);
   border-left-color: var(--accent);
-  font-weight: 700;
+  font-weight: 600;
 }
 .navLink:focus-visible,
 .indexLink:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.navLink[aria-current="page"]:focus-visible {
+  outline-color: var(--on-accent);
 }
 .index {
   margin: 0 -4px;
 }
 .indexGroupLabel {
-  margin: 18px 4px 6px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--text-3, var(--text-muted));
+  margin: var(--sp-4) 4px 6px;
 }
+/* The phone index: each group is a framed list, a row per section with its chevron. */
 .indexList {
-  border-top: 1px solid var(--border-subtle);
+  composes: nj-frame-quiet from global;
 }
 .indexLink {
   display: flex;
   align-items: center;
   gap: 10px;
   min-height: 48px;
-  padding: 0 14px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--text);
+  padding: 0 var(--sp-4);
+  color: var(--text-1);
   text-decoration: none;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: var(--fs-body);
+  border-bottom: 1px solid var(--line);
+}
+.indexList li:last-child .indexLink {
+  border-bottom: 0;
+}
+.indexLink:active {
+  background: var(--row-hover);
 }
 .indexLink [data-section-label] {
   flex: 1;
@@ -169,75 +165,54 @@
 }
 .indexLink svg {
   flex: none;
-  color: var(--text-3, var(--text-muted));
+  color: var(--text-3);
 }
-/* The phone back link is a 44px target (docs/design.md §8). */
-@media (max-width: 800px) {
-  .back {
-    width: 44px;
-    height: 44px;
-  }
-}
-/* The active panel — sections inside keep their own spacing. */
+/* The phone back link is a 44px target (docs/design.md §8): the compact icon plate takes the
+ * touch floor at <=800px itself. */
+/* The active panel — sections inside keep their own spacing. On a phone the section opens
+ * sliding in from the index (Full; one fade in Reduced; nothing in Off — motion.css). */
 .panel {
   min-width: 0;
 }
+@media (max-width: 800px) {
+  .panel {
+    animation: global(nj-arrive) var(--t-base) var(--ease-out) both;
+  }
+}
 
+/* A settings section: THE panel (nj-frame — the chamfer clipped, the lit top edge), its title a
+ * callsign behind the hazard notch. */
 .section {
+  composes: nj-frame from global;
   position: relative;
-  max-width: 640px;
-  margin: 0 auto 26px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 0;
-  padding: 16px 18px;
+  max-width: var(--settings-col, 640px);
+  margin: 0 0 var(--sp-5);
+  padding: var(--sp-4) var(--sp-4) var(--sp-5);
 }
-/* HUD corner brackets (#211 4d): accent ticks at two opposing corners frame each settings
- * panel like the floating shell panels, without per-section JSX. */
-.section::before,
-.section::after {
-  content: "";
-  position: absolute;
-  width: 12px;
-  height: 12px;
-  border-color: var(--accent);
-  border-style: solid;
-  pointer-events: none;
-}
-.section::before {
-  top: -1px;
-  left: -1px;
-  border-width: 1px 0 0 1px;
-}
-.section::after {
-  right: -1px;
-  bottom: -1px;
-  border-width: 0 1px 1px 0;
-}
-/* Section title → mono HUD label with a leading accent tick. */
 .section h2 {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
+  gap: var(--sp-2);
+  min-width: 0;
+  margin: 0 0 var(--sp-2);
+  font: 600 var(--fs-label) / 1.2 var(--font-mono);
+  letter-spacing: 0.18em;
   text-transform: uppercase;
-  margin: 0 0 8px;
-  color: var(--text-2, var(--text));
+  color: var(--text-1);
 }
 .section h2::before {
   content: "";
   flex: none;
-  width: 3px;
-  height: 13px;
-  background: var(--accent);
+  width: 22px;
+  height: 10px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.85;
 }
 .hint {
-  margin: 0 0 12px;
-  font-size: 12.5px;
-  color: var(--text-muted);
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-2);
 }
 /* A link inside running hint copy (#1009): underlined at rest, like the setup wizard's `.copy a`. */
 .inlineLink {
@@ -256,7 +231,7 @@
 }
 .blurb {
   margin: 0 0 12px;
-  font-size: 13px;
+  font-size: var(--fs-row);
   line-height: 1.5;
 }
 
@@ -264,44 +239,90 @@
 .themes {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 10px;
+  gap: var(--sp-3);
 }
 .themeCard {
+  composes: nj-plate from global;
+  --nj-face: var(--bg-0);
+  --nj-edge: var(--line-strong);
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--sp-1);
   text-align: left;
-  padding: 12px;
-  border-radius: 0;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
+  padding: var(--sp-3);
+  color: var(--text-1);
+  font: inherit;
   cursor: pointer;
 }
 .themeCard:hover {
-  border-color: var(--accent);
+  --nj-edge: var(--hud-dim);
 }
 .themeCard.active {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent) inset;
+  --nj-edge: var(--hud);
+  --nj-rail: var(--hud);
+  --nj-face: color-mix(in srgb, var(--hud) 8%, var(--bg-0));
 }
+.themeCard.active .themeName {
+  color: var(--accent-text);
+}
+.themeCard:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+/* The board's radio card: a radio LED before the name, the name in the display caps. */
 .themeName {
-  font-weight: 700;
-  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font: 600 var(--fs-title) / 1.25 var(--font-display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.themeName::before {
+  content: "";
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--text-3);
+  border-radius: 50%;
+}
+.themeCard.active .themeName::before {
+  border-color: var(--hud);
+  background: var(--hud);
+  box-shadow: inset 0 0 0 2.5px var(--bg-0);
 }
 .themeDesc {
-  font-size: 11.5px;
-  color: var(--text-muted);
+  padding-left: calc(14px + var(--sp-2));
+  font-size: var(--fs-row);
+  color: var(--text-2);
 }
 
 .subhead {
-  margin: 18px 0 2px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  margin: var(--sp-5) 0 var(--sp-1);
+  font: 600 var(--fs-label) / 1.2 var(--font-mono);
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--text-2, var(--text));
+  color: var(--text-1);
+}
+/* Inside a section a sub-heading is a smaller callsign behind its own notch (the board's
+ * "/// MODE"). The section's scope outranks the Maintenance block's later `.subhead`. */
+.section .subhead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: var(--sp-5) 0 var(--sp-1);
+  font: 600 var(--fs-label) / 1.2 var(--font-mono);
+  letter-spacing: 0.16em;
+  color: var(--text-1);
+}
+.section .subhead::before {
+  content: "";
+  flex: none;
+  width: 14px;
+  height: 8px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.85;
 }
 /* The native colour well fills the round label so it reads as one more preset dot. */
 
@@ -311,18 +332,24 @@
   margin: 0 0 var(--sp-2);
   line-height: 0;
 }
+/* The board's readout list: the label in the kicker's voice, the value lit in mono. */
 .meta {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 4px 16px;
+  gap: 6px 24px;
   margin: 8px 0 0;
-  font-size: 13px;
+  font-size: var(--fs-row);
 }
 .meta dt {
-  color: var(--text-muted);
+  color: var(--text-3);
+  font: 500 var(--fs-label) / 1.8 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
 .meta dd {
   margin: 0;
+  font: 500 var(--fs-body) / 1.6 var(--font-mono);
+  color: var(--text-1);
   font-variant-numeric: tabular-nums;
   /* #289 mobile breakage: long values (platform strings, paths) overflowed the System card
    * at narrow widths — let the grid cell shrink and the value wrap instead. */
@@ -342,36 +369,18 @@
   gap: 8px 18px;
   margin-top: 12px;
 }
+/* About's links are the shared ghost plates at the compact size (#1574, board Y6). The link and the
+ * button version wear the same plate, so What's new, Source and Contact read as one row. */
 .aboutLink {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
+  composes: ghost compact from "../components/ui/actionButton.module.css";
   text-decoration: none;
-  border-bottom: 1px solid transparent;
 }
-/* What's new (#971): a button that reads as one of the About links beside it. */
 .aboutLinkButton {
-  padding: 0;
-  background: transparent;
-  border: 0;
-  border-bottom: 1px solid transparent;
-  border-radius: 0;
   font-family: inherit;
-  cursor: pointer;
-}
-.aboutLinkButton:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.aboutLink:hover {
-  color: var(--brand-soft);
-  border-bottom-color: var(--brand);
 }
 
 /* Connected agents */
+
 .agents {
   list-style: none;
   margin: 0;
@@ -433,7 +442,6 @@
   color: var(--text-muted);
   overflow-wrap: anywhere;
 }
-
 /* Host / Updates definition lists: the `<div>` only groups a dt/dd pair. It must NOT be a grid
  * item of its own — `.meta` is already the two-column label/value grid, so a row-as-item put
  * two ROWS side by side ("OS …  Platform …") and squeezed the second row's value to a character
@@ -444,22 +452,10 @@
 }
 
 /* Support */
+/* The support call to action: the shared primary plate (compact). */
 .coffee {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 14px;
-  border-radius: 0;
-  font-weight: 700;
+  composes: primary compact from "../components/ui/actionButton.module.css";
   text-decoration: none;
-  background: var(--cta-bg-1);
-  color: var(--cta-text);
-}
-.coffee:hover {
-  background: color-mix(in srgb, var(--accent) 84%, #fff);
-}
-.coffee:active {
-  background: var(--cta-bg-2);
 }
 
 /* Updates */
@@ -482,26 +478,28 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-size: 13px;
+  font-size: var(--fs-row);
   margin: 2px 0 10px;
 }
+/* The 2FA state tag (board Y1 "SETTING UP"): a mono tag on its own edge, never colour alone. */
 .twofaBadge {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  font: 600 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  padding: 2px 7px;
+  padding: 3px 7px;
+  border: 1px solid var(--line-strong);
   border-radius: 0;
 }
 /* 2FA on is a healthy state, so it wears the up status hue. `--ok` was never a token, and its blue
  * fallback painted instead (#948). */
 .twofaOn {
-  background: color-mix(in srgb, var(--status-up) 28%, transparent);
-  color: var(--text, #fff);
+  border-color: color-mix(in srgb, var(--status-up) 60%, transparent);
+  background: color-mix(in srgb, var(--status-up) 14%, transparent);
+  color: var(--ok-text);
 }
 .twofaOff {
-  background: var(--surface-2, #222);
-  color: var(--text-muted);
+  background: var(--bg-2);
+  color: var(--text-2);
 }
 .twofaActions {
   display: flex;
@@ -552,8 +550,8 @@
 }
 .subhead {
   margin: 14px 0 6px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -770,11 +768,9 @@
   padding: 2px 8px;
 }
 .enrollPanel {
+  composes: nj-frame-sm from global;
   margin-top: 12px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 0;
-  background: var(--surface-2);
+  padding: var(--sp-4);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -788,24 +784,36 @@
   border-radius: 0;
   image-rendering: pixelated;
 }
+/* The manual key reads in groups (board Y1): mono, spaced, on the field ground. */
 .manualKey {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 13px;
+  font: 500 var(--fs-title) / 1.4 var(--font-mono);
+  letter-spacing: 0.18em;
   word-break: break-all;
-  background: var(--surface-3);
+  background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: 0;
-  padding: 7px 9px;
+  padding: 8px 10px;
 }
+/* The code field: the nj-field look — the edge lights on focus with an inset ring. */
 .codeInput {
   width: 100%;
-  background: var(--surface-3);
-  color: var(--text, #fff);
+  min-height: 44px;
+  background: var(--bg-2);
+  color: var(--text);
   border: 1px solid var(--border);
   border-radius: 0;
   padding: 9px 11px;
-  font: inherit;
-  letter-spacing: 0.12em;
+  font: 500 var(--fs-title) var(--font-mono);
+  letter-spacing: 0.24em;
+  font-variant-numeric: tabular-nums;
+}
+.codeInput:hover {
+  border-color: var(--hud-dim);
+}
+.codeInput:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+  border-color: var(--hud);
 }
 .recoveryBox {
   border: 1px solid var(--border);
@@ -824,16 +832,16 @@
 }
 .warn {
   color: var(--warn-text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
 }
 .err {
   color: var(--danger-text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
 }
 /* Confirmed endpoint-validation state (#394). */
 .ok {
   color: var(--ok-text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
 }
 
 /* Project-visibility mode toggle (#335). */
@@ -847,7 +855,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: var(--fs-row);
   cursor: pointer;
 }
 /* Cap + brand the native radio so it matches the HUD (amber accent, square scale) and the
@@ -870,33 +878,27 @@
   max-width: 560px;
 }
 .aiFieldLabel {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-muted);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-3);
 }
 .aiInput {
-  background: var(--surface-3);
-  color: var(--text, #fff);
-  border: 1px solid var(--border);
-  border-radius: 0;
-  padding: 8px 10px;
-  font: inherit;
+  composes: nj-field from global;
 }
 .aiInput:focus-visible {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 /* A disabled control must LOOK disabled (#834). The model select/input is locked while the
  * endpoint above has unsaved edits (#394); with no rule here it rendered identically to a
  * live control, so the lock was only discoverable by clicking and getting nothing. */
 .aiInput:disabled {
-  opacity: 0.5;
+  opacity: 0.55;
   cursor: not-allowed;
   border-style: dashed;
 }
@@ -907,11 +909,11 @@
   flex: 1;
   min-width: 0;
   padding: 8px 10px;
-  border: 1px dashed var(--border);
-  background: var(--surface-3);
-  color: var(--text-muted);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12px;
+  border: 1px dashed var(--line-strong);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
   letter-spacing: 0.08em;
   line-height: 1.5;
   overflow: hidden;
@@ -919,13 +921,8 @@
   white-space: nowrap;
 }
 .aiKeyBadge {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  padding: 1px 6px;
+  composes: nj-stamp from global;
   color: var(--accent-text);
-  border: 1px solid var(--accent);
 }
 .aiModelRow {
   display: flex;
@@ -995,6 +992,9 @@
   align-items: center;
   gap: 8px;
 }
+.aiIntervalRow input[type="range"] {
+  accent-color: var(--accent);
+}
 .aiIntervalInput {
   width: 90px;
 }
@@ -1002,8 +1002,8 @@
   width: 100%;
   min-height: 140px;
   resize: vertical;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
   line-height: 1.5;
 }
 .aiActions {
@@ -1022,6 +1022,17 @@
   margin-bottom: 22px;
   padding-bottom: 18px;
   border-bottom: 1px solid var(--border-subtle);
+}
+/* A callout: copy that must be read before acting (YOLO, the AI-written directions heads-up). */
+.callout {
+  padding: var(--sp-2) var(--sp-3);
+  background: color-mix(in srgb, var(--hud) 6%, var(--bg-2));
+  border-left: 2px solid var(--hud);
+  color: var(--text-1);
+}
+.calloutWarn {
+  background: color-mix(in srgb, var(--status-degraded) 8%, var(--bg-2));
+  border-left-color: var(--status-degraded);
 }
 .aiToggle {
   display: flex;
@@ -1073,10 +1084,10 @@
 .activityRow {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: var(--sp-2);
   padding: 7px 2px;
   border-bottom: 1px solid var(--line);
-  font-size: 0.82rem;
+  font-size: var(--fs-row);
 }
 .activityRow:last-child {
   border-bottom: 0;
@@ -1089,7 +1100,7 @@
 .activityState {
   margin-left: auto;
   font-family: var(--font-mono);
-  font-size: 0.74rem;
+  font-size: var(--fs-label);
   color: var(--text-3);
 }
 
@@ -1171,28 +1182,26 @@
  * and the error treatment is a flat status-down rule + text rather than an LED — these are
  * failures of THIS panel, not session state, and a status LED means session state. */
 .promptNote {
-  margin: 0 0 12px;
-  padding: 8px 10px;
-  font-size: 12px;
+  margin: 0 0 var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
   line-height: 1.5;
-  color: var(--text-muted);
-  background: var(--surface-2);
-  border: 1px solid var(--border-subtle);
-  border-left: 3px solid var(--accent);
+  color: var(--text-2);
+  background: color-mix(in srgb, var(--hud) 6%, var(--bg-2));
+  border-left: 2px solid var(--hud);
 }
 .promptGroup {
-  margin: 16px 0 6px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
-  letter-spacing: 0.08em;
+  margin: var(--sp-4) 0 6px;
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--text-3, var(--text-muted));
+  color: var(--text-3);
 }
 .promptRow {
-  margin-bottom: 6px;
-  padding: 4px 10px 6px;
-  background: var(--surface-2);
-  border: 1px solid var(--border-subtle);
+  composes: nj-frame-quiet from global;
+  --c: var(--cut-sm);
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3) 6px;
 }
 .promptToggle {
   display: flex;
@@ -1211,8 +1220,8 @@
 .promptChev {
   flex: none;
   width: 10px;
-  font-size: 11px;
-  color: var(--text-3, var(--text-muted));
+  font-size: var(--fs-label);
+  color: var(--text-3);
 }
 .promptMain {
   flex: 1 1 auto;
@@ -1220,42 +1229,31 @@
 }
 .promptTitle {
   display: block;
-  font-size: 13px;
+  font-size: var(--fs-row);
   font-weight: 700;
 }
 .promptDesc {
   display: block;
   margin-top: 2px;
-  font-size: 11.5px;
+  font-size: var(--fs-label);
   line-height: 1.35;
   color: var(--text-muted);
 }
 .promptBadge {
+  composes: nj-stamp from global;
   flex: none;
-  padding: 2px 6px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  background: var(--badge-bg);
-  color: var(--badge-fg);
-  border: 1px solid var(--badge-bg);
+  color: var(--accent-text);
 }
 .promptBadgeGuard {
-  background: transparent;
-  color: var(--text-muted);
-  border-color: var(--border);
+  color: var(--text-3);
 }
 .promptContract {
-  margin: 8px 0;
-  padding: 6px 8px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
-  line-height: 1.5;
-  color: var(--text-3, var(--text-muted));
-  background: var(--surface-3);
-  border: 1px solid var(--border-subtle);
+  margin: var(--sp-2) 0;
+  padding: 6px var(--sp-2);
+  font: var(--fs-micro) / 1.5 var(--font-mono);
+  color: var(--text-3);
+  background: var(--bg-0);
+  border: 1px solid var(--line);
   overflow-x: auto;
 }
 .promptState {
@@ -1266,28 +1264,26 @@
   align-items: center;
   gap: 6px;
   margin: 8px 0 4px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 9.5px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--text-3, var(--text-muted));
+  color: var(--text-3);
 }
 .promptLockLabel::before {
   content: "";
   flex: none;
   width: 6px;
   height: 6px;
-  background: var(--accent);
+  background: var(--hud);
 }
 .promptLocked {
   margin: 0;
   padding: 7px 10px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--text-3, var(--text-muted));
-  background: var(--panel);
-  border: 1px solid var(--border);
+  font: var(--fs-label) / 1.5 var(--font-mono);
+  color: var(--text-3);
+  background: var(--bg-0);
+  border: 1px dashed var(--line-strong);
 }
 .promptOver {
   border-color: var(--status-down);
@@ -1295,24 +1291,19 @@
 .promptInlineError {
   margin: 8px 0 0;
   padding: 4px 0 4px 8px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1.4;
   color: var(--danger-text);
   border-left: 3px solid var(--status-down);
 }
 .promptError {
-  padding: 9px 11px;
-  font-size: 12.5px;
-  line-height: 1.45;
-  background: var(--surface-2);
-  border: 1px solid var(--status-down);
-  border-left-width: 3px;
+  composes: nj-error from global;
 }
 .promptCount {
   margin-left: auto;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
-  color: var(--text-3, var(--text-muted));
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--text-3);
 }
 .promptOverText {
   font-weight: 700;
@@ -1482,24 +1473,9 @@
   max-width: 320px;
 }
 .termSizeStep {
+  composes: icon from "../components/ui/actionButton.module.css";
   flex: none;
-  width: 44px;
-  min-height: 44px;
-  border: 1px solid var(--border);
-  border-radius: 0;
-  background: var(--bg-2);
-  color: var(--text);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 15px;
-  line-height: 1;
-  cursor: pointer;
-}
-.termSizeStep:hover:not(:disabled) {
-  border-color: var(--accent);
-}
-.termSizeStep:disabled {
-  opacity: 0.4;
-  cursor: default;
+  font: var(--fs-title) / 1 var(--font-mono);
 }
 .termSizeValue {
   flex: 1;
@@ -1507,11 +1483,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--accent);
+  border: 1px solid var(--line-strong);
+  border-top: 2px solid var(--hud);
   background: var(--bg-2);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 13px;
-  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-row);
+  color: var(--text-1);
 }
 .termSizeReset {
   composes: ghost from "../components/ui/actionButton.module.css";
@@ -1527,30 +1504,30 @@
   margin-top: 10px;
 }
 .fontCard {
+  composes: nj-plate from global;
+  --nj-face: var(--bg-0);
+  --nj-edge: var(--line-strong);
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 5px;
-  text-align: left;
-  /* 44px coarse-pointer floor is met by the content (three stacked lines) plus this padding;
-     min-height keeps it true if a note ever wraps to nothing. */
   min-height: 44px;
-  padding: 10px 11px;
-  border-radius: 0;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
+  padding: var(--sp-2) var(--sp-3);
+  text-align: left;
+  color: var(--text-1);
+  font: inherit;
   cursor: pointer;
 }
 .fontCard:hover:not(:disabled) {
-  border-color: var(--accent);
+  --nj-edge: var(--hud-dim);
 }
 .fontCard.active {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent) inset;
+  --nj-edge: var(--hud);
+  --nj-rail: var(--hud);
 }
 .fontCard:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 /* Unavailable = the primary face is not installed on THIS device. Disabled rather than hidden:
    an operator moving between a phone and a desktop should see that the card exists and simply
@@ -1560,25 +1537,25 @@
   cursor: default;
 }
 .fontCard.custom {
-  border-style: dashed;
+  --nj-edge: var(--hud-dim);
 }
 .fontName {
   font-weight: 700;
-  font-size: 13px;
+  font-size: var(--fs-row);
 }
 /* The specimen renders in the card's OWN face — that is the entire point of the control. */
 .fontSpecimen {
-  font-size: 13px;
-  color: var(--text-2, var(--text-muted));
+  font-size: var(--fs-row);
+  color: var(--text-2);
   white-space: pre;
   overflow: hidden;
 }
 .fontNote {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--text-3, var(--text-muted));
+  color: var(--text-3);
 }
 .fontCustomRow {
   display: flex;
@@ -1590,28 +1567,25 @@
   max-width: 420px;
 }
 .fontCustomInput {
+  composes: nj-field from global;
   flex: 1;
   min-width: 0;
   min-height: 44px;
-  padding: 0 10px;
-  border: 1px solid var(--accent);
-  border-radius: 0;
-  background: var(--bg-2);
-  color: var(--text);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
 }
 .fontCustomInput:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 .fontCustomInput.invalid {
-  border-color: var(--danger-text, var(--status-down));
+  border-color: var(--danger-text);
 }
 .fontCustomError {
   margin: 6px 0 0;
-  font-size: 11.5px;
-  color: var(--danger-text, var(--status-down));
+  font-size: var(--fs-label);
+  color: var(--danger-text);
 }
 
 /* The sample line renders at the CHOSEN size, so it must not inherit .hint's size. Mono,
@@ -1621,7 +1595,7 @@
   padding: 7px 9px;
   width: 100%;
   border: 1px solid var(--border);
-  background: var(--term-bg, var(--bg-1));
+  background: var(--term-bg);
   color: var(--text-muted);
   white-space: pre;
   overflow-x: auto;
@@ -1683,12 +1657,12 @@
  * foot. The foot sits on a dashed rule inside the card, so a save can never read as belonging
  * to the card below it (the #834 complaint about "Save & validate" in the middle). */
 .endpointStrip {
+  composes: nj-frame-quiet from global;
+  --c: var(--cut-sm);
   display: flex;
   flex-wrap: wrap;
-  max-width: 640px;
-  margin: 0 auto 18px;
-  background: var(--panel);
-  border: 1px solid var(--border);
+  max-width: var(--settings-col, 640px);
+  margin: 0 0 var(--sp-4);
 }
 .endpointStrip > span {
   display: flex;
@@ -1696,15 +1670,15 @@
   gap: 7px;
   min-width: 0;
   padding: 7px 12px;
-  border-right: 1px solid var(--border);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
+  border-right: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--text-3, var(--text-muted));
+  color: var(--text-3);
 }
 .endpointStrip b {
-  color: var(--text-2, var(--text));
+  color: var(--text-2);
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: none;
@@ -1715,7 +1689,7 @@
   border-right: 0;
 }
 .stepNum {
-  color: var(--brand, var(--accent-text));
+  color: var(--accent-text);
 }
 .endpointPlain {
   margin: 0 0 18px;
@@ -1740,21 +1714,22 @@
   align-items: center;
   gap: 8px;
   margin: 0 0 6px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--text-2, var(--text));
+  color: var(--text-2);
 }
 .cardFoot {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 10px;
-  margin: 16px -18px -16px;
-  padding: 11px 18px;
-  border-top: 1px dashed var(--border);
+  /* Reaches the section's edges: the negative margins cancel `.section`'s padding exactly. */
+  margin: var(--sp-4) calc(-1 * var(--sp-4)) calc(-1 * var(--sp-5));
+  padding: 11px var(--sp-4);
+  border-top: 1px dashed var(--line-strong);
 }
 .endpointPlain .cardFoot {
   margin: 12px 0 0;
@@ -1765,6 +1740,14 @@
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
+}
+/* A failed check or save in a card's foot is an alert block, not a stray red line (the board's
+ * "TEST FAILED"). Scoped to the foot: an inline `.err` elsewhere stays inline. */
+.cardFoot > .err {
+  padding: var(--sp-1) var(--sp-3);
+  font-family: var(--font-mono);
+  border-left: 2px solid var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 8%, transparent);
 }
 .cardActions {
   display: flex;
@@ -1779,13 +1762,13 @@
 .lockBand {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 8px 0 2px;
-  padding: 8px 10px;
-  font-size: 12px;
-  color: var(--text-muted);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
+  gap: var(--sp-2);
+  margin: var(--sp-2) 0 2px;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  background: var(--bg-2);
+  border-left: 2px solid var(--hud-dim);
 }
 /* Every control on this page is a 44px target on a phone (docs/design.md §8). */
 @media (max-width: 800px), (pointer: coarse) {
@@ -1820,7 +1803,7 @@
   white-space: nowrap;
   /* `inherit`, which is what this always rendered: `--font-sans` is not a token (#948). */
   font-family: inherit;
-  font-size: 11px;
+  font-size: var(--fs-label);
   letter-spacing: 0;
   text-transform: none;
   color: var(--text-muted);

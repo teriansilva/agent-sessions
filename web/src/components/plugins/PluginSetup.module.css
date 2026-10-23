@@ -3,14 +3,18 @@
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; }
 .actions > * { min-width: max-content; overflow-wrap: normal; }
 .field { display: grid; gap: 7px; min-width: 0; flex: 1 1 180px; }
-.field > span, .tag { font: 600 11px var(--font-mono); text-transform: uppercase; letter-spacing: .1em; color: var(--text-2); }
-.input { width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); font: 13px var(--font-mono); border-radius: 0; }
-.input:focus-visible, .check:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.field > span, .tag { font: 600 var(--fs-label) var(--font-mono); text-transform: uppercase; letter-spacing: .1em; color: var(--text-2); }
+/* The nj-field look: --bg-2, the edge lights on hover/focus, the focus ring inset (design.md §6). */
+.input { width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; background: var(--bg-2); color: var(--text); border: 1px solid var(--border); font: var(--fs-row) var(--font-mono); border-radius: 0; }
+.input:hover { border-color: var(--hud-dim); }
+.input:focus-visible { outline: 2px solid var(--accent-text); outline-offset: -3px; border-color: var(--hud); }
+.check:focus-within { outline: 2px solid var(--accent-text); outline-offset: 2px; }
 textarea.input { min-height: 180px; resize: vertical; }
-.panel { position: relative; border: 1px solid var(--line-strong); padding: 16px; background: var(--panel); min-width: 0; overflow-wrap: anywhere; }
-.panel h2, .panel h3 { margin: 0 0 12px; font: 600 17px var(--font-mono); color: var(--text); }
+/* A setup step's panel: the small NIGHTJAR frame (clips its chamfer); headings in the HUD caps. */
+.panel { composes: nj-frame-sm from global; position: relative; padding: var(--sp-4); min-width: 0; overflow-wrap: anywhere; }
+.panel h2, .panel h3 { margin: 0 0 12px; font: 600 var(--fs-body) var(--font-mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--text); }
 .panel p { margin: 0 0 12px; color: var(--text-2); line-height: 1.5; }
-.note { padding: 12px 14px; border-left: 3px solid var(--status-degraded); background: var(--surface-2); line-height: 1.5; color: var(--text); overflow-wrap: anywhere; }
+.note { padding: 12px 14px; border-left: 2px solid var(--status-degraded); background: color-mix(in srgb, var(--status-degraded) 10%, var(--bg-2)); line-height: 1.5; color: var(--text); overflow-wrap: anywhere; }
 .error { border-color: var(--status-down); color: var(--danger-text); }
 .ok { color: var(--ok-text); }
 .kv { display: grid; grid-template-columns: minmax(90px, .35fr) minmax(0, 1fr); gap: 12px; margin: 0; }
@@ -19,7 +23,7 @@ textarea.input { min-height: 180px; resize: vertical; }
 .check input { width: 20px; height: 20px; flex: none; accent-color: var(--accent); }
 .details summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; gap: 8px; color: var(--text); }
 .details summary::before { content: "▸"; } .details[open] summary::before { content: "▾"; }
-.digest { margin: 4px 0 12px; font: 11px/1.6 var(--font-mono); overflow-wrap: anywhere; }
+.digest { margin: 4px 0 12px; font: var(--fs-label) / 1.6 var(--font-mono); overflow-wrap: anywhere; }
 .checks { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
 .checks li { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); padding: 8px 0; min-width: 0; overflow-wrap: anywhere; }
 .checks small { display: block; color: var(--text-2); margin-top: 4px; }

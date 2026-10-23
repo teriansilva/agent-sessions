@@ -29,7 +29,7 @@
   min-height: 44px;
   padding: 0 4px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-label);
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -49,7 +49,7 @@
 .summary {
   margin: 0 0 6px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-3);
@@ -132,7 +132,7 @@
 .badgeSm {
   width: 30px;
   height: 30px;
-  font-size: 11px;
+  font-size: var(--fs-label);
 }
 .name {
   flex: 1 1 120px;
@@ -163,7 +163,7 @@
   padding: 4px 8px;
   border: 1px solid var(--border);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -405,7 +405,7 @@
   margin: 0 0 8px;
   padding: 0;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-label);
   font-weight: 600;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -427,16 +427,21 @@
   min-height: 48px;
   min-width: 0;
   padding: 6px 12px;
-  border: 1px solid var(--line);
-  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
   cursor: pointer;
 }
+.opt:hover {
+  border-color: var(--hud-dim);
+}
+/* The chosen card (#1574, board G2): a choice is the accent's — the edge and a faint tint. */
 .opt:has(input:checked) {
-  border-color: var(--text-2);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-2));
 }
 .opt:has(input:focus-visible) {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 /* A square radio: the design system has no radius outside the LEDs. */
 .opt input[type="radio"] {
@@ -458,10 +463,10 @@
   background: transparent;
 }
 .opt input[type="radio"]:checked {
-  border-color: var(--text);
+  border-color: var(--accent-text);
 }
 .opt input[type="radio"]:checked::after {
-  background: var(--text);
+  background: var(--accent);
 }
 .optGone {
   border-style: dashed;
@@ -475,14 +480,20 @@
 .optLabel {
   flex: 1;
   min-width: 0;
-  font-size: 13.5px;
+  font: 600 var(--fs-row) / 1.3 var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
   color: var(--text);
   overflow-wrap: anywhere;
 }
 .optLabel small {
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+.optLabel small {
   display: block;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-label);
   color: var(--text-3);
 }
 .warn {
@@ -490,11 +501,11 @@
   align-items: flex-start;
   gap: 12px;
   margin: 0 0 14px;
-  padding: 12px 14px;
-  border: 1px solid var(--status-degraded);
-  border-left-width: 3px;
-  background: var(--surface-3);
-  font-size: 13px;
+  padding: var(--sp-3) var(--sp-4);
+  border: 0;
+  border-left: 2px solid var(--status-degraded);
+  background: color-mix(in srgb, var(--status-degraded) 10%, var(--bg-2));
+  font-size: var(--fs-row);
   color: var(--text);
 }
 .warn :global(.hud-led) {
@@ -504,7 +515,7 @@
   display: block;
   margin-bottom: 3px;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-label);
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -525,8 +536,8 @@
   gap: 12px;
   min-height: 56px;
   padding: 8px 12px;
-  border: 1px solid var(--line);
-  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
   cursor: pointer;
 }
 .togText {
@@ -535,16 +546,16 @@
 }
 .togText b {
   display: block;
-  font-size: 13.5px;
+  font-size: var(--fs-body);
   font-weight: 600;
 }
 .togText small {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-2);
 }
 .togState {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--text-2);
@@ -571,15 +582,20 @@
   height: 20px;
   background: var(--text-3);
 }
+.switch::after {
+  transition: transform var(--t-fast) var(--ease-out);
+}
+/* On: the thumb slides (transform only) onto the HUD fill (nj-switch). */
 .switch:checked {
-  border-color: var(--text-1);
+  border-color: var(--hud);
+  background: color-mix(in srgb, var(--hud) 22%, var(--bg-2));
 }
 .switch:checked::after {
-  left: 27px;
-  background: var(--text-1);
+  transform: translateX(24px);
+  background: var(--hud);
 }
 .switch:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: 2px;
 }
 .where {
@@ -593,12 +609,12 @@
   gap: 4px 12px;
   padding: 9px 0;
   border-bottom: 1px solid var(--line);
-  font-size: 13px;
+  font-size: var(--fs-row);
 }
 .where dd {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-label);
   letter-spacing: 0.08em;
   color: var(--text-3);
 }
@@ -615,7 +631,7 @@
   text-transform: uppercase;
 }
 .saved {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--ok-text);
 }
 
