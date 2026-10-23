@@ -33,7 +33,9 @@ const HEAD = (from) =>
 
 /** The light block's body, applied when the DEVICE prefers light and no theme attribute is set. */
 function lightForDevice(tokens) {
-  const m = /:root\[data-theme="light"\]\s*\{([\s\S]*?)\n\}/.exec(tokens);
+  // The light block's selector may be a list (`:root[data-theme="light"], [data-theme-scope="light"]`
+  // since #1574): match through to its opening brace.
+  const m = /:root\[data-theme="light"\][^{]*\{([\s\S]*?)\n\}/.exec(tokens);
   if (!m) throw new Error('tokens.css has no :root[data-theme="light"] block');
   return (
     "\n/* The pages outside the SPA have no stored theme: they follow the device (#1596). */\n" +

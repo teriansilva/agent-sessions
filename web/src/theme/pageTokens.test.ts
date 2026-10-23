@@ -39,7 +39,7 @@ describe("the generated page stylesheets", () => {
   test("they follow the device's theme: the light tokens and the light primitives", () => {
     expect(text["tokens.css"]).toMatch(/@media \(prefers-color-scheme: light\) \{\n {2}:root:not\(\[data-theme\]\) \{/);
     // Every light value the app has applies on the device-light page too.
-    const light = /:root\[data-theme="light"\]\s*\{([\s\S]*?)\n\}/.exec(text["tokens.css"])![1];
+    const light = /:root\[data-theme="light"\][^{]*\{([\s\S]*?)\n\}/.exec(text["tokens.css"])![1];
     const names = [...light.matchAll(/(--[a-z0-9-]+):/g)].map((m) => m[1]);
     const device = text["tokens.css"].split("@media (prefers-color-scheme: light)")[1];
     for (const n of names) expect(device, n).toContain(`${n}:`);

@@ -11,6 +11,10 @@
  * `:root[data-theme="dark"]` restates it for an explicit choice. They must stay identical —
  * pinned by theme/tokens.test.ts.
  *
+ * Each mode block also answers to `[data-theme-scope="dark|light"]` (#1574): an element (the
+ * Interface page's mode previews) can show a mode other than the page's by reading the SAME
+ * values — no preview palette. Both mode blocks therefore declare the same token set.
+ *
  * (Originally: near-black ground, phosphor-amber accent, semantic-colour LEDs; rebranded from
  * the TermRoyale royal/indigo+gold theme — royal is retired and migrates to dark.)
  */
@@ -225,8 +229,23 @@
  * (specificity 0,2,0) deterministically beats the bare :root. Interactive-text contrast is
  * held to WCAG AA (text/bg and --on-accent on --accent ≥4.5:1), locked by contrast.test.ts.
  * The accent is light (amber), so text that sits ON it uses dark --on-accent, never white. */
-:root[data-theme="dark"] {
+:root[data-theme="dark"],
+[data-theme-scope="dark"] {
   color-scheme: dark;
+  /* Restated from the bare :root (#1574): a dark-SCOPED preview on a light page must not inherit
+   * these from the light block, so both mode blocks declare the same token set (tokens.test.ts). */
+  --accent-text: var(--accent);
+  --danger-text: color-mix(in srgb, var(--status-down) 55%, var(--text-1));
+  --ok-text: color-mix(in srgb, var(--status-up) 60%, var(--text-1));
+  --warn-text: color-mix(in srgb, var(--status-degraded) 60%, var(--text-1));
+  --diff-add-bg: color-mix(in srgb, var(--status-up) 14%, transparent);
+  --diff-add-fg: var(--status-up);
+  --diff-del-bg: color-mix(in srgb, var(--status-down) 16%, transparent);
+  --diff-del-fg: color-mix(in srgb, var(--status-down) 55%, var(--text-1));
+  --git-add-fg: var(--status-up);
+  --git-del-fg: color-mix(in srgb, var(--status-down) 55%, var(--text-1));
+  --git-mod-fg: var(--status-degraded);
+  --git-unknown-fg: color-mix(in srgb, var(--status-unknown) 75%, var(--text-1));
   --bg-0: #0d0e10;
   --bg-1: #131418;
   --bg-2: #1a1c21;
@@ -285,7 +304,8 @@
   --shadow-drawer: 0 0 32px rgba(0, 0, 0, 0.5);
   --rec: #ff5a5a;
 }
-:root[data-theme="light"] {
+:root[data-theme="light"],
+[data-theme-scope="light"] {
   color-scheme: light;
   --bg-0: #e7e8ea;
   --bg-1: #f2f3f5;
