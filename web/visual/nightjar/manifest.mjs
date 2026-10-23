@@ -1173,6 +1173,112 @@ export const SWEEP = [
     present: "[data-testid='turn-pending']",
   },
   // ---- /PR4a console ----
+  // ---- PR5a outside ---- (#1596, Phase 12: the pages outside the SPA)
+  // The server's own pages (sign-in, TOTP, password, device link, the share placeholder) are
+  // rendered by the Python app: `served` ids are photographed by that spec's capture mode
+  // (NIGHTJAR_CAPTURE_DIR), at the same widths and themes, named like the sweep's.
+  ...[
+    "page:login",
+    "page:login-error",
+    "page:login-qr",
+    "page:totp",
+    "page:totp-error",
+    "page:password",
+    "page:password-error",
+    "page:link-confirm",
+    "page:link-approved",
+    "page:link-denied",
+    "page:link-invalid",
+    "page:share-placeholder",
+  ].map((id) => ({ id, path: "/login", served: "e2e/appmode-served-pages.spec.ts" })),
+  // The Home Free connect page, through its own harness seam (no relay): the form, the verified
+  // gate, the dialog, connecting, the error card (a relay `offline` frame on the real mount path),
+  // and the session bar over the streamed app.
+  ...(() => {
+    const harness = (mode) =>
+      `window.__battlelabConnectHarness = { holdMs: 60, makeWebSocket: () => { const ws = { binaryType: "arraybuffer", readyState: 1, onmessage: null, onopen: null, onclose: null, onerror: null, send(d) { if (${JSON.stringify(mode)} === "offline" && typeof d === "string" && d.includes('"hello"')) setTimeout(() => ws.onmessage && ws.onmessage({ data: JSON.stringify({ t: "error", code: "offline" }) }), 0); }, close() {} }; return ws; }, ${
+        mode === "paired"
+          ? `mountApp: async (_w, _k, _c, o) => { o && o.onEvent && o.onEvent({ type: "paired", deadline: Math.floor(Date.now() / 1000) + 14100, ttl: 14400 }); document.getElementById("app-root").textContent = "[ the streamed BattleLab app ]"; return { teardown() {} }; },`
+          : ""
+      } };`;
+    const ALTCHA = { "re:/altcha/challenge": { algorithm: "SHA-256", challenge: "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9", salt: "", signature: "s", maxnumber: 0 } };
+    const filled = [
+      { css: "#name", fill: "viper-8231" },
+      { css: "#key", fill: "stream-secret" },
+      { css: "#relay-options summary" },
+      { css: "#relay", fill: "https://relay.example" },
+      { css: "#relay-options summary" },
+      { hold: 400, css: "#gate-hold" },
+    ];
+    const go = [...filled, { css: "#connect" }];
+    return [
+      { id: "connect:signed-out", path: "/connect.html", ready: undefined, init: harness("") },
+      { id: "connect:verified", path: "/connect.html", init: harness(""), open: filled, present: '#verify-gate[data-state="verified"]' },
+      { id: "connect:dialog", path: "/connect.html", open: [{ css: "#how-it-works" }], expect: "dialog" },
+      { id: "connect:connecting", path: "/connect.html", init: harness("hang"), api: ALTCHA, open: go, present: "#connect-progress" },
+      { id: "connect:error", path: "/connect.html", init: harness("offline"), api: ALTCHA, open: go, present: "#connect-error" },
+      { id: "connect:connected", path: "/connect.html", init: harness("paired"), api: ALTCHA, open: go, present: "#session-box" },
+    ];
+  })(),
+  // The public share viewer at /p/<token> (share.html), one id per phase, `/api/public/*` answered
+  // per capture. The open conversation is e2e/public-share.spec.ts's full flow.
+  ...(() => {
+    const P = "/p/tok" + "x".repeat(40);
+    const share = (kind) => ({ share: { link: "L1", kind, mode: "view", title: "Fix the auth redirect loop", expires_at: null, name: null, name_required: false }, csrf: "c" });
+    const pw = { "/api/public/unlock": { status: 401, json: { password_required: true, tries_left: 2 } } };
+    return [
+      { id: "share:loading", path: P, document: "/share.html", holdAsset: "/api/public/unlock", at: 1200 },
+      { id: "share:password", path: P, document: "/share.html", api: pw, present: "[data-testid=share-password-gate]" },
+      {
+        id: "share:password-error",
+        path: P,
+        document: "/share.html",
+        api: pw,
+        open: [{ css: "#share-pw", fill: "wrong one" }, { role: "button", name: "Open session" }],
+        present: "[data-testid=share-password-gate] [role=alert]",
+      },
+      {
+        id: "share:password-wait",
+        path: P,
+        document: "/share.html",
+        api: pw,
+        open: [
+          { api: { "/api/public/unlock": { status: 429, json: { detail: "too many tries" } } } },
+          { css: "#share-pw", fill: "wrong again" },
+          { role: "button", name: "Open session" },
+        ],
+        present: "[data-testid=share-password-gate] [role=alert]",
+      },
+      { id: "share:unavailable", path: P, document: "/share.html", api: { "/api/public/unlock": { status: 404, json: {} } }, present: "[data-testid=share-unavailable]" },
+      { id: "share:relink", path: "/p/", document: "/share.html", api: { "/api/public/share": { status: 401, json: {} } }, present: "[data-testid=share-relink]" },
+      {
+        id: "share:nocookie",
+        path: P,
+        document: "/share.html",
+        api: { "/api/public/unlock": share("api"), "re:/api/public/(session|events)": { status: 401, json: {} } },
+        present: "[data-testid=share-nocookie]",
+      },
+      { id: "share:offline", path: P, document: "/share.html", api: { "/api/public/unlock": { status: 503, json: { detail: "restarting" } } }, present: "[data-testid=share-offline]" },
+      { id: "share:terminal", path: P, document: "/share.html", api: { "/api/public/unlock": share("terminal") }, present: "[data-testid=share-terminal-pending]" },
+      {
+        id: "share:open",
+        path: P,
+        document: "/share.html",
+        api: {
+          "/api/public/unlock": { ...share("api"), share: { ...share("api").share, mode: "send", name: "Alex" } },
+          "/api/public/share": { ...share("api"), share: { ...share("api").share, mode: "send", name: "Alex" } },
+          "/api/public/session": {
+            link: "L1", revision: 3, event_cursor: 3, state: "idle", active_turn: null, model: "gpt-5-codex", omitted_turns: 0,
+            pending_requests: [], read_only: false, images: true, can_send: true, mission_held: false, background: false,
+            turns: [{ turn_id: "t1", state: "completed", delivery: null, text: "Login bounces between /login and / after the cookie refresh. Find out why.", text_truncated: false, reply: "The refresh middleware re-issues the cookie with `Path=/api`, so the SPA shell never sees it.", reply_ts: 1800000000, reply_truncated: false, attachments: [], tools: [{ name: "read", outcome: "ok", summary: "src/auth/middleware.py · 212 lines" }], tools_truncated: false, author: null, mine: false }],
+          },
+          "/api/public/events": { link: "L1", revision: 3, next_cursor: 3, events: [] },
+        },
+        present: "[data-testid=share-composer]",
+      },
+    ];
+  })(),
+  // ---- /PR5a outside ----
 ];
 
 // 834: an iPad in portrait, the width the 800 px breakpoint used to hand the desktop layout.

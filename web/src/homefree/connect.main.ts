@@ -6,7 +6,16 @@
 // canonicalization. This page is standalone and NOT linked from the app — it exists
 // for reaching a box through the relay.
 
-import { runButtonGlitch, runDataFlow } from "../components/hud/dataFlow";
+// The app's own sheets, not a copy (#1596): index.css carries the palette, the faces, the motion
+// modes and the NIGHTJAR primitives (appMount.ts needs it for the streamed app anyway), then the
+// page's layout on them. Imported FIRST so connect.css comes after the primitives it composes
+// (a plate's `--nj-face` set here must override nightjar.css's default, not lose to it). Vite links
+// both in the page's <head>, so the card paints before any script runs.
+import "../index.css";
+import "./connect.css";
+
+import { runButtonGlitch } from "../components/hud/dataFlow";
+import { bootPageTheme } from "../theme/applyTheme";
 import { applyMotion, prefersReducedMotion, resolveMotion, startMotionPause } from "../theme/motion";
 import {
   type AltchaChallenge,
@@ -16,6 +25,7 @@ import {
   solveAltcha,
 } from "./connect";
 import { type MountedApp, mountApp } from "./appMount";
+import { CONNECT_STEPS, connectSteps, errorState, renderConnectState } from "./connectState";
 import { sessionExpiredMessage, sessionExpiryMs } from "./sessionWindow";
 
 type UiState = "signed-out" | "connecting" | "connected";
@@ -51,7 +61,12 @@ const byId = (id: string): HTMLElement => {
 };
 
 const body = document.body;
-const bgCanvas = byId("bg") as HTMLCanvasElement;
+const card = byId("connect-title").closest<HTMLElement>(".connect-card")!;
+const connectView = byId("connect-view");
+const progressHost = byId("connect-progress");
+const errorHost = byId("connect-error");
+const uplinkLabel = byId("uplink-label");
+const uplinkLed = card.querySelector<HTMLElement>(".link-led");
 const howModal = byId("how-modal") as HTMLDialogElement;
 const howOpenBtn = byId("how-it-works") as HTMLButtonElement;
 const howCloseBtn = byId("how-close") as HTMLButtonElement;
@@ -92,33 +107,75 @@ function isPublicDeploy(): boolean {
   );
 }
 
-// The motion mode (#1531): this public page has no stored setting, so it follows the device's
-// prefers-reduced-motion. Set before the ambient pair starts and before the SPA streams in, whose
-// stylesheets key every reduced rule off `data-motion`.
+// The theme (#1596): the device's stored BattleLab choice, else its colour scheme. The motion mode
+// (#1531): this public page has no stored setting, so it follows the device's
+// prefers-reduced-motion. Both are set before the ambient loops start and before the SPA streams
+// in, whose stylesheets key every theme and reduced rule off `data-theme` / `data-motion`.
+bootPageTheme();
 applyMotion(resolveMotion("system", prefersReducedMotion()));
 
-// The ambient HUD backdrop + button glitch, shared with the SPA (components/hud/dataFlow).
-// Both are torn down once the streamed app takes the screen — it mounts its own pair.
-let stopDataFlow: (() => void) | null = null;
+// The ambient: the atmosphere in the markup (`.nj-atmo`, CSS only — it follows `data-motion` and
+// `data-motion-paused` by itself) and the button glitch, shared with the SPA
+// (components/hud/dataFlow). The glitch is torn down once the streamed app takes the screen — it
+// mounts its own.
 let stopGlitch: (() => void) | null = null;
 // This page owns the hidden-tab / idle pause (#1531) while its own ambient pair runs; once the
 // streamed app takes the screen, the app's MotionProvider owns it.
 let stopPause: (() => void) | null = null;
 
 function setAmbient(on: boolean): void {
-  if (on && !stopDataFlow) {
+  if (on && !stopGlitch) {
     stopPause = startMotionPause();
-    stopDataFlow = runDataFlow(bgCanvas);
     stopGlitch = runButtonGlitch();
     return;
   }
   if (!on) {
-    stopDataFlow?.();
     stopGlitch?.();
     stopPause?.();
-    stopDataFlow = null;
     stopGlitch = null;
     stopPause = null;
+  }
+}
+
+// What the card shows (#1596): the form, the connecting steps, or the error card with Back and
+// Retry. The uplink tag in the card's head says the same in words.
+type CardView = "form" | "progress" | "error";
+const UPLINK: Record<CardView, [string, string]> = {
+  form: ["hud-led idle link-led", "Uplink // Offline"],
+  progress: ["hud-led link-led", "Uplink // Acquiring"],
+  error: ["hud-led down link-led", "Uplink // Failed"],
+};
+
+function showView(view: CardView): void {
+  card.dataset.view = view;
+  connectView.hidden = view !== "form";
+  progressHost.hidden = view !== "progress";
+  errorHost.hidden = view !== "error";
+  if (view !== "progress") progressHost.textContent = "";
+  if (view !== "error") errorHost.textContent = "";
+  if (uplinkLed) uplinkLed.className = UPLINK[view][0];
+  uplinkLabel.textContent = UPLINK[view][1];
+}
+
+// How far the attempt in flight got: the challenge, the relay, the box, the key exchange.
+let reached = 0;
+let attemptBox = "";
+
+function showProgress(): void {
+  showView("progress");
+  renderConnectState(progressHost, { kind: "loading", box: attemptBox, steps: connectSteps(reached, "active") });
+}
+
+/** Back to the form after a failure. Retry lands on the gate (the next attempt needs a fresh
+ *  hold, #690); Back lands on the console key, to change what was entered. */
+function leaveError(to: "gate" | "key"): void {
+  showView("form");
+  if (to === "gate") {
+    setStatus("hold to verify you're human, then press Connect to retry");
+    gateHoldBtn.focus();
+  } else {
+    setStatus("Enter your console key and access password, then hold to verify you're human.");
+    nameInput.focus();
   }
 }
 
@@ -347,7 +404,7 @@ barNarrowMq.addEventListener("change", () => {
 function setSessionLed(kind: "up" | "warn" | "down"): void {
   if (sessionLed)
     sessionLed.className =
-      kind === "up" ? "session-led" : `session-led ${kind}`;
+      kind === "up" ? "session-led hud-led" : `session-led hud-led ${kind}`;
 }
 
 sessionToggle.addEventListener("click", () =>
@@ -356,7 +413,30 @@ sessionToggle.addEventListener("click", () =>
 
 let countdownTimer: number | undefined;
 let expiryTimer: number | undefined;
-let activeApp: MountedApp | null = null;
+
+/** One connect attempt, from Connect to its end (#1601 review 6800). Every exit — sign out, a relay
+ *  close or expiry, the saved window running out, a newer attempt — aborts it; whatever the attempt
+ *  still had in flight checks `signal` when it lands, so a mount that resolves after its attempt
+ *  ended is torn down on arrival and assigns nothing. */
+interface Attempt {
+  ctl: AbortController;
+  app: MountedApp | null;
+  /** Settles once the attempt's own connect() has finished — including tearing down a late mount. */
+  settled: Promise<void>;
+}
+let attempt: Attempt | null = null;
+/** The newest attempt's `settled` — kept after the attempt ends, so the next one can wait for it. */
+let lastSettled: Promise<void> = Promise.resolve();
+
+/** Run `fn` at most once — a teardown reached from two exits closes the tunnel once. */
+function once(fn: () => void): () => void {
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    fn();
+  };
+}
 
 function stopTimer(timer: number | undefined): undefined {
   if (timer) window.clearTimeout(timer);
@@ -454,9 +534,11 @@ function startCountdown(deadline: number): void {
   stopCountdown();
   const tick = () => {
     const left = Math.max(0, Math.floor(deadline - Date.now() / 1000));
-    const m = String(Math.floor(left / 60)).padStart(2, "0");
+    // H:MM:SS for the 4-hour window (#1596: "234:59" read as minutes), MM:SS in the last hour.
+    const h = Math.floor(left / 3600);
+    const m = String(Math.floor((left % 3600) / 60)).padStart(2, "0");
     const s = String(left % 60).padStart(2, "0");
-    countdownEl.textContent = `${m}:${s}`;
+    countdownEl.textContent = h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
     updateToggleLabel(); // keep the collapsed control's accessible name/tooltip current
     if (left <= 0) endSession(sessionExpiredMessage(), "expired");
   };
@@ -470,19 +552,27 @@ function resetForm(clearIdentity = false): void {
     keyInput.value = "";
   }
   resetGate(); // every error/close/expiry/sign-out re-gates the next attempt (#690)
+  showView("form");
   setState("signed-out");
 }
 
-function teardownActiveApp(): void {
-  activeApp?.teardown();
-  activeApp = null;
+/** End the attempt in flight, if any: abort it (closing its relay socket) and tear its app down.
+ *  Idempotent — every exit path calls it, and a second call finds nothing to end. */
+function endAttempt(): void {
+  const a = attempt;
+  attempt = null;
+  if (!a) return;
+  a.ctl.abort();
+  const app = a.app;
+  a.app = null;
+  app?.teardown();
 }
 
 function endSession(
   message: string,
   reason: "expired" | "closed" | "signed-out",
 ): void {
-  teardownActiveApp();
+  endAttempt();
   clearSavedSession();
   stopCountdown();
   if (reason === "signed-out") {
@@ -530,26 +620,82 @@ async function connect(): Promise<void> {
     return;
   }
 
+  // A newer attempt supersedes any still in flight, and waits for the previous one — even one that
+  // already ended but whose mount is still out — to land (and be torn down) before mounting: two
+  // apps never share the tunnel seams or #app-root.
+  const previous = lastSettled;
+  endAttempt();
+  const ctl = new AbortController();
+  let settle!: () => void;
+  const mine: Attempt = {
+    ctl,
+    app: null,
+    settled: new Promise<void>((r) => (settle = r)),
+  };
+  attempt = mine;
+  lastSettled = mine.settled;
+
   setState("connecting");
   sessionNameEl.textContent = `Connecting to ${name}`;
   setStatus("solving the relay challenge…");
+  reached = 0;
+  attemptBox = name;
+  showProgress();
 
   try {
-    activeApp = await connectApp(base, name, key);
+    await previous;
+    if (ctl.signal.aborted) return;
+    const { app, deadline } = await connectApp(base, name, key, ctl.signal);
+    const teardown = once(app.teardown);
+    if (ctl.signal.aborted) {
+      // The attempt ended (sign out, close, expiry, a newer attempt) while the app was still
+      // mounting: nothing may keep its tunnel. Tear it down now; assign nothing.
+      teardown();
+      return;
+    }
+    mine.app = { teardown };
+    // Live only now the app is mounted (#1601 review 6800): until here the card holds the screen,
+    // so there is no empty app and no Sign out to race the mount.
+    reached = CONNECT_STEPS.length;
+    canonicalizeConnectedUrl();
+    sessionNameEl.textContent = `Connected to ${name}`;
+    setState("connected");
+    setStatus("connected — streaming your BattleLab, the relay is blind", "ok");
+    saveSession(base, name, key, deadline);
+    if (deadline) startCountdown(deadline);
   } catch (err) {
-    const code = err instanceof ViewerError ? err.code : String(err);
-    teardownActiveApp();
+    // A failure that lands after its attempt ended belongs to nobody: the page has moved on.
+    if (ctl.signal.aborted) return;
+    const code =
+      err instanceof ViewerError
+        ? err.code
+        : err instanceof Error && err.name === "HandshakeError"
+          ? "handshake"
+          : String(err);
+    endAttempt();
     setStatus(`could not connect: ${code}`, "error");
     resetForm();
+    // The error card (#1596): which step failed, what it means, and Back / Retry.
+    showView("error");
+    renderConnectState(errorHost, errorState(code, name, reached), {
+      onBack: () => leaveError("key"),
+      onRetry: () => leaveError("gate"),
+    });
+    errorHost.querySelector<HTMLButtonElement>(".primary")?.focus();
+  } finally {
+    settle();
   }
 }
 
-/** Solve the captcha, open the relay socket, then mount the real BattleLab SPA over the tunnel. */
+/** Solve the captcha, open the relay socket, then mount the real BattleLab SPA over the tunnel.
+ *  Every event is fenced by `signal`: once the attempt ends, its socket is closed and nothing it
+ *  reports reaches the page. */
 async function connectApp(
   base: string,
   name: string,
   key: string,
-): Promise<MountedApp> {
+  signal: AbortSignal,
+): Promise<{ app: MountedApp; deadline: number | undefined }> {
   const { altchaUrl, wsUrl } = relayUrls(base, name);
   const fetchFn = window.fetch.bind(window);
   const makeWebSocket =
@@ -558,24 +704,38 @@ async function connectApp(
   const mount = harness()?.mountApp ?? mountApp;
 
   const challenge = (await (
-    await fetchFn(altchaUrl)
+    await fetchFn(altchaUrl, { signal })
   ).json()) as AltchaChallenge;
+  signal.throwIfAborted();
   const captcha = solveAltcha(challenge);
   setStatus("connecting to the relay…");
+  reached = 1;
+  showProgress();
 
   const ws = makeWebSocket(wsUrl);
-  return mount(ws, key, captcha, {
+  // Ending the attempt closes its relay socket at once — a handshake or mount still in flight
+  // cannot keep a live tunnel behind a signed-out page.
+  signal.addEventListener("abort", () => ws.close(), { once: true });
+  // The card renders every step as it happens (#1596): the socket opens (the relay is reached,
+  // the box is next), the relay pairs the box (the key exchange is next), the key exchange
+  // finishes (the app streams in next) — and only a mounted app takes the screen.
+  let deadline: number | undefined;
+  const app = await mount(ws, key, captcha, {
     onEvent: (evt) => {
-      if (evt.type === "paired") {
-        canonicalizeConnectedUrl();
-        sessionNameEl.textContent = `Connected to ${name}`;
-        setState("connected");
-        setStatus(
-          "connected — streaming your BattleLab, the relay is blind",
-          "ok",
-        );
-        saveSession(base, name, key, evt.deadline);
-        if (evt.deadline) startCountdown(evt.deadline);
+      if (signal.aborted) return; // a late event of an attempt that already ended
+      if (evt.type === "open") {
+        reached = 2; // the relay answered; it looks for the box next
+        setStatus("relay reached — finding your box…");
+        showProgress();
+      } else if (evt.type === "paired") {
+        reached = 3; // the relay found the box; the key exchange runs next
+        deadline = evt.deadline;
+        setStatus("box found — exchanging keys…");
+        showProgress();
+      } else if (evt.type === "secured") {
+        reached = CONNECT_STEPS.length; // every step done; the app is streaming in
+        setStatus("keys exchanged — loading your BattleLab…");
+        showProgress();
       } else if (evt.type === "warn") {
         setStatus(
           `session ends soon (${evt.remaining ?? "<5m"}s) — reconnect after`,
@@ -589,6 +749,7 @@ async function connectApp(
       }
     },
   });
+  return { app, deadline };
 }
 
 form.addEventListener("submit", (event) => {

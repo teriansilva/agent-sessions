@@ -6,7 +6,7 @@
 // shows the static hex grid only.
 //
 // Deliberately cosmetic and non-interactive (pointer-events: none, behind everything). The
-// standalone connect shell still runs hud/dataFlow.ts's trails until its own NIGHTJAR pass.
+// Home Free connect page (web/connect.html) wears the same markup (#1596).
 export function Atmosphere() {
   return (
     <div className="nj-atmo" aria-hidden="true" data-testid="nj-atmo">

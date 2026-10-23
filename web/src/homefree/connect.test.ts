@@ -184,10 +184,13 @@ describe("runAppSession", () => {
     const relay = fakeAppRelay(serverWs, key, received);
 
     const frames: Uint8Array[] = [];
+    const events: string[] = [];
     const handle = await runAppSession(clientWs, key, "captcha", {
       onFrame: (f) => frames.push(f),
-      onEvent: () => {},
+      onEvent: (e) => events.push(e.type),
     });
+    // Each step the connect card renders, in order (#1596); the session is live only once secured.
+    expect(events).toEqual(["open", "paired", "secured"]);
     handle.sendFrame(new Uint8Array([1, 2, 3])); // a mux frame after the advert
     await relay;
     await new Promise((r) => setTimeout(r, 20)); // let the echo arrive
@@ -200,11 +203,13 @@ describe("runAppSession", () => {
   it("rejects a wrong access key at the handshake", async () => {
     const [clientWs, serverWs] = linkedPair();
     void fakeAppRelay(serverWs, "correct-key", []).catch(() => {});
+    const events: string[] = [];
     await expect(
       runAppSession(clientWs, "wrong-key", "x", {
         onFrame: () => {},
-        onEvent: () => {},
+        onEvent: (e) => events.push(e.type),
       }),
     ).rejects.toThrow(); // the Initiator handshake rejects a bad key (generic Error)
+    expect(events).toEqual(["open", "paired"]); // never `secured`: the session never went live
   });
 });

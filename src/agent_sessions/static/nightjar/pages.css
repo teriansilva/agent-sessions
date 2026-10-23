@@ -1,0 +1,293 @@
+/* The pages outside the SPA (#1596, epic #1531 Phase 12): sign-in, the TOTP step, change
+ * password, device-link approve and the share placeholder. Server-rendered, before sign-in, with
+ * no JavaScript of their own (the QR panel's /static/link.js aside). They load, in order:
+ *   fonts.css · tokens.css · motion.css · nightjar.css  — GENERATED copies of the app's own sheets
+ *   (web/scripts/emit-page-tokens.mjs) — and this file, the page layout on those primitives.
+ *
+ * Tokens only: every colour, size and duration is a `var()` from tokens.css (the QR tile's quiet
+ * zone is `--qr-ground`, white in either theme so a camera can read it). No classification text
+ * and no telemetry on these pages (Phase 0 decision 4). */
+
+/* ---------- theme and motion: these pages have no stored choice ---------- */
+/* tokens.css applies its light set under `prefers-color-scheme: light` for exactly this case. */
+/* motion.css keys on `data-motion`, which nothing sets here: the pages run in Full unless the
+ * device asks to reduce motion — then nothing loops and nothing rises (the static look is
+ * complete on its own, as in the app's Off). */
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion]) *,
+  :root:not([data-motion]) *::before,
+  :root:not([data-motion]) *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  /* The sweep band is not a still image, so it goes (nightjar.css does the same for Reduced). */
+  :root:not([data-motion]) .nj-atmo .nj-sweep {
+    display: none;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+body.nj-page {
+  min-height: 100dvh;
+  background: var(--bg-0);
+  color: var(--text-1);
+  /* The family is tokens.css's own `:root` font (the system stack the app reads). */
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- layout ---------- */
+.page-shell {
+  position: relative;
+  z-index: var(--z-raised);
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-5) var(--sp-4);
+}
+.page-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  width: min(400px, 100%);
+}
+/* The card: THE panel (nj-frame) with its lit rail along the top edge. */
+.page-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-5) var(--sp-5) var(--sp-4);
+}
+/* A card that is the page's only content (TOTP, password, device link, the share placeholder)
+ * takes the stack's width itself. */
+.page-shell > .page-card {
+  width: min(400px, 100%);
+}
+.page-shell > .page-card.is-wide {
+  width: min(480px, 100%);
+}
+.page-brand {
+  margin: 0;
+  line-height: 0;
+}
+/* The brand kit's lockup (#1590), inlined by the logo slot: 28 px tall. */
+.page-brand .brand-lockup {
+  display: block;
+  height: 28px;
+  width: auto;
+}
+.brand-glyph {
+  display: inline-block;
+  height: 0.8em;
+  width: auto;
+  vertical-align: baseline;
+}
+/* On a light ground the whole word goes dark (the kit's on-light lockup); the plate keeps its
+ * amber and its dark glyph. The words are the lockup's direct <path> children — the plate and
+ * glyph sit in its <g>. The kit draws them #07080A; the theme's ink is --text-1. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .page-brand .brand-lockup > path {
+    fill: var(--text-1);
+  }
+}
+
+.page-callsign {
+  margin: 0;
+}
+.page-title {
+  margin: 0;
+  font: 600 var(--fs-h2) / 1.2 var(--font-display);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+}
+.page-lede {
+  margin: 0;
+  color: var(--text-2);
+}
+.page-hint {
+  margin: 0;
+  font-size: var(--fs-row);
+  color: var(--text-3);
+}
+
+/* ---------- form ---------- */
+.page-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.page-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+}
+.page-label {
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.page-field .nj-field {
+  min-height: 44px;
+}
+/* The error line: the down LED and the danger ink, announced as it appears. */
+.page-error {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font: 500 var(--fs-row) / 1.4 var(--font-mono);
+  color: var(--danger-text);
+}
+
+/* ---------- buttons: plates (nj-plate), the whole rectangle the hit area ---------- */
+.page-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: 44px;
+  padding: 0 var(--sp-4);
+  border: 1px solid transparent;
+  font: 700 var(--fs-label) / 1 var(--font-display);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  cursor: pointer;
+  --nj-face: var(--accent);
+  --nj-edge: var(--accent);
+  color: var(--on-accent);
+}
+.page-btn:hover {
+  --nj-face: color-mix(in srgb, var(--accent) 86%, var(--text-1));
+}
+.page-btn:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -4px;
+}
+.page-btn.is-ghost {
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--border);
+  color: var(--text-1);
+}
+.page-btn.is-ghost:hover {
+  --nj-edge: var(--hud-dim);
+}
+.page-actions {
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.page-actions form {
+  margin: 0;
+}
+
+/* ---------- facts and callouts ---------- */
+.page-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-1) var(--sp-3);
+  margin: 0;
+  font-size: var(--fs-row);
+}
+.page-facts dt {
+  font: 500 var(--fs-micro) / 1.6 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.page-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  color: var(--text-1);
+}
+.page-warn {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--status-degraded);
+  background: color-mix(in srgb, var(--status-degraded) 8%, var(--bg-1));
+  color: var(--warn-text);
+  font-size: var(--fs-row);
+}
+
+/* ---------- QR sign-in (#650): revealed by /static/link.js once a challenge exists ---------- */
+#qr-extra[hidden] {
+  display: none;
+}
+.page-or {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  font: 500 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.page-or::before,
+.page-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.page-qr {
+  align-items: center;
+  text-align: center;
+}
+.page-qr .page-callsign {
+  align-self: stretch;
+}
+/* A QR must be dark modules on a light quiet zone for a camera, in either theme (`--qr-ground`). */
+.qr-tile {
+  width: 188px;
+  height: 188px;
+  display: grid;
+  place-items: center;
+  background: var(--qr-ground);
+}
+.qr-tile img {
+  width: 168px;
+  height: 168px;
+  display: block;
+}
+#qr-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: 1.4em;
+  margin: 0;
+  font: 500 var(--fs-row) / 1.4 var(--font-mono);
+  color: var(--text-3);
+}
+/* link.js marks the status `.live` while it polls: the up LED, beside the words. */
+#qr-status.live::before {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-up);
+  box-shadow: 0 0 var(--glow-led) var(--status-up);
+}
+
+@media (max-width: 480px) {
+  .page-card {
+    padding: var(--sp-4) var(--sp-4) var(--sp-3);
+  }
+}

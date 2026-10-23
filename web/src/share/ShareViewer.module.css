@@ -1,14 +1,18 @@
-/* The public share viewer (#1404 P4, mockup B). The operator app's tokens and base rules
- * (index.css), nothing else of it. Tokens only, no radius, no gradient (cssGuard.test.ts); every
- * control keeps the 44px floor; nothing scrolls sideways at 390px. */
+/* The public share viewer (#1404 P4) in NIGHTJAR // OPS (#1596, epic #1531 Phase 12). The operator
+ * app's tokens, base rules and primitives (index.css → nightjar.css), nothing else of it: the bar
+ * carries the lit rail, every state is THE panel (nj-frame) with a hazard-notch callsign, fields are
+ * nj-field, buttons are the app's plates (actionButton → nj-plate). Tokens only (its ledger row is
+ * `done`); every control keeps the 44px floor; nothing scrolls sideways at 390px. */
 
+/* Above the atmosphere (Atmosphere.tsx, fixed at --z-base), so its ground is the page's. */
 .page {
+  position: relative;
+  z-index: var(--z-raised);
   height: 100dvh;
   display: flex;
   flex-direction: column;
-  background: var(--bg-0);
   color: var(--text-1);
-  font-size: 14px;
+  font-size: var(--fs-body);
 }
 
 .bar {
@@ -16,26 +20,24 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px 12px;
+  gap: var(--sp-1) var(--sp-3);
   min-height: 52px;
-  padding: 8px 16px;
+  padding: var(--sp-2) var(--sp-4);
   background: var(--bg-1);
+  border-top: 2px solid var(--hud);
   border-bottom: 1px solid var(--line-strong);
 }
 .brand {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
+  font: 700 var(--fs-label) / 1 var(--font-display);
+  letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: var(--brand);
+  color: var(--hud-text);
 }
 .sub {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--text-3);
@@ -43,42 +45,42 @@
 .title {
   min-width: 0;
   flex: 1 1 160px;
-  font-weight: 600;
+  font: 600 var(--fs-title) / 1.3 var(--font-display);
+  letter-spacing: 0.04em;
   overflow-wrap: anywhere;
 }
 .facts {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--sp-1);
 }
 .chip {
-  padding: 2px 6px;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
+  padding: 2px var(--sp-2);
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
   letter-spacing: 0.12em;
   white-space: nowrap;
   color: var(--text-2);
   border: 1px solid var(--border);
 }
 .chipMode {
-  color: var(--text-1);
-  border-color: var(--accent);
+  color: var(--hud-text);
+  border-color: var(--hud-dim);
 }
 
 .status {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 6px 16px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-4);
+  font: 500 var(--fs-micro) / 1.6 var(--font-mono);
   letter-spacing: 0.14em;
   color: var(--text-2);
   border-bottom: 1px solid var(--line);
 }
 /* A status LED: green only while the agent works (status colour is the signal). */
 .led {
+  flex: none;
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -86,6 +88,7 @@
 }
 .led[data-state="up"] {
   background: var(--status-up);
+  box-shadow: 0 0 var(--glow-led) var(--status-up);
 }
 .reconnecting {
   color: var(--warn-text);
@@ -99,64 +102,64 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px 16px;
+  padding: var(--sp-5) var(--sp-4);
 }
+/* Every state is THE panel: chamfered, the rail along its top. */
 .card,
 .notice {
-  width: min(420px, 100%);
-  padding: 20px;
-  background: var(--bg-1);
-  border: 1px solid var(--line-strong);
+  composes: nj-frame from global;
+  width: min(440px, 100%);
+  padding: var(--sp-5);
 }
-.notice {
-  text-align: center;
-  background: transparent;
-  border: none;
-}
+/* The callsign over each state: the hazard notch, then the words. */
 .tag {
-  margin: 0 0 8px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.16em;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-3);
+  font: 500 var(--fs-label) / 1.2 var(--font-mono);
+  letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--text-3);
 }
+.tag::before {
+  content: "";
+  flex: none;
+  width: 22px;
+  height: 10px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.85;
+}
 .h1 {
-  margin: 0 0 6px;
-  font-size: 17px;
-  line-height: 1.35;
+  margin: 0 0 var(--sp-2);
+  font: 600 var(--fs-h2) / 1.25 var(--font-display);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--hud-text);
 }
 .muted {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-row);
   line-height: 1.5;
   color: var(--text-2);
 }
+/* "Opening the shared session…": the radar and its words (nj-loader). */
+.loading {
+  composes: nj-frame-quiet from global;
+  padding: var(--sp-4) var(--sp-5);
+}
 .label {
   display: block;
-  margin: 14px 0 6px;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.16em;
+  margin: var(--sp-4) 0 var(--sp-1);
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--text-3);
 }
 .input {
-  width: 100%;
+  composes: nj-field from global;
   min-width: 0;
   min-height: 44px;
-  padding: 0 11px;
-  background: var(--bg-2);
-  color: var(--text-1);
-  border: 1px solid var(--border);
-  border-radius: 0;
-  font: inherit;
-  font-size: 14px;
-}
-.input:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent);
 }
 .pwRow,
 .row {
@@ -189,12 +192,12 @@
   margin-top: 14px;
 }
 .error {
-  margin: 8px 0 0;
-  padding: 6px 10px;
-  font-size: 12.5px;
+  margin: var(--sp-2) 0 0;
+  padding: var(--sp-1) var(--sp-3);
+  font: 400 var(--fs-meta) / 1.5 var(--font-mono);
   color: var(--danger-text);
-  border-left: 3px solid var(--status-down);
-  background: var(--bg-2);
+  border-left: 2px solid var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 8%, transparent);
 }
 .footError {
   margin: 0;
@@ -214,7 +217,7 @@
 .omitted {
   margin: 0;
   padding: 10px 16px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-3);
   border-bottom: 1px solid var(--line);
 }
@@ -231,7 +234,7 @@
 .who {
   margin: 0 0 4px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-3);
@@ -251,7 +254,7 @@
   flex-wrap: wrap;
   gap: 8px;
   margin: 6px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-2);
 }
 .images {
@@ -271,7 +274,7 @@
   gap: 10px;
   align-items: baseline;
   margin-top: 8px;
-  font: 12px var(--font-mono);
+  font: 400 var(--fs-meta) / 1.5 var(--font-mono);
   color: var(--text-2);
   min-width: 0;
 }
@@ -295,7 +298,7 @@
   display: inline-block;
   width: 10px;
   height: 3px;
-  background: var(--accent);
+  background: var(--hud);
   margin-right: 3px;
   vertical-align: middle;
   opacity: 0.35;
@@ -321,7 +324,7 @@
   margin: 0 0 8px;
   border: 1px solid var(--line);
   background: var(--bg-1);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-2);
   min-width: 0;
 }
@@ -333,7 +336,7 @@
   overflow-wrap: anywhere;
 }
 .activity > summary:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: 2px;
 }
 .activityFailed {
@@ -350,7 +353,7 @@
 .tool {
   padding: 5px 9px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-2);
   background: var(--bg-1);
   border: 1px solid var(--line);
@@ -365,12 +368,12 @@
 /* Something waits for the owner: the accent rule marks "attention", not a status. */
 .approval {
   padding: 10px 16px 10px 13px;
-  border-left: 3px solid var(--accent);
+  border-left: 2px solid var(--hud);
   border-bottom: 1px solid var(--line);
 }
 .waiting {
   margin: 6px 0 0;
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   color: var(--text-2);
 }
 
@@ -396,7 +399,7 @@
   flex-wrap: wrap;
   gap: 4px;
   margin: 6px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-2);
 }
 .linkBtn {
@@ -432,16 +435,16 @@
 .viewOnly {
   flex: none;
   padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   line-height: 1.45;
   color: var(--text-2);
   background: var(--bg-1);
   border-top: 1px solid var(--line-strong);
-  border-left: 3px solid var(--accent);
+  border-left: 2px solid var(--hud);
 }
 .viewOnly b {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.14em;
   color: var(--text-1);
 }

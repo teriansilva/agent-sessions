@@ -30,6 +30,11 @@ const ratios = FULL ? PIXEL_RATIOS : [1];
 const browser = await chromium.launch();
 const failures = [];
 for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
+  // A page the Python server renders (#1596): photographed by its own real-server spec, not here.
+  if (cap.served) {
+    console.log(`  ${cap.id}: served page — NIGHTJAR_CAPTURE_DIR=… npx playwright test ${cap.served}`);
+    continue;
+  }
   for (const width of widths.filter((w) => !cap.widths || cap.widths.includes(w < 800 ? "phone" : "desktop")))
     for (const theme of THEMES)
       for (const dpr of ratios) {
@@ -66,7 +71,15 @@ for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
           await ctx.addInitScript(() => {
             Object.defineProperty(Navigator.prototype, "webdriver", { configurable: true, get: () => false });
           });
+        // `init`: a script the page sees before its own (the connect page's test harness seam).
+        if (cap.init) await ctx.addInitScript({ content: cap.init });
         const page = await ctx.newPage();
+        // `document`: the HTML file the server answers this path with (share.html at /p/<token>).
+        if (cap.document)
+          await page.route(
+            (u) => u.pathname === cap.path,
+            async (r) => r.fulfill({ response: await r.fetch({ url: new URL(cap.document, BASE).toString() }) }),
+          );
         const mockState = { theme, unhandled: new Set(), ...(cap.mock ?? {}) };
         await routeApi(page, mockState);
         await routeTerminal(page, cap.term ?? {});
@@ -119,6 +132,16 @@ for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
             // route wins), for a state that a re-read produces (the list emptied under a window).
             if (step.api) {
               await answer(step.api);
+              continue;
+            }
+            // `{ hold: ms, css }`: press and hold the target (the connect page's human gate).
+            if (step.hold) {
+              const box = await page.locator(step.css).first().boundingBox();
+              if (!box) throw new Error("hold target has no box");
+              await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+              await page.mouse.down();
+              await page.waitForTimeout(step.hold);
+              await page.mouse.up();
               continue;
             }
             if (step.press) {

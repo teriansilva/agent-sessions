@@ -158,3 +158,25 @@ export function startMotionPause(idleMs: number = IDLE_PAUSE_MS): () => void {
     delete root.dataset.motionPaused;
   };
 }
+
+/**
+ * A page with no stored motion choice (the public share viewer, #1596): follow the device LIVE —
+ * the mode tracks `prefers-reduced-motion` as it changes, not just at load — and own the hidden-tab
+ * / idle pause, as MotionProvider does for the SPA. Returns the teardown.
+ */
+export function followDeviceMotion(idleMs: number = IDLE_PAUSE_MS): () => void {
+  let mq: MediaQueryList | undefined;
+  try {
+    mq = window.matchMedia?.(REDUCED_MOTION_QUERY);
+  } catch {
+    mq = undefined;
+  }
+  const apply = () => applyMotion(resolveMotion("system", mq?.matches ?? false));
+  apply();
+  mq?.addEventListener?.("change", apply);
+  const stopPause = startMotionPause(idleMs);
+  return () => {
+    mq?.removeEventListener?.("change", apply);
+    stopPause();
+  };
+}

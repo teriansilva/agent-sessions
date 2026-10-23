@@ -1,0 +1,726 @@
+/* The Home Free connect page (web/connect.html, #1596, epic #1531 Phase 12) in NIGHTJAR // OPS.
+ * Before #1596 the page restated the palette and the HUD primitives in an inline <style>, because
+ * it "could not import the SPA's CSS" — yet appMount.ts imported index.css all along. Now
+ * connect.main.ts imports index.css (tokens, fonts, motion, the nightjar.css primitives) FIRST and
+ * this file after it; Vite links both in the page's <head>, so the card still paints before any
+ * script runs and long before the app chunk streams in. This file is the page's layout on those
+ * primitives.
+ *
+ * Tokens only (its ledger row is `done`): no literal colour, no numeric z-index, no off-scale font
+ * size. The theme is the device's stored BattleLab choice or its colour scheme (bootPageTheme);
+ * the motion mode is the device's prefers-reduced-motion (connect.main.ts). */
+
+[hidden] {
+  display: none !important;
+}
+body.connect-page {
+  margin: 0;
+  min-height: 100dvh;
+  overflow: hidden;
+  background: var(--bg-0);
+  color: var(--text-1);
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+.connect-page button,
+.connect-page input {
+  font: inherit;
+}
+/* The shell is the page's scroll container (the app's index.css pins body to the viewport with
+ * overflow hidden): a card taller than a phone's screen scrolls instead of losing its Connect
+ * button. `margin: auto` centres the card while it fits and lets it start at the top when not. */
+.connect-shell {
+  position: relative;
+  z-index: var(--z-raised);
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--sp-5) var(--sp-4);
+}
+.connect-shell > .connect-card {
+  margin: auto;
+}
+
+/* ---------- the card: THE panel (nj-frame), its rail red while it reports a failure ---------- */
+.connect-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  width: min(460px, 100%);
+  padding: var(--sp-5);
+}
+.connect-card[data-view="error"] {
+  border-top-color: var(--status-down);
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  font: 700 var(--fs-label) / 1 var(--font-display);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+}
+/* The brand kit's mark (#1590), inlined by the logo slot. */
+.brand-mark {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+.connect-view {
+  display: grid;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.connect-kicker {
+  margin: var(--sp-2) 0 calc(var(--sp-2) * -1);
+}
+.connect-title {
+  margin: 0;
+}
+.lede {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-row);
+}
+.how-row {
+  margin: 0;
+}
+/* "How does it work?": an accent text link with the `//` prefix, a 44 px target on touch. */
+.linklike {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  cursor: pointer;
+  font: 600 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.linklike::before {
+  content: "//";
+  color: var(--text-3);
+  text-decoration: none;
+}
+.linklike:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+
+/* ---------- the form ---------- */
+.connect-form {
+  display: grid;
+  gap: var(--sp-3);
+}
+.field {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+.field .nj-label {
+  margin-bottom: 0;
+}
+.field .nj-field {
+  min-height: 44px;
+}
+.relay-options summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 32px;
+  cursor: pointer;
+  list-style: none;
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.relay-options summary::-webkit-details-marker {
+  display: none;
+}
+.relay-options summary::before {
+  content: "▸";
+  color: var(--hud-text);
+  transition: transform var(--t-fast) var(--ease-out);
+}
+.relay-options[open] summary::before {
+  transform: rotate(90deg);
+}
+.relay-options summary:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.relay-options .field {
+  margin-top: var(--sp-2);
+}
+
+/* The status line: a callout on the HUD rail; red only for a failure, green once verified. */
+#status {
+  min-height: 1.5em;
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--hud);
+  background: var(--hud-tint);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+}
+#status[data-kind="error"] {
+  border-left-color: var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 8%, transparent);
+  color: var(--danger-text);
+}
+#status[data-kind="ok"] {
+  border-left-color: var(--status-up);
+  background: color-mix(in srgb, var(--status-up) 8%, transparent);
+  color: var(--ok-text);
+}
+
+/* ---------- the human-verification gate (#690) ---------- */
+/* A deliberate-gesture gate: Connect stays disabled until the hold completes. The meter fill is
+ * state, not decoration: it stays visible in every motion mode. */
+.verify-gate {
+  --nj-face: var(--bg-2);
+  padding: var(--sp-3);
+}
+.gate-title {
+  margin: 0 0 var(--sp-1);
+  font: 600 var(--fs-label) / 1.2 var(--font-display);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.gate-hint {
+  margin: 0 0 var(--sp-3);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+}
+.gate-hold {
+  --nj-face: color-mix(in srgb, var(--accent) 16%, var(--bg-2));
+  --nj-edge: color-mix(in srgb, var(--accent) 45%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid transparent;
+  color: var(--hud-text);
+  font: 700 var(--fs-label) / 1 var(--font-display);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+.gate-hold:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -4px;
+}
+.gate-led {
+  animation: none;
+}
+.gate-meter {
+  position: relative;
+  margin-top: var(--sp-2);
+  height: 6px;
+  background: repeating-linear-gradient(90deg, var(--line-strong) 0 10px, transparent 10px 12px);
+}
+.gate-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  background: repeating-linear-gradient(90deg, var(--hud) 0 10px, transparent 10px 12px);
+}
+.gate-meter-label {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--sp-1);
+  color: var(--text-2);
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.gate-meter-label b {
+  color: var(--hud-text);
+  font-variant-numeric: tabular-nums;
+}
+/* Status colour is load-bearing: amber = verifying, green = verified (docs/design.md). */
+.verify-gate[data-state="verified"] .gate-hold {
+  --nj-face: color-mix(in srgb, var(--status-up) 14%, var(--bg-2));
+  --nj-edge: var(--status-up);
+  color: var(--ok-text);
+  cursor: default;
+  opacity: 1;
+}
+.verify-gate[data-state="verified"] .gate-led {
+  --led: var(--status-up);
+}
+.verify-gate[data-state="verified"] .gate-fill {
+  background: repeating-linear-gradient(90deg, var(--status-up) 0 10px, transparent 10px 12px);
+}
+.verify-gate[data-state="verified"] .gate-meter-label b {
+  color: var(--ok-text);
+}
+
+/* ---------- the warning and the actions ---------- */
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.warning,
+.modal-warning {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--status-degraded);
+  background: color-mix(in srgb, var(--status-degraded) 8%, transparent);
+  color: var(--warn-text);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+/* Buttons are plates (nj-plate): the whole rectangle is the hit area, the chamfer is paint. */
+.primary,
+.ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: 44px;
+  padding: 0 var(--sp-4);
+  border: 1px solid transparent;
+  cursor: pointer;
+  font: 700 var(--fs-label) / 1 var(--font-display);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.primary {
+  --nj-face: var(--accent);
+  --nj-edge: var(--accent);
+  color: var(--on-accent);
+}
+.primary:not(:disabled):hover {
+  --nj-face: color-mix(in srgb, var(--accent) 86%, var(--text-1));
+}
+.ghost {
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--border);
+  color: var(--text-1);
+}
+.ghost:hover {
+  --nj-edge: var(--hud-dim);
+}
+.primary:focus-visible,
+.ghost:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -4px;
+}
+.connect-page button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+/* A disabled primary stays legible: a dim amber plate with quiet ink, not a faded one. */
+.connect-page .primary:disabled {
+  --nj-face: color-mix(in srgb, var(--accent) 28%, var(--bg-2));
+  --nj-edge: color-mix(in srgb, var(--accent) 40%, var(--bg-2));
+  color: var(--text-2);
+  opacity: 1;
+}
+.actions > .primary {
+  align-self: flex-end;
+  min-width: 140px;
+}
+
+/* ---------- connecting and the error card (homefree/connectState.ts) ---------- */
+.cs-view {
+  display: grid;
+  gap: var(--sp-3);
+}
+.cs-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.cs-head .nj-radar {
+  --radar-size: 32px;
+}
+.cs-title {
+  margin: 0;
+  font: 600 var(--fs-h2) / 1.2 var(--font-display);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+  overflow-wrap: anywhere;
+}
+.cs-view[data-state="error"] .cs-title {
+  color: var(--text-1);
+}
+.cs-steps {
+  display: grid;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font: 400 var(--fs-meta) / 1.5 var(--font-mono);
+  color: var(--text-2);
+}
+.cs-step {
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr);
+  gap: var(--sp-2);
+  align-items: baseline;
+}
+/* A finished step is steady: only the step in flight blinks. */
+.cs-step .hud-led {
+  transform: translateY(-1px);
+}
+.cs-step-done .hud-led,
+.cs-step-failed .hud-led {
+  animation: none;
+}
+.cs-step-pending {
+  color: var(--text-3);
+}
+.cs-step-failed {
+  color: var(--danger-text);
+}
+.cs-message {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-row);
+}
+.cs-note {
+  margin: 0;
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.cs-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+/* ---------- the "How does it work?" dialog ---------- */
+#how-modal {
+  --nj-face: var(--bg-1);
+  width: min(560px, calc(100vw - 24px));
+  max-height: min(88dvh, 940px);
+  padding: 0;
+  color: var(--text-1);
+  box-shadow: var(--shadow-dialog);
+  /* The UA sheet gives <dialog> `overflow: auto`; the panel never scrolls, .modal-inner does. */
+  overflow: visible;
+}
+/* Flex so .modal-inner fills the panel and owns the scrolling (its height can then never exceed
+ * the panel's content box and raise a second scrollbar). */
+#how-modal[open] {
+  display: flex;
+  flex-direction: column;
+}
+#how-modal::backdrop {
+  background: var(--scrim);
+}
+.modal-inner {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: clip; /* never a horizontal bar (design.md §7); `clip` keeps overflow-y auto */
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  padding: var(--sp-5);
+}
+.modal-inner::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+#how-title {
+  margin: var(--sp-4) 0 0;
+  font: 600 var(--fs-h2) / 1.2 var(--font-display);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+}
+.modal-lede {
+  margin: var(--sp-3) 0 var(--sp-4);
+  color: var(--text-2);
+  font-size: var(--fs-row);
+  line-height: 1.6;
+}
+.modal-lede em {
+  font-style: normal;
+  font-weight: 700;
+  color: var(--text-1);
+}
+.spec-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 150px) minmax(0, 1fr);
+  gap: var(--sp-2) var(--sp-4);
+  margin: 0 0 var(--sp-4);
+  padding: var(--sp-4) 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--fs-meta);
+}
+.spec-grid dt {
+  font: 500 var(--fs-micro) / 1.8 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.spec-grid dd {
+  margin: 0;
+  color: var(--text-2);
+  line-height: 1.6;
+  overflow-wrap: break-word;
+}
+.spec-grid dd b {
+  color: var(--hud-text);
+  font-weight: 600;
+  white-space: nowrap; /* never hyphenate a primitive name across lines */
+}
+.props {
+  display: grid;
+  gap: var(--sp-3);
+  margin: 0 0 var(--sp-4);
+  padding: 0;
+  list-style: none;
+}
+.props li {
+  display: grid;
+  grid-template-columns: 6px minmax(0, 1fr);
+  gap: var(--sp-3);
+  align-items: start;
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+  line-height: 1.6;
+}
+/* A flat chrome-colour square — deliberately NOT a LED: these are protocol properties, not live
+ * statuses, and status colour stays load-bearing (design.md §3). */
+.prop-mark {
+  width: 6px;
+  height: 6px;
+  margin-top: 7px;
+  background: var(--hud);
+}
+.props b {
+  display: block;
+  font: 600 var(--fs-micro) / 1.6 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.modal-warning {
+  margin-bottom: var(--sp-4);
+}
+.modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+.modal-foot a {
+  color: var(--accent-text);
+  font: 500 var(--fs-label) / 1.4 var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- connected: the streamed app and the session bar above it ---------- */
+#app-root {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-raised);
+  display: none;
+  min-height: 100dvh;
+  background: var(--bg-0);
+}
+/* The shell's OWN atmosphere (a direct child of <body>) gives way to the streamed app; the app's
+ * <Atmosphere /> inside #app-root is the app's to show (#1596). */
+body[data-state="connected"] .connect-card,
+body[data-state="connected"] > .nj-atmo {
+  display: none;
+}
+body[data-state="connected"] #app-root {
+  display: block;
+}
+.session-box {
+  --c: var(--cut-sm);
+  --nj-face: color-mix(in srgb, var(--bg-1) 96%, transparent);
+  position: fixed;
+  top: max(10px, env(safe-area-inset-top));
+  left: 50%;
+  z-index: var(--z-dock);
+  width: min(560px, calc(100vw - 18px));
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 52px;
+  padding: var(--sp-2);
+  box-shadow: var(--shadow-menu);
+}
+/* The status LED doubles as the collapse/expand control: a 44 px target with focus. */
+.session-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  flex: none;
+  margin: -6px -4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.session-toggle:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -4px;
+}
+/* The LED: up breathes, near-expiry blinks amber, a lost link goes steady red. The toggle's
+ * aria-label and title carry the state too, so a collapsed dot never lies about the link. */
+.session-led {
+  --led: var(--status-up);
+  animation: nj-breathe 2.4s var(--ease-io) infinite;
+}
+.session-led.warn {
+  --led: var(--status-degraded);
+  animation: nj-blink 1.2s steps(1, end) infinite;
+}
+.session-led.down {
+  --led: var(--status-down);
+  animation: none;
+}
+/* Collapsed: just the status toggle, so the app's own toolbar underneath stays usable. The chrome
+ * lets pointer events through; only the toggle stays clickable. */
+.session-box.collapsed {
+  width: auto;
+  min-height: 0;
+  gap: 0;
+  padding: var(--sp-1);
+  pointer-events: none;
+}
+.session-box.collapsed .session-toggle {
+  pointer-events: auto;
+}
+.session-box.collapsed .session-meta,
+.session-box.collapsed .session-clock,
+.session-box.collapsed #signout {
+  display: none;
+}
+.session-meta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.session-title {
+  display: block;
+  overflow: hidden;
+  font: 600 var(--fs-label) / 1.3 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--hud-text);
+}
+.session-subtitle {
+  display: block;
+  overflow: hidden;
+  font: 400 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+}
+.session-clock {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-1);
+  flex: none;
+  font: 500 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+#countdown {
+  color: var(--hud-text);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- touch and phone ---------- */
+@media (max-width: 800px) {
+  .linklike,
+  .relay-options summary {
+    min-height: 44px;
+  }
+  .modal-foot a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+}
+@media (max-width: 560px) {
+  .connect-shell {
+    padding: var(--sp-3);
+  }
+  .connect-card {
+    padding: var(--sp-4);
+  }
+  .card-head {
+    flex-wrap: wrap;
+  }
+  .spec-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-1) 0;
+  }
+  .spec-grid dd {
+    margin-bottom: var(--sp-2);
+  }
+  .modal-inner {
+    padding: var(--sp-4);
+  }
+  .session-box {
+    gap: var(--sp-2);
+  }
+  .session-clock {
+    display: none;
+  }
+  .ghost {
+    padding: 0 var(--sp-3);
+  }
+}

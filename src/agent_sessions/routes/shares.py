@@ -59,16 +59,24 @@ PLACEHOLDER_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
+<meta name="color-scheme" content="dark light">
 <title>Shared BattleLab session</title>
-<style>
-body{margin:0;font:15px/1.5 system-ui,sans-serif;background:#0d0e10;color:#e8e9ec;
-display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px}
-main{max-width:420px;text-align:center}
-h1{font-size:17px;margin:0 0 8px}p{color:#a7abb3;margin:0}
-</style></head>
-<body><main><h1>Shared BattleLab session</h1>
-<p>This BattleLab can't show shared sessions yet. Ask the person who shared the link to update
-BattleLab, then open it again.</p></main></body></html>
+<link rel="stylesheet" href="/static/nightjar/fonts.css">
+<link rel="stylesheet" href="/static/nightjar/tokens.css">
+<link rel="stylesheet" href="/static/nightjar/motion.css">
+<link rel="stylesheet" href="/static/nightjar/nightjar.css">
+<link rel="stylesheet" href="/static/nightjar/pages.css">
+</head>
+<body class="nj-page">
+<div class="nj-atmo" aria-hidden="true"><i class="nj-hex"></i><i class="nj-scan"></i>\
+<i class="nj-noise"></i><i class="nj-sweep"></i><i class="nj-vig"></i></div>
+<main class="page-shell"><div class="nj-frame page-card">
+<p class="nj-callsign page-callsign"><span class="nj-notch" aria-hidden="true"></span>\
+Shared link // <span class="nj-value">Unavailable</span><span class="nj-meta">\
+<span class="hud-led idle" aria-hidden="true"></span></span></p>
+<h1 class="page-title">Shared BattleLab session</h1>
+<p class="page-lede">This BattleLab can't show shared sessions yet. Ask the person who shared
+the link to update BattleLab, then open it again.</p></div></main></body></html>
 """
 # The runtimes a link can name. A session of any other runtime is refused at create.
 _KIND_BY_RUNTIME = {"api": "api", "pty": "terminal"}

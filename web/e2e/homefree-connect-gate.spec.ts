@@ -236,6 +236,13 @@ test("a failed connect re-gates the next attempt", async ({
   await expect(page.locator("#status")).toContainText(/could not connect/i);
   expect(altcha()).toBe(1);
 
+  // #1596: the failure shows the error card; Retry puts the form back with the hold focused.
+  const card = page.locator("#connect-error");
+  await expect(card).toBeVisible();
+  await card.getByRole("button", { name: "Retry" }).click();
+  await expect(card).toBeHidden();
+  await expect(page.locator("#gate-hold")).toBeFocused();
+
   // The failure consumed the verification: back to an idle gate and a disabled button…
   await expect(page.locator("#verify-gate")).toHaveAttribute(
     "data-state",

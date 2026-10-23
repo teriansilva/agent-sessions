@@ -68,8 +68,11 @@
   opacity: 1;
 }
 /* Reduced / Off: still layers only (motion.css stops the animations; the sweep band is not a
- * still image, so it goes). */
-:root:not([data-motion="full"]) .nj-atmo .nj-sweep {
+ * still image, so it goes). Keyed on the two modes, like motion.css: a page that never sets
+ * `data-motion` (the server-rendered pages, #1596) runs Full, and pages.css handles its device's
+ * reduced-motion request. */
+:root[data-motion="reduced"] .nj-atmo .nj-sweep,
+:root[data-motion="off"] .nj-atmo .nj-sweep {
   display: none;
 }
 

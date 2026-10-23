@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { verifyHuman } from "./connect-helpers";
+import { expectIdleBudget } from "./nightjarShell";
 import { TOUCH_FLOOR } from "./touchTarget";
 
 // #579 app-only connect: the public connect page no longer exposes the recovery terminal pane.
@@ -16,7 +17,7 @@ test("Home Free connect page exposes the app root, not a recovery terminal pane"
   await expect(page.locator(".xterm")).toHaveCount(0);
 });
 
-/** Count rAF calls so "the ambient loop is running / is not running" is observable, not inferred. */
+/** Count rAF calls so "an animation loop is running / is not running" is observable, not inferred. */
 async function countRaf(page: import("@playwright/test").Page): Promise<void> {
   await page.addInitScript(() => {
     (window as unknown as { __raf: number }).__raf = 0;
@@ -30,35 +31,48 @@ async function countRaf(page: import("@playwright/test").Page): Promise<void> {
 const rafCount = (page: import("@playwright/test").Page) =>
   page.evaluate(() => (window as unknown as { __raf: number }).__raf);
 
-// The connect page is a standalone shell (it can't import the SPA's CSS), so nothing else
-// guards it against drifting off the HUD design system — docs/design.md §6/§8.
-test("connect page wears the HUD chrome: ambient canvas, four brackets, glitchable CTA", async ({
+/** The atmosphere's endless CSS animations, by play state (the scan, the sweep). */
+const atmoLoops = (page: import("@playwright/test").Page) =>
+  page.locator(".nj-atmo").evaluate((el) =>
+    el
+      .getAnimations({ subtree: true })
+      .filter((a) => a.effect?.getComputedTiming().iterations === Infinity)
+      .map((a) => a.playState),
+  );
+
+// #1596: the connect page wears the app's own sheets (tokens, primitives, motion), not a copy, and
+// the app's atmosphere in place of the retired data-flow canvas (docs/design.md §6/§8).
+test("connect page wears NIGHTJAR: the app's atmosphere, chamfered card and gate, a glitchable CTA", async ({
   page,
 }) => {
-  await countRaf(page);
+  // The atmosphere drifts on dark only (daylight is the still hex grid); headless defaults to light.
+  await page.emulateMedia({ reducedMotion: "no-preference", colorScheme: "dark" });
   await page.goto("/connect.html");
-  // The ambient field is actually animating, not just present in the DOM.
-  await expect.poll(() => rafCount(page)).toBeGreaterThan(0);
 
-  // The ambient data-flow field paints behind everything and never eats a click.
-  const canvas = page.locator("canvas#bg.hud-canvas");
-  await expect(canvas).toHaveCount(1);
-  await expect(canvas).toHaveCSS("pointer-events", "none");
-  await expect
-    .poll(() =>
-      canvas.evaluate((c: HTMLCanvasElement) => c.width > 0 && c.height > 0),
-    )
-    .toBe(true);
+  // The app's palette is in force, read from the app's own tokens.css.
+  const hud = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--hud").trim());
+  expect(hud).not.toBe("");
 
-  // Corner-bracket frame, not a rounded box. The card owns exactly four brackets of its own;
-  // the human-verification gate (#690) nested inside carries its own four.
-  await expect(page.locator(".connect-card > .hud-cnr")).toHaveCount(4);
-  await expect(page.locator("#verify-gate > .hud-cnr")).toHaveCount(4);
-  await expect(page.locator(".connect-card")).toHaveCSS("border-radius", "0px");
-  await expect(page.locator("#verify-gate")).toHaveCSS("border-radius", "0px");
+  // The atmosphere paints behind everything, never eats a click, and drifts in Full.
+  const atmo = page.locator(".nj-atmo");
+  await expect(atmo).toHaveCount(1);
+  await expect(atmo).toHaveCSS("pointer-events", "none");
+  await expect(atmo.locator(".nj-hex")).toBeVisible();
+  await expect(page.locator("canvas")).toHaveCount(0);
+  await expect.poll(() => atmoLoops(page)).toContain("running");
 
-  // The CTA opts into the ambient glitch, and clicking it still hits the button.
+  // THE panel: a chamfered frame with its rail, not a rounded box and not corner brackets.
+  const card = page.locator(".connect-card");
+  await expect(card).toHaveClass(/\bnj-frame\b/);
+  await expect(card).not.toHaveCSS("clip-path", "none");
+  await expect(card).toHaveCSS("border-radius", "0px");
+  await expect(page.locator(".hud-cnr")).toHaveCount(0);
+  await expect(page.locator("#verify-gate")).toHaveClass(/\bnj-frame-quiet\b/);
+
+  // The CTA opts into the ambient glitch, and it is a plate (the chamfer is paint, never geometry).
   await expect(page.locator("#connect")).toHaveClass(/\bshine\b/);
+  await expect(page.locator("#connect")).toHaveClass(/\bnj-plate\b/);
+  await expect(page.locator("#connect")).toHaveCSS("clip-path", "none");
 });
 
 // The <dialog> UA sheet sets `overflow: auto`, and the corner brackets sit 1px outside the box —
@@ -90,7 +104,7 @@ test("the how-it-works modal paints no scrollbars, and its body still scrolls", 
     };
   });
 
-  // The panel itself is never a scroll container — the brackets may hang 1px outside it in peace.
+  // The panel itself is never a scroll container; its body is.
   expect(m.dlgOverflowX).toBe("visible");
   expect(m.dlgOverflowY).toBe("visible");
   expect(m.innerFitsPanel, "modal body overflows the panel").toBe(true);
@@ -151,55 +165,92 @@ test("connect page explains the blind relay in a dismissible modal", async ({
   await expect(modal).toBeHidden();
 });
 
-// docs/design.md §8: under reduced motion the canvas is gone, a static grid takes over, and
-// *zero* animation loops start — a hidden canvas that still burns rAF would pass a CSS-only check.
-// Emulated per-page rather than via `test.use({ reducedMotion })`: the file-level `test.use` below
-// wins over a describe-scoped one, and the fixture silently no-ops (matchMedia stayed false).
-test("connect page starts no animation loop under reduced motion, and falls back to the static grid", async ({
+// docs/design.md §8: under reduced motion the atmosphere is a still frame and *zero* animation
+// loops start — neither a rAF loop nor an endless CSS animation. Emulated per-page rather than via
+// `test.use({ reducedMotion })`: the file-level `test.use` below wins over a describe-scoped one, and
+// the fixture silently no-ops (matchMedia stayed false).
+test("connect page starts no animation loop under reduced motion, and keeps its still atmosphere", async ({
   page,
 }) => {
   await countRaf(page);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/connect.html");
 
-  await expect(page.locator("canvas#bg")).toBeHidden();
+  await expect(page.locator("html")).toHaveAttribute("data-motion", "reduced");
+  await expect(page.locator(".nj-atmo .nj-hex")).toBeVisible();
+  await expect(page.locator(".nj-atmo .nj-sweep")).toBeHidden();
   await page.waitForTimeout(600); // a loop, had one started, would have ticked by now
   expect(await rafCount(page)).toBe(0);
-  await expect(page.locator("body")).toHaveCSS(
-    "background-image",
-    /linear-gradient/,
-  );
+  expect((await atmoLoops(page)).filter((s) => s === "running")).toEqual([]);
 });
 
-// #1531: in Full the canvas paints only the trails; the 48px grid is the canvas's static CSS
-// background, so the page never loses its grid. And this shell owns the hidden-tab pause until the
-// streamed app takes over: hiding the tab stops the canvas loop, showing it starts it again.
-test("connect page keeps its static grid in Full and pauses the ambient loop while hidden (#1531)", async ({
-  page,
-}) => {
-  await countRaf(page);
-  await page.emulateMedia({ reducedMotion: "no-preference" });
+// #1531: this shell owns the hidden-tab pause until the streamed app takes over: hiding the tab
+// pauses the atmosphere's loops, showing it runs them again.
+test("connect page pauses the atmosphere while hidden (#1531)", async ({ page }) => {
+  // The atmosphere drifts on dark only (daylight is the still hex grid); headless defaults to light.
+  await page.emulateMedia({ reducedMotion: "no-preference", colorScheme: "dark" });
   await page.goto("/connect.html");
   await expect(page.locator("html")).toHaveAttribute("data-motion", "full");
-  await expect(page.locator("canvas#bg")).toHaveCSS("background-image", /linear-gradient/);
-  await expect.poll(() => rafCount(page)).toBeGreaterThan(0);
+  await expect.poll(() => atmoLoops(page)).toContain("running");
 
   await page.evaluate(() => {
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
     document.dispatchEvent(new Event("visibilitychange"));
   });
   await expect(page.locator("html")).toHaveAttribute("data-motion-paused", "hidden");
-  await page.waitForTimeout(200);
-  const a = await rafCount(page);
-  await page.waitForTimeout(600);
-  expect(await rafCount(page), "no frames while hidden").toBe(a);
+  await expect.poll(() => atmoLoops(page)).not.toContain("running");
 
   await page.evaluate(() => {
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
     document.dispatchEvent(new Event("visibilitychange"));
   });
   await expect(page.locator("html")).not.toHaveAttribute("data-motion-paused", /.+/);
-  await expect.poll(() => rafCount(page)).toBeGreaterThan(a);
+  await expect.poll(() => atmoLoops(page)).toContain("running");
+});
+
+// #1601 review: once connected only the shell's OWN atmosphere gives way; the streamed app's
+// <Atmosphere /> inside #app-root is the app's and stays visible.
+test("connected: the shell's atmosphere goes, the streamed app's own atmosphere stays (#1596)", async ({ page, baseURL }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference", colorScheme: "dark" });
+  await stubSuccessfulConnect(page, { appAtmosphere: true });
+  await page.goto(publicConnectUrl(baseURL));
+  await page.getByLabel("Console key").fill("nightjar-1010");
+  await page.getByLabel("Access password").fill("stream-secret");
+  await verifyHuman(page);
+  await page.getByRole("button", { name: "Connect" }).click();
+  await expect(page.locator(".session-box")).toBeVisible();
+
+  await expect(page.locator("body > .nj-atmo")).toBeHidden();
+  const appAtmo = page.getByTestId("app-atmo");
+  await expect(appAtmo).toBeVisible();
+  await expect(appAtmo.locator(".nj-hex")).toBeVisible();
+  await expect(appAtmo.locator(".nj-sweep")).toBeVisible();
+});
+
+// #1596: no setting of its own, so the page follows the device's colour scheme — unless this
+// browser holds a BattleLab theme choice (the operator on their own device).
+test("connect page follows the device's colour scheme, and a stored choice wins", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.goto("/connect.html");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  // Daylight: the hex grid only.
+  await expect(page.locator(".nj-atmo .nj-hex")).toBeVisible();
+  await expect(page.locator(".nj-atmo .nj-vig")).toBeHidden();
+
+  await page.evaluate(() => localStorage.setItem("tr-theme", "dark"));
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+});
+
+// docs/design.md v2 §8: the ambient layer idles under 2 % main-thread time in Full.
+test("connect page idles cheaply in Full (the shared idle budget)", async ({ page, browserName }, info) => {
+  test.skip(browserName !== "chromium", "CDP metrics");
+  test.skip(info.project.name !== "desktop", "one measurement is enough");
+  // The atmosphere drifts on dark only (daylight is the still hex grid); headless defaults to light.
+  await page.emulateMedia({ reducedMotion: "no-preference", colorScheme: "dark" });
+  await page.goto("/connect.html");
+  await expect(page.locator("html")).toHaveAttribute("data-motion", "full");
+  await expectIdleBudget(page, "connect", info);
 });
 
 test.use({
@@ -222,8 +273,9 @@ function publicConnectUrl(baseURL: string | undefined): string {
 
 async function stubSuccessfulConnect(
   page: import("@playwright/test").Page,
+  opts: { appAtmosphere?: boolean } = {},
 ): Promise<void> {
-  await page.addInitScript(() => {
+  await page.addInitScript(({ appAtmosphere }) => {
     window.__battlelabConnectHarness = {
       holdMs: 250, // keep the human-gate hold short in tests
       makeWebSocket: () => ({
@@ -245,6 +297,12 @@ async function stubSuccessfulConnect(
         const root = document.getElementById("app-root");
         if (root) {
           root.textContent = "Mock streamed BattleLab app";
+          // The streamed SPA mounts its own <Atmosphere /> (App.tsx) inside #app-root.
+          if (appAtmosphere)
+            root.insertAdjacentHTML(
+              "beforeend",
+              '<div class="nj-atmo" aria-hidden="true" data-testid="app-atmo"><i class="nj-hex"></i><i class="nj-scan"></i><i class="nj-noise"></i><i class="nj-sweep"></i><i class="nj-vig"></i></div>',
+            );
         }
         return {
           teardown: () => {
@@ -253,7 +311,7 @@ async function stubSuccessfulConnect(
         };
       },
     };
-  });
+  }, { appAtmosphere: opts.appAtmosphere ?? false });
   await page.route(
     "https://relay.battlelab.superstatus.io/altcha/challenge",
     async (route) => {
@@ -571,4 +629,377 @@ test("a newer in-memory choice beats a stale readable stored value on reconnect"
   await expect(box).toBeVisible();
   // The newer in-memory 'expanded' must win over the stale stored 'collapsed'.
   await expect(box).not.toHaveClass(/collapsed/);
+});
+
+/** The relay's side of a connect, through the REAL mount path (#1596): the fake socket answers the
+ *  `hello` with a relay error frame, or never answers (the attempt stays in flight). */
+async function stubRelay(page: import("@playwright/test").Page, outcome: "offline" | "hang" | "paired"): Promise<void> {
+  await page.addInitScript((outcome) => {
+    window.__battlelabConnectHarness = {
+      holdMs: 250,
+      makeWebSocket: () => {
+        const ws = {
+          binaryType: "arraybuffer",
+          readyState: 1,
+          onopen: null,
+          onclose: null,
+          onerror: null,
+          onmessage: null as null | ((e: { data: string }) => void),
+          send(d: unknown) {
+            if (outcome === "offline" && typeof d === "string" && d.includes('"hello"'))
+              setTimeout(() => ws.onmessage?.({ data: JSON.stringify({ t: "error", code: "offline" }) }), 0);
+            // The relay pairs the box, then the box never answers the key exchange.
+            if (outcome === "paired" && typeof d === "string" && d.includes('"hello"'))
+              setTimeout(
+                () =>
+                  ws.onmessage?.({
+                    data: JSON.stringify({ t: "paired", deadline: Math.floor(Date.now() / 1000) + 14400, ttl: 14400 }),
+                  }),
+                0,
+              );
+          },
+          close() {},
+        };
+        return ws;
+      },
+    };
+  }, outcome);
+  await page.route("https://relay.battlelab.superstatus.io/altcha/challenge", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ algorithm: "SHA-256", challenge: ZERO_ALTCHA, salt: "", signature: "test", maxnumber: 0 }),
+    }),
+  );
+}
+
+async function attempt(page: import("@playwright/test").Page): Promise<void> {
+  await verifyHuman(page);
+  await page.getByRole("button", { name: "Connect" }).click();
+}
+
+test("connecting puts the form away for the radar, the steps and the acquire bar (#1596)", async ({ page, baseURL }) => {
+  await stubRelay(page, "hang");
+  await page.goto(publicConnectUrl(baseURL));
+  await page.getByLabel("Console key").fill("viper-8231");
+  await page.getByLabel("Access password").fill("stream-secret");
+  await attempt(page);
+
+  const progress = page.locator("#connect-progress");
+  await expect(progress).toBeVisible();
+  await expect(page.locator("#connect-form")).toBeHidden();
+  await expect(progress.locator(".nj-radar")).toBeVisible();
+  await expect(progress.locator(".nj-acquire")).toBeVisible();
+  await expect(progress).toContainText("viper-8231");
+  // The challenge is solved and the relay socket is open: the box is next (#1601 review: the card
+  // used to stay at "Relay reached" once the socket opened).
+  await expect(progress.locator(".cs-step-done .cs-step-label")).toHaveText(["Relay challenge", "Relay reached"]);
+  await expect(progress.locator(".cs-step-active")).toContainText("Box found");
+  await expect(page.locator("#uplink-label")).toHaveText("Uplink // Acquiring");
+});
+
+// #1601 review: every transition renders — the socket opens (box next), the relay pairs the box
+// (key exchange next), and only a finished key exchange hands the screen to the streamed app.
+// Through the REAL mount path: the relay pairs, the box never answers the key exchange.
+test("a paired box shows the key exchange in flight; the card stays until it finishes (#1596)", async ({ page }) => {
+  await stubRelay(page, "paired");
+  // The local page, not the public host: the key exchange needs WebCrypto, which only a secure
+  // context (127.0.0.1 is one; http://battlelab.superstatus.io is not) has.
+  await page.goto("/connect.html");
+  await page.getByText("Custom relay").click();
+  await page.getByLabel("Relay base URL").fill(PUBLIC_RELAY);
+  await page.getByLabel("Console key").fill("viper-8231");
+  await page.getByLabel("Access password").fill("stream-secret");
+  await attempt(page);
+
+  const progress = page.locator("#connect-progress");
+  await expect(progress.locator(".cs-step-active")).toContainText("Key exchange");
+  await expect(progress.locator(".cs-step-done")).toHaveCount(3);
+  await expect(page.locator("#status")).toContainText("exchanging keys");
+  // Not live yet: the card holds the screen, no session bar, nothing saved.
+  await expect(page.locator(".connect-card")).toBeVisible();
+  await expect(page.locator(".session-box")).toBeHidden();
+  await expect(page.locator("body")).toHaveAttribute("data-state", "connecting");
+  expect(await page.evaluate((key) => sessionStorage.getItem(key), STORAGE_KEY)).toBeNull();
+});
+
+// #1601 review 6800: a finished key exchange no longer hands over the screen — the card stays (all
+// four steps done, the app loading) until the mount resolves. Contract change: this spec pinned
+// "live before the mount even resolves", which left an empty app and a Sign out racing the mount.
+test("the connect card walks every step: relay reached, box found, key exchange, then the app (#1596)", async ({ page, baseURL }) => {
+  // A mount that reports each step and waits for the test to release the next one.
+  await page.addInitScript(() => {
+    const w = window as unknown as { __next?: () => void };
+    const step = () => new Promise<void>((r) => (w.__next = r));
+    window.__battlelabConnectHarness = {
+      holdMs: 250,
+      makeWebSocket: () => ({ binaryType: "arraybuffer", onopen: null, onmessage: null, onclose: null, onerror: null, readyState: 1, send() {}, close() {} }),
+      mountApp: async (_ws, _key, _captcha, opts) => {
+        opts?.onEvent?.({ type: "open" });
+        await step();
+        opts?.onEvent?.({ type: "paired", deadline: Math.floor(Date.now() / 1000) + 14400, ttl: 14400 });
+        await step();
+        opts?.onEvent?.({ type: "secured" });
+        await step();
+        const root = document.getElementById("app-root");
+        if (root) root.textContent = "Mock streamed BattleLab app";
+        return { teardown: () => {} };
+      },
+    };
+  });
+  await page.route("https://relay.battlelab.superstatus.io/altcha/challenge", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ algorithm: "SHA-256", challenge: ZERO_ALTCHA, salt: "", signature: "test", maxnumber: 0 }),
+    }),
+  );
+  await page.goto(publicConnectUrl(baseURL));
+  await page.getByLabel("Console key").fill("viper-8231");
+  await page.getByLabel("Access password").fill("stream-secret");
+  await attempt(page);
+  const next = () => page.evaluate(() => (window as unknown as { __next: () => void }).__next());
+
+  const progress = page.locator("#connect-progress");
+  const active = progress.locator(".cs-step-active");
+  await expect(active).toContainText("Box found");
+  await expect(progress.locator(".cs-step-done")).toHaveCount(2);
+  await expect(page.locator("#status")).toContainText("finding your box");
+
+  await next();
+  await expect(active).toContainText("Key exchange");
+  await expect(progress.locator(".cs-step-done")).toHaveCount(3);
+  await expect(page.locator(".session-box")).toBeHidden();
+
+  await next(); // secured: every step done, the app still mounting — the card holds the screen
+  await expect(progress.locator(".cs-step-done")).toHaveCount(4);
+  await expect(page.locator("#status")).toContainText("loading your BattleLab");
+  await expect(page.locator(".connect-card")).toBeVisible();
+  await expect(page.locator(".session-box")).toBeHidden();
+  await expect(page.getByRole("button", { name: "Sign out" })).toBeHidden();
+  await expect(page.locator("body")).toHaveAttribute("data-state", "connecting");
+  expect(await page.evaluate((key) => sessionStorage.getItem(key), STORAGE_KEY)).toBeNull();
+
+  await next(); // the mount resolves: now, and only now, the app takes the screen
+  await expect(page.locator(".session-box")).toBeVisible();
+  await expect(page.locator(".connect-card")).toBeHidden();
+  await expect(page.locator("body")).toHaveAttribute("data-state", "connected");
+  await expect(page.locator("#app-root")).toHaveText("Mock streamed BattleLab app");
+  expect(await page.evaluate((key) => sessionStorage.getItem(key), STORAGE_KEY)).toBeTruthy();
+});
+
+/** A deferred mount (#1601 review 6800): each attempt reports open → paired → secured, then waits
+ *  for the test to release it. `__mounts[i]` records its fake relay socket (closed?), how often its
+ *  app was torn down, and lets the test push relay events into it. */
+interface DeferredMount {
+  release: () => void;
+  emit: (evt: { type: "closed" } | { type: "expired" }) => void;
+  wsClosed: boolean;
+  teardowns: number;
+}
+async function stubDeferredMount(page: import("@playwright/test").Page): Promise<void> {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __mounts: DeferredMount[] };
+    w.__mounts = [];
+    const sockets: { closed: boolean }[] = [];
+    window.__battlelabConnectHarness = {
+      holdMs: 250,
+      makeWebSocket: () => {
+        const ws = {
+          closed: false,
+          binaryType: "arraybuffer",
+          onopen: null,
+          onmessage: null,
+          onclose: null,
+          onerror: null,
+          readyState: 1,
+          send() {},
+          close() {
+            ws.closed = true;
+          },
+        };
+        sockets.push(ws);
+        return ws;
+      },
+      mountApp: async (_ws, _key, _captcha, opts) => {
+        const ws = sockets[sockets.length - 1];
+        const n = w.__mounts.length;
+        let release!: () => void;
+        const released = new Promise<void>((r) => (release = r));
+        const rec: DeferredMount = {
+          release,
+          emit: (evt) => opts?.onEvent?.(evt),
+          get wsClosed() {
+            return ws.closed;
+          },
+          teardowns: 0,
+        };
+        w.__mounts.push(rec);
+        opts?.onEvent?.({ type: "open" });
+        opts?.onEvent?.({ type: "paired", deadline: Math.floor(Date.now() / 1000) + 14400, ttl: 14400 });
+        opts?.onEvent?.({ type: "secured" });
+        await released;
+        // What the real mount does once the bundle lands: render into #app-root over a live tunnel.
+        const root = document.getElementById("app-root")!;
+        const app = document.createElement("div");
+        app.dataset.testid = `late-app-${n}`;
+        app.textContent = `streamed app ${n}`;
+        root.append(app);
+        return {
+          teardown: () => {
+            rec.teardowns += 1;
+            app.remove();
+            ws.close(); // wired.teardown → session.close → the relay socket
+          },
+        };
+      },
+    };
+  });
+  await page.route("https://relay.battlelab.superstatus.io/altcha/challenge", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ algorithm: "SHA-256", challenge: ZERO_ALTCHA, salt: "", signature: "test", maxnumber: 0 }),
+    }),
+  );
+}
+
+const mounts = (page: import("@playwright/test").Page) =>
+  page.evaluate(() =>
+    (window as unknown as { __mounts: DeferredMount[] }).__mounts.map((m) => ({
+      wsClosed: m.wsClosed,
+      teardowns: m.teardowns,
+    })),
+  );
+const releaseMount = (page: import("@playwright/test").Page, i: number) =>
+  page.evaluate((i) => (window as unknown as { __mounts: DeferredMount[] }).__mounts[i].release(), i);
+
+async function startDeferred(page: import("@playwright/test").Page, baseURL: string | undefined): Promise<void> {
+  await stubDeferredMount(page);
+  await page.goto(publicConnectUrl(baseURL));
+  await page.getByLabel("Console key").fill("viper-8231");
+  await page.getByLabel("Access password").fill("stream-secret");
+  await attempt(page);
+  await expect.poll(async () => (await mounts(page)).length).toBe(1);
+  // The key exchange finished (the mount reported it synchronously, before awaiting the release);
+  // the app is still mounting: the card holds the screen. Read once and soft, so a regression also
+  // reports what the late mount then does (the leak), not only this.
+  expect.soft(await page.locator("body").getAttribute("data-state")).toBe("connecting");
+  expect.soft(await page.locator(".connect-card").isVisible()).toBe(true);
+  expect.soft(await page.locator(".session-box").isVisible()).toBe(false);
+  expect.soft(await page.locator("#connect-progress .cs-step-done").count()).toBe(4);
+}
+
+/** A late mount of an ended attempt: torn down once, nothing in #app-root, its socket closed, and
+ *  the page still signed out with nothing saved. */
+async function expectLateMountTornDown(page: import("@playwright/test").Page, i = 0): Promise<void> {
+  await releaseMount(page, i);
+  await expect.poll(async () => (await mounts(page))[i].teardowns).toBe(1);
+  await expect(page.locator(`[data-testid="late-app-${i}"]`)).toHaveCount(0);
+  expect((await mounts(page))[i].wsClosed).toBe(true);
+  await expect(page.locator("body")).toHaveAttribute("data-state", "signed-out");
+  await expect(page.locator(".connect-card")).toBeVisible();
+  await expect(page.locator(".session-box")).toBeHidden();
+  expect(await page.evaluate((key) => sessionStorage.getItem(key), STORAGE_KEY)).toBeNull();
+}
+
+test("signing out while the app still mounts tears the late app and its tunnel down (#1601 review 6800)", async ({ page, baseURL }) => {
+  await startDeferred(page, baseURL);
+  // No Sign out to reach while the card holds the screen…
+  expect.soft(await page.getByRole("button", { name: "Sign out" }).isVisible()).toBe(false);
+  // …and should one fire anyway (the review's repro), it ends the attempt: the relay socket closes
+  // at once, before the mount has even landed.
+  await page.evaluate(() => document.getElementById("signout")!.click());
+  await expect(page.locator("#status")).toContainText("signed out");
+  await expect.configure({ soft: true }).poll(async () => (await mounts(page))[0].wsClosed).toBe(true);
+  await expectLateMountTornDown(page);
+});
+
+for (const evt of ["closed", "expired"] as const) {
+  test(`a relay ${evt} while the app still mounts tears the late app down (#1601 review 6800)`, async ({ page, baseURL }) => {
+    await startDeferred(page, baseURL);
+    await page.evaluate((type) => (window as unknown as { __mounts: DeferredMount[] }).__mounts[0].emit({ type }), evt);
+    await expect(page.locator("#status")).toContainText(evt === "closed" ? "disconnected" : "expired");
+    await expect.configure({ soft: true }).poll(async () => (await mounts(page))[0].wsClosed).toBe(true);
+    await expectLateMountTornDown(page);
+    // The torn-down app's own late close is not news: the page keeps the relay's message.
+    await expect(page.locator("#status")).toContainText(evt === "closed" ? "disconnected" : "expired");
+  });
+}
+
+test("a second connect waits for the ended attempt's late mount, which never touches it (#1601 review 6800)", async ({ page, baseURL }) => {
+  await startDeferred(page, baseURL);
+  await page.evaluate(() => (window as unknown as { __mounts: DeferredMount[] }).__mounts[0].emit({ type: "closed" }));
+  await expect(page.locator("body")).toHaveAttribute("data-state", "signed-out");
+
+  await attempt(page); // attempt B, while A's mount is still out
+  await expect(page.locator("body")).toHaveAttribute("data-state", "connecting");
+  expect(await mounts(page)).toHaveLength(1); // B does not mount over A's in-flight app
+
+  await releaseMount(page, 0); // A lands late: torn down, and B goes on
+  await expect.poll(async () => (await mounts(page))[0].teardowns).toBe(1);
+  await expect(page.locator('[data-testid="late-app-0"]')).toHaveCount(0);
+  await expect.poll(async () => (await mounts(page)).length).toBe(2);
+  await expect(page.locator(".connect-card")).toBeVisible();
+
+  await releaseMount(page, 1);
+  await expect(page.locator("body")).toHaveAttribute("data-state", "connected");
+  await expect(page.locator('[data-testid="late-app-1"]')).toBeVisible();
+  const [a, b] = await mounts(page);
+  expect(a).toEqual({ wsClosed: true, teardowns: 1 });
+  expect(b).toEqual({ wsClosed: false, teardowns: 0 });
+  expect(await page.evaluate((key) => sessionStorage.getItem(key), STORAGE_KEY)).toBeTruthy();
+
+  // Signing B out tears it down exactly once.
+  if (((await page.locator(".session-box").getAttribute("class")) ?? "").includes("collapsed"))
+    await page.locator("#session-toggle").click();
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect.poll(async () => (await mounts(page))[1]).toEqual({ wsClosed: true, teardowns: 1 });
+  await expect(page.locator('[data-testid="late-app-1"]')).toHaveCount(0);
+});
+
+test("a relay failure shows the error card: Back returns to the key, Retry to the gate (#1596)", async ({ page, baseURL }) => {
+  await stubRelay(page, "offline");
+  await page.goto(publicConnectUrl(baseURL));
+  await page.getByLabel("Console key").fill("viper-8231");
+  await page.getByLabel("Access password").fill("stream-secret");
+  await attempt(page);
+
+  const card = page.locator("#connect-error");
+  await expect(card).toBeVisible();
+  await expect(card).toHaveAttribute("role", "alert");
+  await expect(card.getByRole("heading", { name: "Your box is offline" })).toBeVisible();
+  await expect(card.locator(".cs-step-failed")).toContainText("Box found");
+  await expect(card.locator(".cs-step-done")).toHaveCount(2);
+  await expect(page.locator(".connect-card")).toHaveAttribute("data-view", "error");
+  await expect(page.locator("#uplink-label")).toHaveText("Uplink // Failed");
+  await expect(page.locator("#connect-form")).toBeHidden();
+  // The status line keeps the machine-readable code for anyone reading it later.
+  await expect(page.locator("#status")).toContainText("could not connect: offline");
+  for (const name of ["Back", "Retry"]) {
+    const box = (await card.getByRole("button", { name }).boundingBox())!;
+    expect(box.height, `${name} touch target`).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  }
+  await expect(card.getByRole("button", { name: "Retry" })).toBeFocused();
+
+  // Back: the form again, at the console key, with what was typed still there.
+  await card.getByRole("button", { name: "Back" }).click();
+  await expect(card).toBeHidden();
+  await expect(page.getByLabel("Console key")).toBeFocused();
+  await expect(page.getByLabel("Console key")).toHaveValue("viper-8231");
+  await expect(page.locator(".connect-card")).toHaveAttribute("data-view", "form");
+
+  // Retry: the form again, at the gate — the next attempt needs a fresh hold (#690).
+  await attempt(page);
+  await expect(card).toBeVisible();
+  await card.getByRole("button", { name: "Retry" }).click();
+  await expect(page.locator("#gate-hold")).toBeFocused();
+  await expect(page.locator("#verify-gate")).toHaveAttribute("data-state", "idle");
+  await expect(page.getByRole("button", { name: "Connect" })).toBeDisabled();
+});
+
+test("a card taller than the screen scrolls to its Connect button", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 560 });
+  await page.goto("/connect.html");
+  const connect = page.getByRole("button", { name: "Connect" });
+  await connect.scrollIntoViewIfNeeded();
+  await expect(connect).toBeInViewport();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

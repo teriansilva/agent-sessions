@@ -3,80 +3,30 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
 <title>BattleLab — verify</title>
-<style>
-  /* BattleLab tactical-HUD auth (#211 Phase 4e) — shares the login chassis. */
-  :root {
-    color-scheme: dark;
-    --bg: #0d0e10; --panel: #131418; --ink: #e8e9ec; --mut: #a7abb3; --dim: #6f747d;
-    --amber: #ffb000; --on-amber: #120c00; --line: rgba(255,255,255,.12);
-    --up: #3fbf6f; --mono: "JetBrains Mono","Cascadia Mono","SF Mono",ui-monospace,monospace;
-  }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; }
-  body {
-    background:
-      repeating-linear-gradient(0deg, transparent 0 47px, rgba(150,170,210,.05) 47px 48px),
-      repeating-linear-gradient(90deg, transparent 0 47px, rgba(150,170,210,.05) 47px 48px),
-      var(--bg);
-    color: var(--ink);
-    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-    display: grid; place-items: center;
-  }
-  form {
-    position: relative;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    padding: 26px 24px;
-    min-width: 300px;
-    display: flex; flex-direction: column; gap: 10px;
-  }
-  .cnr { position: absolute; width: 14px; height: 14px; border: 0 solid var(--amber); pointer-events: none; }
-  .cnr.tl { top: -1px; left: -1px; border-top-width: 2px; border-left-width: 2px; }
-  .cnr.tr { top: -1px; right: -1px; border-top-width: 2px; border-right-width: 2px; }
-  .cnr.bl { bottom: -1px; left: -1px; border-bottom-width: 2px; border-left-width: 2px; }
-  .cnr.br { bottom: -1px; right: -1px; border-bottom-width: 2px; border-right-width: 2px; }
-  .brand { display: flex; align-items: baseline; gap: 8px; }
-  h1 { margin: 0; line-height: 0; }
-  /* The brand kit's lockup (#1590), inlined: this page loads before sign-in. 28 px tall = 161 px wide. */
-  .brand-lockup { display: block; height: 28px; width: auto; }
-  .brand-glyph { display: inline-block; height: 0.8em; width: auto; vertical-align: baseline; }
-  .tagline { margin: 0; font-family: var(--mono); font-size: 11px; letter-spacing: .18em;
-             text-transform: uppercase; color: var(--mut); }
-  .tag { display: flex; align-items: center; gap: 7px; margin: 2px 0 8px;
-         font-family: var(--mono); font-size: 10px; letter-spacing: .14em;
-         text-transform: uppercase; color: var(--dim); }
-  .led { width: 6px; height: 6px; border-radius: 50%; background: var(--up); box-shadow: 0 0 7px var(--up); }
-  label { display: flex; flex-direction: column; gap: 4px;
-          font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
-  input { background: var(--bg); color: var(--ink); border: 1px solid var(--line);
-          padding: 9px 11px; font: inherit; letter-spacing: .18em; }
-  input:focus-visible { outline: none; border-color: var(--amber); box-shadow: 0 0 0 2px color-mix(in srgb, var(--amber) 32%, transparent); }
-  button { background: var(--amber); color: var(--on-amber); border: 0; padding: 10px;
-           font: inherit; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; cursor: pointer; }
-  button:hover { background: color-mix(in srgb, var(--amber) 84%, #fff); }
-  button:active { background: color-mix(in srgb, var(--amber) 85%, #000); }
-  .hint { margin: 0; font-size: 11.5px; color: var(--mut); }
-  .err { color: #ff8a8a; font-size: 12px; }
-  .classbar { position: fixed; left: 0; right: 0; bottom: 0; padding: 7px 14px;
-              font-family: var(--mono); font-size: 10px; letter-spacing: .14em;
-              text-transform: uppercase; color: var(--dim); border-top: 1px solid var(--line);
-              background: color-mix(in srgb, var(--bg) 80%, transparent); }
-</style>
+<!-- NIGHTJAR (#1596): the app's own palette and primitives, emitted by web/scripts/emit-page-tokens.mjs,
+     then this page family's layout. Before sign-in, no telemetry and no classification text. -->
+<link rel="stylesheet" href="/static/nightjar/fonts.css">
+<link rel="stylesheet" href="/static/nightjar/tokens.css">
+<link rel="stylesheet" href="/static/nightjar/motion.css">
+<link rel="stylesheet" href="/static/nightjar/nightjar.css">
+<link rel="stylesheet" href="/static/nightjar/pages.css">
 </head>
-<body>
-<form method="post" action="/login/totp" autocomplete="off">
-  <span class="cnr tl"></span><span class="cnr tr"></span><span class="cnr bl"></span><span class="cnr br"></span>
-  <div class="brand"><h1><!-- brand:lockup-notag-dark --><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 368 64" class="brand-lockup" role="img" aria-label="BattleLab"><g transform="translate(0 0)"><path d="M14 0 H64 V50 L50 64 H0 V14 Z" fill="#FFB000"/><path d="M18 17 L33 32 L18 47" fill="none" stroke="#120C00" stroke-width="9" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="10"/><rect x="37" y="40" width="13" height="7" fill="#120C00"/></g><path fill="#E8E9EC" d="M87.08 16.60000000000001H105.73599999999999L110.00399999999999 20.868000000000006V29.492000000000008L108.112 31.384000000000007L111.368 34.64000000000001V42.78000000000001L106.74799999999999 47.400000000000006H87.08ZM103.184 29.84400000000001 104.988 28.040000000000006V22.672000000000008L103.228 20.912000000000006H92.05199999999999V29.84400000000001ZM104.24 43.08800000000001 106.352 40.976000000000006V36.04800000000001L104.24 33.980000000000004H92.05199999999999V43.08800000000001Z M130.024 16.60000000000001H134.864L145.996 47.400000000000006H140.804L138.164 40.096000000000004H126.68L124.04 47.400000000000006H118.848ZM136.976 35.828 132.444 22.804000000000006H132.356L127.912 35.828Z M161.836 20.956000000000007H152.596V16.60000000000001H176.18V20.956000000000007H166.94V47.400000000000006H161.836Z M192.46 20.956000000000007H183.22V16.60000000000001H206.804V20.956000000000007H197.564V47.400000000000006H192.46Z M216.044 16.60000000000001H221.148V43.044000000000004H236.636V47.400000000000006H216.044Z M245.656 16.60000000000001H267.128V20.956000000000007H250.76V29.756000000000007H265.852V34.068000000000005H250.76V43.044000000000004H267.128V47.400000000000006H245.656Z"/><path fill="#FFB000" d="M277.24799999999993 16.60000000000001H282.352V43.044000000000004H297.8399999999999V47.400000000000006H277.24799999999993Z M315.3959999999999 16.60000000000001H320.23599999999993L331.36799999999994 47.400000000000006H326.17599999999993L323.53599999999994 40.096000000000004H312.0519999999999L309.4119999999999 47.400000000000006H304.2199999999999ZM322.3479999999999 35.828 317.8159999999999 22.804000000000006H317.7279999999999L313.28399999999993 35.828Z M340.1679999999999 16.60000000000001H358.8239999999999L363.0919999999999 20.868000000000006V29.492000000000008L361.19999999999993 31.384000000000007L364.4559999999999 34.64000000000001V42.78000000000001L359.8359999999999 47.400000000000006H340.1679999999999ZM356.27199999999993 29.84400000000001 358.0759999999999 28.040000000000006V22.672000000000008L356.3159999999999 20.912000000000006H345.13999999999993V29.84400000000001ZM357.3279999999999 43.08800000000001 359.4399999999999 40.976000000000006V36.04800000000001L357.3279999999999 33.980000000000004H345.13999999999993V43.08800000000001Z"/></svg><!-- /brand:lockup-notag-dark --></h1></div>
-  <p class="tagline">Two-factor verification</p>
-  <p class="tag"><span class="led" aria-hidden="true"></span> Secure // Verify</p>
+<body class="nj-page">
+<div class="nj-atmo" aria-hidden="true"><i class="nj-hex"></i><i class="nj-scan"></i><i class="nj-noise"></i><i class="nj-sweep"></i><i class="nj-vig"></i></div>
+<main class="page-shell">
+<form class="nj-frame page-card page-form" method="post" action="/login/totp" autocomplete="off">
+  <h1 class="page-brand"><!-- brand:lockup-notag-dark --><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 368 64" class="brand-lockup" role="img" aria-label="BattleLab"><g transform="translate(0 0)"><path d="M14 0 H64 V50 L50 64 H0 V14 Z" fill="#FFB000"/><path d="M18 17 L33 32 L18 47" fill="none" stroke="#120C00" stroke-width="9" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="10"/><rect x="37" y="40" width="13" height="7" fill="#120C00"/></g><path fill="#E8E9EC" d="M87.08 16.60000000000001H105.73599999999999L110.00399999999999 20.868000000000006V29.492000000000008L108.112 31.384000000000007L111.368 34.64000000000001V42.78000000000001L106.74799999999999 47.400000000000006H87.08ZM103.184 29.84400000000001 104.988 28.040000000000006V22.672000000000008L103.228 20.912000000000006H92.05199999999999V29.84400000000001ZM104.24 43.08800000000001 106.352 40.976000000000006V36.04800000000001L104.24 33.980000000000004H92.05199999999999V43.08800000000001Z M130.024 16.60000000000001H134.864L145.996 47.400000000000006H140.804L138.164 40.096000000000004H126.68L124.04 47.400000000000006H118.848ZM136.976 35.828 132.444 22.804000000000006H132.356L127.912 35.828Z M161.836 20.956000000000007H152.596V16.60000000000001H176.18V20.956000000000007H166.94V47.400000000000006H161.836Z M192.46 20.956000000000007H183.22V16.60000000000001H206.804V20.956000000000007H197.564V47.400000000000006H192.46Z M216.044 16.60000000000001H221.148V43.044000000000004H236.636V47.400000000000006H216.044Z M245.656 16.60000000000001H267.128V20.956000000000007H250.76V29.756000000000007H265.852V34.068000000000005H250.76V43.044000000000004H267.128V47.400000000000006H245.656Z"/><path fill="#FFB000" d="M277.24799999999993 16.60000000000001H282.352V43.044000000000004H297.8399999999999V47.400000000000006H277.24799999999993Z M315.3959999999999 16.60000000000001H320.23599999999993L331.36799999999994 47.400000000000006H326.17599999999993L323.53599999999994 40.096000000000004H312.0519999999999L309.4119999999999 47.400000000000006H304.2199999999999ZM322.3479999999999 35.828 317.8159999999999 22.804000000000006H317.7279999999999L313.28399999999993 35.828Z M340.1679999999999 16.60000000000001H358.8239999999999L363.0919999999999 20.868000000000006V29.492000000000008L361.19999999999993 31.384000000000007L364.4559999999999 34.64000000000001V42.78000000000001L359.8359999999999 47.400000000000006H340.1679999999999ZM356.27199999999993 29.84400000000001 358.0759999999999 28.040000000000006V22.672000000000008L356.3159999999999 20.912000000000006H345.13999999999993V29.84400000000001ZM357.3279999999999 43.08800000000001 359.4399999999999 40.976000000000006V36.04800000000001L357.3279999999999 33.980000000000004H345.13999999999993V43.08800000000001Z"/></svg><!-- /brand:lockup-notag-dark --></h1>
+  <p class="nj-callsign page-callsign"><span class="nj-notch" aria-hidden="true"></span>Secure terminal // <span class="nj-value">Verify</span><span class="nj-meta"><span class="hud-led up" aria-hidden="true"></span></span></p>
+  <h2 class="page-title">Two-factor verification<span class="nj-caret" aria-hidden="true"></span></h2>
   <input type="hidden" name="next" value="{{ next }}">
-  <label>Auth code<input name="code" type="text" autocomplete="one-time-code"
+  <label class="page-field"><span class="page-label">Auth code</span><input class="nj-field is-mono" name="code" type="text" autocomplete="one-time-code"
          placeholder="6-digit code or recovery code" autofocus required></label>
-  <p class="hint">Enter the code from your authenticator app, or a recovery code.</p>
-  {% if error %}<div class="err">{{ error }}</div>{% endif %}
-  <button type="submit">Verify</button>
+  <p class="page-hint">Enter the code from your authenticator app, or a recovery code.</p>
+  {% if error %}<p class="page-error" role="alert"><span class="hud-led down" aria-hidden="true"></span>{{ error }}</p>{% endif %}
+  <button class="nj-plate page-btn" type="submit">Verify</button>
 </form>
-<div class="classbar">Unclassified // Internal Use // OP: Nightjar</div>
+</main>
 </body>
 </html>

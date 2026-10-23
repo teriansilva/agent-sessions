@@ -4,6 +4,7 @@ import {
   ambientAllowed,
   bootMotion,
   coerceMotionChoice,
+  followDeviceMotion,
   motionMode,
   MOTION_STORAGE_KEY,
   readStoredMotion,
@@ -109,6 +110,34 @@ describe("the pause (hidden tab, 10 idle minutes)", () => {
     expect(root.dataset.motionPaused).toBeUndefined();
     root.dataset.motionPaused = "idle";
     stop();
+    expect(root.dataset.motionPaused).toBeUndefined();
+  });
+});
+
+describe("a page that follows the device (the share viewer, #1596)", () => {
+  test("the mode tracks prefers-reduced-motion live, the pause runs, teardown unsubscribes both", () => {
+    vi.useFakeTimers();
+    let matches = false;
+    const listeners = new Set<() => void>();
+    window.matchMedia = ((q: string) => ({
+      get matches() {
+        return matches && q.includes("prefers-reduced-motion");
+      },
+      media: q,
+      addEventListener: (_: string, cb: () => void) => listeners.add(cb),
+      removeEventListener: (_: string, cb: () => void) => listeners.delete(cb),
+    })) as unknown as typeof window.matchMedia;
+
+    const stop = followDeviceMotion(1000);
+    expect(root.dataset.motion).toBe("full");
+    matches = true;
+    listeners.forEach((cb) => cb());
+    expect(root.dataset.motion).toBe("reduced");
+    vi.advanceTimersByTime(1100);
+    expect(root.dataset.motionPaused).toBe("idle");
+
+    stop();
+    expect(listeners.size).toBe(0);
     expect(root.dataset.motionPaused).toBeUndefined();
   });
 });

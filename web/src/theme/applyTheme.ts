@@ -57,3 +57,17 @@ export function storeTheme(id: ThemeChoice): void {
 export function bootTheme(): void {
   applyTheme(resolveTheme(readStoredTheme(), prefersDark()));
 }
+
+/** A page outside the app (the Home Free connect page, the share viewer, #1596): the device's
+ *  stored BattleLab choice when this browser has one (the operator on their own device), else the
+ *  device's colour scheme — such a page has no settings of its own, and dark-by-default would
+ *  ignore a visitor's light device. */
+export function bootPageTheme(): void {
+  let stored: string | null = null;
+  try {
+    stored = localStorage.getItem(THEME_STORAGE_KEY);
+  } catch {
+    /* storage blocked: follow the device */
+  }
+  applyTheme(resolveTheme(stored === null ? "system" : coerceThemeChoice(stored), prefersDark()));
+}

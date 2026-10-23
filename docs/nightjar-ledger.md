@@ -128,7 +128,8 @@ the same list.
 | `routes/Settings.module.css` | css | 11 | todo |  |  |
 | `routes/Templates.module.css` | css | 10 | todo |  |  |
 | `routes/Variables.module.css` | css | 10 | todo |  |  |
-| `share/ShareViewer.module.css` | css | 12 | todo |  |  |
+| `homefree/connect.css` | css | 12 | done | connect:signed-out connect:verified connect:dialog connect:connecting connect:error connect:connected | atmosphere (Full, dark), radar + acquire bar while connecting, step LEDs, session LED breathe / warn blink, gate meter (state, every mode) |
+| `share/ShareViewer.module.css` | css | 12 | done | share:loading share:password share:password-error share:password-wait share:unavailable share:relink share:nocookie share:offline share:terminal share:open | atmosphere (Full, dark), radar while opening, working bars (Full only), button glitch on press |
 | `theme/fonts.css` | css | 1 | done | gallery:all | none (font faces) |
 | `theme/motion.css` | css | 1 | done | gallery:all | the mode rules and keyframes themselves |
 | `tokens.css` | css | n/a | n/a: the palette itself (literal allowlist) | — | — |
@@ -189,13 +190,13 @@ the same list.
 | `components/memory/MemoryGraph.tsx (React Flow)` | canvas | 9 | done | canvas:memory-graph | the shared theme (hud/reactFlow.css), `colorMode` from the theme; no motion of its own (its page, memoryGraph.module.css, is Phase 10) |
 | `components/playbooks/PlaybookFlowCanvas.tsx (React Flow)` | canvas | 9 | done | canvas:playbook-flow | the shared theme (hud/reactFlow.css), `colorMode` from the theme; no motion of its own (the editor page is Phase 10) |
 | `web/index.html (SPA shell, pre-paint script)` | page | 1 | todo |  |  |
-| `src/agent_sessions/templates/login.html` | page | 12 | todo |  |  |
-| `src/agent_sessions/templates/login_totp.html` | page | 12 | todo |  |  |
-| `src/agent_sessions/templates/change_password.html` | page | 12 | todo |  |  |
-| `src/agent_sessions/templates/link_approve.html` | page | 12 | todo |  |  |
-| `web/share.html → share/ShareViewer.tsx` | page | 12 | todo |  |  |
-| `src/agent_sessions/routes/shares.py PLACEHOLDER_PAGE` | page | 12 | todo |  |  |
-| `web/connect.html (+ homefree/connectState.ts)` | page | 12 | todo |  |  |
+| `src/agent_sessions/templates/login.html` | page | 12 | done | page:login page:login-error page:login-qr | atmosphere (Full, dark; still under prefers-reduced-motion), caret blink, live LED on the QR status |
+| `src/agent_sessions/templates/login_totp.html` | page | 12 | done | page:totp page:totp-error | atmosphere (Full, dark), caret blink |
+| `src/agent_sessions/templates/change_password.html` | page | 12 | done | page:password page:password-error | atmosphere (Full, dark), caret blink |
+| `src/agent_sessions/templates/link_approve.html` | page | 12 | done | page:link-confirm page:link-approved page:link-denied page:link-invalid | atmosphere (Full, dark), attention LED blink on the request |
+| `web/share.html → share/ShareViewer.tsx` | page | 12 | done | share:loading share:password share:password-error share:password-wait share:unavailable share:relink share:nocookie share:offline share:terminal share:open | atmosphere (Full, dark), radar while opening, working bars (Full only) |
+| `src/agent_sessions/routes/shares.py PLACEHOLDER_PAGE` | page | 12 | done | page:share-placeholder | atmosphere (Full, dark); script-free |
+| `web/connect.html (+ homefree/connectState.ts)` | page | 12 | done | connect:signed-out connect:verified connect:dialog connect:connecting connect:error connect:connected | atmosphere (Full, dark; paused hidden/idle), button glitch, gate meter (state, every mode), radar + acquire bar while connecting, step LEDs, session LED breathe / warn blink |
 | `landing/index.html` | page | 12b | n/a: rebuilt in NIGHTJAR by #1544 (PR #1548); 12b checks conformance only | — | — |
 | `landing/legal.html` | page | 12b | todo |  |  |
 | `landing/privacy.html (+ landing/consent.js)` | page | 12b | todo |  |  |

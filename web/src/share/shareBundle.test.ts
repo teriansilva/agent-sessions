@@ -25,6 +25,12 @@ const ALLOWED_OUTSIDE = new Set([
   "theme/motion.css",
   "theme/motion.ts",
   "components/hud/nightjar.css",
+  // The page theme (#1596: the device's stored choice, else its colour scheme — localStorage and
+  // matchMedia only) and two markup-only primitives: the atmosphere and the loader.
+  "theme/applyTheme.ts",
+  "theme/themes.ts",
+  "components/hud/Atmosphere.tsx",
+  "components/hud/Loader.tsx",
   // The one button sheet (docs/design.md §6) the viewer's buttons compose: CSS only, no script.
   "components/ui/actionButton.module.css",
   // The brand kit's logo (#1590): an image component and the kit's static SVG files. No script

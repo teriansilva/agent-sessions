@@ -158,8 +158,13 @@ export class FrameChannel {
   }
 }
 
+/** The attempt's progress, in order (#1596: the connect card renders each one), then the session's
+ *  life: `open` the relay socket is up, `paired` the relay found the box, `secured` the key exchange
+ *  finished — only then is the session live. */
 export type SessionEvent =
+  | { type: "open" }
   | { type: "paired"; deadline?: number; ttl?: number }
+  | { type: "secured" }
   | { type: "warn"; remaining?: number }
   | { type: "expired" }
   | { type: "closed" };
@@ -198,6 +203,7 @@ export async function runAppSession(
 ): Promise<AppSessionHandle> {
   const chan = new FrameChannel(ws);
   await chan.open();
+  cb.onEvent({ type: "open" });
 
   chan.send(JSON.stringify({ t: "hello", captcha }));
   const first = JSON.parse(await chan.recvText());
@@ -211,6 +217,7 @@ export async function runAppSession(
   const msg2 = await chan.recvBinary();
   const { transport, msg3 } = await ini.finish(msg2);
   chan.send(msg3);
+  cb.onEvent({ type: "secured" });
 
   let sendChain: Promise<void> = Promise.resolve();
   const sendFrame = (frame: Uint8Array): void => {
