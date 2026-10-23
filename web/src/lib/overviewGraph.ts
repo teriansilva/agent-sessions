@@ -23,9 +23,11 @@ export const ACTIVE_WINDOW_S = 15 * 60;
 export type GroupBy = "folder" | "project" | "agent";
 
 // Layout geometry (px). Deterministic so snapshots/tests are stable. Chips grew at #424
-// Phase 4 to reach list-row parity (title + AI summary + project/folder/time meta line).
+// Phase 4 to reach list-row parity (title + AI summary + project/folder/time meta line), and
+// again at #1600 for the v5 unit card: a callsign row (LED, engine bar, callsign) above the title,
+// and the status line leading with the state in words.
 const CHIP_W = 240;
-const CHIP_H = 80;
+const CHIP_H = 96;
 const GAP = 8;
 const PAD = 12;
 const HEADER_H = 44; // fits a custom name + a path subtitle line (#148)
@@ -57,6 +59,12 @@ export interface ProjectGroupData extends Record<string, unknown> {
   name?: string;
   /** Entity color (#361) — rendered as a tinted top border + dot on the group node. */
   color?: string;
+  /** An agent is working anywhere under this sector (#1600): its rail and edge light up — the
+   *  same rule that makes the edge into it live (#1531 Phase 9). */
+  live?: boolean;
+  /** This group's own sessions with a live agent process (`running`, #1085 — the sidebar's
+   *  `live_total` definition), for the map's header count (#1600). */
+  liveCount?: number;
   /** Folders-layout only (#445): the project this folder belongs to — the user project all
    *  its sessions resolve to (adopted folder), else the synthetic "Default" catch-all. Drawn
    *  as a small owning-project badge so folders read as a sub-property of a project. */
@@ -443,6 +451,8 @@ export function buildOverview(
         collapsed: !isExpanded,
         name: g.kind === "folder" ? names[key] : undefined,
         color: g.color,
+        live: liveUnder(key),
+        liveCount: g.items.filter((s) => !!s.running).length,
         // Folders layout (#445): tag each folder node with its owning project (the user project
         // all its sessions resolve to, else Default) so folders read as a sub-property of a
         // project. Only meaningful for folder-kind groups in `folder` mode.

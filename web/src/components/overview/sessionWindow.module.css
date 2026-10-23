@@ -5,24 +5,139 @@
  * Flow's zoom transform. Square corners, hairlines, the mono chrome bar (the window's ONLY bar,
  * #1109), plate-feedback controls and a ticked resize grip. */
 
+/* A window is an armour panel (#1600, the map's v5 language and the v5 panels' `.cf`): the frame
+ * is clipped to the chamfer (top-left and bottom-right) and IS the 1 px edge — `--hud` on the
+ * focused window, `--hud-dim` on the others — with the face inset by a pixel, so the edge runs
+ * along the cuts too. The cut is 1.5 × the panel `--cut` (21 px), so it reads at window size; it only
+ * ever cuts into the 30 px bar and the 20 px footer, never the work surface. Over the edge: the
+ * lit top rail and two corner ticks. The section itself is only the positioning box — it takes
+ * no pointer events, so a press in a cut corner falls through to the map like any other gap. */
 .win {
+  --c: calc(var(--cut) * 1.5);
+  /* The face's cut: a pixel in on both axes, so the edge band along the diagonal is 1 px too. */
+  --c-face: calc(var(--c) - 0.6px);
+  --edge: var(--hud-dim);
   position: absolute;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: var(--bg-1);
-  border: 1px solid var(--line-strong);
-  box-shadow: var(--shadow-dialog);
-  /* The layer is pointer-events:none so the canvas pans between windows; each window takes
-     its own events back. */
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 .focused {
-  border-color: var(--hud-dim);
-  box-shadow:
-    var(--shadow-dialog),
-    0 0 0 1px var(--hud-faint);
+  --edge: var(--hud);
+}
+
+.frame {
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  background: var(--edge);
+  clip-path: polygon(
+    var(--c) 0,
+    100% 0,
+    100% calc(100% - var(--c)),
+    calc(100% - var(--c)) 100%,
+    0 100%,
+    0 var(--c)
+  );
+  /* The layer is pointer-events:none so the canvas pans between windows; each window takes its
+     own events back here. */
+  pointer-events: auto;
+}
+
+.face {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-1);
+  clip-path: polygon(
+    var(--c-face) 0,
+    100% 0,
+    100% calc(100% - var(--c-face)),
+    calc(100% - var(--c-face)) 100%,
+    0 100%,
+    0 var(--c-face)
+  );
+}
+
+/* The focused window's glow (design.md: a panel's glow is a drop-shadow on a WRAPPER, because a
+ * clip-path clips shadows): a chamfered halo shape under the frame, its drop-shadow the only
+ * filter. The terminal is never inside a filter. `--glow-panel` is `none` in light mode. */
+.halo {
+  position: absolute;
+  inset: 0;
+  display: none;
+  filter: var(--glow-panel);
+  pointer-events: none;
+}
+
+.focused .halo {
+  display: block;
+}
+
+.haloShape {
+  position: absolute;
+  inset: 0;
+  background: var(--hud);
+  clip-path: polygon(
+    var(--c) 0,
+    100% 0,
+    100% calc(100% - var(--c)),
+    calc(100% - var(--c)) 100%,
+    0 100%,
+    0 var(--c)
+  );
+}
+
+/* The lit rail (the v5 `.rail.short`): 2 px along the top edge from the cut, a third of the way. */
+.rail {
+  position: absolute;
+  top: 0;
+  left: calc(var(--c) + 2px);
+  width: 34%;
+  height: 2px;
+  background: var(--hud-dim);
+  pointer-events: none;
+}
+
+.focused .rail {
+  background: var(--hud);
+  box-shadow: var(--glow-rail);
+}
+
+/* Corner ticks in the two uncut corners: the top-right over the bar, the bottom-left over the
+ * footer. */
+.tick {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border: 0 solid var(--edge);
+  pointer-events: none;
+}
+
+.tickTr {
+  top: 6px;
+  right: 6px;
+  border-top-width: 1px;
+  border-right-width: 1px;
+}
+
+.tickBl {
+  bottom: 4px;
+  left: 6px;
+  border-bottom-width: 1px;
+  border-left-width: 1px;
+}
+
+/* The callsign bar's hazard notch (`nj-notch`), sized to the 30 px bar. */
+.notch {
+  flex: none;
+  width: 16px;
+  height: 7px;
+  opacity: 0.6;
+}
+
+.focused .notch {
+  opacity: 0.9;
 }
 
 .head {
@@ -31,7 +146,7 @@
   gap: 8px;
   align-items: center;
   height: 30px;
-  padding: 0 6px 0 8px;
+  padding: 0 22px 0 calc(var(--c) - 2px); /* clear the chamfer and the tick */
   font-family: var(--font-mono);
   font-size: var(--fs-meta);
   font-weight: 600;
@@ -48,6 +163,59 @@
      shared through HeadFacts' classes) governs both bars. The chrome's extra ladder rules are
      scoped to `[data-window-head]` so the pane never inherits them. */
   container: panelhead / inline-size;
+  position: relative;
+  isolation: isolate;
+}
+
+/* Scanlines on the bar (#1600): static, faint, behind the bar's content — the frame's texture,
+ * never the terminal's. */
+.head::before,
+.foot::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-under);
+  background: repeating-linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--hud) 5%, transparent) 0 1px,
+    transparent 1px 3px
+  );
+  pointer-events: none;
+}
+
+/* The unit's callsign, ENGINE-ID (#1600): the first fact, yielding first on a narrow window. */
+.callsign {
+  flex: none;
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.focused .callsign {
+  color: var(--hud-text);
+}
+
+/* Read in the board's order — LED, then the callsign, then the rest of the run (HeadFacts renders
+ * its facts straight into this flex row). The callsign stands in for the engine badge here
+ * (Terminal.module.css hides the badge in a window bar). */
+.facts > * {
+  order: 2;
+}
+
+.facts > [data-head-led] {
+  order: 0;
+}
+
+.facts > .callsign {
+  order: 1;
+}
+
+@container panelhead (max-width: 440px) {
+  .callsign {
+    display: none;
+  }
 }
 
 /* The project tint (#1109): a subtle mix of `--proj` (set inline on .win when the row carries a
@@ -121,35 +289,39 @@
 
 .btns {
   display: flex;
-  gap: 0;
+  gap: 3px;
 }
 
-.btns button {
+/* The window's controls are compact plates (`nj-plate`: painted chamfer, the hit area stays the
+ * whole square). */
+.btn {
+  composes: nj-plate from global;
+  --nj-face: transparent;
+  --nj-edge: transparent;
   display: inline-grid;
   place-items: center;
   width: 24px;
-  height: 24px;
+  height: 22px;
   padding: 0;
   line-height: 1;
   color: var(--text-3);
   cursor: pointer;
-  background: transparent;
-  border: 0;
-  transition:
-    color var(--t-fast) var(--ease-out),
-    background-color var(--t-fast) var(--ease-out);
+  transition: color var(--t-fast) var(--ease-out);
 }
 
-.focused .btns button {
+.focused .btn {
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--line);
   color: var(--text-2);
 }
 
-.btns button:hover {
+.btn:hover {
+  --nj-face: var(--hud-tint);
+  --nj-edge: var(--hud-dim);
   color: var(--hud-text);
-  background: var(--hud-tint);
 }
 
-.btns button:focus-visible,
+.btn:focus-visible,
 .resize:focus-visible {
   outline: 2px solid var(--accent-text);
   outline-offset: -2px;
@@ -208,39 +380,80 @@
   min-height: 0;
 }
 
-/* The resize grip: two nested corner ticks (borders, no gradient) in the bottom-right corner. */
+/* The status footer (#1600): a mono readout in the frame, under the work surface — the link,
+ * the grid, the last activity. No controls: the chrome bar stays the window's only bar. */
+.foot {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex: 0 0 20px;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  height: 20px;
+  padding: 0 calc(var(--c) + 6px) 0 20px; /* clear the tick and the grip */
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--text-3);
+  background: var(--bg-1);
+  border-top: 1px solid var(--line);
+}
+
+.link {
+  font-weight: 700;
+}
+
+.link[data-link="live"] {
+  color: var(--status-up);
+}
+
+.link[data-link="linking"] {
+  color: var(--warn-text);
+}
+
+.link[data-link="down"] {
+  color: var(--danger-text);
+}
+
+.sep {
+  opacity: 0.6;
+}
+
+/* The resize grip IS the bottom-right cut: its square is the cut corner (`--c`, which the 1 px
+ * edge plus the 20 px footer covers — the grip never reaches over the work surface), its hit area
+ * the whole square, cut corner included. The hazard band is painted along the cut, inside the
+ * frame, by a clipped pseudo-element. */
 .resize {
   position: absolute;
-  right: 1px;
-  bottom: 1px;
-  width: 14px;
-  height: 14px;
+  right: 0;
+  bottom: 0;
+  width: var(--c);
+  height: var(--c);
   padding: 0;
   cursor: nwse-resize;
   background: transparent;
   border: 0;
-  border-right: 2px solid var(--line-strong);
-  border-bottom: 2px solid var(--line-strong);
+  pointer-events: auto;
   touch-action: none;
 }
 
 .resize::before {
   content: "";
   position: absolute;
-  right: 3px;
-  bottom: 3px;
-  width: 6px;
-  height: 6px;
-  border-right: 1px solid var(--line-strong);
-  border-bottom: 1px solid var(--line-strong);
-}
-
-.resize:hover,
-.focused .resize {
-  border-color: var(--hud-dim);
+  inset: 0;
+  /* The band between the cut (the square's anti-diagonal) and a line 8 px inside it. */
+  clip-path: polygon(calc(100% - 8px) 0, 100% 0, 0 100%, 0 calc(100% - 8px));
+  background: repeating-linear-gradient(45deg, var(--edge) 0 2px, transparent 2px 4px);
+  opacity: 0.8;
 }
 
 .resize:hover::before,
 .focused .resize::before {
-  border-color: var(--hud-dim);
+  opacity: 1;
 }

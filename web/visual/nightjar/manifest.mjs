@@ -1279,6 +1279,81 @@ export const SWEEP = [
     ];
   })(),
   // ---- /PR5a outside ----
+  // ---- map v5 ---- (#1600: the map's v5 composition; windows for terminal AND API sessions)
+  // A terminal window beside an API (structured) window: the same armour frame, callsign bar and
+  // footer, each footer with its own readout (a grid; a model).
+  {
+    id: "map:window-api",
+    path: "/overview",
+    widths: ["desktop"],
+    storage: {
+      "tr-overview-workspace": [
+        {
+          key: "claude:7c1e1a00-5b2d-4c8e-9f31-0a6d2e8b4001",
+          engine: "claude",
+          id: "7c1e1a00-5b2d-4c8e-9f31-0a6d2e8b4001",
+          title: "Rate-limit the public ingest API",
+          x: 40,
+          y: 60,
+          w: 620,
+          h: 420,
+          z: 1,
+        },
+        {
+          key: "claude-api:5a9e0c11-2f3d-4e6a-8b7c-1d2e3f4a5b6c",
+          engine: "claude-api",
+          id: "5a9e0c11-2f3d-4e6a-8b7c-1d2e3f4a5b6c",
+          title: "Draft the ingest limits runbook",
+          x: 700,
+          y: 60,
+          w: 620,
+          h: 420,
+          z: 2,
+        },
+      ],
+    },
+    api: {
+      "re:/api/sessions/claude-api(?::|%3A)5a9e0c11-2f3d-4e6a-8b7c-1d2e3f4a5b6c$": {
+        id: "claude-api:5a9e0c11-2f3d-4e6a-8b7c-1d2e3f4a5b6c",
+        engine: "claude-api",
+        uuid: "5a9e0c11-2f3d-4e6a-8b7c-1d2e3f4a5b6c",
+        short_uuid: "5a9e0c11",
+        cwd: "/home/commander/code/orbital-api",
+        project: { kind: "folder", id: "/home/commander/code/orbital-api", name: "orbital-api" },
+        last_mtime: Math.floor(Date.now() / 1000) - 120,
+        title: "Draft the ingest limits runbook",
+        first_user_message: "Draft the ingest limits runbook",
+        sticky: false,
+        archived: false,
+        running: true,
+        model_configured: "claude-sonnet-4",
+      },
+      "re:/api/structured/sessions/claude-api(?::|%3A)5a9e0c11-2f3d-4e6a-8b7c-1d2e3f4a5b6c(\\?.*)?$": {
+        session_key: "claude-api:5a9e0c11-2f3d-4e6a-8b7c-1d2e3f4a5b6c",
+        revision: 1,
+        event_cursor: 1,
+        cwd: "/home/commander/code/orbital-api",
+        state: "idle",
+        active_turn: null,
+        model_requested: null,
+        model_effective: null,
+        turns: [],
+        omitted_turns: 0,
+        pending_requests: [],
+        native: { native_id: "n1", worker: "w1", background_active: false },
+        read_only: null,
+      },
+      "re:/api/structured/sessions/claude-api(?::|%3A)5a9e0c11-2f3d-4e6a-8b7c-1d2e3f4a5b6c/events": {
+        session_key: "claude-api:5a9e0c11-2f3d-4e6a-8b7c-1d2e3f4a5b6c",
+        revision: 1,
+        next_cursor: 1,
+        events: [],
+      },
+    },
+    open: [{ role: "button", name: "Collapse session list" }],
+    present: "[data-window-foot='api']",
+  },
+  // ---- /map v5 ----
 ];
 
 // 834: an iPad in portrait, the width the 800 px breakpoint used to hand the desktop layout.

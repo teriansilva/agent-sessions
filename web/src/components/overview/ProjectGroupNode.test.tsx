@@ -33,7 +33,7 @@ const renderGroup = (data: object, refetchSessions: () => void = () => {}) =>
 // The header is presentational — collapse is toggled via the canvas's React Flow onNodeClick
 // (#149). Here we verify it reflects collapsed state for assistive tech + shows name/count.
 test("collapsed cluster header reports aria-expanded=false + the name/count", () => {
-  renderGroup({
+  const { container } = renderGroup({
     project: "one",
     kind: "folder",
     cwd: "/home/u/one",
@@ -45,7 +45,9 @@ test("collapsed cluster header reports aria-expanded=false + the name/count", ()
     "false",
   );
   expect(screen.getByText("~/one")).toBeInTheDocument();
-  expect(screen.getByText("2 sessions")).toBeInTheDocument();
+  // The count's word is its own span (#1600: a one-unit sector shows the number alone and keeps
+  // the word as accessible text), so the count reads as one string off the element.
+  expect(container.querySelector(".tr-ov-count")?.textContent).toBe("2 sessions");
 });
 
 test("expanded cluster header reports aria-expanded=true", () => {

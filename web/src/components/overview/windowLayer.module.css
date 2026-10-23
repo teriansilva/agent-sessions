@@ -47,6 +47,19 @@
   fill: var(--hud);
 }
 
+/* The connector node where a tether meets its window (#1600, the board's link nodes): a small
+ * square, lit on the focused window. */
+.node {
+  fill: var(--bg-1);
+  stroke: var(--hud-dim);
+  stroke-width: 1.2;
+}
+
+.nodeFocused {
+  fill: var(--hud);
+  stroke: var(--hud);
+}
+
 .slot {
   position: absolute;
   inset: 0;
@@ -70,10 +83,11 @@
 }
 
 /* The tray of parked windows, bottom-centre over the map — above the map's hint line, which sits
- * in a higher stacking layer (z 6) at the bottom edge and would otherwise cover it. */
+ * in a higher stacking layer (z 6) over the legend's row (56 px up since #1600) and would
+ * otherwise cover it. */
 .tray {
   position: absolute;
-  bottom: 40px;
+  bottom: 88px;
   left: 50%;
   z-index: calc(var(--z-dock) + 9);
   display: flex;
@@ -85,8 +99,13 @@
   transform: translateX(-50%);
 }
 
-/* A parked window's chip: a plate with the window's LED; it arrives when the window minimises. */
+/* A parked window's chip: a chamfered plate (`nj-plate`, #1600) with the window's LED; it arrives
+ * when the window minimises. */
 .trayChip {
+  composes: nj-plate from global;
+  --nj-face: var(--bg-1);
+  --nj-edge: var(--line-strong);
+  --nj-rail: var(--hud-dim);
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
@@ -97,8 +116,7 @@
   letter-spacing: 0.06em;
   color: var(--text-2);
   cursor: pointer;
-  background: var(--bg-1);
-  border: 1px solid var(--line-strong);
+  border: 1px solid transparent;
   animation: global(nj-arrive) var(--t-arrive) var(--ease-out) both;
   transition:
     color var(--t-fast) var(--ease-out),
@@ -107,8 +125,9 @@
 
 .trayChip:hover,
 .trayChip:focus-visible {
+  --nj-edge: var(--hud);
+  --nj-rail: var(--hud);
   color: var(--text-1);
-  border-color: var(--hud);
   outline: none;
 }
 

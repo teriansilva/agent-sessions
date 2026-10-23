@@ -37,7 +37,7 @@ test.describe("HUD card frame — brackets only, no left rail (#476)", () => {
   // card rendered under /mission for a session no mission held; that card went with the "Sessions
   // without a mission" view, and nothing under /mission draws a bracketed card any more.
 
-  test("Overview chip: uniform border + four corner brackets", async ({
+  test("Overview chip: uniform border, no left rail; the v5 unit card carries no corner brackets (#1600)", async ({
     page,
   }, testInfo) => {
     test.skip(
@@ -98,6 +98,9 @@ test.describe("HUD card frame — brackets only, no left rail (#476)", () => {
     expect(b.left).toBe(b.right);
     expect(b.left).toBe(b.bottom);
 
-    await expect(chip.locator(".hud-cnr")).toHaveCount(4);
+    // The v5 board (#1600) frames a unit by its uniform hairline and the engine bar in its
+    // callsign row; the HudFrame corner brackets are retired on the map's cards. #476's guard is
+    // the uniform border above — no rail doubles the left edge.
+    await expect(chip.locator(".hud-cnr")).toHaveCount(0);
   });
 });

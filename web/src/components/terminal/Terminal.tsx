@@ -150,6 +150,7 @@ export function Terminal({
   headReservePx,
   headBarRef,
   onTermStatus,
+  onGrid,
   ref,
 }: {
   engine: string;
@@ -194,6 +195,10 @@ export function Terminal({
    *  that the React compiler refused to optimize the component. Ref-held like `onRole`, so an
    *  unstable closure never re-keys the socket. */
   onTermStatus?: (status: TermStatus) => void;
+  /** Publish the terminal's grid (columns × rows) to a host that reads it out (#1600: the map
+   *  window's status footer). Read-only, ref-held like `onTermStatus`; called on every xterm
+   *  resize and once at mount. */
+  onGrid?: (cols: number, rows: number) => void;
   /** Suppress this pane's own `panelHead` (#1109) — a map window's chrome bar carries the
    *  header instead, so a window never shows two stacked bars. The full-screen pane NEVER sets
    *  it. The modals the head actions open (recap, hand off, adopt) stay mounted here: their
@@ -394,6 +399,10 @@ export function Terminal({
   const onTermStatusRef = useRef(onTermStatus);
   useEffect(() => {
     onTermStatusRef.current = onTermStatus;
+  });
+  const onGridRef = useRef(onGrid);
+  useEffect(() => {
+    onGridRef.current = onGrid;
   });
   const setStatus = useCallback((s: TermStatus) => {
     setStatusRaw(s);
@@ -1391,8 +1400,12 @@ export function Terminal({
     // A separate listener, not folded into sendResize: that one dedupes on (cols, rows) and
     // returns early, which is right for the pty and wrong for a readout that must also be
     // correct on the very first fit.
-    term.onResize(({ cols: c }) => setCols(c));
+    term.onResize(({ cols: c, rows: r }) => {
+      setCols(c);
+      onGridRef.current?.(c, r);
+    });
     setCols(term.cols);
+    onGridRef.current?.(term.cols, term.rows);
 
     // Paste over the terminal (#157 + #181):
     // - Image paste → forward to Compose as an attachment pill (opens Compose if

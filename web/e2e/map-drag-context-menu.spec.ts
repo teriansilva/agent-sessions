@@ -617,7 +617,7 @@ test.describe("phone", () => {
     const c1 = chip(page, 1);
     await expect(c1).toBeVisible();
     for (let i = 0; i < 10 && (await zoomOf(page)) < 0.55; i++) {
-      await page.locator(".react-flow__controls-zoomin").tap();
+      await page.locator("[data-map-zoom-in]").tap(); // #1600: the strip's zoom, not React Flow's Controls
     }
     expect(await zoomOf(page)).toBeGreaterThanOrEqual(0.55);
 
@@ -681,7 +681,7 @@ test.describe("phone", () => {
     await page.goto("/overview");
     await expect(chip(page, 1)).toBeVisible();
     for (let i = 0; i < 20 && (await zoomOf(page)) > 0.2001; i++) {
-      await page.locator(".react-flow__controls-zoomout").tap();
+      await page.locator("[data-map-zoom-out]").tap(); // #1600: the strip's zoom
     }
     expect(await zoomOf(page)).toBeLessThanOrEqual(0.2001);
     await expect(page.locator("[data-overview-map]")).toHaveAttribute("data-zoom-far", "");

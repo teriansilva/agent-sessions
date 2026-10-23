@@ -159,7 +159,45 @@
   }
 }
 
-/* Ambient loops (Full only; mark the element `.nj-ambient` so the pause reaches it). */
+/* Ambient loops (Full only; mark the element `.nj-ambient` so the pause reaches it).
+ *
+ * An idle loop costs the main thread one frame or two per ITERATION, however it is composited:
+ * React listens for `animationiteration` at its root, so Chrome wakes the main thread to dispatch
+ * every iteration of every CSS animation on the page (#1600: that was the populated map's whole
+ * idle cost, ~1.4% CPU). A short ambient beat therefore repeats INSIDE one long iteration — the
+ * same motion, a quarter (or a tenth) of the wake-ups. Loop with the `-4` keyframes at four times
+ * the beat; `nj-breathe` / `nj-blink` stay for a single beat. */
+@keyframes nj-breathe-4 {
+  0%,
+  25%,
+  50%,
+  75%,
+  100% {
+    opacity: 1;
+  }
+  12.5%,
+  37.5%,
+  62.5%,
+  87.5% {
+    opacity: 0.55;
+  }
+}
+/* Run with steps(1, end): on for the first half of each beat, dim for the second. */
+@keyframes nj-blink-4 {
+  0%,
+  25%,
+  50%,
+  75% {
+    opacity: 1;
+  }
+  12.5%,
+  37.5%,
+  62.5%,
+  87.5%,
+  100% {
+    opacity: 0.35;
+  }
+}
 @keyframes nj-breathe {
   0%,
   100% {
@@ -223,12 +261,14 @@
     transform: translateX(340%);
   }
 }
+/* Ten 3 px scanline periods per iteration (run as steps(30) over 9 s: the 0.9 s, 3-step drift,
+ * one wake-up in ten, see above); the layer starts 30 px up so the drift never uncovers an edge. */
 @keyframes nj-scan-drift {
   from {
     transform: translateY(0);
   }
   to {
-    transform: translateY(3px);
+    transform: translateY(30px);
   }
 }
 @keyframes nj-acquire {

@@ -143,11 +143,15 @@ test.describe("desktop", () => {
     expect(headBox!.y + headBox!.height).toBeLessThanOrEqual(termBox!.y + 1);
 
     // The chrome carries what the second bar used to render — through the SAME HeadFacts run:
-    // the LED (an accessible image whose state names the link), the engine badge, the project
+    // the LED (an accessible image whose state names the link), the callsign, the project
     // chip with its colour dot, the custom tag, the relative update time, and the title.
     const facts = w.locator("[data-window-facts]");
     await expect(facts.locator('[role="img"][data-head-led]')).toBeVisible();
-    await expect(facts.locator('[title="claude"]')).toBeVisible();
+    // #1600: in a window the engine reads as the unit's callsign (ENGINE-ID, the map cards'
+    // reading) — it stands in for the engine badge, which the window bar hides.
+    await expect(facts.locator("[data-window-callsign]")).toBeVisible();
+    await expect(facts.locator("[data-window-callsign]")).toHaveText(/^claude.*-s1$/i);
+    await expect(facts.locator('[title="claude"]')).toBeHidden();
     await expect(facts).toContainText("proj");
     await expect(facts.locator("[data-head-tag]")).toHaveText("hot");
     await expect(facts).toContainText(/(just now|a minute|ago|\d+m|\ds)/);

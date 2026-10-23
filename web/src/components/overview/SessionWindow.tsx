@@ -11,7 +11,7 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 import { useSessionRow } from "../../app/useSessionRow";
-import { projectColor } from "../../lib/format";
+import { engineName, projectColor, relTime } from "../../lib/format";
 import { pathToken } from "../../lib/pathToken";
 import type { TermRole, TermStatus } from "../../lib/termSocket";
 import type { FreshSession } from "../../lib/termUrl";
@@ -30,6 +30,7 @@ import styles from "./sessionWindow.module.css";
 import { clampRect, type Rect, type Size } from "./workspace";
 import { runsInTerminal, useEngineRoster } from "../../app/engineRoster";
 import { RuntimeGate } from "../terminal/RuntimeGate";
+import { resolveApiModel } from "../../lib/apiModel";
 
 /** One floating session window on the Overview map (#208).
  *
@@ -70,6 +71,19 @@ const PANE_TO_SESSION_KEYS: Record<string, string[]> = {
   handoff: ["handoff"],
   mission: ["adopt-mission", "open-mission"],
 };
+
+
+/** The footer's link word (#1600), from the pane's own socket status. */
+type LinkState = "live" | "linking" | "down";
+const LINK_WORD: Record<LinkState, string> = {
+  live: "Live",
+  linking: "Linking",
+  down: "Down",
+};
+function linkState(s: TermStatus): LinkState {
+  if (s.kind === "connected") return "live";
+  return s.kind === "connecting" || s.kind === "reconnecting" ? "linking" : "down";
+}
 
 export const SessionWindow = memo(function SessionWindow({
   wkey,
@@ -176,7 +190,22 @@ export const SessionWindow = memo(function SessionWindow({
   // it through the same HeadFacts run. The initial states match on purpose: the pane's opening
   // "connecting" needs no publish.
   const [status, setStatus] = useState<TermStatus>({ kind: "connecting" });
-  const onTermStatus = useCallback((s: TermStatus) => setStatus(s), []);
+  // Has the pane published a link state at all? A terminal always has one (its opening
+  // "connecting" is never published, by design); a structured pane publishes its own; a pane that
+  // publishes none (the chat pane) gets no LINK word in the footer rather than a made-up one.
+  const [linkSeen, setLinkSeen] = useState(false);
+  // The model an API session runs, by the one resolution the session pane and the recap share
+  // (#1511: observed, else requested, else reported) — only for a session that has no terminal
+  // grid to show.
+  const apiModel = runsInTerminal(engine) === false && row ? resolveApiModel(row).model : null;
+  const onTermStatus = useCallback((s: TermStatus) => {
+    setStatus(s);
+    setLinkSeen(true);
+  }, []);
+  // The terminal's grid for the status footer (#1600), published by the pane on every xterm
+  // resize. A structured (API) pane has no grid, so the footer leaves it out.
+  const [grid, setGrid] = useState<string | null>(null);
+  const onGrid = useCallback((c: number, r: number) => setGrid(`${c}×${r}`), []);
   // The tint, computed exactly the way the pane's project chip does (#1109). Only a real
   // project entity tints; a folder-cwd session keeps the plain chrome ground.
   const proj =
@@ -384,220 +413,293 @@ export const SessionWindow = memo(function SessionWindow({
       data-focused={focused ? "true" : "false"}
       data-tinted={proj ? "true" : undefined}
     >
-      <div
-        ref={headRef}
-        className={styles.head}
-        onPointerDown={(e) => startGesture(e, "move")}
-        // Right-click opens THE menu at the pointer (#968/#1109): the merged session+pane menu
-        // when the row is on the map, the pane-only menu when it is not. Bound as a NATIVE DOM
-        // listener in the effect above — not React's `onContextMenu` — because the action chips
-        // portal in from the pane and a synthetic event on them never bubbles through this bar.
-        data-window-head
-      >
-        <span className={styles.grip} aria-hidden="true">
-          ⣿
-        </span>
-        {/* The facts run (#1109): the SAME HeadFacts the pane's own bar renders — status LED,
-            engine badge, the session's custom tag, mission tag, project · relative time — fed
-            by this window's row lookup and the pane's published socket status. `flex: none`:
-            the run is a FACT the fold budgets for, and it yields through the container ladder
-            instead of by flex pressure. */}
-        <span ref={factsRef} className={styles.facts} data-window-facts="">
-          <HeadFacts engine={engine} status={status} row={row} showTag />
-        </span>
-        {/* The pane's own header deliberately omits the title (it is the sidebar's job there);
-            a floating window has no sidebar beside it, so the chrome carries it — and it is
-            the bar's shrink absorber, ellipsising before anything clips. */}
-        <span className={styles.title} title={title}>
-          {title}
-        </span>
-        {/* The pane's action chips portal here from <Terminal> (#1109): the fold measures this
-            bar and overflows into the ONE ⋯ menu below, never into a second chip of its own. */}
-        <span
-          ref={setActionsSlot}
-          className={styles.actionsSlot}
-          data-window-actions-slot=""
-        />
-        {role === "secondary" && (
-          <span className={styles.lock} data-window-readonly>
-            READ-ONLY
-          </span>
-        )}
-        <span className={styles.btns}>
-          {onMenu && (
-            <button
-              ref={menuBtnRef}
-              type="button"
-              aria-label="Session actions"
-              title={offMapReason ? `Session actions unavailable — ${offMapReason}` : "Session actions"}
-              aria-haspopup="menu"
-              onClick={(e) => openMergedMenu({ element: e.currentTarget })}
-              data-window-menu
-            >
-              <MoreHorizontal size={13} aria-hidden="true" />
-            </button>
-          )}
-          {onMinimize && (
-            <button
-              type="button"
-              aria-label="Minimize window"
-              title="Minimize window"
-              onClick={(e) => {
-                // Keystrokes must not keep landing in a pane nobody can see.
-                const win = e.currentTarget.closest("section");
-                const active = document.activeElement;
-                if (win && active instanceof HTMLElement && win.contains(active)) active.blur();
-                onMinimize(wkey);
-              }}
-              data-window-minimize
-            >
-              <Minus size={13} aria-hidden="true" />
-            </button>
-          )}
-          <button
-            type="button"
-            aria-label="Open full screen"
-            title="Open full screen"
-            onClick={() => onFullScreen(wkey)}
-            data-window-fullscreen
-          >
-            <Maximize2 size={13} aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            aria-label="Close window"
-            title="Close window"
-            onClick={() => onClose(wkey)}
-            data-window-close
-          >
-            <X size={13} aria-hidden="true" />
-          </button>
-        </span>
-      </div>
-
-      {/* The off-map pane-only menu (#1109). The session group needs the map's row, which is
-          exactly what this session has lost — so only the pane group renders, and the control's
-          title carries the reason (see the ⋯ above). */}
-      {paneMenuAnchor && (
-        <MenuPopover
-          items={paneMenuItems(menuBtnRef.current)}
-          title={title}
-          label="Pane actions"
-          anchor={paneMenuAnchor}
-          ownerRef={menuBtnRef}
-          // The menu asks for refocus when it closes by Escape or after a keyboard selection
-          // (a menu item unmounts with its menu); honoring it keeps focus off BODY (#1109
-          // review) — the ⋯ that opened the menu is where focus returns to.
-          onClose={(refocus?: boolean) => {
-            setPaneMenuAnchor(null);
-            if (refocus) menuBtnRef.current?.focus();
-          }}
-        />
-      )}
-      <div ref={bodyRef} className={styles.body} data-window-body="">
-        {/* RuntimeGate (#1132): a REMOVED engine renders its attach-only retirement notice
-            instead of the pane — and with the pane gone, its portaled chips (and therefore
-            the Files toggle) never render either, so the drawer below stays unreachable for
-            a retired engine, exactly as before. */}
-        <RuntimeGate
-          engine={engine}
-          id={id}
-          // A structured API pane (#1332) takes the same chrome contract as the terminal below:
-          // no bar of its own, chips portalled into the slot, the fold into the ONE ⋯.
-          host={{
-            rowKey: actionKey,
-            suppressHead: true,
-            headActionsSlot: actionsSlot,
-            headOverflowRef: paneOverflowRef,
-            headAllRef: paneAllRef,
-            headReservePx: factsW + CHROME_RESERVE,
-            headBarRef: headRef,
-            onTermStatus,
-            filesOpen,
-            onToggleFiles: (trigger?: HTMLElement | null) => {
-              setFilesTrigger(trigger ?? null);
-              setFilesOpen((open) => !open);
-            },
-            filesDisabledReason: cwd ? undefined : "This session has not reported a folder yet",
-          }}
-        >
-        <Terminal
-          engine={engine}
-          id={id}
-          // Transport (`engine`/`id`) frozen, ACTIONS follow the converge — the same two
-          // identities the record keeps, handed to the pane under the name it already uses.
-          rowKey={actionKey}
-          fresh={fresh}
-          // The converge lands on the WORKSPACE, never on this component's own identity: the
-          // pane must keep its frozen `key` or React would remount it and tear down the socket
-          // of a session that just launched (#127). What changes is the record's `actionKey`.
-          onReconcileId={(sid) => onReconcile(wkey, sid)}
-          onRole={(r) => onRole(wkey, r)}
-          onTermStatus={onTermStatus}
-          ref={termRef}
-          onOpenGallery={onOpenGallery}
-          onSaveAsTemplate={onSaveAsTemplate}
-          // #1109: the chrome bar IS the pane head here — the pane's own bar is suppressed and
-          // its chips portal into the slot above. The drawer toggle is REAL now: it opens the
-          // file drawer below, and a session still resolving its cwd keeps the VISIBLE
-          // DISABLED trigger a cwd-less session gets (#783), rather than a dead chip.
-          suppressHead
-          headActionsSlot={actionsSlot}
-          headOverflowRef={paneOverflowRef}
-          headAllRef={paneAllRef}
-          headReservePx={factsW + CHROME_RESERVE}
-          headBarRef={headRef}
-          filesOpen={filesOpen}
-          onToggleFiles={(trigger?: HTMLElement | null) => {
-            setFilesTrigger(trigger ?? null);
-            setFilesOpen((open) => !open);
-          }}
-          filesDisabledReason={
-            cwd ? undefined : "This session has not reported a folder yet"
-          }
-        />
-        </RuntimeGate>
-        {filesOpen && cwd && (
+      {/* The armour frame (#1600, the v5 panels' `.cf`): the frame is clipped to the chamfer and
+          paints the 1 px edge, the face is inset by a pixel. The cut corners only ever cut into
+          the bar and the footer — never the work surface. The focused window's glow is a
+          drop-shadow on its own clipped halo UNDER the frame, so no filter ever runs over the
+          terminal. */}
+      <span className={styles.halo} aria-hidden="true" data-window-halo="">
+        <span className={styles.haloShape} />
+      </span>
+      <div className={styles.frame} data-window-frame="">
+        <div className={styles.face}>
           <div
-            className={filesMode === "dock" ? styles.drawerDock : styles.drawerSheet}
-            data-window-files-drawer={filesMode}
+            ref={headRef}
+            className={styles.head}
+            onPointerDown={(e) => startGesture(e, "move")}
+            // Right-click opens THE menu at the pointer (#968/#1109): the merged session+pane menu
+            // when the row is on the map, the pane-only menu when it is not. Bound as a NATIVE DOM
+            // listener in the effect above — not React's `onContextMenu` — because the action chips
+            // portal in from the pane and a synthetic event on them never bubbles through this bar.
+            data-window-head
           >
-            <FilePanel
-              // MOUNT identity is the WINDOW (wkey), never the action id (Hermes on #1109):
-              // a fresh launch's `new-` placeholder reconciles to the server id mid-life, and
-              // a key that follows that AUTOMATIC transition would unmount the panel — and a
-              // dirty editor with it. The panel's SERVER identity travels separately, as the
-              // `sessionKey` PROP: it re-points the API calls to the converged id without
-              // touching the mounted component. The dock↔sheet flip below is also NOT a
-              // remount: the panel stays mounted across it, so an open viewer and its tree
-              // state survive a window resize across the boundary.
-              key={wkey}
-              sessionKey={actionKey}
-              // A BACKGROUND window's sheet owns no keys: focus is per-window on the map,
-              // and Escape/Tab belong to whichever window is active (Hermes on #1109).
-              sheetKeyScopeActive={focused}
-              cwd={cwd}
-              paneWidth={bodyW}
-              persistOpen={false}
-              contained={filesMode === "sheet"}
-              returnFocusTo={filesTrigger}
-              onClose={() => setFilesOpen(false)}
-              // Only a terminal pane has the Compose draft a path goes into; an API pane's
-              // composer takes paths in #1332 Phase 3, so until then it offers no send.
-              onSendPath={
-                runsInTerminal(engine) === false
-                  ? undefined
-                  : (path) => {
-                      // The panel knows the path; Compose knows the draft; neither knows the
-                      // other. Same handoff the full-screen pane makes (#792), via this handle.
-                      termRef.current?.insertToken(pathToken(path, cwd));
-                    }
+            <span className={styles.grip} aria-hidden="true">
+              ⣿
+            </span>
+            <span className={`nj-notch ${styles.notch}`} aria-hidden="true" />
+            {/* The facts run (#1109): the SAME HeadFacts the pane's own bar renders — status LED,
+                engine badge, the session's custom tag, mission tag, project · relative time — fed
+                by this window's row lookup and the pane's published socket status. `flex: none`:
+                the run is a FACT the fold budgets for, and it yields through the container ladder
+                instead of by flex pressure. */}
+            <span ref={factsRef} className={styles.facts} data-window-facts="">
+              {/* The unit's callsign, as the map's cards read it (#1600): ENGINE-ID. */}
+              <span className={styles.callsign} data-window-callsign="">
+                {engineName(engine)}
+                {row?.short_uuid ? `-${row.short_uuid}` : ""}
+              </span>
+              <HeadFacts engine={engine} status={status} row={row} showTag />
+            </span>
+            {/* The pane's own header deliberately omits the title (it is the sidebar's job there);
+                a floating window has no sidebar beside it, so the chrome carries it — and it is
+                the bar's shrink absorber, ellipsising before anything clips. */}
+            <span className={styles.title} title={title}>
+              {title}
+            </span>
+            {/* The pane's action chips portal here from <Terminal> (#1109): the fold measures this
+                bar and overflows into the ONE ⋯ menu below, never into a second chip of its own. */}
+            <span
+              ref={setActionsSlot}
+              className={styles.actionsSlot}
+              data-window-actions-slot=""
+            />
+            {role === "secondary" && (
+              <span className={styles.lock} data-window-readonly>
+                READ-ONLY
+              </span>
+            )}
+            <span className={styles.btns}>
+              {onMenu && (
+                <button
+                  ref={menuBtnRef}
+                  type="button"
+                  className={styles.btn}
+                  aria-label="Session actions"
+                  title={offMapReason ? `Session actions unavailable — ${offMapReason}` : "Session actions"}
+                  aria-haspopup="menu"
+                  onClick={(e) => openMergedMenu({ element: e.currentTarget })}
+                  data-window-menu
+                >
+                  <MoreHorizontal size={13} aria-hidden="true" />
+                </button>
+              )}
+              {onMinimize && (
+                <button
+                  type="button"
+                  className={styles.btn}
+                  aria-label="Minimize window"
+                  title="Minimize window"
+                  onClick={(e) => {
+                    // Keystrokes must not keep landing in a pane nobody can see.
+                    const win = e.currentTarget.closest("section");
+                    const active = document.activeElement;
+                    if (win && active instanceof HTMLElement && win.contains(active)) active.blur();
+                    onMinimize(wkey);
+                  }}
+                  data-window-minimize
+                >
+                  <Minus size={13} aria-hidden="true" />
+                </button>
+              )}
+              <button
+                type="button"
+                className={styles.btn}
+                aria-label="Open full screen"
+                title="Open full screen"
+                onClick={() => onFullScreen(wkey)}
+                data-window-fullscreen
+              >
+                <Maximize2 size={13} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className={styles.btn}
+                aria-label="Close window"
+                title="Close window"
+                onClick={() => onClose(wkey)}
+                data-window-close
+              >
+                <X size={13} aria-hidden="true" />
+              </button>
+            </span>
+          </div>
+
+          {/* The off-map pane-only menu (#1109). The session group needs the map's row, which is
+              exactly what this session has lost — so only the pane group renders, and the control's
+              title carries the reason (see the ⋯ above). */}
+          {paneMenuAnchor && (
+            <MenuPopover
+              items={paneMenuItems(menuBtnRef.current)}
+              title={title}
+              label="Pane actions"
+              anchor={paneMenuAnchor}
+              ownerRef={menuBtnRef}
+              // The menu asks for refocus when it closes by Escape or after a keyboard selection
+              // (a menu item unmounts with its menu); honoring it keeps focus off BODY (#1109
+              // review) — the ⋯ that opened the menu is where focus returns to.
+              onClose={(refocus?: boolean) => {
+                setPaneMenuAnchor(null);
+                if (refocus) menuBtnRef.current?.focus();
+              }}
+            />
+          )}
+          <div ref={bodyRef} className={styles.body} data-window-body="">
+            {/* RuntimeGate (#1132): a REMOVED engine renders its attach-only retirement notice
+                instead of the pane — and with the pane gone, its portaled chips (and therefore
+                the Files toggle) never render either, so the drawer below stays unreachable for
+                a retired engine, exactly as before. */}
+            <RuntimeGate
+              engine={engine}
+              id={id}
+              // A structured API pane (#1332) takes the same chrome contract as the terminal below:
+              // no bar of its own, chips portalled into the slot, the fold into the ONE ⋯.
+              host={{
+                rowKey: actionKey,
+                suppressHead: true,
+                headActionsSlot: actionsSlot,
+                headOverflowRef: paneOverflowRef,
+                headAllRef: paneAllRef,
+                headReservePx: factsW + CHROME_RESERVE,
+                headBarRef: headRef,
+                onTermStatus,
+                filesOpen,
+                onToggleFiles: (trigger?: HTMLElement | null) => {
+                  setFilesTrigger(trigger ?? null);
+                  setFilesOpen((open) => !open);
+                },
+                filesDisabledReason: cwd ? undefined : "This session has not reported a folder yet",
+              }}
+            >
+            <Terminal
+              engine={engine}
+              id={id}
+              // Transport (`engine`/`id`) frozen, ACTIONS follow the converge — the same two
+              // identities the record keeps, handed to the pane under the name it already uses.
+              rowKey={actionKey}
+              fresh={fresh}
+              // The converge lands on the WORKSPACE, never on this component's own identity: the
+              // pane must keep its frozen `key` or React would remount it and tear down the socket
+              // of a session that just launched (#127). What changes is the record's `actionKey`.
+              onReconcileId={(sid) => onReconcile(wkey, sid)}
+              onRole={(r) => onRole(wkey, r)}
+              onTermStatus={onTermStatus}
+              onGrid={onGrid}
+              ref={termRef}
+              onOpenGallery={onOpenGallery}
+              onSaveAsTemplate={onSaveAsTemplate}
+              // #1109: the chrome bar IS the pane head here — the pane's own bar is suppressed and
+              // its chips portal into the slot above. The drawer toggle is REAL now: it opens the
+              // file drawer below, and a session still resolving its cwd keeps the VISIBLE
+              // DISABLED trigger a cwd-less session gets (#783), rather than a dead chip.
+              suppressHead
+              headActionsSlot={actionsSlot}
+              headOverflowRef={paneOverflowRef}
+              headAllRef={paneAllRef}
+              headReservePx={factsW + CHROME_RESERVE}
+              headBarRef={headRef}
+              filesOpen={filesOpen}
+              onToggleFiles={(trigger?: HTMLElement | null) => {
+                setFilesTrigger(trigger ?? null);
+                setFilesOpen((open) => !open);
+              }}
+              filesDisabledReason={
+                cwd ? undefined : "This session has not reported a folder yet"
               }
             />
-          </div>
-        )}
+            </RuntimeGate>
+            {filesOpen && cwd && (
+              <div
+                className={filesMode === "dock" ? styles.drawerDock : styles.drawerSheet}
+                data-window-files-drawer={filesMode}
+              >
+                <FilePanel
+                  // MOUNT identity is the WINDOW (wkey), never the action id (Hermes on #1109):
+                  // a fresh launch's `new-` placeholder reconciles to the server id mid-life, and
+                  // a key that follows that AUTOMATIC transition would unmount the panel — and a
+                  // dirty editor with it. The panel's SERVER identity travels separately, as the
+                  // `sessionKey` PROP: it re-points the API calls to the converged id without
+                  // touching the mounted component. The dock↔sheet flip below is also NOT a
+                  // remount: the panel stays mounted across it, so an open viewer and its tree
+                  // state survive a window resize across the boundary.
+                  key={wkey}
+                  sessionKey={actionKey}
+                  // A BACKGROUND window's sheet owns no keys: focus is per-window on the map,
+                  // and Escape/Tab belong to whichever window is active (Hermes on #1109).
+                  sheetKeyScopeActive={focused}
+                  cwd={cwd}
+                  paneWidth={bodyW}
+                  persistOpen={false}
+                  contained={filesMode === "sheet"}
+                  returnFocusTo={filesTrigger}
+                  onClose={() => setFilesOpen(false)}
+                  // Only a terminal pane has the Compose draft a path goes into; an API pane's
+                  // composer takes paths in #1332 Phase 3, so until then it offers no send.
+                  onSendPath={
+                    runsInTerminal(engine) === false
+                      ? undefined
+                      : (path) => {
+                          // The panel knows the path; Compose knows the draft; neither knows the
+                          // other. Same handoff the full-screen pane makes (#792), via this handle.
+                          termRef.current?.insertToken(pathToken(path, cwd));
+                        }
+                  }
+                />
+              </div>
+            )}
 
+          </div>
+          {/* The status footer (#1600): a mono readout in the frame — the link, the grid, the last
+              activity. Not a bar: no controls, nothing to fold; the chrome bar stays the only bar. */}
+          <div
+            className={styles.foot}
+            data-window-foot={runsInTerminal(engine) === false ? "api" : "terminal"}
+          >
+            {(runsInTerminal(engine) !== false || linkSeen) && (
+              <span className={styles.link} data-link={linkState(status)}>
+                Link <span className={styles.sep}>//</span> {LINK_WORD[linkState(status)]}
+              </span>
+            )}
+            {grid && (
+              <>
+                <span className={styles.sep} aria-hidden="true">
+                  ·
+                </span>
+                <span data-window-grid="">{grid}</span>
+              </>
+            )}
+            {/* An API session reads out its model instead of a grid it does not have. */}
+            {apiModel && (
+              <>
+                <span className={styles.sep} aria-hidden="true">
+                  ·
+                </span>
+                <span data-window-model="">{apiModel}</span>
+              </>
+            )}
+            {row?.last_mtime ? (
+              <>
+                <span className={styles.sep} aria-hidden="true">
+                  ·
+                </span>
+                <span>Active {relTime(row.last_mtime)}</span>
+              </>
+            ) : null}
+          </div>
+        </div>
       </div>
+      {/* The frame's paint over its edge (#1600): the lit rail and two corner ticks, on the bar
+          and the footer only. */}
+      <span className={styles.rail} aria-hidden="true" data-window-rail="" />
+      <span
+        className={`${styles.tick} ${styles.tickTr}`}
+        aria-hidden="true"
+        data-window-tick=""
+      />
+      <span
+        className={`${styles.tick} ${styles.tickBl}`}
+        aria-hidden="true"
+        data-window-tick=""
+      />
       <button
         type="button"
         className={styles.resize}

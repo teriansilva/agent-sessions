@@ -104,7 +104,7 @@ export function WindowLayer({
   const lookup = useCallback((id: string) => byId.get(id), [byId]);
 
   const tethers = useMemo(() => {
-    const out: { key: string; d: string; from: Point; focused: boolean }[] = [];
+    const out: { key: string; d: string; from: Point; to: Point; focused: boolean }[] = [];
     for (const w of windows) {
       // A parked window has nothing on screen to point at.
       if (w.minimized) continue;
@@ -127,7 +127,7 @@ export function WindowLayer({
         bounds,
       );
       const to = tetherAnchor(clampRect(w.rect, bounds), from);
-      out.push({ key: w.key, d: tetherPath(from, to), from, focused: w.key === focusedKey });
+      out.push({ key: w.key, d: tetherPath(from, to), from, to, focused: w.key === focusedKey });
     }
     return out;
     // `transform` is a REPROJECTION TRIGGER the lint rule cannot see: it is read indirectly, by
@@ -168,6 +168,13 @@ export function WindowLayer({
               d={t.d}
             />
             <circle className={styles.dot} cx={t.from.x} cy={t.from.y} r={3.5} />
+            <rect
+              className={t.focused ? styles.nodeFocused : styles.node}
+              x={t.to.x - 3.5}
+              y={t.to.y - 3.5}
+              width={7}
+              height={7}
+            />
           </g>
         ))}
       </svg>

@@ -4,7 +4,6 @@ import { type CSSProperties, type MouseEvent, useState } from "react";
 import { api, ApiError } from "../../lib/api";
 import { pathBase, shortCwd } from "../../lib/format";
 import type { ProjectGroupData } from "../../lib/overviewGraph";
-import { HudFrame } from "../hud/HudFrame";
 import { useOverviewActions } from "./overviewActions";
 
 /** A project cluster container. React Flow sizes it from the node `style`; the header shows
@@ -15,7 +14,7 @@ import { useOverviewActions } from "./overviewActions";
  *  folder-hierarchy edges attach top/bottom (#148). When a custom name is set, the real
  *  path is shown as a subtitle to disambiguate. */
 export function ProjectGroupNode({ data }: NodeProps) {
-  const { project, kind, cwd, cwdCount, count, collapsed, name, color, owner } =
+  const { project, kind, cwd, cwdCount, count, collapsed, name, color, owner, live } =
     data as ProjectGroupData;
   const { refetchSessions } = useOverviewActions();
   const [busy, setBusy] = useState(false);
@@ -58,18 +57,18 @@ export function ProjectGroupNode({ data }: NodeProps) {
       .finally(() => setBusy(false));
   };
 
-  // The sector frame's tag (#1531 Phase 9): drawn by CSS around the cluster (overview.css
-  // `[data-sector]`), so it pans and zooms with the canvas. Decorative — the header already names
-  // the cluster for assistive tech.
-  const sector = `${kind === "folder" ? "FOLDER" : kind === "agent" ? "AGENT" : "SECTOR"} // ${label}`;
+  // The sector's callsign kind (#1600, the v5 board): SECTOR for a project, FOLDER, AGENT. It
+  // sits INSIDE the armour panel, in the header, before the cluster's name.
+  const sectorKind = kind === "folder" ? "Folder" : kind === "agent" ? "Agent" : "Sector";
 
   return (
     <div
-      className={`tr-ov-group tr-ov-group--${kind}${collapsed ? " collapsed" : ""}${isEmptyProject ? " empty" : ""}${color ? " tinted" : ""}`}
+      className={`tr-ov-group tr-ov-group--${kind}${collapsed ? " collapsed" : ""}${isEmptyProject ? " empty" : ""}${color ? " tinted" : ""}${live ? " is-live" : ""}`}
       style={color ? ({ "--proj": color } as CSSProperties) : undefined}
-      data-sector={sector}
+      data-sector-live={live ? "" : undefined}
     >
-      <HudFrame />
+      {/* The armour panel's lit rail (#1600): brighter while an agent works in this sector. */}
+      <span className="tr-ov-rail" aria-hidden="true" />
       <Handle
         type="target"
         position={Position.Top}
@@ -85,23 +84,36 @@ export function ProjectGroupNode({ data }: NodeProps) {
         title={`${collapsed ? "Expand" : "Collapse"} ${kind === "folder" ? cwd : project}`}
       >
         <Chevron size={14} className="tr-ov-chev" aria-hidden="true" />
+        <span className="nj-notch tr-ov-notch" aria-hidden="true" />
         {color && <span className="tr-ov-proj-dot" aria-hidden="true" />}
+        {/* Two lines (#1600): a folder sector puts its kind + owning-project tag on line 1 and
+            the path across line 2, so a narrow one-unit sector never squeezes the path to
+            nothing; a project/agent sector reads "SECTOR // NAME" with the folder under it. */}
         <span className="tr-ov-meta">
-          {kind === "folder" && owner && (
-            <span
-              className="tr-ov-owner"
-              title={`In project ${owner.name}`}
-              style={
-                owner.color
-                  ? ({ "--owner": owner.color } as CSSProperties)
-                  : undefined
-              }
-            >
-              <span className="tr-ov-owner-dot" aria-hidden="true" />
-              {owner.name}
+          <span className="tr-ov-callline">
+            <span className="tr-ov-kind" aria-hidden="true">
+              {sectorKind} //
             </span>
-          )}
-          <span className="tr-ov-path">{label}</span>
+            {kind === "folder" ? (
+              owner && (
+                <span
+                  className="tr-ov-owner"
+                  title={`In project ${owner.name}`}
+                  style={
+                    owner.color
+                      ? ({ "--owner": owner.color } as CSSProperties)
+                      : undefined
+                  }
+                >
+                  <span className="tr-ov-owner-dot" aria-hidden="true" />
+                  {owner.name}
+                </span>
+              )
+            ) : (
+              <span className="tr-ov-path">{label}</span>
+            )}
+          </span>
+          {kind === "folder" && <span className="tr-ov-path">{label}</span>}
           {err ? (
             <span className="tr-ov-err" title={err}>
               {err}
@@ -113,7 +125,8 @@ export function ProjectGroupNode({ data }: NodeProps) {
           )}
         </span>
         <span className="tr-ov-count">
-          {count} session{count === 1 ? "" : "s"}
+          {count}
+          <span className="tr-ov-count-word"> session{count === 1 ? "" : "s"}</span>
         </span>
         {kind === "folder" && (
           <button

@@ -34,9 +34,10 @@
     0 0 / 56px 97px repeat;
 }
 .nj-atmo .nj-scan {
-  inset: -3px 0 0;
+  inset: -30px 0 0;
   background: repeating-linear-gradient(0deg, var(--scanline) 0 1px, transparent 1px 3px);
-  animation: nj-scan-drift 0.9s steps(3, end) infinite;
+  /* A 1 px step every 0.3 s, ten 3 px periods per iteration (motion.css nj-scan-drift). */
+  animation: nj-scan-drift 9s steps(30, end) infinite;
 }
 .nj-atmo .nj-noise {
   background: var(--text-1);
@@ -424,11 +425,12 @@
   border-radius: 50%;
   background: var(--led);
   box-shadow: 0 0 var(--glow-led) var(--led);
-  animation: nj-blink 1.6s steps(1, end) infinite;
+  /* Four 1.6 s blinks per iteration (motion.css: one wake-up per iteration). */
+  animation: nj-blink-4 6.4s steps(1, end) infinite;
 }
 .hud-led.up {
   --led: var(--status-up);
-  animation: nj-breathe 2.4s var(--ease-io) infinite;
+  animation: nj-breathe-4 9.6s var(--ease-io) infinite; /* four 2.4 s breaths */
 }
 .hud-led.down {
   --led: var(--status-down);
@@ -446,7 +448,7 @@
 .hud-led.attention,
 .hud-led.att {
   --led: var(--status-degraded);
-  animation: nj-blink 1.2s steps(1, end) infinite;
+  animation: nj-blink-4 4.8s steps(1, end) infinite; /* four 1.2 s blinks */
 }
 /* A state change flashes once (DECORATIVE scale on a text-free dot). */
 .hud-led.is-changed {
@@ -497,7 +499,7 @@
   background: var(--status-degraded);
 }
 .nj-gauge.is-low.is-live .nj-track > i.on:last-of-type {
-  animation: nj-breathe 1.8s var(--ease-io) infinite;
+  animation: nj-breathe-4 7.2s var(--ease-io) infinite; /* four 1.8 s breaths */
 }
 .nj-gauge .nj-ticks {
   display: flex;

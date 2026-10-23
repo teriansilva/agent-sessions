@@ -4,22 +4,25 @@ import { type CSSProperties } from "react";
 import {
   engineBadge,
   engineColor,
+  engineName,
   projectColor,
   relTime,
   shortCwd,
 } from "../../lib/format";
 import type { SessionNodeData } from "../../lib/overviewGraph";
-import { HudFrame } from "../hud/HudFrame";
 import { useOverviewActions } from "./overviewActions";
+import { STATE_WORD, unitState } from "./unitState";
 import { useEngineRoster } from "../../app/engineRoster";
 import { originOf, useAutomationOrigins } from "../../app/automationOrigins";
 import { OriginBadge } from "../automations/OriginBadge";
 
-/** A session chip inside a project cluster — at information parity with the sidebar list row
- *  (#424 Phase 4): a working/idle LED, the title, an intervention "!" badge, the AI summary,
- *  the engine badge, the project + folder, and the relative time. Framed by the HudFrame corner
- *  brackets only (#476) — no engine left rail; engine identity reads off the coloured dot/handles
- *  + badge. Archived dimmed; `selected` highlights the open session. The chip body's click is
+/** A unit card inside a sector (#1600, the v5 map board) — at information parity with the sidebar
+ *  list row (#424 Phase 4). The callsign row: the state LED, the engine's colour bar and the
+ *  engine's callsign (its badge, with the agent's name). Then the title, the AI summary, and the
+ *  status line, which LEADS with the state in words (ENGAGED / AWAITING ORDERS / STANDBY /
+ *  OFFLINE) before the project, folder and relative time. An intervention "!" stays on the
+ *  callsign row and puts the card on the amber edge. Archived dimmed; `selected` highlights the
+ *  open session. The chip body's click is
  *  handled by the canvas's React Flow `onNodeClick` (opens the session); in Projects layout the
  *  chip is also draggable to reassign it (#424 Phase 5), so it carries `nopan` (no canvas pan on
  *  press) but NOT `nodrag` — React Flow tells a click from a drag by the movement threshold.
@@ -47,10 +50,14 @@ export function SessionNode({ data }: NodeProps) {
     ? "Excluded from AI review"
     : session.ai_summary;
   const folder = folderLabel ?? shortCwd(session.cwd);
+  // The unit's state in words (#1600), from the fields the LED already reads. `running` (a live
+  // agent process, #1085) is absent on an older server; recent activity stands in for it there.
+  const state = unitState(session.archived, intervention, working, session.running ?? active);
 
   return (
     <div
       className={`tr-ov-chip nopan${session.archived ? " archived" : ""}${selected ? " selected" : ""}${opened ? " opened" : ""}`}
+      data-unit-state={state}
       style={
         {
           "--eng": color,
@@ -62,7 +69,6 @@ export function SessionNode({ data }: NodeProps) {
       aria-label={`Open ${title}`}
       aria-current={selected ? "true" : undefined}
     >
-      <HudFrame />
       {/* #208: this session is open as a workspace window — the marker plus the tether are what
           keep a floating panel legible as "this node, opened". */}
       {opened && (
@@ -93,7 +99,15 @@ export function SessionNode({ data }: NodeProps) {
           aria-label={working ? "agent working" : undefined}
           role={working ? "status" : undefined}
         />
-        <span className="tr-ov-ttl">{title}</span>
+        <span className="tr-ov-engbar" aria-hidden="true" />
+        <span className="tr-ov-eng" aria-hidden="true">
+          {engineBadge(session.engine)}
+        </span>
+        {/* ENGINE-ID, as the window's bar reads it (#1600): two units of one engine never share it. */}
+        <span className="tr-ov-callsign" aria-hidden="true">
+          {engineName(session.engine)}
+          {session.short_uuid ? `-${session.short_uuid}` : ""}
+        </span>
         {intervention && (
           <span
             className="tr-ov-alert"
@@ -104,10 +118,8 @@ export function SessionNode({ data }: NodeProps) {
             !
           </span>
         )}
-        <span className="tr-ov-eng" aria-hidden="true">
-          {engineBadge(session.engine)}
-        </span>
       </span>
+      <span className="tr-ov-ttl">{title}</span>
       {summary && (
         <span
           className={`tr-ov-summary${session.review_excluded ? " excluded" : ""}`}
@@ -116,6 +128,10 @@ export function SessionNode({ data }: NodeProps) {
         </span>
       )}
       <span className="tr-ov-chip-foot">
+        <span className="tr-ov-unit-state">{STATE_WORD[state]}</span>
+        <span className="tr-ov-foot-sep" aria-hidden="true">
+          ·
+        </span>
         {origin ? <OriginBadge origin={origin} /> : null}
         {session.project.kind === "project" && (
           <>

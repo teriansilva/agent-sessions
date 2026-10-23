@@ -61,20 +61,47 @@
   background: conic-gradient(from 0deg, var(--hud-tint), transparent 64deg);
   animation: nj-spin 14s linear infinite;
 }
-/* The crosshair: one vertical and one horizontal hairline drifting slowly across the map. */
+/* The reticle (#1600, the v5 board): one ring with its cross, drifting slowly across the map.
+ * The outer element drifts in x, the inner in y (two full-size layers, so each drift is a
+ * transform of its own and the compositor runs both); the ring is drawn at the inner layer's
+ * origin. */
 .tr-ov-cross-x,
 .tr-ov-cross-y {
   inset: 0;
 }
 .tr-ov-cross-x {
-  border-left: 1px solid var(--hud-faint);
   transform: translateX(38%);
   animation: tr-ov-cross-x 64s var(--ease-io) infinite alternate;
 }
 .tr-ov-cross-y {
-  border-top: 1px solid var(--hud-faint);
+  position: absolute;
+  display: block;
   transform: translateY(42%);
   animation: tr-ov-cross-y 52s var(--ease-io) infinite alternate;
+}
+.tr-ov-cross-y::before,
+.tr-ov-cross-y::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+/* The ring (a round reticle, as the board draws it). */
+.tr-ov-cross-round::before {
+  width: 28px;
+  height: 28px;
+  margin: -14px 0 0 -14px;
+  border: 1px solid var(--hud-dim);
+  border-radius: 50%;
+}
+.tr-ov-cross-y::after {
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
+  background:
+    linear-gradient(var(--hud-dim), var(--hud-dim)) center / 1px 100% no-repeat,
+    linear-gradient(var(--hud-dim), var(--hud-dim)) center / 100% 1px no-repeat;
+  opacity: 0.8;
 }
 @keyframes tr-ov-cross-x {
   from {
@@ -97,7 +124,20 @@
   opacity: 0.6;
 }
 
-/* The minimap's frame breathes (an overlay ring, so the map inside never repaints for it). */
+/* The minimap is a framed panel (#1600, the v5 board): the lit top edge, the chamfered corner,
+ * sectors as amber blocks (`miniMapColor`). Its frame breathes (an overlay ring, so the map
+ * inside never repaints for it). */
+.tr-overview .react-flow__minimap {
+  --c: var(--cut-sm);
+  background: var(--bg-1);
+  border: 1px solid var(--hud-dim);
+  border-top: 2px solid var(--hud);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - var(--c)), calc(100% - var(--c)) 100%, 0 100%);
+}
+.tr-overview .react-flow__minimap-node {
+  stroke: var(--hud-dim);
+  stroke-width: 2;
+}
 .tr-overview .tr-ov-minimap::after {
   content: "";
   position: absolute;
@@ -105,7 +145,7 @@
   border: 1px solid var(--hud-dim);
   opacity: 0.35;
   pointer-events: none;
-  animation: nj-breathe 6s var(--ease-io) infinite;
+  animation: nj-breathe-4 24s var(--ease-io) infinite; /* four 6 s breaths */
 }
 
 /* No rounded corners on the node wrappers: our custom nodes carry their own square frames. */
@@ -114,9 +154,12 @@
 }
 
 /* ---- hierarchy edges (#148) and their hidden handles ---- */
+/* An idle link is a dim dotted line; a live one is the amber dash (#1600, the v5 board). */
 .tr-overview .react-flow__edge-path {
   stroke: var(--line-strong);
   stroke-width: 1.5;
+  stroke-dasharray: 1 5;
+  stroke-linecap: round;
 }
 /* A LIVE edge (an agent works under the cluster it points at): a lit dashed line, and the
  * data-flow — one packet (OverviewCanvas `MapEdge`) travelling down, across and down its three
@@ -124,8 +167,10 @@
  * main thread painting every frame and cost more than the map's 2% idle budget on its own (#1573,
  * measured in e2e/map-nightjar.spec.ts). */
 .tr-overview .react-flow__edge.tr-ov-edge-live .react-flow__edge-path {
-  stroke: var(--hud-dim);
-  stroke-dasharray: 6 6;
+  stroke: var(--hud);
+  stroke-dasharray: 6 5;
+  stroke-linecap: butt;
+  opacity: 0.85;
 }
 .tr-ov-packet {
   position: absolute;
@@ -137,24 +182,78 @@
   background: var(--hud);
   opacity: 0;
   pointer-events: none;
-  animation: tr-ov-packet 2.8s linear infinite;
+  animation: tr-ov-packet 11.2s linear infinite; /* four 2.8 s trips */
 }
+/* FOUR trips per iteration, each the 2.8 s run (8% fade in, down 27%, across 30%, down 35%, fade
+ * from 92%): one main-thread wake-up per four packets (motion.css, "Ambient loops"). */
 @keyframes tr-ov-packet {
   0% {
     opacity: 0;
     transform: translate(var(--sx), var(--sy));
   }
-  8% {
+  2%,
+  23% {
     opacity: 1;
   }
-  35% {
+  8.75% {
     transform: translate(var(--sx), var(--cy));
   }
-  65% {
+  16.25% {
     transform: translate(var(--tx), var(--cy));
   }
-  92% {
+  24.99% {
+    opacity: 0;
+    transform: translate(var(--tx), var(--ty));
+  }
+  25% {
+    opacity: 0;
+    transform: translate(var(--sx), var(--sy));
+  }
+  27%,
+  48% {
     opacity: 1;
+  }
+  33.75% {
+    transform: translate(var(--sx), var(--cy));
+  }
+  41.25% {
+    transform: translate(var(--tx), var(--cy));
+  }
+  49.99% {
+    opacity: 0;
+    transform: translate(var(--tx), var(--ty));
+  }
+  50% {
+    opacity: 0;
+    transform: translate(var(--sx), var(--sy));
+  }
+  52%,
+  73% {
+    opacity: 1;
+  }
+  58.75% {
+    transform: translate(var(--sx), var(--cy));
+  }
+  66.25% {
+    transform: translate(var(--tx), var(--cy));
+  }
+  74.99% {
+    opacity: 0;
+    transform: translate(var(--tx), var(--ty));
+  }
+  75% {
+    opacity: 0;
+    transform: translate(var(--sx), var(--sy));
+  }
+  77%,
+  98% {
+    opacity: 1;
+  }
+  83.75% {
+    transform: translate(var(--sx), var(--cy));
+  }
+  91.25% {
+    transform: translate(var(--tx), var(--cy));
   }
   100% {
     opacity: 0;
@@ -171,48 +270,62 @@
   height: 1px;
 }
 
-/* ---- project cluster: a sector-framed panel ----
+/* ---- project cluster: a sector, as an armour panel (#1600, the v5 board) ----
  * The node wrapper keeps pointer events ENABLED (default) so the header toggle is hit-testable;
- * chips are separate React Flow nodes on top and stay clickable. (#144) */
+ * chips are separate React Flow nodes on top and stay clickable (#144). The panel is the
+ * `nj-frame` chamfer — painted cut lines on the two cut corners, clipped to the polygon. Only the
+ * group's OWN box is clipped: its units are sibling nodes, so no card, menu or handle is. */
 .tr-ov-group {
+  --c: var(--cut);
+  --edge: var(--line-strong);
+  container: sector / inline-size;
   position: relative;
   width: 100%;
   height: 100%;
-  background: var(--bg-1);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--edge);
   border-radius: 0;
+  background:
+    linear-gradient(
+        to bottom right,
+        transparent calc(50% - 1px),
+        var(--edge) calc(50% - 0.5px) calc(50% + 0.5px),
+        transparent calc(50% + 1px)
+      )
+      top left / var(--c) var(--c) no-repeat border-box,
+    linear-gradient(
+        to bottom right,
+        transparent calc(50% - 1px),
+        var(--edge) calc(50% - 0.5px) calc(50% + 0.5px),
+        transparent calc(50% + 1px)
+      )
+      bottom right / var(--c) var(--c) no-repeat border-box,
+    var(--bg-1);
+  clip-path: polygon(
+    var(--c) 0,
+    100% 0,
+    100% calc(100% - var(--c)),
+    calc(100% - var(--c)) 100%,
+    0 100%,
+    0 var(--c)
+  );
 }
-/* The sector frame and its tag, a step outside the cluster (the layout leaves 28 px between
- * siblings and 64 px between rows). Decorative: it never takes a pointer. */
-.tr-ov-group[data-sector]::before {
-  content: "";
+/* A sector with an agent at work: the edge and the rail light up. */
+.tr-ov-group.is-live {
+  --edge: var(--hud-dim);
+}
+/* The lit rail along the panel's top edge, a third of its width (the board's short rail). */
+.tr-ov-rail {
   position: absolute;
-  inset: -9px;
-  border: 1px solid var(--line);
+  top: 0;
+  left: calc(var(--c) + 2px);
+  width: 34%;
+  height: 2px;
+  background: var(--hud-dim);
   pointer-events: none;
 }
-.tr-ov-group[data-sector]::after {
-  content: attr(data-sector) / "";
-  position: absolute;
-  left: -9px;
-  top: -12px;
-  max-width: calc(100% + 18px);
-  padding-right: var(--sp-2);
-  overflow: hidden;
-  font: 500 var(--fs-micro) / 1 var(--font-mono);
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-3);
-  background: var(--bg);
-  transform: translateY(-50%);
-  pointer-events: none;
-}
-/* A folder's path keeps its case. */
-.tr-ov-group--folder[data-sector]::after {
-  text-transform: none;
-  letter-spacing: 0.08em;
+.tr-ov-group.is-live .tr-ov-rail {
+  background: var(--hud);
+  box-shadow: var(--glow-rail);
 }
 /* An empty project cluster (#447): a dashed, muted drop target with no sessions yet. */
 .tr-ov-group.empty {
@@ -251,7 +364,28 @@
   flex: none;
   color: var(--text-3);
 }
+.tr-ov-notch {
+  width: 18px;
+  height: 8px;
+}
+/* The callsign line: the sector's kind, then its name — "SECTOR // AGENT-SESSIONS". */
+.tr-ov-callline {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.tr-ov-kind {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
 .tr-ov-group-head .tr-ov-meta {
+  flex: 1 1 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -288,20 +422,32 @@
   flex: none;
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
+  font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--text-3);
+  color: var(--hud-text);
   font-variant-numeric: tabular-nums;
 }
-/* Owning-project tag on a folder node (#445, Folders layout): a square mono tag above the path. */
+/* A one-unit sector is a chip wide: the count keeps its number and drops the word (it stays in
+ * the accessible text), so the path keeps the header's width (#1600). */
+@container sector (max-width: 300px) {
+  .tr-ov-count-word {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+/* Owning-project tag on a folder node (#445, Folders layout): a square mono tag on the callsign
+ * line, after "FOLDER //", with the path on the line under it (#1600). */
 .tr-ov-owner {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
-  align-self: flex-start;
-  max-width: 100%;
-  margin-bottom: 2px;
-  padding: 1px 6px;
+  min-width: 0;
+  padding: 0 5px;
   border: 1px solid var(--line-strong);
   border-radius: 0;
   font-family: var(--font-mono);
@@ -322,9 +468,7 @@
 }
 /* Project colour marker (#361 Phase 4 / #285): the group/chip sets --proj; a lit top rail and a
  * square swatch consume it. */
-.tr-ov-group.tinted {
-  border-top: 2px solid var(--proj);
-}
+/* A project's colour reads off its dot in the header (#361); the rail is the chrome's. */
 .tr-ov-proj-dot {
   width: 8px;
   height: 8px;
@@ -373,8 +517,8 @@
 
 /* ---- session chip: at information parity with the sidebar list row (#424 Phase 4) ----
  * A head line (LED + title + intervention badge + engine), the AI summary, and a project/folder/
- * time foot. Fixed size so the tidy-tree layout stays deterministic. Framed by the HudFrame
- * corner brackets on a uniform hairline (#476): no left rail. */
+ * time foot. Fixed size so the tidy-tree layout stays deterministic. Framed by a uniform
+ * hairline (#476: no left rail); the v5 board (#1600) retired the HudFrame corner brackets here. */
 .tr-ov-chip {
   position: relative;
   display: flex;
@@ -382,7 +526,7 @@
   justify-content: center;
   gap: 3px;
   width: 240px;
-  height: 80px;
+  height: 96px; /* CHIP_H in overviewGraph.ts */
   padding: var(--sp-2) 11px;
   background: var(--bg-2);
   border: 1px solid var(--line-strong);
@@ -403,6 +547,12 @@
 }
 .tr-ov-chip.archived {
   opacity: 0.45;
+}
+/* A unit awaiting orders sits on the amber edge (#1600, the v5 board) — the semantic degraded
+ * token, never the brand's. */
+.tr-ov-chip[data-unit-state="awaiting"] {
+  border-color: color-mix(in srgb, var(--status-degraded) 70%, var(--line-strong));
+  box-shadow: inset 2px 0 0 var(--status-degraded);
 }
 /* The currently-open session, in sync with the sidebar's active row (#149). */
 .tr-ov-chip.selected {
@@ -441,7 +591,20 @@
   font-style: italic;
   color: var(--text-3);
 }
-/* Foot line: project + folder + relative time, as one ellipsised mono line. */
+/* The status line (#1600): the state in words leads, then project + folder + relative time, as
+ * one ellipsised mono line. The word carries the state's semantic colour. */
+.tr-ov-unit-state {
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+[data-unit-state="engaged"] .tr-ov-unit-state {
+  color: var(--status-up);
+}
+[data-unit-state="awaiting"] .tr-ov-unit-state {
+  color: var(--warn-text);
+}
 .tr-ov-chip-foot {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
@@ -465,44 +628,55 @@
 .tr-ov-folder-mark {
   color: var(--text-3);
 }
-/* The chip's LED, in the engine's colour. A working agent's LED pings (a ring on a pseudo-element:
- * opacity and a decorative scale, never the LED itself). */
+/* The unit's LED (#1600): the STATE's semantic colour, as on the v5 board — engaged up, awaiting
+ * orders degraded, standby a quiet solid, offline a hollow ring. The engine's identity is the
+ * colour bar beside it. A working agent's LED pings (a ring on a pseudo-element: opacity and a
+ * decorative scale, never the LED itself). */
 .tr-ov-dot {
+  --led: var(--text-3);
   position: relative;
   width: 8px;
   height: 8px;
   flex: none;
   border-radius: 50%;
-  border: 1.5px solid var(--eng, var(--accent));
+  border: 1.5px solid var(--led);
+  background: var(--led);
 }
-.tr-ov-dot.active {
-  background: var(--eng, var(--accent));
+[data-unit-state="engaged"] .tr-ov-dot {
+  --led: var(--status-up);
 }
-.tr-ov-dot.idle {
+[data-unit-state="awaiting"] .tr-ov-dot {
+  --led: var(--status-degraded);
+}
+[data-unit-state="offline"] .tr-ov-dot,
+[data-unit-state="archived"] .tr-ov-dot {
   background: transparent;
 }
 .tr-ov-dot.working {
-  background: var(--eng, var(--accent));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--eng, var(--accent)) 30%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--led) 30%, transparent);
 }
 .tr-ov-dot.working::after {
   content: "";
   position: absolute;
   inset: -1.5px;
   border-radius: 50%;
-  border: 1.5px solid var(--eng, var(--accent));
+  border: 1.5px solid var(--led);
   opacity: 0;
-  animation: tr-ov-ping 6s linear infinite;
+  animation: tr-ov-ping 12s linear infinite;
 }
 /* ONE ping every 6 s (#1573): the 1.8 s ring, then quiet. A continuous ping on every working dot
- * cost about a third of the map's idle budget; a beat says "engaged" as clearly. */
+ * cost about a third of the map's idle budget; a beat says "engaged" as clearly. Two pings per
+ * 12 s iteration (one main-thread wake-up per two, motion.css "Ambient loops"). */
 @keyframes tr-ov-ping {
-  0% {
+  0%,
+  50% {
     transform: scale(0.6);
     opacity: 0.8;
     animation-timing-function: var(--ease-out);
   }
-  30%,
+  15%,
+  49.99%,
+  65%,
   100% {
     transform: scale(2.2);
     opacity: 0;
@@ -510,15 +684,16 @@
 }
 /* Reduced and Off (the motion mode, #1531): a steady, wider ring says "working" without moving. */
 :root:not([data-motion="full"]) .tr-ov-dot.working {
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--eng, var(--accent)) 45%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--led) 45%, transparent);
 }
 .tr-ov-meta {
   min-width: 0;
   display: flex;
   flex-direction: column;
 }
+/* The title, on a line of its own under the callsign (#1600). */
 .tr-ov-ttl {
-  flex: 1;
+  display: block;
   min-width: 0;
   font-size: var(--fs-row);
   font-weight: 500;
@@ -526,14 +701,33 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* The callsign row: the engine's colour bar, its callsign (the badge) and the agent's name. */
+.tr-ov-engbar {
+  flex: none;
+  width: 3px;
+  height: 12px;
+  background: var(--eng, var(--accent));
+}
 .tr-ov-eng {
   flex: none;
   font-family: var(--font-mono);
-  font-size: var(--fs-micro);
+  font-size: var(--fs-label);
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--eng, var(--accent-text));
+  letter-spacing: 0.14em;
+  color: var(--text-1);
+}
+.tr-ov-callsign {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* The chip's session-menu ⋯ (#968). An absolutely-positioned HIT SQUARE anchored to the chip's
@@ -639,17 +833,148 @@
   border-left: 2px solid var(--status-down);
 }
 
-/* ---- the toolbar (#144), top-right over the canvas ---- */
-.tr-ov-toolbar {
+/* ---- the tactical header strip (#1600, the v5 board) ----
+ * The map's callsign and counts at the left, every control at the right on ONE row: as the canvas
+ * narrows the fit ladder below collapses the labels to their icons (still the accessible names,
+ * and every control keeps its title), then the counts, then the callsign — the controls never
+ * wrap, so no control ends up alone on a second row. Its measured bottom is the window layer's
+ * top inset (OverviewCanvas `barRef`). */
+.tr-ov-strip {
   position: absolute;
-  top: 10px;
-  right: 10px;
+  top: 0;
+  left: 0;
+  right: 0;
   z-index: calc(var(--z-raised) + 5);
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  max-width: calc(100% - 20px);
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 48px;
+  padding: 6px var(--sp-3);
+  background: var(--bg-1);
+  border-top: 2px solid var(--hud);
+  border-bottom: 1px solid var(--line);
+}
+.tr-ov-strip-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--text-1);
+}
+.tr-ov-strip-name,
+.tr-ov-strip-counts {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tr-ov-strip-name {
+  flex: none;
+}
+.tr-ov-strip-counts {
+  min-width: 0;
+  font-weight: 500;
+  color: var(--text-3);
+}
+.tr-ov-strip-counts b {
+  font-weight: 600;
+  color: var(--hud-text);
+  font-variant-numeric: tabular-nums;
+}
+.tr-ov-sep {
+  color: var(--text-3);
+}
+.tr-ov-toolbar {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
+  align-items: center;
   gap: 6px;
+  min-width: 0;
+  /* The ladder's floor: scroll sideways, never wrap. The block padding keeps focus rings inside
+   * the scroll box. */
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding-block: 3px;
+  margin-block: -3px;
+}
+.tr-ov-zoom {
+  display: inline-flex;
+  gap: 4px;
+  padding-left: 6px;
+  border-left: 1px solid var(--line);
+}
+/* The fit ladder (OverviewCanvas `fitStrip` sets `data-fit`, widest first): the labels collapse
+ * to their icons, then the counts go, then the callsign's name; past that the controls scroll
+ * sideways. Never a second row. */
+.tr-ov-strip:not([data-fit="full"]) :is(.tr-ov-tool-label, .tr-ov-gb-label) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.tr-ov-strip:is([data-fit="nocounts"], [data-fit="bare"]) .tr-ov-strip-counts {
+  display: none;
+}
+.tr-ov-strip[data-fit="bare"] .tr-ov-strip-name {
+  display: none;
+}
+.tr-ov-strip[data-fit="bare"] .tr-ov-strip-title {
+  flex: none;
+}
+/* The legend (#1600, the v5 board): the unit states and their LEDs, bottom-left over the canvas. */
+.tr-ov-legend {
+  position: absolute;
+  left: var(--sp-3);
+  bottom: var(--sp-3);
+  z-index: calc(var(--z-raised) + 4);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  max-width: calc(100% - 260px);
+  margin: 0;
+  padding: 6px 10px;
+  list-style: none;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  pointer-events: none;
+}
+.tr-ov-legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tr-ov-legend-led {
+  --led: var(--text-3);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--led);
+  background: var(--led);
+}
+.tr-ov-legend [data-unit-state="engaged"] .tr-ov-legend-led {
+  --led: var(--status-up);
+}
+.tr-ov-legend [data-unit-state="awaiting"] .tr-ov-legend-led {
+  --led: var(--status-degraded);
+}
+.tr-ov-legend [data-unit-state="offline"] .tr-ov-legend-led {
+  background: transparent;
 }
 /* The group-by selector (#424 Phase 2): one segmented frame (the `nj-seg` look); the selected
  * segment wears the lit underline. Its members are segments of one control, not buttons of their
@@ -671,11 +996,6 @@
 }
 /* Narrow canvases (mobile / squeezed): drop the labels to icons so the selector + actions
  * still fit the top-right toolbar. The aria-label keeps each control named for a11y/tests. */
-@media (max-width: 640px) {
-  .tr-ov-gb-label {
-    display: none;
-  }
-}
 /* The toolbar's ACTIONS are the shared ghost plates (actionButton.module.css `ghost compact`,
  * docs/design.md §6). The two composite controls — the group-by strip and the window stepper —
  * share their row height: 32 px on a fine pointer, the 44 px floor on touch or ≤800px. */
@@ -814,7 +1134,7 @@
  * targets (folder/agent groups aren't user-assignable, so they're never highlighted). */
 .tr-ov-hint {
   position: absolute;
-  bottom: 10px;
+  bottom: 56px; /* above the legend row (#1600) */
   left: 50%;
   transform: translateX(-50%);
   z-index: calc(var(--z-raised) + 5);

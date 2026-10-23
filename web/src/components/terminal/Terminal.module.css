@@ -533,6 +533,16 @@ button.headChip[aria-pressed="true"] {
 /* The window chrome's facts yield EARLIER than the pane's ladder (#1109): the chrome bar also
    carries the title, the action chips and the window buttons, so the relative time goes first —
    below the pane's own 520px rule, scoped to the chrome head so the pane's bar is untouched. */
+/* A map window's bar carries the unit's callsign (ENGINE-ID, #1600) in place of the engine
+ * badge — until the callsign itself yields on a very narrow bar, when the badge comes back. */
+:global([data-window-head]) .headEng {
+  display: none;
+}
+@container panelhead (max-width: 440px) {
+  :global([data-window-head]) .headEng {
+    display: inline;
+  }
+}
 @container panelhead (max-width: 700px) {
   :global([data-window-head]) .headUpdated {
     display: none;

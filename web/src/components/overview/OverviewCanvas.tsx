@@ -1,7 +1,6 @@
 import {
   Background,
   BackgroundVariant,
-  Controls,
   EdgeLabelRenderer,
   type EdgeProps,
   getSmoothStepPath,
@@ -22,11 +21,15 @@ import {
   ChevronsDownUp,
   ChevronsUpDown,
   FolderTree,
+  Maximize,
   Minus,
   Plus,
   LayoutGrid,
   RotateCcw,
   SquareDashedBottom,
+  X,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import {
   type CSSProperties,
@@ -46,7 +49,6 @@ import { useOverviewPrefs } from "../../app/overviewPrefs";
 import { isNewSessionPlaceholder } from "../../app/sessionsStore";
 import { useWorkspaceCtx } from "../../app/workspaceWindows";
 import { api, ApiError } from "../../lib/api";
-import { engineColor } from "../../lib/format";
 import {
   buildOverview,
   clusterKeyFor,
@@ -73,6 +75,7 @@ import { anchorPointOf } from "./nodeAnchor";
 import { OverviewActionsCtx } from "./overviewActions";
 import { ProjectGroupNode } from "./ProjectGroupNode";
 import { SessionNode } from "./SessionNode";
+import { STATE_WORD, type UnitState } from "./unitState";
 import type { WindowRequest, WindowSeed } from "./useWorkspace";
 import { WindowLayer } from "./WindowLayer";
 import {
@@ -103,7 +106,9 @@ function MapEdge(props: EdgeProps) {
   } as CSSProperties;
   return (
     <>
-      <SmoothStepEdge {...props} />
+      {/* Softly curved, as the v5 board draws its links (#1600): a large corner radius on the
+          same three segments, so the packet still runs the path it always did. */}
+      <SmoothStepEdge {...props} pathOptions={{ borderRadius: 40 }} />
       {live && (
         <EdgeLabelRenderer>
           <span className="tr-ov-packet nj-ambient" style={at} aria-hidden="true" />
@@ -118,6 +123,16 @@ const nodeTypes = { projectGroup: ProjectGroupNode, session: SessionNode };
 const edgeTypes = { smoothstep: MapEdge };
 /* The toolbar's actions: the shared ghost plate at row height (docs/design.md §6). */
 const TOOL = `${action.ghost} ${action.compact}`;
+const TOOL_ICON = `${action.icon} ${action.compact}`;
+/** The header strip's fit ladder, widest first (overview.css `[data-fit]`). */
+const STRIP_FITS = ["full", "icons", "nocounts", "bare"] as const;
+/** The map legend (#1600, the v5 board): the unit states in the order a state outranks another. */
+const LEGEND: ReadonlyArray<readonly [UnitState, string]> = [
+  ["engaged", STATE_WORD.engaged],
+  ["awaiting", STATE_WORD.awaiting],
+  ["standby", STATE_WORD.standby],
+  ["offline", STATE_WORD.offline],
+];
 
 // The map layout selector (#424 Phase 2) — one explicit grouping at a time.
 const GROUP_MODES: { key: GroupBy; label: string; Icon: typeof FolderTree }[] =
@@ -143,10 +158,14 @@ const seedOf = (s: Session): WindowSeed => ({
   title: s.title || s.short_uuid,
 });
 
+/** The minimap draws the sectors as amber blocks, as the v5 board does (#1600); a unit is the
+ *  sector's detail, so it stays out of the overview. A live sector reads brighter. */
 const miniMapColor = (n: Node): string =>
   n.type === "session"
-    ? engineColor((n.data as SessionNodeData).session.engine)
-    : "var(--line-strong)";
+    ? "transparent"
+    : (n.data as ProjectGroupData).live
+      ? "var(--hud-dim)"
+      : "var(--hud-faint)";
 
 type OverviewCanvasProps = {
   sessions: Session[];
@@ -1033,6 +1052,55 @@ function OverviewCanvasInner({
   // #208's contract is the opposite: a map filter never closes a window. With no windows open,
   // the bare message is exactly what it always was.
   const emptyMap = !nodes.length;
+  // The header strip's counts (#1600), read off the graph itself so they follow grouping, the
+  // filters and collapsed sectors exactly: sectors are the clusters on the map, units the sessions
+  // they hold (collapsed or not), live the units with an agent process running (`running`, the
+  // sidebar's `live_total`).
+  let sectorCount = 0;
+  let unitCount = 0;
+  let liveCount = 0;
+  for (const n of nodes) {
+    if (n.type !== "projectGroup") continue;
+    const d = n.data as ProjectGroupData;
+    sectorCount += 1;
+    unitCount += d.count;
+    liveCount += d.liveCount ?? 0;
+  }
+  // The strip's fit ladder (#1600): the controls stay on ONE row at every width. Each step is
+  // tried in order until the callsign and the controls both fit — every label shown, then the
+  // controls as icons (the labels stay their accessible names), then without the counts, then
+  // without the callsign's name; at the last step the controls scroll sideways rather than wrap.
+  // Measured, not a container query: the toolbar's width moves with the window controls, the
+  // inline New-project form, Reset, the count digits and the pointer's touch floor. It runs on a
+  // resize and on those changes only — never per frame, so the idle map pays nothing.
+  const fitStrip = useCallback(() => {
+    const strip = barRef.current;
+    const title = strip?.querySelector<HTMLElement>(".tr-ov-strip-title");
+    const tools = strip?.querySelector<HTMLElement>(".tr-ov-toolbar");
+    if (!strip || !title || !tools) return;
+    for (const fit of STRIP_FITS) {
+      strip.dataset.fit = fit;
+      if (
+        title.scrollWidth <= title.clientWidth &&
+        tools.scrollWidth <= tools.clientWidth
+      )
+        return;
+    }
+  }, []);
+  const stripKey = `${naming}|${hasPins}|${layerOn}|${ws.windows.length}|${ws.windows.some((w) => !w.minimized)}|${emptyMap}|${sectorCount}|${unitCount}|${liveCount}|${groupBy}`;
+  useLayoutEffect(() => {
+    fitStrip();
+  }, [fitStrip, stripKey]);
+  useEffect(() => {
+    const strip = barRef.current;
+    if (!strip || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => fitStrip());
+    ro.observe(strip);
+    // A web font arriving after the first fit widens the labels.
+    void document.fonts?.ready.then(() => fitStrip());
+    return () => ro.disconnect();
+  }, [fitStrip, emptyMap, layerOn]);
+
   if (emptyMap && !layerOn) {
     return (
       <div className="tr-overview tr-ov-state">No sessions to map yet.</div>
@@ -1054,7 +1122,38 @@ function OverviewCanvasInner({
         {partial && (
           <div className="tr-ov-partial">Showing the most recent sessions</div>
         )}
-        <div className="tr-ov-toolbar" ref={barRef}>
+        {/* The tactical header strip (#1600, the v5 board): the map's callsign and counts at the
+            left, every control at the right on ONE row (a narrow canvas collapses the labels to
+            their icons, overview.css). Its measured bottom is the window layer's top inset. */}
+        <div className="tr-ov-strip" ref={barRef} data-map-strip="">
+          <div className="tr-ov-strip-title" data-map-counts="">
+            <span className="nj-notch tr-ov-notch" aria-hidden="true" />
+            <span className="tr-ov-strip-name">Tactical map</span>
+            <span className="tr-ov-strip-counts">
+              <span className="tr-ov-sep" aria-hidden="true">
+                {" // "}
+              </span>
+              <b data-map-count="sectors">{sectorCount}</b>{" "}
+              {sectorCount === 1 ? "sector" : "sectors"}
+              <span className="tr-ov-sep" aria-hidden="true">
+                {" // "}
+              </span>
+              <b data-map-count="units">{unitCount}</b>{" "}
+              {unitCount === 1 ? "unit" : "units"}
+              <span className="tr-ov-sep" aria-hidden="true">
+                {" // "}
+              </span>
+              <b data-map-count="live">{liveCount}</b> live
+            </span>
+          </div>
+        <div
+          className="tr-ov-toolbar"
+          // The ladder's floor scrolls the controls sideways: a control reached by Tab is brought
+          // fully into the strip's view (the browser's own focus scroll stops at "partly").
+          onFocus={(e) =>
+            (e.target as HTMLElement).scrollIntoView?.({ block: "nearest", inline: "nearest" })
+          }
+        >
           <div
             className="tr-ov-groupby"
             role="radiogroup"
@@ -1112,7 +1211,8 @@ function OverviewCanvasInner({
               onClick={() => setNaming(true)}
               title="Create a project entity"
             >
-              <Plus size={14} /> New project
+              <Plus size={14} aria-hidden="true" />
+              <span className="tr-ov-tool-label">New project</span>
             </button>
           )}
           <button
@@ -1121,7 +1221,8 @@ function OverviewCanvasInner({
             onClick={() => expandAll(allKeys)}
             title="Expand all projects"
           >
-            <ChevronsUpDown size={14} /> Expand all
+            <ChevronsUpDown size={14} aria-hidden="true" />
+            <span className="tr-ov-tool-label">Expand all</span>
           </button>
           <button
             type="button"
@@ -1129,7 +1230,8 @@ function OverviewCanvasInner({
             onClick={collapseAll}
             title="Collapse all projects"
           >
-            <ChevronsDownUp size={14} /> Collapse all
+            <ChevronsDownUp size={14} aria-hidden="true" />
+            <span className="tr-ov-tool-label">Collapse all</span>
           </button>
           {hasPins && (
             <button
@@ -1139,7 +1241,8 @@ function OverviewCanvasInner({
               title="Put every cluster in this layout back where the map lays it out"
               data-reset-layout
             >
-              <RotateCcw size={14} /> Reset layout
+              <RotateCcw size={14} aria-hidden="true" />
+              <span className="tr-ov-tool-label">Reset layout</span>
             </button>
           )}
           {layerOn && (
@@ -1154,7 +1257,8 @@ function OverviewCanvasInner({
                 title={`${ws.windows.length} of ${ws.cap} session windows open`}
               >
                 <span className="tr-ov-wins-label">
-                  <SquareDashedBottom size={14} aria-hidden="true" /> Windows{" "}
+                  <SquareDashedBottom size={14} aria-hidden="true" />
+                  <span className="tr-ov-tool-label">Windows</span>{" "}
                   <b>{ws.windows.length}</b>/{ws.cap}
                 </span>
                 <span className="tr-ov-wins-step">
@@ -1188,7 +1292,8 @@ function OverviewCanvasInner({
                   title="Arrange: tile the open windows across the map, sorted by name — any that don't fit go to the tray"
                   data-window-arrange
                 >
-                  <LayoutGrid size={14} aria-hidden="true" /> Arrange
+                  <LayoutGrid size={14} aria-hidden="true" />
+                  <span className="tr-ov-tool-label">Arrange</span>
                 </button>
               )}
               {ws.windows.length > 0 && (
@@ -1199,11 +1304,49 @@ function OverviewCanvasInner({
                   title="Close every open session window"
                   data-window-close-all
                 >
-                  Close all
+                  <X size={14} aria-hidden="true" />
+                  <span className="tr-ov-tool-label">Close all</span>
                 </button>
               )}
             </>
           )}
+          {/* The view controls, on the strip as the v5 board draws them (#1600): React Flow's own
+              fit and zoom, one step each — never a slowed or animated pan. */}
+          {!emptyMap && (
+            <span className="tr-ov-zoom" role="group" aria-label="Map view">
+              <button
+                type="button"
+                className={TOOL_ICON}
+                onClick={() => void rf.fitView({ padding: 0.18 })}
+                aria-label="Fit the map"
+                title="Fit every sector into view"
+                data-map-fit
+              >
+                <Maximize size={14} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className={TOOL_ICON}
+                onClick={() => void rf.zoomIn()}
+                aria-label="Zoom in"
+                title="Zoom in"
+                data-map-zoom-in
+              >
+                <ZoomIn size={14} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className={TOOL_ICON}
+                onClick={() => void rf.zoomOut()}
+                aria-label="Zoom out"
+                title="Zoom out"
+                data-map-zoom-out
+              >
+                <ZoomOut size={14} aria-hidden="true" />
+              </button>
+            </span>
+          )}
+        </div>
         </div>
         {refused.length > 0 && (
           <div className="tr-ov-refused" role="alert" data-map-refused>
@@ -1254,9 +1397,24 @@ function OverviewCanvasInner({
         {!emptyMap && !compact && (
           <div className="tr-ov-deco" aria-hidden="true" data-map-deco="">
             <i className="tr-ov-radar nj-ambient" />
-            <i className="tr-ov-cross-x nj-ambient" />
-            <i className="tr-ov-cross-y nj-ambient" />
+            {/* The reticle (#1600, the v5 board): one ring with its cross, drifting slowly — the
+                x drift on the outer element, the y drift on the inner. */}
+            <i className="tr-ov-cross-x nj-ambient">
+              <i className="tr-ov-cross-y tr-ov-cross-round nj-ambient" />
+            </i>
           </div>
+        )}
+        {/* Not on a phone: there it would stack over the hint and the minimap, and every card
+            already says its state in words. */}
+        {!emptyMap && !compact && !isMobile && (
+          <ul className="tr-ov-legend" aria-label="Map legend" data-map-legend="">
+            {LEGEND.map(([state, word]) => (
+              <li key={state} data-unit-state={state}>
+                <span className="tr-ov-legend-led" aria-hidden="true" />
+                {word}
+              </li>
+            ))}
+          </ul>
         )}
         {!emptyMap && (
         <ReactFlow
@@ -1292,10 +1450,6 @@ function OverviewCanvasInner({
             className="tr-ov-grid-major"
             variant={BackgroundVariant.Lines}
             gap={160}
-          />
-          <Controls
-            showInteractive={false}
-            position={compact ? "bottom-right" : "bottom-left"}
           />
           {!compact && (
             <MiniMap
