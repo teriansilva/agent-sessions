@@ -534,6 +534,14 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
   let focusChecked = 0;
   for (const visit of surfaces) {
     await visit();
+    // Measure the RESTING layout: a sheet or menu that just opened is still sliding in, and a
+    // rectangle taken 17 ms into `nj-sheet-up` read a 44 px button as 43.99 (a CI flake). Wait for
+    // every finite animation to finish; the ambient loops (infinite) never do and don't move controls.
+    await page.waitForFunction(() =>
+      document
+        .getAnimations()
+        .every((a) => a.playState !== "running" || a.effect?.getComputedTiming().iterations === Infinity),
+    );
     const found = await page.evaluate(() => {
       // `select` IS on this list, and its absence was a real gap rather than an oversight of
       // taste: the project picker #896 made REQUIRED is a `<select>`, so the one control an
