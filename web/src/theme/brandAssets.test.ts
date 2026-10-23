@@ -101,8 +101,10 @@ describe("every page links the generated files, and they exist", () => {
 });
 
 describe("the old marks are gone from the surfaces #1590 owns", () => {
-  // The top bar (#1589) and the new-session landing (#1458) adopt the same assets in their own PRs.
+  // The top bar adopted them in #1589; the new-session landing (#1458) does in its own PR.
   const OWNED = [
+    "web/src/app/App.tsx",
+    "web/src/app/App.css",
     "web/public/favicon.svg",
     "web/public/icon.svg",
     "web/public/icon-maskable.svg",
@@ -134,6 +136,12 @@ describe("the old marks are gone from the surfaces #1590 owns", () => {
       const text = read(rel);
       for (const [what, re] of OLD) expect(re.test(text), `${rel}: ${what}`).toBe(false);
     });
+
+  test("the top bar shows the kit's mark and wordmark through the shared components (#1589)", () => {
+    const app = read("web/src/app/App.tsx");
+    expect(app).toContain("<BrandMark");
+    expect(app).toContain("<BrandWordmark");
+  });
 
   test("the SPA surfaces show the kit's logo through the shared components", () => {
     expect(read("web/src/routes/Onboarding.tsx")).toContain("<BrandMark");

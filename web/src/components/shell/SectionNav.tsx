@@ -18,6 +18,12 @@
  *  On a child's route the parent carries `aria-current="true"` rather than `"page"`: its link goes
  *  somewhere else (the last session), so claiming it IS the page would be false. The child's own
  *  menu entry is the one that says `"page"`.
+ *
+ *  **NIGHTJAR v5 (#1589).** Each entry is a plate (`nj-plate`: the chamfer is painted behind it, so
+ *  the corners stay part of the hit area — #946), numbered by its place in `SECTIONS` (01, 02, …,
+ *  `aria-hidden`: the number is not part of the destination's name). A section with a sub-menu is
+ *  ONE plate holding both controls: the link and the chevron keep their own hit areas and
+ *  behaviour, the plate is the group's.
  */
 import { ChevronDown } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -59,9 +65,10 @@ export function SectionNav({
       : ("true" as const);
   };
 
-  const link = (s: Section) => (
+  const link = (s: Section, plate: boolean) => (
     <Link
       key={s.id}
+      className={plate ? "nj-plate" : undefined}
       to={s.to ?? sessionsPath}
       aria-current={parentCurrent(s)}
       onClick={onNavigate}
@@ -70,6 +77,9 @@ export function SectionNav({
       data-section={s.id}
     >
       <s.Icon size={16} aria-hidden="true" />
+      <span className="section-nav-ix" aria-hidden="true">
+        {String(SECTIONS.indexOf(s) + 1).padStart(2, "0")}
+      </span>
       <span className="section-nav-label">{s.label}</span>
       {/* BETA (#1085): for the eye only. The link's name stays "Missions" — the tag is not part
           of the destination, and every spec and screen reader that names it keeps working. The
@@ -92,13 +102,13 @@ export function SectionNav({
       data-testid="section-nav"
     >
       {SECTIONS.map((s) => {
-        if (!s.children) return link(s);
+        if (!s.children) return link(s, true);
         return (
           <span
             key={s.id}
-            className={`section-nav-split${active === s.id ? " is-active" : ""}`}
+            className={`section-nav-split nj-plate${active === s.id ? " is-active" : ""}`}
           >
-            {link(s)}
+            {link(s, false)}
             <AnchoredMenu
               label={`${s.label} menu`}
               trigger={<ChevronDown size={14} aria-hidden="true" />}

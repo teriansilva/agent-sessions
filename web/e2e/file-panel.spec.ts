@@ -369,10 +369,11 @@ test.describe("file panel — touch", () => {
     // The reason the 44px `::after` idea was dropped: expanded hit boxes in a 26px bar overlap,
     // so a size assertion passes while the tap routes to the neighbour. Assert NON-OVERLAP.
     //
-    // A touch viewport WIDER than 800px: at ≤800px the head carries no chips at all, only the one
-    // "Actions" menu trigger (#948 P6), so at the phone's own width this would compare an empty
-    // list and pass vacuously. Chips on a coarse pointer now exist only on a wider touch screen.
-    await page.setViewportSize({ width: 1024, height: 768 });
+    // A touch viewport WIDER than 1180px: at ≤800px — and, since #1589, on any touch screen up to
+    // 1180px (a tablet) — the head carries no chips at all, only the one "Actions" menu trigger, so
+    // a narrower touch width would compare an empty list and pass vacuously. Chips on a coarse
+    // pointer exist only on a touch screen wider than that.
+    await page.setViewportSize({ width: 1280, height: 800 });
     await mockApp(page);
     await page.goto(`/s/claude/${SESSION.id.split(":")[1]}`);
     await expect(page.locator("#root")).toBeVisible();

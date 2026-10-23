@@ -41,7 +41,7 @@ import {
 import { substituteFields, uploadStoredName } from "../../lib/templateMessage";
 import { shareLink } from "../../lib/shareLink";
 import type { TermStatus } from "../../lib/termSocket";
-import { useIsMobile } from "../../lib/useIsMobile";
+import { useCompactHead, useIsMobile } from "../../lib/useIsMobile";
 import { SESSIONS_PATH } from "../../lib/routes";
 import { reloadRoster } from "../../app/reloadRoster";
 import { HandoffModal } from "../terminal/HandoffModal";
@@ -1239,6 +1239,8 @@ export function StructuredPane({
   const actionKey = host.rowKey || key;
   const row = useSessionRow(key, host.rowKey);
   const isMobile = useIsMobile();
+  // The in-pane head folds on touch tablets too (#1589); the window chrome keeps `isMobile`.
+  const compactHead = useCompactHead();
   // The agent is the console agent this client drives (`api.source`), named by its own label.
   const source = engineInfo(engine)?.api?.source;
   const agent = source ? engineLabel(source) : engineLabel(engine);
@@ -2623,7 +2625,7 @@ export function StructuredPane({
         btnClassName={term.restartBtn}
         labelClassName={term.headActionLabel}
         actions={headActions}
-        collapsed={isMobile}
+        collapsed={compactHead}
       />
     </div>
   );

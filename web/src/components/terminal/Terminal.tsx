@@ -46,7 +46,7 @@ import {
 import { useConfig } from "../../app/config";
 import { useSessionLookup } from "../../app/useSessionRow";
 import { reloadRoster } from "../../app/reloadRoster";
-import { useIsMobile } from "../../lib/useIsMobile";
+import { useCompactHead, useIsMobile } from "../../lib/useIsMobile";
 import {
   isNewSessionPlaceholder,
   useSessionsStore,
@@ -282,6 +282,9 @@ export function Terminal({
   const [cols, setCols] = useState(0);
   // The shell's own ≤800px breakpoint (#948 P6): the header becomes one Actions menu there.
   const isMobile = useIsMobile();
+  // The in-pane head's compact form also covers touch tablets (#1589); a map window's chrome keeps
+  // its own single external menu and the phone line (`isMobile`).
+  const compactHead = useCompactHead();
   // "Adopt to mission" / "Open mission" (#948 P5) — the header half of session-side adoption.
   const [adoptOpen, setAdoptOpen] = useState(false);
   const [adoptTrigger, setAdoptTrigger] = useState<HTMLElement | null>(null);
@@ -2120,7 +2123,7 @@ export function Terminal({
             btnClassName={styles.headChip}
             labelClassName={styles.headActionLabel}
             actions={headActions}
-            collapsed={isMobile}
+            collapsed={compactHead}
           />
         </div>
       )}

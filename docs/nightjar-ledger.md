@@ -35,8 +35,8 @@ the same list.
 
 | Path | Kind | Phase | Status | Captures | Motion |
 |---|---|---|---|---|---|
-| `app/App.css` | css | 4 | done | route:dashboard route:new-session route:boot popup:session-row-menu | sector fade-in (Full), boot power-on, ≤800px drawer slide-in + backdrop |
-| `components/brand/Brand.module.css` | css | 4 | done | route:settings-about popup:whats-new popup:tour | none: the brand kit's logo (#1590) is a still image |
+| `app/App.css` | css | 4 | done | route:dashboard route:new-session route:boot popup:session-row-menu headers:topbar headers:topbar-menu | sector fade-in (Full), boot power-on, ≤800px drawer slide-in + backdrop |
+| `components/brand/Brand.module.css` | css | 4 | done | route:settings-about popup:whats-new popup:tour headers:topbar | none: the brand kit's logo (#1590) is a still image |
 | `components/agents/Roster.module.css` | css | 11 | done | route:settings-agents route:settings-agents-defaults | the filter Seg lights its segment; status LEDs steady; the usage Gauge is lit at read, no loop |
 | `components/agents/SessionDefaults.module.css` | css | 11 | todo |  |  |
 | `components/ask/AskCards.module.css` | css | 4 | done | popup:hq | card deploy-in, LED change flash |
@@ -80,15 +80,15 @@ the same list.
 | `components/pulse/direction.module.css` | css | 8 | done | mission:decisions mission:objective-evidence popup:objective-direction | the AI-drafted card deploys in (fade + 6 px rise; 120 ms fade in Reduced); fields and fact chips: edge transition on hover / focus |
 | `components/pulse/mission.module.css` | css | 8 | done | route:mission route:mission-needs-you route:mission-rail-loading mission:console popup:mission-template-picker route:mission-start-refused mission:objective-drag mission:objective-refused route:mission-rail-filtered-empty route:mission-rail-archived-empty route:mission-rail-more route:mission-needs-filtered route:mission-needs-loading route:mission-needs-error mission:objectives-unreadable mission:objectives-pending mission:objectives-unavailable mission:objectives-empty mission:objective-clamped mission:objective-unclamped mission:objective-rename mission:timeline-empty mission:pending | rail rows arrive and their LEDs flash on a change; thread events arrive; the state chip flashes on a transition; Details, objective evidence and Show brief expand; planning pips + Acquiring (see the note) |
 | `components/pulse/missionThread.module.css` | css | 8 | done | mission:thread mission:failed mission:console mission:pending | a thread event arriving while the console is open slides in and flashes the HUD tint once (≤3 at once, never on first paint; a fade in Reduced); Show brief / Show text fade in; chevrons turn |
-| `components/pulse/NotificationBell.module.css` | css | 4 | done | popup:bell | deploy-in, ≤800px drawer slide-in + scrim, row arrival flash, badge bump (filter) |
+| `components/pulse/NotificationBell.module.css` | css | 4 | done | popup:bell headers:topbar | deploy-in, ≤800px drawer slide-in + scrim, row arrival flash, badge bump (filter) |
 | `components/pulse/Orchestrator.module.css` | css | 8 | done | mission:decisions | a decision card deploys in (fade + 6 px rise; 120 ms fade in Reduced); option rows tint their edge on hover; the Run-now spinner is `nj-spin` (Full only) |
 | `components/sessions/AdoptToMissionModal.module.css` | css | 3 | done | popup:adopt | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/settings/AgentEndpointCard.module.css` | css | 11 | todo |  |  |
 | `components/settings/ResourceLimits.module.css` | css | 11 | done | route:settings-resources | none: fields light their edge on focus |
 | `components/shares/Shares.module.css` | css | 11 | done | route:settings-sharing route:settings-sharing-revoke-all | none: a live link's LED is steady |
 | `components/shell/HelpMenu.module.css` | css | 4 | done | popup:operator-menu | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
-| `components/shell/OperatorMenu.module.css` | css | 4 | done | popup:operator-menu | tile hover transition |
-| `components/shell/SectionNav.module.css` | css | 4 | done | route:dashboard route:mission | tab tint transition |
+| `components/shell/OperatorMenu.module.css` | css | 4 | done | popup:operator-menu headers:topbar | tile hover transition |
+| `components/shell/SectionNav.module.css` | css | 4 | done | route:dashboard route:mission headers:topbar headers:topbar-menu | tab tint transition |
 | `components/sidebar/Filters.module.css` | css | 6 | done | route:sidebar route:sidebar-folded route:sidebar-empty | disclosure (grid rows 0fr → 1fr, one container), chevron turn, segment tint transition |
 | `components/sidebar/RowMenu.module.css` | css | 3 | done | popup:session-row-menu | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
 | `components/sidebar/SessionList.module.css` | css | 6 | done | route:sidebar route:sidebar-empty route:sidebar-error route:sidebar-rename popup:session-row-menu | row arrival (nj-arrive + nj-flash overlay, LED nj-led-flash; Reduced: the single fade), FLIP reorder, review spin (nj-spin, Full only), toast-in, marquee (Full only) |
@@ -108,7 +108,7 @@ the same list.
 | `components/terminal/SentMessagesModal.module.css` | css | 3 | done | popup:sent-messages | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/SessionRecapModal.module.css` | css | 3 | done | popup:session-brief | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/TermUplinkVeil.module.css` | css | 6 | done | route:uplink-veil route:uplink-veil-api | veil fade in/out (--t-slow), log deploy (fade + 6 px rise), acquire bar; Reduced: 120 ms fade in and out via `.nj-fade-ok` + a Reduced exit rule; Off: none (#1570) |
-| `components/terminal/Terminal.module.css` | css | 6 | done | route:session-pane popup:head-menu popup:toast | head chip glitch on press (nj-glitch-step, Full only), connect-chip radar (nj-radar), history pill steps (nj-steps), copied toast opacity only — nothing over the terminal moves |
+| `components/terminal/Terminal.module.css` | css | 6 | done | route:session-pane popup:head-menu popup:toast headers:session-head | head chip glitch on press (nj-glitch-step, Full only), connect-chip radar (nj-radar), history pill steps (nj-steps), copied toast opacity only — nothing over the terminal moves |
 | `components/ui/actionButton.module.css` | css | 2 | done | gallery:buttons | press glitch (filter), hover |
 | `components/updates/UpdateProgressPanel.module.css` | css | 11 | done | route:settings-updates | the Acquiring strip scans while the installer runs; the fill widens (--t-slow); Reduced/Off hold a still strip |
 | `components/updates/UpdateWhatsNew.module.css` | css | 11 | done | route:settings-updates | none |

@@ -408,6 +408,14 @@ async function contrastFailures(page: Page) {
     const background = (el: Element): number[] => {
       const chain: number[][] = [];
       for (let e: Element | null = el; e; e = e.parentElement) {
+        // A NIGHTJAR plate (`nj-plate`, the top bar's tabs since #1589) paints its face on `::after`
+        // over the element's own transparent background: that face IS the surface its text sits on
+        // (the active tab: on-accent ink on the accent fill). Read it before the element's own.
+        if (e.classList.contains("nj-plate")) {
+          const face = parse(getComputedStyle(e, "::after").backgroundColor);
+          if (face && face[3] > 0) chain.push(face);
+          if (face && face[3] >= 1) break;
+        }
         const c = parse(getComputedStyle(e).backgroundColor);
         if (c && c[3] > 0) chain.push(c);
         if (c && c[3] >= 1) break;

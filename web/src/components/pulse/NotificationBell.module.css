@@ -11,19 +11,24 @@
   position: relative;
   display: inline-flex;
 }
+/* A corner control is a PLATE like the section tabs beside it (NIGHTJAR v5, #1589): the chamfer
+ * painted behind it, the whole box the hit area. HQ's toggle wears this class too. */
 .btn {
+  composes: nj-plate from global;
+  --nj-face: color-mix(in srgb, var(--text-1) 6%, var(--bg-1));
+  --nj-edge: var(--line-strong);
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 34px;
   height: 34px;
-  background: transparent;
   border: 1px solid transparent;
   color: var(--text-2);
   cursor: pointer;
 }
 .btn:hover {
+  --nj-edge: var(--hud-dim);
   color: var(--text-1);
 }
 .btn:focus-visible {
@@ -31,9 +36,9 @@
   outline-offset: -3px;
 }
 .btnOn {
+  --nj-edge: var(--hud);
+  --nj-face: color-mix(in srgb, var(--hud) 12%, var(--bg-1));
   color: var(--hud-text);
-  border-color: var(--hud-dim);
-  background: color-mix(in srgb, var(--hud) 12%, transparent);
 }
 .badge {
   position: absolute;

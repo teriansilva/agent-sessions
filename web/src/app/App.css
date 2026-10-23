@@ -294,28 +294,23 @@
   padding: 9px var(--sp-3);
   border-top: 1px solid var(--line);
 }
-/* BattleLab wordmark (#211 redux): the prominent command-bar wordmark — uppercase, wide
- * tracking, an amber ◢ mark, "BATTLE" in soft + a bold brand-amber "LAB". */
+/* THE BRAND KIT'S LOGO in the command bar (#1589): `BrandMark` and `BrandWordmark` from
+ * components/brand (the one source, web/src/brand, #1590), only ever SCALED here, at the files' own
+ * aspect ratios. The gap is the kit's clear space: three cursor bars (7/64 of the mark) ≈ 9px at
+ * 28px. Amber on dark; the dark plate and the black wordmark on light — the kit's pairs. */
 .hud-brand {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  font-family: var(--font-display);
-  font-size: var(--fs-title);
-  font-weight: 600;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: var(--brand-soft);
-  white-space: nowrap;
+  flex: none;
+  gap: 9px;
 }
-.hud-brand .mk {
-  color: var(--accent-text);
-  font-size: var(--fs-body);
-  line-height: 1;
+/* The images and their theme pairs are `components/brand` (#1590); the bar only sizes them. */
+.hud-brand .brand-mark {
+  width: 28px;
+  height: 28px;
 }
-.hud-brand b {
-  color: var(--brand);
-  font-weight: 700;
+.hud-brand .wm {
+  display: flex;
 }
 .terminal-pane {
   grid-area: pane;
@@ -691,7 +686,7 @@
   min-width: 0;
 }
 .section-nav a {
-  /* The corner BETA tag (#1085) anchors to the entry. */
+  /* The BETA tag (#1085) anchors to the entry. */
   position: relative;
   display: flex;
   align-items: center;
@@ -700,28 +695,46 @@
   flex: none;
   min-height: 44px;
   min-width: 76px;
-  padding: 0 10px;
-  border: 1px solid var(--line-strong);
-  background: color-mix(in srgb, var(--text-1) 5%, transparent);
+  padding: 0 14px;
   color: var(--text-2);
   text-decoration: none;
   font: 400 var(--fs-micro) var(--font-mono);
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  transition:
-    color var(--t-fast) var(--ease-out),
-    border-color var(--t-fast) var(--ease-out);
+  transition: color var(--t-fast) var(--ease-out);
 }
-/* Square, not chamfered: the corners of a section are part of its hit area (#946's check). */
+/* NIGHTJAR v5 (#1589): each entry is a PLATE — the chamfer is painted behind it (`nj-plate`), so
+ * its corners stay part of the hit area (#946's check clicks them). A section with a sub-menu is
+ * one plate holding its link and its chevron. */
+.section-nav a.nj-plate,
+.section-nav-split {
+  --nj-face: color-mix(in srgb, var(--text-1) 6%, var(--bg-1));
+  --nj-edge: var(--line-strong);
+}
+.section-nav a.nj-plate:hover:not([aria-current]),
+.section-nav-split:not(.is-active):hover {
+  --nj-edge: var(--hud-dim);
+}
 .section-nav a:hover:not([aria-current]) {
   color: var(--text-1);
-  border-color: var(--hud-dim);
 }
-.section-nav a[aria-current="page"],
-.section-nav a[aria-current="true"] {
+/* You are here: the accent fill on the plate's chamfer. */
+.section-nav a.nj-plate[aria-current],
+.section-nav-split.is-active {
+  --nj-face: var(--accent);
+  --nj-edge: var(--accent);
+}
+.section-nav a[aria-current],
+.section-nav-split.is-active .section-nav-chevron {
   color: var(--on-accent);
-  border-color: var(--accent);
-  background: var(--accent);
+}
+/* The place in the row, v5's dim numeral before the label; decoration (`aria-hidden`). */
+.section-nav-ix {
+  opacity: 0.6;
+}
+/* No icons on a labelled bar (v5): the label is the name. They return as the tile at ≤800px. */
+.section-nav a svg {
+  display: none;
 }
 .section-nav a:focus-visible {
   outline: 2px solid var(--accent-text);
@@ -733,9 +746,9 @@
   outline-color: var(--on-accent);
 }
 
-/* BETA (#1085): a small outlined tag beside the label. Accent ink on the bar's ground — the brand
+/* BETA (#1085): v5's small outlined tag beside the label. Accent ink on the bar's ground — the brand
    colour, never a status colour (docs/design.md §3). On the active (filled) entry it takes the
-   fill's ink instead. Below the desktop line it becomes a corner tag inside the icon tile. */
+   fill's ink instead. At ≤800px it sits under the tile's icon. */
 .section-nav-beta {
   padding: 1px 3px;
   border: 1px solid var(--accent);
@@ -752,20 +765,19 @@
   display: none;
 }
 
-/* A SECTION WITH A SUB-MENU (#1069) is its link plus a chevron, drawn as one box: the link gives
-   up its right border and the chevron closes the box. Both halves keep the 44px height — the
-   chevron is a target of its own, not a decoration on the link. */
+/* A SECTION WITH A SUB-MENU (#1069): its link and its chevron inside ONE plate; a hairline seam
+   between them. Both halves keep the 44px height — the chevron is a target of its own. */
 .section-nav-split {
   display: flex;
   flex: none;
 }
 .section-nav .section-nav-split > a {
-  border-right: none;
-  /* THE SEAM GOES TO THE LINK. The row sits at a fractional x (the wordmark's width), and at the
+  /* THE SEAM GOES TO THE LINK. The row sits at a fractional x (the brand's width), and at the
      shared edge hit-testing gave the link's last half-pixel to the chevron — the #946 hit-area
      check caught it. Lifting the link settles the tie in its favour. */
   position: relative;
   z-index: var(--z-raised);
+  padding-right: 10px;
 }
 .section-nav-chevron {
   display: flex;
@@ -775,15 +787,15 @@
   height: 100%;
   width: 28px;
   padding: 0;
-  border: 1px solid var(--line-strong);
-  border-left-color: var(--line);
+  border: 0;
+  border-left: 1px solid var(--line);
   border-radius: 0;
   background: transparent;
   color: var(--text-2);
   cursor: pointer;
 }
 .section-nav-chevron:hover {
-  color: var(--text);
+  color: var(--text-1);
 }
 .section-nav-chevron[aria-expanded="true"] svg {
   transform: rotate(180deg);
@@ -793,24 +805,24 @@
   outline-offset: -3px;
 }
 .section-nav-split.is-active .section-nav-chevron {
-  color: var(--on-accent);
-  border-color: var(--accent);
-  background: var(--accent);
-  /* The seam between the two halves, in the ink the fill already uses. */
-  box-shadow: inset 1px 0 0
-    color-mix(in srgb, var(--on-accent) 35%, transparent);
+  border-left-color: color-mix(in srgb, var(--on-accent) 35%, transparent);
 }
 
+/* The numerals are the first thing the row gives back (#1589): measured, the numbered row runs
+   Library ~36px under the corner at 801px and fits at 834px; 960px keeps a margin. */
+@media (max-width: 960px) {
+  .section-nav-ix {
+    display: none;
+  }
+}
 @media (max-width: 1100px) {
-  /* The bar carries four sections (two with a chevron) and three corner controls since #1294. Below a full desktop the first
-     things to go are the decorations: the section ICONS (the label is the name) and the operator
-     tile's username (the panel repeats it in full the moment it opens). */
+  /* The bar carries four sections (two with a chevron) and three corner controls since #1294. Below
+     a full desktop the decorations give way first: the operator tile's username (the panel repeats
+     it in full the moment it opens) and some of each tab's padding. */
   .section-nav a {
     min-width: 64px;
-    gap: 0;
-  }
-  .section-nav a svg {
-    display: none;
+    padding-inline: 10px;
+    gap: 6px;
   }
 }
 @media (max-width: 800px) {
@@ -826,10 +838,14 @@
   .hud-topbar-actions {
     height: auto;
   }
-  .hud-brand {
-    font-size: var(--fs-meta);
-    letter-spacing: 0.08em;
-    gap: 4px;
+  /* A phone keeps the MARK alone (#1589): the sections, HQ, the bell and the operator tile need the
+     width. Scaled, never below the kit's 16px minimum. */
+  .hud-brand .wm {
+    display: none;
+  }
+  .hud-brand .brand-mark {
+    width: 24px;
+    height: 24px;
   }
   .section-nav {
     margin: 0 0 0 auto;
@@ -871,27 +887,36 @@
     padding: 0;
     gap: 0;
   }
+  /* The compact tile (#1589): the same plates at a smaller cut, the icon back as the face, no
+     numeral (the label carries the name, clipped below). */
+  .section-nav a.nj-plate,
+  .section-nav-split {
+    --c: 6px;
+  }
   .section-nav a svg {
     display: block;
   }
+  .section-nav-ix {
+    display: none;
+  }
+  /* BETA stays v5's outlined tag — under the icon, inside the tile, never a superscript over the
+     glyph. The letter, because a 10px "BETA" cannot fit a 28px tile (#1531: 10px is the floor). */
   .section-nav-beta {
     position: absolute;
-    top: 2px;
-    right: 2px;
+    left: 50%;
+    bottom: 3px;
+    transform: translateX(-50%);
     padding: 0 2px;
     font-size: var(--fs-micro);
+    line-height: 1;
     letter-spacing: 0;
     text-transform: none;
-    background: var(--bg-1);
   }
   .section-nav-beta-long {
     display: none;
   }
   .section-nav-beta-short {
     display: inline;
-  }
-  .section-nav a[aria-current] .section-nav-beta {
-    background: var(--accent);
   }
   .section-nav-chevron {
     width: 24px;
@@ -910,16 +935,6 @@
   }
 }
 
-/* The wordmark is the last thing the row can afford at phone widths: the ◢ mark alone keeps the
-   brand present while the sections, Ask, the bell and the operator tile take the space. */
-@media (max-width: 480px) {
-  .hud-brand .wm {
-    display: none;
-  }
-  .hud-brand {
-    gap: 0;
-  }
-}
 
 /* Keep the command row on one line on the narrowest supported screens. */
 @media (max-width: 380px) {
@@ -928,14 +943,21 @@
     /* 3px, not 4 (#1294): with Ask in the corner the 320px row is 1.2px short at 4. */
     gap: 3px;
   }
-  .hud-brand {
-    font-size: var(--fs-label);
-    gap: 2px;
-    letter-spacing: 0.04em;
+  /* The mark STAYS at every width, at the kit's 16px minimum or more: a bar with no brand at
+     all is worse than a smaller one. (Three classes, so it outranks the ≤440px size below.) */
+  .hud-topbar .hud-brand .brand-mark {
+    width: 16px;
+    height: 16px;
   }
-  /* The ◢ mark STAYS at every width: the ≤480px rule above already dropped the wordmark, and
-     hiding the mark too (as this block used to) would leave no brand at all on the narrowest
-     phones. */
+  /* #1589: the kit's mark (16px, its minimum) is wider than the old glyph mark; at 320px the
+     row ran Library's chevron 6px under the HQ toggle — measured, these 10px close it: the bar's
+     padding and the two chevrons (still full-height targets) give back the rest. */
+  .hud-topbar.hud-topbar {
+    padding-inline: 4px;
+  }
+  .section-nav .section-nav-chevron {
+    width: 16px;
+  }
   /* 320px is the narrowest supported screen and the one width where five entries do NOT fit at
      40px: 5×40 + gaps needs 172px against the 170px between the wordmark and the corner, and the
      overflow slid TEMPLATES under the notification bell — visible, clickable-looking and dead.
@@ -952,6 +974,10 @@
    icon by up to 38px. Measured: these sizes leave room at 320, 375 and 440, and the full sizes
    leave ~13px at 441. Width is given back, never the 44px height. */
 @media (max-width: 440px) {
+  .hud-brand .brand-mark {
+    width: 20px;
+    height: 20px;
+  }
   .section-nav {
     gap: 2px;
   }

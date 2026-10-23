@@ -579,10 +579,11 @@ button.headChip[aria-pressed="true"] {
   }
 }
 
-/* ONE ACTIONS MENU ON A SMALL SCREEN (#948 P6). At the shell's ≤800px breakpoint every head action
- * moves into a single labelled menu, so the bar is a 44px row with a 44px trigger whatever the
- * pointer class — the trigger is the only control on it, and it is a finger's target. */
-@media (max-width: 800px) {
+/* ONE ACTIONS MENU ON A SMALL SCREEN (#948 P6), AND ON A TOUCH TABLET (#1589). At the shell's ≤800px
+ * breakpoint — and on a coarse pointer up to 1180px (lib/useIsMobile.ts COMPACT_HEAD_QUERY) — every
+ * head action moves into a single labelled menu, so the bar is a 44px row with a 44px trigger: the
+ * trigger is the only control on it, and it is a finger's target; the facts take the width. */
+@media (max-width: 800px), (pointer: coarse) and (max-width: 1180px) {
   .panelHead {
     height: 44px;
   }

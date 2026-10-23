@@ -15,16 +15,19 @@
   display: inline-flex;
 }
 
+/* The operator tile is a PLATE like the tabs and the bell (NIGHTJAR v5, #1589). */
 .tile {
+  composes: nj-plate from global;
+  --nj-face: color-mix(in srgb, var(--text-1) 6%, var(--bg-1));
+  --nj-edge: var(--line-strong);
   position: relative;
   display: inline-flex;
   align-items: center;
   gap: 0;
-  height: 32px;
+  height: 34px;
   padding: 0;
-  border: 1px solid var(--line-strong);
+  border: 1px solid transparent;
   border-radius: 0;
-  background: transparent;
   color: var(--text-muted);
   cursor: pointer;
   /* The bar is tight; the username must never push the row into a second line. */
@@ -32,11 +35,11 @@
   transition: border-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
 }
 .tile:hover {
+  --nj-edge: var(--hud-dim);
   color: var(--text-1);
-  border-color: var(--hud-dim);
 }
 .tile[aria-expanded="true"] {
-  border-color: var(--hud);
+  --nj-edge: var(--hud);
 }
 .tile:focus-visible {
   outline: 2px solid var(--accent-text);
@@ -107,14 +110,10 @@
   }
 }
 @media (max-width: 800px) {
+  /* The 44px touch floor is the plate itself (#1589): a plate paints with ::before/::after, so the
+     old invisible ::after hit-area halo is gone and the box is the target. */
   .tile {
-    height: 34px;
-  }
-  /* The tile stays 34px in the tight bar; its HIT AREA is the 44px floor (#1531 touch targets). */
-  .tile::after {
-    content: "";
-    position: absolute;
-    inset: -5px;
+    height: 44px;
   }
   .square {
     width: 32px;

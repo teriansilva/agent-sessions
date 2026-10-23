@@ -93,6 +93,7 @@ import {
   NIGHTJAR_GALLERY_PATH,
 } from "../lib/routes";
 import { SETTINGS_PATH } from "../routes/settingsTabs";
+import { BrandMark, BrandWordmark } from "../components/brand/Brand";
 import { OperatorMenu } from "../components/shell/OperatorMenu";
 import { FooterTelemetry } from "../components/shell/FooterTelemetry";
 import { BootSequence } from "../components/shell/BootSequence";
@@ -568,14 +569,16 @@ function Layout() {
               {surfaceOpen ? <PanelLeftClose size={18} /> : <Menu size={18} />}
             </button>
           )}
+          {/* THE BRAND KIT'S LOGO (#1589, the one source is web/src/brand via components/brand, #1590):
+              the Chevron Plate mark (themed: the kit's dark plate on light) and the outlined
+              wordmark — never recoloured, rounded or stretched. The name is text for assistive
+              tech; the images are decoration. A phone keeps the mark alone: the sections, HQ, the
+              bell and the operator tile need the width (#1058). */}
           <span className="hud-brand">
-            <span className="mk" aria-hidden="true">
-              ◢
-            </span>
-            {/* The wordmark is its own element so a phone can drop it and keep the ◢ mark: five
-                sections, the bell and the operator tile need the width (#1058). */}
+            <span className="sr-only">BattleLab</span>
+            <BrandMark size={28} themed className="brand-mark" />
             <span className="wm">
-              BATTLE<b>LAB</b>
+              <BrandWordmark height={13} />
             </span>
           </span>
           <SectionNav

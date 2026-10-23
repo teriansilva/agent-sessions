@@ -898,6 +898,13 @@ export const SWEEP = [
   },
   // The pane: the head's chips, the terminal and the folded compose bar (open on a phone).
   { id: "route:session-pane", path: S1 },
+  // ---- headers ---- (#1589: the v5 top bar with the brand kit's logo, and the session head that
+  // folds into one Actions menu on a touch tablet). Sweep with `--widths 1440,1100,834,412,390,320`
+  // (touch at ≤1180) for the tablet and phone forms; the default 1440 / 390 covers both ends.
+  { id: "headers:topbar", path: S1, height: 140 },
+  { id: "headers:topbar-menu", path: S1, open: [{ role: "button", name: "Library menu" }] },
+  { id: "headers:session-head", path: S1, height: 200 },
+  // ---- /headers ----
   // The compose bar open: textarea, key chips, Talk and Send.
   { id: "route:session-compose", path: S1, open: [{ role: "button", name: "Open compose box" }], openPhone: [], present: "textarea" },
   // The terminal's chrome states (#1568): reconnecting (the radar), refused, and a read-only
