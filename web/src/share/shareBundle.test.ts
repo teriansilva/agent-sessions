@@ -27,6 +27,18 @@ const ALLOWED_OUTSIDE = new Set([
   "components/hud/nightjar.css",
   // The one button sheet (docs/design.md §6) the viewer's buttons compose: CSS only, no script.
   "components/ui/actionButton.module.css",
+  // The brand kit's logo (#1590): an image component and the kit's static SVG files. No script
+  // beyond rendering an <img>, no network of its own.
+  "components/brand/Brand.tsx",
+  "components/brand/Brand.module.css",
+  "brand/mark-amber.svg",
+  "brand/mark-dark.svg",
+  "brand/wordmark-on-dark.svg",
+  "brand/wordmark-on-light.svg",
+  "brand/logo-horizontal-on-dark.svg",
+  "brand/logo-horizontal-on-light.svg",
+  "brand/logo-horizontal-notag-on-dark.svg",
+  "brand/logo-horizontal-notag-on-light.svg",
   "lib/shareFormat.ts",
   "components/structured/Markdown.tsx",
   "components/structured/Markdown.module.css",

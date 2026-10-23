@@ -96,6 +96,7 @@ import { whatsNewLabel } from "../whatsnew/due";
 import { useOpenWhatsNew } from "../whatsnew/WhatsNewContext";
 import { engineLabel, useEngineRoster } from "../app/engineRoster";
 import { SharingSettings } from "../components/shares/SharingSettings";
+import { BrandLockup } from "../components/brand/Brand";
 
 const BUY_ME_A_COFFEE = "https://buymeacoffee.com/teriansilva";
 // AGPL-3.0 §13: a network-served build must offer its users the Corresponding Source. The
@@ -2164,9 +2165,8 @@ export function Settings() {
             <section className={styles.section} aria-labelledby="about-h">
               <h2 id="about-h">About</h2>
               <p className={styles.brandLine}>
-                Battle<b>Lab</b>
+                <BrandLockup height={48} tagline label="BattleLab — Command & Code" />
               </p>
-              <p className={styles.hint}>Command &amp; Code</p>
               <p className={styles.blurb}>
                 The mobile-first organizer for your AI-coding sessions — every agent you
                 run, all in one place.

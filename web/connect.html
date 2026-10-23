@@ -161,18 +161,11 @@
         letter-spacing: 0.2em;
         text-transform: uppercase;
       }
+      /* The brand kit's mark (#1590), inlined: this shell loads before the SPA. */
       .brand-mark {
-        width: 21px;
-        height: 21px;
-        display: grid;
-        place-items: center;
-        border: 1px solid var(--accent);
-      }
-      .brand-mark::before {
-        content: "";
-        width: 8px;
-        height: 8px;
-        background: var(--accent);
+        width: 22px;
+        height: 22px;
+        flex: none;
       }
       .eyebrow {
         margin: 28px 0 10px;
@@ -750,7 +743,7 @@
 
         <div class="card-head">
           <div class="brand" aria-label="BattleLab Connect">
-            <span class="brand-mark" aria-hidden="true"></span>
+            <!-- brand:mark --><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" class="brand-mark" aria-hidden="true" focusable="false"><path d="M14 0 H64 V50 L50 64 H0 V14 Z" fill="#FFB000"/><path d="M18 17 L33 32 L18 47" fill="none" stroke="#120C00" stroke-width="9" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="10"/><rect x="37" y="40" width="13" height="7" fill="#120C00"/></svg><!-- /brand:mark -->
             <span>BattleLab Connect</span>
           </div>
           <span class="hud-tag" aria-hidden="true">

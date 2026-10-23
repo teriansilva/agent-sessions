@@ -25,6 +25,7 @@ import { HqContactGallery } from "../components/hq/HqContactGallery";
 import { SlideCounter, SlideDots } from "../components/slideshow/Slideshow";
 import { useSlideshow } from "../components/slideshow/useSlideshow";
 import { newestRelease, whatsNewLabel } from "../whatsnew/due";
+import { BrandMark } from "../components/brand/Brand";
 
 /** Slideshow tour slides (#1544): real captures of the app (`web/visual/promo/capture.mjs`), plus
  *  two drawn slides for surfaces a capture can't show (the relay, Settings). The copy is the durable
@@ -1048,7 +1049,11 @@ function Overlay({
       >
         <header className={styles.bar}>
           <span className={styles.brand}>
-            <span aria-hidden="true">◢</span> BATTLE<b>LAB</b>
+            <BrandMark size={18} />
+            {/* One flex item: the bar's gap belongs between the mark and the word, not inside it. */}
+            <span>
+              BATTLE<b>LAB</b>
+            </span>
           </span>
           <span className={styles.barTag}>{title.toUpperCase()}</span>
           <button

@@ -1,0 +1,27 @@
+/* The brand kit's logo (#1590). An image at its own aspect ratio: never stretched or recoloured. */
+.mark {
+  display: inline-block;
+  flex: none;
+  vertical-align: middle;
+}
+.lockup {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  line-height: 0;
+}
+.lockup img,
+.mark {
+  max-width: 100%;
+  height: auto;
+}
+/* The light theme takes the on-light variants (wordmark black; the themed mark's dark plate). */
+.onLight.onLight {
+  display: none;
+}
+:global(:root[data-theme="light"]) .onDark {
+  display: none;
+}
+:global(:root[data-theme="light"]) .onLight.onLight {
+  display: inline-block;
+}

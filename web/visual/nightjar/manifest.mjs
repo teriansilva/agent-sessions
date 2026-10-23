@@ -604,6 +604,9 @@ export const SWEEP = [
   { id: "route:settings-interface", path: "/settings/appearance" },
   { id: "route:settings-agents", path: "/settings/agents" },
   { id: "route:settings-security", path: "/settings/security" },
+  // ---- brand (#1590) ---- the kit's lockup with its tagline on Settings → About.
+  { id: "route:settings-about", path: "/settings/about", expectCss: "[data-brand-lockup]" },
+  // ---- /brand ----
   // ---- PR3 chrome ----
   // Session chrome (#1568 Phase 6): the sidebar list and its states, the pane head, the terminal
   // chrome and the compose bar. On a phone the list is in the drawer.

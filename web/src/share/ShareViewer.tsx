@@ -3,6 +3,7 @@ import { expiryChip, modeChip, nowSeconds } from "../lib/shareFormat";
 import { ApiView } from "./ApiView";
 import { PublicError, VIEWER_PATH, publicApi, tokenFromPath, type Unlocked } from "./publicApi";
 import styles from "./ShareViewer.module.css";
+import { BrandMark } from "../components/brand/Brand";
 
 type Phase =
   | { kind: "loading" }
@@ -149,7 +150,10 @@ export function ShareViewer() {
   return (
     <div className={styles.page} data-testid="share-viewer" data-phase={phase.kind}>
       <header className={styles.bar}>
-        <span className={styles.brand}>BattleLab</span>
+        <span className={styles.brand}>
+          <BrandMark size={20} />
+          BattleLab
+        </span>
         {open ? (
           <>
             <span className={styles.title}>{open.share.title || "Shared session"}</span>

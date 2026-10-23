@@ -306,14 +306,10 @@
 /* The native colour well fills the round label so it reads as one more preset dot. */
 
 /* About */
+/* The brand kit's lockup with its tagline (#1590). */
 .brandLine {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 800;
-  color: var(--brand-soft);
-}
-.brandLine b {
-  color: var(--brand);
+  margin: 0 0 var(--sp-2);
+  line-height: 0;
 }
 .meta {
   display: grid;

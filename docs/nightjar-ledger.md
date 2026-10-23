@@ -36,6 +36,7 @@ the same list.
 | Path | Kind | Phase | Status | Captures | Motion |
 |---|---|---|---|---|---|
 | `app/App.css` | css | 4 | done | route:dashboard route:new-session route:boot popup:session-row-menu | sector fade-in (Full), boot power-on, ≤800px drawer slide-in + backdrop |
+| `components/brand/Brand.module.css` | css | 4 | done | route:settings-about popup:whats-new popup:tour | none: the brand kit's logo (#1590) is a still image |
 | `components/agents/Roster.module.css` | css | 11 | todo |  |  |
 | `components/agents/SessionDefaults.module.css` | css | 11 | todo |  |  |
 | `components/ask/AskCards.module.css` | css | 4 | done | popup:hq | card deploy-in, LED change flash |

@@ -41,6 +41,8 @@ export default defineConfig({
   // a 404 into the sidebar — the structural half of "docs cannot drift" (#828).
   ignoreDeadLinks: false,
   head: [
+    // The brand kit's mark (#1590), generated into docs/site/public by web/scripts/render-brand-assets.mjs.
+    ["link", { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" }],
     ["meta", { name: "theme-color", content: "#0d0e10" }],
     ["meta", { name: "robots", content: "index, follow" }],
   ],
@@ -109,6 +111,8 @@ export default defineConfig({
   },
 
   themeConfig: {
+    // The brand kit's mark beside the name (#1590; min 16 px — VitePress draws the logo at 24 px).
+    logo: { src: "/logo-mark.svg", alt: "" },
     siteTitle: "BATTLELAB",
     outline: { level: [2, 3], label: "On this page" },
     search: { provider: "local" },

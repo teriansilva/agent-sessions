@@ -8,6 +8,7 @@ import { useSlideshow } from "../components/slideshow/useSlideshow";
 import { useInertBehind } from "../components/templates/useInertBehind";
 import type { WhatsNewRelease } from "./releases";
 import styles from "./WhatsNewDialog.module.css";
+import { BrandLockup } from "../components/brand/Brand";
 
 const publicAsset = (path: string): string =>
   `${import.meta.env.BASE_URL}${path.replace(/^\/+/, "")}`;
@@ -90,7 +91,7 @@ export function WhatsNewDialog({
           <>
             <p className={styles.ver}>{slide.eyebrow}</p>
             <p className={styles.wordmark} aria-hidden="true">
-              BATTLE<b>LAB</b>
+              <BrandLockup height={40} />
             </p>
           </>
         ) : (
