@@ -567,6 +567,11 @@
 .VPLocalSearchBox .search-keyboard-shortcuts {
   font-family: var(--font-mono);
 }
+/* VitePress sets the titles a 14 px line under 16 px text: a title that wraps on a phone printed
+   its second line over the first. */
+.VPLocalSearchBox .result .titles {
+  line-height: 1.4;
+}
 .VPLocalSearchBox .result mark {
   background: none;
   color: var(--accent-text);

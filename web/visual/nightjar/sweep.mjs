@@ -32,7 +32,8 @@ const failures = [];
 for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
   // A page the Python server renders (#1596): photographed by its own real-server spec, not here.
   if (cap.served) {
-    console.log(`  ${cap.id}: served page — NIGHTJAR_CAPTURE_DIR=… npx playwright test ${cap.served}`);
+    const run = `NIGHTJAR_CAPTURE_DIR=… npx playwright test ${cap.served}`;
+    console.log(`  ${cap.id}: served page — ${cap.cwd ? `(cd ${cap.cwd} && ${run})` : run}`);
     continue;
   }
   for (const width of widths.filter((w) => !cap.widths || cap.widths.includes(w < 800 ? "phone" : "desktop")))

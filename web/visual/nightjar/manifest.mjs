@@ -1413,6 +1413,31 @@ export const SWEEP = [
     ];
   })(),
   // ---- /PR5a outside ----
+  // ---- sites ---- (#1597, Phases 12b and 12c: battlelabos.com's sub-pages and the docs site)
+  // Static sites outside the SPA: each is photographed by its own spec's capture mode
+  // (NIGHTJAR_CAPTURE_DIR). The public site is dark only; the docs site in both themes. `cwd` is
+  // relative to web/.
+  ...[
+    "site:legal",
+    "site:privacy",
+    "site:privacy-on",
+    "site:privacy-off",
+    "site:privacy-gpc",
+    "site:privacy-nojs",
+    "site:404",
+    "site:og",
+  ].map((id) => ({
+    id,
+    path: "/",
+    served: "e2e/landing-pages.spec.ts",
+  })),
+  ...["docs:home", "docs:page", "docs:search", "docs:404"].map((id) => ({
+    id,
+    path: "/",
+    served: "e2e/geometry.spec.ts",
+    cwd: "../docs/site",
+  })),
+  // ---- /sites ----
   // ---- map v5 ---- (#1600: the map's v5 composition; windows for terminal AND API sessions)
   // A terminal window beside an API (structured) window: the same armour frame, callsign bar and
   // footer, each footer with its own readout (a grid; a model).

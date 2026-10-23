@@ -1,3 +1,5 @@
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { test, expect, type Page } from "@playwright/test";
 
 // The design rules in docs/design.md are enforced here rather than re-asserted in a review
@@ -155,6 +157,25 @@ test("search opens on Ctrl K and Esc closes it with focus restored", async ({ pa
   await expect(link, "focus returns to where it was").toBeFocused();
 });
 
+// A result title that wraps (a long page name on a phone) must not print over itself: the titles
+// once ran 16 px text on a 14 px line, so the second line overlapped the first.
+test("search result titles have room for a wrapped second line", async ({ page }) => {
+  await open(page, "/guide/missions", "dark");
+  await page.keyboard.press("Control+k");
+  const box = page.locator(".VPLocalSearchBox");
+  await box.locator("input").fill("mission");
+  await expect(box.locator(".result").first()).toBeVisible();
+  const cramped = await box.locator(".result .titles .text").evaluateAll((els) =>
+    els
+      .map((el) => {
+        const s = getComputedStyle(el);
+        return [el.textContent?.trim().slice(0, 30), parseFloat(s.lineHeight), parseFloat(s.fontSize)] as const;
+      })
+      .filter(([, lh, fs]) => !(lh >= fs * 1.2)),
+  );
+  expect(cramped, "line-height at least 1.2 × the font size").toEqual([]);
+});
+
 // Hermes 6787 P1: the search button activated from the keyboard is the opener focus goes back to.
 for (const key of ["Enter", "Space"]) {
   test(`search opened with ${key} on the search button gives focus back to it on Esc`, async ({ page }, testInfo) => {
@@ -190,4 +211,37 @@ test("reading pages never move; only the hero and the search modal animate, and 
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await open(page, "/guide/missions", "dark");
   expect(await page.evaluate(() => document.getAnimations().length), "a reading page in full motion").toBe(0);
+});
+
+// The capture mode (as web/e2e/appmode-served-pages.spec.ts): with NIGHTJAR_CAPTURE_DIR set, the
+// docs site is photographed at 1440 and 390, dark and light, named `<capture id>-<width>-<theme>-1x.png`
+// like the app's sweep (web/visual/nightjar). The ids are the ledger's `docs:*` captures.
+const CAPTURE_DIR = process.env.NIGHTJAR_CAPTURE_DIR;
+test("capture mode: the docs site as the ledger's docs:* captures", async ({ page }, testInfo) => {
+  test.skip(!CAPTURE_DIR || testInfo.project.name !== "desktop", "only with NIGHTJAR_CAPTURE_DIR, desktop project");
+  testInfo.setTimeout(120_000);
+  mkdirSync(CAPTURE_DIR!, { recursive: true });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const shots: [string, string][] = [
+    ["docs:home", "/"],
+    ["docs:page", "/guide/missions"],
+    ["docs:search", "/guide/missions"],
+    ["docs:404", "/no-such-page-at-all"],
+  ];
+  for (const theme of THEMES)
+    for (const [id, path] of shots)
+      for (const [w, h] of [
+        [1440, 960],
+        [390, 844],
+      ]) {
+        await page.setViewportSize({ width: w, height: h });
+        await open(page, path, theme);
+        if (id === "docs:search") {
+          await page.keyboard.press("Control+k");
+          const box = page.locator(".VPLocalSearchBox");
+          await box.locator("input").fill("mission");
+          await expect(box.locator(".result").first()).toBeVisible();
+        }
+        await page.screenshot({ path: resolve(CAPTURE_DIR!, `${id.replace(/[:/]/g, "_")}-${w}-${theme}-1x.png`) });
+      }
 });

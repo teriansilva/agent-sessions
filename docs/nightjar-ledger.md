@@ -198,18 +198,18 @@ the same list.
 | `src/agent_sessions/routes/shares.py PLACEHOLDER_PAGE` | page | 12 | done | page:share-placeholder | atmosphere (Full, dark); script-free |
 | `web/connect.html (+ homefree/connectState.ts)` | page | 12 | done | connect:signed-out connect:verified connect:dialog connect:connecting connect:error connect:connected | atmosphere (Full, dark; paused hidden/idle), button glitch, gate meter (state, every mode), radar + acquire bar while connecting, step LEDs, session LED breathe / warn blink |
 | `landing/index.html` | page | 12b | n/a: rebuilt in NIGHTJAR by #1544 (PR #1548); 12b checks conformance only | — | — |
-| `landing/legal.html` | page | 12b | todo |  |  |
-| `landing/privacy.html (+ landing/consent.js)` | page | 12b | todo |  |  |
-| `landing/404.html (new)` | page | 12b | todo |  |  |
-| `landing/og.svg` | page | 12b | todo |  |  |
-| `docs/site home (index.md)` | page | 12c | todo |  |  |
-| `docs/site pages (theme/hud.css)` | page | 12c | todo |  |  |
-| `docs/site local search` | page | 12c | todo |  |  |
-| `docs/site 404` | page | 12c | todo |  |  |
-| `battlelab-cloud relay/admin_page.py` | page | 12d | todo |  |  |
-| `battlelab-cloud catalog gallery.html` | page | 12d | todo |  |  |
-| `battlelab-cloud catalog admin.html` | page | 12d | todo |  |  |
-| `battlelab-cloud catalog edge 403` | page | 12d | todo |  |  |
+| `landing/legal.html` | page | 12b | done | site:legal | atmosphere sweep (`lp-sweep`) and the title cursor blink (`lp-blink`); none under prefers-reduced-motion (`landing-pages.spec.ts`) |
+| `landing/privacy.html (+ landing/consent.js)` | page | 12b | done | site:privacy site:privacy-on site:privacy-off site:privacy-gpc site:privacy-nojs | atmosphere sweep (`lp-sweep`) and the title cursor blink (`lp-blink`); none under prefers-reduced-motion (`landing-pages.spec.ts`); the consent LED is a state, not a motion |
+| `landing/404.html` | page | 12b | done | site:404 | atmosphere sweep (`lp-sweep`) and the title cursor blink (`lp-blink`); none under prefers-reduced-motion (`landing-pages.spec.ts`); the radar is still |
+| `landing/og.svg` | page | 12b | done | site:og | none (a still share card) |
+| `docs/site home (index.md)` | page | 12c | done | docs:home | the hero's atmosphere sweep band (`docs-sweep`), none under reduced motion (`geometry.spec.ts`) |
+| `docs/site pages (theme/hud.css)` | page | 12c | done | docs:page | none (reading pages never move; `geometry.spec.ts`) |
+| `docs/site local search` | page | 12c | done | docs:search | the modal deploys once (`docs-deploy`, 180 ms), none under reduced motion |
+| `docs/site 404` | page | 12c | done | docs:404 | none (a still radar) |
+| `battlelab-cloud relay/admin_page.py` | page | 12d | n/a: restyled in its own repo by battlelab-cloud#81 (PR battlelab-cloud#82), with its captures there | — | — |
+| `battlelab-cloud catalog gallery.html` | page | 12d | n/a: restyled in its own repo by battlelab-cloud#81 (PR battlelab-cloud#82), with its captures there | — | — |
+| `battlelab-cloud catalog admin.html` | page | 12d | n/a: restyled in its own repo by battlelab-cloud#81 (PR battlelab-cloud#82), with its captures there | — | — |
+| `battlelab-cloud catalog edge 403` | page | 12d | n/a: restyled in its own repo by battlelab-cloud#81 (PR battlelab-cloud#82), with its captures there | — | — |
 | `web/public/og-image.svg + og-image.png` | page | 13 | todo |  |  |
 | `web/public/onboarding/* (tour slides)` | page | 13 | todo |  |  |
 
