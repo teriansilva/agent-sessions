@@ -445,12 +445,20 @@ def register(
                     if ev.get("t") == "end":
                         await call.end("hung_up")
                         return
+                    if ev.get("t") == "needs_you":
+                        await call.on_needs_you_request()
+                    if ev.get("t") == "card_decided":
+                        await call.on_card_decided(ev.get("id"))
                     if ev.get("t") == "mute":
                         call.muted = bool(ev.get("on"))
+                        if call.muted:
+                            await call.void_challenge()
                         await call.worker({"t": "mute", "on": call.muted})
                         await call.client({"t": "muted", "on": call.muted})
                     if ev.get("t") == "played":
                         call.last_activity = time.monotonic()
+                        # The browser has PLAYED a say out: a read-back may now arm (#1397 P2).
+                        await call.on_played(ev.get("id"))
 
         async def watchdog() -> None:
             while call.state != "ended":

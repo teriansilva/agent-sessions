@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 from pathlib import Path
 
 import httpx
@@ -372,6 +373,8 @@ class FakeWorker:
             if ev.get("t") == "say":
                 self.said.append(ev["text"])
                 await conn.send(b"\x01\x00" * 100)
+                # In order after the audio, as the real worker's non-urgent marker (P2).
+                await conn.send(json.dumps({"t": "said", "id": ev.get("id")}))
             if ev.get("t") == "stop":
                 return
 
@@ -405,7 +408,14 @@ def worker(ready, monkeypatch):
             "turn_id": turn_id,
             "status": "done",
             "answer": STORED,
-            "proposals": [{"kind": "nudge", "title": "api-rebase", "action_id": "a1"}],
+            "proposals": [
+                {
+                    "kind": "nudge",
+                    "title": "api-rebase",
+                    "action_id": "a1",
+                    "text": "Rerun the auth tests.",
+                }
+            ],
             "ask": None,
             "via": "call",
         }
@@ -432,10 +442,12 @@ def test_a_call_asks_hq_and_speaks_the_stored_answer(ready, worker):
             if m.get("bytes") is not None:
                 got.append(m["bytes"])
                 continue
+            if m.get("text") is None:
+                break  # the socket closed
             ev = json.loads(m["text"])
             if ev.get("t") == "caption":
                 captions.append(ev)
-            if ev.get("t") == "caption" and ev.get("kind") == "answer" and "screen" in ev["text"]:
+            if ev.get("t") == "caption" and ev.get("kind") == "readback":
                 break
         ws.send_text(json.dumps({"t": "end"}))
     # The worker was told no token: those ride its environment, never the socket.
@@ -452,9 +464,81 @@ def test_a_call_asks_hq_and_speaks_the_stored_answer(ready, worker):
         == voice_text.speakable(STORED)
         == "Two auth tests fail in api-rebase. I drafted a nudge."
     )
-    assert spoken[1] == "I've drafted a message to api-rebase. It's on your screen to send."
+    # P2: a confirmable card is read back (fixed words) instead of a plain "on your screen".
+    assert spoken[1] == (
+        "A message to api-rebase: Rerun the auth tests. Say confirm to send it, or cancel."
+    )
     assert any(cap["who"] == "you" and cap["text"] == "How is api rebase?" for cap in captions)
     assert got, "speech audio reaches the client"
+
+
+def test_the_browsers_played_ack_arms_the_challenge_through_the_socket(ready, worker):
+    """#1397 P2 through the real socket: the read-back's `said` reaches the browser, the browser
+    acks `played`, and only then is the card offered for a spoken confirmation. (A route that
+    dropped `played` once left every challenge unarmed while the unit tests stayed green.)"""
+    c, hdr, cfg = ready
+    call = _admit(c, hdr)
+    events: list[dict] = []
+    with c.websocket_connect(f"/ws/voice/{call['id']}", headers=_ws(c, cfg)) as ws:
+        ws.send_text(json.dumps({"t": "hello", "csrf": hdr["X-CSRF-Token"]}))
+        readback = None
+        for _ in range(200):
+            m = ws.receive()
+            if m.get("text") is None:
+                if m.get("bytes") is not None:
+                    continue
+                break
+            ev = json.loads(m["text"])
+            events.append(ev)
+            if ev.get("t") == "connected":
+                ws.send_bytes(b"\x00" * 640)
+            if ev.get("t") == "caption" and ev.get("kind") == "readback":
+                readback = ev["id"]
+            if ev.get("t") == "said" and ev.get("id") == readback:
+                assert not any(e.get("t") == "challenge" and e.get("cards") for e in events)
+                ws.send_text(json.dumps({"t": "played", "id": readback}))
+                # A bounded end marker: the socket handles messages in order, so `muted` comes
+                # back only after `played` was handled (and its challenge, if any, was sent).
+                ws.send_text(json.dumps({"t": "mute", "on": False}))
+            if ev.get("t") == "muted":
+                break
+        ws.send_text(json.dumps({"t": "end"}))
+    assert readback is not None
+    offered = [e for e in events if e.get("t") == "challenge"]
+    assert offered == [{"t": "challenge", "cards": ["a1"], "expires_s": voice_calls.CHALLENGE_S}]
+
+
+def test_the_needs_you_chip_reaches_the_call_through_the_socket(ready, worker):
+    """The chip's {"t": "needs_you"} is dispatched by the socket to the Needs-you read-out."""
+    c, hdr, cfg = ready
+    call = _admit(c, hdr)
+    events: list[dict] = []
+    deadline = time.monotonic() + 15
+    with c.websocket_connect(f"/ws/voice/{call['id']}", headers=_ws(c, cfg)) as ws:
+        ws.send_text(json.dumps({"t": "hello", "csrf": hdr["X-CSRF-Token"]}))
+        for _ in range(2000):
+            m = ws.receive()
+            if m.get("text") is None:
+                if m.get("bytes") is not None:
+                    continue
+                break
+            ev = json.loads(m["text"])
+            events.append(ev)
+            if ev.get("t") == "connected":
+                ws.send_text(json.dumps({"t": "needs_you"}))
+                ws.send_text(json.dumps({"t": "mute", "on": False}))  # bounded end marker
+            if ev.get("t") == "caption" and ev.get("kind") == "outcome":
+                break
+            if ev.get("t") == "muted":
+                # The read-out runs beside the relay loop (it reads live screens): keep the
+                # socket turning until it speaks, for at most 15 s.
+                if time.monotonic() > deadline:
+                    break
+                time.sleep(0.05)
+                ws.send_text(json.dumps({"t": "mute", "on": False}))
+        ws.send_text(json.dumps({"t": "end"}))
+    outcome = [e["text"] for e in events if e.get("t") == "caption" and e.get("kind") == "outcome"]
+    assert outcome and "needs you" in outcome[0]
 
 
 # --- spoken text -------------------------------------------------------------------------------

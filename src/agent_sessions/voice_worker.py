@@ -10,8 +10,10 @@ Protocol with the app (JSON text + binary PCM16 mono):
 - app → worker: first ``{"t":"config", stt, tts, in_rate, out_rate, stop_secs, interrupt}``;
   then mic audio (binary, ``in_rate``), ``{"t":"say","id","text"}``, ``{"t":"mute","on"}``,
   ``{"t":"stop"}``.
-- worker → app: ``{"t":"ready"}``, ``{"t":"user_started"}``, ``{"t":"user_stopped"}``,
-  ``{"t":"utterance","text"}``, ``{"t":"interrupt"}`` (barge-in: the client flushes playback),
+- worker → app: ``{"t":"ready"}``, ``{"t":"user_started","turn"}``, ``{"t":"user_stopped"}``,
+  ``{"t":"utterance","text","turn"}`` (``turn``: the number of the user turn it was heard in; a
+  LATE transcript is ``{"t":"utterance","text","late":true}``), ``{"t":"interrupt"}`` (barge-in:
+  the client flushes playback; Pipecat sends it at every user turn start),
   ``{"t":"bot_started"}``, ``{"t":"bot_stopped"}``, ``{"t":"error","endpoint","code","detail"}``;
   and speech audio (binary, ``out_rate``).
 
@@ -262,13 +264,18 @@ class Bridge(FrameProcessor):
         self._tts = tts
         self._grace: asyncio.Task | None = None  # the newest turn's flush (each awaits the last)
         self.muted = False
+        # Numbers each user turn: `user_started` and that turn's `utterance` carry it, so the app
+        # can tell when an utterance BEGAN even though its transcript arrives later (#1397 P2).
+        self._turn = 0
 
-    async def _flush(self, target: int) -> None:
+    async def _flush(self, target: int, turn: int) -> None:
         text = self._bus.turns.flush(target)
         if text and not self.muted:
-            await self._bus.send({"t": "utterance", "text": text})
+            await self._bus.send({"t": "utterance", "text": text, "turn": turn})
 
-    async def _when_transcribed(self, target: int, previous: asyncio.Task | None) -> None:
+    async def _when_transcribed(
+        self, target: int, previous: asyncio.Task | None, turn: int
+    ) -> None:
         """Flush THIS turn (its segments up to `target`) once they are back from STT, or after a
         grace; turns go out in order, each with only its own words."""
         deadline = time.monotonic() + TRANSCRIPT_GRACE_S
@@ -282,7 +289,7 @@ class Bridge(FrameProcessor):
             self._bus.segment_done.clear()
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._bus.segment_done.wait(), timeout=left)
-        await self._flush(target)
+        await self._flush(target, turn)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -295,11 +302,12 @@ class Bridge(FrameProcessor):
                 await self._bus.send({"t": "utterance", "text": late, "late": True})
             return  # transcripts go to the app, not to TTS
         if isinstance(frame, UserStartedSpeakingFrame):
-            await self._bus.send({"t": "user_started"})
+            self._turn += 1
+            await self._bus.send({"t": "user_started", "turn": self._turn})
         elif isinstance(frame, UserStoppedSpeakingFrame):
             await self._bus.send({"t": "user_stopped"})
             self._grace = asyncio.create_task(
-                self._when_transcribed(self._bus.turns.target(), self._grace)
+                self._when_transcribed(self._bus.turns.target(), self._grace, self._turn)
             )
         elif isinstance(frame, InterruptionFrame):
             self._tts.drop_prefetch()
@@ -320,6 +328,12 @@ class Bridge(FrameProcessor):
             self._tts.prefetch(chunks)
             for c in chunks:
                 await self.push_frame(TTSSpeakFrame(c))
+            # In order with the audio (a NON-urgent message is sent by the output transport after
+            # the frames before it): the app learns this say has been played out. An interruption
+            # drops it, so a read-back that was talked over never arms a confirmation (#1397 P2).
+            await self.push_frame(
+                OutputTransportMessageFrame(message={"t": "said", "id": msg.get("id")})
+            )
         elif t == "mute":
             self.muted = bool(msg.get("on"))
         elif t == "stop":

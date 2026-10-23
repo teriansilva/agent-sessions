@@ -42,6 +42,23 @@ def speakable(text: str) -> str:
     return out
 
 
+#: A card's text is offered for a SPOKEN confirmation only if it can be read back in full.
+READBACK_MAX = 300
+
+
+def verbatim(text: str) -> str | None:
+    """`text` as it will be read back, ONLY if that is the whole of it, word for word: plain prose
+    (nothing `speakable` would drop or rewrite — no code, links or markup), at most READBACK_MAX
+    characters. Otherwise None: what would be confirmed is not what was heard (#1631 review), so
+    the card stays a screen decision."""
+    plain = " ".join((text or "").split())
+    if not plain or len(plain) > READBACK_MAX:
+        return None
+    if " ".join(speakable(plain).split()) != plain or any(c in plain for c in "`<>[]{}|*_#"):
+        return None
+    return plain
+
+
 #: Words per spoken chunk: shorter chunks give earlier first audio on slow TTS servers.
 CHUNK_WORDS = 14
 
@@ -81,11 +98,13 @@ def split_speech(text: str, *, first_max: int | None = None) -> list[str]:
     return [c for c in fitted if c]
 
 
-def card_sentences(view: dict) -> list[str]:
+def card_sentences(view: dict, *, skip: set[str] | frozenset = frozenset()) -> list[str]:
     """Fixed, server-rendered sentences for what an HQ turn left on screen (D8). The card text
     itself is not read out: the title and kind are enough to find it; the screen has the rest."""
     out: list[str] = []
     for p in view.get("proposals") or []:
+        if p.get("action_id") in skip:
+            continue  # read back as a confirmable card instead
         kind = p.get("kind")
         title = (p.get("title") or "").strip()[:80] or "that session"
         if kind == "nudge":
@@ -133,3 +152,87 @@ def pick_option(said: str, options: list[str]) -> int | None:
         if hits:
             return None
     return None
+
+
+# --- spoken confirmation (#1397 P2) ------------------------------------------------------------
+
+# An ALLOWLIST grammar (#1631 review): a blocklist of negations never converges ("can't",
+# "won't", "should I send it", a curly apostrophe). An utterance confirms only if it is, word for
+# word: fillers, ONE confirm phrase, and optionally the card's ordinal — nothing else, no question.
+_CONFIRM_PHRASES = (
+    ("confirm", "it"), ("confirm",), ("confirmed",), ("send", "it"), ("send",),
+    ("start", "it"), ("start",), ("do", "it"), ("go", "ahead"), ("approve", "it"),
+    ("approve",), ("approved",),
+)  # fmt: skip
+_FILLERS = frozenset({"please", "ok", "okay", "yes", "yeah"})
+_SKIP = frozenset({"the", "number", "option", "please", "ok", "okay", "yes", "yeah"})
+_CANCEL = re.compile(r"^(no|nope|cancel|cancel it|leave it|not now|never mind|dismiss)\b")
+_ALL_TAILS = (("all",), ("everything",), ("both",), ("all", "of", "them"), ("them", "all"),
+              ("every", "one"), ("each", "one"), ("all", "three"), ("all", "four"))  # fmt: skip
+CONFIRM_MAX_WORDS = 6
+_APOSTROPHES = str.maketrans({"\u2019": "'", "\u2018": "'", "\u02bc": "'", "\u0060": "'"})
+
+
+def _confirm_rest(words: list[str]) -> list[str] | None:
+    """The words after ONE leading confirm phrase (fillers before it skipped), or None."""
+    i = 0
+    while i < len(words) and words[i] in _FILLERS:
+        i += 1
+    for phrase in _CONFIRM_PHRASES:
+        if tuple(words[i : i + len(phrase)]) == phrase:
+            return words[i + len(phrase) :]
+    return None
+
+
+def classify_confirmation(said: str, cards: int) -> tuple[str, int | None]:
+    """What a spoken reply to a read-back means, matched on the WHOLE utterance, never by a model:
+
+    - ``("confirm", i)`` — fillers, one confirm phrase and, when more than one card is pending,
+      exactly one ordinal naming card ``i``. Nothing else, and no question mark;
+    - ``("cancel", None)`` — leave it (the card stays on screen, untouched);
+    - ``("all", None)`` — a bulk request, refused;
+    - ``("ambiguous", None)`` — a confirm without the ordinal several cards need;
+    - ``("other", None)`` — anything else: a new question, and the challenge is void.
+    """
+    raw = said.translate(_APOSTROPHES).lower()
+    norm = " ".join(re.sub(r"[^a-z0-9' ]", " ", raw).split())
+    words = norm.split()
+    if not words:
+        return "other", None
+    if _CANCEL.match(norm):
+        return "cancel", None
+    if "?" in raw or len(words) > CONFIRM_MAX_WORDS:
+        return "other", None
+    rest = _confirm_rest(words)
+    if rest is None:
+        return "other", None
+    if tuple(w for w in rest if w not in _FILLERS) in _ALL_TAILS:
+        return "all", None
+    rest = [w for w in rest if w not in _SKIP]
+    if len(rest) == 2 and rest[0] in _ORDINALS and rest[1] == "one":
+        rest = rest[:1]  # "the second one"
+    if not rest:
+        picked = None
+    elif len(rest) == 1 and (rest[0] in _ORDINALS or rest[0] in _CARDINALS):
+        picked = _ORDINALS.get(rest[0], _CARDINALS.get(rest[0]))
+    else:
+        return "other", None  # any other word: "but", "later", "nothing", "that", …
+    if picked is not None and picked >= cards:
+        return "ambiguous", None  # names a card that was not read out
+    if picked is None and cards != 1:
+        return "ambiguous", None
+    return "confirm", picked or 0
+
+
+_ORDINAL_WORDS = ("first", "second", "third", "fourth")
+
+
+def readback(cards: list[dict]) -> str:
+    """The fixed read-back that arms a challenge: what each card does, then how to confirm."""
+    if not cards:
+        return ""
+    if len(cards) == 1:
+        c = cards[0]
+        return f"{c['line']} Say confirm to {c['verb']}, or cancel."
+    parts = [f"{_ORDINAL_WORDS[i].capitalize()}: {c['line']}" for i, c in enumerate(cards)]
+    return " ".join(parts) + " Say confirm and the number, or cancel."
