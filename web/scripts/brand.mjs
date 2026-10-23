@@ -104,6 +104,9 @@ export const SLOTTED = [
   "src/agent_sessions/templates/change_password.html",
   "web/connect.html",
   "landing/index.html",
+  "landing/legal.html",
+  "landing/privacy.html",
+  "landing/404.html",
 ];
 
 const SLOT = /<!-- brand:([a-z-]+) -->[\s\S]*?<!-- \/brand:\1 -->/g;

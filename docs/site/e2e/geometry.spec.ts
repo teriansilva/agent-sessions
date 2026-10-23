@@ -6,6 +6,9 @@ import { test, expect, type Page } from "@playwright/test";
 // that drifts back.
 
 const PAGES = ["/", "/security/", "/guide/missions", "/reference/"];
+// A transform or a fractional line box can read a 44 px target as 43.99997 px; 0.01 px cannot hide
+// a real violation, which is at least one device pixel short (same floor as web/e2e/touchTarget.ts).
+const TOUCH_FLOOR = 44 - 0.01;
 const THEMES = ["dark", "light"] as const;
 
 // VitePress reads its appearance from localStorage before hydrating; setting it in an init script
@@ -40,7 +43,7 @@ for (const theme of THEMES) {
       }, testInfo) => {
         test.skip(testInfo.project.name !== "mobile", "44px is a touch rule (design.md §8)");
         await open(page, path, theme);
-        const undersized = await page.evaluate(() => {
+        const undersized = await page.evaluate((floor) => {
           const out: string[] = [];
           // "Visible" has to mean visible to a FINGER, not merely present in the layout tree.
           // Three things fail that and are correctly exempt: the skip-to-content link (clipped
@@ -64,13 +67,13 @@ for (const theme of THEMES) {
             // Anchors inside a sentence get their hit area from padding, which the bounding box
             // of an inline box does not report; measure their client rects instead.
             const boxes = el.getClientRects();
-            const tall = [...boxes].some((b) => b.height >= 44);
-            if (!tall && r.height < 44) {
+            const tall = [...boxes].some((b) => b.height >= floor);
+            if (!tall && r.height < floor) {
               out.push(`${el.tagName}.${el.className || "-"}:${Math.round(r.height)}`);
             }
           }
           return out;
-        });
+        }, TOUCH_FLOOR);
         expect(undersized, `elements under 44px on ${path}`).toEqual([]);
       });
 
@@ -83,7 +86,7 @@ for (const theme of THEMES) {
       });
     }
 
-    test("prose is system sans and HUD chrome is mono (design.md §4)", async ({ page }) => {
+    test("prose is system sans, headings the display face, code mono (design.md §4)", async ({ page }) => {
       await open(page, "/security/", theme);
       const fonts = await page.evaluate(() => {
         const first = (sel: string) => document.querySelector(sel);
@@ -96,7 +99,7 @@ for (const theme of THEMES) {
         };
       });
       expect(fonts.prose, "body prose is the system sans stack").not.toMatch(/mono/);
-      expect(fonts.heading, "section headings are HUD chrome").toMatch(/mono/);
+      expect(fonts.heading, "section headings are the NIGHTJAR display face").toMatch(/^"?battlelab display/);
       expect(fonts.code, "code is mono").toMatch(/mono/);
     });
 
@@ -123,4 +126,68 @@ test("the footer carries the build provenance stamp (#828)", async ({ page }) =>
   // The stamp must never invent an ahead-count it cannot justify; "unknown" is a valid state and
   // a bare number with no provenance is not.
   await expect(footer).toContainText(/last publish|matches last publish/);
+});
+
+// ---- NIGHTJAR theme (#1597, epic #1531 Phase 12c) ----
+
+for (const path of PAGES) {
+  test(`${path} — no sideways scroll at 390 px`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await open(page, path, "dark");
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(1);
+  });
+}
+
+test("search opens on Ctrl K and Esc closes it with focus restored", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "a keyboard shortcut");
+  await open(page, "/guide/missions", "dark");
+  const link = page.locator(".VPSidebarItem a.link").first();
+  await link.focus();
+  await page.keyboard.press("Control+k");
+  const box = page.locator(".VPLocalSearchBox");
+  await expect(box).toBeVisible();
+  await expect(box.locator("input")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(box).toHaveCount(0);
+  await expect(link, "focus returns to where it was").toBeFocused();
+});
+
+// Hermes 6787 P1: the search button activated from the keyboard is the opener focus goes back to.
+for (const key of ["Enter", "Space"]) {
+  test(`search opened with ${key} on the search button gives focus back to it on Esc`, async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "desktop", "the search button is an icon in the phone nav");
+    await open(page, "/guide/missions", "dark");
+    const button = page.locator(".VPNavBarSearch .DocSearch-Button");
+    await button.focus();
+    await page.keyboard.press(key);
+    const box = page.locator(".VPLocalSearchBox");
+    await expect(box.locator("input")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(box).toHaveCount(0);
+    await expect(button, "focus returns to the search button").toBeFocused();
+  });
+}
+
+for (const theme of THEMES) {
+  test(`the 404 renders as "Sector not found" (${theme})`, async ({ page }) => {
+    await open(page, "/no-such-page-at-all", theme);
+    await expect(page.locator(".NotFound .code")).toHaveText("404");
+    const home = page.locator(".NotFound .link");
+    await expect(home).toBeVisible();
+    expect((await home.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  });
+}
+
+test("reading pages never move; only the hero and the search modal animate, and not under reduced motion", async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await open(page, "/", "dark");
+  expect(await page.evaluate(() => document.getAnimations().length), "the home under reduced motion").toBe(0);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await open(page, "/guide/missions", "dark");
+  expect(await page.evaluate(() => document.getAnimations().length), "a reading page in full motion").toBe(0);
 });

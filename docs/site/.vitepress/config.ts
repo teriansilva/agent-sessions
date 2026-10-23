@@ -116,6 +116,14 @@ export default defineConfig({
     siteTitle: "BATTLELAB",
     outline: { level: [2, 3], label: "On this page" },
     search: { provider: "local" },
+    // The NIGHTJAR 404 (#1597): the field manual's missing page, the way back and the search hint.
+    notFound: {
+      code: "404",
+      title: "This page was moved or retired",
+      quote: "> Search the manual with Ctrl K, or go back to the docs home.",
+      linkLabel: "Back to the docs home",
+      linkText: "Docs home",
+    },
 
     nav: [
       { text: "Start", link: "/start/install" },

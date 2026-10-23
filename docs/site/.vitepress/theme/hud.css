@@ -11,6 +11,8 @@
  * the palette applies unchanged rather than being restated in a `.dark` block here.
  */
 @import "../../../../web/src/tokens.css";
+/* The app's self-hosted NIGHTJAR faces (BattleLab Display / BattleLab Mono): one set of font files. */
+@import "../../../../web/src/theme/fonts.css";
 
 :root {
   /* Grounds and surfaces */
@@ -44,12 +46,18 @@
   --vp-button-brand-hover-bg: var(--accent);
   --vp-button-brand-hover-text: var(--on-accent);
   --vp-button-brand-hover-border: var(--accent);
-  --vp-button-alt-bg: transparent;
-  --vp-button-alt-text: var(--brand);
-  --vp-button-alt-border: var(--accent-soft);
+  /* The alt action is the NIGHTJAR ghost plate (#1597): a --hud tint, no outline. */
+  --vp-button-alt-bg: color-mix(in srgb, var(--hud) 14%, transparent);
+  --vp-button-alt-text: var(--hud-text);
+  --vp-button-alt-border: transparent;
+  --vp-button-alt-hover-bg: color-mix(in srgb, var(--hud) 22%, transparent);
+  --vp-button-alt-hover-text: var(--hud-text);
+  --vp-button-alt-hover-border: transparent;
 
-  /* Typography (design.md §4): system sans for prose, mono for HUD chrome and code. */
-  --vp-font-family-base: var(--font-sans);
+  /* Typography (design.md §4): system sans for prose, mono for HUD chrome and code, the display
+     face for headings and the wordmark (#1597). */
+  /* Prose stays a system sans (tokens.css has no sans token; `var(--font-sans)` named nothing). */
+  --vp-font-family-base: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --vp-font-family-mono: var(--font-mono);
 
   /* Code surfaces */
@@ -80,9 +88,20 @@
   --amber-edge: color-mix(in srgb, var(--brand) 24%, transparent);
 }
 
-/* ---------------------------------------------------------------- HUD chrome ---- */
 
-/* No radius anywhere (design.md §9) — only LEDs and dots are round, and this site has none. */
+/* ======================================================= NIGHTJAR chrome (#1597) ====
+ * Epic #1531 Phase 12c. The docs adopt the app's NIGHTJAR primitives on VitePress's own markup:
+ * chamfered panels (clip-path polygon, --cut 14 px / --cut-sm 8 px for controls), lit --hud rails,
+ * the display face for headings and the wordmark, plates for buttons with an INSET focus ring
+ * (a chamfer clips an outset one), status colour only for status. Reading pages never move; only
+ * the hero atmosphere and the search modal opening animate, and neither under reduced motion.
+ * Every value is a var() or geometry — the build gate refuses a hex literal in this directory. */
+
+:root {
+  --nj-chamfer: polygon(var(--c, var(--cut)) 0, 100% 0, 100% calc(100% - var(--c, var(--cut))), calc(100% - var(--c, var(--cut))) 100%, 0 100%, 0 var(--c, var(--cut)));
+}
+
+/* No radius anywhere (design.md §9): only LEDs and dots are round, and this site has none. */
 .VPDoc,
 .vp-doc div[class*="language-"],
 .vp-doc table,
@@ -90,82 +109,140 @@
 .VPButton,
 .DocSearch-Button,
 .VPNavBarSearch input,
-.VPFeature {
+.VPFeature,
+.VPBadge,
+.VPLocalSearchBox .shell,
+.VPLocalSearchBox .search-bar,
+.VPLocalSearchBox .result,
+.VPDocFooter .pager-link,
+.vp-code-group .tabs {
   border-radius: 0 !important;
 }
 
-/* Nav: opaque ground + a hairline, matching the landing page's sticky bar. */
-.VPNavBar {
+/* ---- nav bar: opaque ground, a lit --hud rule, the display wordmark ---- */
+.VPNavBar,
+.VPNavBar.has-sidebar .content-body,
+.VPNavBar:not(.home.top) .content-body {
   background-color: var(--hud-nav-bg);
-  border-bottom: 1px solid var(--line);
 }
-.VPNavBar .title,
+.VPNavBar .divider-line,
+.VPNavBar:not(.home.top) .divider-line {
+  background-color: var(--hud-dim);
+}
 .VPNavBarTitle .title {
-  font-family: var(--font-mono);
-  font-weight: 800;
+  font: 600 15px/1 var(--font-display);
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.VPNavBarMenuLink {
+  font: 500 var(--fs-micro) / 1 var(--font-mono);
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  font-size: 14px;
+  color: var(--text-2);
+}
+.VPNavBarMenuLink.active {
+  color: var(--hud-text);
+  box-shadow: inset 0 -2px 0 var(--hud);
+}
+/* The search trigger is a field-shaped plate with its key hint. */
+.DocSearch-Button {
+  --c: var(--cut-sm);
+  clip-path: var(--nj-chamfer);
+  background: color-mix(in srgb, var(--text-1) 6%, transparent);
+  font-family: var(--font-mono);
+}
+.DocSearch-Button:hover {
+  background: color-mix(in srgb, var(--hud) 12%, transparent);
+}
+.DocSearch-Button .DocSearch-Button-Key,
+.DocSearch-Button .DocSearch-Button-Keys {
+  border-radius: 0;
+  font-family: var(--font-mono);
+}
+/* The appearance switch: a square track. */
+.VPSwitch {
+  border-radius: 0;
+  border-color: var(--line-strong);
+}
+.VPSwitch .check {
+  border-radius: 0;
+  background: var(--hud-tint);
 }
 
-/* Sidebar + outline are chrome, so they are mono and uppercase-labelled. */
+/* ---- sidebar and outline: mono chrome, the active row lit on a --hud edge ---- */
 .VPSidebarItem .text,
 .VPDocOutlineItem a,
 .VPDocAsideOutline .outline-title {
   font-family: var(--font-mono);
 }
 .VPSidebarItem.level-0 > .item > .text {
-  font-size: 10.5px;
+  font: 600 var(--fs-micro) / 1.2 var(--font-display);
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--text-1);
 }
 .VPSidebarItem.is-active > .item .link .text {
-  color: var(--brand);
+  color: var(--hud-text);
+}
+.VPSidebarItem.is-active > .item .indicator {
+  background-color: var(--hud);
 }
 .VPDocAsideOutline .outline-title {
-  font-size: 9.5px;
-  letter-spacing: 0.18em;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.22em;
   text-transform: uppercase;
+  color: var(--text-3);
+}
+.VPDocAsideOutline .outline-marker {
+  background-color: var(--hud);
+}
+.VPDocAsideOutline .outline-link.active {
+  color: var(--hud-text);
 }
 
-/* Headings are HUD chrome: mono, uppercase, with the dashed rule the landing page uses. */
-.vp-doc h2 {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  letter-spacing: 0.2em;
+/* ---- headings: the display face; h2 sits on a hairline, h1 is the accent ---- */
+.vp-doc h1 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
-  border-top: 0;
-  border-bottom: 1px dashed var(--line-strong);
-  padding-bottom: 10px;
+  color: var(--accent-text);
+}
+.vp-doc h2 {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
+  padding-top: 14px;
   margin-top: 40px;
 }
-.vp-doc h1 {
-  font-family: var(--font-mono);
-  letter-spacing: 0.04em;
-}
 .vp-doc h3 {
-  font-family: var(--font-mono);
-  letter-spacing: 0.12em;
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: 0.08em;
 }
 
-/* Prose measure — long lines are the single biggest readability cost on a docs site. */
+/* Prose measure: long lines are the single biggest readability cost on a docs site. */
 .vp-doc p,
 .vp-doc li {
   max-width: 72ch;
   line-height: 1.7;
 }
 
-/* Tables: small-caps hairline heads, tabular numerics (design.md §4). */
+/* ---- tables: small-caps heads on a --hud rule, tabular numerics (design.md §4) ---- */
 .vp-doc th {
   font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.16em;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--text-3);
   background: transparent;
   border: 0;
-  border-bottom: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--hud-dim);
 }
 .vp-doc td {
   border: 0;
@@ -178,28 +255,436 @@
   border: 0;
 }
 
-/* Callouts read as HUD panels with an amber left edge, not coloured boxes. */
+/* ---- callouts: a status edge and a callsign title; colour only where it means status ---- */
 .custom-block {
-  border: 1px solid var(--line);
-  border-left: 2px solid var(--accent);
-  background: var(--glass);
+  --cb: var(--line-strong);
+  --cb-title: var(--text-1);
+  border: 0;
+  border-left: 2px solid var(--cb);
+  background: color-mix(in srgb, var(--cb) 7%, var(--bg-1));
 }
 .custom-block .custom-block-title {
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.18em;
+  font: 600 var(--fs-micro) / 1.2 var(--font-display);
+  letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: var(--brand);
+  color: var(--cb-title);
+}
+.custom-block.tip {
+  --cb: var(--status-draft);
+  --cb-title: color-mix(in srgb, var(--status-draft) 60%, var(--text-1));
+}
+.custom-block.info {
+  --cb: var(--hud-dim);
+  --cb-title: var(--hud-text);
+}
+.custom-block.warning {
+  --cb: var(--status-degraded);
+  --cb-title: var(--warn-text);
+}
+.custom-block.danger {
+  --cb: var(--status-down);
+  --cb-title: var(--danger-text);
+}
+.custom-block.details {
+  --cb: var(--line-strong);
+}
+.custom-block.details summary {
+  font: 600 var(--fs-micro) / 1.2 var(--font-display);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
 }
 
-/* Focus is a 2px accent reticle, never the UA ring (design.md §8). */
+/* ---- code: a chamfered well; code groups are tab rails ---- */
+.vp-doc div[class*="language-"] {
+  --c: var(--cut-sm);
+  clip-path: var(--nj-chamfer);
+  background: var(--surface-3, var(--bg-1));
+}
+.vp-doc :not(pre) > code {
+  border-radius: 0;
+}
+.vp-doc [class*="language-"] > span.lang {
+  font-family: var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.vp-code-group .tabs {
+  background: var(--bg-1);
+  box-shadow: inset 0 -1px 0 var(--line-strong);
+}
+.vp-code-group .tabs label {
+  font: 500 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.12em;
+  color: var(--text-3);
+}
+.vp-code-group .tabs label::after {
+  border-radius: 0;
+}
+.vp-code-group .tabs input:checked + label {
+  color: var(--hud-text);
+}
+.vp-code-group .tabs input:checked + label::after {
+  background-color: var(--hud);
+}
+
+/* ---- badges: square tags; colour only for status ---- */
+.VPBadge {
+  font-family: var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.VPBadge.tip {
+  border-color: var(--status-draft);
+  color: color-mix(in srgb, var(--status-draft) 60%, var(--text-1));
+  background: color-mix(in srgb, var(--status-draft) 12%, transparent);
+}
+.VPBadge.warning {
+  border-color: var(--status-degraded);
+  color: var(--warn-text);
+  background: color-mix(in srgb, var(--status-degraded) 12%, transparent);
+}
+.VPBadge.danger {
+  border-color: var(--status-down);
+  color: var(--danger-text);
+  background: color-mix(in srgb, var(--status-down) 12%, transparent);
+}
+.VPBadge.info {
+  border-color: var(--hud-dim);
+  color: var(--hud-text);
+  background: var(--hud-tint);
+}
+
+/* ---- buttons: plates with an inset focus ring ---- */
+.VPButton {
+  --c: 10px;
+  clip-path: var(--nj-chamfer);
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.VPButton:focus-visible,
+.DocSearch-Button:focus-visible {
+  outline: 2px solid var(--text-1);
+  outline-offset: -4px;
+}
+
+/* Focus elsewhere is a 2 px accent reticle, never the UA ring (design.md §8). */
 :where(a, button, input, summary, [tabindex]):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-/* Touch targets >=44px (design.md §8), enforced by e2e/geometry.spec.ts. Applied at the
-   breakpoint VitePress collapses the rails at, which is also BattleLab's single 800px (§5). */
+/* ---- the prev/next pager: chamfered plates with a callsign label ---- */
+.VPDocFooter .pager-link {
+  --c: var(--cut-sm);
+  clip-path: var(--nj-chamfer);
+  border: 0;
+  background: var(--bg-1);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+.VPDocFooter .pager-link:hover {
+  box-shadow: inset 0 0 0 1px var(--hud-dim);
+}
+.VPDocFooter .pager-link .desc {
+  font: 500 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.VPDocFooter .pager-link .title {
+  font: 600 14px/1.2 var(--font-display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}
+
+/* Footer stamp: the build provenance line (#828). Mono, tabular, quiet. */
+.VPDocFooter .stamp,
+.vp-doc .build-stamp {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* ---- the home hero: a chamfered panel on a lit rail, the atmosphere sweeping behind ---- */
+.VPHero .container {
+  --c: var(--cut);
+  position: relative;
+  padding: 30px;
+  clip-path: var(--nj-chamfer);
+  background: color-mix(in srgb, var(--bg-1) 92%, transparent);
+  box-shadow: inset 0 2px 0 var(--hud), inset 0 0 0 1px var(--hud-dim);
+  overflow: hidden;
+}
+/* The atmosphere's sweep band, behind the hero's words (transform only; Full motion only). */
+.VPHero .container::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 40%;
+  background: linear-gradient(180deg, transparent, var(--hud-tint), transparent);
+  pointer-events: none;
+  animation: docs-sweep 9s linear infinite;
+}
+@keyframes docs-sweep {
+  from { transform: translateY(-100%); }
+  to { transform: translateY(250%); }
+}
+/* The wordmark is chrome: the display face, tracked and uppercase. The line under it is a
+   SENTENCE, and uppercasing a sentence at hero scale turns the fold into a shout and costs three
+   extra lines on a phone, so it stays sentence-case at a readable size. */
+.VPHero .name,
+.VPHero .name .clip {
+  font-family: var(--font-display);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+  -webkit-text-fill-color: currentColor;
+  background: none;
+}
+.VPHero .text {
+  font-family: var(--font-display);
+  font-size: 22px;
+  line-height: 1.3;
+  letter-spacing: 0.03em;
+  color: var(--text-1);
+  max-width: 24ch;
+}
+@media (min-width: 960px) {
+  .VPHero .text {
+    font-size: 26px;
+  }
+}
+.VPHero .tagline {
+  font-family: var(--font-mono);
+  color: var(--text-2);
+}
+
+/* ---- feature cards: chamfered dossier cards ---- */
+.VPFeature {
+  --c: var(--cut);
+  clip-path: var(--nj-chamfer);
+  border: 0;
+  background: var(--bg-1);
+  box-shadow: inset 0 0 0 1px var(--hud-dim);
+}
+.VPFeature:hover,
+.VPFeature.link:hover {
+  box-shadow: inset 0 0 0 1px var(--hud);
+}
+/* The lit rail stub over each card, and an LED before its title (decoration). */
+.VPFeature {
+  position: relative;
+}
+.VPFeature::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: calc(var(--cut) + 2px);
+  width: 34%;
+  height: 2px;
+  background: var(--hud);
+}
+.VPFeature .title::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  vertical-align: 2px;
+  border-radius: 50%;
+  background: var(--hud);
+}
+.VPFeature .title {
+  font: 600 13px/1.2 var(--font-display);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.VPFeature .details {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.VPFeature .link-text {
+  font: 500 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+}
+
+/* ---- the phone drawer and local nav bar ---- */
+.VPNavScreen {
+  background-color: var(--bg-0);
+  border-top: 1px solid var(--hud-dim);
+}
+.VPNavScreenMenuLink,
+.VPNavScreenMenuGroup .button {
+  font: 500 12px/1 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.VPLocalNav {
+  background-color: var(--hud-nav-bg);
+  border-bottom: 1px solid var(--line);
+}
+
+/* ---- the local search modal: a chamfered panel that deploys in ---- */
+.VPLocalSearchBox .backdrop {
+  background: var(--scrim, color-mix(in srgb, var(--ground) 72%, transparent));
+}
+.VPLocalSearchBox .shell {
+  --c: var(--cut);
+  clip-path: var(--nj-chamfer);
+  background: var(--bg-1);
+  box-shadow: inset 0 2px 0 var(--hud), inset 0 0 0 1px var(--hud-dim);
+  animation: docs-deploy 180ms ease-out both;
+}
+@keyframes docs-deploy {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.VPLocalSearchBox .search-bar {
+  border-color: var(--hud-dim);
+  background: var(--bg-0);
+}
+.VPLocalSearchBox .search-input {
+  font-family: var(--font-mono);
+}
+.VPLocalSearchBox .result {
+  border-color: transparent;
+  background: transparent;
+}
+.VPLocalSearchBox .result.selected {
+  background: var(--hud-tint);
+  box-shadow: inset 2px 0 0 var(--hud);
+}
+.VPLocalSearchBox .result .titles,
+.VPLocalSearchBox .search-keyboard-shortcuts {
+  font-family: var(--font-mono);
+}
+.VPLocalSearchBox .result mark {
+  background: none;
+  color: var(--accent-text);
+  box-shadow: inset 0 -1px 0 var(--accent);
+}
+.VPLocalSearchBox .search-keyboard-shortcuts kbd {
+  border-radius: 0;
+}
+
+/* ---- hero emblem: the brand mark on a radar panel (the kit's mark, never recoloured) ---- */
+.VPHero .image-container {
+  --c: var(--cut);
+  clip-path: var(--nj-chamfer);
+  background: repeating-radial-gradient(circle, transparent 0 15px, var(--hud-faint) 15px 16px), var(--bg-1);
+  box-shadow: inset 0 0 0 1px var(--hud-dim);
+}
+.VPHero .image-bg {
+  display: none;
+}
+.VPHero .image-src {
+  max-width: 96px;
+  max-height: 96px;
+}
+
+/* ---- 404: the field manual's missing page on VitePress's NotFound ---- */
+.NotFound {
+  padding-top: 64px;
+}
+.NotFound > .code,
+.NotFound > .title,
+.NotFound > .divider,
+.NotFound > .quote,
+.NotFound > .action {
+  position: relative;
+}
+.NotFound {
+  --c: var(--cut);
+  width: min(560px, calc(100% - 32px));
+  margin: 8vh auto 48px;
+  padding: 28px 30px 30px;
+  clip-path: var(--nj-chamfer);
+  background: var(--bg-1);
+  box-shadow: inset 0 2px 0 var(--hud), inset 0 0 0 1px var(--hud-dim);
+  text-align: left;
+  position: relative;
+}
+.NotFound::before {
+  content: "Field manual // page missing";
+  display: block;
+  margin-bottom: 12px;
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+/* The radar in the corner: decoration only, still under reduced motion (it never moves). */
+.NotFound::after {
+  content: "";
+  position: absolute;
+  top: 22px;
+  right: 26px;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  border: 1px solid var(--hud-dim);
+  background: conic-gradient(from 0deg, var(--hud-tint), transparent 70deg),
+    repeating-radial-gradient(circle, transparent 0 13px, var(--hud-faint) 13px 14px);
+  pointer-events: none;
+}
+.NotFound .divider {
+  margin: 14px 0;
+  width: 64px;
+}
+.NotFound .quote {
+  max-width: none;
+  margin: 0;
+  padding-left: 12px;
+  border-left: 2px solid var(--line-strong);
+  font-size: 12px;
+}
+.NotFound .action {
+  padding-top: 20px;
+}
+/* (the 404 heading and code are styled below) */
+.NotFound .code {
+  font: 600 64px/1 var(--font-display);
+  letter-spacing: 0.08em;
+  color: var(--accent-text);
+}
+.NotFound .title {
+  font: 600 20px/1.2 var(--font-display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.NotFound .divider {
+  background-color: var(--hud-dim);
+}
+.NotFound .quote {
+  font-family: var(--font-mono);
+  color: var(--text-2);
+}
+.NotFound .link {
+  --c: 10px;
+  clip-path: var(--nj-chamfer);
+  border: 0;
+  border-radius: 0;
+  background: var(--accent);
+  color: var(--on-accent);
+  font: 600 12px/1 var(--font-display);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Touch targets >=44 px (design.md §8), enforced by e2e/geometry.spec.ts. Applied at the
+   breakpoint VitePress collapses the rails at, which is also BattleLab's single 800 px (§5). */
 @media (max-width: 800px) {
   .VPNavBarMenuLink,
   .VPSidebarItem .link,
@@ -207,7 +692,10 @@
   .VPButton,
   .VPNavBarHamburger,
   .VPLocalNavOutlineDropdown button,
-  /* The doc footer sits OUTSIDE .vp-doc, so the content rule above misses its links — and
+  .VPLocalNav .menu,
+  .VPNavScreenMenuLink,
+  .VPNavScreenMenuGroup .button,
+  /* The doc footer sits OUTSIDE .vp-doc, so the content rule above misses its links, and
      "Edit this page" plus prev/next are exactly the controls a phone reader reaches for. */
   .VPDocFooter .edit-link-button,
   .VPDocFooter .pager-link {
@@ -215,18 +703,17 @@
     display: inline-flex;
     align-items: center;
   }
-  /* Collapsible sidebar SECTION headers are not links, so the rule above misses them — but they
-     are the control you tap to open a section, and VitePress ships them at 32px. The caret is
-     part of the same target. */
+  /* Collapsible sidebar SECTION headers are not links, so the rule above misses them, but they
+     are the control you tap to open a section. The caret is part of the same target. */
   .VPSidebarItem > .item,
   .VPSidebarItem > .item > .caret {
     min-height: 44px;
     display: flex;
     align-items: center;
   }
-  /* Anchor links inside a paragraph must not become block-level rows — that would break the
-     sentence — so the hit area comes from padding. 14px, not 12: at the 16px line box a 12px
-     pad measures 43px, one pixel short, which the geometry test correctly refused. */
+  /* Anchor links inside a paragraph must not become block-level rows (that would break the
+     sentence), so the hit area comes from padding. 14 px, not 12: at the 16 px line box a 12 px
+     pad measures 43 px, one pixel short. */
   .vp-doc p a:not(.header-anchor),
   .vp-doc li a:not(.header-anchor),
   .vp-doc td a:not(.header-anchor) {
@@ -235,83 +722,89 @@
   }
 }
 
-/* The home hero: corner brackets, the landing page's signature frame. */
-.VPHero .container {
-  position: relative;
-  padding: 30px;
-  border: 1px solid var(--line);
-  background: var(--glass);
-}
-.VPHero .container::before,
-.VPHero .container::after {
-  content: "";
-  position: absolute;
-  width: 14px;
-  height: 14px;
-  border: 0 solid var(--accent);
-  pointer-events: none;
-}
-.VPHero .container::before {
-  top: -1px;
-  left: -1px;
-  border-top-width: 1.5px;
-  border-left-width: 1.5px;
-}
-.VPHero .container::after {
-  bottom: -1px;
-  right: -1px;
-  border-bottom-width: 1.5px;
-  border-right-width: 1.5px;
-}
-/* The wordmark is chrome — mono, tracked, uppercase. The line under it is a SENTENCE, and
-   uppercasing a sentence at hero scale turns the fold into a shout and costs three extra lines
-   of height on a phone. It stays sentence-case at a readable size. */
-.VPHero .name {
-  font-family: var(--font-mono);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-.VPHero .text {
-  font-family: var(--font-mono);
-  font-size: 22px;
-  line-height: 1.35;
-  letter-spacing: 0.06em;
-  color: var(--text-2);
-  max-width: 22ch;
-}
-@media (min-width: 960px) {
-  .VPHero .text {
-    font-size: 26px;
+/* ---- motion: reading pages never move; under reduced motion nothing does ---- */
+@media (prefers-reduced-motion: reduce) {
+  .VPHero .container::after,
+  .VPLocalSearchBox .shell {
+    animation: none;
   }
-}
-.VPFeature {
-  border: 1px solid var(--line);
-  background: var(--glass);
-}
-.VPFeature .title {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.17em;
-  text-transform: uppercase;
-}
-
-/* Footer stamp — the build provenance line (#828). Mono, tabular, quiet. */
-.VPDocFooter .stamp,
-.vp-doc .build-stamp {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-  font-size: 10px;
-  letter-spacing: 0.13em;
-  text-transform: uppercase;
-  color: var(--text-3);
+  .VPHero .container::after {
+    display: none;
+  }
 }
 
 /* A reference the public mirror does not carry (an export-ignored path inside a transcluded
    file). Rendered as text rather than a link, because a rewritten URL to a file the mirror
-   strips is a confidently-wrong 404 — worse than no link, since it looks authoritative. */
+   strips is a confidently-wrong 404: worse than no link, since it looks authoritative. */
 .vp-doc .internal-ref {
   font-family: var(--font-mono);
   color: var(--text-3);
   border-bottom: 1px dotted var(--line-strong);
   cursor: help;
+}
+
+/* ---- layout corrections over VitePress's defaults (#1597) ---- */
+/* The 404 card is a compact, left-aligned panel; VitePress centres every child and lets the
+   container grow. */
+.NotFound {
+  height: auto;
+  min-height: 0;
+  flex: none;
+  align-self: center;
+}
+.NotFound .code,
+.NotFound .title,
+.NotFound .quote,
+.NotFound::before {
+  text-align: left;
+}
+.NotFound .divider {
+  margin-left: 0;
+}
+.NotFound .action {
+  text-align: left;
+}
+/* The hero emblem is a desktop panel; a phone hero is the words and the actions, aligned like
+   the rest of the page (the v5 phone board has no emblem). */
+.VPHero .image-container {
+  width: 240px;
+  height: 240px;
+}
+@media (max-width: 959px) {
+  .VPHero .image {
+    display: none;
+  }
+  /* VitePress centres a hero that has an image with Vue-scoped `.VPHero.has-image …[data-v-…]`
+     rules, which outrank a plain class chain; these match them with more classes. */
+  .VPHero.has-image .container .main,
+  .VPHero.has-image .container .main .name,
+  .VPHero.has-image .container .main .text,
+  .VPHero.has-image .container .main .tagline {
+    text-align: left;
+    margin-left: 0;
+    margin-right: 0;
+  }
+  .VPHero.has-image .container .main .actions {
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+  .VPHero .tagline {
+    font-size: 14px;
+    line-height: 1.6;
+  }
+}
+@media (max-width: 800px) {
+  /* The radar steps in so the kicker beside it keeps its words. */
+  .NotFound {
+    padding: 24px 18px 26px;
+  }
+  .NotFound::before {
+    padding-right: 64px;
+  }
+  .NotFound::after {
+    width: 52px;
+    height: 52px;
+    top: 16px;
+    right: 16px;
+  }
 }

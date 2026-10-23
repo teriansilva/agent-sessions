@@ -4,6 +4,9 @@ hero:
   name: BattleLab
   text: Every feature, and the whole security model
   tagline: The self-hosted command deck for AI coding agents. This site is the repository's own documentation, rendered — built from the same filtered public snapshot that feeds the GitHub mirror, so it contains only content eligible for the public mirror.
+  image:
+    src: /logo-mark.svg
+    alt: ""
   actions:
     - theme: brand
       text: Install
