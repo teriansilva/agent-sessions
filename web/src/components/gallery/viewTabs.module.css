@@ -1,34 +1,40 @@
-/* Library view tabs (#1440): two underlined links on one rule. The accent marks the current view
- * (selection, not state); tokens only, no radius (docs/design.md §5, §9). */
+/* Library view tabs (#1440), on NIGHTJAR (#1574): mono caps on one rule, the current view
+ * underlined in the chrome (a selection, never the accent). Tokens only. */
 .tabs {
   display: flex;
-  gap: 4px;
-  margin: 12px 0 4px;
+  gap: var(--sp-1);
+  margin: var(--sp-3) 0 var(--sp-1);
   border-bottom: 1px solid var(--line);
 }
 .tabs .tab {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
-  padding: 0 14px;
+  padding: 0 var(--sp-3);
   margin-bottom: -1px;
   border-bottom: 2px solid transparent;
-  font-size: 13px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
   font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
   color: var(--text-2);
   text-decoration: none;
+  transition:
+    color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
 }
 .tabs .tab:hover {
   color: var(--text-1);
   background: var(--row-hover);
 }
 .tabs .tab[aria-current="page"] {
-  color: var(--text-1);
-  border-bottom-color: var(--accent);
+  color: var(--hud-text);
+  border-bottom-color: var(--hud);
 }
 .tabs .tab:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 @media (max-width: 800px) {
   .tabs .tab {
@@ -41,11 +47,11 @@
 .note {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin: 12px 0;
-  padding: 6px 6px 6px 14px;
+  gap: var(--sp-3);
+  margin: var(--sp-3) 0;
+  padding: 6px 6px 6px var(--sp-3);
   border-left: 2px solid var(--line-strong);
-  background: var(--surface-2);
+  background: var(--bg-2);
   color: var(--text-2);
   line-height: 1.6;
 }
@@ -69,6 +75,6 @@
   background: var(--row-hover);
 }
 .note button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }

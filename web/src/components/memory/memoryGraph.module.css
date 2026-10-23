@@ -1,24 +1,124 @@
-/* The Memory graph (#1441). Flat HUD cards: no radius, no gradient, tokens only. A note's TYPE is a
- * mono tag, never a status colour (docs/design.md §3: status hues mean state). */
-.canvas { position: relative; width: 100%; height: 100%; min-height: 420px; }
-.canvas :global(.react-flow__node) { border-radius: 0; }
-.canvas :global(.react-flow__controls-button) { width: 44px; height: 44px; box-sizing: border-box; background: var(--panel); border-color: var(--border); color: var(--text-2); fill: currentColor; }
-.note { width: 200px; padding: 8px 10px; display: flex; flex-direction: column; gap: 5px; background: var(--panel); border: 1px solid var(--border); color: var(--text-1); cursor: pointer; }
-.note[data-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 18px var(--accent-glow); }
-.tag { align-self: flex-start; padding: 1px 5px; font: 9.5px var(--font-mono); letter-spacing: .12em; color: var(--text-2); border: 1px solid var(--border); }
-.tag[data-type="decision"] { color: var(--badge-fg); background: var(--badge-bg); border-color: transparent; }
-.title { font-size: 12.5px; font-weight: 500; line-height: 1.3; overflow-wrap: anywhere; }
-.meta { font: 10px var(--font-mono); color: var(--text-2); }
-.session { padding: 6px 9px; display: flex; flex-direction: column; gap: 3px; background: var(--surface-2); border: 1px solid var(--border); cursor: pointer; }
-.engine { font: 11px var(--font-mono); display: inline-flex; align-items: center; gap: 6px; }
-.engine::before { content: ""; width: 8px; height: 8px; background: currentColor; flex-shrink: 0; }
-.kind { font: 9px var(--font-mono); letter-spacing: .14em; color: var(--text-2); }
+/* The Memory graph (#1441). NIGHTJAR (#1531 Phase 10, #1574): the canvas is themed by the shared
+ * `hud/reactFlow.css` (#1573) — Controls, handles, edges and the minimap come from there, so this
+ * sheet styles only the nodes and the legend. Flat cards: no radius, no gradient, tokens only.
+ * A note's TYPE is a mono tag, never a status colour (docs/design.md §3); a Decision is teal, so the
+ * page's only amber is the quarantine's (attention). */
+.canvas {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 420px;
+}
+.canvas :global(.react-flow__node) {
+  border-radius: 0;
+}
+.note {
+  width: 200px;
+  padding: var(--sp-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  color: var(--text-1);
+  cursor: pointer;
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.note:hover {
+  border-color: var(--hud-dim);
+}
+.note[data-selected="true"] {
+  border-color: var(--hud);
+  box-shadow: 0 0 0 1px var(--hud), var(--glow-rail);
+}
+.tag {
+  align-self: flex-start;
+  padding: 1px 5px;
+  font: 600 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  border: 1px solid var(--line-strong);
+}
+.tag[data-type="decision"] {
+  /* Mixed toward the theme's ink so the small mono text reads at WCAG AA on either ground. */
+  color: color-mix(in srgb, var(--engine-teal) 72%, var(--text-1));
+  border-color: color-mix(in srgb, var(--engine-teal) 55%, transparent);
+}
+.title {
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.meta {
+  font: 400 var(--fs-micro) / 1.3 var(--font-mono);
+  color: var(--text-2);
+}
+.session {
+  padding: var(--sp-1) var(--sp-2);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  cursor: pointer;
+}
+.engine {
+  font: 500 var(--fs-label) / 1.2 var(--font-mono);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+.engine::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.kind {
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.14em;
+  color: var(--text-2);
+}
 /* Bottom-left, with the zoom controls bottom-right: the two never meet, however narrow the canvas. */
-.legend { position: absolute; left: 12px; bottom: 12px; max-width: calc(100% - 96px); box-sizing: border-box; z-index: calc(var(--z-raised) + 4); display: flex; flex-wrap: wrap; gap: 14px; align-items: center; padding: 6px 10px; font-size: 11px; color: var(--text-2); background: var(--panel); border: 1px solid var(--border); }
-.legend span { display: inline-flex; align-items: center; gap: 6px; }
-.solid, .dashed { display: inline-block; width: 24px; border-top: 1.5px solid var(--text-2); }
-.dashed { border-top-style: dashed; }
-.dim { color: var(--text-2); }
+.legend {
+  position: absolute;
+  left: var(--sp-3);
+  bottom: var(--sp-3);
+  max-width: calc(100% - 96px);
+  box-sizing: border-box;
+  z-index: calc(var(--z-raised) + 4);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  align-items: center;
+  padding: var(--sp-1) var(--sp-2);
+  font: 400 var(--fs-label) / 1.4 var(--font-mono);
+  color: var(--text-2);
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+}
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+.solid,
+.dashed {
+  display: inline-block;
+  width: 24px;
+  border-top: 1.5px solid var(--text-2);
+}
+.dashed {
+  border-top-style: dashed;
+}
+.dim {
+  color: var(--text-2);
+}
 @media (max-width: 800px) {
-  .canvas { min-height: 360px; }
+  .canvas {
+    min-height: 360px;
+  }
 }

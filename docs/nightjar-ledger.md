@@ -43,7 +43,7 @@ the same list.
 | `components/ask/AskConsole.module.css` | css | 4 | done | popup:hq | answer word fade + caret, match-row arrival, portrait scan (Full, ambient), acquire bar |
 | `components/ask/AskHome.module.css` | css | 5 | done | route:dashboard route:dashboard-acquiring route:dashboard-recent popup:needs-you-details popup:recent-work | rows arrive (slide + tint flash), needs-you LEDs blink in Full (steady in Reduced/Off), first read Acquiring (scan bar) |
 | `components/ask/AskSidebar.module.css` | css | 4 | done | popup:hq | drawer slide-in + scrim (≤800px) |
-| `components/automations/automations.module.css` | css | 10 | todo |  |  |
+| `components/automations/automations.module.css` | css | 10 | done | route:automations route:automations-list popup:automation-menu route:automation-runs route:automation-editor popup:consent | segments and weekdays light in the chrome on a short colour fade; the run row lights its edge; no ambient motion (the counters are static readouts) |
 | `components/chat/ChatPane.module.css` | css | 6 | todo |  |  |
 | `components/chat/EditProposal.module.css` | css | 6 | todo |  |  |
 | `components/dashboard/Dashboard.module.css` | css | 5 | done | route:dashboard route:dashboard-acquiring route:dashboard-unread route:dashboard-recent | readouts flash on change (filter step), LEDs flash on a state change, new rows arrive (slide + tint flash), first read Acquiring (radar / scan bar), re-read keeps its data under the refresh bar (scan, static in Reduced/Off), Recent work grows its row (grid-rows) |
@@ -51,8 +51,8 @@ the same list.
 | `components/files/filePanel.module.css` | css | 7 | todo |  |  |
 | `components/files/mediaPreview.module.css` | css | 7 | todo |  |  |
 | `components/FolderPickerModal.module.css` | css | 3 | done | popup:folder-picker | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
-| `components/gallery/gallery.module.css` | css | 10 | todo |  |  |
-| `components/gallery/viewTabs.module.css` | css | 10 | todo |  |  |
+| `components/gallery/gallery.module.css` | css | 10 | done | route:skills route:skills-empty route:gallery-compare route:gallery-browse | gallery cards arrive once (slide + tint flash, Full); a file disclosure turns its chevron; the pressed segment lights in the chrome |
+| `components/gallery/viewTabs.module.css` | css | 10 | done | route:playbooks route:skills | the current tab underlines in the chrome on a short colour fade (no sliding marker: the tabs are links) |
 | `components/hq/HqContactGallery.module.css` | css | 11 | done | route:settings-hq-gallery | none of its own: the selection is an edge, never motion; portraits are posters off Full |
 | `components/hq/hq.module.css` | css | 4 | done | popup:hq | portrait loop (Full only, paused with the ambient pause) |
 | `components/hq/PrimaryContact.module.css` | css | 5 | done | route:dashboard route:dashboard-acquiring | plate edge lights on hover (no movement); the portrait's own loop is HqPortrait's |
@@ -62,17 +62,17 @@ the same list.
 | `components/hud/nightjar.css` | css | 2 | done | gallery:all | atmosphere, power-on, rail pulse, LED breathe/blink/flash, pips, gauge pulse, readout flash, seg/tab marker, disclosure, loaders, arrival, stream |
 | `components/links/HandoffStub.module.css` | css | 4 | done | popup:handoff-stub | none (a static notice) |
 | `components/links/OpenLinkDialog.module.css` | css | 3 | done | popup:open-link | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
-| `components/memory/agentAccess.module.css` | css | 10 | todo |  |  |
-| `components/memory/importCard.module.css` | css | 10 | todo |  |  |
-| `components/memory/memoryGraph.module.css` | css | 10 | todo |  |  |
+| `components/memory/agentAccess.module.css` | css | 10 | done | route:memory route:memory-off | the "for agents without the tool" disclosure fades open |
+| `components/memory/importCard.module.css` | css | 10 | done | route:memory route:memory-quarantine | the Acquiring bar on the first read and while an import runs |
+| `components/memory/memoryGraph.module.css` | css | 10 | done | route:memory-graph | none of its own (the shared React Flow theme, #1573); the selected note's edge lights |
 | `components/newSession/NewSessionControls.module.css` | css | 6 | todo |  |  |
 | `components/overview/overview.css` | css | 9 | done | route:map map:expanded map:folders-live map:chip-menu map:loading map:error map:empty map:empty-projects map:partial map:new-project-error map:group-error map:windows-refused map:toolbar-error map:empty-windows | radar sweep + crosshair drift (transform), live-edge data packets (transform/opacity), working-LED ping (decorative scale), minimap breathe (opacity) — Full only, compositor-only, paused with the page; chip hover tint transition |
 | `components/overview/sessionWindow.module.css` | css | 9 | done | map:windows map:window-files map:window-cap map:window-readonly | chrome-button hover tint transition (the window's deploy-in and flash live in the layer) |
 | `components/overview/windowLayer.module.css` | css | 9 | done | map:windows map:window-cap map:empty-windows | window deploy-in (fade only, on open and on restore), tray chip arrival, duplicate-open edge flash (opacity on a pseudo-element); the focused tether is lit, never animated |
-| `components/playbooks/playbookCanvas.module.css` | css | 10 | todo |  |  |
-| `components/playbooks/playbookEditor.module.css` | css | 10 | todo |  |  |
-| `components/playbooks/playbookPrompts.module.css` | css | 10 | todo |  |  |
-| `components/playbooks/playbooks.module.css` | css | 10 | todo |  |  |
+| `components/playbooks/playbookCanvas.module.css` | css | 10 | done | canvas:playbook-flow route:playbook-editor route:playbook-step | none: a playbook edge carries no live state, so nothing flows (#1573: motion only where a state is live); the rework path is static in --status-degraded |
+| `components/playbooks/playbookEditor.module.css` | css | 10 | done | route:playbook-editor route:playbook-step | fields light their edge on hover/focus (colour only); no ambient motion |
+| `components/playbooks/playbookPrompts.module.css` | css | 10 | done | route:playbook-step | fields light their edge on hover/focus (colour only); no ambient motion |
+| `components/playbooks/playbooks.module.css` | css | 10 | done | route:playbooks route:playbook-detail popup:playbook-delete canvas:playbook-flow | dossier cards arrive once (slide + tint flash, Full; at rest in Reduced/Off) |
 | `components/playbooks/ProjectPlaybook.module.css` | css | 10 | todo |  |  |
 | `components/plugins/PluginSetup.module.css` | css | 11 | done | route:agent-add | none of its own (the wizard rail is Phase 4's WizardShell) |
 | `components/ProjectColorPicker.module.css` | css | 10 | todo |  |  |
@@ -100,7 +100,7 @@ the same list.
 | `components/structured/Questions.module.css` | css | 6 | todo |  |  |
 | `components/structured/StructuredPane.module.css` | css | 6 | todo |  |  |
 | `components/templates/ConfirmDialog.module.css` | css | 3 | done | popup:confirm popup:git-confirm popup:playbook-delete | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
-| `components/templates/SuggestionsPanel.module.css` | css | 10 | todo |  |  |
+| `components/templates/SuggestionsPanel.module.css` | css | 10 | done | route:templates-suggestions | the cursor square blinks by opacity (steady in Reduced and Off) over the Acquiring bar; suggestion cards arrive once |
 | `components/templates/TemplatePickerModal.module.css` | css | 3 | done | popup:template-picker | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/Compose.module.css` | css | 6 | done | route:session-compose route:session-pane popup:keybar | Talk recording: mic glyph opacity step (Full only), key menu appear / ≤800px sheet-up, Send glitch (.shine) |
 | `components/terminal/HandoffModal.module.css` | css | 3 | done | popup:hand-off | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
@@ -118,7 +118,7 @@ the same list.
 | `routes/Appearance.module.css` | css | 11 | todo |  |  |
 | `routes/Ask.module.css` | css | 4 | done | popup:hq | none (layout) |
 | `routes/Checklists.module.css` | css | 8 | done | route:checklists route:checklists-list route:checklists-editor popup:checklists-leave | step form fades open (Reduced: 120 ms fade; Off: none), plate and row hover tints |
-| `routes/Memory.module.css` | css | 10 | todo |  |  |
+| `routes/Memory.module.css` | css | 10 | done | route:memory route:memory-graph route:memory-quarantine route:memory-off route:memory-acquiring popup:memory-erase | the View / view-tab marker slides; the memory switch's knob slides; the list and inspector fade in; the first read is Acquiring, then skeleton rows |
 | `routes/NewProject.module.css` | css | 10 | todo |  |  |
 | `routes/NewSessionLanding.module.css` | css | 6 | todo |  |  |
 | `routes/NightjarGallery.module.css` | css | 2 | done | gallery:all | none (layout) |
@@ -126,8 +126,8 @@ the same list.
 | `routes/ProjectsManager.module.css` | css | 11 | todo |  |  |
 | `routes/Pulse.module.css` | css | 8 | done | route:mission route:mission-overview-error route:mission-health | none of its own: the route heading and its error line are static |
 | `routes/Settings.module.css` | css | 11 | todo |  |  |
-| `routes/Templates.module.css` | css | 10 | todo |  |  |
-| `routes/Variables.module.css` | css | 10 | todo |  |  |
+| `routes/Templates.module.css` | css | 10 | done | route:templates route:templates-suggestions route:template-editor popup:template-delete | the tabs' marker slides under the open tab and the panel cross-fades; dossier cards arrive once; chips and fields light their edge |
+| `routes/Variables.module.css` | css | 10 | done | route:variables route:variables-form | the rail's selection tints in; the Advanced disclosure fades open |
 | `homefree/connect.css` | css | 12 | done | connect:signed-out connect:verified connect:dialog connect:connecting connect:error connect:connected | atmosphere (Full, dark), radar + acquire bar while connecting, step LEDs, session LED breathe / warn blink, gate meter (state, every mode) |
 | `share/ShareViewer.module.css` | css | 12 | done | share:loading share:password share:password-error share:password-wait share:unavailable share:relink share:nocookie share:offline share:terminal share:open | atmosphere (Full, dark), radar while opening, working bars (Full only), button glitch on press |
 | `theme/fonts.css` | css | 1 | done | gallery:all | none (font faces) |

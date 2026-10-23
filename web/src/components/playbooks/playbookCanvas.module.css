@@ -1,12 +1,17 @@
+/* The playbook flowchart (NIGHTJAR #1531 Phase 10, #1574). React Flow's own theming (Controls,
+ * MiniMap, handles, edges) is the shared `hud/reactFlow.css` (#1573); this sheet draws the step
+ * nodes (clipped panels with a mono step line), the rework path's label in the degraded edge and
+ * the canvas toolbar. Edges carry no live state here, so nothing flows (#1573: motion only where a
+ * state is live). Tokens only (nightjarLedger.test.ts). */
 .root {
   min-width: 0;
 }
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
-  padding: 10px 0;
+  padding: var(--sp-2) 0;
 }
 .toolbar button {
   min-height: 44px;
@@ -18,42 +23,52 @@
   border: 1px solid var(--line-strong);
   background: var(--bg-0);
 }
+/* A step: the small clipped panel, its lit top edge, its edge the accent when selected. */
 .node {
+  composes: nj-frame-sm from global;
+  --nj-edge: var(--line-strong);
   width: 224px;
   min-height: 136px;
-  padding: 14px 18px;
-  border: 1px solid var(--line-strong);
-  background: var(--bg-1);
+  padding: var(--sp-3) var(--sp-4);
+  border-top-color: var(--hud-dim);
   color: var(--text-1);
   overflow-wrap: anywhere;
 }
 .node[data-selected="true"] {
-  border-color: var(--accent);
-  outline: 1px solid var(--accent);
+  --nj-edge: var(--accent);
+  border-top-color: var(--accent);
 }
 .node strong {
   display: block;
-  font-size: 14px;
+  font-family: var(--font-display);
+  font-size: var(--fs-body);
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 .id,
 .meta {
   display: block;
-  font: 11px var(--font-mono);
-  color: var(--text-2);
-  margin: 8px 0;
+  margin: var(--sp-2) 0;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
+/* The rework path's label: on the degraded edge it labels. */
 .edgeLabel {
   position: absolute;
   max-width: 260px;
-  padding: 4px 8px;
-  border: 1px dashed var(--line-strong);
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px dashed var(--status-degraded);
   background: var(--bg-0);
-  color: var(--text-2);
-  font: 11px var(--font-mono);
+  color: var(--warn-text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
   overflow-wrap: anywhere;
 }
 .hint {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1.6;
   color: var(--text-2);
 }
@@ -75,7 +90,7 @@
   height: 1px;
 }
 .root :global(.react-flow__node:focus-visible) {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: 4px;
 }
 .root :global(.react-flow__edge.selected .react-flow__edge-path) {

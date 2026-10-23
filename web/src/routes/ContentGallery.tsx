@@ -37,7 +37,6 @@ import type {
 } from "../types/gallery";
 import { usePlaybookRead } from "../components/playbooks/usePlaybooks";
 import { PlaybookDialog } from "../components/playbooks/PlaybookDialog";
-import { HudFrame } from "../components/hud/HudFrame";
 import {
   Fact,
   FileRow,
@@ -215,9 +214,9 @@ export default function ContentGallery() {
   const settled = !gallery.loading && !gallery.checking;
   return (
     <main className={styles.page} data-testid="content-gallery">
-      <HudFrame hero />
-      <div className={styles.kicker}>
-        Library // {NOUN[kind]} // gallery
+      <div className={`nj-kicker ${styles.kicker}`}>
+        <span className="nj-notch" aria-hidden="true" />
+        Library // {NOUN[kind]} // <b>gallery</b>
         {!digest && gallery.data ? ` // ${mine.length}` : ""}
       </div>
       {!digest && (
@@ -319,8 +318,10 @@ export default function ContentGallery() {
           <div className={styles.grid}>
             {matches.map((e) => (
               <article className={styles.card} key={e.digest}>
-                <div className={styles.tag}>
-                  <KindIcon kind={e.content.kind} />v{e.content.version}
+                <div className={`${styles.tag} ${styles.stamp}`}>
+                  <KindIcon kind={e.content.kind} />
+                  Gallery
+                  <span className={styles.stampId}>v{e.content.version}</span>
                 </div>
                 <h2>{e.content.title}</h2>
                 <p>{e.content.summary}</p>

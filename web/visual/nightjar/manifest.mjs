@@ -611,8 +611,135 @@ export const SWEEP = [
   { id: "route:templates", path: "/templates" },
   { id: "route:playbooks", path: "/library/playbooks" },
   { id: "route:skills", path: "/library/skills" },
-  { id: "route:memory", path: "/library/memory" },
-  { id: "route:variables", path: "/library/variables" },
+  { id: "route:memory", path: "/library/memory", mock: { memory: true }, present: "[role='group'][aria-label='Project orbital-api']" },
+  { id: "route:variables", path: "/library/variables", mock: { variables: true }, present: "article[aria-label='deploy_token']" },
+  // ---- PR4b library A ---- (#1574 Phase 10: templates, variables, memory)
+  // Suggestions on demand: the analysed result, its dossier cards and the withheld note.
+  {
+    id: "route:templates-suggestions",
+    path: "/templates",
+    mock: { suggestions: true },
+    open: [{ role: "tab", name: /Suggested/ }],
+    present: "[data-suggestion]",
+  },
+  // The editor: fields, the {{variable}} list, tags and the image strip.
+  { id: "route:template-editor", path: "/templates/tpl_review", present: "fieldset textarea" },
+  // Delete sits behind the Phase 3 confirm, the danger plate naming the thing.
+  {
+    id: "popup:template-delete",
+    path: "/templates",
+    open: [{ role: "button", name: "Delete Security review" }],
+    expect: "dialog",
+  },
+  // The variable form: a secret's edit form with its Advanced disclosure open.
+  {
+    id: "route:variables-form",
+    path: "/library/variables",
+    mock: { variables: true },
+    open: [{ role: "button", name: "Edit deploy_token" }, { css: "form details summary" }],
+    present: "form details[open]",
+  },
+  // Memory as a graph: the shared React Flow theme (#1573) with the page's legend.
+  {
+    id: "route:memory-graph",
+    path: "/library/memory",
+    mock: { memory: true },
+    open: [{ role: "button", name: "Graph" }],
+    openPhone: [{ role: "tab", name: "Graph" }],
+    present: ".react-flow__node",
+  },
+  // Quarantine: the amber edge (the page's only amber), with Release and Delete.
+  {
+    id: "route:memory-quarantine",
+    path: "/library/memory",
+    mock: { memory: true },
+    openPhone: [{ role: "tab", name: /Trays/ }],
+    present: "[aria-label='Quarantined deploy-notes.md']",
+  },
+  // Memory off: the quiet frame with the switch to turn it on.
+  {
+    id: "route:memory-off",
+    path: "/library/memory",
+    mock: { memory: true, memoryOff: true },
+    present: "button:has-text('Turn memory on')",
+  },
+  // The first read: Acquiring, in words.
+  {
+    id: "route:memory-acquiring",
+    path: "/library/memory",
+    mock: { memory: true },
+    holdAsset: "/api/memory(\\?|$)",
+    present: "[data-testid='memory-acquiring']",
+  },
+  // Clear behind the type-the-name confirm.
+  {
+    id: "popup:memory-erase",
+    path: "/library/memory",
+    mock: { memory: true },
+    open: [{ role: "button", name: "Clear…" }],
+    expect: "dialog",
+  },
+  // ---- /PR4b library A ----
+  // ---- PR4b library B ---- (#1574 Phase 10: automations, playbooks, skills and the gallery)
+  // The list with three automations (an enabled one, one waiting for consent, one off): counter
+  // tiles, LED rows, the consent row on its degraded edge.
+  {
+    id: "route:automations-list",
+    path: "/mission/automations",
+    mock: { automationsShowcase: true },
+    present: "[data-testid='automation-row']",
+  },
+  // The row ⋯ menu: anchored on a desktop, a sheet on a phone (Phase 3 chrome).
+  {
+    id: "popup:automation-menu",
+    path: "/mission/automations",
+    mock: { automationsShowcase: true },
+    open: [{ css: "[data-testid='automation-row'][data-id='a-nightly-audit'] [data-testid='automation-more']" }],
+    present: "[data-testid='automation-menu']",
+  },
+  // One automation's runs: the list and a failed run's detail with its timeline.
+  {
+    id: "route:automation-runs",
+    path: "/mission/automations/a-nightly-audit?run=run-26",
+    mock: { automationsShowcase: true },
+    present: "[data-testid='run-detail']",
+  },
+  // The editor on a weekly session: segments, the weekday group, square fields.
+  {
+    id: "route:automation-editor",
+    path: "/mission/automations/a-release-notes/edit",
+    mock: { automationsShowcase: true },
+    present: "[data-testid='editor-fields']",
+  },
+  // A playbook's detail: callsign sections, the flow (canvas on a desktop, the list on a phone),
+  // the stamps and the actions.
+  { id: "route:playbook-detail", path: "/library/playbooks/ship-it", present: "h1" },
+  // The editor: the page around the canvas and the step inspector.
+  { id: "route:playbook-editor", path: "/library/playbooks/ship-it/edit", present: "h1" },
+  // A step selected: the inspector with its fields, completion rules and prompts.
+  {
+    id: "route:playbook-step",
+    path: "/library/playbooks/ship-it/edit",
+    open: [{ css: ".react-flow__node" }],
+    present: "text=Prompts follow the step instructions",
+  },
+  // Review update: the three-way compare of a local skill behind the gallery's newer version.
+  {
+    id: "route:gallery-compare",
+    path: "/library/gallery/skills/" + "a".repeat(64) + "?update=my-skill",
+    mock: { galleryCompare: true },
+    present: "[aria-label^='Versions of']",
+  },
+  // The gallery's browse page: three skills as dossier cards (board G1).
+  {
+    id: "route:gallery-browse",
+    path: "/library/gallery/skills",
+    mock: { galleryShowcase: true },
+    present: "[data-testid='content-gallery'] article",
+  },
+  // Skills with nothing saved yet: the empty state (`route:skills` is the same page, unpinned).
+  { id: "route:skills-empty", path: "/library/skills", present: "h2:has-text('No skills yet')" },
+  // ---- /PR4b library B ----
   { id: "route:new-project", path: "/projects/new" },
   { id: "route:settings-interface", path: "/settings/appearance" },
   // ---- PR4b settings A ---- (#1574 Phase 11: the shell, Appearance and AI pages)

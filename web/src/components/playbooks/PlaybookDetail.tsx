@@ -134,7 +134,7 @@ export function PlaybookDetailPage({ id }: { id: string }) {
         <>
           <div className={styles.header}>
             <div>
-              <div className={styles.kicker}>Library // playbooks</div>
+              <div className={`nj-kicker ${styles.kicker}`}><span className="nj-notch" aria-hidden="true" />Library // <b>playbooks</b></div>
               <h1>{pb.name || pb.id}</h1>
               <PlaybookSource card={pb} />
             </div>

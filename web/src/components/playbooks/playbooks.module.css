@@ -1,9 +1,13 @@
+/* Library → Playbooks: the list, the detail and the fleet (NIGHTJAR #1531 Phase 10, #1574). Dossier
+ * cards are clipped panels (`nj-frame-sm`) that arrive once; section headings carry the callsign
+ * notch; fields are square `nj-field`s; tags are mono stamps. Tokens only (nightjarLedger.test.ts).
+ * The card is shared with the New project wizard (#1537's), which therefore wears the same look. */
 .page {
   position: relative;
   height: 100%;
   min-height: 0;
   overflow: auto;
-  padding: 24px;
+  padding: var(--sp-5);
   color: var(--text-1);
   overflow-wrap: anywhere;
 }
@@ -12,112 +16,239 @@
   box-sizing: border-box;
   min-width: 0;
 }
+/* The page title (`nj-h1`'s voice): display caps in the chrome's ink. */
 .page h1 {
-  margin: 8px 0 12px;
-  font-size: 24px;
+  margin: var(--sp-2) 0 var(--sp-3);
+  font-family: var(--font-display);
+  font-size: var(--fs-h1);
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--hud-text);
 }
 .page h2 {
-  font-size: 15px;
-  margin: 0 0 12px;
+  margin: 0 0 var(--sp-3);
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 .page p {
   color: var(--text-2);
   line-height: 1.6;
-  margin: 8px 0;
+  margin: var(--sp-2) 0;
 }
 .page code,
 .review code {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-meta);
 }
+/* The section's breadcrumb, in the Library's voice: `LIBRARY // PLAYBOOKS`. */
 .kicker {
-  font: 11px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.22em;
   text-transform: uppercase;
-  letter-spacing: 0.13em;
-  color: var(--text-2);
+  color: var(--text-3);
 }
 .intro {
-  max-width: 780px;
+  max-width: 72ch;
 }
 .filters {
   display: flex;
   flex-wrap: wrap;
   align-items: end;
-  gap: 12px;
-  margin: 24px 0;
+  gap: var(--sp-3);
+  margin: var(--sp-5) 0;
 }
 .filters label {
   display: grid;
   gap: 6px;
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
 }
 .filters label:first-child {
   flex: 1 1 280px;
 }
+/* The square field (`nj-field`'s look; an input cannot compose a class it does not wear). */
 .filters input,
 .filters select {
   width: 100%;
   min-height: 44px;
-  padding: 8px 12px;
+  padding: var(--sp-2) var(--sp-3);
   background: var(--bg-2);
   border: 1px solid var(--border);
-  color: var(--text-1);
   border-radius: 0;
+  color: var(--text-1);
+  font-family: inherit;
+  font-size: var(--fs-body);
+  letter-spacing: normal;
+  text-transform: none;
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.filters input:hover,
+.filters select:hover {
+  border-color: var(--hud-dim);
+}
+.filters input:focus-visible,
+.filters select:focus-visible {
+  border-color: var(--hud);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
 }
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
-  gap: 16px;
+  gap: var(--sp-4);
   align-items: stretch;
 }
+/* A dossier card: the clipped panel, a quiet edge until hovered, and one arrival (Full; Reduced and
+ * Off show it at rest). */
 .card {
+  composes: nj-frame nj-arrive from global;
+  --nj-edge: var(--hud-dim);
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 18px;
-  border: 1px solid var(--line-strong);
-  background: var(--bg-1);
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  border-top-width: 1px;
+  border-top-color: var(--nj-edge);
+}
+/* The short lit rail of a dossier card (#1574 board B1). */
+.card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: calc(var(--cut) + 2px);
+  width: 34%;
+  height: 2px;
+  background: var(--hud);
+  box-shadow: var(--glow-rail);
+  pointer-events: none;
+}
+.card:hover {
+  --nj-edge: var(--hud);
+  --nj-face: color-mix(in srgb, var(--hud) 6%, var(--bg-1));
+}
+.dh {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font: 500 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.did {
+  margin-left: auto;
+  color: var(--hud-text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+/* The dashed New card. */
+.newCard {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: var(--sp-2);
+  min-height: 200px;
+  padding: var(--sp-4);
+  border: 1px dashed var(--line-strong);
+  color: var(--text-2);
+  text-align: center;
+  text-decoration: none;
+  transition: border-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
+}
+.newCard svg {
+  color: var(--hud-text);
+}
+.newCard:hover,
+.newCard:focus-visible {
+  border-color: var(--hud);
+  color: var(--text-1);
+}
+.newCard:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.newTitle {
+  font: 600 var(--fs-title) / 1.25 var(--font-display);
+  color: var(--text-1);
+}
+.newHint {
+  font-size: var(--fs-meta);
+  line-height: 1.45;
 }
 .card h2 {
-  font-size: 17px;
   margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 .card .actions {
   margin-top: auto;
-  padding-top: 12px;
+  padding-top: var(--sp-3);
 }
 .tags {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
   align-items: center;
-  color: var(--text-2);
-  font: 10px var(--font-mono);
-}
-.badge {
-  padding: 3px 6px;
-  border: 1px solid var(--line-strong);
-  font: 11px var(--font-mono);
-}
-.defaultTag {
-  padding: 4px 6px;
-  color: var(--on-accent);
-  background: var(--accent);
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
   text-transform: uppercase;
 }
+/* A mono stamp: the source, the version, an actor that is not an agent. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 6px;
+  border: 1px solid var(--line-strong);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.defaultTag {
+  padding: 3px 6px;
+  color: var(--on-accent);
+  background: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+/* The flow: a quiet inset with the steps as a numbered mono list. */
 .flow {
-  background: var(--surface-3);
-  padding: 12px;
-  margin: 4px 0;
+  margin: var(--sp-1) 0;
+  padding: var(--sp-3);
+  border-left: 2px solid var(--hud-dim);
+  background: var(--bg-2);
 }
 .flow ol {
-  padding-left: 20px;
-  margin-bottom: 0;
+  margin: var(--sp-2) 0 0;
+  padding-left: var(--sp-5);
 }
 .flow li {
-  margin: 12px 0;
-  font-size: 13px;
+  margin: var(--sp-2) 0;
+  font-size: var(--fs-row);
 }
+.flow li::marker {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+}
+/* An agent actor: its engine colour on the left edge (inline), name and model in mono. */
 .actor {
   display: inline-flex;
   flex-wrap: wrap;
@@ -126,22 +257,26 @@
   padding: 3px 6px;
   border: 1px solid var(--line-strong);
   border-left-width: 3px;
-  background: var(--bg-2);
-  font-size: 12px;
+  background: var(--bg-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
 }
 .flow .actor,
 .flow .badge {
-  margin: 4px 0 0 6px;
+  margin: var(--sp-1) 0 0 6px;
 }
 .counts {
-  padding-top: 8px;
+  padding-top: var(--sp-2);
   border-top: 1px solid var(--line);
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.06em;
+  color: var(--text-3);
 }
 .actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--sp-2);
   align-items: center;
 }
 .actions a {
@@ -151,78 +286,120 @@
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--sp-4);
   align-items: center;
-  margin-bottom: 16px;
+  margin-bottom: var(--sp-4);
 }
 .back {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
+  margin-bottom: var(--sp-3);
   color: var(--accent-text);
-  margin-bottom: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.back:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .detailGrid {
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-  gap: 28px;
-  margin-top: 24px;
+  gap: var(--sp-6);
+  margin-top: var(--sp-5);
 }
 .section {
-  margin: 24px 0;
+  margin: var(--sp-5) 0;
 }
+/* A section's callsign: the hazard notch, then the mono title. */
 .section > h2 {
-  font: 12px var(--font-mono);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  color: var(--text-1);
+}
+.section > h2::before {
+  content: "";
+  flex: none;
+  width: 22px;
+  height: 10px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.85;
 }
 .stepList {
   padding: 0;
   list-style-position: inside;
 }
 .stepList li {
-  border-left: 2px solid var(--line-strong);
-  padding: 12px 16px;
-  margin: 8px 0;
+  margin: var(--sp-2) 0;
+  padding: var(--sp-3) var(--sp-4);
+  border-left: 2px solid var(--hud-dim);
   background: var(--bg-1);
+  font-size: var(--fs-row);
 }
 .stepList li > div {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--sp-2);
 }
 .section dl > div {
   border-bottom: 1px solid var(--line);
-  padding: 10px 0;
+  padding: var(--sp-2) 0;
+}
+.section dt {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
 }
 .section dd {
   margin: 6px 0 0;
   color: var(--text-2);
 }
 .section ul {
-  padding-left: 18px;
+  padding-left: var(--sp-4);
   line-height: 1.8;
 }
 .page pre,
 .review pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font: 12px/1.6 var(--font-mono);
-  padding: 12px;
-  background: var(--surface-3);
   max-width: 100%;
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.6;
 }
+/* A file disclosure: the mono label row with the chevron the browser draws. */
 .page summary {
   min-height: 44px;
-  cursor: pointer;
-  padding: 12px 0;
+  padding: var(--sp-3) 0;
   border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: var(--fs-row);
+  cursor: pointer;
+}
+.page summary:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .markdown h1,
 .markdown h2 {
-  font-size: 17px;
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
 }
 .fleet {
   border-top: 1px solid var(--line-strong);
@@ -230,10 +407,11 @@
 .project {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-  gap: 18px;
+  gap: var(--sp-4);
   align-items: center;
   border-bottom: 1px solid var(--line);
-  padding: 16px 0;
+  padding: var(--sp-4) 0;
+  font-size: var(--fs-row);
 }
 .good,
 .page .good {
@@ -244,27 +422,33 @@
   color: var(--warn-text);
 }
 .error {
-  color: var(--danger-text);
-  padding: 12px 0;
+  composes: nj-error from global;
+  margin: var(--sp-2) 0;
+  padding: var(--sp-2) var(--sp-3);
 }
 .error button {
-  margin: 8px;
+  margin: var(--sp-2);
 }
+/* A card that could not be loaded: the failed edge. */
 .invalid {
-  border-color: var(--status-down);
+  --nj-edge: color-mix(in srgb, var(--status-down) 60%, transparent);
+  border-top-color: var(--status-down);
 }
 .empty {
-  padding: 24px 0;
+  padding: var(--sp-5) 0;
 }
 .review {
   overflow-wrap: anywhere;
 }
 .review section {
-  padding: 12px 0;
+  padding: var(--sp-3) 0;
   border-top: 1px solid var(--line-strong);
 }
 .review h3 {
-  margin: 8px 0;
+  margin: var(--sp-2) 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-row);
+  font-weight: 600;
 }
 /* PlaybookDialog (#1531): a native <dialog> on THE dialog chrome (../HudDialog.module.css, composed
  * by the component); these rules place it, give it the scrim and size its scrolling body. */
@@ -292,7 +476,7 @@
     width: calc(100% - 20px);
   }
   .page {
-    padding: 16px;
+    padding: var(--sp-4);
   }
   .detailGrid {
     grid-template-columns: minmax(0, 1fr);
@@ -300,7 +484,7 @@
   }
   .project {
     grid-template-columns: minmax(0, 1fr);
-    gap: 4px;
+    gap: var(--sp-1);
   }
   .filters label {
     flex: 1 1 120px;

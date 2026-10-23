@@ -12,7 +12,6 @@ import { useCallback, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Ellipsis, Plus } from "lucide-react";
 
-import { HudFrame } from "../components/hud/HudFrame";
 import { AnchoredMenu } from "../components/ui/AnchoredMenu";
 import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import { MissionRailOnly } from "../components/automations/MissionRailOnly";
@@ -239,10 +238,9 @@ export default function Automations() {
       <MissionRailOnly />
       <div className={styles.stack}>
         <section className={styles.panel} aria-labelledby="automations-title">
-          <HudFrame />
           <div className={styles.head}>
             <div className={styles.headText}>
-              <span className={styles.kicker}>Library // Automations</span>
+              <span className={`nj-kicker ${styles.kicker}`}><span className="nj-notch" aria-hidden="true" />Library // <b>Automations</b></span>
               <h1 id="automations-title" className={styles.title}>
                 Automations
               </h1>
@@ -435,7 +433,6 @@ export default function Automations() {
 
         {waiting.length > 0 && (
           <section className={styles.panel} aria-labelledby="why-title" data-testid="why-not-running">
-            <HudFrame />
             <h2 id="why-title" className={styles.panelTitle}>
               Why is something not running?
             </h2>

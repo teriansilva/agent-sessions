@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { Copy, Pencil, Plus, Search, Send, Trash2 } from "lucide-react";
+import { Copy, FileText, Pencil, Plus, Search, Send, Trash2 } from "lucide-react";
 import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import { SessionChooserModal } from "../components/templates/SessionChooserModal";
 import { UploadImage } from "../components/templates/UploadImage";
@@ -99,6 +99,11 @@ export default function Templates() {
   // A tag filter that no longer exists (its last template was deleted) is dropped.
   const effTag = tag && tagCounts.some(([g]) => g === tag) ? tag : null;
 
+  // A template's place in the library (last used first), for the dossier's stamp line.
+  const ordinal = useMemo(
+    () => new Map((templates ?? []).map((t, i) => [t.id, i + 1] as const)),
+    [templates],
+  );
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     return (templates ?? []).filter((t) => (!effTag || t.tags.includes(effTag)) && matches(t, q));
@@ -181,7 +186,13 @@ export default function Templates() {
   return (
     <div className={styles.page}>
       <header className={styles.head}>
-        <div className={styles.headLeft}>
+        <div className={styles.headStack}>
+          {/* The board's page head (#1574): the notch kicker names the section above the title. */}
+          <p className={`nj-kicker ${styles.kicker}`}>
+            <span className="nj-notch" aria-hidden="true" />
+            Library // <b>Prompt templates</b>
+          </p>
+          <div className={styles.titleRow}>
           <h1 className={styles.h1}>Prompt Templates</h1>
           <span className={styles.sl} aria-hidden="true">
             //
@@ -197,6 +208,7 @@ export default function Templates() {
               <span className={styles.meta}>sorted by last use</span>
             </>
           )}
+          </div>
         </div>
         <div className={styles.headRight}>
           <Link to="/templates/new" className={styles.cta}>
@@ -231,7 +243,8 @@ export default function Templates() {
         </button>
       </div>
 
-      <div id="tpl-tabpanel" role="tabpanel" aria-labelledby={`tpl-tab-${tab}`}>
+      {/* Keyed by the open tab, so a switch cross-fades the panel in (#1574). */}
+      <div key={tab} id="tpl-tabpanel" className={styles.tabPanel} role="tabpanel" aria-labelledby={`tpl-tab-${tab}`}>
         {tab === "suggested" ? (
           <SuggestionsPanel
             onCountChange={setSuggestedCount}
@@ -341,26 +354,29 @@ export default function Templates() {
               <ul className={styles.cards} aria-label="Templates">
                 {visible.map((t) => (
                   <li key={t.id} className={styles.card} data-template-id={t.id}>
+                    {/* The dossier's stamp line (#1574 board L1): kind, then the template's place
+                        in the library (the list's order, last used first). */}
+                    <div className={styles.dh} aria-hidden="true">
+                      <FileText size={13} />
+                      Template
+                      <span className={styles.did}>T-{String(ordinal.get(t.id) ?? 0).padStart(2, "0")}</span>
+                    </div>
+                    {t.images.length > 0 && (
                     <div className={styles.thumb}>
-                      {t.images[0] ? (
-                        <UploadImage
-                          path={t.images[0].path}
-                          alt=""
-                          fallback={
-                            <span className={styles.glyph} aria-hidden="true">
-                              &gt;_
-                            </span>
-                          }
-                        />
-                      ) : (
-                        <span className={styles.glyph} aria-hidden="true">
-                          &gt;_
-                        </span>
-                      )}
+                      <UploadImage
+                        path={t.images[0].path}
+                        alt=""
+                        fallback={
+                          <span className={styles.glyph} aria-hidden="true">
+                            &gt;_
+                          </span>
+                        }
+                      />
                       {t.images.length > 0 && (
                         <span className={styles.thumbN}>{t.images.length} img</span>
                       )}
                     </div>
+                    )}
                     <div className={styles.cbody}>
                       <h2 className={styles.cname}>
                         <Link to={`/templates/${encodeURIComponent(t.id)}`}>{t.name}</Link>
@@ -380,7 +396,7 @@ export default function Templates() {
                     <div className={styles.acts}>
                       <button
                         type="button"
-                        className={`${styles.act} ${styles.actUse}`}
+                        className={styles.actUse}
                         aria-label={`Use ${t.name}`}
                         onClick={(e) => setChooser({ t, returnTo: e.currentTarget })}
                       >
@@ -395,29 +411,40 @@ export default function Templates() {
                         <Pencil size={13} aria-hidden="true" />
                         Edit
                       </Link>
+                      {/* Duplicate and Delete are the board's icon plates; the name stays the
+                          accessible label and the title says it on hover. */}
                       <button
                         type="button"
-                        className={styles.act}
+                        className={styles.actIcon}
                         aria-label={`Duplicate ${t.name}`}
+                        title="Duplicate"
                         disabled={busy}
                         onClick={() => void duplicate(t)}
                       >
-                        <Copy size={13} aria-hidden="true" />
-                        Duplicate
+                        <Copy size={14} aria-hidden="true" />
                       </button>
                       <button
                         type="button"
-                        className={`${styles.act} ${styles.actDanger}`}
+                        className={`${styles.actIcon} ${styles.actDanger}`}
                         aria-label={`Delete ${t.name}`}
+                        title="Delete"
                         disabled={busy}
                         onClick={(e) => setPendingDelete({ t, returnTo: e.currentTarget })}
                       >
-                        <Trash2 size={13} aria-hidden="true" />
-                        Delete
+                        <Trash2 size={14} aria-hidden="true" />
                       </button>
                     </div>
                   </li>
                 ))}
+                {/* The dashed New card closes the grid (#1574 board L1). `role="none"`: it is a way
+                    in, not a template, so the list's items stay the templates. */}
+                <li role="none" className={styles.newCard}>
+                  <Link to="/templates/new" className={styles.newLink}>
+                    <Plus size={22} aria-hidden="true" />
+                    <span className={styles.newTitle}>New template</span>
+                    <span className={styles.newHint}>Start blank, or save one from the compose box.</span>
+                  </Link>
+                </li>
               </ul>
             )}
           </>

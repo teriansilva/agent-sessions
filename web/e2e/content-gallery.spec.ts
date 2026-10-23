@@ -106,6 +106,7 @@ async function setup(page: Page, options: Options = {}) {
   });
   const control = { catalogOk: !options.failCatalogAfterRefresh, release: () => release() };
   let reads = 0;
+  let readsAtRefresh = Infinity;
   let current = {
     id: "my-skill",
     revision,
@@ -148,6 +149,7 @@ async function setup(page: Page, options: Options = {}) {
       // must not race the app's first config read).
       if (!request.headers()["x-csrf-token"]) return reply({ detail: "forbidden" }, 403);
       refreshes.push(Date.now());
+      if (readsAtRefresh === Infinity) readsAtRefresh = reads;
       if (options.refresh === "unreachable")
         return reply(
           { detail: "The public gallery can't be reached right now.", reason: "unreachable" },
@@ -160,7 +162,11 @@ async function setup(page: Page, options: Options = {}) {
     if (path === "/api/gallery") {
       reads += 1;
       if (options.holdSecondRead && reads >= 2) await held;
-      if (!control.catalogOk && refreshes.length)
+      // Only a read that arrives AFTER the check fails, and never the page's first one: the
+      // first listing read and the automatic check go out together, and when the refresh landed
+      // first the initial read failed too, so the entry never loaded (the scenario is the read
+      // that FOLLOWS a check).
+      if (!control.catalogOk && reads > readsAtRefresh && reads >= 2)
         return reply({ detail: "Gallery storage is unavailable." }, 503);
       return listing();
     }

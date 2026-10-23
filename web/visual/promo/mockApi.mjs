@@ -31,10 +31,46 @@ export async function routeApi(page, state) {
 
 async function answer(path, q, method, req, state) {
   // ---- order matters: specific before prefix ------------------------------------------------
+  // `galleryCompare` (a sweep state, #1574): a local skill behind the gallery's newer version.
+  if (state.galleryCompare) {
+    if (path === "/api/gallery" || path === "/api/gallery/refresh") return json(X.galleryListing());
+    if (path.startsWith("/api/gallery/content/")) return json(X.galleryContent());
+    if (path === "/api/gallery/compare" && method === "POST") return json(X.galleryComparison());
+    if (path === "/api/library/skills") return json({ skills: [X.localSkill()] });
+    if (path === "/api/library/skills/my-skill") return json(X.localSkill());
+  }
+  // `galleryShowcase` (a sweep state, #1574): the browse page with three skills.
+  if (state.galleryShowcase && (path === "/api/gallery" || path === "/api/gallery/refresh"))
+    return json(X.galleryShowcase());
+  // `automationsShowcase` (a sweep state, #1574): one automation, and its run history.
+  if (state.automationsShowcase) {
+    const rm = /^\/api\/automations\/runs\/([^/]+)$/.exec(path);
+    if (rm && method === "GET") {
+      const run = X.automationRuns("a-nightly-audit").runs.find((r) => r.id === decodeURIComponent(rm[1]));
+      return run ? json(run) : json({ detail: "not found" }, 404);
+    }
+    const am = /^\/api\/automations\/([^/]+)(\/runs)?$/.exec(path);
+    if (am && am[1] !== "origins" && method === "GET") {
+      const id = decodeURIComponent(am[1]);
+      if (am[2]) return json(X.automationRuns(id));
+      const a = X.automationsShowcase().find((x) => x.id === id);
+      return a ? json(a) : json({ detail: "not found" }, 404);
+    }
+  }
   if (/^\/api\/sessions\/[^/]+\/draft$/.test(path))
     return json({ id: decodeURIComponent(path.split("/")[3]), text: "", attachments: [], updated_at: null });
 
+  // PR4b library A (#1574): a project's memory, its import preview and its pass.
+  if (state.memory && path.startsWith("/api/memory")) {
+    const body = X.memoryAnswer(path, method, state);
+    if (body) return json(body);
+  }
+
   switch (path) {
+    case "/api/templates/suggestions":
+      if (method === "GET" && state.suggestions) return json(X.SUGGESTIONS);
+      if (method === "GET") return json({ result: null, configured: true });
+      break;
     case "/api/prefs":
       // The map persists its layout (expanded groups, window slots); accept and echo it.
       if (method === "POST") return json(req.postDataJSON() ?? {});
@@ -111,10 +147,14 @@ async function answer(path, q, method, req, state) {
       if (method === "GET")
         return json({
           // `disabledAutomation` (a sweep state): one automation that is off, so Enable… asks consent.
-          automations: state.disabledAutomation ? [X.disabledAutomation()] : [],
-          engines: [],
+          automations: state.automationsShowcase
+            ? X.automationsShowcase()
+            : state.disabledAutomation
+              ? [X.disabledAutomation()]
+              : [],
+          engines: state.automationsShowcase ? X.AUTOMATION_ENGINES : [],
           loop: { enabled: true, owner: true },
-          limits: {
+          limits: state.automationsShowcase ? X.AUTOMATION_LIMITS : {
             interval_min_minutes: 15,
             max_runs_per_day_max: 48,
             max_concurrent_max: 4,
@@ -144,6 +184,7 @@ async function answer(path, q, method, req, state) {
       if (method === "GET") return json({ projects: [] });
       break;
     case "/api/variables":
+      if (method === "GET" && state.variables) return json(X.VARIABLES_LIB);
       if (method === "GET")
         return json({
           variables: [],

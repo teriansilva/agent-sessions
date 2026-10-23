@@ -1,8 +1,12 @@
+/* Library → Playbooks → the editor (NIGHTJAR #1531 Phase 10, #1574): the page around the canvas,
+ * the step inspector, the variables and the review. Fields are square (`nj-field`'s look on the
+ * elements the editor renders); group titles are mono callsigns; the inspector is a quiet panel.
+ * Tokens only (nightjarLedger.test.ts). */
 .editor {
   position: relative;
   height: 100%;
   overflow: auto;
-  padding: 24px;
+  padding: var(--sp-5);
   color: var(--text-1);
   overflow-wrap: anywhere;
 }
@@ -10,14 +14,26 @@
   min-width: 0;
   box-sizing: border-box;
 }
+/* The page title (`nj-h1`'s voice): display caps in the chrome's ink. */
 .editor h1 {
-  font-size: 24px;
-  margin: 8px 0;
+  margin: var(--sp-2) 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-h1);
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--hud-text);
 }
 .editor h2,
 .editor h3 {
-  font: 14px var(--font-mono);
-  margin: 16px 0;
+  margin: var(--sp-4) 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-1);
 }
 .editor p {
   color: var(--text-2);
@@ -27,21 +43,33 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin: 12px 0;
+  margin: var(--sp-3) 0;
   color: var(--text-2);
-  font-size: 13px;
+  font-size: var(--fs-row);
 }
+/* The square field (`nj-field`'s look). */
 .editor input,
 .editor textarea,
 .editor select {
   width: 100%;
   min-height: 44px;
-  padding: 10px;
+  padding: var(--sp-2) var(--sp-3);
   background: var(--bg-2);
   color: var(--text-1);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--border);
   border-radius: 0;
   font: inherit;
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.editor input:hover,
+.editor textarea:hover,
+.editor select:hover {
+  border-color: var(--hud-dim);
+}
+.editor input:focus,
+.editor textarea:focus,
+.editor select:focus {
+  border-color: var(--hud);
 }
 .editor textarea {
   resize: vertical;
@@ -49,24 +77,33 @@
 .editor input:read-only {
   color: var(--text-2);
 }
+/* The inset ring (§6): a ring drawn outside would be clipped by a panel. */
 .editor :focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
 }
 .editor fieldset {
+  margin: var(--sp-4) 0;
+  padding: var(--sp-3);
   border: 1px solid var(--line-strong);
-  padding: 12px;
-  margin: 16px 0;
 }
 .editor legend {
-  font: 12px var(--font-mono);
   padding: 0 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
 }
 .editor summary {
-  cursor: pointer;
   min-height: 44px;
-  padding: 12px 0;
+  padding: var(--sp-3) 0;
   border-bottom: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  cursor: pointer;
 }
 .editor .check {
   flex-direction: row;
@@ -84,25 +121,29 @@
 .fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 20px;
+  gap: 0 var(--sp-5);
 }
 .toolbar {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: var(--sp-3);
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 20px;
+  margin-bottom: var(--sp-5);
 }
 .toolbar a {
-  min-height: 44px;
   display: inline-flex;
   align-items: center;
+  min-height: 44px;
   color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
 .actions {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
   align-items: center;
 }
@@ -110,41 +151,42 @@
   display: flex;
   flex-wrap: wrap;
   align-items: end;
-  gap: 12px;
-  margin-top: 20px;
+  gap: var(--sp-3);
+  margin-top: var(--sp-5);
 }
 .workflowBar > :first-child {
   flex: 1 1 240px;
 }
 .workflowBar > .actions {
-  margin-bottom: 12px;
+  margin-bottom: var(--sp-3);
 }
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
-  gap: 20px;
+  gap: var(--sp-5);
   align-items: start;
 }
 .graph {
   position: sticky;
   top: 0;
 }
+/* The step inspector: a quiet clipped panel beside the canvas. */
 .inspector {
-  border-top: 1px solid var(--line-strong);
-  padding: 0 16px 16px;
-  background: var(--bg-1);
+  composes: nj-frame-quiet from global;
+  padding: 0 var(--sp-4) var(--sp-4);
 }
 .inspector .fields {
   grid-template-columns: minmax(0, 1fr);
 }
 .propertyGroup {
+  margin-top: var(--sp-5);
+  padding-top: var(--sp-1);
   border-top: 1px solid var(--line-strong);
-  margin-top: 20px;
-  padding-top: 4px;
 }
 .editor .hint {
-  font-size: 12px;
-  margin: 8px 0;
+  margin: var(--sp-2) 0;
+  font-size: var(--fs-meta);
+  color: var(--text-3);
 }
 /* "Ask HQ" in the toolbar hint (#1611): a link-styled button (it opens the HQ panel, no route),
  * the toolbar link's accent, with the 44px touch target the hint's line can't give it. */
@@ -168,45 +210,51 @@
 .editor .warning {
   color: var(--warn-text);
 }
-.error,
-.editor .error {
-  color: var(--danger-text);
-  padding: 12px;
-  border: 1px solid var(--status-down);
-  margin: 16px 0;
+.error {
+  composes: nj-error from global;
 }
+.editor .error {
+  margin: var(--sp-4) 0;
+  padding: var(--sp-3);
+}
+/* A save that met a newer copy: the degraded edge, never the failure red. */
 .conflict {
-  border: 1px solid var(--status-degraded);
-  padding: 16px;
-  margin: 16px 0;
+  margin: var(--sp-4) 0;
+  padding: var(--sp-4);
+  border: 1px solid var(--line-strong);
+  border-left: 2px solid var(--status-degraded);
+  background: color-mix(in srgb, var(--status-degraded) 6%, var(--bg-1));
 }
 .comparison {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: var(--sp-3);
 }
 .editor pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: 320px;
   overflow: auto;
-  background: var(--surface-3);
-  padding: 12px;
-  font: 12px/1.5 var(--font-mono);
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
 }
 .rule {
   border-bottom: 1px solid var(--line);
-  padding-bottom: 12px;
+  padding-bottom: var(--sp-3);
 }
 @media (max-width: 800px) {
   .editor {
-    padding: 16px;
+    padding: var(--sp-4);
   }
   .workspace,
   .fields,
   .comparison {
     grid-template-columns: minmax(0, 1fr);
-    gap: 12px;
+    gap: var(--sp-3);
   }
   .toolbar .actions {
     width: 100%;
@@ -217,7 +265,7 @@
 }
 
 .editor .field {
-  margin: 12px 0;
+  margin: var(--sp-3) 0;
 }
 .editor .field > label {
   margin: 0 0 6px;
@@ -225,9 +273,9 @@
 
 .fieldError {
   display: block;
-  color: var(--danger-text);
-  font-size: 12px;
   margin-top: 6px;
+  color: var(--danger-text);
+  font-size: var(--fs-meta);
 }
 .editor [aria-invalid="true"] {
   border-color: var(--status-down);

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import { relTime } from "../../lib/format";
+import { Loader } from "../hud/Loader";
 import { ConfirmDialog } from "../templates/ConfirmDialog";
 import type { ImportPreview, ImportResult, ImportSource } from "../../types/memory";
 import { heldFor, labelsOf, MAX_SOURCES, message, plural, resultLine } from "./importResult";
@@ -103,7 +104,8 @@ export function ImportCard({ pid, projectName, disabled = false, onImported }: P
   return (
     <section className={styles.card} aria-label="Existing memory">
       <h2 className={styles.eyebrow}>Existing memory</h2>
-      {preview === null && !loadError && <p className={styles.small}>Looking for existing agent memory…</p>}
+      {/* The first read is Acquiring, in words (#1574). */}
+      {preview === null && !loadError && <Loader kind="acquire" label="Looking for existing agent memory…" className={styles.reading} />}
       {loadError !== null && <p className={styles.warn} role="alert">Couldn't look for existing memory: {message(loadError)}</p>}
       {preview && (
         <>
@@ -113,6 +115,9 @@ export function ImportCard({ pid, projectName, disabled = false, onImported }: P
               : "No agent memory found for this project's folders."}
             {unreadable.length > 0 && ` ${plural(unreadable.length, "place")} couldn't be read.`}
           </p>
+          {/* An import in progress: the acquire bar under the card's lines (#1574). Decorative — the
+              dialog's busy state already says so, and a second status region would read twice. */}
+          {importing && <div className={`nj-acquire ${styles.reading}`} aria-hidden="true" data-testid="memory-import-progress" />}
           {ran
             ? <p className={styles.result} role="status">{resultLine(ran, heldFor(ran, held))}</p>
             : last && <p className={styles.small}>Last import {relTime(last.at)} — {resultLine(last, heldFor(last, held))}</p>}

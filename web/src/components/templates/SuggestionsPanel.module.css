@@ -1,18 +1,22 @@
-/* SUGGESTED — AI template suggestions (#1090, Phase 3). The gallery's vocabulary: square cards on
- * --bg-1, an accent square as the non-status marker (docs/design.md §3), mono for what would be
- * sent. The running / no-endpoint strips are notes, not status LEDs: nothing here is "down". */
+/* SUGGESTED — AI template suggestions (#1090, Phase 3). NIGHTJAR (#1531 Phase 10, #1574): on demand
+ * only; while it reads, the line says so with the blinking cursor square (opacity, steady in
+ * Reduced and Off) over the shared Acquiring bar; suggestions are dossier cards on the Library's
+ * frame; mono for what would be sent; the withheld note says what was left out. The running /
+ * no-endpoint strips are notes, not status LEDs: nothing here is "down". Tokens only. */
 
 .status {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  margin: 0 0 14px;
-  border: 1px solid var(--line);
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  margin: 0 0 var(--sp-3);
+  border: 1px solid var(--line-strong);
+  border-left: 2px solid var(--hud);
   background: var(--bg-1);
 }
 .statusWarn {
-  border-left: 2px solid var(--accent);
+  border-left-color: var(--status-degraded);
 }
 .statusText {
   display: flex;
@@ -20,24 +24,33 @@
   gap: 3px;
   flex: 1;
   min-width: 0;
-  font-size: 0.82rem;
+  font-size: var(--fs-meta);
   color: var(--text-2);
 }
 .statusText strong {
-  color: var(--text-1);
-  font-weight: 600;
+  font: 600 var(--fs-label) / 1.3 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--hud-text);
 }
-/* A flat accent square that blinks — the design's "working" mark; static under reduced motion. */
+.statusWarn .statusText strong {
+  color: var(--warn-text);
+}
+/* The Acquiring bar takes its own line under the text. */
+.acquire {
+  flex: 1 1 100%;
+}
+/* The cursor: a flat accent square that blinks by opacity — steady in Reduced and Off. */
 .square {
   width: 8px;
-  height: 8px;
-  background: var(--accent);
+  height: 12px;
+  background: var(--hud);
   flex: 0 0 auto;
   animation: blink 1s steps(2, start) infinite;
 }
 @keyframes blink {
   to {
-    visibility: hidden;
+    opacity: 0;
   }
 }
 /* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
@@ -49,12 +62,11 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
-  margin: 0 0 12px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.1em;
+  margin: 0 0 var(--sp-3);
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-3);
 }
@@ -65,61 +77,59 @@
   padding: 0;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 12px;
+  gap: var(--sp-3);
 }
+/* A suggestion is a dossier card: the quiet frame, arriving once. */
 .card {
+  composes: nj-frame-quiet from global;
+  --c: var(--cut-sm);
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  background: var(--bg-1);
+  gap: var(--sp-1);
+  padding: var(--sp-3);
   min-width: 0;
+  animation: global(nj-arrive) var(--t-base) var(--ease-out) both;
 }
 .cardHead {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--sp-2);
   min-width: 0;
 }
 .kind {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.12em;
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  font: 600 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-3);
-  border: 1px solid var(--line);
-  padding: 1px 5px;
-  flex: 0 0 auto;
+  border: 1px solid var(--line-strong);
 }
 .name {
   margin: 0;
-  font-size: 0.92rem;
-  font-weight: 600;
+  font: 600 var(--fs-title) / 1.3 var(--font-display);
+  letter-spacing: 0.02em;
   overflow-wrap: anywhere;
 }
 .reason {
   margin: 0;
-  font-size: 0.8rem;
+  font-size: var(--fs-meta);
   line-height: 1.45;
   color: var(--text-2);
 }
 .count {
   margin: 0;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.08em;
+  font: 500 var(--fs-micro) / 1.3 var(--font-mono);
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-3);
 }
 .body {
   margin: 2px 0;
-  padding: 8px 10px;
+  padding: var(--sp-2);
   border: 1px solid var(--line);
   background: var(--term-bg);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.5;
+  font: 400 var(--fs-label) / 1.5 var(--font-mono);
   color: var(--text-1);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -128,31 +138,33 @@
 }
 .chips {
   display: flex;
-  gap: 5px;
+  gap: var(--sp-1);
   flex-wrap: wrap;
 }
 .chip {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--accent-text);
-  border: 1px solid var(--line);
   padding: 1px 6px;
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  color: var(--hud-text);
+  border: 1px solid var(--line-strong);
 }
 .secret {
   margin: 2px 0;
-  font-size: 0.8rem;
+  font-size: var(--fs-meta);
   color: var(--text-2);
 }
 .acts {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
   margin-top: auto;
-  padding-top: 4px;
+  padding-top: var(--sp-1);
 }
+/* The withheld note: what was left out, said plainly under the cards. */
 .dropped {
-  margin: 12px 0 0;
-  font-size: 0.78rem;
+  margin: var(--sp-3) 0 0;
+  padding-left: var(--sp-2);
+  border-left: 2px solid var(--line-strong);
+  font-size: var(--fs-meta);
   color: var(--text-3);
 }
 
@@ -163,9 +175,6 @@
   .acts > * {
     flex: 1 1 0;
     min-height: 44px;
-  }
-  .status {
-    flex-wrap: wrap;
   }
   .status > a,
   .status > button {
@@ -179,44 +188,48 @@
 
 /* WRITE ME A TEMPLATE FOR … — always first on the tab, independent of any analysis. */
 .write {
+  composes: nj-frame-quiet from global;
+  --c: var(--cut-sm);
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 12px 14px;
-  margin: 0 0 16px;
-  border: 1px solid var(--line);
-  background: var(--bg-1);
+  gap: var(--sp-1);
+  padding: var(--sp-3);
+  margin: 0 0 var(--sp-4);
 }
 .writeLabel {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  letter-spacing: 0.12em;
+  font: 500 var(--fs-label) / 1.3 var(--font-mono);
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--text-2);
 }
 .writeRow {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
   align-items: stretch;
 }
+/* `nj-field`. */
 .writeInput {
   flex: 1;
   min-width: 0;
   resize: vertical;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  background: var(--bg-0);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  background: var(--bg-2);
   color: var(--text-1);
   font: inherit;
-  font-size: 0.85rem;
+  font-size: var(--fs-row);
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.writeInput:hover {
+  border-color: var(--hud-dim);
 }
 .writeInput:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .writeHint {
   margin: 0;
-  font-size: 0.74rem;
+  font-size: var(--fs-meta);
   color: var(--text-3);
 }
 @media (max-width: 800px) {

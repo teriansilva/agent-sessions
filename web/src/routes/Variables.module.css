@@ -1,58 +1,383 @@
-.page { width: min(1200px, 100%); margin: 0 auto; padding: 28px; color: var(--text-1); overflow-wrap: anywhere; }
-.head, .toolbar, .actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.head { margin-bottom: 20px; }
-.head h1 { margin: 4px 0; font-size: 26px; font-weight: 600; }
-.eyebrow, .count { color: var(--text-2); font: 11px var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
-.actions { justify-content: flex-start; }
-.notice { padding: 12px 0; margin: 0 0 24px; border-block: 1px solid var(--border); color: var(--text-2); line-height: 1.6; }
-.layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 28px; }
-.collections { min-width: 0; }
-.collections h2 { font: 12px var(--font-mono); color: var(--text-2); text-transform: uppercase; margin: 0 0 12px; }
-.collection { display: flex; width: 100%; min-height: 44px; padding: 10px 12px; gap: 8px; justify-content: space-between; align-items: center; text-align: left; color: var(--text-2); background: transparent; border: 1px solid transparent; cursor: pointer; }
-.collection span:first-child { min-width: 0; overflow-wrap: anywhere; }
-.collection[aria-pressed="true"] { border-color: var(--border); color: var(--text-1); background: var(--panel); border-left: 2px solid var(--accent); }
-.collection:hover:not(:disabled) { color: var(--text-1); background: var(--panel); }
-.newCollection { margin-top: 12px; width: 100%; }
-.content { min-width: 0; }
-.toolbar { padding-bottom: 16px; border-bottom: 1px solid var(--border); }
-.toolbar h2 { font-size: 18px; margin: 0; }
-.search { display: flex; align-items: center; gap: 8px; min-width: 0; width: 100%; padding: 8px 0; }
-.search input { flex: 1; min-width: 0; }
-.row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: center; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--border); }
-.name { display: flex; align-items: center; gap: 8px; font: 13px var(--font-mono); }
-.name span { min-width: 0; }
-.kind, .help { color: var(--text-2); font-size: 13px; line-height: 1.6; }
-.kind { margin-top: 6px; }
-.value { color: var(--text-2); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.empty { padding: 28px 0; color: var(--text-2); line-height: 1.6; }
-.fields { padding: 0; border: 0; min-width: 0; margin: 20px 0; }
-.field { display: flex; flex-direction: column; min-width: 0; gap: 8px; margin: 0 0 16px; font-size: 13px; }
-.field small { color: var(--text-2); line-height: 1.5; }
-.field input, .field textarea, .field select, .search input { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 0; color: var(--text-1); background: var(--bg); font: inherit; box-sizing: border-box; }
-.field textarea { resize: vertical; }
-.twoColumns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
-.check { display: flex; align-items: center; min-height: 44px; gap: 10px; font-size: 13px; line-height: 1.5; }
-.check input { width: 18px; height: 18px; flex-shrink: 0; accent-color: var(--accent); }
-.valueSection { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
-.advanced { margin: 20px 0; border-block: 1px solid var(--border); }
-.advanced summary { min-height: 44px; align-content: center; cursor: pointer; font-size: 13px; }
-.advanced[open] summary { margin-bottom: 12px; }
-.error, .status { padding: 12px 0; line-height: 1.6; font-size: 13px; }
-.error { color: var(--danger-text); }
-.error:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.status { color: var(--text-2); }
-.page :is(button, input, select, textarea, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.page button:disabled { opacity: .55; cursor: default; }
+/* LIBRARY → VARIABLES & COLLECTIONS (#1390). NIGHTJAR (#1531 Phase 10, #1574): the head is the
+ * Library's kicker + display title; the collections rail lights its selection with the accent edge;
+ * variable rows are hairline rows (a secret's value is never shown — "Stored · hidden"); fields
+ * are `nj-field` squares; every focus ring is inset. Tokens only (docs/nightjar-ledger.md). */
+.page {
+  width: min(1200px, 100%);
+  margin: 0 auto;
+  padding: var(--sp-6);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.head,
+.toolbar,
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+.head {
+  align-items: flex-end;
+  margin-bottom: var(--sp-5);
+}
+.head h1 {
+  margin: var(--sp-2) 0 0;
+  font: 600 var(--fs-h1) / 1.1 var(--font-display);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+  text-shadow: var(--glow-head);
+}
+.head h1:focus {
+  outline: none;
+}
+.eyebrow,
+.count {
+  font: 400 var(--fs-label) / 1 var(--font-mono);
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.actions {
+  justify-content: flex-start;
+}
+.notice {
+  margin: 0 0 var(--sp-5);
+  padding: var(--sp-3) 0;
+  border-block: 1px solid var(--line);
+  color: var(--text-2);
+  font-size: var(--fs-row);
+  line-height: 1.6;
+}
+.layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: var(--sp-6);
+}
+.collections {
+  min-width: 0;
+}
+.collections h2 {
+  margin: 0 0 var(--sp-3);
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+/* A rail entry: a row, not a button look. The selection is the accent edge and a tint. */
+.collection {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-3);
+  gap: var(--sp-2);
+  justify-content: space-between;
+  align-items: center;
+  text-align: left;
+  color: var(--text-2);
+  background: transparent;
+  border: 0;
+  border-left: 2px solid transparent;
+  font: 500 var(--fs-label) / 1.2 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+.collection span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.collection[aria-pressed="true"] {
+  border-left-color: var(--hud);
+  color: var(--hud-text);
+  background: var(--hud-tint);
+}
+.collection:hover:not(:disabled) {
+  color: var(--text-1);
+  background: var(--row-hover);
+}
+.newCollection {
+  margin-top: var(--sp-3);
+  width: 100%;
+}
+/* The list (and the editor) sit on one NIGHTJAR panel (#1574 board L6): the chamfered frame with a
+ * short lit rail. */
+.content {
+  composes: nj-frame from global;
+  position: relative;
+  min-width: 0;
+  padding: var(--sp-4);
+  border-top-width: 1px;
+  border-top-color: var(--nj-edge);
+}
+.content::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: calc(var(--cut) + 2px);
+  width: 34%;
+  height: 2px;
+  background: var(--hud);
+  box-shadow: var(--glow-rail);
+  pointer-events: none;
+}
+.toolbar {
+  padding-bottom: var(--sp-4);
+  border-bottom: 1px solid var(--line-strong);
+}
+.toolbar h2 {
+  margin: 0;
+  font: 600 var(--fs-h2) / 1.2 var(--font-display);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.search {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  width: 100%;
+  padding: var(--sp-2) 0;
+  color: var(--text-2);
+}
+.search input {
+  flex: 1;
+  min-width: 0;
+}
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--line);
+}
+.name {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font: 600 var(--fs-row) / 1.3 var(--font-mono);
+}
+.name svg {
+  color: var(--hud-text);
+}
+.name span {
+  min-width: 0;
+}
+.kind,
+.help {
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+  line-height: 1.6;
+}
+.kind {
+  margin-top: var(--sp-1);
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.help {
+  margin: var(--sp-1) 0 0;
+  color: var(--text-2);
+}
+.value {
+  color: var(--text-2);
+  font: 400 var(--fs-meta) / 1.5 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.empty {
+  padding: var(--sp-6) 0;
+  color: var(--text-2);
+  font-size: var(--fs-row);
+  line-height: 1.6;
+}
+.fields {
+  padding: 0;
+  border: 0;
+  min-width: 0;
+  margin: var(--sp-5) 0;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-4);
+  font-size: var(--fs-row);
+}
+/* The field's own label: the NIGHTJAR label voice. */
+.field > span:first-child {
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.field small {
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+}
+/* `nj-field`: square, `--bg-2`, the edge lights on hover and focus. */
+.field input,
+.field textarea,
+.field select,
+.search input {
+  width: 100%;
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text-1);
+  background: var(--bg-2);
+  font: inherit;
+  font-size: var(--fs-body);
+  box-sizing: border-box;
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.field input:hover,
+.field textarea:hover,
+.field select:hover,
+.search input:hover {
+  border-color: var(--hud-dim);
+}
+.field textarea {
+  resize: vertical;
+}
+.twoColumns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--sp-4);
+}
+.check {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  gap: var(--sp-2);
+  font-size: var(--fs-row);
+  line-height: 1.5;
+}
+.check input {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+.valueSection {
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--line);
+}
+/* Advanced is a disclosure: the label voice, a hairline above and below. */
+.advanced {
+  margin: var(--sp-5) 0;
+  border-block: 1px solid var(--line);
+}
+.advanced summary {
+  min-height: 44px;
+  align-content: center;
+  cursor: pointer;
+  font: 500 var(--fs-label) / 1.2 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.advanced summary:hover {
+  color: var(--text-1);
+}
+.advanced[open] summary {
+  margin-bottom: var(--sp-3);
+  color: var(--hud-text);
+}
+.advanced[open] > :not(summary) {
+  animation: global(nj-fade-in) var(--t-fast) var(--ease-out) both;
+}
+.error,
+.status {
+  padding: var(--sp-3) 0;
+  line-height: 1.6;
+  font-size: var(--fs-row);
+}
+/* A refused save or a failed read: the `nj-error` edge. */
+.error {
+  margin: 0 0 var(--sp-4);
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--danger-text);
+  border-left: 2px solid var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 8%, transparent);
+}
+.error:focus {
+  outline: none;
+}
+.error:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.status {
+  color: var(--text-2);
+}
+.page :is(input, select, textarea, summary, .collection):focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.page button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 @media (max-width: 800px) {
-  .page { padding: 18px 14px; }
-  .head h1 { font-size: 22px; }
-  .layout { grid-template-columns: minmax(0, 1fr); gap: 24px; }
-  .collections { border-bottom: 1px solid var(--border); padding-bottom: 16px; }
-  .collectionList { display: flex; flex-wrap: wrap; gap: 4px; }
-  .collection { width: auto; max-width: 100%; border-color: var(--border); }
-  .newCollection { width: auto; }
-  .twoColumns { grid-template-columns: minmax(0, 1fr); gap: 0; }
-  .row { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
-  .value { grid-column: 1; grid-row: 2; }
-  .row > button { grid-column: 2; grid-row: 1 / 3; }
+  .page {
+    padding: var(--sp-4) var(--sp-3);
+  }
+  .head h1 {
+    font-size: var(--fs-h2);
+  }
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-5);
+  }
+  .collections {
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--sp-4);
+  }
+  .collectionList {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-1);
+  }
+  .collection {
+    width: auto;
+    max-width: 100%;
+    border: 1px solid var(--line-strong);
+    border-left-width: 2px;
+  }
+  .newCollection {
+    width: auto;
+  }
+  .twoColumns {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--sp-2);
+  }
+  .value {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .row > button {
+    grid-column: 2;
+    grid-row: 1 / 3;
+  }
+}
+
+/* The collections rail is one framed list (#1574 board L6). */
+.collectionList {
+  border: 1px solid var(--line-strong);
+  background: var(--bg-1);
 }

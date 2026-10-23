@@ -229,6 +229,8 @@ export function SuggestionsPanel({
           <button type="button" className={page.ghost} onClick={stop}>
             Stop waiting
           </button>
+          {/* Acquiring (#1574): the shared scan bar under the line, never a spinner. */}
+          <span className={`nj-acquire ${styles.acquire}`} aria-hidden="true" />
         </div>
       )}
 

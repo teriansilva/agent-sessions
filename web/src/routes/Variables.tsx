@@ -142,7 +142,7 @@ export default function Variables() {
 
   return <div className={styles.page}>
     <header className={styles.head}>
-      <div><div className={styles.eyebrow}>Library / Shared inputs</div><h1 ref={titleRef} tabIndex={-1}>Variables & collections</h1></div>
+      <div><div className={`nj-kicker ${styles.eyebrow}`}><span className="nj-notch" aria-hidden="true" />Library // <b>Shared inputs</b></div><h1 ref={titleRef} tabIndex={-1}>Variables & collections</h1></div>
       <div className={styles.actions}>
         <button className={buttons.ghost} disabled={locked || !library || needsMigration || variables.length >= library.limits.variables_max} onClick={() => editVariable(undefined, "secret")}><LockKeyhole size={14} aria-hidden="true" /> New secret</button>
         <button className={buttons.primary} disabled={locked || !library || needsMigration || variables.length >= library.limits.variables_max} onClick={() => editVariable()}><Plus size={14} aria-hidden="true" /> New variable</button>

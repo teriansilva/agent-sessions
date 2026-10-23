@@ -101,7 +101,8 @@ function ReworkEdge({
         id={id}
         path={path}
         markerEnd={markerEnd}
-        style={{ stroke: "var(--text-2)", strokeDasharray: "6 4" }}
+        // The rework path reads as a degraded loop (#1574), never the failure red: it is bounded.
+        style={{ stroke: "var(--status-degraded)", strokeDasharray: "6 4" }}
       />
       <EdgeLabelRenderer>
         <span

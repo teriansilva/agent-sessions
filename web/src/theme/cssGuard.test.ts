@@ -221,10 +221,7 @@ const KEYFRAME_PROPS = new Set([
 ]);
 /** Keyframes that predate the budget, each pinned to the phase that redraws it. Keyed by file and
  *  keyframe name, so a new violation in the same file still fails. Remove an entry with its fix. */
-const KEYFRAME_PENDING: Record<string, readonly string[]> = {
-  // Phase 10: the suggestions caret blinks with opacity like `.nj-caret`.
-  "components/templates/SuggestionsPanel.module.css": ["blink"],
-};
+const KEYFRAME_PENDING: Record<string, readonly string[]> = {};
 
 function keyframes(css: string): { name: string; props: string[] }[] {
   const out: { name: string; props: string[] }[] = [];

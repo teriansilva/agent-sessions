@@ -13,7 +13,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
-import { HudFrame } from "../components/hud/HudFrame";
 import {
   InFlightNote,
   KillSwitchNotice,
@@ -226,10 +225,10 @@ function RunsPage({ id }: { id: string }) {
       <MissionRailOnly />
       <div className={styles.stack}>
         <section className={styles.panel} aria-labelledby="runs-title">
-          <HudFrame />
           <div className={styles.head}>
             <div className={styles.headText}>
-              <span className={styles.kicker}>
+              <span className={`nj-kicker ${styles.kicker}`}>
+                <span className="nj-notch" aria-hidden="true" />
                 <Link className={styles.link} to={AUTOMATIONS_PATH}>
                   Automations
                 </Link>
@@ -428,7 +427,6 @@ function RunDetail({
   const steps: RunStep[] = run.steps ?? [];
   return (
     <section className={styles.panel} aria-labelledby="run-detail-title" data-testid="run-detail">
-      <HudFrame />
       <div className={styles.head}>
         <h2 id="run-detail-title" className={styles.panelTitle}>
           Run {index >= 0 ? `#${total - index}` : ""}

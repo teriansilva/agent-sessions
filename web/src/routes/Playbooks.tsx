@@ -1,10 +1,10 @@
 /** Library → Playbooks: your playbooks (bundled + local — what projects use) and one playbook's
  *  detail. The public gallery is the sibling Browse view (#1440). Mutations retain the revision the
  *  operator saw. */
+import { Plus } from "lucide-react";
 import { GALLERY_PLAYBOOKS_PATH, PLAYBOOK_NEW_PATH } from "../lib/routes";
 import { useCallback, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { HudFrame } from "../components/hud/HudFrame";
 import { LandingNote, ViewTabs } from "../components/gallery/ViewTabs";
 import { PlaybookCard } from "../components/playbooks/PlaybookCard";
 import { PlaybookDetailPage } from "../components/playbooks/PlaybookDetail";
@@ -17,7 +17,6 @@ export default function Playbooks() {
   const { playbookId } = useParams();
   return (
     <main className={styles.page} data-testid="playbooks-page">
-      <HudFrame hero />
       <LandingNote />
       {playbookId ? (
         <PlaybookDetailPage key={playbookId} id={playbookId} />
@@ -60,8 +59,9 @@ function Library() {
   );
   return (
     <>
-      <div className={styles.kicker}>
-        Library // playbooks{data ? ` // ${rows.length}` : ""}
+      <div className={`nj-kicker ${styles.kicker}`}>
+        <span className="nj-notch" aria-hidden="true" />
+        Library // <b>playbooks</b>{data ? ` // ${rows.length}` : ""}
       </div>
       <div className={styles.header}><h1>Playbooks</h1><Link className={buttons.primary} to={PLAYBOOK_NEW_PATH}>New playbook</Link></div>
       <ViewTabs kind="playbook" view="local" />
@@ -149,8 +149,16 @@ function Library() {
       )}
       <div className={styles.grid}>
         {shown.map((card, i) => (
-          <PlaybookCard key={`${card.source}:${card.id}:${i}`} card={card} />
+          <PlaybookCard key={`${card.source}:${card.id}:${i}`} card={card} ordinal={i + 1} />
         ))}
+        {/* The dashed New card closes the grid (#1574 board B1). */}
+        {data && (
+          <Link to={PLAYBOOK_NEW_PATH} className={styles.newCard}>
+            <Plus size={22} aria-hidden="true" />
+            <span className={styles.newTitle}>New playbook</span>
+            <span className={styles.newHint}>Start from a flow, or copy one from the gallery.</span>
+          </Link>
+        )}
       </div>
       {!!data?.recovery_total && (
         <p>

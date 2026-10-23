@@ -12,6 +12,7 @@ import { AgentAccessCard } from "../components/memory/AgentAccessCard";
 import { ImportCard } from "../components/memory/ImportCard";
 import { linkedFrom, TYPE_ORDER, TYPE_TAG } from "../components/memory/memoryGraph";
 import buttons from "../components/ui/actionButton.module.css";
+import { Loader } from "../components/hud/Loader";
 import styles from "./Memory.module.css";
 
 const MemoryGraph = lazy(() => import("../components/memory/MemoryGraph"));
@@ -346,7 +347,7 @@ export default function Memory() {
   return (
     <div className={styles.page}>
       <header className={styles.head}>
-        <div><div className={styles.eyebrow}>Library / Shared memory</div><h1>Memory</h1></div>
+        <div><div className={`nj-kicker ${styles.eyebrow}`}><span className="nj-notch" aria-hidden="true" />Library // <b>Shared memory</b></div><h1>Memory</h1></div>
       </header>
       {statusText && <p className={styles.status} role="status">{statusText}</p>}
       {view && view.withheld.notes > 0 && (
@@ -355,7 +356,8 @@ export default function Memory() {
         </p>
       )}
       {!confirm && errorView}
-      {projects === null && !error && <p className={styles.empty}>Loading memory…</p>}
+      {/* The first read is Acquiring, in words (#1574). */}
+      {projects === null && !error && <Loader kind="acquire" label="Loading memory…" className={styles.reading} testId="memory-acquiring" />}
       {projects?.length === 0 && <p className={styles.empty}>No projects yet. Memory belongs to a project — create one from New session or Settings → Projects, then turn its memory on here.</p>}
       {projects && projects.length > 0 && (
         <div className={styles.layout} data-mobile={mobile}>
@@ -379,7 +381,7 @@ export default function Memory() {
             </>}
           </nav>
           <main className={styles.main}>
-            {!view && !error && <p className={styles.empty}>Loading notes…</p>}
+            {!view && !error && <Loader kind="skeleton" rows={4} label="Loading notes…" className={styles.reading} />}
             {projectBar}
             {view && (offState ? (
               <>

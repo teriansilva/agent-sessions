@@ -69,15 +69,24 @@ export function PlaybookSource({ card }: { card: PlaybookCardData }) {
 export function PlaybookCard({
   card,
   onSelect,
+  ordinal,
 }: {
   card: PlaybookCardData;
   onSelect?: (card: PlaybookCardData) => void;
+  /** The card's place in the library list, for the dossier's stamp line (#1574 board B1). */
+  ordinal?: number;
 }) {
   return (
     <article
       className={`${styles.card} ${card.ok ? "" : styles.invalid}`}
       data-testid={`playbook-card-${card.id}`}
     >
+      <div className={styles.dh} aria-hidden="true">
+        Playbook
+        {ordinal !== undefined && (
+          <span className={styles.did}>P-{String(ordinal).padStart(2, "0")}</span>
+        )}
+      </div>
       <h2>{card.name || card.id}</h2>
       <PlaybookSource card={card} />
       {card.ok ? (

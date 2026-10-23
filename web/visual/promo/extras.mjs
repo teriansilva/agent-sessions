@@ -33,12 +33,14 @@ export function extraSession() {
 
 export async function answerExtra(path, q, method, req, state) {
   if (path === "/api/playbooks" && method === "GET") return json(PLAYBOOKS);
+  // The editor's schema (#1574 sweep): the vocabulary the step inspector offers.
+  if (path === "/api/playbooks/authoring/schema" && method === "GET") return json(AUTHORING_SCHEMA);
   const pbm = /^\/api\/playbooks\/([a-z0-9-]+)(\/projects)?$/.exec(path);
   if (pbm && method === "GET") {
     const book = PLAYBOOKS.playbooks.find((b) => b.id === pbm[1]);
     if (!book) return undefined;
     if (pbm[2]) return json({ playbook_id: book.id, revision: book.revision, projects: [] });
-    return json({ ...book, recovery_total: 0 });
+    return json({ ...book, ...playbookDocuments(book), recovery_total: 0 });
   }
   const nyd = /^\/api\/pulse\/needs-you\/([^/]+)\/details$/.exec(path);
   if (nyd && method === "GET") {
@@ -553,4 +555,352 @@ export function fsDirs(q) {
   const path = q.get("path") || `${F.HOME}`;
   const names = path === F.HOME ? ["orbital-api", "harbor-web", "atlas-cli"] : ["src", "docs", "tests"];
   return { path, home: "/home/commander", dirs: names.map((n) => ({ name: n, path: `${path}/${n}` })) };
+}
+
+// ---- PR4b library A (#1574): memory, variables and suggestions for the sweep ------------------
+// Opt-in mock states (`mock: { memory: true }` …). Every value is invented; the one secret is
+// stored and never carries a value, as the server's secret rows never do.
+const MEM_PID = "p-mem1a2b";
+const memSession = (engine, n) => ({
+  key: `${engine}:${String(n).repeat(8)}-${String(n).repeat(4)}-4${String(n).repeat(3)}-8${String(n).repeat(3)}-${String(n).repeat(12)}`,
+  engine,
+  kind: "terminal",
+  resolved: true,
+});
+function memoryView(state) {
+  return {
+    project: { id: MEM_PID, name: "orbital-api", color: "" },
+    enabled: !state.memoryOff,
+    notes: state.memoryOff
+      ? []
+      : [
+          { slug: "typed-ids", name: "Scopes are typed ids", description: "never display names", type: "decision", body: "Use the project entity id everywhere. See [[inbox-nofollow]].", size: 58, created: F.NOW - 600, updated: F.NOW - 240, session: memSession("claude", 1), links: ["inbox-nofollow"] },
+          { slug: "inbox-nofollow", name: "Inbox files: O_NOFOLLOW", description: "refuse symlinks", type: "pitfall", body: "Open every inbox file with O_NOFOLLOW.", size: 40, created: F.NOW - 1200, updated: F.NOW - 1200, session: memSession("codex", 2), links: [] },
+          { slug: "ci-pr-validate", name: "pr-validate takes 20–40 minutes", description: "that is normal", type: "finding", body: "A slow pr-validate run is the shared runner, not a wedge.", size: 56, created: F.NOW - 9000, updated: F.NOW - 9000, session: memSession("claude", 3), links: ["typed-ids"] },
+          { slug: "deploy-verify", name: "Deploy, then verify live", description: "the stamp, a deep route, a 404", type: "reference", body: "A green deploy is not a ship: check the stamp is live.", size: 52, created: F.NOW - 20000, updated: F.NOW - 20000, session: memSession("gemini", 4), links: [] },
+        ],
+    pending: [{ filename: "paste-gotcha.md", size: 1200, at: F.NOW - 5, session: memSession("claude", 1) }],
+    refused: [{ filename: "whole-transcript.md", reason: "larger than 4 KiB", size: 61000, at: F.NOW - 60, session: memSession("codex", 2) }],
+    quarantine: [{ id: 7, filename: "deploy-notes.md", reason: "looks like a credential", size: 90, at: F.NOW - 30, masked: "████████ (withheld)", session: memSession("claude", 3) }],
+    withheld: { notes: 0, reason: "" },
+    instructions:
+      "If `$BATTLELAB_MEMORY` is set, read `$BATTLELAB_MEMORY/MEMORY.md` before a task and open the notes it needs. To leave a note for later sessions, write one short `.md` file into `$BATTLELAB_MEMORY_INBOX`.",
+    limits: { note_bytes: 4096, notes: 200, inbox_files: 20 },
+  };
+}
+const memoryImport = {
+  sources: [
+    { id: "s-here", engine: "claude", label: "Claude Code", path: "~/.claude/projects/-home-commander-code-orbital-api/memory", relation: "this folder", files: 41, over_agent_size: 2, over_cap: 0, beyond_max_files: 0, state: "ok", reason: "" },
+  ],
+  last: null,
+  held: [],
+};
+export function memoryAnswer(path, method, state) {
+  const v = memoryView(state);
+  if (path === "/api/memory" && method === "GET")
+    return {
+      projects: [
+        { id: MEM_PID, name: "orbital-api", color: "", enabled: v.enabled, notes: v.notes.length, pending: v.pending.length, quarantined: v.quarantine.length, last_write: F.NOW - 240 },
+        { id: "p-mem9z8y", name: "harbor-web", color: "", enabled: false, notes: 0, pending: 0, quarantined: 0, last_write: null },
+      ],
+    };
+  if (path === `/api/memory/${MEM_PID}` && method === "GET") return v;
+  if (path === `/api/memory/${MEM_PID}/import` && method === "GET") return memoryImport;
+  if (path === `/api/memory/${MEM_PID}/ingest`) return { notes: 0, quarantined: 0, refused: 0, dropped: 0 };
+  return null;
+}
+
+export const VARIABLES_LIB = {
+  variables: [
+    { id: "var_branch", name: "release_branch", kind: "text", definition: { value_type: "text", label: "Release branch", help: "The branch a release is cut from." }, set: true, value: "main", created_at: F.NOW - 86400 * 9, updated_at: F.NOW - 86400 },
+    { id: "var_token", name: "deploy_token", kind: "secret", definition: { value_type: "text", label: "Deploy token" }, set: true, created_at: F.NOW - 86400 * 7, updated_at: F.NOW - 86400 * 2 },
+    { id: "var_reviewer", name: "reviewer", kind: "text", definition: { value_type: "enum", label: "Reviewer", choices: ["hermes", "operator", "pair"] }, set: false, created_at: F.NOW - 86400 * 4, updated_at: F.NOW - 86400 * 4 },
+    { id: "var_region", name: "staging_region", kind: "text", definition: { value_type: "text", label: "Staging region" }, set: true, value: "eu-central", created_at: F.NOW - 86400 * 3, updated_at: F.NOW - 86400 * 3 },
+  ],
+  collections: [
+    { id: "col_release", name: "Release", variable_ids: ["var_branch", "var_token"], created_at: F.NOW - 86400 * 9, updated_at: F.NOW - 86400 },
+    { id: "col_review", name: "Review", variable_ids: ["var_reviewer"], created_at: F.NOW - 86400 * 4, updated_at: F.NOW - 86400 * 4 },
+  ],
+  migration_required: false,
+  limits: { variables_max: 200, value_max: 4096, name_max: 64, secret_min: 8, collections_max: 20 },
+};
+
+export const SUGGESTIONS = {
+  result: {
+    generated_at: F.NOW - 600,
+    stats: { messages: 212, distinct: 90, sessions: 41, withheld: 2, days: 30 },
+    dropped: 1,
+    suggestions: [
+      { id: "aaaaaaaaaaaaaaaa", kind: "template", name: "Fix review notes", reason: "You sent a variant of this 17 times.", count: 17, body: "Read the latest review on {{pr}}, fix every note, push.", fields: [{ name: "pr", label: "PR", default: "" }] },
+      { id: "bbbbbbbbbbbbbbbb", kind: "variable", name: "staging_host", reason: "Appears in 23 messages.", count: 23, value: "staging.orbital.test", secret: false },
+      { id: "cccccccccccccccc", kind: "variable", name: "deploy_token", reason: "Looks like a credential you paste.", count: 4, value: "", secret: true },
+    ],
+  },
+  configured: true,
+};
+// ---- the automations showcase (#1574, sweep state `automationsShowcase`) ----------------------
+// Three automations as the Library B board draws them: one enabled with a run history (a failed
+// run and an ok one), one that waits for your consent, one that is off — so the list's LED rows,
+// the ⋯ menu, the runs page and the editor all have something to show.
+function strip14(worst) {
+  return Array.from({ length: 14 }, (_, i) => ({
+    date: new Date((F.NOW - (13 - i) * 86400) * 1000).toISOString().slice(0, 10),
+    worst: worst(i),
+  }));
+}
+function showcaseBase(over) {
+  return {
+    ...disabledAutomation(),
+    consented_at: F.NOW - 5 * 86400,
+    consented_scope: { version: 1 },
+    ...over,
+  };
+}
+export function automationsShowcase() {
+  const audit = showcaseBase({
+    id: "a-nightly-audit",
+    name: "Nightly dependency audit",
+    state: "enabled",
+    enabled: true,
+    next_run: { slot: "tomorrow", at: F.NOW + 9 * 3600 },
+    last_run: automationRuns("a-nightly-audit").runs[1],
+    stats: { ok: 24, failed: 2, skipped: 0, pending: 0, runs: 26, success_rate: 0.92 },
+    strip: strip14((i) => (i === 9 ? "failed" : i % 3 === 1 ? null : "ok")),
+  });
+  const notes = showcaseBase({
+    id: "a-release-notes",
+    name: "Weekly release notes draft",
+    trigger: { kind: "schedule", cadence: { kind: "weekly", days: ["mon"], time: "09:00" }, tz: "Europe/Berlin" },
+    action: { kind: "start_session", engine: "claude", folder: `${F.PROJECTS[0].folders[0]}`, message: { text: "Draft the release notes for everything merged since the last tag. Do not publish." }, bypass: false },
+    state: "needs_reapproval",
+    enabled: true,
+    paused: true,
+    needs_reapproval: true,
+    reapproval_reason: "its scope changed since you approved it",
+    scope_lines: [
+      `Starts a claude session in ${F.PROJECTS[0].folders[0]}`,
+      "Permission bypass: off",
+      "Message: Draft the release notes for everything merged since the last tag. Do not publish.",
+    ],
+    strip: strip14(() => null),
+  });
+  const prune = showcaseBase({
+    id: "a-prune-checkouts",
+    name: "Prune merged checkouts",
+    trigger: { kind: "manual" },
+    state: "off",
+    enabled: false,
+    consented_at: null,
+    consented_scope: null,
+  });
+  return [audit, notes, prune];
+}
+export function automationRuns(id) {
+  const step = (seq, s, detail, dt, t) => ({ seq, at: t + dt, step: s, detail });
+  const failedAt = F.NOW - 4 * 3600;
+  const okAt = F.NOW - 28 * 3600;
+  const runs = [
+    {
+      id: "run-26",
+      automation_id: id,
+      trigger: "schedule",
+      slot: "2026-10-22T03:00",
+      fire_at: failedAt,
+      catch_up: false,
+      covered: 1,
+      state: "done",
+      outcome: "failed",
+      result_class: "failed",
+      reason: "npm audit could not reach the registry",
+      mission_id: null,
+      session_key: null,
+      created_at: failedAt,
+      finished_at: failedAt + 240,
+      inputs: { instruction: "Audit the dependencies and open one PR per risky bump." },
+      scope: {},
+      steps: [
+        step(1, "claimed", "slot 03:00", 0, failedAt),
+        step(2, "creating_mission", F.PROJECTS[0].id, 1, failedAt),
+        step(3, "failed", "npm audit could not reach the registry", 240, failedAt),
+      ],
+    },
+    {
+      id: "run-25",
+      automation_id: id,
+      trigger: "schedule",
+      slot: "2026-10-21T03:00",
+      fire_at: okAt,
+      catch_up: false,
+      covered: 1,
+      state: "done",
+      outcome: "ok",
+      result_class: "ok",
+      reason: "the mission proposed its plan",
+      mission_id: "msn_" + "1a2b3c4d".repeat(4),
+      session_key: null,
+      created_at: okAt,
+      finished_at: okAt + 180,
+      inputs: { instruction: "Audit the dependencies and open one PR per risky bump." },
+      scope: {},
+      steps: [
+        step(1, "claimed", "slot 03:00", 0, okAt),
+        step(2, "creating_mission", F.PROJECTS[0].id, 1, okAt),
+        step(3, "mission_created", "msn_" + "1a2b3c4d".repeat(4), 2, okAt),
+        step(4, "ok", "the mission proposed its plan", 180, okAt),
+      ],
+    },
+  ];
+  return { runs, total: 26 };
+}
+export const AUTOMATION_ENGINES = [
+  { id: "claude", ok: true, reason: "" },
+  { id: "codex", ok: true, reason: "" },
+];
+export const AUTOMATION_LIMITS = {
+  interval_min_minutes: 15,
+  max_runs_per_day_max: 48,
+  max_concurrent_max: 4,
+  pause_after_failures_max: 10,
+  triggers: ["once", "schedule", "manual"],
+  actions: ["start_mission", "start_session", "send_to_session"],
+  autonomy: ["propose", "dispatch", "dispatch_auto_choose"],
+  timezone: "Europe/Berlin",
+};
+
+// ---- the gallery compare (#1574, sweep state `galleryCompare`) --------------------------------
+// A local skill copied from the gallery at v1.0.0, and the gallery now publishing v2.0.0: the
+// Review update page runs the three-way compare and shows one conflicting file.
+const GC_DIGEST = "a".repeat(64);
+const GC_REVISION = "b".repeat(64);
+const GC_CONTENT = {
+  format: 1,
+  kind: "skill",
+  id: "review-checklist",
+  version: "2.0.0",
+  title: "Review checklist",
+  author: "BattleLab",
+  publisher: "BattleLab",
+  summary: "A short checklist an agent follows before it calls a change done.",
+  source: "https://example.com/review-checklist",
+  requirements: ["Read the change first"],
+  files: {
+    "SKILL.md": "# Review\nRead the change, run the tests, and report concrete findings.",
+    "notes/example.md": "Supporting notes",
+  },
+};
+export const GALLERY_COMPARE_DIGEST = GC_DIGEST;
+export function galleryListing() {
+  return {
+    state: "ready",
+    entries: [{ content: GC_CONTENT, digest: GC_DIGEST, available: true }],
+    sequence: 1,
+    digest: "e".repeat(64),
+    expires_at: F.NOW + 86400 * 365,
+    error: null,
+  };
+}
+// `galleryShowcase` (#1574 G1): the browse page with three skills, as the board draws it.
+export function galleryShowcase() {
+  const entry = (id, version, title, summary, d) => ({
+    content: { ...GC_CONTENT, id, version, title, summary },
+    digest: d.repeat(64),
+    available: true,
+  });
+  return {
+    ...galleryListing(),
+    entries: [
+      entry("bug-hunt", "0.5.0", "Bug hunt", "Reproduce first, fix second, add a regression guard.", "1"),
+      entry("performance-sweep", "1.0.0", "Performance sweep", "Profile, change one thing at a time, prove it.", "2"),
+      entry("docs-pass", "2.0.0", "Docs pass", "Bring the docs in line with what shipped.", "3"),
+    ],
+  };
+}
+export function galleryContent() {
+  return {
+    entry: { content: GC_CONTENT, digest: GC_DIGEST, available: true },
+    importable: true,
+    reason: null,
+    cut_digest: "e".repeat(64),
+    preview: null,
+  };
+}
+export function localSkill() {
+  return {
+    id: "my-skill",
+    revision: GC_REVISION,
+    files: {
+      "SKILL.md": "# Review\nRead the change and report concrete findings. Keep it short.",
+      "notes/example.md": "Supporting notes",
+    },
+    gallery_origin: {
+      state: "verified",
+      kind: "skill",
+      title: GC_CONTENT.title,
+      id: GC_CONTENT.id,
+      version: "1.0.0",
+      publisher: GC_CONTENT.publisher,
+      source: GC_CONTENT.source,
+      entry_digest: GC_DIGEST,
+      base_revision: GC_REVISION,
+      pointer: "d".repeat(32),
+    },
+    editable: true,
+  };
+}
+export function galleryComparison() {
+  const local = localSkill();
+  return {
+    kind: "skill",
+    id: local.id,
+    revision: local.revision,
+    origin: local.gallery_origin.pointer,
+    incoming_digest: GC_DIGEST,
+    comparison: local.revision,
+    base: { "SKILL.md": "# Review\nRead the change and report concrete findings.", "notes/example.md": "Supporting notes" },
+    local: local.files,
+    incoming: GC_CONTENT.files,
+    proposed: local.files,
+    conflicts: ["SKILL.md"],
+    changed_files: ["SKILL.md"],
+    incoming_version: "2.0.0",
+    base_version: "1.0.0",
+  };
+}
+
+// ---- the playbook editor (#1574 sweep) ----------------------------------------------------------
+// What GET /api/playbooks/<id> carries for the editor: the parsed manifest and flow, and the files.
+export const AUTHORING_SCHEMA = {
+  agents: ["claude", "codex", "gemini", "kimi", "opencode"],
+  actors: ["agent", "external", "none", "operator"],
+  memory: ["none", "read", "read-write"],
+  distinct: ["session", "engine", "model"],
+  variable_types: ["text", "url", "enum", "bool", "int", "path"],
+  probes: { supervisor_judged: { outputs: [], args: {} }, none: { outputs: [], args: {} } },
+  limits: { flows: 20, steps: 30, items: 12, variables: 32, distinct: 8, rework_min: 1, rework_max: 10 },
+};
+function playbookDocuments(book) {
+  const manifest = {
+    format: 2,
+    identity: { id: book.id, name: book.name, publisher: book.publisher, version: book.version, domain: book.domain },
+    flows: { default: "main" },
+  };
+  const steps = book.flows[0].steps.map((st, i, all) => ({
+    id: st.id,
+    title: st.title,
+    actor: st.actor.kind === "agent" ? { kind: "agent", engine: st.actor.engine, ...(st.actor.model ? { model: st.actor.model } : {}) } : { kind: st.actor.kind },
+    ...(st.after.length ? { after: st.after } : {}),
+    checklist: [{ key: `${st.id}-done`, title: `${st.title} — done`, probe: "supervisor_judged" }],
+    // The review step sends a failed review back to the build: the bounded rework path.
+    ...(st.id === "review" && all.some((x) => x.id === "build") ? { rework: { to: "build", when: "failed", max_rounds: 2 } } : {}),
+  }));
+  const flow = { format: 2, title: book.flows[0].title, steps };
+  return {
+    documents: { "playbook.toml": manifest, "flows/main.toml": flow },
+    files: {
+      "playbook.toml": `format = 2\n[identity]\nid = "${book.id}"\nname = "${book.name}"\n`,
+      "flows/main.toml": `format = 2\ntitle = "${book.flows[0].title}"\n`,
+      "README.md": `# ${book.name}\n\n${book.summary}\n`,
+    },
+    readme: `# ${book.name}\n\n${book.summary}\n`,
+  };
 }

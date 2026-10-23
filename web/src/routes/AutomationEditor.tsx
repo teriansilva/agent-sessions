@@ -17,7 +17,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useBlocker, useLocation, useNavigate, useParams } from "react-router-dom";
 
-import { HudFrame } from "../components/hud/HudFrame";
 import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import { FolderPickerModal } from "../components/FolderPickerModal";
 import { ConsentDialog } from "../components/automations/ConsentDialog";
@@ -388,9 +387,9 @@ function Editor({ routeId }: { routeId?: string }) {
       <MissionRailOnly />
       <div className={`${styles.stack} ${styles.editorGrid}`}>
         <section className={styles.panel} aria-labelledby={f("title")}>
-          <HudFrame />
           <div className={styles.headText}>
-            <span className={styles.kicker}>
+            <span className={`nj-kicker ${styles.kicker}`}>
+              <span className="nj-notch" aria-hidden="true" />
               <Link className={styles.link} to={AUTOMATIONS_PATH}>
                 Automations
               </Link>
@@ -1069,7 +1068,6 @@ function Editor({ routeId }: { routeId?: string }) {
 
         <aside className={styles.aside}>
           <section className={styles.panel} aria-labelledby={f("scope")} data-testid="editor-scope">
-            <HudFrame />
             <h2 id={f("scope")} className={styles.panelTitle}>
               What this will do, unattended
             </h2>

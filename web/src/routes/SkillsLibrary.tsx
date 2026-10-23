@@ -12,7 +12,6 @@ import { GALLERY_SKILLS_PATH, SKILLS_PATH } from "../lib/routes";
 import { LandingNote, ViewTabs } from "../components/gallery/ViewTabs";
 import type { LocalSkill } from "../types/gallery";
 import { usePlaybookRead } from "../components/playbooks/usePlaybooks";
-import { HudFrame } from "../components/hud/HudFrame";
 import { FileRow, LeaveGuard, Origin, PendingOperation } from "../components/gallery/Shared";
 import { beginOperation, finishOperation, errorText, ownValue } from "../components/gallery/operations";
 import buttons from "../components/ui/actionButton.module.css";
@@ -22,8 +21,7 @@ export default function SkillsLibrary() {
   const { skillId } = useParams();
   return (
     <main className={styles.page}>
-      <HudFrame hero />
-      <div className={styles.kicker}>Library // Skills</div>
+      <div className={`nj-kicker ${styles.kicker}`}><span className="nj-notch" aria-hidden="true" />Library // <b>Skills</b></div>
       {!skillId && (
         <>
           <div className={styles.header}>
@@ -64,9 +62,12 @@ function List() {
       <div className={`${styles.grid} ${styles.listTop}`}>
         {read.data?.skills.map((skill) => (
           <article className={styles.card} key={skill.id}>
-            <div className={styles.tag}>
+            <div className={`${styles.tag} ${styles.stamp}`}>
               <FileText size={14} aria-hidden />
-              Skill // {skill.gallery_origin ? `v${skill.gallery_origin.version}` : "local"}
+              Skill
+              <span className={styles.stampId}>
+                {skill.gallery_origin ? `v${skill.gallery_origin.version}` : "local"}
+              </span>
             </div>
             <h2>{skill.gallery_origin?.title ?? skill.id}</h2>
             <p>
