@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -448,6 +449,45 @@ def test_apply_manual_cooldown_prevents_double_spawn(monkeypatch, tmp_path):
     assert update.apply_manual() == "started"
     assert update.apply_manual() == "busy"
     assert len(spawns) == 1
+
+
+def _cooldown_with(monkeypatch, tmp_path, child):
+    """An `apply()` from moments ago whose installer is ``child``, and a next one to count."""
+    inst = tmp_path / "current" / "src" / "install.sh"
+    inst.parent.mkdir(parents=True)
+    inst.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("AGENT_SESSIONS_HOME", str(tmp_path))
+    monkeypatch.setattr(update, "_channel", lambda: "main")
+    monkeypatch.setattr(update, "_SPAWNED_AT", update.time.monotonic())
+    monkeypatch.setattr(update, "_INSTALLER", child)
+    spawns: list[object] = []
+    monkeypatch.setattr(
+        update.subprocess, "Popen", lambda argv, **kw: spawns.append(argv) or SimpleNamespace()
+    )
+    return spawns
+
+
+def test_a_failed_installer_does_not_hold_the_cooldown(monkeypatch, tmp_path):
+    """The UI build failed, the installer exited, the card said "failed" — and "Update now"
+    answered 409 "already in progress" for the rest of the 15 minutes. An installer that has
+    exited restarts nothing, so the next update may start straight away."""
+    child = subprocess.Popen(["sh", "-c", "exit 1"])  # noqa: S603, S607
+    child.wait()
+    spawns = _cooldown_with(monkeypatch, tmp_path, child)
+    assert update.apply_manual() == "started"
+    assert len(spawns) == 1
+
+
+def test_a_running_installer_still_holds_the_cooldown(monkeypatch, tmp_path):
+    child = subprocess.Popen(["sleep", "30"])  # noqa: S603, S607
+    try:
+        spawns = _cooldown_with(monkeypatch, tmp_path, child)
+        assert update.apply_manual() == "busy"
+        assert update.autoupdate() == "busy"
+        assert spawns == []
+    finally:
+        child.kill()
+        child.wait()
 
 
 # ---- release-tag verification against the committed manifest (#612 Phase 1) -----

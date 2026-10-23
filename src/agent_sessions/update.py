@@ -69,8 +69,8 @@ CHANNELS = ("stable", "main")
 # Single-flight (#538): one check/apply at a time, shared between the scheduled loop and
 # the manual /api/update/apply path.
 _RUN_LOCK = threading.Lock()
-# After an installer spawn, the service is about to be restarted by that installer (or the
-# spawn failed silently) — the scheduled path skips instead of stacking a second installer.
+# After an installer spawn, the service is about to be restarted by that installer — both paths
+# skip instead of stacking a second one, for as long as it is still running (`_spawn_cooling_down`).
 _SPAWNED_AT: float | None = None
 _SPAWN_COOLDOWN_S = 15 * 60
 # Recent-runtime status of the last SCHEDULED pass (#538): in-memory by design — a status
@@ -904,6 +904,20 @@ def apply() -> bool:
     return True
 
 
+def _spawn_cooling_down() -> bool:
+    """Is the installer this process spawned still working through its build/restart window?
+
+    Only while it is still RUNNING. An installer that already exited — a failed build, a refused
+    commit — will restart nothing, and holding the cooldown after it made "Update now" answer
+    409 "already in progress" for the rest of the 15 minutes behind a card that already said
+    the update failed. ``poll()`` on our own handle also reaps it (see `_pid_alive`). A handle
+    we cannot poll is treated as running: the cooldown exists to stop a second installer."""
+    if _SPAWNED_AT is None or time.monotonic() - _SPAWNED_AT >= _SPAWN_COOLDOWN_S:
+        return False
+    poll = getattr(_INSTALLER, "poll", None)
+    return poll is None or poll() is None
+
+
 def apply_manual() -> str:
     """The manual "Update now" path: single-flight with the scheduled loop AND with a
     just-spawned installer. `apply()` returns right after the detached spawn while the
@@ -913,7 +927,7 @@ def apply_manual() -> str:
     if not _RUN_LOCK.acquire(blocking=False):
         return "busy"
     try:
-        if _SPAWNED_AT is not None and time.monotonic() - _SPAWNED_AT < _SPAWN_COOLDOWN_S:
+        if _spawn_cooling_down():
             return "busy"
         return "started" if apply() else _not_started()
     finally:
@@ -936,7 +950,7 @@ def autoupdate() -> str:
     if not _RUN_LOCK.acquire(blocking=False):
         return "busy"
     try:
-        if _SPAWNED_AT is not None and time.monotonic() - _SPAWNED_AT < _SPAWN_COOLDOWN_S:
+        if _spawn_cooling_down():
             return "busy"
         info = check()
         if not info["update_available"]:
