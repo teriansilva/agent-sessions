@@ -1,0 +1,45 @@
+/* The relay plate (#1658). The trigger is the HQ/bell plate (NotificationBell.module.css `.btn`) and
+ * the panel is the Help menu's (HelpMenu.module.css); what is here is the slot and the status
+ * header, which nothing else draws. Tokens only. */
+
+/* The `data-topbar-keep` slot — a plain inline box, so the plate sits in the corner's flex row
+ * like its neighbours (the operator slot's pattern, OperatorMenu.module.css). */
+.slot {
+  display: inline-flex;
+}
+
+.head {
+  display: grid;
+  gap: var(--sp-1);
+  padding: var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.state {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  font: 600 var(--fs-label) / 1.3 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+  overflow-wrap: anywhere;
+}
+.status {
+  font: 400 var(--fs-micro) / 1.5 var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.clock {
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.clock b {
+  color: var(--hud-text);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}

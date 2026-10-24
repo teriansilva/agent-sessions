@@ -95,6 +95,7 @@ import {
 import { SETTINGS_PATH } from "../routes/settingsTabs";
 import { BrandMark, BrandWordmark } from "../components/brand/Brand";
 import { OperatorMenu } from "../components/shell/OperatorMenu";
+import { RelayChip } from "../components/shell/RelayChip";
 import { FooterTelemetry } from "../components/shell/FooterTelemetry";
 import { BootSequence } from "../components/shell/BootSequence";
 import { useBoot } from "../components/shell/useBoot";
@@ -593,7 +594,10 @@ function Layout() {
               asked to drop, and the width goes back to the nav. */}
           <span className="hud-topbar-actions">
             {/* The `?` and ⚙ that sat here moved into the operator menu (#1085). Ask sits beside
-                the bell (#1294): it opens the right-hand sidebar on every route. */}
+                the bell (#1294): it opens the right-hand sidebar on every route. Streamed through the
+                Home Free relay, the connection's plate leads the corner (#1658); elsewhere it renders
+                nothing. */}
+            <RelayChip />
             <AskToggle />
             <NotificationBell />
             {/* LAST, hard against the edge, and it KEEPS ITS PLACE on a phone (#1058): the bell

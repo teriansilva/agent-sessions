@@ -24,8 +24,16 @@ import {
   relayUrls,
   solveAltcha,
 } from "./connect";
-import { type MountedApp, mountApp } from "./appMount";
+import { type MountedApp, mountApp, renderRealApp } from "./appMount";
 import { CONNECT_STEPS, connectSteps, errorState, renderConnectState } from "./connectState";
+import {
+  type RelayLink,
+  clearRelay,
+  onRelayDockChange,
+  publishRelay,
+  relayPlateDocked,
+  updateRelay,
+} from "./relayStatus";
 import { sessionExpiredMessage, sessionExpiryMs } from "./sessionWindow";
 
 type UiState = "signed-out" | "connecting" | "connected";
@@ -182,13 +190,44 @@ function leaveError(to: "gate" | "key"): void {
 function setState(state: UiState): void {
   body.dataset.state = state;
   syncConnectEnabled();
-  sessionBox.hidden = state !== "connected";
+  armBarFallback(state === "connected");
   setAmbient(state !== "connected");
   if (state === "connected") {
     setSessionLed("up");
     applyBarDefault(); // pick collapsed/expanded for this viewport (unless the user chose)
   }
 }
+
+// The floating bar is the FALLBACK (#1658). Connected, the streamed app's top bar shows the
+// connection as a plate (components/shell/RelayChip, through homefree/relayStatus) and this bar
+// stands down. It shows only while no plate is docked: 2 s after `connected` if none has docked
+// yet (no flash while the app's bar renders), and at once if a docked plate leaves while still
+// connected — so Sign out is reachable whatever the app renders.
+const BAR_FALLBACK_MS = 2000;
+let barFallbackDue = false;
+let barFallbackTimer: number | undefined;
+
+function syncSessionBox(): void {
+  sessionBox.hidden =
+    body.dataset.state !== "connected" || relayPlateDocked() || !barFallbackDue;
+}
+
+function armBarFallback(connected: boolean): void {
+  barFallbackTimer = stopTimer(barFallbackTimer);
+  barFallbackDue = false;
+  if (connected)
+    barFallbackTimer = window.setTimeout(() => {
+      barFallbackTimer = undefined;
+      barFallbackDue = true;
+      syncSessionBox();
+    }, BAR_FALLBACK_MS);
+  syncSessionBox();
+}
+
+onRelayDockChange((docked) => {
+  if (!docked && body.dataset.state === "connected") barFallbackDue = true;
+  syncSessionBox();
+});
 
 // ── Human-verification gate (#690) ─────────────────────────────────────────────
 // Connecting requires a deliberate press-and-hold gesture first. This is a browser-side
@@ -328,6 +367,7 @@ function setStatus(text: string, kind: "info" | "error" | "ok" = "info"): void {
   statusEl.textContent = text;
   statusEl.dataset.kind = kind;
   sessionStatusEl.textContent = text;
+  updateRelay({ status: text }); // the plate's panel says the same (a no-op until published)
 }
 
 // Collapsible connection bar (#684). On small screens the full bar overlaps the app toolbar, so
@@ -423,6 +463,9 @@ interface Attempt {
   app: MountedApp | null;
   /** Settles once the attempt's own connect() has finished — including tearing down a late mount. */
   settled: Promise<void>;
+  /** The attempt's link (#1658). `warn` can land while the app is still mounting, before anything
+   *  is published: the first snapshot must carry it, and the post-mount status must not undo it. */
+  link: RelayLink;
 }
 let attempt: Attempt | null = null;
 /** The newest attempt's `settled` — kept after the attempt ends, so the next one can wait for it. */
@@ -540,6 +583,7 @@ function startCountdown(deadline: number): void {
     const s = String(left % 60).padStart(2, "0");
     countdownEl.textContent = h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
     updateToggleLabel(); // keep the collapsed control's accessible name/tooltip current
+    updateRelay({ remaining: countdownEl.textContent });
     if (left <= 0) endSession(sessionExpiredMessage(), "expired");
   };
   tick();
@@ -559,6 +603,7 @@ function resetForm(clearIdentity = false): void {
 /** End the attempt in flight, if any: abort it (closing its relay socket) and tear its app down.
  *  Idempotent — every exit path calls it, and a second call finds nothing to end. */
 function endAttempt(): void {
+  clearRelay(); // the plate goes with the attempt; a stale one can sign nothing out
   const a = attempt;
   attempt = null;
   if (!a) return;
@@ -631,6 +676,7 @@ async function connect(): Promise<void> {
     ctl,
     app: null,
     settled: new Promise<void>((r) => (settle = r)),
+    link: "linked",
   };
   attempt = mine;
   lastSettled = mine.settled;
@@ -660,9 +706,26 @@ async function connect(): Promise<void> {
     canonicalizeConnectedUrl();
     sessionNameEl.textContent = `Connected to ${name}`;
     setState("connected");
-    setStatus("connected — streaming your BattleLab, the relay is blind", "ok");
+    // An early `warn` (it landed while the app was mounting) keeps its amber LED and its "ends
+    // soon" status: the panel must never pair "ends soon" with a "connected" line.
+    if (mine.link === "ending") setSessionLed("warn");
+    else setStatus("connected — streaming your BattleLab, the relay is blind", "ok");
     saveSession(base, name, key, deadline);
     if (deadline) startCountdown(deadline);
+    // The countdown's first tick can already end the attempt (a deadline in the past): then there
+    // is nothing to publish.
+    if (ctl.signal.aborted) return;
+    // Published only now — after the status decision — so the plate's first paint is right.
+    publishRelay(
+      {
+        link: mine.link,
+        name,
+        status: sessionStatusEl.textContent ?? "",
+        remaining: deadline ? (countdownEl.textContent ?? "") : "",
+      },
+      () => endSession("signed out", "signed-out"),
+    );
+    updateToggleLabel();
   } catch (err) {
     // A failure that lands after its attempt ended belongs to nobody: the page has moved on.
     if (ctl.signal.aborted) return;
@@ -720,7 +783,10 @@ async function connectApp(
   // the box is next), the relay pairs the box (the key exchange is next), the key exchange
   // finishes (the app streams in next) — and only a mounted app takes the screen.
   let deadline: number | undefined;
+  // `render` is the real SPA render, the real mountApp's own default; handed over explicitly so a
+  // test harness standing in for the tunnel can still mount the real app (#1658).
   const app = await mount(ws, key, captcha, {
+    render: renderRealApp,
     onEvent: (evt) => {
       if (signal.aborted) return; // a late event of an attempt that already ended
       if (evt.type === "open") {
@@ -737,10 +803,13 @@ async function connectApp(
         setStatus("keys exchanged — loading your BattleLab…");
         showProgress();
       } else if (evt.type === "warn") {
+        // Events are fenced by `signal`, so the attempt in flight is the one this event belongs to.
+        if (attempt) attempt.link = "ending";
         setStatus(
           `session ends soon (${evt.remaining ?? "<5m"}s) — reconnect after`,
         );
         setSessionLed("warn"); // amber pulse so a collapsed bar still signals near-expiry
+        updateRelay({ link: "ending" });
         updateToggleLabel();
       } else if (evt.type === "expired") {
         endSession(sessionExpiredMessage(), "expired");

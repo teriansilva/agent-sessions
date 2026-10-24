@@ -985,3 +985,35 @@
     padding-inline: 0;
   }
 }
+
+/* THE RELAYED ROW (#1658). Streamed through the Home Free relay, the connection's plate joins the
+   corner, and on a sidebar route (the hamburger present) that one tile ran the row 20px over at
+   320, 2px at 344 and 10px at 390 (measured). Only while that plate is in the bar, the shared tiles
+   give width back — 3px each up to 440 (eight tiles, 24px), 4px each at ≤380 where the row was
+   already tightest (3px left it 1.5px short at 320) — and the plain bar keeps the sizes above. Width
+   only: the 44px height is untouched, and nothing leaves the row. The selectors out-weigh the
+   three-class ≤380px rule, so each band's value wins in its own band. */
+@media (max-width: 440px) {
+  .hud-topbar.hud-topbar.hud-topbar:has([data-relay-plate]) {
+    --tb-tile: 29px;
+  }
+}
+@media (max-width: 380px) {
+  .hud-topbar.hud-topbar.hud-topbar.hud-topbar:has([data-relay-plate]) {
+    --tb-tile: 26px;
+  }
+}
+/* The same plate also ran Library's chevron under it just past two band edges (measured on a sidebar
+   route, #1662): at 441–464px, where the phone tiles are back to 38px (23px at 441), and at
+   801–826px, the first desktop widths (24px at 801). The phone band gets 34px tiles; the desktop
+   band takes 4px off each section tab's side padding (four tabs, 32px). */
+@media (min-width: 441px) and (max-width: 480px) {
+  .hud-topbar.hud-topbar.hud-topbar:has([data-relay-plate]) {
+    --tb-tile: 34px;
+  }
+}
+@media (min-width: 801px) and (max-width: 880px) {
+  .hud-topbar:has([data-relay-plate]) .section-nav a {
+    padding-inline: 6px;
+  }
+}

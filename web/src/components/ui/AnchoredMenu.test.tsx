@@ -162,3 +162,31 @@ test("the items function is handed the trigger, read at event time (a portalled 
   await userEvent.click(screen.getByRole("menuitem", { name: "Act" }));
   expect(got).toBe(screen.getByTestId("trigger"));
 });
+
+test("a trigger label and title of its own name the trigger; the menu and the sheet title keep `label` (#1658)", async () => {
+  viewport(true);
+  const root = document.createElement("div");
+  root.id = "root";
+  document.body.appendChild(root);
+  render(
+    <AnchoredMenu
+      label="Relay connection"
+      triggerLabel="Relay connection: linked — onyx-9780, 3:57:50 left"
+      triggerTitle="Relay connection: linked — onyx-9780, 3:57:50 left"
+      trigger={<span>●</span>}
+      triggerClassName="t"
+      triggerTestId="trigger"
+      menuTestId="panel"
+      classes={{ wrap: "w", panel: "p", items: "i" }}
+    >
+      <button type="button" role="menuitem">Sign out</button>
+    </AnchoredMenu>,
+    { container: root },
+  );
+  const trigger = screen.getByTestId("trigger");
+  expect(trigger).toHaveAccessibleName("Relay connection: linked — onyx-9780, 3:57:50 left");
+  expect(trigger).toHaveAttribute("title", "Relay connection: linked — onyx-9780, 3:57:50 left");
+  await userEvent.click(trigger);
+  expect(screen.getByRole("dialog", { name: "Relay connection" })).toBeInTheDocument();
+  expect(screen.getByRole("menu", { name: "Relay connection" })).toBeInTheDocument();
+});

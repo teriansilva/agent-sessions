@@ -58,6 +58,9 @@ function menuItems(panel: HTMLElement | null): HTMLElement[] {
 
 export function AnchoredMenu({
   label,
+  triggerLabel,
+  triggerTitle,
+  triggerDescribedBy,
   trigger,
   triggerClassName,
   triggerTestId,
@@ -72,6 +75,14 @@ export function AnchoredMenu({
 }: {
   /** The accessible name of both the trigger and the menu. */
   label: string;
+  /** The trigger's own accessible name, when it says more than the menu's (the relay plate's
+   *  "Relay connection: linked — onyx-9780, …", #1658). The menu and the sheet title keep `label`. */
+  triggerLabel?: string;
+  /** The trigger's tooltip. */
+  triggerTitle?: string;
+  /** The id of an element describing the trigger (`aria-describedby`) — what changes too often to be
+   *  part of its name, like the relay plate's time left (#1658). */
+  triggerDescribedBy?: string;
   /** The trigger's content — an icon. */
   trigger: ReactNode;
   triggerClassName: string;
@@ -322,7 +333,9 @@ export function AnchoredMenu({
         disabled={disabled}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={label}
+        aria-label={triggerLabel ?? label}
+        title={triggerTitle}
+        aria-describedby={triggerDescribedBy}
         onClick={() => {
           // Measured BEFORE it opens, so a portalled panel's first paint is already in place.
           if (!open && portal && !sheet) measure();

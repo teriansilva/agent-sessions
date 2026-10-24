@@ -123,8 +123,10 @@ export interface MountedApp {
 /** Renders the SPA into `rootId` and returns an unmount fn. Injectable for testing. */
 export type RenderApp = (rootId: string) => Promise<() => void>;
 
-/** Fork C (dynamic-import): pull the app bundle on demand and boot it exactly like main.tsx. */
-const dynamicImportRender: RenderApp = async (rootId) => {
+/** Fork C (dynamic-import): pull the app bundle on demand and boot it exactly like main.tsx.
+ *  Exported so the connect page can hand it to a test harness that stands in for the tunnel and
+ *  still mounts the real app (#1658); `mountApp` uses it by default. */
+export const renderRealApp: RenderApp = async (rootId) => {
   const [
     { default: App },
     { createRoot },
@@ -166,7 +168,7 @@ export async function mountApp(
 ): Promise<MountedApp> {
   const wired = await wireAppTunnel(ws, accessKey, captcha, opts.onEvent);
   try {
-    const unmount = await (opts.render ?? dynamicImportRender)(
+    const unmount = await (opts.render ?? renderRealApp)(
       opts.rootId ?? "app-root",
     );
     return {
