@@ -3443,11 +3443,6 @@ export function StructuredPane({
             </span>
           </button>
         </div>
-        {snap?.native?.worker && snap.files === false && !readOnly && (
-          <div className={chat.note}>
-            To attach documents, stop this session, then send a message to resume it.
-          </div>
-        )}
         {(snap?.files || snap?.images) && !readOnly && (
           <input
             ref={fileRef}
