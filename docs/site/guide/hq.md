@@ -221,6 +221,8 @@ follows you to every device.
   you switch. Answers with the contact Off, from a contact that no longer exists, or from before
   HQ read **HQ**. If your AI endpoint refuses tool calls and HQ falls back to a plain search, the
   answer still carries the contact's name but not their character.
+- **You can switch contact mid-conversation.** The new General reads the earlier answers as
+  someone else's, with the name of whoever gave them, and answers under their own name.
 - Only the chosen contact's loop is downloaded, and the installed app doesn't keep the loops for
   offline use.
 

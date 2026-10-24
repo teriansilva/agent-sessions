@@ -57,8 +57,10 @@ def test_registry_covers_every_system_prompt():
     # #956 removed pulse_banner; #1088 added mission_judge; #1086 added pulse_recap;
     # #1090 added template_suggest + template_write; #1209 added chat_agent; #1222 chat_agent_tools
     # #1443 added ask_orchestrator; #1525 the 13 HQ contact personas (unguarded: who speaks, sent
-    # BEFORE the guarded ask_orchestrator, whose guard stays the last word)
-    assert len(prompts.REGISTRY) == 37
+    # BEFORE the guarded ask_orchestrator, whose guard stays the last word); #1397 hq_call +
+    # hq_call_detailed; hq_handover / hq_handover_plain, when the Commander switched contact
+    # mid-conversation
+    assert len(prompts.REGISTRY) == 39
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -144,6 +146,8 @@ EXPECTED_DEFAULT_SHA = {
     "hq_persona_romania_woman": "e87849be173ee7b0",
     "hq_call": "2a2d38ffdfc7bd9b",  # #1397
     "hq_call_detailed": "bdfdfb789725e801",  # #1397 (#1626 review: the answers setting)
+    "hq_handover": "a27b7d563b8cb484",  # the Commander switched contact mid-conversation
+    "hq_handover_plain": "2629dd59306634d4",  # the same, switched to Off
 }
 
 

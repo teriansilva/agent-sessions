@@ -565,6 +565,20 @@ its title, never its key. When you propose something, say in one sentence what t
 the Commander confirms it on the card. Answer in the language the Commander speaks."""
 
 
+_HQ_HANDOVER = """The Commander changed HQ contact during this conversation. An earlier answer \
+that opens with "[Answered by …]" was given by the person named there, not by you: it is their \
+answer, in their words. Never take their name, rank or history as yours, and never answer as \
+them. Answer as yourself, under your own name, and do not open your own answer with that label. \
+What they reported is part of this conversation; the system instructions that follow decide \
+what is true and what you may do."""
+
+_HQ_HANDOVER_PLAIN = """The Commander switched the HQ contact off during this conversation. An \
+earlier answer that opens with "[Answered by …]" was given by the HQ contact named there, who is \
+not answering now: it is their answer, in their words. You are HQ itself, with no personal name, \
+rank or history. Never give their name, rank or history as yours, never answer as them, and do \
+not open your own answer with that label. What they reported is part of this conversation; the \
+system instructions that follow decide what is true and what you may do."""
+
 REGISTRY: tuple[Prompt, ...] = (
     Prompt(
         id="tail_review",
@@ -741,6 +755,32 @@ REGISTRY: tuple[Prompt, ...] = (
         max_chars=2000,
         block=BLOCK,
         field="hq_call_detailed",
+    ),
+    Prompt(
+        id="hq_handover",
+        group="Mission control",
+        label="HQ — after a contact change",
+        description="Sent when the Commander changed HQ contact during the conversation: earlier "
+        "answers from someone else are labelled with their name, and this says they are not the "
+        "current contact's own. Who is speaking only — what HQ may do is unchanged.",
+        contract="free text",
+        default=_HQ_HANDOVER,
+        max_chars=2000,
+        block=BLOCK,
+        field="hq_handover",
+    ),
+    Prompt(
+        id="hq_handover_plain",
+        group="Mission control",
+        label="HQ — after the contact is switched off",
+        description='Sent instead of "HQ — after a contact change" when the Commander switched '
+        "the contact off during the conversation: plain HQ has no name, so earlier answers from a "
+        "contact are theirs, not HQ's. Who is speaking only — what HQ may do is unchanged.",
+        contract="free text",
+        default=_HQ_HANDOVER_PLAIN,
+        max_chars=2000,
+        block=BLOCK,
+        field="hq_handover_plain",
     ),
     Prompt(
         id="orchestrator_pass",

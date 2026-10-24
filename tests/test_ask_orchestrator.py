@@ -1149,6 +1149,92 @@ def test_a_turn_keeps_its_contact_after_the_selection_changes(app, ai):
     assert [t["contact"] for t in turns] == ["southamerica-woman", "asia-man", "off"]
 
 
+def _replayed(body: dict) -> list[str]:
+    """The replayed answers in a request: every assistant message before the question."""
+    return [m["content"] for m in body["messages"] if m.get("role") == "assistant"]
+
+
+def test_a_switched_contact_reads_the_earlier_answer_as_someone_elses(app, ai):
+    """The operator's report: Lupu answered "General Ileana Lupu, Commander", the operator
+    switched to Sokolov mid-chat, and Sokolov — replayed that answer as his own — gave Lupu's name.
+    The earlier answer now opens with its speaker's label, and `hq_handover` says what it means,
+    after the persona and before the guarded prompt, through the REAL outbound guard."""
+    from agent_sessions import prompts
+
+    script = ai(answer("General Ileana Lupu, Commander."), answer("General Dmitri Sokolov."))
+    cid = app.new()
+    app.ask(cid, "Name and rank please", contact="romania-woman")
+    r = app.ask(cid, "Name and rank please", contact="russia-man")
+    assert r.json()["turn"]["status"] == "done", r.text
+    body = script.bodies[1]
+    review._assert_registered_system_prompts(body["messages"])
+    assert _systems(script.bodies[0]) == [
+        prompts.effective(hq_contacts.prompt_id("romania-woman")),
+        prompts.effective("ask_orchestrator"),
+    ]
+    assert _systems(body) == [
+        prompts.effective(hq_contacts.prompt_id("russia-man")),
+        prompts.effective("hq_handover"),
+        prompts.effective("ask_orchestrator"),
+    ]
+    assert _systems(body)[-1].endswith(prompts.GUARD_CLAUSE)
+    assert _replayed(body) == [
+        "[Answered by General Ileana Lupu]\n\nGeneral Ileana Lupu, Commander."
+    ]
+    # The stored answer is untouched: the label is built for the request only.
+    assert app.get(cid)["turns"][0]["answer"] == "General Ileana Lupu, Commander."
+
+
+def test_the_same_contact_throughout_sends_no_label_and_no_handover(app, ai):
+    """No switch, no change — even when an answer's own TEXT looks like the label: who spoke is
+    read from the stored turn, never from what it said."""
+    from agent_sessions import prompts
+
+    script = ai(answer("[Answered by General Ileana Lupu] Miss me?"), answer("Still here."))
+    cid = app.new()
+    app.ask(cid, "one", contact="russia-man")
+    app.ask(cid, "two", contact="russia-man")
+    assert _systems(script.bodies[1]) == [
+        prompts.effective(hq_contacts.prompt_id("russia-man")),
+        prompts.effective("ask_orchestrator"),
+    ]
+    assert _replayed(script.bodies[1]) == ["[Answered by General Ileana Lupu] Miss me?"]
+
+
+def test_switching_back_labels_only_the_other_contacts_answers(app, ai):
+    script = ai(answer("Lupu one."), answer("Sokolov."), answer("Lupu two."))
+    cid = app.new()
+    app.ask(cid, "one", contact="romania-woman")
+    app.ask(cid, "two", contact="russia-man")
+    app.ask(cid, "three", contact="romania-woman")
+    assert _replayed(script.bodies[2]) == [
+        "Lupu one.",
+        "[Answered by General Dmitri Sokolov]\n\nSokolov.",
+    ]
+
+
+def test_plain_hq_and_a_contact_label_each_other(app, ai):
+    """Off has no persona, but a General's earlier answer is still not plain HQ's own (live, plain
+    HQ gave Lupu's name until it had `hq_handover_plain`), and plain HQ's is not the General's."""
+    from agent_sessions import prompts
+
+    script = ai(answer("HQ here."), answer("Cruz here."), answer("HQ again."))
+    cid = app.new()
+    app.ask(cid, "one", contact="off")
+    app.ask(cid, "two", contact="southamerica-woman")
+    app.ask(cid, "three", contact="off")
+    assert _replayed(script.bodies[1]) == ["[Answered by HQ, with no contact]\n\nHQ here."]
+    # Off has no name to answer under: its own handover says it is HQ itself.
+    assert _systems(script.bodies[2]) == [
+        prompts.effective("hq_handover_plain"),
+        prompts.effective("ask_orchestrator"),
+    ]
+    assert _replayed(script.bodies[2]) == [
+        "HQ here.",
+        "[Answered by General Valentina Cruz]\n\nCruz here.",
+    ]
+
+
 def test_a_turn_from_before_hq_contacts_reads_as_plain_hq(app):
     cid = app.new()
     tid = str(uuid.uuid4())

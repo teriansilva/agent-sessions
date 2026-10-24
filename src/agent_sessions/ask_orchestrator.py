@@ -1944,10 +1944,16 @@ async def _call(turn: _Turn, name: str, raw_args: str) -> tuple[str, dict, dict]
 # ---- the turn ----------------------------------------------------------------------------------
 
 
-def _history(records: list[dict], turn_id: str) -> list[dict]:
+def _history(
+    records: list[dict], turn_id: str, contact: str = hq_contacts.OFF
+) -> tuple[list[dict], bool]:
     """The settled exchanges before ``turn_id``, as user/assistant messages (stored text — already
-    through the store boundary)."""
+    through the store boundary), and whether any of them was answered by someone other than
+    ``contact``. Such an answer — the Commander switched generals mid-conversation — opens with its
+    speaker's label (`speaker_label`), so the contact answering now never reads it as their own
+    (`_handover` says what the label means). Decided from the stored speaker, never the text."""
     questions: dict[str, str] = {}
+    speakers: dict[str, str] = {}
     answers: dict[str, str] = {}
     order: list[str] = []
     for r in records:
@@ -1956,17 +1962,31 @@ def _history(records: list[dict], turn_id: str) -> list[dict]:
             break
         if r.get("type") == "user" and isinstance(r.get("text"), str):
             questions[tid] = r["text"]
+            # Stored on each question (#1525); a turn from before HQ contacts is plain HQ.
+            speakers[tid] = hq_contacts.resolve(r.get("contact"))
             order.append(tid)
         elif r.get("type") == "assistant" and isinstance(r.get("text"), str):
             answers[tid] = r["text"]
     out: list[dict] = []
+    switched = False
     for tid in order[-HISTORY_TURNS:]:
         if tid in answers:
+            answer = answers[tid]
+            if speakers[tid] != contact:
+                answer = f"{speaker_label(speakers[tid])}\n\n{answer}"
+                switched = True
             out += [
                 {"role": "user", "content": questions[tid]},
-                {"role": "assistant", "content": answers[tid]},
+                {"role": "assistant", "content": answer},
             ]
-    return out
+    return out, switched
+
+
+def speaker_label(contact: str) -> str:
+    """The label an earlier answer from another speaker opens with: a contact's own name, never
+    text from the conversation. Plain HQ (``off``) is named as such."""
+    name = hq_contacts.get(contact).name if contact in hq_contacts.IDS else "HQ, with no contact"
+    return f"[Answered by {name}]"
 
 
 def _tools_rejected(r) -> bool:
@@ -2061,6 +2081,17 @@ def _call_style(turn: _Turn) -> list[dict]:
     return [{"role": "system", "content": prompts.effective("hq_call")}]
 
 
+def _handover(turn: _Turn, switched: bool) -> list[dict]:
+    """When an earlier answer came from someone else: ``hq_handover`` says the labelled answers
+    are not this contact's own, or ``hq_handover_plain`` — for Off, which has no name to answer
+    under — that they are not HQ's. After the persona, BEFORE the guarded prompt."""
+    if not switched:
+        return []
+    if turn.contact not in hq_contacts.IDS:
+        return [{"role": "system", "content": prompts.effective("hq_handover_plain")}]
+    return [{"role": "system", "content": prompts.effective("hq_handover")}]
+
+
 def _persona(turn: _Turn) -> list[dict]:
     """The contact's persona as its own system message, or nothing for ``off`` (#1525). An exact
     registry string: the outbound check holds as it is, and it goes BEFORE the guarded prompt."""
@@ -2080,11 +2111,12 @@ async def run_turn(turn: _Turn) -> list[dict]:
     except review.NotConfiguredError:
         return fail("the AI endpoint is not configured", "unconfigured")
     records = await asyncio.to_thread(ask_store.read, turn.cid)
-    history = _history(records, turn.turn_id)
+    history, switched = _history(records, turn.turn_id, turn.contact)
     convo: list[dict] = [
         # The persona first, the guarded prompt LAST of the system messages: its guard is then
         # the final instruction the model reads, whatever the voice says (`prompt-registry.md`).
         *_persona(turn),
+        *_handover(turn, switched),
         *_call_style(turn),
         {"role": "system", "content": prompts.effective("ask_orchestrator")},
         # Stored user/assistant text only; the pinned sanitizer gates the role at the sink.
