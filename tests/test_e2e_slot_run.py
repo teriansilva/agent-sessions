@@ -227,12 +227,15 @@ def test_every_slot_caller_reads_the_same_cap_knob() -> None:
 
 
 def test_the_command_runs_niced(slot_dir: Path) -> None:
-    """Browsers share the org runners with every repo's validations; they run at nice 10."""
+    """Browsers share the org runners with every repo's validations; they run 10 nicer than their
+    caller. `nice -n` is RELATIVE: a runner that already runs the suite niced (one did, at 9) lands
+    at its own niceness + 10, capped at 19 — never a flat 10."""
+    base = os.nice(0)
     r = _run(slot_dir, 1, "sh", "-c", "nice")
     assert r.returncode == 0, r.stderr
-    assert r.stdout.strip().splitlines()[-1] == "10", r.stdout
+    assert r.stdout.strip().splitlines()[-1] == str(min(19, base + 10)), r.stdout
     r = _run(slot_dir, 1, "sh", "-c", "nice", E2E_NICE="0")
-    assert r.stdout.strip().splitlines()[-1] == "0", r.stdout
+    assert r.stdout.strip().splitlines()[-1] == str(base), r.stdout
 
 
 def test_a_bad_nice_value_fails_closed(slot_dir: Path) -> None:
