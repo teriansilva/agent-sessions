@@ -19,7 +19,6 @@ const DRAFT: NewSessionDraft = {
   bypassChoice: false,
   returnTo: MAP_PATH,
   projectChoice: "",
-  cwdOverride: "/home/u/x",
 };
 
 describe("returnTarget — a closed map", () => {
@@ -80,17 +79,21 @@ describe("readDraft", () => {
         bypassChoice: "yes",
         returnTo: "https://evil.example",
         projectChoice: 3,
-        cwdOverride: {},
       }),
     ).toEqual({
       engineChoice: "",
       bypassChoice: null,
       returnTo: null,
       projectChoice: null,
-      cwdOverride: null,
     });
     expect(readDraft("x")).toBeNull();
     expect(readDraft(null)).toBeNull();
+  });
+
+  test("a pre-#1458 cwdOverride is dropped, never carried into the form", () => {
+    const parsed = readDraft({ ...DRAFT, cwdOverride: "/home/u/else" });
+    expect(parsed).toEqual(DRAFT);
+    expect(parsed).not.toHaveProperty("cwdOverride");
   });
 });
 
@@ -105,7 +108,7 @@ describe("the New session handoff", () => {
   test("finish selects the new project and keeps agent/bypass/map return", () => {
     expect(finishState(DRAFT, "p-new")).toEqual({
       returnTo: MAP_PATH,
-      restoreDraft: { ...DRAFT, projectChoice: null, cwdOverride: null },
+      restoreDraft: { ...DRAFT, projectChoice: null },
       selectProjectId: "p-new",
     });
     expect(finishState(null, "p-new")).toEqual({ selectProjectId: "p-new" });
@@ -113,7 +116,7 @@ describe("the New session handoff", () => {
 
   test("New session reads both back, round-trip", () => {
     expect(readLandingRestore(finishState(DRAFT, "p-new"))).toEqual({
-      draft: { ...DRAFT, projectChoice: null, cwdOverride: null },
+      draft: { ...DRAFT, projectChoice: null },
       selectProjectId: "p-new",
     });
     expect(readLandingRestore(cancelState(DRAFT))).toEqual({

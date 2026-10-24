@@ -1,13 +1,20 @@
-/* The New session form's pickers (#1436). Flat and square (design.md): the selection is an
- * accent border plus the 6px accent square — never a status colour. The only LED is
- * --status-down on a client that cannot start, which is a state. Every target is >= 44px (§8). */
+/* The New session form's pickers (#1436; NIGHTJAR #1531 Phase 6, the v5 board 08-deploy).
+ * Tokens only (cssGuard, nightjarLedger). An agent tile is a PLATE: the chamfer is paint, so the
+ * whole rectangle stays the hit area (#782), and its top rail carries the agent's own identity
+ * colour (`--eng`, set from the roster) — identity, never a state. The selection is the chrome:
+ * a `--hud` edge, a tinted face and the 6px mark — never a status colour. The only LED is
+ * `--status-down` on a client that cannot start, which is a state. The project list is a small
+ * chamfered frame. Every target is >= 44px (§8); every focus ring is inset. */
 .group {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-2);
+  min-width: 0;
 }
 .groupHead {
-  font-size: 11px;
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
   color: var(--text-3);
   margin-top: 2px;
 }
@@ -26,75 +33,83 @@
 .tiles {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 6px;
+  gap: var(--sp-2);
 }
 .tile {
+  composes: nj-plate from global;
+  --nj-face: var(--bg-1);
+  --nj-edge: var(--line-strong);
+  --nj-rail: var(--eng, var(--line-strong));
   position: relative;
   min-height: 48px;
-  padding: 7px 16px 7px 10px;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-4) var(--sp-2) var(--sp-3);
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 2px;
-  border: 1px solid var(--border);
-  background: var(--panel);
-  color: var(--text);
+  border: 1px solid transparent;
+  color: var(--text-1);
   cursor: pointer;
+  transition: filter var(--t-fast) var(--ease-out);
 }
 .tile:hover {
-  border-color: var(--accent-soft);
+  --nj-edge: var(--hud-dim);
 }
 .tile:has(input:checked) {
-  border-color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
-  background: color-mix(in srgb, var(--accent) 9%, var(--panel));
+  --nj-edge: var(--hud);
+  --nj-face: color-mix(in srgb, var(--hud) 10%, var(--bg-1));
+  /* Lock-on (§8 Interaction): one brightness step as the choice lands — Full only (motion.css
+   * removes it in Reduced and Off). Geometry never moves. */
+  animation: global(nj-glitch-step) var(--t-base) var(--ease-out) 1;
 }
-.tile:has(input:checked)::after {
+/* The 6px selection mark (selection is never colour alone, design §8). */
+.tile:has(input:checked) .tileName::after {
   content: "";
   position: absolute;
-  top: 7px;
-  right: 7px;
+  top: var(--sp-2);
+  right: var(--sp-2);
   width: 6px;
   height: 6px;
-  background: var(--accent);
+  background: var(--hud);
 }
 .tile:has(input:focus-visible),
 .row:has(input:focus-visible) {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 .tile:has(input:disabled) {
+  --nj-edge: var(--line);
+  --nj-rail: var(--line);
   cursor: default;
   opacity: 0.6;
-  border-color: var(--border-subtle);
 }
 .tileName {
-  font-size: 13px;
-  font-weight: 600;
+  font: 600 var(--fs-row) / 1.25 var(--font-display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .tileSub {
-  font-size: 11px;
-  color: var(--text-muted);
-  line-height: 1.3;
+  font: 400 var(--fs-micro) / 1.35 var(--font-mono);
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
 }
+/* `default` / `project`: a mono stamp, chrome — not a control. */
 .badge {
-  font-size: 10px;
-  font-weight: 500;
-  border: 1px solid var(--border);
-  padding: 0 4px;
-  color: var(--text-muted);
+  composes: nj-stamp from global;
+  padding: 2px 5px;
+  font-family: var(--font-mono);
+  color: var(--text-2);
 }
 .ledDown {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex: none;
-  background: var(--status-down);
+  composes: hud-led down from global;
 }
 
 /* Project list */
@@ -104,7 +119,7 @@
   flex: none;
 }
 .listNote {
-  padding: 8px 12px;
+  padding: var(--sp-2) var(--sp-3);
 }
 /* The filter is the list's first row, pinned while the rows scroll under it. */
 .filter {
@@ -112,29 +127,30 @@
   top: 0;
   z-index: var(--z-raised);
   flex: none;
-  background: var(--panel);
-  color: var(--text);
+  background: var(--bg-2);
+  color: var(--text-1);
   border: 0;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--line-strong);
   border-radius: 0;
-  padding: 0 12px;
+  padding: 0 var(--sp-3);
   min-height: 44px;
-  font: inherit;
-  font-size: 13px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-row);
 }
 .filter:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 2px var(--accent);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
-/* A FIXED height — six 44px rows plus the borders — whatever the list holds (#1437): the skeleton
- * and every list size take the same room, so nothing below it shifts when the list arrives. A
- * longer list scrolls inside it. */
+/* A FIXED height — six 44px rows plus the frame's 2px rail and 1px floor — whatever the list holds
+ * (#1437): the skeleton and every list size take the same room, so nothing below it shifts when
+ * the list arrives. A longer list scrolls inside it. The frame is a static clip (a panel clips,
+ * design §6); its cut lines are background paint that stays put while the rows scroll. */
 .list {
+  composes: nj-frame-sm from global;
+  --nj-edge: var(--line-strong);
   display: flex;
   flex-direction: column;
-  height: 266px;
-  border: 1px solid var(--border);
-  background: var(--panel);
+  height: 267px;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -142,22 +158,23 @@
 .skeleton {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-3);
   min-height: 44px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--border-subtle);
+  padding: 0 var(--sp-3);
+  border-bottom: 1px solid var(--line);
 }
 .row {
   position: relative;
   cursor: pointer;
-  color: var(--text);
+  color: var(--text-1);
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 .row:hover {
-  background: color-mix(in srgb, var(--accent) 5%, var(--panel));
+  background: var(--hud-tint);
 }
 .row:has(input:checked) {
-  background: color-mix(in srgb, var(--accent) 9%, var(--panel));
-  box-shadow: inset 3px 0 0 var(--accent);
+  background: color-mix(in srgb, var(--hud) 12%, transparent);
+  box-shadow: inset 3px 0 0 var(--hud);
 }
 .swatch {
   flex: none;
@@ -165,7 +182,7 @@
   height: 10px;
 }
 .rowName {
-  font-size: 13px;
+  font-size: var(--fs-row);
   font-weight: 600;
   min-width: 0;
   overflow: hidden;
@@ -173,8 +190,8 @@
   white-space: nowrap;
 }
 .rowNone {
-  font-size: 13px;
-  color: var(--text-muted);
+  font-size: var(--fs-row);
+  color: var(--text-2);
 }
 .rowFolder {
   margin-left: auto;
@@ -182,109 +199,58 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 11px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
   color: var(--text-3);
 }
 .star {
   flex: none;
   margin-left: auto;
-  color: var(--accent-text);
-  font-size: 12px;
+  color: var(--hud-text);
+  font-size: var(--fs-meta);
 }
 .rowFolder + .star {
   margin-left: 0;
 }
+/* The loading rows: the swatch and a bar, each the `nj-skeleton` scan band (Full only). */
 .skeleton span {
   display: block;
-  height: 9px;
-  background: var(--border);
+  --skeleton-h: 9px;
 }
 .skeleton span:first-child {
   width: 10px;
-  height: 10px;
+  --skeleton-h: 10px;
 }
 .newProject {
   display: flex;
   align-items: center;
   min-height: 44px;
-  padding: 0 12px 0 32px;
-  font-size: 13px;
+  /* Aligned with the project names: the row's inset, the swatch and its gap. */
+  padding: 0 var(--sp-3) 0 calc(var(--sp-3) + 10px + var(--sp-3));
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  letter-spacing: 0.08em;
   color: var(--accent-text);
   text-decoration: none;
 }
 .newProject:hover {
   text-decoration: underline;
+  text-underline-offset: 3px;
 }
 .newProject:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
 }
 
-/* The folder line (#1473): one row under the project list — text, then the override. */
-.folderLine {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-.folderText {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
-  font-size: 12px;
-  color: var(--text-muted);
-  overflow-wrap: anywhere;
-}
-.folderText code {
-  font-family: var(--font-mono);
-  color: var(--text);
-}
-.folderNote {
-  color: var(--text-3);
-}
-.folderLine .error {
-  flex: 1;
-}
-.choose {
-  flex: none;
-  min-height: 44px;
-  padding: 0 12px;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
+/* A quiet note under a picker (the list's failed-refresh note). */
 .note {
   margin: 0;
-  font-size: 12px;
-  color: var(--text-muted);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0 6px;
-}
-.error {
-  margin: 0;
-  font-size: 12px;
-  color: var(--text);
-  border-left: 2px solid var(--status-down);
-  padding: 2px 10px;
-}
-.linkButton {
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  padding: 0;
-  border: 0;
-  background: none;
-  font: inherit;
-  color: var(--accent-text);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  cursor: pointer;
-}
-.linkButton:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: 2px;
+  gap: 0 var(--sp-2);
 }
 @media (max-width: 800px) {
   .tiles {
@@ -301,6 +267,6 @@
 /* The wide two-column form has the height to spare: eight rows instead of six. */
 @container new-session (min-width: 880px) {
   .list {
-    height: 354px;
+    height: 355px;
   }
 }

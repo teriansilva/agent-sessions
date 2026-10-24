@@ -74,7 +74,6 @@ const DRAFT: NewSessionDraft = {
   bypassChoice: false,
   returnTo: null,
   projectChoice: "",
-  cwdOverride: "/home/u/else",
 };
 
 function Probe({ name }: { name: string }) {
@@ -379,7 +378,7 @@ test("finish from New session goes back with the project selected and the draft'
   expect(
     JSON.parse(screen.getByTestId("landed-state").textContent ?? "null"),
   ).toEqual({
-    restoreDraft: { ...DRAFT, projectChoice: null, cwdOverride: null },
+    restoreDraft: { ...DRAFT, projectChoice: null },
     selectProjectId: "p-new",
   });
 });

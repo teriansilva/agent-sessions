@@ -33,14 +33,15 @@ export function returnTarget(from: unknown): string | null {
 
 /** New session's form, as the operator left it. The fields mirror `NewSessionLanding`'s own state,
  *  including `projectChoice`'s three states: `null` = untouched (the default selection applies),
- *  `""` = explicitly no project, anything else = a chosen project id. */
+ *  `""` = explicitly no project, anything else = a chosen project id. There is NO folder field
+ *  (#1458): the project owns the launch folder, and a draft may never pick one — an old draft that
+ *  still carries a `cwdOverride` key has it dropped by `readDraft`, never applied. */
 export interface NewSessionDraft {
   engineChoice: string;
   bypassChoice: boolean | null;
   /** The map-return intent (#936): only `MAP_PATH` means anything. */
   returnTo: string | null;
   projectChoice: string | null;
-  cwdOverride: string | null;
   /** The model chosen for `engine` (#1189); absent ⇒ `default`. Bound to the engine it was chosen
    *  for, so switching engine clears it. */
   modelChoice?: { engine: string; model: string };
@@ -53,7 +54,9 @@ export interface NewSessionDraft {
 
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
-/** A draft read back out of router state, every field checked. Anything malformed → `null`. */
+/** A draft read back out of router state, every field checked. Anything malformed → `null`.
+ *  Unknown keys — a pre-#1458 `cwdOverride`, say — are ignored: parsing an old entry is harmless,
+ *  but nothing outside this interface's fields ever reaches the form. */
 export function readDraft(v: unknown): NewSessionDraft | null {
   if (!v || typeof v !== "object") return null;
   const d = v as Record<string, unknown>;
@@ -62,7 +65,6 @@ export function readDraft(v: unknown): NewSessionDraft | null {
     bypassChoice: typeof d.bypassChoice === "boolean" ? d.bypassChoice : null,
     returnTo: d.returnTo === MAP_PATH ? MAP_PATH : null,
     projectChoice: str(d.projectChoice),
-    cwdOverride: str(d.cwdOverride),
     ...readModelChoice(d.modelChoice),
     ...readEffortChoice(d.effortChoice),
     ...(str(d.apiGuardedEngine) ? { apiGuardedEngine: str(d.apiGuardedEngine) as string } : {}),
@@ -124,7 +126,7 @@ export function cancelState(draft: NewSessionDraft | null): LandingRestoreState 
 }
 
 /** Finish: the draft's agent/bypass/map-return intent, plus the new project to select. The prior
- *  project/folder choice is dropped — the new project and ITS folder replace it. */
+ *  project choice is dropped — the new project and ITS folder replace it (#1458). */
 export function finishState(
   draft: NewSessionDraft | null,
   projectId: string,
@@ -132,7 +134,7 @@ export function finishState(
   return {
     ...(draft?.returnTo ? { returnTo: draft.returnTo } : {}),
     ...(draft
-      ? { restoreDraft: { ...draft, projectChoice: null, cwdOverride: null } }
+      ? { restoreDraft: { ...draft, projectChoice: null } }
       : {}),
     selectProjectId: projectId,
   };

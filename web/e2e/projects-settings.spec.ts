@@ -279,17 +279,11 @@ test.describe("New-session Project → Folder (#448)", () => {
     );
   });
 
-  test("the selected project prefills the folder; the picker overrides it", async ({
+  test("the selected project resolves its default folder (#448, #1458)", async ({
     page,
   }) => {
     await page.goto(NEW_SESSION_PATH);
     await expect(projectPicker(page).radio("p-1")).toBeChecked(); // SampleProject is default
-    await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/sampleproject"); // its default folder
-
-    // Override the folder for this session via the ~/ picker.
-    await page.getByRole("button", { name: /choose folder/i }).click();
-    await page.getByRole("button", { name: "free" }).click();
-    await page.getByRole("button", { name: /^Select/ }).click();
-    await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/free");
+    await expect(launchFolder(page)).toHaveAttribute("data-cwd", "/home/u/sampleproject"); // its default folder
   });
 });

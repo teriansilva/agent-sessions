@@ -10,6 +10,8 @@ import type { EngineInfo, StructuredSnapshot } from "../../types/api";
 import { StructuredPane } from "./StructuredPane";
 import { handStart, resetStartHandoff } from "./startHandoff";
 import { NEW_SESSION_PATH } from "../../lib/routes";
+import { SessionsCtx, type SessionsStore } from "../../app/sessionsStore";
+import type { Session } from "../../types/api";
 
 vi.mock("../../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
@@ -58,15 +60,33 @@ function Where() {
   return <div data-testid="where">{JSON.stringify({ path: location.pathname, state: location.state })}</div>;
 }
 
-function renderPane() {
-  return render(
+/** The sessions store the pane reads its row from. Without one the row is still being looked up
+ *  (`pending`), as on a deep link whose lookup has not answered yet. */
+function store(row: Partial<Session> | null): SessionsStore {
+  return {
+    sessions: row ? [{ id: KEY, engine: "codex-api", title: "t", ...row } as Session] : [],
+    setSessions: () => {},
+    counts: null,
+    setCounts: () => {},
+    looked: {},
+    phases: {},
+    lookup: () => {},
+    retryGen: 0,
+    remember: () => {},
+    forget: () => {},
+  };
+}
+
+function renderPane(sessions?: SessionsStore) {
+  const pane = (
     <MemoryRouter initialEntries={[`/s/codex-api/${ID}`]}>
       <Routes>
         <Route path="/s/:engine/:id" element={<StructuredPane engine="codex-api" id={ID} />} />
         <Route path={NEW_SESSION_PATH} element={<Where />} />
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
+  return render(sessions ? <SessionsCtx.Provider value={sessions}>{pane}</SessionsCtx.Provider> : pane);
 }
 
 const sendButton = () => screen.getByTestId("structured-send");
@@ -162,7 +182,7 @@ test("a guarded create that failed offers New session and Discard — never Star
       launch: { gen: "w1", state: "failed", reason: REASON, since: 2 },
     }),
   );
-  renderPane();
+  renderPane(store({ project: { kind: "project", id: "p-proj", name: "Proj" } as Session["project"] }));
   const banner = await screen.findByTestId("structured-create-failed");
   expect(banner).toHaveTextContent(`Couldn’t start: ${REASON}`);
   expect(startButtons()).toHaveLength(0);
@@ -174,12 +194,39 @@ test("a guarded create that failed offers New session and Discard — never Star
   expect(where.path).toBe(NEW_SESSION_PATH);
   // GUARDED again (Hermes on #1518, 4): a stored skip default must not flip the replacement.
   expect(where.state.apiGuardedEngine).toBe("codex-api");
-  // Back to New session with the same agent, folder and model preselected.
+  // Back to New session with the same agent and model preselected — and no folder of its own:
+  // the folder follows the project (#1458).
   expect(where.state.restoreDraft).toMatchObject({
     engineChoice: "codex-api",
-    cwdOverride: "/home/u/proj",
     modelChoice: { engine: "codex-api", model: "gpt-5-codex" },
+    projectChoice: "p-proj",
   });
+  expect(where.state.restoreDraft).not.toHaveProperty("cwdOverride");
+});
+
+const failedCreate = () =>
+  snap({
+    native: { native_id: null, worker: null, background_active: false },
+    launch: { gen: "w1", state: "failed", reason: REASON, since: 2 },
+  });
+
+test("a failed session with NO project hands over an explicit No project — never the starred one (Hermes on #1646)", async () => {
+  // `null` would mean "untouched", and the form would preselect the starred project and start in
+  // ITS folder, unrelated to this session's. "" is the explicit No project the form keeps.
+  const user = userEvent.setup();
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(failedCreate());
+  renderPane(store({ project: { kind: "folder", id: "/home/u/proj", name: "/home/u/proj" } as Session["project"] }));
+  await screen.findByTestId("structured-create-failed");
+  await user.click(screen.getByRole("button", { name: "New session" }));
+  const where = JSON.parse((await screen.findByTestId("where")).textContent ?? "{}");
+  expect(where.state.restoreDraft.projectChoice).toBe("");
+});
+
+test("New session waits while the session's row is still being looked up — no project is guessed (Hermes on #1646)", async () => {
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(failedCreate());
+  renderPane();
+  await screen.findByTestId("structured-create-failed");
+  expect(screen.getByRole("button", { name: "New session" })).toBeDisabled();
 });
 
 test("a start refused before any worker existed shows its reason at once, with Start again", async () => {

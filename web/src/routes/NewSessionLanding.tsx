@@ -8,7 +8,6 @@ import {
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useConfig } from "../app/config";
 import { MAP_PATH, useMapWindows } from "../app/workspaceWindows";
-import { FolderPickerModal } from "../components/FolderPickerModal";
 import { ApiError, api } from "../lib/api";
 import { mintNewSessionId } from "../lib/newSession";
 import {
@@ -36,19 +35,15 @@ import { shortCwd } from "../lib/format";
 import { useProjectPicker } from "../app/useProjectPicker";
 import { usePrefetchStructuredModels, useStructuredModels } from "../app/useStructuredModels";
 import { listAgeMinutes, structuredModelsStore } from "../lib/structuredModelsStore";
-import {
-  AgentTiles,
-  FolderLine,
-  ProjectList,
-  type FolderState,
-} from "../components/newSession/NewSessionControls";
+import { AgentTiles, ProjectList } from "../components/newSession/NewSessionControls";
 import { handStart } from "../components/structured/startHandoff";
 import styles from "./NewSessionLanding.module.css";
 
-/** Landing at "/" — no session selected. Pick an engine + project + folder and start a new
- *  session (#448): a project owns a DEFAULT launch folder, so choosing a project prefills the
- *  folder; the folder is overridable for this one session via a ~/-rooted picker. We mint a
- *  client-side id, navigate to /s/:engine/:id carrying the fresh-launch params (cwd + bypass).
+/** Landing at "/" — no session selected. Pick an engine + project and start a new session: a
+ *  project owns the launch folder (#448), and the form takes it — there is no folder definition
+ *  here (#1458). The start summary names the folder it resolved; a missing one is fixed on the
+ *  project (Settings → Projects), never from this form. We mint a client-side id, navigate to
+ *  /s/:engine/:id carrying the fresh-launch params (cwd + bypass).
  *
  *  Unless the map sent us (#936): pressing "+ New session" with the workspace up carries
  *  `returnTo: "/overview"` in router state, and then the launch goes back to the MAP as a window
@@ -337,12 +332,6 @@ export function NewSessionLanding() {
   const modelSelect = engineInfo(engine)?.model_select;
 
 
-  // Folder: the project's default unless overridden for this session via the picker.
-  // A created project brings its own folder, so a finish never restores the old override.
-  const [cwdOverride, setCwdOverride] = useState<string | null>(
-    restore.selectProjectId ? null : (restore.draft?.cwdOverride ?? null),
-  );
-
   // The restore is one-shot: drop it from the history entry (keeping the map return), so a later
   // Back/Forward onto this entry does not re-select the project or re-apply the draft.
   useEffect(() => {
@@ -353,30 +342,15 @@ export function NewSessionLanding() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on mount
   }, []);
-  // `||`, not `??`, between the project's folder and the legacy pref: a folderless project stores
-  // "" (#448 back-compat), and "" is a *missing* folder, not a chosen one — fall through to the
-  // legacy cwd rather than opening the picker on nothing (#615 Phase 2 edge case). `cwdOverride`
-  // keeps `??`: an explicit "" from the picker is a real choice.
-  const projectCwd =
-    selectedProject?.default_folder || config?.default_project || "";
-  const cwd = (choiceVanished ? null : cwdOverride) ?? projectCwd;
-  const overridden = !choiceVanished && cwdOverride !== null;
-  const folderState: FolderState = !cwd
-    ? "none"
-    : selectedProject?.default_folder && cwd === selectedProject.default_folder
-      ? "project-default"
-      : overridden
-        ? "override"
-        : "global-default";
-
-  // The folder picker overrides this session's folder. `false` = closed.
-  const [folderPicker, setFolderPicker] = useState(false);
-  // Captured at open time (not read from a ref during render) so focus returns to the trigger.
-  const [pickerReturn, setPickerReturn] = useState<HTMLElement | null>(null);
-  const openPicker = (e: { currentTarget: HTMLElement }) => {
-    setPickerReturn(e.currentTarget);
-    setFolderPicker(true);
-  };
+  // Folder: the project's default, else the legacy global default — never a per-session choice
+  // (#1458). `||`, not `??`, between the project's folder and the legacy pref: a folderless project
+  // stores "" (#448 back-compat), and "" is a *missing* folder, not a chosen one — fall through to
+  // the legacy cwd (#615 Phase 2 edge case). A stale draft's old `cwdOverride` is not even read
+  // (`readDraft` drops it): invisible state never picks the launch directory.
+  const cwd = selectedProject?.default_folder || config?.default_project || "";
+  // The "using your global default" note (#1436) lives in the start summary (#1458): the folder
+  // the project does not own needs saying, and that line is where the launch is read.
+  const usingGlobalDefault = !!cwd && !selectedProject?.default_folder;
 
   // Creating a project is the New project wizard's job (#1187). It carries this form's draft so
   // finishing — or cancelling — brings the form back exactly as it is now.
@@ -385,7 +359,6 @@ export function NewSessionLanding() {
     bypassChoice,
     returnTo: returnToMap ? MAP_PATH : null,
     projectChoice,
-    cwdOverride,
     ...(modelChoice ? { modelChoice } : {}),
     ...(effortChoice ? { effortChoice } : {}),
     // A GUARDED API choice survives the detour (#1505); a skip choice never does.
@@ -635,29 +608,21 @@ export function NewSessionLanding() {
     }
   };
 
-  const onPick = (path: string) => {
-    setCwdOverride(path);
-    setFolderPicker(false);
-  };
   // Any explicit project choice settles a vanished one; the folder follows the new project.
-  const chooseProject = (id: string) => {
-    setProjectChoice(id);
-    setCwdOverride(null);
-  };
+  const chooseProject = (id: string) => setProjectChoice(id);
 
   // Ctrl/⌘+Enter starts — but only with focus INSIDE the form (#1437 review). A document-wide
   // listener fired from the sidebar, the top bar or a dialog beside the form, launching an agent
   // the operator never asked for (and Ctrl+Enter on a link is the browser's background-tab
-  // gesture). The folder picker renders outside the form, so it never reaches here. A held key's
-  // auto-repeat is ignored: the console path has no in-flight guard of its own.
+  // gesture). A held key's auto-repeat is ignored: the console path has no in-flight guard of its
+  // own.
   const onFormKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey) || e.repeat || e.defaultPrevented) return;
     // A focused link keeps its own Ctrl+Enter — the browser's open-in-background-tab.
     if ((e.target as Element).closest?.("a[href]")) return;
-    // Nothing starts while a modal is up. The folder picker moves focus into itself only once its
-    // directory listing answers, so until then focus is still on "Choose folder…" INSIDE this form
-    // (Hermes on #1437, review 6231). Checked twice: our own picker state, and any aria-modal.
-    if (folderPicker || document.querySelector('[aria-modal="true"]')) return;
+    // Nothing starts while a modal is up — whatever has focus: a dialog renders outside this form,
+    // and until it moves focus into itself the focus can still sit on a control in here (#1437).
+    if (document.querySelector('[aria-modal="true"]')) return;
     e.preventDefault();
     start();
   };
@@ -848,7 +813,8 @@ export function NewSessionLanding() {
 
         </div>
         <div className={styles.column}>
-        {/* Project FIRST (#448): it owns the default launch folder below. */}
+        {/* Project FIRST (#448): it owns the launch folder — each row shows it, and the start
+            summary names the one this session resolves to (#1458). */}
         <section className={styles.section} aria-labelledby="new-session-project-head">
           <h2 id="new-session-project-head" className={styles.sectionHead}>
             Project
@@ -880,16 +846,6 @@ export function NewSessionLanding() {
               <Link to={settingsPath("projects")}>Edit project defaults</Link>
             </p>
           )}
-
-          {/* Where it starts (#448): the project's default folder, overridable for this session —
-              one line, since each project row already shows its folder (#1473). */}
-          <FolderLine
-            cwd={cwd}
-            state={folderState}
-            projectName={selectedProject?.name ?? ""}
-            onChoose={openPicker}
-            onReset={() => setCwdOverride(null)}
-          />
         </section>
 
         {/* A `chat` agent (#1209) has no tools, so there are no permission prompts to skip. An
@@ -942,14 +898,14 @@ export function NewSessionLanding() {
           …or open an existing session from the list.
         </p>
         {startError && (
-          <p className={styles.hint} role="alert" data-testid="start-error">
+          <p className={styles.startError} role="alert" data-testid="start-error">
             {startError}
           </p>
         )}
         </div>
         </div>
         <div className={styles.startBar}>
-          <p className={styles.summary} data-testid="new-session-summary">
+          <p className={styles.summary} data-testid="new-session-summary" data-cwd={cwd}>
             {checkingSaved ? (
               "Checking your saved model…"
             ) : awaitingProjects ? (
@@ -962,12 +918,21 @@ export function NewSessionLanding() {
               <>
                 Start <b>{engineLabel(engine)}</b> in <code>{shortCwd(cwd)}</code>
                 <br />
-                {[selectedProject ? `project ${selectedProject.name}` : "no project", permissionNote]
+                {[
+                  selectedProject ? `project ${selectedProject.name}` : "no project",
+                  usingGlobalDefault ? "using your global default folder" : "",
+                  permissionNote,
+                ]
                   .filter(Boolean)
                   .join(" · ")}
               </>
+            ) : selectedProject ? (
+              <>
+                “{selectedProject.name}” has no default folder — set one in{" "}
+                <Link to={settingsPath("projects")}>Settings → Projects</Link>.
+              </>
             ) : (
-              "Choose a folder to start in."
+              "Pick a project to start in."
             )}
           </p>
           <button
@@ -981,16 +946,6 @@ export function NewSessionLanding() {
           </button>
         </div>
       </div>
-
-      {folderPicker && (
-        <FolderPickerModal
-          initialPath={cwd || undefined}
-          title="Choose a folder"
-          onPick={onPick}
-          onCancel={() => setFolderPicker(false)}
-          returnFocusTo={pickerReturn}
-        />
-      )}
     </div>
   );
 }

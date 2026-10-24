@@ -65,7 +65,7 @@ the same list.
 | `components/memory/agentAccess.module.css` | css | 10 | done | route:memory route:memory-off | the "for agents without the tool" disclosure fades open |
 | `components/memory/importCard.module.css` | css | 10 | done | route:memory route:memory-quarantine | the Acquiring bar on the first read and while an import runs |
 | `components/memory/memoryGraph.module.css` | css | 10 | done | route:memory-graph | none of its own (the shared React Flow theme, #1573); the selected note's edge lights |
-| `components/newSession/NewSessionControls.module.css` | css | 6 | todo |  |  |
+| `components/newSession/NewSessionControls.module.css` | css | 6 | done | route:new-session newsession:loading newsession:list-failed newsession:no-folder newsession:no-project newsession:many newsession:api | route sector fade (App); tile lock-on (one-shot `nj-glitch-step` as a tile is chosen, Full only); Start press glitch (`.shine`, Full only); `nj-skeleton` scan band on the loading rows (Full only); edge and fill transitions at `--t-fast`; nothing moves in Off |
 | `components/overview/overview.css` | css | 9 | done | route:map map:expanded map:folders-live map:chip-menu map:loading map:error map:empty map:empty-projects map:partial map:new-project-error map:group-error map:windows-refused map:toolbar-error map:empty-windows | radar sweep + crosshair drift (transform), live-edge data packets (transform/opacity), working-LED ping (decorative scale), minimap breathe (opacity) — Full only, compositor-only, paused with the page; chip hover tint transition |
 | `components/overview/sessionWindow.module.css` | css | 9 | done | map:windows map:window-files map:window-cap map:window-readonly | chrome-button hover tint transition (the window's deploy-in and flash live in the layer) |
 | `components/overview/windowLayer.module.css` | css | 9 | done | map:windows map:window-cap map:empty-windows | window deploy-in (fade only, on open and on restore), tray chip arrival, duplicate-open edge flash (opacity on a pseudo-element); the focused tether is lit, never animated |
@@ -120,7 +120,7 @@ the same list.
 | `routes/Checklists.module.css` | css | 8 | done | route:checklists route:checklists-list route:checklists-editor popup:checklists-leave | step form fades open (Reduced: 120 ms fade; Off: none), plate and row hover tints |
 | `routes/Memory.module.css` | css | 10 | done | route:memory route:memory-graph route:memory-quarantine route:memory-off route:memory-acquiring popup:memory-erase | the View / view-tab marker slides; the memory switch's knob slides; the list and inspector fade in; the first read is Acquiring, then skeleton rows |
 | `routes/NewProject.module.css` | css | 10 | todo |  |  |
-| `routes/NewSessionLanding.module.css` | css | 6 | todo |  |  |
+| `routes/NewSessionLanding.module.css` | css | 6 | done | route:new-session newsession:loading newsession:list-failed newsession:no-folder newsession:no-project newsession:many newsession:api | route sector fade (App); tile lock-on (one-shot `nj-glitch-step` as a tile is chosen, Full only); Start press glitch (`.shine`, Full only); `nj-skeleton` scan band on the loading rows (Full only); edge and fill transitions at `--t-fast`; nothing moves in Off |
 | `routes/NightjarGallery.module.css` | css | 2 | done | gallery:all | none (layout) |
 | `routes/Onboarding.module.css` | css | 4 | done | popup:tour | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `routes/ProjectsManager.module.css` | css | 11 | todo |  |  |
@@ -155,7 +155,7 @@ the same list.
 | `components/files/UploadQueue.tsx` | popup | 3 | done | popup:upload-collision | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/FolderPickerModal.tsx` | popup | 3 | done | popup:folder-picker | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/links/OpenLinkDialog.tsx` | popup | 3 | done | popup:open-link | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
-| `components/newSession/NewSessionControls.tsx` | popup | 6 | todo |  |  |
+| `components/newSession/NewSessionControls.tsx` | popup | 6 | done | route:new-session newsession:loading newsession:list-failed newsession:no-folder newsession:no-project newsession:many newsession:api | route sector fade (App); tile lock-on (one-shot `nj-glitch-step` as a tile is chosen, Full only); Start press glitch (`.shine`, Full only); `nj-skeleton` scan band on the loading rows (Full only); edge and fill transitions at `--t-fast`; nothing moves in Off |
 | `components/overview/SessionTextDialog.tsx` | popup | 3 | done | popup:session-text | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/playbooks/PlaybookDialog.tsx` | popup | 3 | done | popup:playbook-delete | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/pulse/MissionConsole.tsx` | popup | 8 | done | mission:console mission:details-band mission:question | the details band fades in when opened (≤1399px); disclosures expand by grid rows; the header state chip flashes once on a change; the question card deploys in |
@@ -181,7 +181,7 @@ the same list.
 | `components/terminal/SessionRecapModal.tsx` | popup | 3 | done | popup:session-brief | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/Terminal.tsx` | popup | 6 | done | popup:head-menu popup:toast popup:session-brief popup:hand-off route:session-pane | appear (head menu), toast (opacity only over the terminal), deploy-in (the dialogs it mounts) |
 | `components/ui/AnchoredMenu.tsx` | popup | 3 | done | popup:operator-menu popup:dashboard-new | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
-| `routes/NewSessionLanding.tsx` | popup | 6 | todo |  |  |
+| `routes/NewSessionLanding.tsx` | popup | 6 | done | route:new-session newsession:loading newsession:list-failed newsession:no-folder newsession:no-project newsession:many newsession:api | route sector fade (App); tile lock-on (one-shot `nj-glitch-step` as a tile is chosen, Full only); Start press glitch (`.shine`, Full only); `nj-skeleton` scan band on the loading rows (Full only); edge and fill transitions at `--t-fast`; nothing moves in Off |
 | `routes/Onboarding.tsx` | popup | 4 | done | popup:tour | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `routes/RenameProjectModal.tsx` | popup | 3 | done | popup:rename-project | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `whatsnew/WhatsNewDialog.tsx` | popup | 4 | done | popup:whats-new | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |

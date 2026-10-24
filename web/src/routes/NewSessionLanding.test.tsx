@@ -11,6 +11,7 @@ import { projectPickerStore } from "../lib/projectPickerStore";
 import { structuredModelsStore } from "../lib/structuredModelsStore";
 import type { NewSessionDraft } from "../lib/newProject";
 import { MAP_PATH, NEW_PROJECT_PATH } from "../lib/routes";
+import { settingsPath } from "./settingsTabs";
 import type { AppConfig, EngineInfo } from "../types/api";
 import { NewSessionLanding } from "./NewSessionLanding";
 
@@ -35,19 +36,6 @@ vi.mock("../lib/api", async (orig) => {
     },
   };
 });
-// Stub the folder picker (#448): a real tree needs a browser (e2e covers it). The stub exposes a
-// button that resolves the pick with a fixed path, so these tests exercise NewSessionLanding's
-// wiring (project→folder default, override, new-project default folder, stamping).
-vi.mock("../components/FolderPickerModal", () => ({
-  FolderPickerModal: ({ onPick }: { onPick: (p: string) => void }) => (
-    <div role="dialog" aria-modal="true" aria-label="folder picker">
-      <button type="button" onClick={() => onPick("/picked")}>
-        stub-pick
-      </button>
-    </div>
-  ),
-}));
-
 const mockEntities = vi.mocked(api.projectPickerEntities);
 
 /** A stored "skip permission prompts" default of OFF. The API skip choice follows the stored default
@@ -79,9 +67,16 @@ async function chooseAgent(user: ReturnType<typeof userEvent.setup>, id: string)
   if (!radio) throw new Error(`no agent radio ${id}`);
   await user.click(radio);
 }
-const launchFolder = () => screen.getByTestId("launch-folder").getAttribute("data-path");
-/** Put keyboard focus inside the form without changing any choice — the shortcuts are scoped to it. */
-const focusForm = () => act(() => screen.getByRole("button", { name: /choose folder/i }).focus());
+/** The resolved launch folder — the start summary carries it as `data-cwd` (#1458: the folder
+ *  card is gone, the summary is where the launch folder is read). */
+const launchFolder = () =>
+  screen.getByTestId("new-session-summary").getAttribute("data-cwd");
+/** Put keyboard focus inside the form without changing any choice — the shortcuts are scoped to
+ *  it. The "No project" radio is always there, even while the list is still loading. */
+const focusForm = () =>
+  act(() =>
+    (screen.getByRole("radio", { name: /no project/i }) as HTMLInputElement).focus(),
+  );
 
 const ENTITIES = [
   {
@@ -182,7 +177,7 @@ test("the agent picker is hidden with one engine, shown with more (#448 reorder)
   expect(await screen.findByText("Agent")).toBeInTheDocument();
 });
 
-test("selecting a project prefills the Folder with its default and launches there (#448)", async () => {
+test("selecting a project resolves its default folder and launches there (#448, #1458)", async () => {
   const user = userEvent.setup();
   renderLanding(["claude"]);
   await findProjects();
@@ -211,27 +206,6 @@ test("changing the project switches the default folder (#448)", async () => {
   ).toBe("/b");
 });
 
-test("Choose folder overrides the project default for this session + stamps the project (#448)", async () => {
-  const user = userEvent.setup();
-  renderLanding(["claude"]);
-  await findProjects(); // default project = Alpha (/a)
-  await user.click(screen.getByRole("button", { name: /choose folder/i }));
-  await user.click(screen.getByRole("button", { name: "stub-pick" }));
-  expect(
-    launchFolder(),
-  ).toBe("/picked");
-
-  await user.click(screen.getByRole("button", { name: /start session/i }));
-  const [path, opts] = navigateMock.mock.calls[0] as [
-    string,
-    { state: { fresh: { cwd: string } } },
-  ];
-  expect(opts.state.fresh.cwd).toBe("/picked");
-  // /picked isn't Alpha's adopted folder → the explicit project must be stamped.
-  const id = path.split("/").pop();
-  expect(api.setSessionProject).toHaveBeenCalledWith(`claude:${id}`, "p-a");
-});
-
 test("'no project' launches in the config default folder without stamping (#448)", async () => {
   const user = userEvent.setup();
   renderLanding(["claude"], { default_project: "/d" });
@@ -250,15 +224,16 @@ test("'no project' launches in the config default folder without stamping (#448)
 
 test("opencode stamping uses the new-<uuid> placeholder key (#448)", async () => {
   const user = userEvent.setup();
-  renderLanding(["opencode"]);
+  // A folderless project launches in the legacy folder — a cwd no project adopts, so the explicit
+  // project must be stamped (#448, #1458).
+  mockEntities.mockResolvedValue({ projects: [FOLDERLESS] });
+  renderLanding(["opencode"], { default_project: "/legacy" });
   await findProjects();
-  await user.click(screen.getByRole("button", { name: /choose folder/i })); // override → /picked
-  await user.click(screen.getByRole("button", { name: "stub-pick" }));
   await user.click(screen.getByRole("button", { name: /start session/i }));
   const [path] = navigateMock.mock.calls[0] as [string, unknown];
   const id = path.split("/").pop() as string;
   expect(id).toMatch(/^new-[0-9a-f-]{36}$/);
-  expect(api.setSessionProject).toHaveBeenCalledWith(`opencode:${id}`, "p-a");
+  expect(api.setSessionProject).toHaveBeenCalledWith(`opencode:${id}`, "p-x");
 });
 
 const DRAFT: NewSessionDraft = {
@@ -266,7 +241,6 @@ const DRAFT: NewSessionDraft = {
   bypassChoice: false,
   returnTo: null,
   projectChoice: "p-b",
-  cwdOverride: "/b/sub",
 };
 
 test("+ New project… saves the draft into this entry, then opens the wizard with it (#1187)", async () => {
@@ -282,7 +256,6 @@ test("+ New project… saves the draft into this entry, then opens the wizard wi
     returnTo: null,
     // The explicit "no project" survives as "", distinct from untouched null.
     projectChoice: "",
-    cwdOverride: null,
   };
   // First THIS entry learns the draft (so the browser's Back restores it), then the push.
   expect(navigateMock.mock.calls).toEqual([
@@ -317,7 +290,7 @@ test("finish: the created project and its folder are selected, the agent/bypass 
     {},
     {
       returnTo: MAP_PATH,
-      restoreDraft: { ...DRAFT, projectChoice: null, cwdOverride: null },
+      restoreDraft: { ...DRAFT, projectChoice: null },
       selectProjectId: "p-b",
     },
   );
@@ -335,16 +308,25 @@ test("finish: the created project and its folder are selected, the agent/bypass 
   });
 });
 
-test("cancel: the prior project + folder override come back exactly (#1187)", async () => {
-  renderLanding(["claude"], {}, { restoreDraft: DRAFT });
+test("an old draft's folder override is ignored — the project's current folder wins (#1458)", async () => {
+  const user = userEvent.setup();
+  // Pre-#1458 drafts carried a `cwdOverride`. Invisible state must never pick the launch
+  // directory: the folder follows the project, whatever the restored draft says.
+  renderLanding(["claude"], {}, { restoreDraft: { ...DRAFT, cwdOverride: "/b/sub" } });
   await findProjects();
   expect(projectValue()).toBe("p-b");
-  expect(launchFolder()).toBe("/b/sub");
+  expect(launchFolder()).toBe("/b");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  const [, opts] = navigateMock.mock.calls.at(-1) as [
+    string,
+    { state: { fresh: { cwd: string } } },
+  ];
+  expect(opts.state.fresh.cwd).toBe("/b");
   expect(navigateMock).toHaveBeenCalledWith("/", { replace: true, state: null });
 });
 
 test("cancel keeps an explicit “no project” — it never falls back to the default (#1187)", async () => {
-  renderLanding(["claude"], {}, { restoreDraft: { ...DRAFT, projectChoice: "", cwdOverride: null } });
+  renderLanding(["claude"], {}, { restoreDraft: { ...DRAFT, projectChoice: "" } });
   await findProjects();
   expect(projectValue()).toBe("");
 });
@@ -353,7 +335,7 @@ test("cancel keeps an UNTOUCHED project choice untouched — the default selecti
   renderLanding(
     ["claude"],
     { default_project_id: "p-b" },
-    { restoreDraft: { ...DRAFT, projectChoice: null, cwdOverride: null } },
+    { restoreDraft: { ...DRAFT, projectChoice: null } },
   );
   await findProjects();
   expect(projectValue()).toBe("p-b");
@@ -601,7 +583,6 @@ test("a restored choice the roster no longer offers is shown and SENT, never swa
     bypassChoice: null,
     returnTo: null,
     projectChoice: null,
-    cwdOverride: null,
     modelChoice: { engine: "claude", model: "claude-retired-1" },
   };
   renderLanding(["claude"], {}, { restoreDraft: draft });
@@ -723,7 +704,6 @@ test("an API skip tick is never restored from a draft and never survives an agen
     bypassChoice: true,
     returnTo: null,
     projectChoice: null,
-    cwdOverride: null,
   };
   renderLanding(["claude", "codex-api"], { ...GUARDED, default_project: "/d" }, { restoreDraft: draft });
   const skip = await screen.findByRole("checkbox", { name: /skip permission prompts/i });
@@ -1265,7 +1245,6 @@ test("a chosen API model whose list then fails keeps a select: it shows the stal
     bypassChoice: null,
     returnTo: null,
     projectChoice: "",
-    cwdOverride: null,
     modelChoice: { engine: "codex-api", model: "gpt-6-luna" },
   };
   renderLanding(["codex-api"], { default_project: "/d" }, { restoreDraft: draft });
@@ -1605,7 +1584,7 @@ test("an explicit choice the fresh list dropped falls back BEFORE Start, and is 
   projectPickerStore.commit(0, ENTITIES); // the cache still has Beta…
   const pending = deferred<{ projects: typeof ENTITIES }>();
   mockEntities.mockReturnValue(pending.promise);
-  renderLanding(["claude"], {}, { restoreDraft: { ...DRAFT, engineChoice: "claude", cwdOverride: null } });
+  renderLanding(["claude"], {}, { restoreDraft: { ...DRAFT, engineChoice: "claude" } });
   expect(projectValue()).toBe("p-b");
   expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
   // …but Beta was archived meanwhile: the confirmed list has only Alpha.
@@ -1622,7 +1601,7 @@ test("a failed refresh keeps the cached list visible, and Start still works (#14
   const user = userEvent.setup();
   projectPickerStore.commit(0, ENTITIES);
   mockEntities.mockRejectedValue(new ApiError(502, "bad gateway"));
-  renderLanding(["claude"], {}, { restoreDraft: { ...DRAFT, engineChoice: "claude", cwdOverride: null } });
+  renderLanding(["claude"], {}, { restoreDraft: { ...DRAFT, engineChoice: "claude" } });
   expect(await screen.findByText(/couldn’t refresh your projects/i)).toBeInTheDocument();
   // An unreachable server proves nothing: the explicit choice stands, the rows stay.
   expect(projectValue()).toBe("p-b");
@@ -1644,54 +1623,55 @@ test("a failed first load says so and still lets the operator start without a pr
 
 const FOLDERLESS = { ...ENTITIES[0], id: "p-x", name: "Scratch", folders: [], default_folder: "" };
 
-test("a folderless project with a global default starts there, with no error copy (#1436)", async () => {
+test("a folderless project with a global default starts there, and the summary says so (#1436, #1458)", async () => {
   mockEntities.mockResolvedValue({ projects: [FOLDERLESS] });
   renderLanding(["claude"], { default_project: "/legacy" });
   await findProjects();
   expect(launchFolder()).toBe("/legacy");
-  expect(screen.getByTestId("launch-folder")).toHaveTextContent(
-    /Starts in \/legacy · “Scratch” has no default folder · your global default/,
+  // The "using your global default" note (#1436) moved into the summary (#1458).
+  expect(screen.getByTestId("new-session-summary")).toHaveTextContent(
+    /Start Claude Code in \/legacyproject Scratch · using your global default folder/,
   );
-  expect(screen.queryByText(/choose one for this session/i)).toBeNull();
+  expect(screen.queryByText(/set one in/i)).toBeNull();
   expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
 });
 
-test("a folderless project with no global default asks for a folder; Start waits for one (#1436)", async () => {
-  const user = userEvent.setup();
+test("a folderless project with no global default points at Settings → Projects, Start disabled (#1458)", async () => {
   mockEntities.mockResolvedValue({ projects: [FOLDERLESS] });
   renderLanding(["claude"]);
   await findProjects();
   expect(launchFolder()).toBe("");
-  expect(screen.getByText(/“Scratch” has no default folder — choose one/)).toBeInTheDocument();
+  const summary = screen.getByTestId("new-session-summary");
+  expect(summary).toHaveTextContent(
+    "“Scratch” has no default folder — set one in Settings → Projects.",
+  );
+  // The action is a real link to the projects settings: the folder is configured on the project,
+  // never picked on this form (#1458).
+  expect(
+    within(summary).getByRole("link", { name: /settings → projects/i }),
+  ).toHaveAttribute("href", settingsPath("projects"));
   expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
-  await user.click(screen.getByRole("button", { name: /choose folder/i }));
-  await user.click(screen.getByRole("button", { name: "stub-pick" }));
-  expect(launchFolder()).toBe("/picked");
-  expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
 });
 
-test("the folder line says what applies; “use project default” undoes an override (#1473)", async () => {
-  const user = userEvent.setup();
+test("with no folder at all — no project, no global default — the summary says what to do (#1458)", async () => {
+  mockEntities.mockResolvedValue({ projects: [FOLDERLESS] });
   renderLanding(["claude"]);
   await findProjects();
-  expect(screen.getByTestId("launch-folder")).toHaveTextContent(/Starts in \/a · project default/);
-  await user.click(screen.getByRole("button", { name: /choose folder/i }));
-  await user.click(screen.getByRole("button", { name: "stub-pick" }));
-  expect(screen.getByTestId("launch-folder")).toHaveTextContent(/Starts in \/picked · just this session/);
-  await user.click(screen.getByRole("button", { name: /use project default/i }));
-  expect(launchFolder()).toBe("/a");
+  await chooseProject(userEvent.setup(), "");
+  expect(screen.getByTestId("new-session-summary")).toHaveTextContent(
+    /^Pick a project to start in\.$/,
+  );
+  expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
 });
 
-test("the folder is ONE line under the project list — no separate Folder section (#1473)", async () => {
-  mockEntities.mockResolvedValue({
-    projects: [{ ...ENTITIES[0], folders: ["/home/u/claude/agent-sessions"], default_folder: "/home/u/claude/agent-sessions" }],
-  });
+test("the form defines no folder — no Folder section, no picker, no override (#1458)", async () => {
   renderLanding(["claude"]);
   await findProjects();
   expect(screen.queryByRole("heading", { name: "Folder" })).toBeNull();
-  const line = screen.getByTestId("launch-folder");
-  expect(line).toHaveTextContent("Starts in ~/claude/agent-sessions");
-  expect(line).toHaveAttribute("data-path", "/home/u/claude/agent-sessions");
+  expect(screen.queryByTestId("launch-folder")).toBeNull();
+  expect(screen.queryByRole("button", { name: /choose folder/i })).toBeNull();
+  expect(screen.queryByRole("button", { name: /use project default/i })).toBeNull();
+  expect(launchFolder()).toBe("/a");
 });
 
 test("more than six projects get a filter, and / focuses it (#1436)", async () => {
@@ -1761,7 +1741,7 @@ test("a failed refresh never launches a choice it cannot vouch for — no folder
   const user = userEvent.setup();
   projectPickerStore.commit(0, [ENTITIES[0]]); // a cache that does not have p-gone
   mockEntities.mockRejectedValue(new ApiError(502, "bad gateway"));
-  renderLanding(["claude"], { default_project: "/d" }, { restoreDraft: { ...DRAFT, engineChoice: "claude", projectChoice: "p-gone", cwdOverride: null } });
+  renderLanding(["claude"], { default_project: "/d" }, { restoreDraft: { ...DRAFT, engineChoice: "claude", projectChoice: "p-gone" } });
   expect(await screen.findByText(/couldn’t refresh your projects/i)).toBeInTheDocument();
   expect(screen.getByTestId("new-session-summary")).toHaveTextContent(/couldn’t confirm the project you chose/i);
   expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
@@ -1807,7 +1787,7 @@ test("a first visit holds Start until the projects arrive, even with a global fo
 
 test("an explicit “No project” has nothing to confirm — Start is not held for the list (#1437)", async () => {
   mockEntities.mockReturnValue(new Promise(() => {}));
-  renderLanding(["claude"], { default_project: "/d" }, { restoreDraft: { ...DRAFT, engineChoice: "claude", projectChoice: "", cwdOverride: null } });
+  renderLanding(["claude"], { default_project: "/d" }, { restoreDraft: { ...DRAFT, engineChoice: "claude", projectChoice: "" } });
   expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
 });
 
@@ -1827,12 +1807,14 @@ test("Ctrl+Enter outside the form never starts a session — the sidebar, the bo
   expect(navigateMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/s\//), expect.anything());
 });
 
-test("Ctrl+Enter inside the folder picker does not start a session (#1437 review)", async () => {
+test("Ctrl+Enter while a modal is open does not start a session (#1437 review, #1458)", async () => {
   const user = userEvent.setup();
+  render(<div role="dialog" aria-modal="true" aria-label="some modal" />);
   renderLanding(["claude"]);
   await findProjects();
-  await user.click(screen.getByRole("button", { name: /choose folder/i }));
-  act(() => screen.getByRole("button", { name: "stub-pick" }).focus());
+  // Focus can still sit on a control INSIDE the form while the dialog is up — the guard must
+  // hold for whatever modal renders beside the form (Hermes 6231, retargeted in #1458).
+  focusForm();
   await user.keyboard("{Control>}{Enter}{/Control}");
   expect(navigateMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/s\//), expect.anything());
 });
@@ -1840,11 +1822,11 @@ test("Ctrl+Enter inside the folder picker does not start a session (#1437 review
 test("a held Ctrl+Enter starts ONE session — auto-repeat is ignored (#1437 review)", async () => {
   renderLanding(["claude"]);
   await findProjects();
-  const card = screen.getByRole("button", { name: /choose folder/i });
-  act(() => card.focus());
+  focusForm();
+  const el = document.activeElement as HTMLElement;
   const press = (repeat: boolean) =>
     act(() => {
-      card.dispatchEvent(
+      el.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, repeat, bubbles: true, cancelable: true }),
       );
     });
@@ -1894,7 +1876,7 @@ test("Ctrl+Enter on a link inside the form keeps the link's own gesture (#1437 r
   expect(navigateMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/s\//), expect.anything());
 });
 
-test("`/` from the body does nothing while a modal is open — e.g. the folder picker (#1437 review)", async () => {
+test("`/` from the body does nothing while a modal is open — any dialog beside the form (#1437 review)", async () => {
   const user = userEvent.setup();
   const many = Array.from({ length: 7 }, (_, i) => ({
     ...ENTITIES[0],
@@ -1912,28 +1894,6 @@ test("`/` from the body does nothing while a modal is open — e.g. the folder p
   expect(screen.getByRole("searchbox", { name: "Filter projects" })).not.toHaveFocus();
 });
 
-test("while the folder picker is opening, focus still on its trigger: Ctrl+Enter and / do nothing (Hermes 6231)", async () => {
-  const user = userEvent.setup();
-  const many = Array.from({ length: 7 }, (_, i) => ({
-    ...ENTITIES[0],
-    id: `p-${i}`,
-    name: `Project ${i}`,
-    folders: [`/p${i}`],
-    default_folder: `/p${i}`,
-  }));
-  mockEntities.mockResolvedValue({ projects: many });
-  renderLanding(["claude"]);
-  await findProjects();
-  const trigger = screen.getByRole("button", { name: /choose folder/i });
-  await user.click(trigger);
-  // The real picker moves focus only after /api/fs/dirs answers; until then it is here.
-  expect(screen.getByRole("dialog", { name: "folder picker" })).toBeInTheDocument();
-  act(() => trigger.focus());
-  await user.keyboard("{Control>}{Enter}{/Control}");
-  expect(navigateMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/s\//), expect.anything());
-  await user.keyboard("/");
-  expect(screen.getByRole("searchbox", { name: "Filter projects" })).not.toHaveFocus();
-});
 
 test("fail closed: with no stored default in the config, an API agent starts guarded (#1473, from #1457)", async () => {
   setRoster(FIXTURE);
@@ -1967,7 +1927,7 @@ test("a skip-capable API agent waits for the config: no Start until the default 
     <ConfigCtx.Provider value={config}>
       <MemoryRouter
         initialEntries={[
-          { pathname: "/", state: { restoreDraft: { ...DRAFT, engineChoice: "codex-api", projectChoice: "", cwdOverride: "/d" } } },
+          { pathname: "/", state: { restoreDraft: { ...DRAFT, engineChoice: "codex-api", projectChoice: "" } } },
         ]}
       >
         <Routes>
@@ -1986,7 +1946,8 @@ test("a skip-capable API agent waits for the config: no Start until the default 
   expect(api.structuredCreate).not.toHaveBeenCalled();
   // It arrives, ON: the box shows it, and only now can Start send it.
   view.rerender(
-    tree({ csrf: "x", new_session_engines: ["codex-api"], terminal_backend: "ws", agent_defaults: { bypass: true } }),
+    // The folder is the legacy default the config carries — the draft names none (#1458).
+    tree({ csrf: "x", new_session_engines: ["codex-api"], terminal_backend: "ws", default_project: "/d", agent_defaults: { bypass: true } }),
   );
   expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).toBeChecked();
   await user.click(screen.getByRole("button", { name: /start session/i }));
@@ -2052,7 +2013,6 @@ test("New session after a guarded create failed stays guarded with skip-by-defau
       bypassChoice: null,
       returnTo: null,
       projectChoice: null,
-      cwdOverride: "/d",
     },
   };
   renderLanding(["claude", "codex-api"], { default_project: "/d", agent_defaults: { bypass: true } }, state);

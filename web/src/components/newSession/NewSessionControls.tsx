@@ -1,15 +1,23 @@
-import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import { Link } from "react-router-dom";
-import { engineInfo, engineLabel } from "../../app/engineRoster";
+import { engineColor, engineInfo, engineLabel } from "../../app/engineRoster";
 import { shortCwd } from "../../lib/format";
 import type { ProjectPickerEntity } from "../../lib/projectPickerStore";
 import type { UnavailableClient } from "../../types/api";
 import styles from "./NewSessionControls.module.css";
 
-/** The New session form's three pickers (#1436). Each is a group of NATIVE radios drawn as tiles or
- *  rows, so arrow keys, Tab order and screen-reader semantics are the browser's own — the visible
- *  box is only the radio's label. Which agents and projects exist is the caller's business: these
- *  never name one. */
+/** The New session form's pickers (#1436): the agent tiles and the project list. Each is a group of
+ *  NATIVE radios drawn as tiles or rows, so arrow keys, Tab order and screen-reader semantics are
+ *  the browser's own — the visible box is only the radio's label. Which agents and projects exist is
+ *  the caller's business: these never name one. There is no folder picker here (#1458): the project
+ *  owns the launch folder, and the start summary names it. */
 
 /** What an agent tile says under its name: an API client names the CLI it drives (what the old
  *  "API client · ready" note explained in a paragraph); a chat agent has no tools. */
@@ -41,7 +49,13 @@ export function AgentTiles({
   const tile = (id: string) => {
     const sub = agentSubtitle(id);
     return (
-      <label key={id} className={styles.tile} data-engine={id}>
+      <label
+        key={id}
+        className={styles.tile}
+        data-engine={id}
+        // The tile's rail is the agent's identity colour (NIGHTJAR, #1531) — never a state.
+        style={{ "--eng": engineColor(id) } as CSSProperties}
+      >
         <input
           type="radio"
           name="new-session-agent"
@@ -142,10 +156,9 @@ export function ProjectList({
       if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
       const t = e.target as HTMLElement | null;
       // From inside the New session form, or with nothing focused (the body) — never from the
-      // sidebar or a dialog (the folder picker renders outside the form) (#1437 review)…
+      // sidebar or a dialog beside the form (#1437 review)…
       // Never while a modal is open — whatever has focus: a click on a dialog's padding drops it to
-      // the body, and while the folder picker loads it is still on a control in this form
-      // (#1437 reviews).
+      // the body (#1437 reviews).
       if (document.querySelector('[aria-modal="true"]')) return;
       if (!t || (t !== document.body && !t.closest?.("[data-new-session-form]"))) return;
       // …and never while typing. A radio or a checkbox is not typing: focus sits on one after a
@@ -187,8 +200,8 @@ export function ProjectList({
   return (
     <div className={styles.group}>
       {/* ONE fixed-height box at every list size, the filter inside it (#1437): the skeleton, a
-          two-project list and a forty-project list all take the same room, so the folder card
-          below never moves when the list lands. */}
+          two-project list and a forty-project list all take the same room, so nothing below the
+          list moves when it lands. */}
       <div className={styles.list}>
         {showFilter && (
           <input
@@ -208,8 +221,8 @@ export function ProjectList({
         {projects === null && !failed ? (
           [0, 1].map((i) => (
             <div key={i} className={styles.skeleton} data-testid="project-skeleton" aria-hidden="true">
-              <span />
-              <span style={{ width: `${[45, 30][i]}%` }} />
+              <span className="nj-skeleton" />
+              <span className="nj-skeleton" style={{ width: `${[45, 30][i]}%` }} />
             </div>
           ))
         ) : (
@@ -250,67 +263,6 @@ export function ProjectList({
           </p>
         )}
       </div>
-    </div>
-  );
-}
-
-export type FolderState =
-  | "project-default"
-  | "override"
-  | "global-default"
-  | "none";
-
-/** Where the session starts — ONE line under the project list (#1473). The project rows
- *  already show each project's folder, so this only says what applies and offers the override; a
- *  full folder section repeated the row above it and cost a screenful on a phone. */
-export function FolderLine({
-  cwd,
-  state,
-  projectName,
-  onChoose,
-  onReset,
-}: {
-  cwd: string;
-  state: FolderState;
-  projectName: string;
-  onChoose: (e: MouseEvent<HTMLButtonElement>) => void;
-  onReset: () => void;
-}) {
-  const note =
-    state === "project-default"
-      ? "project default"
-      : state === "override"
-        ? "just this session"
-        : state === "global-default"
-          ? projectName
-            ? `“${projectName}” has no default folder · your global default`
-            : "your global default"
-          : null;
-  return (
-    <div className={styles.folderLine} data-testid="launch-folder" data-path={cwd}>
-      {cwd ? (
-        <p className={styles.folderText}>
-          Starts in <code title={cwd}>{shortCwd(cwd)}</code>
-          {note && <span className={styles.folderNote}> · {note}</span>}
-          {state === "override" && projectName && (
-            <>
-              {" · "}
-              <button type="button" className={styles.linkButton} onClick={onReset}>
-                use project default
-              </button>
-            </>
-          )}
-        </p>
-      ) : (
-        <p className={styles.error} role="status">
-          {projectName
-            ? `“${projectName}” has no default folder — choose one for this session.`
-            : "Choose a folder for this session."}
-        </p>
-      )}
-      <button type="button" className={styles.choose} onClick={onChoose}>
-        Choose folder…
-      </button>
     </div>
   );
 }

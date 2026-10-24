@@ -131,6 +131,14 @@ escape it. The app itself no longer calls it: the New project wizard and the fol
 Commit `218cf3a` — `docs/reference.md § Sessions & projects`; `src/agent_sessions/projects.py`; `src/agent_sessions/fsbrowse.py § make_dir`; `web/src/routes/NewProject.tsx` (#1187); `src/agent_sessions/autosort.py § NEAR_MISS_CAP, CALL_SPACING_S`; `src/agent_sessions/prefs.py § PROJECT_MODES`.
 :::
 
+## Where a new session starts
+
+A session starts in its project's default folder. **New session** has no folder control of its
+own: each project row shows its folder, and the line beside **Start session** names the folder the
+session will start in. A project with no default folder falls back to your global default folder,
+and that line says so. With neither, Start stays disabled and the line links to **Settings →
+Projects**, where you set the project's folder.
+
 ## Session defaults
 
 A project can say what its new sessions start with: an agent, that agent's model and reasoning

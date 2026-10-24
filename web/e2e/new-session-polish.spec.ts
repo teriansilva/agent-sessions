@@ -32,7 +32,7 @@ const PROJECTS = [
 
 async function mockBackend(
   page: Page,
-  opts: { projectsDelayMs?: number; projects?: typeof PROJECTS } = {},
+  opts: { projectsDelayMs?: number; projects?: typeof PROJECTS; defaultProject?: string } = {},
 ) {
   const projectCalls: string[] = [];
   await page.route("**/api/config", (r) =>
@@ -46,6 +46,7 @@ async function mockBackend(
         terminal_backend: "ws",
         auth_mode: "none",
         default_project_id: "p-1",
+        ...(opts.defaultProject ? { default_project: opts.defaultProject } : {}),
         agent_defaults: { default_engine: "claude", bypass: true },
       },
     }),
@@ -64,7 +65,7 @@ async function mockBackend(
   return projectCalls;
 }
 
-test("pick an agent tile and a project, override and reset the folder, start (#1436)", async ({ page }) => {
+test("pick an agent tile and a project, start — the project's folder, no folder card (#1436, #1458)", async ({ page }) => {
   const calls = await mockBackend(page);
   await page.goto(NEW_SESSION_PATH);
   const agent = agentPicker(page);
@@ -79,14 +80,20 @@ test("pick an agent tile and a project, override and reset the folder, start (#1
   await agent.selectOption("codex");
   await expect(agent.radio("codex")).toBeChecked();
 
-  await expect(project.radio("p-1")).toBeChecked(); // the starred project
-  await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/claude/agent-sessions");
-  // ONE line under the project list, no Folder section (#1473).
-  await expect(launchFolder(page)).toContainText("Starts in ~/claude/agent-sessions · project default");
+  // #1458: the form defines no folder — no folder line, no picker, no per-session override. The
+  // folder is the project's, and the start summary names it (its full path is data-cwd).
+  await expect(page.getByTestId("launch-folder")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /choose folder/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /use project default/i })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Folder" })).toHaveCount(0);
+  await expect(project.radio("p-1")).toBeChecked(); // the starred project
+  await expect(launchFolder(page)).toHaveAttribute("data-cwd", "/home/u/claude/agent-sessions");
+  await expect(page.getByTestId("new-session-summary")).toContainText(
+    "Start Codex in ~/claude/agent-sessions",
+  );
 
   await project.selectOption("p-2");
-  await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/claude/payments-api");
+  await expect(launchFolder(page)).toHaveAttribute("data-cwd", "/home/u/claude/payments-api");
   await expect(page.getByTestId("new-session-summary")).toContainText("Start Codex in ~/claude/payments-api");
 
   // The launch picker asked for the COUNT-FREE list.
@@ -101,7 +108,7 @@ test("every tile, row and the Start button are ≥44px tall (#1436, design §8)"
   await expect(projectPicker(page).radio("p-1")).toBeChecked();
   const boxes = await page
     .locator(
-      'label:has(> input[name="new-session-agent"]), label:has(> input[name="new-session-project"]), [data-testid="launch-folder"] button',
+      'label:has(> input[name="new-session-agent"]), label:has(> input[name="new-session-project"])',
     )
     .evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().height)));
   expect(boxes.length).toBeGreaterThan(6);
@@ -139,7 +146,10 @@ test("a second visit paints the cached projects at once — no layout shift (#14
   // First-ever visit: fixed-height skeleton rows, then the list.
   await expect(page.getByTestId("project-skeleton").first()).toBeVisible();
   await expect(projectPicker(page).radio("p-1")).toBeChecked();
-  const folderY = (await launchFolder(page).boundingBox())!.y;
+  // The first element BELOW the fixed-height list — it must not move when the list lands (#1458:
+  // the folder card that used to anchor this is gone; the checkbox is the first flow element after).
+  const belowList = page.getByRole("checkbox", { name: /skip permission/i });
+  const belowY = (await belowList.boundingBox())!.y;
 
   // Leave and come back inside the SPA: the module cache outlives the route.
   await page.evaluate(() => {
@@ -154,7 +164,7 @@ test("a second visit paints the cached projects at once — no layout shift (#14
   // Rows are there before the (slow) revalidation lands; Start waits for it.
   await expect(projectPicker(page).radio("p-1")).toBeChecked({ timeout: 500 });
   await expect(page.getByTestId("project-skeleton")).toHaveCount(0);
-  expect((await launchFolder(page).boundingBox())!.y).toBe(folderY);
+  expect((await belowList.boundingBox())!.y).toBe(belowY);
   await expect(page.getByRole("button", { name: /start session/i })).toBeDisabled();
   await expect(page.getByRole("button", { name: /start session/i })).toBeEnabled();
 });
@@ -167,8 +177,9 @@ const MANY = Array.from({ length: 10 }, (_, i) => ({
   default_folder: `/home/u/code/project-${i}`,
 }));
 
-// Hermes on #1437, finding 3: the FIRST visit must not jump either — at any list size. The folder
-// card sits at the same y under the skeleton and under the loaded list, for two projects and ten.
+// Hermes on #1437, finding 3: the FIRST visit must not jump either — at any list size. What sits
+// below the fixed-height list holds its y under the skeleton and under the loaded list, for two
+// projects and ten.
 for (const [label, projects] of [
   ["two projects", PROJECTS],
   ["ten projects", MANY],
@@ -177,36 +188,16 @@ for (const [label, projects] of [
     await mockBackend(page, { projectsDelayMs: 1500, projects: [...projects] });
     await page.goto(NEW_SESSION_PATH);
     await expect(page.getByTestId("project-skeleton").first()).toBeVisible();
-    const before = (await launchFolder(page).boundingBox())!.y;
+    const before = (await page.getByRole("checkbox", { name: /skip permission/i }).boundingBox())!.y;
     await expect(page.getByTestId("project-skeleton")).toHaveCount(0);
     await expect(page.getByRole("radiogroup", { name: "Project" }).getByRole("radio").first()).toBeAttached();
-    expect((await launchFolder(page).boundingBox())!.y).toBe(before);
+    expect((await page.getByRole("checkbox", { name: /skip permission/i }).boundingBox())!.y).toBe(before);
     if (projects.length > 6) {
       // The filter lives INSIDE the fixed box, and the long list scrolls within it.
       await expect(page.getByRole("searchbox", { name: "Filter projects" })).toBeVisible();
     }
   });
 }
-
-test("Ctrl+Enter while the folder picker is still loading does not start a session (Hermes 6231)", async ({ page }) => {
-  await mockBackend(page);
-  // Hold the picker's directory listing: until it answers, focus stays on "Choose folder…".
-  let release!: () => void;
-  const held = new Promise<void>((r) => (release = r));
-  await page.route("**/api/fs/dirs**", async (r) => {
-    await held;
-    await r.fulfill({ json: { path: "/home/u", home: "/home/u", dirs: [] } });
-  });
-  await page.goto(NEW_SESSION_PATH);
-  await expect(projectPicker(page).radio("p-1")).toBeChecked();
-  await page.getByRole("button", { name: /choose folder/i }).click();
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await expect(page.getByRole("button", { name: /choose folder/i })).toBeFocused();
-  await page.keyboard.press("Control+Enter");
-  await page.waitForTimeout(300); // a launch would navigate at once; give it the chance to
-  await expect(page).toHaveURL(new RegExp(`${NEW_SESSION_PATH}$`));
-  release();
-});
 
 test("a wide pane puts agent and project side by side; a narrow one stacks them (#1473)", async ({ page }, info) => {
   await mockBackend(page);
@@ -234,39 +225,47 @@ test("an API agent starts at the stored skip-permissions default (#1473)", async
   await expect(page.getByTestId("new-session-summary")).toContainText("skips permission prompts");
 });
 
-test("the folder line: override for this session, back to the project default (Hermes on #1473)", async ({ page }) => {
-  await mockBackend(page);
-  await page.route(/\/api\/fs\/dirs(\?.*)?$/, (r) => {
-    const path = new URL(r.request().url()).searchParams.get("path") || "/home/u";
-    return r.fulfill({
-      json:
-        path === "/home/u"
-          ? { path, home: "/home/u", dirs: [{ name: "scratch", path: "/home/u/scratch" }] }
-          : { path, home: "/home/u", dirs: [] },
-    });
-  });
-  await page.goto(NEW_SESSION_PATH);
-  await expect(projectPicker(page).radio("p-1")).toBeChecked();
-  await expect(launchFolder(page)).toContainText("Starts in ~/claude/agent-sessions · project default");
-  await page.getByRole("button", { name: /choose folder/i }).click();
-  await page.getByRole("button", { name: "Home" }).click();
-  await page.getByRole("button", { name: "scratch" }).click();
-  await page.getByRole("button", { name: /^Select/ }).click();
-  await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/scratch");
-  await expect(launchFolder(page)).toContainText("Starts in ~/scratch · just this session");
-  await page.getByRole("button", { name: /use project default/i }).click();
-  await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/claude/agent-sessions");
-  await expect(page.getByRole("button", { name: /start session/i })).toBeEnabled();
-});
-
-test("a project with no folder and no global default says so, and Start waits (Hermes on #1473)", async ({ page }) => {
+test("a project with no folder and no global default points at Settings → Projects, and Start waits (#1458)", async ({ page }) => {
   await mockBackend(page, {
     projects: [{ ...PROJECTS[0], folders: [], default_folder: "" }],
   });
   await page.goto(NEW_SESSION_PATH);
   await expect(projectPicker(page).radio("p-1")).toBeChecked();
-  await expect(launchFolder(page)).toContainText("“agent-sessions” has no default folder — choose one for this session.");
-  await expect(launchFolder(page)).toHaveAttribute("data-path", "");
+  const summary = page.getByTestId("new-session-summary");
+  await expect(summary).toContainText(
+    "“agent-sessions” has no default folder — set one in Settings → Projects.",
+  );
+  await expect(summary).toHaveAttribute("data-cwd", "");
+  await expect(page.getByRole("button", { name: /start session/i })).toBeDisabled();
+  // A real link, a 44px target (design §8), reachable from the keyboard — and it goes there.
+  const link = summary.getByRole("link", { name: "Settings → Projects" });
+  expect((await link.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  await link.focus();
+  await expect(link).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/settings\/projects$/);
+});
+
+test("a folderless project with a global default starts there, and the summary says so (#1458)", async ({ page }) => {
+  await mockBackend(page, {
+    projects: [{ ...PROJECTS[0], folders: [], default_folder: "" }],
+    defaultProject: "/home/u/legacy",
+  });
+  await page.goto(NEW_SESSION_PATH);
+  await expect(projectPicker(page).radio("p-1")).toBeChecked();
+  const summary = page.getByTestId("new-session-summary");
+  await expect(summary).toHaveAttribute("data-cwd", "/home/u/legacy");
+  await expect(summary).toContainText("Start Claude Code in ~/legacy");
+  await expect(summary).toContainText("project agent-sessions · using your global default folder");
+  await expect(page.getByRole("button", { name: /start session/i })).toBeEnabled();
+});
+
+test("no project and no global default: “Pick a project to start in.”, Start disabled (#1458)", async ({ page }) => {
+  await mockBackend(page);
+  await page.goto(NEW_SESSION_PATH);
+  await expect(projectPicker(page).radio("p-1")).toBeChecked();
+  await projectPicker(page).selectOption("");
+  await expect(page.getByTestId("new-session-summary")).toHaveText("Pick a project to start in.");
   await expect(page.getByRole("button", { name: /start session/i })).toBeDisabled();
 });
 
@@ -283,9 +282,9 @@ for (const theme of ["dark", "light"] as const) {
     await agentPicker(page).selectOption("codex-api");
     await page.screenshot({ path: info.outputPath(`new-session-${theme}-api.png`), fullPage: true });
     if (info.project.name === "mobile") {
-      // The lower half on a phone (Hermes on #1473): the folder line and the skip control, in view.
-      // Scroll the form above the fixed footer to reveal the remaining controls.
-      await launchFolder(page).evaluate((el) => {
+      // The lower half on a phone (Hermes on #1473): the skip control, in view. Scroll the form
+      // above the fixed footer to reveal the remaining controls.
+      await page.getByRole("checkbox", { name: /skip permission/i }).evaluate((el) => {
         let p: HTMLElement | null = el.parentElement;
         while (p && getComputedStyle(p).overflowY !== "auto") p = p.parentElement;
         p?.scrollTo(0, p.scrollHeight);
@@ -318,7 +317,7 @@ test("Start footer stays flush with the pane while the form scrolls", async ({ p
   await flush();
   await page.setViewportSize({ width: info.project.name === "desktop" ? 1280 : 320, height: 480 });
   await flush();
-  await page.getByRole("button", { name: /choose folder/i }).scrollIntoViewIfNeeded();
+  await page.getByRole("radiogroup", { name: "Project" }).scrollIntoViewIfNeeded();
   await flush();
   const skip = page.getByRole("checkbox", { name: /skip permission prompts/i });
   await skip.scrollIntoViewIfNeeded();

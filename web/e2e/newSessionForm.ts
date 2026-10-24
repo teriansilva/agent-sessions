@@ -16,5 +16,6 @@ function picker(page: Page, name: "new-session-agent" | "new-session-project") {
 
 export const agentPicker = (page: Page) => picker(page, "new-session-agent");
 export const projectPicker = (page: Page) => picker(page, "new-session-project");
-/** The launch folder card; its full path is `data-path`. */
-export const launchFolder = (page: Page) => page.getByTestId("launch-folder");
+/** The resolved launch folder. The folder card is gone (#1458) — the project owns the folder and
+ *  the start summary names it, carrying the full path as `data-cwd`. */
+export const launchFolder = (page: Page) => page.getByTestId("new-session-summary");

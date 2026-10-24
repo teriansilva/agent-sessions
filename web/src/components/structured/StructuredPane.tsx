@@ -22,7 +22,7 @@ import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { engineInfo, engineLabel, isAgent, useEngineRoster } from "../../app/engineRoster";
 import { isNewSessionPlaceholder } from "../../app/sessionsStore";
-import { useSessionRow } from "../../app/useSessionRow";
+import { useSessionLookup } from "../../app/useSessionRow";
 import { ApiError, api } from "../../lib/api";
 import {
   filesFromData,
@@ -1237,7 +1237,7 @@ export function StructuredPane({
   const key = `${engine}:${id}`;
   // Actions act on the id the URL settled on (#867), the same split the terminal keeps.
   const actionKey = host.rowKey || key;
-  const row = useSessionRow(key, host.rowKey);
+  const { row, phase: rowPhase } = useSessionLookup(key, host.rowKey);
   const isMobile = useIsMobile();
   // The in-pane head folds on touch tablets too (#1589); the window chrome keeps `isMobile`.
   const compactHead = useCompactHead();
@@ -2126,8 +2126,16 @@ export function StructuredPane({
     if (s && (s.launch || s.start_in_flight || !s.pending_start)) setStartOutcome(null);
   };
   const navigate = useNavigate();
-  // Back to New session with this session's agent, folder and model preselected (#1505) —
+  // Back to New session with this session's agent, project and model preselected (#1505) —
   // and GUARDED, as this session was: the form's stored skip default must not turn it into one.
+  // The folder comes with the project: the form takes no folder of its own (#1458). So the project is
+  // never GUESSED (Hermes on #1646): a session with no project hands over an explicit "" (No
+  // project; the form then names the folder it would use, or asks for a project), never the
+  // `null` that means "untouched" and lets the starred project — and ITS folder — be preselected.
+  // While this session's row is still being looked up there is nothing to hand over yet, so the
+  // button waits for it (`rowPending`); a lookup that settled with no row is a session with no
+  // project we can name, so it hands over "" too.
+  const rowPending = !row && rowPhase === "pending";
   const newSessionLikeThis = () =>
     navigate(SESSIONS_PATH, {
       state: {
@@ -2136,8 +2144,7 @@ export function StructuredPane({
           engineChoice: engine,
           bypassChoice: null,
           returnTo: null,
-          projectChoice: null,
-          cwdOverride: snap?.cwd ?? null,
+          projectChoice: row?.project?.kind === "project" ? row.project.id : "",
           ...(snap?.model_requested
             ? { modelChoice: { engine, model: snap.model_requested } }
             : {}),
@@ -2933,7 +2940,13 @@ export function StructuredPane({
           <p>
             <b>Couldn’t start:</b> {startFailure}
           </p>
-          <button type="button" className={chat.send} onClick={newSessionLikeThis}>
+          <button
+            type="button"
+            className={chat.send}
+            onClick={newSessionLikeThis}
+            disabled={rowPending}
+            title={rowPending ? "Reading this session’s project…" : undefined}
+          >
             New session
           </button>
           <button

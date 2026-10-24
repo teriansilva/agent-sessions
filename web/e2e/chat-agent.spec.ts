@@ -290,7 +290,7 @@ test("Start on an API agent creates the conversation on the server and opens it 
     }),
   );
   await page.goto(NEW_SESSION_PATH);
-  await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/proj");
+  await expect(launchFolder(page)).toHaveAttribute("data-cwd", "/home/u/proj");
   await expect(page.getByText("Skip permission prompts")).toHaveCount(0);
   await page.getByRole("button", { name: /start session/i }).click();
   await expect(page).toHaveURL(new RegExp(`/s/apichat/${SID}$`));

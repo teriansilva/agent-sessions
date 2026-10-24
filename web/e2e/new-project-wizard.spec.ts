@@ -234,7 +234,7 @@ test.describe("New project wizard (#1187)", () => {
     await page.getByRole("button", { name: "Start a session" }).click();
     await expect(page.getByRole("heading", { name: "Start a new session" })).toBeVisible();
     await expect(projectPicker(page).radio("p-new")).toBeChecked();
-    await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/payments-api");
+    await expect(launchFolder(page)).toHaveAttribute("data-cwd", "/home/u/payments-api");
     await expect(page.locator("aside.sidebar")).not.toBeHidden();
   });
 
@@ -273,22 +273,18 @@ test.describe("New project wizard (#1187)", () => {
     await expect(projectPicker(page).radio("")).toBeChecked();
   });
 
-  test("cancel keeps an UNTOUCHED project untouched and the folder override intact", async ({
+  test("cancel keeps an UNTOUCHED project untouched, and its folder with it (#1458)", async ({
     page,
   }) => {
     await mockApp(page);
     await page.goto(SESSIONS_PATH);
     await expect(projectPicker(page).radio("p-1")).toBeChecked();
-    await page.getByRole("button", { name: /choose folder/i }).click();
-    await page.getByRole("button", { name: "Home" }).click(); // the picker opens at ~/sampleproject
-    await page.getByRole("button", { name: "free" }).click();
-    await page.getByRole("button", { name: /^Select/ }).click();
-    await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/free");
+    await expect(launchFolder(page)).toHaveAttribute("data-cwd", "/home/u/sampleproject");
     await openFromNewSession(page);
     await page.getByRole("button", { name: "Cancel" }).click(); // clean → no question
     await expect(page.getByRole("heading", { name: "Start a new session" })).toBeVisible();
     await expect(projectPicker(page).radio("p-1")).toBeChecked();
-    await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/free");
+    await expect(launchFolder(page)).toHaveAttribute("data-cwd", "/home/u/sampleproject");
   });
 
   test("map → New session → wizard → session: the launch still goes back to the map as a window", async ({

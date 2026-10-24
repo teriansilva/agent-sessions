@@ -7,6 +7,18 @@ import * as SB from "../promo/settingsStates.mjs";
 //   cd web && npm run build && npx vite preview --port 41918 --strictPort &
 //   node visual/nightjar/sweep.mjs --base http://127.0.0.1:41918 --out ../out/nightjar [--only id,id] [--full]
 
+/** A New session picker project (the `/api/projects` row shape) for the PR6 captures. */
+const NS_PROJECT = (id, name, folder) => ({
+  id,
+  name,
+  color: "#64748b",
+  folders: folder ? [folder] : [],
+  default_folder: folder,
+  archived: false,
+  created_at: 0,
+  session_count: 0,
+});
+
 /** @typedef {({ testId: string } | { role: string, name: string, partial?: boolean } | { css: string })
  *   & { upload?: string, fill?: string, select?: string, drag?: [number, number],
  *       wait?: "attached" | "detached" | "visible" }) | { viewport: [number, number] } | { press: string }
@@ -313,7 +325,8 @@ export const SWEEP = [
     open: [{ css: "button[aria-label^='Rename'][aria-label$='scratch']" }],
     expect: "dialog",
   },
-  { id: "popup:folder-picker", path: "/new", open: [{ role: "button", name: "Choose folder…" }], expect: "dialog" },
+  // New session has no folder picker of its own any more (#1458); Settings → Projects opens it.
+  { id: "popup:folder-picker", path: "/settings/projects", open: [{ css: "button[aria-label^='Change default folder for']" }], expect: "dialog" },
   { id: "popup:permissions", path: SAPI, mock: { bypassOffer: true }, ...head("Enable Skip permissions for this session"), expect: "dialog" },
   { id: "popup:share-publicly", path: SAPI, ...head("Share this session publicly"), expectCss: "[data-testid='share-publicly']" },
   { id: "popup:adopt", path: S6, ...head("Adopt this session into a mission"), expectCss: "[data-testid='adopt-dialog']" },
@@ -438,6 +451,68 @@ export const SWEEP = [
   },
   // ---- /PR3 dashboard ----
   { id: "route:new-session", path: "/new" },
+  // ---- PR6 new session ("Deploy", #1531 Phase 6) ----
+  // The form's states: the first read (skeleton rows), a failed read, a folderless project with
+  // no fallback (the summary points at Settings → Projects, #1458), an explicit "No project",
+  // a long list with its filter, and an API agent with its model and effort selects.
+  {
+    id: "newsession:loading",
+    path: "/new",
+    holdAsset: "/api/projects(\\?|$)",
+    at: 1500,
+    present: "[data-testid='project-skeleton']",
+  },
+  {
+    id: "newsession:list-failed",
+    path: "/new",
+    api: { "/api/projects": { status: 502, json: { detail: "project store did not answer" } } },
+    present: "[data-new-session-form] p[role='status']",
+  },
+  {
+    id: "newsession:no-folder",
+    path: "/new",
+    api: { "/api/projects": { projects: [NS_PROJECT("p-scratch", "scratch", "")] } },
+    present: "[data-testid='new-session-summary'] a",
+  },
+  {
+    id: "newsession:no-project",
+    path: "/new",
+    open: [{ css: "label:has(> input[name='new-session-project'][value=''])" }],
+    present: "input[name='new-session-project'][value='']:checked",
+  },
+  {
+    id: "newsession:many",
+    path: "/new",
+    api: {
+      "/api/projects": {
+        projects: ["orbital-api", "harbor-web", "atlas-cli", "ledger-sync", "pixel-forge", "relay-gw", "nova-docs", "quartz-ui"].map(
+          (name, i) => NS_PROJECT(i ? `p-${name}` : "p-orbital", name, `/home/commander/code/${name}`),
+        ),
+      },
+    },
+    present: "input[type='search'][aria-label='Filter projects']",
+  },
+  {
+    id: "newsession:api",
+    path: "/new",
+    // The promo config (its `config` mock state merges over it), with the two API clients offered.
+    mock: { config: { new_session_engines: ["claude", "codex", "opencode", "gemini", "kimi", "codex-api", "claude-api"] } },
+    api: {
+      "re:/api/structured/clients/[^/]+/models": {
+        status: "ok",
+        reason: null,
+        models: [
+          { id: "frontier-large", label: "Frontier Large", description: null, efforts: ["low", "medium", "high"], is_default: true },
+          { id: "frontier-mini", label: "Frontier Mini", description: null, efforts: ["low", "medium"], is_default: false },
+        ],
+      },
+    },
+    open: [
+      { css: "label:has(> input[name='new-session-agent'][value='codex-api'])" },
+      { css: "[data-testid='new-session-model']", select: "Frontier Large (frontier-large)" },
+    ],
+    present: "[data-testid='new-session-effort']",
+  },
   { id: "route:mission", path: "/mission" },
   { id: "route:checklists", path: "/mission/checklists" },
   { id: "route:automations", path: "/mission/automations" },

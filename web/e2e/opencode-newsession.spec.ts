@@ -33,7 +33,7 @@ for (const engine of ["opencode", "antigravity"] as const) {
 
     await mockRoster(page); // the manifest-generated roster (#853 P4)
     await page.goto(NEW_SESSION_PATH);
-    await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/proj");
+    await expect(launchFolder(page)).toHaveAttribute("data-cwd", "/home/u/proj");
     await page.getByRole("button", { name: /start session/i }).click();
     await expect(page).toHaveURL(
       new RegExp(

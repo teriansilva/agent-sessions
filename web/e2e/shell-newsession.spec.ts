@@ -44,7 +44,7 @@ test("shell Start opens a bare-uuid /s/shell/<uuid>, not a new- placeholder (#63
 }) => {
   await mockBackend(page, ["shell"]);
   await page.goto(NEW_SESSION_PATH);
-  await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/proj");
+  await expect(launchFolder(page)).toHaveAttribute("data-cwd", "/home/u/proj");
   await page.getByRole("button", { name: /start session/i }).click();
   await expect(page).toHaveURL(new RegExp(`/s/shell/${UUID.source}$`));
   // The placeholder form is reserved for reconcile engines — shell must never use it.
