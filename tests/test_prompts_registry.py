@@ -104,6 +104,7 @@ HTTP_MODULES = frozenset(
         "feed_client",
         "gallery_client",
         "speech_endpoints",
+        "voice_setup",
     }
 )
 
@@ -174,6 +175,8 @@ POST_SITES = {
     # ambient proxy) and the origin-bound token are applied in one place. It carries the
     # operator's audio and HQ's STORED answer text, never a prompt and never tool output.
     ("speech_endpoints", "_request"): 1,
+    # #1397 P4: `voice setup` fetches its pinned models (sha256-verified before use); fixed URLs.
+    ("voice_setup", "_fetch"): 1,
 }
 
 # Layer 3 — a module that never imports a client can still be handed one. `.post(` / `.request(`

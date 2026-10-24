@@ -1,0 +1,5 @@
+faster-whisper==1.2.1
+kokoro-onnx==0.6.1
+fastapi==0.139.0
+uvicorn==0.32.1
+python-multipart==0.0.31

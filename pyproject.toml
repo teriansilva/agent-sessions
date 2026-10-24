@@ -70,6 +70,8 @@ agent_sessions = [
     # The pages outside the SPA (#1596): the app's palette and primitives, emitted by
     # web/scripts/emit-page-tokens.mjs, plus their layout sheet and the self-hosted fonts.
     "static/*.js", "static/nightjar/*.css", "static/nightjar/fonts/*.woff2",
+    # Calling HQ (#1397 P4): the hash-locked lock files `voice setup` installs from.
+    "voice_locks/*.txt", "voice_locks/*.in",
 ]
 
 [tool.pytest.ini_options]

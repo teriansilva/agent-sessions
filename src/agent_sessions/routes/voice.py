@@ -7,6 +7,9 @@
   persisted; a stored token is used only for the origin it was saved for.
 * ``POST /api/voice/preview`` — one fixed line in a voice, returned as WAV for the browser to play.
 * ``GET  /api/voice/capabilities`` — can a call start now, and if not, why; destinations.
+* ``GET  /api/voice/local`` — the speech set up on this machine (#1397 P4): installed, running.
+* ``POST /api/voice/local/use`` — point both endpoints at it, after the compatibility check; its
+  token is read from its 0600 file server-side and never returned.
 * ``POST /api/voice/calls`` — admit a call (one per instance) into an HQ conversation.
 * ``DELETE /api/voice/calls/{id}`` — end it.
 * ``WS /ws/voice/{id}`` — the call itself: binary PCM16 both ways, JSON control.
@@ -23,6 +26,7 @@ import asyncio
 import contextlib
 import hmac
 import json
+import os
 import time
 
 import websockets
@@ -38,6 +42,7 @@ from .. import (
     speech_conformance,
     speech_endpoints,
     voice_calls,
+    voice_setup,
 )
 from ..auth import AuthConfig, current_csrf, origin_matches, session_uid
 
@@ -268,6 +273,78 @@ def register(
         wav = speech_endpoints.pcm16_to_wav(bytes(pcm), voice_calls.OUT_RATE)
         return Response(wav, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
+    async def _local_running(token: str | None) -> bool:
+        if not token:
+            return False
+        try:
+            await speech_endpoints.list_models(
+                speech_endpoints.Endpoint(voice_setup.LOCAL_URL, "", token)
+            )
+        except speech_endpoints.SpeechError:
+            return False
+        return True
+
+    @app.get("/api/voice/local")
+    async def local_status(_: str = Depends(logged_in)) -> JSONResponse:
+        st = await asyncio.to_thread(voice_setup.status)
+        token = await asyncio.to_thread(voice_setup.read_token)
+        block = await asyncio.to_thread(hq_calls_settings.get)
+        st["running"] = await _local_running(token)
+        st["in_use"] = all(block[s]["base_url"] == voice_setup.LOCAL_URL for s in ("stt", "tts"))
+        st["voices"] = voice_setup.VOICES
+        return JSONResponse(st)
+
+    @app.post("/api/voice/local/use")
+    async def local_use(
+        request: Request, _u: str = Depends(logged_in), _c: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        """Save both endpoints as this machine's speech server — only once it passes the same
+        compatibility check as **Test both**, whose optional results set the capability flags."""
+        token = await asyncio.to_thread(voice_setup.read_token)
+        if not token:
+            return JSONResponse({"detail": "speech isn't set up on this machine", "code":
+                                 "not_set_up"}, status_code=409)  # fmt: skip
+        if not await _local_running(token):
+            return JSONResponse({"detail": "the local speech server isn't running", "code":
+                                 "not_running"}, status_code=409)  # fmt: skip
+        stt = speech_endpoints.Endpoint(voice_setup.LOCAL_URL, "faster-whisper", token)
+        tts = speech_endpoints.Endpoint(voice_setup.LOCAL_URL, "kokoro-v1.0", token)
+        report = await speech_conformance.check(stt, tts, voice_setup.VOICES["woman"])
+        if not report.usable:
+            return JSONResponse({"detail": "the local speech server failed the check",
+                                 "report": report.as_dict()}, status_code=502)  # fmt: skip
+        ok = {c.id: c.ok for c in report.checks}
+        found = await speech_endpoints.discover(tts)
+        # Observed by this server, of exactly these endpoints: what the save below may claim.
+        hq_calls_settings.observe(
+            "stt", stt.base_url, stt.model, token,
+            stt_detects_language=speech_conformance.detects_language(report),  # None: unproven
+        )  # fmt: skip
+        hq_calls_settings.observe(
+            "tts", tts.base_url, tts.model, token,
+            tts_accepts_language=ok.get("tts.language") is True,
+            tts_voices=found["voices"] or [], tts_languages=found["languages"] or [],
+        )  # fmt: skip
+        patch = {
+            "stt": {"base_url": voice_setup.LOCAL_URL, "model": "faster-whisper", "api_key": token},
+            "tts": {"base_url": voice_setup.LOCAL_URL, "model": "kokoro-v1.0", "api_key": token},
+            "voices": dict(voice_setup.VOICES),
+            "tts_voices": found["voices"] or [],
+            "tts_languages": found["languages"] or [],
+            "tts_styles": [],
+            "stt_detects_language": speech_conformance.detects_language(report),
+            "tts_accepts_language": bool(ok.get("tts.language")),
+        }
+        try:
+            saved = await asyncio.to_thread(voice_setup.save_if_token_current, token, patch)
+        except hq_calls_settings.SettingsError as e:
+            return JSONResponse({"detail": str(e)}, status_code=422)
+        if not saved:  # the token was rotated while this checked: never save the old one
+            why = "the speech server's token changed meanwhile — press Use this machine again"
+            return JSONResponse({"detail": why, "code": "token_changed"}, status_code=409)
+        pub = await asyncio.to_thread(hq_calls_settings.public)
+        return JSONResponse({"settings": pub, "report": report.as_dict()})
+
     @app.get("/api/voice/capabilities")
     async def capabilities(request: Request, _: str = Depends(logged_in)) -> JSONResponse:
         block = await asyncio.to_thread(hq_calls_settings.get)
@@ -286,6 +363,12 @@ def register(
         elif _over_home_free(request):
             reason = HOME_FREE_REASON
         current = voice_calls.REGISTRY.current
+        if os.environ.get("AGENT_SESSIONS_VOICE_PYTHON"):
+            runtime_note = "the call runtime is overridden (AGENT_SESSIONS_VOICE_PYTHON)"
+        else:
+            runtime_note = await asyncio.to_thread(voice_setup.stale) or ""
+        if not ready and configured and voice_setup.runtime_python() is None:
+            reason = "the call runtime isn't installed: run `agent-sessions voice setup`"
         return JSONResponse(
             {
                 "configured": configured,
@@ -295,6 +378,7 @@ def register(
                 and bool(ai.get("configured"))
                 and not _over_home_free(request),
                 "reason": reason,
+                "runtime_note": runtime_note,
                 "destinations": _destinations(block),
                 "captions": block["captions"],
                 "mic": block["mic"],

@@ -94,6 +94,16 @@ def observe(side: str, base_url: str, model: str, api_key: str, **facts) -> None
             _OBSERVED.pop(next(iter(_OBSERVED)))
 
 
+def rotated_claims(side: str, block: dict, new_key: str) -> dict:
+    """`voice rotate` (#1397 P4): the SAME local server, verified answering with `new_key`, keeps
+    the claims `block` holds for it. Recorded as observed under the new token and returned for the
+    save, which would otherwise reset them (a token change is an endpoint change)."""
+    claims = {k: copy.deepcopy(block[k]) for k in _PROBED[side]}
+    ep = block[side]
+    observe(side, ep["base_url"], ep["model"], new_key, **claims)
+    return claims
+
+
 def forget_observations() -> None:
     with _OBSERVED_LOCK:
         _OBSERVED.clear()

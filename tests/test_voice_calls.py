@@ -541,6 +541,48 @@ def test_the_needs_you_chip_reaches_the_call_through_the_socket(ready, worker):
     assert outcome and "needs you" in outcome[0]
 
 
+def test_the_call_lock_outlives_the_worker(ready, worker, monkeypatch):
+    """#1397 P4 (review 104040): the shared call lock is taken at admission and released only
+    after the worker has been stopped, so `voice setup` can't swap or restart under a teardown."""
+    from agent_sessions import voice_setup as vs
+
+    vs.root().mkdir(parents=True)
+    seen: list = []
+    orig = voice_calls.start_worker
+
+    async def start(settings):
+        w = await orig(settings)
+        real_stop = w.stop
+
+        async def stop():
+            with vs.no_call() as free:
+                seen.append(("stopping", free))
+            await real_stop()
+
+        w.stop = stop
+        return w
+
+    monkeypatch.setattr(voice_calls, "start_worker", start)
+    c, hdr, cfg = ready
+    call = _admit(c, hdr)
+    with vs.no_call() as free:
+        seen.append(("admitted", free))
+    with c.websocket_connect(f"/ws/voice/{call['id']}", headers=_ws(c, cfg)) as ws:
+        ws.send_text(json.dumps({"t": "hello", "csrf": hdr["X-CSRF-Token"]}))
+        for _ in range(100):
+            m = ws.receive()
+            if m.get("text") and json.loads(m["text"]).get("t") == "connected":
+                break
+        ws.send_text(json.dumps({"t": "end"}))
+        for _ in range(100):
+            m = ws.receive()
+            if m.get("text") is None and m.get("bytes") is None:
+                break
+    with vs.no_call() as free:
+        seen.append(("after", free))
+    assert seen == [("admitted", False), ("stopping", False), ("after", True)]
+
+
 # --- spoken text -------------------------------------------------------------------------------
 
 

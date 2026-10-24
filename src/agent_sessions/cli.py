@@ -60,7 +60,53 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("autoupdate", help="Check the channel and apply an update if available")
+
+    # Calling HQ on this machine (#1397 P4): the call runtime + a local speech server.
+    vo = sub.add_parser("voice", help="Set up calling HQ on this machine (runtime + speech server)")
+    vsub = vo.add_subparsers(dest="voice_cmd")
+    vs = vsub.add_parser("setup", help="Install the call runtime and the local speech server")
+    only = vs.add_mutually_exclusive_group()
+    only.add_argument("--runtime-only", action="store_true", help="only the call runtime")
+    only.add_argument("--server-only", action="store_true", help="only the speech server")
+    only.add_argument("--rollback", action="store_true", help="go back to the previous setup")
+    only.add_argument("--rotate-token", action="store_true", help="new speech-server token")
+    vs.add_argument("--stt", choices=["base", "small"], default="base",
+                    help="speech recognition model: base (~145 MB, ~1.6 s per turn on 2 CPU "
+                         "threads) or small (~480 MB, more accurate, ~4 s)")  # fmt: skip
+    vs.add_argument("--yes", action="store_true", help="don't ask before downloading")
+    vsub.add_parser("status", help="What is set up and running")
+    vr = vsub.add_parser("remove", help="Remove the runtime, the speech server and its token")
+    vr.add_argument("--models", action="store_true", help="also remove the downloaded models")
+    vr.add_argument("--yes", action="store_true", help="don't ask")
+    vsub.add_parser("serve", help="Run the speech server in the foreground (on its socket)")
     return p
+
+
+def _voice(args) -> int:
+    import json
+
+    from . import voice_setup as vs
+
+    try:
+        if args.voice_cmd == "setup":
+            if args.rollback:
+                return vs.rollback()
+            if args.rotate_token:
+                return vs.rotate_token()
+            return vs.setup(stt=args.stt, runtime=not args.server_only,
+                            server=not args.runtime_only, yes=args.yes)  # fmt: skip
+        if args.voice_cmd == "status":
+            print(json.dumps(vs.status(), indent=1))
+            return 0
+        if args.voice_cmd == "remove":
+            return vs.remove(models=args.models, yes=args.yes)
+        if args.voice_cmd == "serve":
+            return vs.serve()
+    except vs.SetupError as e:
+        print(f"error: {e}")
+        return 2
+    print("usage: agent-sessions voice {setup,status,remove,serve}")
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -134,6 +180,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"2FA was not enabled (no file at {path})")
         return 0
+
+    if args.cmd == "voice":
+        return _voice(args)
 
     if args.cmd == "autoupdate":
         from . import update

@@ -34,6 +34,7 @@ import asyncio
 import contextlib
 import io
 import ipaddress
+import os
 import re
 import socket
 import struct
@@ -219,10 +220,13 @@ async def _vet_destination(url: str) -> _Pinned:
 # --- the one outbound site ---------------------------------------------------------------------
 
 
-def _client(timeout: float) -> httpx.AsyncClient:
+def _client(timeout: float, uds: str | None = None) -> httpx.AsyncClient:
+    transport = _TRANSPORT
+    if transport is None and uds is not None:
+        transport = httpx.AsyncHTTPTransport(uds=uds)  # the local server: its socket, never TCP
     return httpx.AsyncClient(
         timeout=httpx.Timeout(timeout, connect=CONNECT_TIMEOUT_S),
-        transport=_TRANSPORT,
+        transport=transport,
         trust_env=False,
         follow_redirects=False,
     )
@@ -244,6 +248,28 @@ def _status_error(status: int, where: str) -> SpeechError:
     return SpeechError("failed", f"{where} answered {status}", status=status)
 
 
+#: This machine's speech server (`agent-sessions voice serve`, #1397 P4) is named by its loopback
+#: URL in the settings, but it is reached ONLY over its Unix socket in the 0700 voice dir: loopback
+#: is no boundary between local users (another user could bind the TCP port while ours is down),
+#: a socket in an owner-only directory is. Nothing is ever sent to that TCP port.
+LOCAL_SERVER_PORT = 8766
+
+
+def _is_local_server(ep: Endpoint) -> bool:
+    u = urlsplit(ep.base)
+    return u.hostname in ("127.0.0.1", "localhost", "::1") and u.port == LOCAL_SERVER_PORT
+
+
+def local_socket() -> str:
+    """The local speech server's socket: from the worker's environment, else the voice dir."""
+    env = os.environ.get("AGENT_SESSIONS_SPEECH_SOCKET")
+    if env:
+        return env
+    from . import voice_setup
+
+    return str(voice_setup.socket_path())
+
+
 @contextlib.asynccontextmanager
 async def _request(
     ep: Endpoint,
@@ -257,12 +283,13 @@ async def _request(
 ):
     """THE outbound call (inventoried). Yields the streaming response once its status is 2xx."""
     url = f"{ep.base}{path}"
+    uds = local_socket() if _is_local_server(ep) else None
     dest = await _vet_destination(url)
     # identity only: a compressed reply would be inflated before any cap could see it.
     headers = {**_headers(ep), "Host": dest.host_header, "Accept-Encoding": "identity"}
     extensions = {"sni_hostname": dest.sni} if dest.sni else None
     try:
-        async with _client(timeout) as client:
+        async with _client(timeout, uds) as client:
             req = client.build_request(
                 method,
                 dest.url,

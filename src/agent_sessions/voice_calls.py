@@ -40,7 +40,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import ask_orchestrator, ask_store, hq_calls_settings, hq_contacts
+from . import ask_orchestrator, ask_store, hq_calls_settings, hq_contacts, voice_setup
 
 log = logging.getLogger(__name__)
 
@@ -158,6 +158,8 @@ class Call:
     #: itself be heard as English. False (TESTED, it cannot): English is assumed. None (untested,
     #: or its endpoint changed since): unknown — spoken confirmation fails closed.
     detects_language: bool | None = None
+    #: The shared `voice/call.lock` (#1397 P4) held for this call's lifetime.
+    _held: contextlib.ExitStack | None = field(default=None, repr=False)
     #: Did the TTS server accept a `language` field (conformance `tts.language`)? Else none is sent.
     tts_takes_language: bool = False
     heard_language: str | None = None
@@ -688,11 +690,20 @@ class Call:
         finally:
             self._ended.set()
             if not self.worker_started:
-                self.torn_down.set()
+                self.mark_torn_down()  # nothing to tear down
 
     def mark_torn_down(self) -> None:
-        """The worker has been stopped: the next call may be admitted."""
+        """Nothing of this call runs any more (its worker stopped, or it never had one): the next
+        call may be admitted, and `voice setup`/`remove` may proceed (#1397 P4)."""
+        self.release()
         self.torn_down.set()
+
+    def release(self) -> None:
+        """Drop the shared `voice/call.lock` (#1397 P4). Once a worker started, only after it has
+        been STOPPED: setup must not swap or restart what a call is still tearing down."""
+        if self._held is not None:
+            self._held.close()
+            self._held = None
 
     async def wait_ended(self) -> None:
         await self._ended.wait()
@@ -843,7 +854,21 @@ class Registry:
                 raise CallError(409, "a call is already in progress — end it first", "busy")
             if cur is not None and not cur.torn_down.is_set():
                 raise CallError(409, "the last call is still hanging up — try again", "busy")
+            held = contextlib.ExitStack()
+            try:
+                held.enter_context(voice_setup.call_lock())
+            except BlockingIOError:
+                raise CallError(
+                    503, "the voice setup is being changed — try again", "busy"
+                ) from None
+            except OSError as e:  # the voice dir can't be made or locked: named, never a 500
+                raise CallError(
+                    503,
+                    f"the call lock is unavailable ({e.strerror or type(e).__name__})",
+                    "runtime",
+                ) from None
             call = Call(id=secrets.token_urlsafe(16), **kw)
+            call._held = held  # released when the call ends (`voice remove` waits for that)
             self.current = call
             return call
 
@@ -870,10 +895,14 @@ REGISTRY = Registry()
 
 
 def worker_python() -> str:
-    """The interpreter that runs the worker: `AGENT_SESSIONS_VOICE_PYTHON` (a separate
-    environment with Pipecat, kept across releases — docs/voice/runtime.md), else the app's own
-    (installed with the `voice` extra)."""
-    return os.environ.get("AGENT_SESSIONS_VOICE_PYTHON") or sys.executable
+    """The interpreter that runs the worker: `AGENT_SESSIONS_VOICE_PYTHON` (an explicit override
+    wins), else the runtime `agent-sessions voice setup` installed (#1397 P4), else the app's own
+    (the `voice` extra). Without `voice setup`, a separate environment: docs/voice/runtime.md."""
+    override = os.environ.get("AGENT_SESSIONS_VOICE_PYTHON")
+    if override:
+        return override
+    py = voice_setup.runtime_python()
+    return str(py) if py is not None else sys.executable
 
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
@@ -935,6 +964,10 @@ def _worker_env(tokens: dict[str, str], shim: str | None = None) -> dict[str, st
     for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
         env[k] = "2"
     env.update({k: v for k, v in tokens.items() if v})
+    # Where this machine's speech server listens (its socket; never a TCP port, #1397 P4).
+    from . import voice_setup
+
+    env["AGENT_SESSIONS_SPEECH_SOCKET"] = str(voice_setup.socket_path())
     return env
 
 

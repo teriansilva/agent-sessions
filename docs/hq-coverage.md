@@ -561,6 +561,8 @@ POST   /api/voice/preview                                                       
 GET    /api/voice/capabilities                                                    n/a  # whether a call can start: calling HQ is HQ
 POST   /api/voice/calls                                                           n/a  # calling HQ is HQ (#1397)
 DELETE /api/voice/calls/{call_id}                                                 n/a  # hanging up on HQ
+GET    /api/voice/local                                                           never  # the local speech server's status (#1625)
+POST   /api/voice/local/use                                                       never  # points call audio at a server and stores its token
 WS     /ws/voice/{call_id}                                                        n/a  # the call itself: speech for HQ's own turns
 ```
 

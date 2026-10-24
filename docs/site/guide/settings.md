@@ -166,6 +166,16 @@ Checklists** (the chevron beside Library in the top bar), beside templates, auto
 the [missions guide](/guide/missions). The old address, `/settings/ai-playbooks`, still works and
 redirects there.
 
+### HQ calls · `ai-hq-calls`
+
+How [Calling HQ](/guide/calls) sounds and where its audio goes:
+
+- **Speech on this machine:** the status of `agent-sessions voice setup`, and **Use this machine**.
+- **Speech services:** speech-to-text and text-to-speech, each a URL, a model and an optional
+  access key. **Test both** checks them before you save.
+- **Each General's voice:** voice, style, speed and a voice per language, with **Preview**.
+- **Call language**, **Turn-taking**, **Interrupt HQ**, **Captions**, and **Where your call goes**.
+
 ### Prompts · `ai-prompts`
 
 Every system prompt BattleLab sends, with the JSON shape each one must return and **Reset to

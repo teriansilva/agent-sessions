@@ -165,6 +165,7 @@ export default defineConfig({
           { text: "AI review", link: "/guide/ai-review" },
           { text: "Handoff", link: "/guide/handoff" },
           { text: "Dictation", link: "/guide/dictation" },
+          { text: "Calling HQ", link: "/guide/calls" },
           { text: "Notifications", link: "/guide/notifications" },
           { text: "Home Free", link: "/guide/home-free" },
           { text: "Settings", link: "/guide/settings" },
