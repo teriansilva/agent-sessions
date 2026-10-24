@@ -7,8 +7,10 @@ after that, the intended flow asks the operator. An approval belongs to the exac
 ## Use this template
 
 Open **Library → Playbooks → Forgejo workflow → Duplicate to local**, then **Edit playbook**.
-Choose an available agent and model for the planning and implementation steps. The initial Codex
-reference is an example; if unavailable, it remains unresolved until you choose a replacement.
+The planning and implementation steps name a role (the `forgejo-pr-flow` skill, at least the
+Specialist grade), and the review step names another (the `code-review` skill, at least Senior,
+and a different specialist from the one who implemented). No step names an agent or model; a
+specialist from your pool fills each role when a mission runs.
 Edit the evidence, dependencies and maximum rework rounds in the step inspector, then save.
 
 **Available now:** browse, duplicate, edit and save the bundle. Saving does not execute its flow.
@@ -23,8 +25,8 @@ are hints, not selected targets. This bundle contains no credentials, credential
 CI files, agent instruction files or scripts. A private forge may require adding a secret
 variable and connection credential reference to your own local bundle before deployment.
 
-Configure the actual reviewer account (for example, Hermes), its permissions and webhook/CI
-trigger on the forge separately. Ensure the repository already has the required labels, CI
+Configure the reviewer account the review posts as (for example, Hermes), its permissions and
+webhook/CI trigger on the forge separately. Ensure the repository already has the required labels, CI
 checks, deployment workflow, secrets and revision endpoint. This template provisions none of
 them. Missing prerequisites mean the workflow is not verified.
 

@@ -4,7 +4,9 @@ import {
   classifyLegacy,
   compareVersions,
   freeId,
+  idRule,
   LOCAL_ID,
+  SKILL_LOCAL_ID,
   updateId,
   updateStatus,
 } from "./galleryRules";
@@ -21,6 +23,26 @@ const catalog = (entries: GalleryEntry[], state: GalleryIndex["state"] = "ready"
   state, entries, error: null,
 });
 const origin: GalleryOrigin = { state: "verified", kind: "playbook", id: "inbox-triage", version: "1.2.0" };
+
+describe("skill IDs use the one skill grammar (#1654)", () => {
+  it("keeps a digit-first or one-character skill ID that a playbook ID could not be", () => {
+    expect(freeId("9-lives", new Set(), "skill")).toBe("9-lives");
+    expect(freeId("a", new Set(), "skill")).toBe("a");
+    expect(freeId("9-lives", new Set())).toBe("lives"); // playbooks keep their own grammar
+  });
+  it("stays within 64 characters for a skill", () => {
+    const long = "s".repeat(64);
+    const id = freeId(long, new Set([long]), "skill");
+    expect(id).toHaveLength(64);
+    expect(SKILL_LOCAL_ID.test(id)).toBe(true);
+    expect(updateId("9-lives", "1.2.0", new Set(), "skill")).toBe("9-lives-v1-2-0");
+  });
+  it("validates by kind", () => {
+    expect(idRule("skill").re.test("9-lives")).toBe(true);
+    expect(idRule("playbook").re.test("9-lives")).toBe(false);
+    expect(idRule("skill").re.test("-x")).toBe(false);
+  });
+});
 
 describe("freeId", () => {
   it("keeps a free valid base", () => {
@@ -104,6 +126,14 @@ describe("classifyLegacy", () => {
   });
   it("refuses a malformed digest", () => {
     expect(classifyLegacy("not-a-digest", q(""))).toEqual({ type: "invalid" });
+  });
+  it("resolves a skill link in the skill grammar and a playbook link in its own (#1654)", () => {
+    for (const id of ["a", "9-lives", "s".repeat(64)])
+      expect(classifyLegacy(undefined, q(`kind=skill&id=${id}`))).toEqual({ type: "update", kind: "skill", id });
+    for (const id of ["a", "9-lives"])
+      expect(classifyLegacy(undefined, q(`kind=playbook&id=${id}`))).toEqual({ type: "missing-local", kind: "playbook" });
+    for (const id of ["-x", "S", "s".repeat(65), ""])
+      expect(classifyLegacy(undefined, q(`kind=skill&id=${id}`))).toEqual({ type: "missing-local", kind: "skill" });
   });
   it("resolves a compare link for either kind", () => {
     expect(classifyLegacy(undefined, q("kind=playbook&id=inbox-triage"))).toEqual({ type: "update", kind: "playbook", id: "inbox-triage" });

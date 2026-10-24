@@ -9,6 +9,7 @@ is still listed. Nothing here writes, fetches, or executes; `requires_status` is
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import shutil
@@ -103,6 +104,9 @@ def card(pb: dict) -> dict:
                         "actor": dict(s["actor"]),
                         "after": list(s["after"]),
                         "note": is_note(s),
+                        # #1654: an agent step's role (skills + minimum grade); a format ≤4 step's
+                        # is the read-only projection with its `legacy_hint`. Absent otherwise.
+                        **({"role": copy.deepcopy(s["role"])} if s.get("role") is not None else {}),
                     }
                     for s in f["steps"]
                 ],

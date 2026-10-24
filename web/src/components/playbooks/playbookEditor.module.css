@@ -298,3 +298,138 @@
     flex: 1 1 auto;
   }
 }
+
+/* ---- format 5 role (#1654): required skills + minimum grade; legacy hint + explicit upgrade ---- */
+.role,
+.legacy {
+  display: grid;
+  gap: var(--sp-3);
+}
+.roleSkills,
+.grades {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-2);
+}
+.roleSkills legend,
+.grades legend {
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  margin-bottom: var(--sp-2);
+}
+.skillList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-2);
+}
+.skill,
+.skillMissing {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+}
+.skillMissing {
+  border-left: 2px solid var(--status-degraded);
+}
+.skill > button,
+.skillMissing > button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  min-height: 44px;
+}
+.skillId {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.skillLabel {
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+}
+.gradeRow {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--sp-1);
+}
+.grade,
+.gradeOn {
+  min-height: 44px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-1);
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--fs-meta);
+  cursor: pointer;
+}
+.gradeOn {
+  border-color: var(--accent);
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-1));
+}
+.grade:focus-visible,
+.gradeOn:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.legacy {
+  padding: var(--sp-3);
+  border: 1px solid var(--line-strong);
+  border-left: 2px solid var(--text-3);
+  background: var(--bg-2);
+}
+.upgrade {
+  display: grid;
+  gap: var(--sp-2);
+}
+/* #1654: one group per agent step the upgrade changes. */
+.upgradeStep {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 0;
+  padding: var(--sp-2) 0 0;
+  display: grid;
+  gap: var(--sp-2);
+}
+.upgradeStep legend {
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.editor .checkBlocked {
+  display: flex;
+  flex-direction: row;
+  gap: var(--sp-2);
+  align-items: flex-start;
+  min-height: 44px;
+  margin: 2px 0;
+  color: var(--text-3);
+}
+.editor .checkBlocked input {
+  flex: 0 0 20px;
+  width: 20px;
+  min-height: 20px;
+  height: 20px;
+  margin-top: 2px;
+}
+.editor .upgrade .check {
+  align-items: flex-start;
+}
+.upgradeActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+@media (max-width: 800px) {
+  .gradeRow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

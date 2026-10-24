@@ -1,4 +1,4 @@
-format = 1
+format = 5
 title = "Question to reviewed brief"
 description = "A non-development example. Define scope, collect evidence, review independently and ask the operator to accept the result."
 
@@ -16,7 +16,8 @@ probe = "none"
 [[steps]]
 id = "draft"
 title = "Draft with evidence"
-actor = { kind = "agent", engine = "codex", model = "default" }
+actor = { kind = "agent" }
+role = { skills = ["research-with-citations"], min_grade = "strong" }
 after = ["scope"]
 brief = "Answer {{research_question}} for {{audience}}. Cite the sources supporting each material claim. Distinguish observations from inference, explain contradictory evidence and state uncertainty. Revise findings raised by the independent review."
 
@@ -33,9 +34,10 @@ probe = "supervisor_judged"
 [[steps]]
 id = "review"
 title = "Review independently"
-actor = { kind = "agent", engine = "claude", model = "default" }
+actor = { kind = "agent" }
+role = { skills = ["research-review"], min_grade = "frontier" }
 after = ["draft"]
-distinct_from = [{ step = "draft", constraint = "session" }]
+distinct_from = [{ step = "draft", constraint = "specialist" }]
 rework = { to = "draft", when = "brief_reviewed", max_rounds = 3 }
 brief = "Independently check the draft against its sources and agreed scope. Record specific unsupported claims or omissions and an explicit verdict. Request revision when needed; after three revision rounds, ask the operator to decide."
 

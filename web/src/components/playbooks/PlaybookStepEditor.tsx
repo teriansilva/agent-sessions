@@ -1,14 +1,16 @@
 /** Contextual step Properties; completion probes retain their serialized checklist identity. */
 import { useId } from "react";
 import { useFieldError } from "./playbookValidation";
-import {
-  engineName,
-  offeredModels,
-  useEngineRoster,
-} from "../../app/engineRoster";
-import type { AuthoringSchema, Item, Step, Variable } from "./playbookDraft";
-import { ancestors, freshId } from "./playbookDraft";
+import type {
+  AuthoringSchema,
+  Item,
+  Step,
+  UpgradeStep,
+  Variable,
+} from "./playbookDraft";
+import { ROLE_FORMAT, ancestors, freshId } from "./playbookDraft";
 import { PlaybookPrompts } from "./PlaybookPrompts";
+import { LegacyActor, RoleSection } from "./PlaybookRole";
 import buttons from "../ui/actionButton.module.css";
 import styles from "./playbookEditor.module.css";
 
@@ -155,7 +157,16 @@ export function PlaybookStepEditor({
   onRemove,
   onMove,
   field,
+  format = 4,
+  upgradeSteps,
+  onUpgrade,
 }: {
+  /** The flow's format: 5 shows a role (#1654); ≤4 shows the recorded agent read-only. */
+  format?: number;
+  /** Every agent step the explicit upgrade changes, each confirmed per reference. */
+  upgradeSteps?: UpgradeStep[];
+  /** The explicit, whole-document upgrade to format 5, with every step's chosen role skills. */
+  onUpgrade?: (picks: Record<string, string[]>) => void;
   step: Step;
   onBack: () => void;
   steps: Step[];
@@ -166,19 +177,11 @@ export function PlaybookStepEditor({
   onMove: (direction: -1 | 1) => void;
   field: string;
 }) {
-  const roster = useEngineRoster();
   const patch = (value: Partial<Step>) => onChange({ ...step, ...value });
   const parents = ancestors(steps, step.id);
   const previous = steps.filter((s) => parents.has(s.id));
   const actor = step.actor;
-  const eligible = schema.agents.filter((id) =>
-    roster.engines.some((e) => e.id === id),
-  );
-  const models = offeredModels(actor.engine ?? "");
-  const model = actor.model ?? "default";
-  const knownModel =
-    model === "default" ||
-    models.some((m) => m.id === model || m.aliases.includes(model));
+  const roles = format >= ROLE_FORMAT || !!step.role;
   const checklist = step.checklist ?? [];
   const changeItem = (index: number, item: Item) =>
     patch({ checklist: checklist.map((old, i) => (i === index ? item : old)) });
@@ -210,8 +213,9 @@ export function PlaybookStepEditor({
       >
         <h3>Who performs this step</h3>
         <p className={styles.hint}>
-          Choose an agent, an external service, the operator, or a note with no
-          performer.
+          {format >= 5
+            ? "Choose an agent role (filled per mission from your pool), an external service, the operator, or a note."
+            : "Choose an agent, an external service, the operator, or a note with no performer."}
         </p>
         <Choice
           label="Who does this step?"
@@ -226,55 +230,34 @@ export function PlaybookStepEditor({
           }))}
           onChange={(kind) =>
             patch({
+              ...(kind === "agent" && roles
+                ? { role: step.role ?? { skills: [] } }
+                : { role: undefined }),
               actor:
                 kind === "agent"
-                  ? { kind, engine: "" }
+                  ? roles
+                    ? { kind }
+                    : { kind, engine: "" }
                   : kind === "external"
                     ? { kind, label: "External reviewer" }
                     : { kind },
             })
           }
         />
-        {actor.kind === "agent" && (
-          <>
-            <p className={styles.warning}>
-              Saved agent assignments are retained. API profile setup and
-              workflow execution are not available yet.
-            </p>
-            <Choice
-              label="Agent"
-              value={actor.engine ?? ""}
-              choices={eligible.map((id) => ({
-                value: id,
-                label: engineName(id),
-              }))}
-              onChange={(engine) =>
-                patch({ actor: { ...actor, engine, model: "default" } })
-              }
-              field={`${field}.actor.engine`}
-            />
-            <Choice
-              label="Model"
-              value={model}
-              choices={[
-                "default",
-                ...models.map((m) => ({ value: m.id, label: m.id })),
-                ...(knownModel &&
-                model !== "default" &&
-                !models.some((m) => m.id === model)
-                  ? [model]
-                  : []),
-              ]}
-              onChange={(model) => patch({ actor: { ...actor, model } })}
-              field={`${field}.actor.model`}
-            />
-            {(!eligible.includes(actor.engine ?? "") || !knownModel) && (
-              <p className={styles.warning}>
-                This agent or model is unavailable. Its stored reference is
-                retained until you choose a replacement.
-              </p>
-            )}
-          </>
+        {actor.kind === "agent" && roles && (
+          <RoleSection
+            step={step}
+            schema={schema}
+            field={field}
+            onChange={(role) => patch({ actor: { kind: "agent" }, role })}
+          />
+        )}
+        {actor.kind === "agent" && !roles && (
+          <LegacyActor
+            step={step}
+            upgradeSteps={upgradeSteps}
+            onUpgrade={onUpgrade}
+          />
         )}
         {actor.kind === "external" && (
           <TextField
@@ -583,7 +566,15 @@ export function PlaybookStepEditor({
                 label="Distinct constraint"
                 field={`${field}.distinct_from[${i}].constraint`}
                 value={d.constraint}
-                choices={schema.distinct}
+                choices={
+                  roles
+                    ? (schema.distinct_role ?? [
+                        "specialist",
+                        "engine",
+                        "model",
+                      ])
+                    : schema.distinct
+                }
                 onChange={(constraint) =>
                   patch({
                     distinct_from: step.distinct_from!.map((old, j) =>
@@ -620,7 +611,7 @@ export function PlaybookStepEditor({
                   ...(step.distinct_from ?? []),
                   {
                     step: steps.find((s) => s.id !== step.id)!.id,
-                    constraint: "session",
+                    constraint: roles ? "specialist" : "session",
                   },
                 ],
               })

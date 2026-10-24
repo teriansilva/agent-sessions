@@ -82,7 +82,7 @@ def _evidence(pointer: str, kind: str, local_id: str | None) -> dict:
         raise contract.GalleryError("Original content is absent from its signed gallery evidence.")
     from ..playbooks import store
 
-    store.playbook_id(record["id"])
+    store.local_id(kind, record["id"])
     base = rewritten(entry["content"], record["id"])
     if record["base_files"] != base or record["base_revision"] != _revision(kind, base):
         raise contract.GalleryError("The imported gallery base is inconsistent.")

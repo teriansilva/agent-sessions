@@ -11,6 +11,13 @@ export interface PlaybookStep {
   };
   after: string[];
   note: boolean;
+  /** Format 5 (#1654): what an agent step needs; filled per mission from the pool. A format ≤4
+   *  step's role is a read-only view: no skills, its recorded agent as `legacy_hint`. */
+  role?: {
+    skills: string[];
+    min_grade?: string | null;
+    legacy_hint?: { engine: string; model: string };
+  };
 }
 export interface PlaybookCardData {
   gallery_origin?: GalleryOrigin | null;
@@ -49,6 +56,8 @@ export interface PlaybookDetail extends PlaybookCardData {
   documents?: Record<string, Record<string, unknown>>;
   requires_present?: { binaries: Record<string, boolean> };
   recovery_total: number;
+  /** #1654: upgraded from a retained format ≤4 copy, which Revert to format 4 restores. */
+  revertible?: boolean;
 }
 export interface PlaybookWriteResult {
   durable?: boolean;
@@ -94,4 +103,8 @@ export interface PlaybookFleetReview {
 export interface PlaybookFleetResult {
   operation_id: string;
   projects: { project_id: string; outcome: string; detail: string }[];
+}
+/** The role a step BINDS (#1654): a format 5 agent step's; never the legacy read-only view. */
+export function bindingRole(step: PlaybookStep) {
+  return step.role && !step.role.legacy_hint ? step.role : undefined;
 }

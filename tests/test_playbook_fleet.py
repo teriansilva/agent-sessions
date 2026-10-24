@@ -120,6 +120,7 @@ def test_an_interrupted_or_baseline_free_deployment_is_never_batched(fleet_of_tw
 
 
 BASE = {
+    "playbook": {"format": 2},
     "conflicts": [],
     "targets": [{"id": "connection:service", "url": "https://a/", "requires_confirmation": False}],
     "capability_requests": ["shared_memory"],

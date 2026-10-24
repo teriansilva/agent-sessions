@@ -46,8 +46,8 @@ export const VARIABLES_PATH = "/library/variables";
 export const MEMORY_PATH = "/library/memory";
 
 /** The public gallery (#1440): one Browse view per kind, inside Library → Playbooks and → Skills.
- *  A playbook/skill ID (`[a-z][a-z0-9-]{1,47}`) never equals a kind segment plus a digest, and the
- *  bare prefix and `/library/gallery/<digest>[?kind=&id=]` are only old links, redirected by
+ *  A playbook ID (`[a-z][a-z0-9-]{1,47}`) or skill ID (`[a-z0-9][a-z0-9-]{0,63}`, #1654) has no
+ *  slash, so it never equals a kind segment plus a digest, and the bare prefix and `/library/gallery/<digest>[?kind=&id=]` are only old links, redirected by
  *  `LegacyGalleryRedirect`. */
 export const GALLERY_PATH = "/library/gallery";
 export const GALLERY_PLAYBOOKS_PATH = `${GALLERY_PATH}/playbooks`;

@@ -612,3 +612,83 @@ test.describe("New project wizard — playbook setup (#1508)", () => {
     expect(bound?.value).toBe("first line\nsecond line");
   });
 });
+
+/** #1654: a format 5 book — its agent steps name roles, so nothing is assigned at deployment. */
+const ROLES_BOOK = {
+  ...ISSUE_TO_LIVE,
+  id: "roles-book",
+  name: "Roles book",
+  flows: [
+    {
+      id: "main",
+      title: "Roles",
+      steps: [
+        { id: "plan", title: "Plan the change", actor: { kind: "agent" }, role: { skills: ["forgejo-pr-flow"], min_grade: "strong" }, after: [], note: false },
+        { id: "review", title: "Independent review", actor: { kind: "agent" }, role: { skills: ["code-review"], min_grade: "frontier" }, after: ["plan"], note: false },
+        { id: "merge", title: "Confirm and merge", actor: { kind: "operator" }, after: ["review"], note: false },
+      ],
+    },
+  ],
+};
+
+test.describe("New project wizard — format 5 roles (#1654)", () => {
+  test("a format 5 playbook deploys with its roles and no per-step assignment", async ({ page }) => {
+    await mockApp(page);
+    await page.route("**/api/playbooks", (r) =>
+      r.fulfill({ json: { playbooks: [ROLES_BOOK], default: null, recovery_total: 0 } }),
+    );
+    await page.route("**/api/playbooks/authoring/schema", (r) => r.fulfill({ json: { agents: ["claude"] } }));
+    await page.route("**/api/playbooks/roles-book", (r) =>
+      r.fulfill({
+        json: {
+          ...ROLES_BOOK,
+          recovery_total: 0,
+          requires_present: { binaries: { git: true } },
+          documents: { "playbook.toml": { format: 5, variables: [] } },
+        },
+      }),
+    );
+    await page.route("**/api/template-variables", (r) => r.fulfill({ json: { variables: [], limits: {} } }));
+    const reviews: { assignments?: Record<string, unknown> }[] = [];
+    await page.route("**/api/playbooks/roles-book/review", (r) => {
+      reviews.push(r.request().postDataJSON());
+      return r.fulfill({
+        json: {
+          digest: "b".repeat(64),
+          deployment_id: "d-roles",
+          destination: { path: "/home/operator/payments-api", device: 1, inode: 2 },
+          variables: [],
+          materials: [],
+          changes: [],
+          conflicts: [],
+          targets: [],
+          assignments: [],
+          capability_requests: [],
+          rituals: [],
+          playbook: { id: "roles-book", format: 5, source: "bundled", version: "1.0.0", revision: "r1" },
+        },
+      });
+    });
+    await page.goto(NEW_PROJECT_PATH);
+    await page.getByLabel("Project name").fill("Payments API");
+    for (let i = 0; i < 6 && !(await heading(page, "Choose a playbook").isVisible()); i++) await next(page);
+    await expect(heading(page, "Choose a playbook")).toBeVisible();
+    await page.getByTestId("playbook-card-roles-book").getByRole("radio").check();
+    await next(page);
+    const roles = page.locator('section[aria-labelledby="pb-roles-h"]');
+    await expect(roles).toContainText("forgejo-pr-flow");
+    await expect(roles).toContainText("code-review");
+    await expect(roles).toContainText("Senior");
+    await expect(roles).toContainText("a specialist, per mission");
+    await expect(page.getByRole("heading", { name: "Agents per step", exact: true })).toHaveCount(0);
+    await expect(page.getByLabel("Agent for Plan the change")).toHaveCount(0);
+    // The phone layout keeps the roles in bounds.
+    const box = (await roles.boundingBox())!;
+    expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
+    await next(page);
+    await expect(heading(page, "Review and create")).toBeVisible();
+    await expect.poll(() => reviews.length).toBeGreaterThan(0);
+    for (const body of reviews) expect(body.assignments ?? {}).toEqual({});
+    await expect(page.getByRole("heading", { name: "Assignments", exact: true })).toHaveCount(0);
+  });
+});

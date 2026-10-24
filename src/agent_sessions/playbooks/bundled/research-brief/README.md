@@ -5,9 +5,10 @@ to accept it. The review can return to the draft at most **three times** before 
 asks the operator to decide.
 
 Open **Library → Playbooks → Research brief → Duplicate to local → Edit playbook**. Set the
-question and audience declarations, adapt the evidence criteria, and choose available agents
-and models. Codex and Claude are example references; an unavailable agent remains unresolved
-until you replace it. Keep the review in a different session from the drafter.
+question and audience declarations and adapt the evidence criteria. The draft and review steps
+name a role (the skills they need and a minimum grade), not an agent or model; a specialist from
+your pool fills each role when a mission runs. The review is always done by a different specialist
+than the drafter.
 
 The checklist requires sources that support material claims, explicit uncertainty and contrary
 evidence, an independent verdict, and operator acceptance. A citation alone is not evidence that

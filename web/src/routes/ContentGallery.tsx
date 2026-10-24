@@ -47,7 +47,8 @@ import {
   Verified,
 } from "../components/gallery/Shared";
 import { LandingNote, ViewTabs } from "../components/gallery/ViewTabs";
-import { freeId, LOCAL_ID, updateId } from "../components/gallery/galleryRules";
+import { freeId, idRule, updateId } from "../components/gallery/galleryRules";
+import { bindingRole, type PlaybookStep } from "../types/playbooks";
 import {
   galleryWait,
   useGallery,
@@ -68,10 +69,19 @@ import styles from "../components/gallery/gallery.module.css";
 const plural = (n: number, one: string, many = `${one}s`) =>
   `${n} ${n === 1 ? one : many}`;
 const NOUN = { playbook: "playbooks", skill: "skills" } as const;
-const ID_HINT =
-  "2–48 lowercase letters, digits or dashes, starting with a letter.";
 const STALE =
   "This gallery listing is out of date, so adding is paused until it refreshes.";
+
+/** #1654: a format 5 step's role in the preview, instead of an engine/model it no longer names. */
+function roleText(step: PlaybookStep): string | null {
+  const role = bindingRole(step);
+  if (!role) return null;
+  const grade =
+    { fast: "Intern", strong: "Specialist", frontier: "Senior" }[
+      role.min_grade ?? ""
+    ] ?? "any grade";
+  return `role: ${role.skills.length ? role.skills.join(", ") : "no skills"} · at least ${grade}`;
+}
 
 function KindIcon({ kind }: { kind: GalleryKind }) {
   return kind === "playbook" ? (
@@ -189,7 +199,7 @@ export default function ContentGallery() {
       ? "skill"
       : "playbook";
   const update = query.get("update");
-  const target = update !== null && LOCAL_ID.test(update) ? update : null;
+  const target = update !== null && idRule(kind).re.test(update) ? update : null;
   const gallery = useGallery();
   const [search, setSearch] = useState("");
   const all = gallery.data?.entries ?? [];
@@ -447,9 +457,10 @@ function useConfirmedWrite({
   );
   const [pending] = usePendingId();
   const id = taking?.next ?? custom ?? (taken ? suggested(taken) : null);
+  const rule = idRule(kind);
   const idProblem =
-    custom !== null && !LOCAL_ID.test(custom)
-      ? `A local ID is ${ID_HINT}`
+    custom !== null && !rule.re.test(custom)
+      ? `A local ID is ${rule.hint}`
       : custom !== null && taken?.has(custom)
         ? `“${custom}” is already used. Choose another.`
         : "";
@@ -485,7 +496,7 @@ function useConfirmedWrite({
         // the next free one; the operator has to click again.
         const now = await reloadTaken();
         if (e.status === 409 && now?.has(id)) {
-          setTaking({ was: id, next: freeId(id.replace(/-\d+$/, ""), now) });
+          setTaking({ was: id, next: freeId(id.replace(/-\d+$/, ""), now, kind) });
           setCustom(null);
         } else setError(errorText(e));
       } else {
@@ -505,6 +516,7 @@ function useConfirmedWrite({
       setTaking(null);
     },
     idProblem,
+    rule,
     taking,
     asking,
     setAsking,
@@ -534,7 +546,7 @@ function Inspect({
   );
   const write = useConfirmedWrite({
     kind: c.kind,
-    suggested: (taken) => freeId(c.id, taken),
+    suggested: (taken) => freeId(c.id, taken, c.kind),
     label: c.title,
     write: (id, operation) =>
       api.importGallery(c.kind, id, entry.digest, operation),
@@ -627,7 +639,8 @@ function Inspect({
                     {flow.steps.map((step) => (
                       <li key={step.id}>
                         {step.title} ·{" "}
-                        {step.actor.engine ??
+                        {roleText(step) ??
+                          step.actor.engine ??
                           step.actor.label ??
                           step.actor.kind}
                         {step.after.length
@@ -740,13 +753,13 @@ function Inspect({
                   <input
                     disabled={write.busy}
                     value={write.custom ?? write.id ?? ""}
-                    pattern="[a-z][a-z0-9-]{1,47}"
+                    pattern={write.rule.pattern}
                     aria-describedby={idHint}
                     onChange={(e) => write.setCustom(e.target.value)}
                   />
                 </label>
                 <p className={styles.why} id={idHint}>
-                  {ID_HINT}
+                  {write.rule.hint}
                 </p>
               </>
             )}
@@ -878,7 +891,8 @@ function Merge({
   }, []);
   const write = useConfirmedWrite({
     kind: view.kind,
-    suggested: (taken) => updateId(view.id, view.incoming_version, taken),
+    suggested: (taken) =>
+      updateId(view.id, view.incoming_version, taken, view.kind),
     label: `the updated ${title}`,
     write: (newId, operation) =>
       api.updateGallery(
@@ -1122,13 +1136,13 @@ function Merge({
               <input
                 disabled={write.busy}
                 value={write.custom ?? write.id ?? ""}
-                pattern="[a-z][a-z0-9-]{1,47}"
+                pattern={write.rule.pattern}
                 aria-describedby={idHint}
                 onChange={(e) => write.setCustom(e.target.value)}
               />
             </label>
             <p className={styles.why} id={idHint}>
-              {ID_HINT}
+              {write.rule.hint}
             </p>
           </>
         )}

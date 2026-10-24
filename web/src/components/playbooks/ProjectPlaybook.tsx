@@ -12,6 +12,7 @@ import {
 } from "../../app/engineRoster";
 import { settingsPath } from "../../routes/settingsTabs";
 import type { PlaybookCardData } from "../../types/playbooks";
+import { bindingRole } from "../../types/playbooks";
 import { ProjectPlaybookRemove } from "./ProjectPlaybookRemove";
 import { inputState, sourceLabels, type Globals } from "./playbookInputState";
 import { playbookMissing, usePlaybookGlobals } from "./usePlaybookGlobals";
@@ -215,11 +216,14 @@ export function ProjectPlaybookInputs({
 }) {
   const roster = useEngineRoster();
   const [everyStep, setEveryStep] = useState("");
-  const steps = (book.detail?.flows ?? []).flatMap((f) =>
+  const agentSteps = (book.detail?.flows ?? []).flatMap((f) =>
     f.steps
       .filter((s) => s.actor.kind === "agent")
       .map((s) => ({ ...s, key: `${f.id}:${s.id}`, flow: f.title, flowId: f.id })),
   );
+  // #1654: format 5 steps name a role and take NO assignment; only legacy agent steps are assigned.
+  const roleSteps = agentSteps.filter((s) => bindingRole(s));
+  const steps = agentSteps.filter((s) => !bindingRole(s));
   const available = roster.engines.filter(
     (e) => e.present && e.status !== "retiring" && book.agents.includes(e.id),
   );
@@ -399,6 +403,60 @@ export function ProjectPlaybookInputs({
         </div>
       </section>
 
+      {roleSteps.length > 0 && (
+        <section className={styles.section} aria-labelledby="pb-roles-h">
+          {/* Format 5 (#1654): no per-step assignments — roles are filled per mission by HQ. */}
+          <div className={styles.sectionHead}>
+            <h2 id="pb-roles-h">Roles in this playbook</h2>
+            <span className={styles.sectionMeta}>
+              filled per mission from your pool · nothing to assign here
+            </span>
+          </div>
+          <p className={styles.rolesNote}>
+            This playbook names what each step needs, not who does it. When a
+            mission runs a procedure here, HQ proposes a specialist for each
+            role and you approve the plan. Whether your pool covers each role is
+            shown once specialists exist.
+          </p>
+          <div className={styles.steps}>
+            <div className={styles.stepsHead} aria-hidden="true">
+              <span>Step</span>
+              <span>Required skills</span>
+              <span>Minimum grade</span>
+              <span>Filled by</span>
+            </div>
+            {roleSteps.map((step) => {
+              const role = step.role ?? { skills: [] };
+              const grade =
+                (
+                  {
+                    fast: "Intern",
+                    strong: "Specialist",
+                    frontier: "Senior",
+                  } as Record<string, string>
+                )[role.min_grade ?? ""] ?? "Any";
+              return (
+                <div key={step.key} className={styles.stepRow}>
+                  <span className={styles.stepName}>
+                    <strong>{step.title}</strong>
+                    <span className={styles.stepNo}>{step.flow}</span>
+                  </span>
+                  <span className={styles.roleSkills}>
+                    {role.skills.length
+                      ? role.skills.map((s) => <code key={s}>{s}</code>)
+                      : "none"}
+                  </span>
+                  <span>{grade}</span>
+                  <span className={styles.state}>
+                    a specialist, per mission
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+      {(steps.length > 0 || roleSteps.length === 0) && (
       <section className={styles.section} aria-labelledby="pb-steps-h">
         <div className={styles.sectionHead}>
           <h2 id="pb-steps-h">Agents per step</h2>
@@ -566,6 +624,7 @@ export function ProjectPlaybookInputs({
           </div>
         )}
       </section>
+      )}
 
       {binaries.length > 0 && (
         <section className={styles.section} aria-labelledby="pb-req-h">
@@ -726,17 +785,21 @@ export function ProjectPlaybookReview({
               )}
             </div>
           ))}
-          <h3>Assignments</h3>
-          <ul>
-            {plan.assignments.map((a) => (
-              <li key={a.step}>
-                {a.step}:{" "}
-                {a.assignment
-                  ? `${engineLabel(a.assignment.engine)} / ${a.assignment.model}`
-                  : `Unassigned — ${a.reason}`}
-              </li>
-            ))}
-          </ul>
+          {plan.assignments.length > 0 && (
+            <>
+              <h3>Assignments</h3>
+              <ul>
+                {plan.assignments.map((a) => (
+                  <li key={a.step}>
+                    {a.step}:{" "}
+                    {a.assignment
+                      ? `${engineLabel(a.assignment.engine)} / ${a.assignment.model}`
+                      : `Unassigned — ${a.reason}`}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
           <h3>Capability requests</h3>
           <p>
             {plan.capability_requests.join(", ") || "None"}. Assignment grants

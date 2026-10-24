@@ -611,11 +611,15 @@ def _item_key(r: _Reader) -> str:
     return key
 
 
-def _actor(r: _Reader) -> dict:
+def _actor(r: _Reader, *, format: int) -> dict:
     t = r.table("actor")
     kind = t.str("kind", one_of=schema.ACTOR_KINDS)
     out: dict[str, Any] = {"kind": kind}
-    if kind == schema.ACTOR_AGENT:
+    if kind == schema.ACTOR_AGENT and format >= schema.ROLE_FORMAT:
+        for name in ("engine", "model"):
+            if t.has(name):
+                raise _fail(t._f(name), "a format 5 step names a role, not an engine or model")
+    elif kind == schema.ACTOR_AGENT:
         out["engine"] = t.str("engine", pattern=schema.ENGINE_REF_RE)
         model = t.str("model", schema.MODEL_DEFAULT, max_len=96)
         if model != schema.MODEL_DEFAULT and not schema.MODEL_REF_RE.fullmatch(model):
@@ -632,7 +636,7 @@ def _step(sr: _Reader, *, format: int, variables: dict) -> dict:
         "id": sr.str("id", pattern=schema.STEP_ID_RE),
         "title": sr.str("title", max_len=schema.ITEM_TITLE_MAX),
         "brief": _prose(sr, "brief", max_len=schema.BRIEF_MAX),
-        "actor": _actor(sr),
+        "actor": _actor(sr, format=format),
         "after": list(sr.strs("after", pattern=schema.STEP_ID_RE, max_items=schema.MAX_AFTER)),
         "memory": sr.str("memory", "none", one_of=schema.MEMORY_MODES),
         "outputs": list(sr.strs("outputs", one_of=frozenset(schema.SLOT_TYPES))),
@@ -640,6 +644,7 @@ def _step(sr: _Reader, *, format: int, variables: dict) -> dict:
         "rework": None,
         "distinct_from": [],
         "skills": [],
+        "role": None,
     }
     if sr.has("prompts"):
         if format < schema.DIRECT_PROMPT_FORMAT:
@@ -685,15 +690,45 @@ def _step(sr: _Reader, *, format: int, variables: dict) -> dict:
             ),
         }
         rw.done()
+    roles = format >= schema.ROLE_FORMAT
     for dr in _records(sr, "distinct_from", max_items=schema.MAX_DISTINCT_FROM):
         d = {
             "step": dr.str("step", pattern=schema.STEP_ID_RE),
-            "constraint": dr.str("constraint", one_of=schema.DISTINCT_CONSTRAINTS),
+            "constraint": dr.str(
+                "constraint",
+                one_of=schema.DISTINCT_CONSTRAINTS_ROLE if roles else schema.DISTINCT_CONSTRAINTS,
+            ),
         }
         dr.done()
         if d in step["distinct_from"]:
             raise _fail(dr.where, "duplicate distinct_from entry")
         step["distinct_from"].append(d)
+    if roles:
+        if sr.has("skills"):
+            raise _fail(sr._f("skills"), "format 5 lists a step's skills in role.skills")
+        rt = sr.table("role", required=False)
+        if rt is not None and step["actor"]["kind"] != schema.ACTOR_AGENT:
+            raise _fail(sr._f("role"), "only an agent step has a role")
+        if step["actor"]["kind"] == schema.ACTOR_AGENT:
+            skills: list[str] = []
+            grade = None
+            if rt is not None:
+                skills = list(
+                    rt.strs("skills", pattern=schema.SKILL_REF_RE, max_items=schema.MAX_SKILLS)
+                )
+                grade = rt.str("min_grade", None, one_of=frozenset(schema.GRADES))
+                rt.done()
+            step["role"] = {"skills": skills, "min_grade": grade}
+    elif step["actor"]["kind"] == schema.ACTOR_AGENT:
+        # The pure read normaliser (#1654): a format ≤4 agent step is PRESENTED as a role with no
+        # skills (its references stay advisory in `skills`, never promoted) and its recorded
+        # engine/model as a non-binding `legacy_hint`. Nothing is written back; every consumer
+        # that binds asks `schema.binding_role`, which ignores this view.
+        step["role"] = {
+            "skills": [],
+            "min_grade": None,
+            "legacy_hint": {"engine": step["actor"]["engine"], "model": step["actor"]["model"]},
+        }
     for kr in _records(sr, "skills", max_items=schema.MAX_SKILLS):
         skill = {
             "id": kr.str("id", pattern=schema.SKILL_ID_RE),
@@ -865,6 +900,7 @@ def _flow(tree: Tree, fid: str, rel: str, variables: dict, targets: dict[str, st
         fr.raw("format")
         flow: dict[str, Any] = {
             "id": fid,
+            "format": doc["format"],
             "title": fr.str("title", max_len=schema.NAME_MAX),
             "description": fr.str("description", "", max_len=schema.SUMMARY_MAX),
         }
@@ -1002,6 +1038,10 @@ def validate_tree(tree: Tree) -> dict:
         "prompts" in step for flow in flows.values() for step in flow["steps"]
     ):
         raise _fail("playbook.toml: format", "direct prompts require bundle format 4")
+    if doc["format"] < schema.ROLE_FORMAT and any(
+        flow["format"] >= schema.ROLE_FORMAT for flow in flows.values()
+    ):
+        raise _fail("playbook.toml: format", "role steps (flow format 5) require bundle format 5")
     if doc["format"] == 1:
         _check_target_variables(variables, targets)
     if default_flow is not None and default_flow not in flows:

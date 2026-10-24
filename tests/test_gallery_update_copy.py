@@ -398,3 +398,45 @@ def test_skill_edit_copy_refuses_races_without_replacing_source(catalog, monkeyp
         assert (root / "edited-copy" / "SKILL.md").read_text() == "Other owner"
     else:
         assert not (root / "edited-copy").exists()
+
+
+def test_a_one_character_skill_id_imports_reads_its_provenance_and_update_copies(catalog):
+    # #1654 D14: the one skill grammar end to end — `a` and a digit-first id were refused before.
+    imported(catalog, "skill", local_id="a")
+    local = library.local("skill", "a")
+    origin = local["gallery_origin"]
+    assert origin["state"] == "verified"
+    assert origins.evidence(origin["pointer"], "skill", "a")["base_revision"] == local["revision"]
+    incoming = next_version(catalog, "skill")
+    comparison = library.compare("skill", "a", incoming["digest"])
+    result = library.apply_update(
+        "skill",
+        "a",
+        incoming["digest"],
+        comparison["comparison"],
+        comparison["proposed"],
+        uuid.uuid4().hex,
+        True,
+        new_id="9-lives",
+    )
+    assert result["state"] == "complete" and result["result"]["id"] == "9-lives"
+    after = library.local("skill", "9-lives")
+    assert after["gallery_origin"]["previous"] == origin["pointer"]
+    assert library.local("skill", "a") == local
+    # Playbook ids keep their own grammar: the same ids are refused for a playbook.
+    for bad in ("a", "9-lives"):
+        with pytest.raises(store.StoreError):
+            store.playbook_id(bad)
+
+
+def test_a_crashed_save_of_a_new_grammar_skill_id_is_swept_into_recovery(catalog):
+    # Reviewer finding: STAGING_RE only matched the playbook grammar, so these stayed unswept.
+    imported(catalog, "skill")
+    root = storage.skills_root()
+    for sid in ("a", "9-lives", "s" * 64):
+        (root / f".staging-{sid}-{'0' * 16}").mkdir()
+    with skills.locked(exclusive=True):
+        pass
+    assert not [p.name for p in root.iterdir() if p.name.startswith(".staging-")]
+    kept = {p.name.rsplit("-", 2)[0] for p in (root / store.RECOVERY_DIR).iterdir()}
+    assert {"a", "9-lives", "s" * 64} <= kept

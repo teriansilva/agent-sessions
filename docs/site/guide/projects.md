@@ -78,9 +78,11 @@ hidden while it is open. It asks, one step at a time:
    **Value**, **Global** (the global variable of that name; a secret's value stays hidden) or
    **Default** — and each choice names what it resolves to, e.g. *Default · staging*, or *No
    default*. A required input that would be empty is marked in red on its card straight away, and
-   **Next** waits until it is filled; the review stays the final check. **Agents per step** is one
-   table — step, agent, model, state — with the agent's own models (an agent that sets its model
-   in its own config says so) and *Set every step to …* to assign one agent to all of them.
+   **Next** waits until it is filled; the review stays the final check. For a format 5 playbook,
+   **Roles in this playbook** lists what each agent step needs (its skills and minimum grade);
+   there is nothing to assign, because a specialist fills each role when a mission runs. An older
+   (format 4) playbook shows **Agents per step** instead: one table (step, agent, model, state)
+   with the agent's own models and *Set every step to …* to assign one agent to all of them.
    Values stay in the wizard until the project exists and its inputs are bound.
 7. **Review**: the project details and, for a playbook, proposed file changes, rendered
    instructions, resolved inputs and targets, assignments and capability requests. Confirm each

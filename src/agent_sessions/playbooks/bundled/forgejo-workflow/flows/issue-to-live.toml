@@ -1,11 +1,12 @@
-format = 1
+format = 5
 title = "Issue to live"
-description = "A reusable Forgejo process with external review and bounded fixes. This is an authoring template; automatic flow execution is not available yet."
+description = "A reusable Forgejo process with independent specialist review and bounded fixes. This is an authoring template; automatic flow execution is not available yet."
 
 [[steps]]
 id = "plan"
 title = "Plan the change"
-actor = { kind = "agent", engine = "codex", model = "default" }
+actor = { kind = "agent" }
+role = { skills = ["forgejo-pr-flow"], min_grade = "strong" }
 brief = "Write a scoped issue for {{repo}} on {{forge_url}}. Include the outcome, acceptance checks, architecture where needed, risks and exclusions. Resolve scope questions before implementation."
 
 [[steps.checklist]]
@@ -16,7 +17,8 @@ probe = "supervisor_judged"
 [[steps]]
 id = "implement"
 title = "Implement and validate"
-actor = { kind = "agent", engine = "codex", model = "default" }
+actor = { kind = "agent" }
+role = { skills = ["forgejo-pr-flow"], min_grade = "strong" }
 after = ["plan"]
 brief = "Use an isolated checkout and branch {{work_branch}}. Implement the accepted issue, run relevant tests, document behavior and security impact, and open a pull request. Address review findings here and push a new head for fresh checks and review."
 outputs = ["pr_number", "head_branch", "head_sha"]
@@ -42,10 +44,11 @@ probe_args = { repo = "{{repo}}", branch = "{{work_branch}}" }
 [[steps]]
 id = "review"
 title = "Independent review"
-actor = { kind = "external", label = "{{reviewer_account}}" }
+actor = { kind = "agent" }
+role = { skills = ["code-review"], min_grade = "frontier" }
 after = ["implement"]
-brief = "Request {{reviewer_account}} through the configured trigger: {{ci_trigger}}. Read the review and inline findings at the current head. Changes requested return to implementation, at most four times; after the cap ask the operator. Pending or missing review is not approval."
-distinct_from = [{ step = "implement", constraint = "session" }]
+brief = "Review the pull request at its current head as {{reviewer_account}}, once the configured trigger has run: {{ci_trigger}}. Check correctness, tests and the stated security impact, and post the verdict with inline findings on the forge. Changes requested return to implementation, at most four times; after the cap ask the operator. Pending or missing review is not approval."
+distinct_from = [{ step = "implement", constraint = "specialist" }]
 rework = { to = "implement", when = "review_approved", max_rounds = 4 }
 
 [[steps.checklist]]

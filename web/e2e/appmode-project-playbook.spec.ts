@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { devices, expect, test, type Page } from "@playwright/test";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PY_STACK_AVAILABLE, startStack, type Stack } from "./appmode";
@@ -341,5 +341,97 @@ test("gallery, inputs, review and result fit both themes at 1440, 390 and 320px"
     await create(page); await verified(page);
     await page.getByRole("heading", { name: "Project created", exact: true }).scrollIntoViewIfNeeded();
     await capture("done", theme, width);
+  }
+});
+
+test("a legacy selection refreshed onto its format 5 upgrade drops the stale assignment (#1654)", async ({ page }) => {
+  // Hermes 6947 #3: the wizard held an assignment for a step that is now a role; the server
+  // refuses one, and the role step has no control to clear it. Refresh must reconcile it.
+  const id = "legacy-upgraded"; const root = seed(id);
+  const flow = join(root, "flows", "main.toml");
+  writeFileSync(flow, readFileSync(flow, "utf8").replace('actor = { kind = "operator" }', 'actor = { kind = "agent", engine = "absent-agent", model = "default" }'));
+  const reviews: { assignments?: Record<string, unknown> }[] = [];
+  page.on("request", (r) => {
+    if (r.url().endsWith(`/api/playbooks/${id}/review`) && r.method() === "POST") reviews.push(r.postDataJSON());
+  });
+  await gallery(page, id, id); await next(page);
+  await page.getByLabel("Agent for Review the result", { exact: true }).selectOption("");
+  await page.getByRole("radiogroup", { name: "Source for token" }).getByRole("radio", { name: "Value", exact: true }).check();
+  await page.getByLabel("Value for token", { exact: true }).fill("fictional-input-for-verification");
+  const first = page.waitForResponse((r) => r.url().endsWith(`/api/playbooks/${id}/review`) && r.request().method() === "POST");
+  await next(page);
+  expect((await first).status()).toBe(200);
+  expect(reviews.at(-1)?.assignments).toEqual({ "main:review": null });
+  // The operator upgrades the source to format 5 meanwhile.
+  const manifest = join(root, "playbook.toml");
+  writeFileSync(manifest, readFileSync(manifest, "utf8").replace("format = 2\n", "format = 5\n"));
+  writeFileSync(flow, readFileSync(flow, "utf8").replace("format = 2\n", "format = 5\n").replace(
+    'actor = { kind = "agent", engine = "absent-agent", model = "default" }',
+    'actor = { kind = "agent" }\nrole = { skills = ["code-review"] }',
+  ));
+  const refreshed = page.waitForResponse((r) => r.url().endsWith(`/api/playbooks/${id}/review`) && r.request().method() === "POST");
+  await page.getByRole("button", { name: "Refresh review", exact: true }).click();
+  const result = await refreshed; expect(result.status(), await result.text()).toBe(200);
+  expect(reviews.at(-1)?.assignments).toEqual({});
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Assignments", exact: true })).toHaveCount(0);
+  await page.getByRole("checkbox", { name: /Confirm this target/ }).check();
+  await create(page); await verified(page);
+});
+
+async function rolesJourney(page: Page, id: string) {
+  const root = seed(id);
+  const manifest = join(root, "playbook.toml");
+  writeFileSync(manifest, readFileSync(manifest, "utf8").replace("format = 2\n", "format = 5\n"));
+  const flow = join(root, "flows", "main.toml");
+  writeFileSync(flow, readFileSync(flow, "utf8").replace("format = 2\n", "format = 5\n") + `
+[[steps]]
+id = "build"
+title = "Build"
+actor = { kind = "agent" }
+role = { skills = ["forgejo-pr-flow"], min_grade = "strong" }
+[[steps.checklist]]
+key = "built"
+title = "Built"
+probe = "supervisor_judged"
+`);
+  const reviews: { assignments?: Record<string, unknown> }[] = [];
+  page.on("request", (r) => {
+    if (r.url().endsWith(`/api/playbooks/${id}/review`) && r.method() === "POST") reviews.push(r.postDataJSON());
+  });
+  await gallery(page, id, id);
+  await next(page);
+  await expect(page.getByRole("heading", { name: /^Set up / })).toBeVisible();
+  const roles = page.locator('section[aria-labelledby="pb-roles-h"]');
+  await expect(roles).toContainText("forgejo-pr-flow");
+  await expect(roles).toContainText("Specialist");
+  await expect(roles).toContainText("a specialist, per mission");
+  await expect(page.getByRole("heading", { name: "Agents per step", exact: true })).toHaveCount(0);
+  await page.getByRole("radiogroup", { name: "Source for token" }).getByRole("radio", { name: "Value", exact: true }).check();
+  await page.getByLabel("Value for token", { exact: true }).fill("fictional-input-for-verification");
+  const response = page.waitForResponse((r) => r.url().endsWith(`/api/playbooks/${id}/review`) && r.request().method() === "POST");
+  await next(page);
+  const result = await response; expect(result.status(), await result.text()).toBe(200);
+  await page.getByRole("checkbox", { name: /Confirm this target/ }).check();
+  await create(page); await verified(page);
+  expect(reviews.length).toBeGreaterThan(0);
+  for (const body of reviews) expect(Object.keys(body.assignments ?? {})).toEqual([]);
+}
+
+test("a format 5 playbook deploys with roles and no per-step assignment (#1654)", async ({ page }) => {
+  await rolesJourney(page, "roles-journey");
+});
+
+test("a format 5 playbook deploys end to end on a phone (#1654)", async ({ browser }) => {
+  // Hermes 6963: the desktop/mobile acceptance covers DEPLOYMENT, against the real backend. The
+  // app-mode job runs the desktop project, so this journey opens its own phone context (the
+  // `mobile` project's device: touch, 412px) and creates, binds, applies and verifies there.
+  const context = await browser.newContext({ ...devices["Pixel 7"] });
+  try {
+    const page = await context.newPage();
+    expect(page.viewportSize()!.width).toBeLessThan(500);
+    await rolesJourney(page, "roles-journey-phone");
+  } finally {
+    await context.close();
   }
 });

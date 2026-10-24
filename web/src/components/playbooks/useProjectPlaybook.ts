@@ -7,6 +7,7 @@ import type {
   PlaybookList,
   PlaybookVerify,
 } from "../../types/playbooks";
+import { bindingRole } from "../../types/playbooks";
 import type {
   DeploymentReceipt,
   DeploymentReview,
@@ -34,6 +35,18 @@ type Attempt = {
   bound?: DeploymentReceipt;
   applied?: boolean;
 };
+/** The agent steps a deployment may still assign (#1654): format ≤4 ones. A format 5 step names
+ *  a role that is filled per mission, and the server refuses an assignment for it. */
+export function assignableSteps(detail: PlaybookDetail): Set<string> {
+  return new Set(
+    (detail.flows ?? []).flatMap((f) =>
+      f.steps
+        .filter((s) => s.actor.kind === "agent" && !bindingRole(s))
+        .map((s) => `${f.id}:${s.id}`),
+    ),
+  );
+}
+
 export function assignmentUnavailable(
   detail: PlaybookDetail,
   preProject = true,
@@ -265,6 +278,7 @@ export function useProjectPlaybook(
     let acceptedInputs = inputs;
     let fresh: PlaybookDetail | null = null;
     let retainedChoices = choices;
+    let retainedAssignments = assignments;
     try {
       if (refreshSource) {
         fresh = await api.playbook(id);
@@ -287,10 +301,16 @@ export function useProjectPlaybook(
         retainedChoices = Object.fromEntries(
           Object.entries(choices).filter(([name]) => unchanged.has(name)),
         );
+        // A refreshed revision may have upgraded to format 5: its role steps take no assignment.
+        const assignable = assignableSteps(fresh);
+        retainedAssignments = Object.fromEntries(
+          Object.entries(assignments).filter(([key]) => assignable.has(key)),
+        );
         acceptedInputs = {
           ...inputs,
           revision: fresh.revision || "",
           bindings: bindings.filter((v) => unchanged.has(v.name)),
+          assignments: retainedAssignments,
         };
       }
       if (target && !projectId) {
@@ -307,6 +327,7 @@ export function useProjectPlaybook(
         if (fresh) {
           setDetail(fresh);
           setChoices(retainedChoices);
+          setAssignments(retainedAssignments);
         }
         setReviewed({ inputs: acceptedInputs, plan });
       }
@@ -315,6 +336,7 @@ export function useProjectPlaybook(
         if (fresh) {
           setDetail(fresh);
           setChoices(retainedChoices);
+          setAssignments(retainedAssignments);
         }
         setError(errorText(e));
       }

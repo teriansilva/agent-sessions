@@ -140,6 +140,11 @@ def _update(pid: str, body: dict) -> dict:
     return store.update_playbook(pid, store.revision(body["revision"]), body["files"])
 
 
+def _revert_format(pid: str, body: dict) -> dict:
+    _only(body, {"revision"}, {"revision"}, "a format revert")
+    return store.revert_format(pid, store.revision(body["revision"]))
+
+
 def _set_default(pid: str, body: dict) -> dict:
     _only(body, {"revision", "expect_default"}, {"revision", "expect_default"}, "set default")
     return store.set_default(pid, store.revision(body["revision"]), body["expect_default"])
@@ -263,6 +268,23 @@ def register(app: FastAPI, *, logged_in, csrf_guard, signing_key: str) -> None:
         if isinstance(body, JSONResponse):
             return body
         out = await _run(_update, pid, body)
+        return out if isinstance(out, JSONResponse) else _json(out)
+
+    @app.post(PREFIX + "/{pid}/revert-format")
+    async def revert_playbook_format(
+        pid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        # #1654: undo an explicit format 5 upgrade from the retained format ≤4 copy.
+        gate = await _run(store.require_writable, pid)
+        if isinstance(gate, JSONResponse):
+            return gate
+        body = await _read_body(request)
+        if isinstance(body, JSONResponse):
+            return body
+        out = await _run(_revert_format, pid, body)
         return out if isinstance(out, JSONResponse) else _json(out)
 
     @app.delete(PREFIX + "/{pid}")

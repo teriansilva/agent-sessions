@@ -173,6 +173,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Playbooks: list, detail, authoring schema | GET /api/playbooks, /api/playbooks/{pid}, …/authoring/schema | have (`list_playbooks`, `playbook_detail`, `playbook_schema`, #1611) |
 | Playbooks: projects using one, verify a deployment | GET /api/playbooks/{pid}/projects, /api/projects/{p}/playbook/verify | P4 R |
 | Playbooks: create, edit (files), duplicate | POST /api/playbooks, PUT /api/playbooks/{pid}, …/duplicate | have (`propose_library`, revision-checked, the files or diff on the card, #1611) |
+| Playbooks: revert an explicit format 5 upgrade to the retained format ≤4 copy (#1654) | POST /api/playbooks/{pid}/revert-format | P4 W (revision-checked; the format 5 tree is retained) |
 | Playbooks: delete, set / clear default, save as new | DELETE /api/playbooks/{pid}, …/default, …/authoring/copy | P4 W |
 | Playbook step prompts: import a template, compare | POST /api/playbooks/authoring/prompts/import, …/compare | P4 R/W |
 | Deploy a playbook to a project: review → confirm → (create target) → bind → apply → verify | POST …/review, …/review/confirm, …/review/create-target, /api/projects/{p}/playbook/bind, …/apply | P4 W (external: writes into the project folder; secrets on the card) |
@@ -388,6 +389,7 @@ POST   /api/playbooks/{pid}/fleet/review                                        
 POST   /api/playbooks/{pid}/fleet/update                                          P4
 GET    /api/playbooks/{pid}/fleet/{operation}                                     P4
 GET    /api/playbooks/{pid}/projects                                              P4
+POST   /api/playbooks/{pid}/revert-format                                         P4  # #1654: revert an explicit format 5 upgrade
 POST   /api/playbooks/{pid}/review                                                P4
 POST   /api/playbooks/{pid}/review/confirm                                        P4
 POST   /api/playbooks/{pid}/review/create-target                                  P4

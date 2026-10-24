@@ -30,6 +30,7 @@ import {
 } from "../components/playbooks/usePlaybooks";
 import {
   MANIFEST,
+  ROLE_FORMAT,
   differences,
   draftFiles,
   flowId,
@@ -39,6 +40,8 @@ import {
   newDraft,
   newStep,
   same,
+  upgradeSteps,
+  upgradeToRoles,
   withStep,
 } from "../components/playbooks/playbookDraft";
 import type {
@@ -182,6 +185,9 @@ function Editor({
     title: string;
     apply: () => void;
   } | null>(null);
+  const [reverting, setReverting] = useState(false);
+  // #1654: only a book upgraded from a retained format ≤4 copy can revert (the server says).
+  const [revertible, setRevertible] = useState(!!original?.revertible);
   const live = useRef(true);
   useEffect(() => {
     live.current = true;
@@ -264,6 +270,7 @@ function Editor({
     setDraft(next);
     setBaseline(next);
     setRevision(pb.revision);
+    setRevertible(!!pb.revertible);
     setConflict(false);
     setCompared(null);
     setError("");
@@ -310,6 +317,29 @@ function Editor({
           state: { savedNotice },
         });
       }
+    } catch (e) {
+      if (live.current) report(e);
+    } finally {
+      busyRef.current = false;
+      if (live.current) setBusy(false);
+    }
+  }
+  /** #1654: restore the retained format ≤4 copy; the format 5 tree is itself retained. */
+  async function revertFormat() {
+    if (!original || busyRef.current || !revision) return;
+    busyRef.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      const pb = await api.revertPlaybookFormat(original.id, revision);
+      if (!live.current) return;
+      adopt(pb);
+      // Hermes 6958: promise the recovery copy only when the server confirmed it.
+      setNotice(
+        pb.durable === false || pb.recovery_durable === false
+          ? "Reverted to the retained format 4 copy, but durable storage or the recovery copy of the format 5 version could not be confirmed. Inspect the store before further changes."
+          : "Reverted to the retained format 4 copy. The format 5 version is kept in the recovery area.",
+      );
     } catch (e) {
       if (live.current) report(e);
     } finally {
@@ -385,12 +415,30 @@ function Editor({
               operator confirms, through this editor's own save route. */}
           <p className={styles.hint} data-testid="playbook-ask-hq">
             Want a draft or a change written for you?{" "}
-            <button type="button" className={styles.linkButton} onClick={ask.openAsk}>
+            <button
+              type="button"
+              className={styles.linkButton}
+              onClick={ask.openAsk}
+            >
               Ask HQ
             </button>
           </p>
         </div>
         <div className={styles.actions}>
+          {original &&
+            revertible &&
+            ((baseline.documents[MANIFEST] as Manifest | undefined)?.format ??
+              0) >= ROLE_FORMAT && (
+              <button
+                type="button"
+                className={buttons.ghost}
+                disabled={busy || dirty}
+                title={dirty ? "Save or discard your changes first" : undefined}
+                onClick={() => setReverting(true)}
+              >
+                Revert to format 4…
+              </button>
+            )}
           <button
             type="button"
             className={buttons.primary}
@@ -651,6 +699,9 @@ function Editor({
                 onBack={() => selectWorkflow()}
                 key={`${path}:${selectedStep.id}`}
                 step={selectedStep}
+                format={flow.format}
+                upgradeSteps={upgradeSteps(draft)}
+                onUpgrade={(picks) => edit(upgradeToRoles(draft, picks))}
                 steps={flow.steps}
                 variables={manifest.variables ?? []}
                 schema={schema}
@@ -794,6 +845,24 @@ function Editor({
           </details>
         </fieldset>
       </PlaybookValidation.Provider>
+      {reverting && (
+        <PlaybookDialog
+          tag="Playbook editor"
+          title="Revert to format 4?"
+          confirmLabel="Revert"
+          onCancel={() => setReverting(false)}
+          onConfirm={() => {
+            setReverting(false);
+            void revertFormat();
+          }}
+        >
+          <p>
+            The format 4 copy this playbook was upgraded from is saved back
+            exactly as it was. This format 5 version is not deleted: it is kept
+            in the recovery area.
+          </p>
+        </PlaybookDialog>
+      )}
       {remove && (
         <PlaybookDialog
           tag="Playbook editor"

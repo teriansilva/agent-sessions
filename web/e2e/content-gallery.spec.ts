@@ -61,6 +61,15 @@ const playbookPreview = {
           after: [],
           note: false,
         },
+        {
+          // #1654: a format 5 step names a role; the preview shows it, not an engine.
+          id: "sort",
+          title: "Sort by urgency",
+          actor: { kind: "agent" },
+          role: { skills: ["urgency-sorting"], min_grade: "strong" },
+          after: ["read"],
+          note: false,
+        },
       ],
     },
   ],
@@ -992,6 +1001,15 @@ test.describe("the listing read after a successful check holds writes until it l
     writes.control.release();
     await expect(source.getByTestId("update-available")).toBeVisible();
   });
+});
+
+test("the playbook preview shows a format 5 step's role, never an engine (#1654)", async ({ page }) => {
+  await setup(page, { playbooks: true });
+  await page.goto(`${GALLERY_PLAYBOOKS_PATH}/${playbookDigest}`);
+  await expect(page.getByText("Read the new messages · claude")).toBeVisible();
+  await expect(
+    page.getByText("Sort by urgency · role: urgency-sorting · at least Specialist · after read"),
+  ).toBeVisible();
 });
 
 test("on a phone, Add comes after every file and a long file scrolls in its own viewer", async ({ page }) => {

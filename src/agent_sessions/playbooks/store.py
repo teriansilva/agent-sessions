@@ -94,7 +94,9 @@ STATE_PENDING = ".pending-state.json"
 STAGING_PREFIX = ".staging-"
 TRASH_PREFIX = ".trash-"
 STATE_TMP_PREFIX = ".state-"
-STAGING_RE = re.compile(r"\.staging-([a-z][a-z0-9-]{1,47})-([0-9a-f]{16})")
+# The id group admits every local id the store writes: playbook ids and (#1654) the one skill
+# grammar, so a crashed skill save under `a`, `9-lives` or a 64-character id is swept too.
+STAGING_RE = re.compile(r"\.staging-([a-z0-9][a-z0-9-]{0,63})-([0-9a-f]{16})")
 #: How many retained copies a gallery or detail read lists (newest first); `recovery_total` counts.
 RECOVERY_LIST_MAX = 100
 #: Every tree a change DISPLACES (the old tree of a save, a deleted playbook, a tree a crashed
@@ -102,7 +104,15 @@ RECOVERY_LIST_MAX = 100
 #: prunes it: pruning is exactly the check-then-unlink race, even with a reviewed revision.
 #: `recovery_entries` lists copies; permanent cleanup requires an offline operator procedure.
 RECOVERY_DIR = ".recovery"
-RECOVERY_NAME_RE = re.compile(r"([a-z][a-z0-9-]{1,47})-(\d{8}T\d{6})-([0-9a-f]{8})")
+RECOVERY_NAME_RE = re.compile(r"([a-z0-9][a-z0-9-]{0,63})-(\d{8}T\d{6})-([0-9a-f]{8})")
+#: #1654: the explicit upgrade to format 5 records, on the published directory, WHICH retained
+#: format ≤4 tree it replaced (`<recovery name> <revision>`); later format 5 saves carry it. Revert
+#: restores exactly that copy, never "the newest copy under this id" (an id is reusable, and
+#: copies saved within one second share a timestamp).
+LEGACY_XATTR = "user.battlelab.legacy_copy"
+_LEGACY_POINTER_RE = re.compile(
+    r"(?P<name>[a-z][a-z0-9-]{1,47}-\d{8}T\d{6}-[0-9a-f]{8}) (?P<revision>[0-9a-f]{64})"
+)
 TRASH_RE = re.compile(r"\.trash-([a-z][a-z0-9-]{1,47})-([0-9a-f]{16})")
 LEFTOVER_PREFIXES = (STAGING_PREFIX, TRASH_PREFIX, STATE_TMP_PREFIX)  # settled by `_sweep`
 STATE_MAX_BYTES = 64 * 1024
@@ -170,6 +180,20 @@ def playbook_id(raw: object) -> str:
     if not isinstance(raw, str) or not raw.isascii() or not schema.PLAYBOOK_ID_RE.fullmatch(raw):
         raise StoreError("not a playbook id")
     return raw
+
+
+def skill_id(raw: object) -> str:
+    """A local skill's id: the one skill grammar (#1654), never the playbook grammar."""
+    if not isinstance(raw, str) or not raw.isascii() or not schema.SKILL_REF_RE.fullmatch(raw):
+        raise StoreError("not a skill id")
+    return raw
+
+
+def local_id(kind: object, raw: object) -> str:
+    """A gallery copy's local id by its kind: playbooks keep `PLAYBOOK_ID_RE` unchanged."""
+    if kind == "skill":
+        return skill_id(raw)
+    return playbook_id(raw)
 
 
 def revision(raw: object) -> str:
@@ -373,6 +397,10 @@ class Retained(str):
     reason: str = ""
 
 
+def _recovery_name(pid: str) -> str:
+    return f"{pid}-{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}-{secrets.token_hex(4)}"
+
+
 def _retain(root_fd: int, name: str, pid: str) -> Retained | None:
     """Move the displaced tree `name` into the recovery area as `<id>-<time>-<rand>` (NOREPLACE).
     Never deletes, and NEVER RAISES: before the rename nothing has moved (None — the tree stays
@@ -383,9 +411,8 @@ def _retain(root_fd: int, name: str, pid: str) -> Retained | None:
     except OSError:
         return None
     try:
-        stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
         for _ in range(8):
-            target = f"{pid}-{stamp}-{secrets.token_hex(4)}"
+            target = _recovery_name(pid)
             try:
                 renameat.renameat2(root_fd, name, rfd, target, renameat.RENAME_NOREPLACE)
             except FileExistsError:
@@ -1108,15 +1135,25 @@ def get_playbook(pid: str) -> dict:
         state = _read_state(root_fd)
         mine = [r for r in _recovery_list(root_fd) if r["playbook_id"] == pid]
         listed = _with_revisions(root_fd, mine[:RECOVERY_LIST_MAX])
+        revertible = _legacy_at(root_fd, pid) is not None
     out = _detail(_find(entries, pid), _default_of(entries, state))
+    out["revertible"] = revertible
     out["recovery"] = listed
     out["recovery_total"] = len(mine)
     return out
 
 
-def _stage(root_fd: int, tree: Tree, pid: str = "unsaved", *, origin: str | None = None) -> str:
+def _stage(
+    root_fd: int,
+    tree: Tree,
+    pid: str = "unsaved",
+    *,
+    origin: str | None = None,
+    legacy: str | None = None,
+) -> str:
     """Write `tree` into a fresh staging directory under the root, descriptor-relative, and prove
-    by reading it back that it holds exactly `tree`. Returns the staging name."""
+    by reading it back that it holds exactly `tree`. Returns the staging name. `legacy` is the
+    #1654 pointer to the retained format ≤4 predecessor (`LEGACY_XATTR`)."""
     name = f"{STAGING_PREFIX}{pid}-{secrets.token_hex(8)}"
     os.mkdir(name, DIR_MODE, dir_fd=root_fd)
     fds: dict[str, int] = {}
@@ -1144,6 +1181,17 @@ def _stage(root_fd: int, tree: Tree, pid: str = "unsaved", *, origin: str | None
         from ..gallery import origins
 
         origins.bind(fds[""], origin)
+        if legacy is not None:
+            # The upgrade's rollback is part of the save: without its pointer, nothing publishes.
+            try:
+                os.setxattr(fds[""], LEGACY_XATTR, legacy.encode("ascii"), flags=os.XATTR_CREATE)
+                os.fsync(fds[""])
+            except OSError as e:
+                raise StoreError(
+                    "this filesystem cannot record which format 4 copy an upgrade replaces "
+                    f"({e.strerror or type(e).__name__}); nothing was saved",
+                    status=503,
+                ) from None
         back = read_tree_at(root_fd, name)
         if back.files != tree.files or back.dirs != tree.dirs:
             raise Conflict("the playbook changed while it was being written; nothing was saved")
@@ -1348,11 +1396,20 @@ def update_playbook(pid: str, expect: str, files: object) -> dict:
             )
         previous = local.origin["pointer"] if local.origin else None
         tree = tree_from_files(files)
-        _validate(tree, pid)
+        new_format = _validate(tree, pid)["format"]
+        # #1654: an upgrade (≤4 → 5) first retains a verified copy of the exact tree it replaces
+        # and points at it; a later format 5 save carries the pointer; a save below 5 drops it.
+        legacy = None
+        if new_format >= schema.ROLE_FORMAT:
+            if local.pb is not None and local.pb["format"] < schema.ROLE_FORMAT:
+                legacy = _keep_predecessor(root_fd, local.tree, pid, expect)
+            else:
+                held = _legacy_pointer_at(root_fd, pid)
+                legacy = f"{held[0]} {held[1]}" if held else None
         if tree.digest() != expect:
             staging = (
-                _stage(root_fd, tree, pid, origin=previous)
-                if previous
+                _stage(root_fd, tree, pid, origin=previous, legacy=legacy)
+                if previous or legacy
                 else _stage(root_fd, tree, pid)
             )
             try:
@@ -1377,7 +1434,9 @@ def update_playbook(pid: str, expect: str, files: object) -> dict:
         displaced = kept is None and tree.digest() != expect
         entries = _all_entries(root_fd)
         state = _read_state(root_fd)
+        revertible = _legacy_at(root_fd, pid) is not None
     out = _detail(_find(entries, pid), _default_of(entries, state))
+    out["revertible"] = revertible
     if not_durable:
         out.update(durable=False, durable_reason=not_durable)
     if kept is not None:
@@ -1386,6 +1445,108 @@ def update_playbook(pid: str, expect: str, files: object) -> dict:
             out.update(recovery_durable=False, recovery_reason=kept.reason)
     elif displaced:
         out.update(recovery_durable=False, recovery_reason=_NOT_RETAINED_YET)
+    return out
+
+
+def _legacy_pointer_at(root_fd: int | None, pid: str) -> tuple[str, str] | None:
+    """The live playbook directory's `LEGACY_XATTR` as `(recovery name, revision)`, or None."""
+    if root_fd is None:
+        return None
+    try:
+        fd = os.open(pid, _DIR_FLAGS, dir_fd=root_fd)
+    except OSError:
+        return None
+    try:
+        raw = os.getxattr(fd, LEGACY_XATTR)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    m = _LEGACY_POINTER_RE.fullmatch(raw.decode("ascii", "replace"))
+    if not m:
+        return None
+    named = RECOVERY_NAME_RE.fullmatch(m["name"])
+    if named is None or named.group(1) != pid:
+        return None
+    return m["name"], m["revision"]
+
+
+def _keep_predecessor(root_fd: int, tree: Tree | None, pid: str, expect: str) -> str:
+    """Before an upgrade publishes, retain a read-back-verified copy of the exact format ≤4 tree
+    it replaces and return the legacy pointer naming it (#1654). The rollback is part of the save:
+    if the copy cannot be retained durably, the upgrade refuses and nothing is published. The
+    exchange then displaces the live tree as on every save, so a crash or a failed retention of
+    THAT tree can no longer leave the pointer naming nothing."""
+    if tree is None or tree.digest() != expect:
+        raise Conflict("the playbook changed while it was being upgraded; nothing was saved")
+    kept = _retain(root_fd, _stage(root_fd, tree, pid), pid)
+    if kept is None or not kept.durable:
+        reason = kept.reason if kept is not None else "it could not be moved into the recovery area"
+        raise StoreError(
+            f"the format 4 copy this upgrade replaces could not be retained ({reason}); nothing "
+            "was saved",
+            status=503,
+        )
+    return f"{kept} {expect}"
+
+
+def _legacy_at(root_fd: int | None, pid: str) -> dict | None:
+    """The retained format ≤4 copy the live `pid` was upgraded from, as save-ready files — only
+    the copy its pointer names, and only while it still holds the recorded revision.
+
+    An explicit upgrade to format 5 (#1654) is an ordinary save, so the format ≤4 tree it
+    replaced is already in the recovery area (displace, never drop), byte for byte. A deleted
+    and re-created id, a duplicate or a fresh format 5 book carries no pointer: no revert."""
+    held = _legacy_pointer_at(root_fd, pid)
+    if held is None:
+        return None
+    name, digest = held
+    try:
+        rfd = os.open(RECOVERY_DIR, _DIR_FLAGS, dir_fd=root_fd)
+    except OSError:
+        return None
+    try:
+        fd = os.open(name, _DIR_FLAGS, dir_fd=rfd)
+    except OSError:
+        return None
+    finally:
+        os.close(rfd)
+    try:
+        tree = read_tree_at(fd, ".")
+        bundle = _validate(tree, pid)
+    except (OSError, PlaybookFormatError, StoreError, RecursionError, ValueError):
+        return None
+    finally:
+        os.close(fd)
+    if tree.digest() != digest or bundle["format"] >= schema.ROLE_FORMAT:
+        return None
+    return {"name": name, "revision": digest, "files": _files_of(tree)[0]}
+
+
+def _legacy_copy(pid: str) -> dict | None:
+    with root_lock(exclusive=False) as root_fd:
+        return _legacy_at(root_fd, pid)
+
+
+def revert_format(pid: str, expect: str) -> dict:
+    """Revert an upgraded (format 5) playbook to the exact format ≤4 copy its upgrade retained.
+
+    A normal fenced save of exactly those bytes: the format 5 tree it replaces is itself retained,
+    so edits made since the upgrade are kept as a recovery copy, never dropped."""
+    playbook_id(pid)
+    current = get_playbook(pid)
+    manifest = (current.get("documents") or {}).get(schema.MANIFEST_NAME) or {}
+    if not isinstance(manifest, dict) or manifest.get("format", 0) < schema.ROLE_FORMAT:
+        raise StoreError("this playbook is not in format 5; there is nothing to revert", status=409)
+    legacy = _legacy_copy(pid)
+    if legacy is None:
+        raise StoreError(
+            "this playbook was not upgraded from a retained format 4 copy; there is nothing to "
+            "revert to",
+            status=404,
+        )
+    out = update_playbook(pid, revision(expect), legacy["files"])
+    out["reverted_from"] = legacy["name"]
     return out
 
 

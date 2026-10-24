@@ -3,28 +3,56 @@
  *  server stays the authority on every write (NOREPLACE, acknowledgement, signed admission). */
 import type { GalleryEntry, GalleryIndex, GalleryKind, GalleryOrigin } from "../../types/gallery";
 
-/** A local playbook or skill ID (`schema.PLAYBOOK_ID_RE`). */
+/** A local playbook ID (`schema.PLAYBOOK_ID_RE`). */
 export const LOCAL_ID = /^[a-z][a-z0-9-]{1,47}$/;
-const MAX_ID = 48;
+/** A local skill ID: the one skill grammar (`schema.SKILL_REF_RE`, #1654 D14) shared with roles. */
+export const SKILL_LOCAL_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/** The local-ID rule for a gallery kind: playbooks keep their grammar, skills use the skill one. */
+export function idRule(kind: GalleryKind) {
+  return kind === "skill"
+    ? {
+        re: SKILL_LOCAL_ID,
+        pattern: "[a-z0-9][a-z0-9-]{0,63}",
+        max: 64,
+        hint: "1–64 lowercase letters, digits or dashes, starting with a letter or digit.",
+      }
+    : {
+        re: LOCAL_ID,
+        pattern: "[a-z][a-z0-9-]{1,47}",
+        max: 48,
+        hint: "2–48 lowercase letters, digits or dashes, starting with a letter.",
+      };
+}
 
 /** `base` if it is a valid ID nobody holds, else the first free `<base>-2`, `<base>-3`, … The base
- *  is trimmed so every candidate stays within the 48-character limit. */
-export function freeId(base: string, taken: ReadonlySet<string>): string {
+ *  is trimmed so every candidate stays within the kind's length limit. */
+export function freeId(
+  base: string,
+  taken: ReadonlySet<string>,
+  kind: GalleryKind = "playbook",
+): string {
+  const max = idRule(kind).max;
   let stem = base.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/-+/g, "-");
-  stem = stem.replace(/^[^a-z]+/, "").replace(/-+$/, "");
-  if (stem.length < 2) stem = `copy${stem ? `-${stem}` : ""}`;
-  stem = stem.slice(0, MAX_ID).replace(/-+$/, "");
+  stem = stem.replace(kind === "skill" ? /^-+/ : /^[^a-z]+/, "").replace(/-+$/, "");
+  if (stem.length < (kind === "skill" ? 1 : 2)) stem = `copy${stem ? `-${stem}` : ""}`;
+  stem = stem.slice(0, max).replace(/-+$/, "");
   if (!taken.has(stem)) return stem;
   for (let n = 2; ; n++) {
     const suffix = `-${n}`;
-    const candidate = `${stem.slice(0, MAX_ID - suffix.length).replace(/-+$/, "")}${suffix}`;
+    const candidate = `${stem.slice(0, max - suffix.length).replace(/-+$/, "")}${suffix}`;
     if (!taken.has(candidate)) return candidate;
   }
 }
 
 /** The suggested ID for an updated copy: `<id>-v1-3-0`, or the next free one. */
-export function updateId(id: string, version: string, taken: ReadonlySet<string>): string {
-  return freeId(`${id}-v${version.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, taken);
+export function updateId(
+  id: string,
+  version: string,
+  taken: ReadonlySet<string>,
+  kind: GalleryKind = "playbook",
+): string {
+  return freeId(`${id}-v${version.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, taken, kind);
 }
 
 type Semver = { core: number[]; pre: string[] };
@@ -101,7 +129,8 @@ export function classifyLegacy(digest: string | undefined, search: URLSearchPara
   const id = search.get("id");
   if (kind !== null || id !== null) {
     if (kind !== "playbook" && kind !== "skill") return { type: "invalid" };
-    if (id === null || !LOCAL_ID.test(id)) return { type: "missing-local", kind };
+    // Each kind's own grammar (#1654): `9-lives` is a valid skill but never a playbook.
+    if (id === null || !idRule(kind).re.test(id)) return { type: "missing-local", kind };
     return { type: "update", kind, id };
   }
   if (digest === undefined || digest === "") return { type: "browse" };

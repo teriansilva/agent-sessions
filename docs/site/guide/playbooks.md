@@ -7,9 +7,10 @@ A playbook packages a workflow, its evidence checks and optional project materia
 ## Start from an example
 
 **Forgejo workflow** describes planning an issue, implementing on a branch, independent review,
-merge, deployment and live verification. A changes-requested review returns to implementation
-for up to four rounds. Choose your reviewer account, such as an existing Hermes bot, and describe
-the CI/webhook trigger you already operate. The template installs neither the reviewer nor its
+merge, deployment and live verification. The review is a role of its own: a Senior specialist with
+the `code-review` skill, never the one who implemented. A changes-requested review returns to
+implementation for up to four rounds. Choose the reviewer account the review posts as, such as an
+existing Hermes bot, and describe the CI/webhook trigger you already operate. The template installs neither the reviewer nor its
 trigger. A separate operator check before merge confirms that the requested reviewer approved
 the exact head and every required check is present.
 
@@ -21,14 +22,15 @@ To customize either example:
 
 1. Open its card and choose **Duplicate to local**.
 2. Open **Edit playbook**, rename your copy and select a step.
-3. Choose an available agent/model or an operator/external actor, then edit its instructions and completion rules.
+3. Choose who performs it: an agent **role** (the skills it needs and a minimum grade), an external service, or the operator. Then edit its instructions and completion rules.
 4. Set dependencies and a bounded rework target. The target must be an earlier dependency, and the
    condition names an evidence check on the reviewing step. The round limit is 1–10.
 5. Save. A validation error names the field to correct. A conflicting save preserves your draft
    for comparison or for saving as another new playbook.
 
-The example agents are references. If an agent or model is unavailable on your host, it stays
-unresolved until you explicitly select a replacement. Target examples are hints; they do not
+The examples name roles, not agents: a step never says which agent or model runs it. When a
+mission runs, a specialist from your pool fills each role. A skill a role needs but your skills
+library lacks is flagged in the editor. Target examples are hints; they do not
 silently select a repository or endpoint. Credentials belong in secret bindings, never in a
 brief, README or ordinary variable default.
 
@@ -49,7 +51,13 @@ reviewer confirmation and deployment approval when adapting it.
 Choose **New playbook** and name it. Workflow properties let you name the workflow and define
 its inputs. Add a step, then select its graph node to open **Properties**:
 
-- **Who performs this step** records its agent, external service or operator assignment.
+- **Who performs this step**: an agent **role** (required skills from your skills library, by
+  exact id, and a minimum grade: Intern, Specialist or Senior), an external service, or the
+  operator. A playbook saved in an older format (4 or earlier) shows its recorded agent and model
+  read-only; **Upgrade this playbook to format 5…** converts it, listing every agent step and
+  asking which of its skill references become that step's role. After an upgrade, **Revert to
+  format 4…** restores the previous file exactly; a playbook created in format 5 has nothing to
+  revert to.
 - **Instructions** describes the work, with manual prompts or retained copies from the template library.
 - **Completion rules** defines the independent evidence required for completion.
 - **What happens next** sets prerequisites and bounded review loops. **Starts after**, Move up/down

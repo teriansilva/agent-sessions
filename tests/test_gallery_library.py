@@ -130,6 +130,28 @@ def test_frozen_cross_distribution_bytes_and_refusals():
             contract.parse(case["raw"].encode(), now=NOW)
 
 
+def test_a_format5_playbook_imports_beside_the_unchanged_shared_fixtures(catalog):
+    # #1654: format 5 is ADDED beside the shared fixtures (their bytes stay pinned by vectors.json,
+    # above); the gallery envelope stays format 1 and its import carries the roles unchanged.
+    doc, accept = catalog
+    content = json.loads((FIXTURES / "playbook-format5.json").read_bytes())
+    assert content["format"] == 1 and "format = 5" in content["files"]["playbook.toml"]
+    doc = copy.deepcopy(doc)
+    doc["entries"].append({"available": True, "content": content, "digest": ""})
+    doc["sequence"] += 1
+    accept(doc)
+    entry = doc["entries"][-1]
+    result = library.import_copy("playbook", "roles-copy", entry["digest"], uuid.uuid4().hex, True)
+    assert result["state"] == "complete"
+    local = store.get_playbook("roles-copy")
+    assert local["documents"]["playbook.toml"]["format"] == 5
+    steps = {s["id"]: s for s in local["flows"][0]["steps"]}
+    assert steps["read"]["role"] == {"skills": ["inbox-reading"], "min_grade": "fast"}
+    assert steps["sort"]["actor"] == {"kind": "agent"}
+    vectors = json.loads((FIXTURES / "vectors.json").read_text())
+    assert "playbook-format5.json" not in vectors["sha256"]
+
+
 @pytest.mark.parametrize("kind", ["playbook", "skill"])
 def test_import_is_local_editable_exact_origin_and_id_only_rewrite(catalog, kind):
     result, entry, op = imported(catalog, kind)

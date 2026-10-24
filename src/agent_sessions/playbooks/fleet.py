@@ -24,7 +24,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from .. import atomicjson, template_vars
-from . import apply, lifecycle, review, store
+from . import apply, lifecycle, review, schema, store
 from . import deployment_state as state
 
 
@@ -87,11 +87,29 @@ def _reasons(baseline: dict | None, public: dict) -> list[str]:
     return reasons
 
 
+_TO_ROLES = (
+    "this update moves the project to format 5, where roles replace per-step agent assignments; "
+    "review this project on its own"
+)
+
+
+def _role_format(playbook_id: str) -> bool:
+    """Whether the playbook's current revision is format 5 (its steps name roles)."""
+    try:
+        manifest = (store.get_playbook(playbook_id).get("documents") or {}).get(
+            schema.MANIFEST_NAME
+        )
+    except store.StoreError:
+        return False
+    return isinstance(manifest, dict) and manifest.get("format", 0) >= schema.ROLE_FORMAT
+
+
 def plan(playbook_id: str, *, key: str) -> dict:
     """The combined update review: per project, batchable or why not, and one keyed digest."""
     listing = projects(playbook_id)
     current = listing["revision"]
     rows, batched = [], []
+    roles = _role_format(playbook_id)
     for row in listing["projects"]:
         if not row["update_available"]:
             continue
@@ -106,6 +124,13 @@ def plan(playbook_id: str, *, key: str) -> dict:
             record = locked.read() if locked is not None else None
         if record is None:
             rows.append({**out, "batchable": False, "reasons": ["the deployment disappeared"]})
+            continue
+        deployed = (record.get("review_facts") or {}).get("format", 1)
+        if roles and (not isinstance(deployed, int) or deployed < schema.ROLE_FORMAT):
+            # #1654: the FIRST move to format 5 is the operator's call, project by project — keyed
+            # on the deployed revision's format, whatever assignments the project recorded. A
+            # baseline from before formats were recorded counts as a legacy deployment.
+            rows.append({**out, "batchable": False, "reasons": [_TO_ROLES]})
             continue
         inputs = {**record["inputs"], "revision": current}
         try:

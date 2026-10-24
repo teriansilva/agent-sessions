@@ -8,6 +8,7 @@ import {
   Plus,
 } from "lucide-react";
 import { api } from "../lib/api";
+import { SKILL_LOCAL_ID } from "../components/gallery/galleryRules";
 import { GALLERY_SKILLS_PATH, SKILLS_PATH } from "../lib/routes";
 import { LandingNote, ViewTabs } from "../components/gallery/ViewTabs";
 import type { LocalSkill } from "../types/gallery";
@@ -128,7 +129,7 @@ function Editor({
     };
   }, []);
   const dirty = !done && JSON.stringify(files) !== JSON.stringify(base.files);
-  const idOk = /^[a-z][a-z0-9-]{1,47}$/.test(newId);
+  const idOk = SKILL_LOCAL_ID.test(newId);
   const why = done
     ? ""
     : base.gallery_origin?.state === "unavailable"
@@ -259,7 +260,7 @@ function Editor({
             <input
               disabled={busy || !!done}
               value={newId}
-              pattern="[a-z][a-z0-9-]{1,47}"
+              pattern="[a-z0-9][a-z0-9-]{0,63}"
               onChange={(e) => setNewId(e.target.value)}
             />
           </label>

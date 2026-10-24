@@ -75,12 +75,24 @@ def assignment_available(provider) -> bool:
 def _assignments(bundle: dict, raw: object) -> tuple[list[dict], dict]:
     if not isinstance(raw, dict) or len(raw) > schema.MAX_FLOWS * schema.MAX_STEPS:
         raise store.StoreError("assignments must be a bounded object")
+    # Format 5 (#1654): a role is filled per mission from the pool, never at deployment, so only
+    # format ≤4 agent steps take an assignment. Legacy deployments keep replaying theirs unchanged.
     expected = {
         f"{fid}:{s['id']}": s
         for fid, flow in bundle["flows"].items()
         for s in flow["steps"]
-        if s["actor"]["kind"] == schema.ACTOR_AGENT
+        if s["actor"]["kind"] == schema.ACTOR_AGENT and schema.binding_role(s) is None
     }
+    roles = {
+        f"{fid}:{s['id']}"
+        for fid, flow in bundle["flows"].items()
+        for s in flow["steps"]
+        if schema.binding_role(s) is not None
+    }
+    if set(raw) & roles:
+        raise store.StoreError(
+            "format 5 steps take no assignment: roles are filled at mission assembly"
+        )
     if set(raw) - set(expected):
         raise store.StoreError("assignments may only name agent steps")
     rows = []
@@ -245,6 +257,19 @@ def build(
             if entry.revision != revision:
                 raise store.Conflict("the playbook changed; review it again")
             bundle, tree = entry.pb, entry.tree
+            if (
+                active is not None
+                and bundle["format"] >= schema.ROLE_FORMAT
+                and (active.get("inputs") or {}).get("revision") != revision
+                and deployment_state.pending(active)
+            ):
+                # #1654: a project MOVES to a format 5 revision (no assignments) only once its
+                # journals settled — an interrupted bind/apply replays its legacy request first.
+                # Re-reviewing the record's own revision (recovery's `_check_plan`) is no move.
+                raise store.Conflict(
+                    "finish or recover the project's pending playbook operation before moving it "
+                    "to a format 5 playbook"
+                )
             resolved = binding.resolve(bundle, pid, raw.get("bindings", []), _records=_variables)
             secret_names = materials.secret_names(bundle, tree)
             if secret_names and pid is None:

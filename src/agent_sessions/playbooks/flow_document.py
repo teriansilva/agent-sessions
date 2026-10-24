@@ -90,7 +90,19 @@ def render(
             sid = step["id"]
             lines.extend([f"### {sid}: " + _inline(expand(step["title"])), ""])
             actor = step["actor"]
-            if actor["kind"] == schema.ACTOR_AGENT:
+            role = schema.binding_role(step)
+            if role is not None:
+                grade = {"fast": "Intern", "strong": "Specialist", "frontier": "Senior"}.get(
+                    role["min_grade"] or "", "any grade"
+                )
+                needs = (
+                    ", ".join(f"`{s}`" for s in role["skills"]) if role["skills"] else "no skills"
+                )
+                lines.append(
+                    f"Role: needs {needs} · at least {grade}. Filled per mission by a specialist "
+                    "from the pool; this document names no agent or model."
+                )
+            elif actor["kind"] == schema.ACTOR_AGENT:
                 row = assigned.get(f"{fid}:{sid}")
                 selection = row["assignment"] if row is not None else None
                 if selection is None:

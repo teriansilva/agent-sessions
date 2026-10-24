@@ -68,7 +68,10 @@ def test_forgejo_example_keeps_review_identity_authorization_and_merge_revision_
         "when": "review_approved",
         "max_rounds": 4,
     }
-    assert steps["review"]["actor"]["kind"] == "external"
+    # #1654: the reviewer is a role — a different, Senior specialist with the review skill.
+    assert steps["review"]["actor"] == {"kind": "agent"}
+    assert steps["review"]["role"] == {"skills": ["code-review"], "min_grade": "frontier"}
+    assert steps["review"]["distinct_from"] == [{"step": "implement", "constraint": "specialist"}]
     for sid, key in [("merge", "merge_authorized"), ("deploy", "deployment_authorized")]:
         assert steps[sid]["actor"]["kind"] == "operator"
         item = next(item for item in steps[sid]["checklist"] if item["key"] == key)

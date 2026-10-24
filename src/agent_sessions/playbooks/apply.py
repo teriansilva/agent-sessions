@@ -800,8 +800,10 @@ def review_facts(public: dict) -> dict:
     """The baseline a fleet update is compared against (#1191): the deployed revision's resolved
     probe targets, assignments, capability requests and variable names. The store keeps only a
     playbook's current revision, so the deployed facts are recorded here. No secret value enters:
-    a secret is never a probe argument, and only variable NAMES are kept."""
+    a secret is never a probe argument, and only variable NAMES are kept. `format` is the deployed
+    revision's (#1654): the first move to format 5 is a per-project decision."""
     return {
+        "format": public["playbook"]["format"],
         "targets": sorted(
             (
                 {k: v for k, v in t.items() if k != "requires_confirmation"}

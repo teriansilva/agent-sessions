@@ -39,6 +39,15 @@ def _unsettled(record: dict) -> bool:
     return any(name in record for name in _OPERATIONS)
 
 
+def pending(record: dict) -> bool:
+    """Any operation journal not marked complete: an interrupted bind, apply or removal."""
+    return any(
+        not isinstance(record.get(name), dict) or record[name].get("state") != "complete"
+        for name in _OPERATIONS
+        if name in record
+    )
+
+
 def holds(record: dict) -> bool:
     """A record holds its project and source playbook unless it is cleanly removed."""
     return record["state"] != "removed" or _unsettled(record)

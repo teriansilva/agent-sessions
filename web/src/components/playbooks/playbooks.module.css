@@ -499,3 +499,20 @@
     flex: 1 1 auto;
   }
 }
+
+/* Format 5 role on a card/node (#1654): grade + required skills, no engine colour. */
+.role {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  padding-left: var(--sp-2);
+  border-left: 2px solid var(--accent);
+  font-size: var(--fs-meta);
+}
+.roleGrade {
+  font-family: var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}

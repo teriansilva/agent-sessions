@@ -57,7 +57,7 @@ def inspect(digest, local_id):
     preview = None
     try:
         trust.selected(digest)
-        store.playbook_id(local_id)
+        store.local_id(entry["content"]["kind"], local_id)
         base = origins.rewritten(entry["content"], local_id)
         origins._revision(entry["content"]["kind"], base)
         if entry["content"]["kind"] == "playbook":
@@ -256,7 +256,7 @@ def _complete(operation_id, result):
 
 def import_copy(kind, local_id, digest, operation_id, acknowledge):
     _kind(kind)
-    store.playbook_id(local_id)
+    store.local_id(kind, local_id)
     _id(operation_id)
     if acknowledge is not True:
         raise contract.GalleryError("Review and acknowledge the complete content before import.")
@@ -281,8 +281,8 @@ def import_copy(kind, local_id, digest, operation_id, acknowledge):
 
 def apply_update(kind, local_id, digest, comparison, files, operation_id, acknowledge, *, new_id):
     _kind(kind)
-    store.playbook_id(local_id)
-    store.playbook_id(new_id)
+    store.local_id(kind, local_id)
+    store.local_id(kind, new_id)
     if new_id == local_id:
         raise store.Conflict("Choose a new copy ID; the original stays unchanged.")
     _id(operation_id)
@@ -342,8 +342,8 @@ def apply_update(kind, local_id, digest, comparison, files, operation_id, acknow
 
 def edit_skill_copy(local_id, new_id, revision, origin, files, operation_id):
     """Save local edits under a new identity, preserving the source and its imported base."""
-    store.playbook_id(local_id)
-    store.playbook_id(new_id)
+    store.skill_id(local_id)
+    store.skill_id(new_id)
     store.revision(revision)
     _id(operation_id)
     if new_id == local_id:
@@ -381,5 +381,5 @@ def edit_skill_copy(local_id, new_id, revision, origin, files, operation_id):
 
 def create_skill(new_id, files):
     """A new local skill from scratch (#1611): no source, no origin. Existing ids are refused."""
-    store.playbook_id(new_id)
+    store.skill_id(new_id)
     return skills.save(new_id, files)

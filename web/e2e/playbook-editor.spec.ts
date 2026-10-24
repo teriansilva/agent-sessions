@@ -23,6 +23,12 @@ const schema: AuthoringSchema = {
   actors: ["agent", "external", "none", "operator"],
   memory: ["none", "read", "read-write"],
   distinct: ["session", "engine", "model"],
+  distinct_role: ["engine", "model", "specialist"],
+  grades: ["fast", "strong", "frontier"],
+  skills: [
+    { id: "forgejo-pr-flow", label: "Forgejo PR flow" },
+    { id: "code-review", label: "Code review" },
+  ],
   variable_types: ["text", "url", "enum", "bool", "int", "path"],
   probes: {
     supervisor_judged: { outputs: [], args: {} },
@@ -71,14 +77,19 @@ async function setup(
     readonly?: boolean;
     collision?: boolean;
     flow?: Flow;
+    format?: number;
+    legacyAfterRevert?: Flow;
+    revertible?: boolean;
+    revertRecoveryDurable?: boolean;
   } = {},
 ) {
   await commonMocks(page);
   await page.route("**/api/engines", (r) =>
     r.fulfill({ json: { engines: roster.engines } }),
   );
+  let revertible = options.revertible ?? false;
   let manifest: Manifest = {
-    format: 2,
+    format: options.format ?? 2,
     identity: {
       id: "team-flow",
       name: "Team flow",
@@ -127,6 +138,7 @@ async function setup(
     ok: true,
     revision,
     recovery_total: 0,
+    revertible,
     files,
     documents,
     readme: files["README.md"] ?? "",
@@ -151,6 +163,23 @@ async function setup(
       });
     const body = req.postDataJSON();
     calls.push({ method: req.method(), body });
+    if (path.endsWith("/revert-format")) {
+      // #1654: the retained format ≤4 copy comes back; the mock returns the legacy fixture.
+      manifest = { ...manifest, format: 2 };
+      revertible = false;
+      flow = options.legacyAfterRevert ?? flow;
+      documents = { ...documents, "playbook.toml": manifest, "flows/main.toml": flow };
+      revision = NEXT;
+      return route.fulfill({
+        json: {
+          ...detail(),
+          reverted_from: "team-flow-20261024T000000-abcd1234",
+          ...(options.revertRecoveryDurable === false
+            ? { recovery_durable: false, recovery_reason: "flush failed" }
+            : {}),
+        },
+      });
+    }
     if (
       options.collision &&
       path === "/api/playbooks" &&
@@ -223,7 +252,7 @@ async function selectStep(page: Page, title: string) {
   ).toBeVisible();
 }
 
-test("create, reorder, add rework, save, reload and edit two different agents", async ({
+test("create, reorder, add rework, save, reload and give two steps different roles (#1654)", async ({
   page,
 }) => {
   const { calls } = await setup(page);
@@ -242,13 +271,17 @@ test("create, reorder, add rework, save, reload and edit two different agents", 
   await page
     .getByLabel("Who does this step?", { exact: true })
     .selectOption("agent");
-  await page.getByLabel("Agent", { exact: true }).selectOption("claude");
+  // A new playbook is format 5: an agent step names a ROLE, never an agent or model.
+  await expect(page.getByLabel("Agent", { exact: true })).toHaveCount(0);
+  await page.getByLabel("Add a skill", { exact: true }).selectOption("forgejo-pr-flow");
+  await page.getByRole("radio", { name: "Specialist", exact: true }).click();
   await page.getByRole("button", { name: "Add step", exact: true }).click();
   await page.getByLabel("Step title", { exact: true }).fill("Review");
   await page
     .getByLabel("Who does this step?", { exact: true })
     .selectOption("agent");
-  await page.getByLabel("Agent", { exact: true }).selectOption("codex");
+  await page.getByLabel("Add a skill", { exact: true }).selectOption("code-review");
+  await page.getByRole("radio", { name: "Senior", exact: true }).click();
   await page
     .getByRole("group", { name: "Starts after" })
     .getByLabel("Implement")
@@ -272,7 +305,12 @@ test("create, reorder, add rework, save, reload and edit two different agents", 
     page.getByRole("heading", { name: "Edit playbook", exact: true }),
   ).toBeVisible();
   const sent = (calls[0].body.files["flows/main.toml"] as { toml: Flow }).toml;
-  expect(sent.steps.map((s) => s.actor.engine)).toEqual(["codex", "claude"]);
+  expect(sent.format).toBe(5);
+  expect(sent.steps.map((s) => s.actor)).toEqual([{ kind: "agent" }, { kind: "agent" }]);
+  expect(sent.steps.map((s) => s.role)).toEqual([
+    { skills: ["code-review"], min_grade: "frontier" },
+    { skills: ["forgejo-pr-flow"], min_grade: "strong" },
+  ]);
   expect(sent.steps[0].rework).toMatchObject({
     to: sent.steps[1].id,
     max_rounds: 4,
@@ -966,4 +1004,253 @@ test("workflow and Escape actions clear edge selection without deleting the depe
   ).toHaveCount(0);
   await expect(edge).toHaveCount(1);
   expect(calls).toHaveLength(0);
+});
+
+/* ---- #1654: format 5 roles, the explicit legacy upgrade, and Revert to format 4 ---------------- */
+
+const roleFlow: Flow = {
+  format: 5,
+  title: "Ship a change",
+  steps: [
+    {
+      id: "review",
+      title: "Review",
+      actor: { kind: "agent" },
+      role: {
+        skills: ["code-review", "security-audit"],
+        min_grade: "frontier",
+      },
+      checklist: [
+        { key: "reviewed", title: "Reviewed", probe: "supervisor_judged" },
+      ],
+    },
+  ],
+};
+
+test("a format 5 step edits its role: library skills by id, a missing skill flagged, a grade", async ({
+  page,
+}) => {
+  const { calls } = await setup(page, { format: 5, flow: roleFlow });
+  await page.goto(playbookEditPath("team-flow"));
+  await selectStep(page, "Review");
+  const role = page.getByTestId("step-role");
+  await expect(role.getByText("Not in your skills library")).toBeVisible();
+  await expect(
+    page.getByRole("radio", { name: "Senior", exact: true }),
+  ).toHaveAttribute("aria-checked", "true");
+  await role
+    .getByRole("button", { name: "Remove skill security-audit" })
+    .click();
+  await page.getByRole("radio", { name: "Specialist", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Save playbook", exact: true })
+    .click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Playbook saved" }),
+  ).toBeVisible();
+  const sent = (calls[0].body.files["flows/main.toml"] as { toml: Flow }).toml;
+  expect(sent.steps[0].actor).toEqual({ kind: "agent" });
+  expect(sent.steps[0].role).toEqual({
+    skills: ["code-review"],
+    min_grade: "strong",
+  });
+});
+
+test("a format 4 step shows its recorded agent read-only and upgrades only by explicit choice", async ({
+  page,
+}) => {
+  const legacyFlow: Flow = {
+    format: 2,
+    title: "Main flow",
+    steps: [
+      {
+        id: "build",
+        title: "Build",
+        actor: { kind: "agent", engine: "codex", model: "default" },
+        skills: [
+          { id: "forgejo-pr-flow", required: true },
+          { id: "code.review", required: false },
+          { id: "code-review", required: false },
+        ],
+        checklist: [
+          { key: "built", title: "Built", probe: "supervisor_judged" },
+        ],
+      },
+      {
+        id: "check",
+        title: "Check",
+        after: ["build"],
+        actor: { kind: "agent", engine: "claude", model: "default" },
+        skills: [{ id: "code-review", required: true }],
+      },
+      {
+        id: "approve",
+        title: "Approve",
+        after: ["check"],
+        actor: { kind: "operator" },
+        skills: [{ id: "release-sign-off" }],
+      },
+    ],
+  };
+  const { calls } = await setup(page, { flow: legacyFlow });
+  await page.goto(playbookEditPath("team-flow"));
+  await selectStep(page, "Build");
+  const legacy = page.getByTestId("legacy-actor");
+  await expect(legacy).toContainText("Format 4 step");
+  await expect(page.getByLabel("Agent", { exact: true })).toHaveCount(0);
+  await legacy
+    .getByRole("button", { name: /Upgrade this playbook to format 5/ })
+    .click();
+  const upgrade = page.getByRole("group", { name: "Upgrade to format 5" });
+  // Hermes 6947 #4: the upgrade changes EVERY agent step, so every one is shown and confirmed.
+  const groups = upgrade.getByTestId("upgrade-step");
+  await expect(groups).toHaveCount(3);
+  const build = groups.filter({ hasText: "Build" });
+  const check = groups.filter({ hasText: "Check" });
+  // Required is pre-selected; advisory is NOT; a blocked id is disabled and says how to fix it.
+  await expect(build.getByRole("checkbox").nth(0)).toBeChecked();
+  await expect(build.getByRole("checkbox").nth(1)).toBeDisabled();
+  await expect(build).toContainText("Rename “code.review” to “code-review”");
+  await expect(build.getByRole("checkbox").nth(2)).not.toBeChecked();
+  // The other step's required reference is visible and pre-selected — and the operator's to drop.
+  await expect(check.getByRole("checkbox")).toBeChecked();
+  await check.getByRole("checkbox").uncheck();
+  // Hermes 6955 #3: a non-agent step's references cannot migrate; removing them is acknowledged.
+  const approve = groups.filter({ hasText: "Approve" });
+  await expect(approve).toContainText("references are removed");
+  await expect(approve).toContainText("release-sign-off");
+  await expect(approve).toContainText("main:approve");
+  const go = upgrade.getByRole("button", { name: "Upgrade to format 5", exact: true });
+  await expect(go).toBeDisabled();
+  await upgrade.getByRole("checkbox", { name: /Remove the skill references/ }).check();
+  await expect(go).toBeEnabled();
+  await upgrade
+    .getByRole("button", { name: "Upgrade to format 5", exact: true })
+    .click();
+  await expect(page.getByTestId("step-role")).toBeVisible();
+  await page
+    .getByRole("button", { name: "Save playbook", exact: true })
+    .click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Playbook saved" }),
+  ).toBeVisible();
+  const files = calls[0].body.files;
+  const manifestSent = (files["playbook.toml"] as { toml: Manifest }).toml;
+  const sent = (files["flows/main.toml"] as { toml: Flow }).toml;
+  expect(manifestSent.format).toBe(5);
+  expect(sent.format).toBe(5);
+  expect(sent.steps[0].actor).toEqual({ kind: "agent" });
+  expect(sent.steps[0].role).toEqual({ skills: ["forgejo-pr-flow"] });
+  expect(sent.steps[0].skills).toBeUndefined();
+  // Unchecked in the confirm: never promoted.
+  expect(sent.steps[1].actor).toEqual({ kind: "agent" });
+  expect(sent.steps[1].role).toEqual({ skills: [] });
+  expect(sent.steps[1].skills).toBeUndefined();
+  expect(sent.steps[2].actor).toEqual({ kind: "operator" });
+  expect(sent.steps[2].skills).toBeUndefined();
+  expect(sent.steps[2].role).toBeUndefined();
+});
+
+test("Revert to format 4 is confirmed, revision-fenced and adopts the restored copy", async ({
+  page,
+}) => {
+  const legacyFlow: Flow = {
+    format: 2,
+    title: "Main flow",
+    steps: [
+      {
+        id: "build",
+        title: "Build",
+        actor: { kind: "agent", engine: "codex", model: "default" },
+        checklist: [
+          { key: "built", title: "Built", probe: "supervisor_judged" },
+        ],
+      },
+    ],
+  };
+  const { calls } = await setup(page, {
+    format: 5,
+    flow: roleFlow,
+    legacyAfterRevert: legacyFlow,
+    revertible: true,
+  });
+  await page.goto(playbookEditPath("team-flow"));
+  await page
+    .getByRole("button", { name: "Revert to format 4…", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Revert", exact: true }).click();
+  await expect(
+    page
+      .getByRole("status")
+      .filter({ hasText: "Reverted to the retained format 4 copy" }),
+  ).toBeVisible();
+  expect(calls.at(-1)?.body).toEqual({ revision: REV });
+  await selectStep(page, "Build");
+  await expect(page.getByTestId("legacy-actor")).toContainText("Format 4 step");
+  await expect(
+    page.getByRole("button", { name: "Revert to format 4…" }),
+  ).toHaveCount(0);
+});
+test("a revert whose format 5 recovery copy is unconfirmed says so (#1654)", async ({
+  page,
+}) => {
+  const legacyFlow: Flow = {
+    format: 2,
+    title: "Main flow",
+    steps: [{ id: "build", title: "Build", actor: { kind: "agent", engine: "codex", model: "default" } }],
+  };
+  await setup(page, {
+    format: 5,
+    flow: roleFlow,
+    legacyAfterRevert: legacyFlow,
+    revertible: true,
+    revertRecoveryDurable: false,
+  });
+  await page.goto(playbookEditPath("team-flow"));
+  await page.getByRole("button", { name: "Revert to format 4…", exact: true }).click();
+  await page.getByRole("button", { name: "Revert", exact: true }).click();
+  const notice = page.getByRole("status").filter({ hasText: "Reverted to the retained format 4 copy" });
+  await expect(notice).toContainText("could not be confirmed");
+  await expect(notice).not.toContainText("is kept in the recovery area");
+});
+test("a format 5 book with no retained format 4 copy offers no revert (#1654)", async ({
+  page,
+}) => {
+  // Hermes 6947 #8: a new or duplicated format 5 book has nothing to revert to.
+  await setup(page, { format: 5, flow: roleFlow, revertible: false });
+  await page.goto(playbookEditPath("team-flow"));
+  await expect(
+    page.getByRole("button", { name: "Save playbook", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Revert to format 4…" }),
+  ).toHaveCount(0);
+});
+
+test("320px: the role editor stays in bounds with 44px targets in light and dark", async ({
+  page,
+}) => {
+  await setup(page, { format: 5, flow: roleFlow });
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.goto(playbookEditPath("team-flow"));
+  await selectStep(page, "Review");
+  for (const theme of ["dark", "light"]) {
+    await page.evaluate((t) => {
+      document.documentElement.dataset.theme = t;
+    }, theme);
+    const editor = page.getByTestId("playbook-editor");
+    expect(
+      await editor.evaluate((el) => el.scrollWidth <= el.clientWidth),
+    ).toBe(true);
+    const small = await page
+      .getByTestId("step-role")
+      .locator("button,select")
+      .evaluateAll((els) =>
+        els
+          .filter((el) => el.getClientRects().length)
+          .filter((el) => el.getBoundingClientRect().height < 44)
+          .map((el) => el.textContent),
+      );
+    expect(small).toEqual([]);
+  }
 });

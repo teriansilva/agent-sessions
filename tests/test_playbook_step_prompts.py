@@ -78,6 +78,8 @@ def test_direct_prompts_preserve_completion_rules_outputs_and_rework(bundle):
         manual(),
         manual(id="prompt-two", body="Review every required rule."),
     ]
+    # Opting into prompts bumps the flow's format (#1654 exposes it); everything else is equal.
+    assert (old.pop("format"), new.pop("format")) == (1, 4)
     assert old == new
 
 

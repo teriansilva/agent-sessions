@@ -18,12 +18,18 @@ from ..plugins import manifest as plugin_manifest
 
 #: Format 2 permits proposed target defaults/choices, armed only by deployment review. Format 3
 #: adds the `{{secret_path:<name>}}` reference token (template materials only). Format 4 adds
-#: retained manual/template prompts directly on a step. Earlier formats
-#: retain their own validation; reading/saving never silently upgrades a document.
-FORMAT = 4
-SUPPORTED_FORMATS = frozenset({1, 2, 3, 4})
+#: retained manual/template prompts directly on a step. Format 5 (#1654) replaces an agent step's
+#: engine/model with a ROLE: required skills by exact id plus an optional minimum grade; the
+#: specialist that fills it is chosen per mission, never by the bundle or a deployment. Earlier
+#: formats retain their own validation; reading/saving never silently upgrades a document.
+FORMAT = 5
+SUPPORTED_FORMATS = frozenset({1, 2, 3, 4, 5})
 SECRET_PATH_FORMAT = 3
 DIRECT_PROMPT_FORMAT = 4
+ROLE_FORMAT = 5
+#: Model tiers a role may require, weakest first (shown as Intern / Specialist / Senior). P2 is
+#: vocabulary only; mapping models to grades is P3 (#1613).
+GRADES = ("fast", "strong", "frontier")
 MIGRATIONS: dict = {}
 
 # --- identities ----------------------------------------------------------------------------------
@@ -36,7 +42,11 @@ STEP_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 #: A free domain tag (`development`, `documents`, `mail`, ...): a tag, never a code path.
 DOMAIN_RE = re.compile(r"^[a-z][a-z0-9-]{0,23}$")
 CONNECTION_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+#: Format ≤4 advisory step skill references keep their historical grammar.
 SKILL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+#: THE skill id (#1654, D14): format-5 role skills, local skill-library ids and gallery skill slugs
+#: all use this one grammar, so a role can be matched to a skill by exact id.
+SKILL_REF_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 VERSION_RE = plugin_manifest._SEMVERISH_RE
 #: Engine and model are REFERENCES here — validated for shape only. Resolution against the
 #: roster is P2/P5 (#1191/#1194); an engine or model this host does not have is *unresolved*, not
@@ -173,6 +183,8 @@ ACTOR_NONE = "none"
 ACTOR_KINDS = frozenset({ACTOR_AGENT, ACTOR_EXTERNAL, ACTOR_OPERATOR, ACTOR_NONE})
 MEMORY_MODES = frozenset({"none", "read", "read-write"})
 DISTINCT_CONSTRAINTS = frozenset({"session", "engine", "model"})
+#: Format 5: a different instance (session) is always implied; a step may demand more.
+DISTINCT_CONSTRAINTS_ROLE = frozenset({"specialist", "engine", "model"})
 
 #: STEP OUTPUTS (#1096 §5): the closed, per-probe-kind set of observed facts a step may expose.
 #: A step may declare only a slot one of its own checklist's probe kinds produces.
@@ -241,3 +253,10 @@ STEP_TOKEN_RE = re.compile(r"\{\{steps\.([a-z][a-z0-9_-]{0,31})\.([a-z][a-z0-9_]
 #: The PATH of a declared secret variable's 0600 reference file (#1096 §3), never its value. Only a
 #: template material may carry it; apply writes the file outside the project (`secret_files`).
 SECRET_PATH_RE = re.compile(r"\{\{secret_path:([a-z][a-z0-9_]{0,31})\}\}")
+
+
+def binding_role(step: dict) -> dict | None:
+    """The role a step BINDS (#1654): a format 5 agent step's, else None. A format ≤4 agent step's
+    projected role carries a `legacy_hint` and is a read-only view; it binds nothing."""
+    role = step.get("role")
+    return None if role is None or "legacy_hint" in role else role

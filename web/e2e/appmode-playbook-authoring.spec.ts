@@ -192,16 +192,20 @@ for (const state of ["absent", "retiring", "model-unavailable"] as const) {
       await expect(page.getByLabel("Step: Implement", { exact: true })).toBeVisible();
       await page.getByLabel("Step: Implement", { exact: true }).focus();
       await page.keyboard.press("Enter");
-      await expect(page.getByLabel("Agent", { exact: true })).toHaveValue("fixture-agent");
-      await expect(page.getByLabel("Model", { exact: true })).toHaveValue(model);
+      // #1654: a format ≤4 step's recorded agent/model is shown read-only (no pickers) and kept.
+      await expect(page.getByTestId("legacy-actor")).toContainText("Format 4 step");
+      await expect(page.getByTestId("legacy-actor")).toContainText(model);
+      await expect(page.getByLabel("Agent", { exact: true })).toHaveCount(0);
       await page.getByLabel("Playbook name", { exact: true }).fill("Edited reference proof");
       await save(page, id, 200);
       await page.reload();
       await expect(page.getByLabel("Step: Implement", { exact: true })).toBeVisible();
       await page.getByLabel("Step: Implement", { exact: true }).focus();
       await page.keyboard.press("Enter");
-      await expect(page.getByLabel("Agent", { exact: true })).toHaveValue("fixture-agent");
-      await expect(page.getByLabel("Model", { exact: true })).toHaveValue(model);
+      // #1654: a format ≤4 step's recorded agent/model is shown read-only (no pickers) and kept.
+      await expect(page.getByTestId("legacy-actor")).toContainText("Format 4 step");
+      await expect(page.getByTestId("legacy-actor")).toContainText(model);
+      await expect(page.getByLabel("Agent", { exact: true })).toHaveCount(0);
       const reloaded = await stored(page, id);
       expect(reloaded.revision).not.toBe(original.revision);
       expect(reloaded.files["flows/main.toml"]).toBe(original.files["flows/main.toml"]);

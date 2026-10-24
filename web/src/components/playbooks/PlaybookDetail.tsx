@@ -397,8 +397,9 @@ function BundleFacts({ pb }: { pb: PlaybookDetail }) {
         <p>Connections: {pb.connections?.join(", ") || "none"}</p>
         <p>Capabilities requested: {pb.capabilities?.join(", ") || "none"}</p>
         <p>
-          Step assignments are resolved in the deployment review. Stored agent
-          and model references are preserved.
+          Format 5 steps name roles, filled per mission by a specialist from
+          your pool. Older steps keep their stored agent and model, and their
+          assignments are resolved in the deployment review.
         </p>
       </section>
     </>

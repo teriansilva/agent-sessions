@@ -196,7 +196,7 @@ There are three public kinds: **playbooks** and **skills** (the existing feed), 
 |---|---|---|
 | Glossary, this document | — | P0 |
 | Checklists | Library → Checklists; missions pick one | Retired into procedure evidence (P1) |
-| Playbook steps | Name an engine and a model; one flow per bundled playbook | Role + skills + minimum grade; several procedures per project (P2) |
+| Playbook steps | **Format 5 (P2, #1654):** an agent step names a role (skills + minimum grade); formats ≤4 keep their recorded engine/model read-only | Several procedures per project; filling roles from the pool (P3/P5) |
 | Project memory | The BattleLab memory tool, per project | Unchanged; plus specialist notes per specialist × project (P3) |
 | Specialists, the pool | Not present; skills are stored but turned on nowhere; client profiles per engine | A versioned pool on client profiles; skills activated per session (P3) |
 | Mission scope | One project per mission | One project per objective; single project first, then cross-project (P4) |

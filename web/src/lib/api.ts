@@ -2389,6 +2389,9 @@ export const api = {
   playbook: (id: string) => getJsonWithDetail<PlaybookDetail>(`/api/playbooks/${encodeURIComponent(id)}`),
   duplicatePlaybook: (id: string, revision: string) =>
     mutateJson<PlaybookDetail & PlaybookWriteResult>("POST", `/api/playbooks/${encodeURIComponent(id)}/duplicate`, { revision }),
+  /** #1654: undo an explicit format 5 upgrade from the retained format ≤4 copy (revision-fenced). */
+  revertPlaybookFormat: (id: string, revision: string) =>
+    mutateJson<PlaybookDetail & PlaybookWriteResult & { reverted_from?: string }>("POST", `/api/playbooks/${encodeURIComponent(id)}/revert-format`, { revision }),
   deletePlaybook: (id: string, revision: string) =>
     mutateJson<PlaybookWriteResult>("DELETE", `/api/playbooks/${encodeURIComponent(id)}?revision=${encodeURIComponent(revision)}`),
   setDefaultPlaybook: (id: string, revision: string, expectDefault: string | null) =>

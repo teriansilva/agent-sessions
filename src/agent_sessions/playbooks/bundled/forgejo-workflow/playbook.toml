@@ -1,4 +1,4 @@
-format = 1
+format = 5
 verify = ["variables", "connections", "binaries"]
 
 [identity]
@@ -31,7 +31,7 @@ example = "feature/example-change"
 [[variables]]
 name = "reviewer_account"
 label = "Requested reviewer account"
-help = "For example, your Hermes account. This describes the reviewer; the merge step separately requires operator confirmation of that account's approval."
+help = "The forge account the reviewing specialist posts as, for example your Hermes account. The merge step separately requires operator confirmation of that account's approval."
 required = true
 example = "reviewer-bot"
 

@@ -22,7 +22,7 @@ def locked(*, exclusive):
 
 
 def _read(root_fd, local_id):
-    store.playbook_id(local_id)
+    store.skill_id(local_id)
     try:
         fd = os.open(local_id, files.DIR, dir_fd=root_fd)
     except FileNotFoundError:
@@ -103,7 +103,7 @@ def _stage(fd, tree, local_id, pointer):
 
 def save(local_id, contents, *, publication=None):
     """Create a new skill only. Existing identities are never replaced."""
-    store.playbook_id(local_id)
+    store.skill_id(local_id)
     tree = files.tree(contents)
     with locked(exclusive=True) as fd:
         if store._exists_locally(fd, local_id):

@@ -46,13 +46,54 @@ def compare_template_prompt(body: dict) -> dict:
     return template_prompt(body, compare=True)
 
 
+def _skill_label(files: dict, sid: str) -> str:
+    """`name:` from SKILL.md's frontmatter when present, else the id. Display text only."""
+    text = files.get("SKILL.md") if isinstance(files.get("SKILL.md"), str) else ""
+    if text.startswith("---"):
+        for line in text.splitlines()[1:40]:
+            if line.strip() == "---":
+                break
+            if line.startswith("name:"):
+                name = line[5:].strip().strip("\"'")
+                if name:
+                    return name[: schema.LABEL_MAX]
+    return sid
+
+
+def _library_skills() -> tuple[list[dict], str | None]:
+    """The local skills library by exact id (D14): what a role may require. Never a path.
+
+    Fail-soft: a damaged, unsafe or busy library must not take the authoring schema (and with it
+    the editor and the New Project wizard) down; the reason is returned instead."""
+    from ..gallery import skills as skill_library
+    from ..plugins import provenance
+
+    try:
+        listing = skill_library.listing()
+    except (OSError, ValueError, store.StoreError, provenance.ProvenanceError):
+        # No exception text: this vocabulary also reaches HQ's `playbook_schema` tool.
+        return [], "The skills library cannot be read right now; open Library → Skills to check it."
+    out = []
+    for row in listing.get("skills", []):
+        sid = row.get("id")
+        if isinstance(sid, str) and schema.SKILL_REF_RE.fullmatch(sid) and not row.get("error"):
+            out.append({"id": sid, "label": _skill_label(row.get("files") or {}, sid)})
+    return out, None
+
+
 def vocabulary() -> dict:
     roster = engines.registry.current()
+    skills, skills_note = _library_skills()
     return {
         "agents": sorted(eid for eid, p in roster.by_id.items() if review.assignment_available(p)),
         "actors": sorted(schema.ACTOR_KINDS),
         "memory": sorted(schema.MEMORY_MODES),
         "distinct": sorted(schema.DISTINCT_CONSTRAINTS),
+        # Format 5 (#1654): what a role may require, and the instance-floor constraint set.
+        "distinct_role": sorted(schema.DISTINCT_CONSTRAINTS_ROLE),
+        "grades": list(schema.GRADES),
+        "skills": skills,
+        **({"skills_unavailable": skills_note} if skills_note else {}),
         "variable_types": sorted(schema.VARIABLE_TYPES),
         "probes": {
             kind: {

@@ -7,6 +7,7 @@ import {
 } from "../../app/engineRoster";
 import { playbookPath } from "../../lib/routes";
 import type { PlaybookCardData, PlaybookStep } from "../../types/playbooks";
+import { bindingRole } from "../../types/playbooks";
 import buttons from "../ui/actionButton.module.css";
 import styles from "./playbooks.module.css";
 
@@ -23,6 +24,24 @@ export function PlaybookActor({ step }: { step: PlaybookStep }) {
             : "Operator"}
       </span>
     );
+  const role = bindingRole(step);
+  if (role) {
+    // Format 5 (#1654): a role, filled per mission from the pool. Never an engine or model.
+    const grade =
+      { fast: "Intern", strong: "Specialist", frontier: "Senior" }[
+        role.min_grade ?? ""
+      ] ?? "Any grade";
+    return (
+      <span className={styles.role}>
+        <span className={styles.roleGrade}>{grade}</span>
+        {role.skills.length ? (
+          role.skills.map((s) => <code key={s}>{s}</code>)
+        ) : (
+          <span>no skills required</span>
+        )}
+      </span>
+    );
+  }
   const id = actor.engine ?? "";
   const engine = roster.engines.find((entry) => entry.id === id);
   const reason =
