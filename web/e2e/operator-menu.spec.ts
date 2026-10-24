@@ -166,3 +166,36 @@ test("on a short landscape screen every item — Sign out included — stays rea
   await page.keyboard.press("End");
   await expect(signOut).toBeFocused();
 });
+
+/** Reads one CSS pixel of a page screenshot, decoded by the browser itself (no PNG dependency). */
+async function pixelAt(page: Page, x: number, y: number): Promise<number[]> {
+  const shot = await page.screenshot({
+    clip: { x: Math.floor(x), y: Math.floor(y), width: 1, height: 1 },
+    scale: "css",
+    animations: "disabled",
+  });
+  return page.evaluate(async (b64) => {
+    const img = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+    const ctx = new OffscreenCanvas(1, 1).getContext("2d")!;
+    ctx.drawImage(img, 0, 0);
+    return Array.from(ctx.getImageData(0, 0, 1, 1).data.slice(0, 3));
+  }, shot.toString("base64"));
+}
+
+test("the initials square is cut by the tile's chamfer — no corner pokes out of the plate", async ({
+  page,
+}) => {
+  await mockShell(page);
+  await page.goto(NEW_SESSION_PATH);
+  const tile = page.getByTestId("operator-menu");
+  await expect(tile).toBeVisible();
+  await animationsSettled(page);
+  const tb = (await tile.boundingBox())!;
+
+  // A point inside the plate's top-left cut (x + y well under --cut-sm) is the bar behind the tile,
+  // so it paints like the bar just above the tile — not the square's accent tint, which it did
+  // when the square was an unclipped rectangle sitting in that corner.
+  const corner = await pixelAt(page, tb.x + 2, tb.y + 3);
+  const bar = await pixelAt(page, tb.x + 2, tb.y - 2);
+  for (let i = 0; i < 3; i++) expect(Math.abs(corner[i] - bar[i])).toBeLessThanOrEqual(10);
+});
