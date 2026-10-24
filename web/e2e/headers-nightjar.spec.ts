@@ -225,6 +225,68 @@ test.describe("the top bar (#1589)", () => {
     });
   }
 
+  test("the list toggle sits after the logo, a corner-tile plate lit while its list is open", async ({
+    browser,
+  }) => {
+    onceOnDesktop();
+    for (const width of [1440, 834, 390, 320]) {
+      const touch = width <= 1180;
+      const { ctx, page } = await device(browser, width, touch);
+      await openTerminalSession(page);
+      const toggle = page.locator(".hud-topbar > .navToggle");
+      await expect(toggle).toHaveCount(1);
+      const brand = (await page.locator(".hud-brand").boundingBox())!;
+      const tb = (await toggle.boundingBox())!;
+      const firstSection = (await page.locator(".section-nav a").first().boundingBox())!;
+      // Operator, 2026-10-24: the brand leads the bar; the toggle follows it, before the sections.
+      expect(tb.x, `toggle after the logo at ${width}`).toBeGreaterThanOrEqual(brand.x + brand.width);
+      expect(tb.x + tb.width, `toggle before the sections at ${width}`).toBeLessThanOrEqual(firstSection.x + 0.5);
+      // The corner tiles' plate, at their size: HQ's trigger is the reference tile. On a touch
+      // tablet above 800px the box is a 44px hit square and the plate is painted inside it, so the
+      // PAINTED tile (the box less its ::before inset) is what matches HQ's.
+      await expect(toggle).toHaveClass(/\bnj-plate\b/);
+      const ask = (await page.getByTestId("ask-toggle").boundingBox())!;
+      const inset = await toggle.evaluate((el) => {
+        const b = getComputedStyle(el, "::before");
+        return { x: parseFloat(b.left) + parseFloat(b.right), y: parseFloat(b.top) + parseFloat(b.bottom) };
+      });
+      expect(Math.abs(tb.width - inset.x - ask.width), `toggle plate width = HQ's at ${width}`).toBeLessThanOrEqual(0.5);
+      if (!touch || width <= 800) {
+        expect(Math.abs(tb.height - inset.y - ask.height), `toggle plate height = HQ's at ${width}`).toBeLessThanOrEqual(0.5);
+      }
+      // A finger's target wherever touch is the pointer, tablets above 800px included (Hermes 6911,
+      // 6936): the box itself is the hit area (the plate's ::before/::after are paint), so it must be
+      // 44px in BOTH dimensions where there is room (the phone row's tiles share the width, and keep
+      // the 44px height), and a tap 1px inside each of its four edges must land on the toggle.
+      if (touch) {
+        expect(tb.height, `toggle touch target height at ${width}`).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+        if (width > 800) expect(tb.width, `toggle touch target width at ${width}`).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+        const cx = tb.x + tb.width / 2;
+        const cy = tb.y + tb.height / 2;
+        const points = [
+          [cx, tb.y + 1],
+          [cx, tb.y + tb.height - 1],
+          [tb.x + 1, cy],
+          [tb.x + tb.width - 1, cy],
+        ];
+        const hits = await page.evaluate(
+          (pts) => pts.map(([x, y]) => !!document.elementFromPoint(x, y)?.closest(".navToggle")),
+          points,
+        );
+        expect(hits, `taps 1px inside each edge of the toggle hit it at ${width}`).toEqual([true, true, true, true]);
+      }
+      // Lit while its list is open, as HQ is while its sidebar is: the edge is the chrome's --hud.
+      const edge = () => toggle.evaluate((el) => getComputedStyle(el).getPropertyValue("--nj-edge").trim());
+      const hud = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--hud").trim());
+      const open = (await toggle.getAttribute("aria-expanded")) === "true";
+      if (open) expect(await edge(), `lit while open at ${width}`).toBe(hud);
+      else expect(await edge(), `unlit while closed at ${width}`).not.toBe(hud);
+      const scroll = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      expect(scroll, `no sideways scroll at ${width}`).toBeLessThanOrEqual(0);
+      await ctx.close();
+    }
+  });
+
   for (const theme of ["dark", "light"] as const) {
     test(`the brand kit's logo, ${theme}: the theme's pair, the mark at every width, the wordmark above 800px`, async ({
       browser,

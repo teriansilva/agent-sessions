@@ -546,13 +546,27 @@ function Layout() {
           blurred by the panels' backdrop-filter. Inside, the frosted chrome blurs it. (#211, #1531) */}
         <Atmosphere />
         <header className="hud-topbar" ref={headerRef}>
-          {/* No toggle on Settings (#1129): the surface it drives does not exist there in
-              either viewport form, and a live hamburger on a settings page would only mutate
-              the persisted collapse pref for nothing. */}
+          {/* THE BRAND KIT'S LOGO (#1589, the one source is web/src/brand via components/brand, #1590):
+              the Chevron Plate mark (themed: the kit's dark plate on light) and the outlined
+              wordmark — never recoloured, rounded or stretched. The name is text for assistive
+              tech; the images are decoration. A phone keeps the mark alone: the sections, HQ, the
+              bell and the operator tile need the width (#1058). */}
+          <span className="hud-brand">
+            <span className="sr-only">BattleLab</span>
+            <BrandMark size={28} themed className="brand-mark" />
+            <span className="wm">
+              <BrandWordmark height={13} />
+            </span>
+          </span>
+          {/* The list toggle sits AFTER the logo (operator, 2026-10-24): the brand leads the bar, and
+              the toggle is a corner-tile plate like HQ and the bell, lit while its list is open.
+              No toggle on Settings (#1129): the surface it drives does not exist there in either
+              viewport form, and a live hamburger on a settings page would only mutate the
+              persisted collapse pref for nothing. */}
           {!noSidebar && (
             <button
               type="button"
-              className="navToggle"
+              className="navToggle nj-plate"
               ref={navToggleRef}
               aria-label={
                 railInSidebar
@@ -569,18 +583,6 @@ function Layout() {
               {surfaceOpen ? <PanelLeftClose size={18} /> : <Menu size={18} />}
             </button>
           )}
-          {/* THE BRAND KIT'S LOGO (#1589, the one source is web/src/brand via components/brand, #1590):
-              the Chevron Plate mark (themed: the kit's dark plate on light) and the outlined
-              wordmark — never recoloured, rounded or stretched. The name is text for assistive
-              tech; the images are decoration. A phone keeps the mark alone: the sections, HQ, the
-              bell and the operator tile need the width (#1058). */}
-          <span className="hud-brand">
-            <span className="sr-only">BattleLab</span>
-            <BrandMark size={28} themed className="brand-mark" />
-            <span className="wm">
-              <BrandWordmark height={13} />
-            </span>
-          </span>
           <SectionNav
             active={section}
             activeSub={subsection}

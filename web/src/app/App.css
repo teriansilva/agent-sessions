@@ -427,34 +427,51 @@
   background: var(--bg-1);
   border-top: 1px solid var(--hud-dim);
 }
-.navToggle {
-  position: relative;
+/* The session / mission list toggle, after the logo: the corner tiles' plate (NotificationBell
+ * `.btn`, which HQ shares) at their size, lit while the list it drives is open (`aria-expanded`),
+ * as HQ is while its sidebar is. The plate's ::before/::after are its edge and face, so the hit
+ * area is the box itself: 34px with a mouse; on a touch tablet above 800px a 44px square whose
+ * plate is painted 5px in, so it still reads as HQ's 34px tile (below); the row's 44px tile at
+ * ≤800px. Two classes, so the plate's own defaults (nightjar.css) never win on load order. */
+.navToggle.nj-plate {
+  --nj-face: color-mix(in srgb, var(--text-1) 6%, var(--bg-1));
+  --nj-edge: var(--line-strong);
   flex: none;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  background: transparent;
-  border: 1px solid var(--border);
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid transparent;
   border-radius: 0;
-  color: var(--text);
+  color: var(--text-2);
   cursor: pointer;
-  transition: border-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
 }
-.navToggle:hover {
-  border-color: var(--hud-dim);
+.navToggle.nj-plate:hover {
+  --nj-edge: var(--hud-dim);
+  color: var(--text-1);
+}
+.navToggle.nj-plate[aria-expanded="true"] {
+  --nj-edge: var(--hud);
+  --nj-face: color-mix(in srgb, var(--hud) 12%, var(--bg-1));
   color: var(--hud-text);
+}
+@media (pointer: coarse) and (min-width: 801px) {
+  .navToggle.nj-plate {
+    width: 44px;
+    height: 44px;
+  }
+  .navToggle.nj-plate::before {
+    inset: 5px;
+  }
+  .navToggle.nj-plate::after {
+    inset: 6px;
+  }
 }
 .navToggle:focus-visible {
   outline: 2px solid var(--accent-text);
-  outline-offset: -2px;
-}
-/* The tile stays 32px in the tight bar; its HIT AREA is the 44px floor (#1531 touch targets). */
-.navToggle::after {
-  content: "";
-  position: absolute;
-  inset: -6px;
+  outline-offset: -3px;
 }
 .backdrop {
   display: none;
@@ -791,8 +808,8 @@
   .app {
     grid-template-rows: var(--app-header-height) minmax(0, 1fr) 28px;
   }
-  /* ONE TILE on a phone: every control in the row — the four sections, HQ, the bell and the
-     operator — is the same plate, --tb-tile wide and 44px tall; a sub-menu's chevron adds
+  /* ONE TILE on a phone: every control in the row — the list toggle, the four sections, HQ, the bell
+     and the operator — is the same plate, --tb-tile wide and 44px tall; a sub-menu's chevron adds
      --tb-chev; one gap between them all. Sized here, read by SectionNav, NotificationBell and
      OperatorMenu, so no control drifts to its own width again. */
   .hud-topbar {
@@ -802,6 +819,10 @@
     flex-wrap: nowrap;
     gap: 6px;
     padding-inline: 10px;
+  }
+  .navToggle.nj-plate {
+    width: var(--tb-tile);
+    height: 44px;
   }
   .hud-brand,
   .hud-topbar-actions {
