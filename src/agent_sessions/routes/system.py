@@ -179,9 +179,11 @@ def _preflight_prefs(payload: dict) -> None:
     # The key-origin policy (#956), checked up front too so a multi-block patch fails before
     # ANY block is written. `set_ai_review` re-checks inside its lock; that one is authoritative.
     if "ai_review" in payload:
-        why = prefs.key_origin_violation(prefs.get_ai_review(), payload["ai_review"])
-        if why is not None:
-            raise bad(why)
+        # The whole write rule (#1657): key origin, the provider's URL, and the egress gate.
+        try:
+            prefs.apply_ai_review_patch(prefs.get_ai_review(), payload["ai_review"])
+        except prefs.KeyOriginError as e:
+            raise bad(str(e)) from None
     if "project_names" in payload:
         v = payload["project_names"]
         if not isinstance(v, dict) or not all(

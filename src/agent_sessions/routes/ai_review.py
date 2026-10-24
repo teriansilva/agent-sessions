@@ -9,6 +9,11 @@
   of the stored block decides); any other origin needs the key in the request, and a refused
   request makes no outbound call. ``listing: "unsupported"`` when the endpoint answers but
   cannot list models; 502 with the redacted gateway error when it rejects the request.
+  A draft may name a ``provider`` (#1657); a hosted provider's URL is the table's, and unless the
+  draft carries ``egress_acknowledged: true`` (or the stored acknowledgement already names that
+  provider + origin) the route answers 409 and makes no outbound call at all.
+* ``GET  /api/ai-review/providers`` (#1657) — the static, secret-free provider table the
+  Settings picker renders. No outbound call.
 * ``POST /api/sessions/{sid}/review`` — manual "Review now". 409 while the feature is
   unconfigured; 502 on a failed review (the last good result + its stale age survive).
 * ``POST /api/sessions/{sid}/review-exclude`` — per-session exclusion toggle.
@@ -23,7 +28,7 @@ import json
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
-from .. import aitasks, engines, metadata, prefs, review
+from .. import ai_providers, aitasks, engines, metadata, prefs, review
 
 
 def _first_message(key: str) -> str | None:
@@ -40,6 +45,10 @@ def _first_message(key: str) -> str | None:
 
 
 def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
+    @app.get("/api/ai-review/providers")
+    async def ai_review_providers(_: str = Depends(logged_in)) -> JSONResponse:
+        return JSONResponse({"providers": ai_providers.public_catalog()})
+
     @app.get("/api/ai-review/models")
     async def ai_review_models(
         _: str = Depends(logged_in), refresh: int = Query(0, ge=0, le=1)
@@ -70,9 +79,25 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             raise HTTPException(status_code=422, detail="invalid JSON body") from None
         if not isinstance(body, dict):
             raise HTTPException(status_code=422, detail="body must be an object")
-        unknown = sorted(set(body) - {"base_url", "api_key"})
+        unknown = sorted(set(body) - {"base_url", "api_key", "provider", prefs.AI_REVIEW_ACK_FIELD})
         if unknown:
             raise HTTPException(status_code=422, detail=f"unknown fields: {unknown}")
+        provider = body.get("provider", ai_providers.CUSTOM)
+        if provider not in ai_providers.PROVIDER_IDS:
+            raise HTTPException(status_code=422, detail="unknown provider")
+        acked = body.get(prefs.AI_REVIEW_ACK_FIELD, False)
+        if not isinstance(acked, bool):
+            raise HTTPException(
+                status_code=422, detail=f"{prefs.AI_REVIEW_ACK_FIELD} must be a boolean"
+            )
+        row = ai_providers.get(provider)
+        if row.hosted:
+            # The table fixes a hosted provider's URL; a draft may omit it, never change it.
+            if body.get("base_url", row.base_url) != row.base_url:
+                raise HTTPException(
+                    status_code=422, detail=f"{row.label} is reached at {row.base_url}"
+                )
+            body = {**body, "base_url": row.base_url}
         base_url = body.get("base_url")
         if (
             not isinstance(base_url, str)
@@ -91,7 +116,21 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         key, why = prefs.resolve_test_key(stored, base_url, api_key)
         if why is not None:
             raise HTTPException(status_code=422, detail=why)
-        draft = {**stored, "base_url": base_url.strip(), "api_key": key}
+        draft = {
+            **stored,
+            "base_url": base_url.strip(),
+            "api_key": key,
+            "provider": provider,
+            # The draft's OWN acknowledgement, bound to the draft's provider + origin; otherwise
+            # the stored one, which `egress_violation` only accepts when it names exactly these.
+            "egress_ack": ai_providers.make_ack(provider, base_url, "draft")
+            if acked
+            else stored.get("egress_ack"),
+        }
+        why = ai_providers.egress_violation(draft)
+        if why is not None:
+            # Before ANY outbound call: a model list would already send the key to the vendor.
+            raise HTTPException(status_code=409, detail=why)
         try:
             models = await review.list_models(force=True, cfg=draft)
         except review.ModelsUnsupportedError:

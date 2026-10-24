@@ -658,6 +658,8 @@ def test_there_is_exactly_one_enforced_chat_transport():
     assert all(
         span[0] <= line <= span[1] for line in urls
     ), f"a chat-completions URL exists outside {TRANSPORT_FUNC}: lines {urls}, span {span}"
+    # The provider table (#1657) is data: it names no completion path a second door could use.
+    assert "chat/completions" not in (SRC / "ai_providers.py").read_text()
 
 
 def test_bound_history_cannot_smuggle_a_system_role():

@@ -46,6 +46,7 @@ from pathlib import Path
 import httpx
 
 from . import (
+    ai_providers,
     assessment,
     hq_usage,
     metadata,
@@ -167,6 +168,12 @@ class InsufficientInputError(ReviewError):
     handler — the summary just written stands and the last good recap is kept."""
 
 
+class EgressRefusedError(NotConfiguredError):
+    """The configured provider receives session content and the operator has not acknowledged
+    that for this provider + origin (#1657). A `NotConfiguredError`, because to every caller it
+    means the same thing — the endpoint is not usable yet — and routes already answer that 409."""
+
+
 class ModelsUnsupportedError(ReviewError):
     """The endpoint answered but cannot list models (404/405, or a body that is not a model
     list) — distinct from a rejection, because the URL and key can still be right (#956)."""
@@ -184,7 +191,23 @@ def _require_config() -> dict:
     cfg = prefs.get_ai_review()
     if not str(cfg["base_url"]).strip() or not cfg["api_key"]:
         raise NotConfiguredError("AI review endpoint is not configured")
+    _require_egress(cfg)
+    if ai_providers.is_auto(cfg):
+        # Model "Auto" (#1657): the provider's recommended model, followed through its own list
+        # when one has been seen (`_post_chat` refreshes it the first time).
+        cfg = {
+            **cfg,
+            "model": ai_providers.auto_model(cfg, ai_providers.fingerprint(cfg["api_key"])),
+        }
     return cfg
+
+
+def _require_egress(cfg: dict) -> None:
+    """The egress gate (#1657): nothing — no completion, no model list — goes to a provider that
+    receives session content without the operator's acknowledgement for it."""
+    why = ai_providers.egress_violation(cfg)
+    if why is not None:
+        raise EgressRefusedError(why)
 
 
 def _headers(cfg: dict) -> dict[str, str]:
@@ -1210,17 +1233,20 @@ _JSON_MODE_REFUSED: frozenset[int] = frozenset({400, 422, 501})
 #
 # It is a literal server-side flag — never operator or model text — and it never touches
 # `messages`, so the registry guarantee in `_assert_registered_system_prompts` is untouched.
-_NO_THINKING: dict = {"enable_thinking": False}
+# Since #1657 the field is the provider's own (`ai_providers.thinking_fields`): for Custom and
+# the self-hosted rows it is still exactly `chat_template_kwargs: {enable_thinking: false}`, and an
+# explicit level sends the provider's equivalent (`reasoning_effort`, `reasoning`).
 
-# Endpoints that answered an explicit REJECTION to `chat_template_kwargs`, so the field is not
-# sent to them again (one probe, not a 400-plus-retry on every call).
+# Endpoints that answered an explicit REJECTION to the thinking field, so it is not sent to them
+# again (one probe, not a 400-plus-retry on every call). Keyed with the fields themselves, so a
+# rejected `off` does not suppress an operator's later `high`.
 #
 # There is deliberately no "accepted" state. Nothing here consumes one, and a 200 could not
 # establish it anyway: a server that silently IGNORES the field also answers 200, and one that
 # ignores it simply keeps thinking — exactly today's behaviour, which is the fallback this is
 # designed to preserve. (Proving thinking is actually off needs response-side evidence and a
 # stable backend identity; that is #843, and it is why the `max_tokens` cap does not live here.)
-_thinking_refused: set[tuple[str, str, str]] = set()
+_thinking_refused: set[tuple[str, ...]] = set()
 
 
 def _capability_key(cfg: dict, model: object) -> tuple[str, str, str]:
@@ -1234,16 +1260,6 @@ def _capability_key(cfg: dict, model: object) -> tuple[str, str, str]:
     """
     key_fp = hashlib.sha256(str(cfg.get("api_key") or "").encode()).hexdigest()[:12]
     return (_base(cfg), str(model or cfg.get("model") or ""), key_fp)
-
-
-def _with_thinking_opt_out(body: dict) -> dict:
-    """A COPY of `body` carrying the thinking opt-out, merged into any existing
-    `chat_template_kwargs` rather than replacing it."""
-    out = dict(body)
-    extra = dict(out.get("chat_template_kwargs") or {})
-    extra.update(_NO_THINKING)
-    out["chat_template_kwargs"] = extra
-    return out
 
 
 def _transport_error(e: Exception, cfg: dict, *, subject: str) -> ReviewError:
@@ -1315,8 +1331,45 @@ async def _request_payload(body: dict, cfg: dict, admission):
         }
 
 
+def _prepare_outbound(messages: list[dict]) -> list[dict]:
+    """What every outbound transport does to a message list before it leaves (#1657): the
+    registry assertion, then the template-secret redaction — fail closed. ONE function, so the
+    HTTP send and P2's CLI stdin write cannot drift apart."""
+    _assert_registered_system_prompts(messages)
+    # Secret template values (#1090 Phase 2) never ride to the endpoint: once a secret is pasted
+    # into a session it is in that session's transcript and screen, which every prompt here may
+    # read. Redacted HERE — before any transport — so it holds for every prompt, current or
+    # future, however its messages were assembled. System messages are untouched (the registry
+    # check above compares them byte for byte, and they are the operator's prompt text).
+    try:
+        return template_secrets.redact_messages(messages)
+    except template_secrets.RedactionUnavailable as e:
+        # Fail closed: if the values to redact cannot be established, nothing is sent.
+        raise ReviewError(f"{e} — nothing was sent to the AI endpoint") from None
+
+
+async def _auto_model(cfg: dict) -> str:
+    """Model "Auto" on the wire (#1657). The first call for a key asks the provider's own list
+    once (gated like any listing), so a retired preference resolves to the current model."""
+    fp = ai_providers.fingerprint(cfg.get("api_key"))
+    if not ai_providers.has_listing(cfg, fp):
+        try:
+            await list_models(force=True, cfg=cfg)
+        except EgressRefusedError:
+            raise
+        except ReviewError:
+            # Remembered as "no list": the next completion does not ask again.
+            ai_providers.remember_listing(cfg, fp, [])
+    return ai_providers.auto_model(cfg, fp)
+
+
 async def _post_chat(
-    cfg: dict, body: dict, *, retry_without_json_mode: bool = False, admission=None
+    cfg: dict,
+    body: dict,
+    *,
+    retry_without_json_mode: bool = False,
+    admission=None,
+    interactive: bool = False,
 ):
     """THE chat-completions transport. Every request to the endpoint goes through here.
 
@@ -1330,27 +1383,25 @@ async def _post_chat(
     step (#841). Callers see only the final response either way. The count is pinned as an
     inventory in ``tests/test_prompts_registry.py``'s ``POST_SITES``.
     """
-    _assert_registered_system_prompts(body.get("messages") or [])
+    body = {**body, "messages": _prepare_outbound(body.get("messages") or [])}
+    # The egress gate (#1657), on the config this request is actually sent with: a caller that
+    # resolved its own snapshot (the API chat agent on Settings → AI) is held to it here too.
+    _require_egress(cfg)
     # HQ's calls are marked by HQ's pipeline (`hq_usage.hq_call`), never inferred from the prompt
     # text: identical registry texts would otherwise count another feature's call (#1531).
     hq = hq_usage.in_hq_call()
-    # Secret template values (#1090 Phase 2) never ride to the endpoint: once a secret is pasted
-    # into a session it is in that session's transcript and screen, which every prompt here may
-    # read. Redacted HERE — the one transport — so it holds for every prompt, current or future,
-    # however its messages were assembled. System messages are untouched (the registry check
-    # above compares them byte for byte, and they are the operator's prompt text).
-    try:
-        body = {**body, "messages": template_secrets.redact_messages(body.get("messages") or [])}
-    except template_secrets.RedactionUnavailable as e:
-        # Fail closed: if the values to redact cannot be established, nothing is sent.
-        raise ReviewError(f"{e} — nothing was sent to the AI endpoint") from None
+    if ai_providers.is_auto(cfg) and body.get("model") == cfg.get("model"):
+        body["model"] = await _auto_model(cfg)
     url = _base(cfg) + "/chat/completions"
-    key = _capability_key(cfg, body.get("model"))
+    # The configured thinking level as this provider spells it (#1657). For Custom and the
+    # self-hosted rows that is exactly the pre-#1657 opt-out (#841), byte for byte.
+    thinking = ai_providers.thinking_fields(cfg, interactive=interactive or hq)
+    key = (*_capability_key(cfg, body.get("model")), json.dumps(thinking, sort_keys=True))
     # Every attempt builds its OWN body. The previous version degraded by mutating the caller's
     # dict (`body.pop(...)`), which aliased state the caller still owned; with two optional
     # fields and a memo that reads back what was sent, that stops being harmless.
-    sent_no_thinking = key not in _thinking_refused
-    attempt = _with_thinking_opt_out(body) if sent_no_thinking else dict(body)
+    sent_thinking = bool(thinking) and key not in _thinking_refused
+    attempt = ai_providers.with_fields(body, thinking) if sent_thinking else dict(body)
     async with _client(request_timeout(cfg)) as client:
         async with _request_payload(attempt, cfg, admission) as payload:
             r = await client.post(url, **payload)
@@ -1360,7 +1411,7 @@ async def _post_chat(
         # A refusal names no field, so the degrade is ORDERED and each step isolates exactly
         # one. Drop the thinking option first: if the retry then succeeds, that field was the
         # offender and this endpoint is marked so it is not sent again.
-        if sent_no_thinking:
+        if sent_thinking:
             attempt = dict(body)
             _assert_registered_system_prompts(attempt.get("messages") or [])
             async with _request_payload(attempt, cfg, admission) as payload:
@@ -1396,7 +1447,7 @@ async def post_chat_response(cfg: dict, body: dict, *, admission=None):
     with transport failures translated to `ReviewError` — so that caller needs no HTTP client of
     its own. Adds no request: this is `_post_chat`, once."""
     try:
-        return await _post_chat(cfg, body, admission=admission)
+        return await _post_chat(cfg, body, admission=admission, interactive=True)
     except httpx.TimeoutException:
         raise TransportTimeout(
             f"the endpoint did not answer within {request_timeout(cfg):.0f}s"
@@ -1542,6 +1593,9 @@ async def list_models(*, force: bool = False, cfg: dict | None = None) -> list[s
     draft = cfg is not None
     if cfg is None:
         cfg = _require_config()
+    # The egress gate (#1657): a model list is an outbound call to the provider, so a draft test
+    # of an unacknowledged provider makes none either.
+    _require_egress(cfg)
     ck = _cache_key(cfg)
     now = time.monotonic()
     if not force and not draft:
@@ -1577,6 +1631,8 @@ async def list_models(*, force: bool = False, cfg: dict | None = None) -> list[s
         elif isinstance(item, dict) and isinstance(item.get("id"), str):
             models.append(item["id"])
     models = sorted(set(models))
+    if models:
+        ai_providers.remember_listing(cfg, ai_providers.fingerprint(cfg.get("api_key")), models)
     if not draft:
         _models_cache[ck] = (now, models)
     return models

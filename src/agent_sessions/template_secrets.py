@@ -538,8 +538,20 @@ def redact_messages(messages: list) -> list:
                     for p in content
                 ],
             }
+        calls = m.get("tool_calls")
+        if isinstance(calls, list):
+            # A replayed tool call's arguments are model output that may quote session content
+            # (#1660): redacted like any other text that goes back out.
+            m = {**m, "tool_calls": [_redact_call(c, secrets) for c in calls]}
         out.append(m)
     return out
+
+
+def _redact_call(call: object, secrets: list[str]) -> object:
+    fn = call.get("function") if isinstance(call, dict) else None
+    if not isinstance(fn, dict) or not isinstance(fn.get("arguments"), str):
+        return call
+    return {**call, "function": {**fn, "arguments": redact_text(fn["arguments"], secrets)}}
 
 
 def _reset_for_tests() -> None:

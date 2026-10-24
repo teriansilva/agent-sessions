@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import hq_contacts
+from . import ai_providers, hq_contacts
 from .atomicjson import atomic_write_json, json_write_lock, read_json_doc
 
 # Mirror of web/src/theme/themes.ts THEME_CHOICES. Kept in sync by
@@ -1017,7 +1017,19 @@ _AI_REVIEW_DEFAULTS: dict[str, object] = {
     "prompt": DEFAULT_AI_REVIEW_PROMPT,
     "max_input_chars": 24_000,
     "request_timeout": None,
+    # Where requests go (#1657): a row of `ai_providers.PROVIDERS`. Absent = Custom, so a block
+    # stored before providers existed reads as exactly what it was.
+    "provider": ai_providers.CUSTOM,
+    # `specific` sends the stored `model`; `auto` (hosted providers only) follows the provider's
+    # recommended model. Absent = `specific`, so a legacy block keeps its model.
+    "model_mode": "specific",
+    "thinking": "auto",
 }
+
+# A patch-only intent, never stored: "I understand session content is sent to this provider".
+# The server turns it into the server-owned `egress_ack`, bound to the lock-current provider and
+# origin (`ai_providers` module docstring); no patch can write `egress_ack` itself.
+AI_REVIEW_ACK_FIELD = "egress_acknowledged"
 
 
 def _valid_base_url(value: object) -> bool:
@@ -1059,6 +1071,17 @@ def is_valid_ai_base_url(value: object) -> bool:
 
 class KeyOriginError(ValueError):
     """A patch would send the stored API key to an origin it was not saved for (→ 422)."""
+
+
+class EgressConsentError(KeyOriginError):
+    """A patch would point AI requests at a provider that receives session content, without the
+    operator's acknowledgement for that provider + origin (#1657). A `KeyOriginError` subclass so
+    every route that already refuses a key-origin violation refuses this the same way (422)."""
+
+
+class ProviderUrlError(KeyOriginError):
+    """A patch names a base URL a hosted provider does not use, or leaves a hosted provider
+    without saying where requests go instead (#1657)."""
 
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
@@ -1154,9 +1177,22 @@ def _coerce_ai_review(raw: object) -> dict:
     # Server-owned, never in `_AI_REVIEW_DEFAULTS` (so no patch may set it) and never public:
     # see `set_ai_review`.
     out["endpoint_revision"] = ""
+    # Server-owned too (#1657): the acknowledgement record, written only by `set_ai_review`.
+    out["egress_ack"] = None
     if isinstance(raw, dict):
         if isinstance(raw.get("endpoint_revision"), str):
             out["endpoint_revision"] = raw["endpoint_revision"]
+        ack = raw.get("egress_ack")
+        if isinstance(ack, dict) and all(
+            isinstance(ack.get(k), str) for k in ("provider", "origin", "at", "source")
+        ):
+            out["egress_ack"] = {k: ack[k] for k in ("provider", "origin", "at", "source")}
+        if raw.get("provider") in ai_providers.PROVIDER_IDS:
+            out["provider"] = raw["provider"]
+        if raw.get("model_mode") in ai_providers.MODEL_MODES:
+            out["model_mode"] = raw["model_mode"]
+        if raw.get("thinking") in ai_providers.THINKING_LEVELS:
+            out["thinking"] = raw["thinking"]
         for k in ("base_url", "api_key", "model", "prompt"):
             if isinstance(raw.get(k), str):
                 out[k] = raw[k]
@@ -1196,9 +1232,18 @@ def public_ai_review(path: Path | None = None) -> dict:
     full = get_ai_review(path)
     # Neither the key nor the prompt: the prompt is edited (and read) through the registry
     # catalog, `GET/PATCH /api/prompts` (#824), and a second copy here was read by nothing (#956).
-    pub = {k: v for k, v in full.items() if k not in ("api_key", "prompt", "endpoint_revision")}
+    pub = {
+        k: v
+        for k, v in full.items()
+        if k not in ("api_key", "prompt", "endpoint_revision", "egress_ack")
+    }
     pub["api_key_set"] = bool(full["api_key"])
     pub["configured"] = bool(str(full["base_url"]).strip() and full["api_key"])
+    # The acknowledgement as the operator gave it (never anything secret), and whether the stored
+    # endpoint needs one at all / has a matching one (#1657).
+    pub["egress_ack"] = full["egress_ack"]
+    pub["egress_required"] = ai_providers.needs_consent(full["provider"], full["base_url"])
+    pub["egress_allowed"] = ai_providers.egress_violation(full) is None
     return pub
 
 
@@ -1217,9 +1262,17 @@ def validate_ai_review_patch(patch: object) -> str | None:
     null (clear) sentinels."""
     if not isinstance(patch, dict):
         return "ai_review must be an object"
-    unknown = set(patch) - set(_AI_REVIEW_DEFAULTS)
+    unknown = set(patch) - set(_AI_REVIEW_DEFAULTS) - {AI_REVIEW_ACK_FIELD}
     if unknown:
         return f"unknown ai_review fields: {sorted(unknown)}"
+    if "provider" in patch and patch["provider"] not in ai_providers.PROVIDER_IDS:
+        return f"ai_review.provider must be one of {list(ai_providers.PROVIDER_IDS)}"
+    if "model_mode" in patch and patch["model_mode"] not in ai_providers.MODEL_MODES:
+        return f"ai_review.model_mode must be one of {list(ai_providers.MODEL_MODES)}"
+    if "thinking" in patch and patch["thinking"] not in ai_providers.THINKING_LEVELS:
+        return f"ai_review.thinking must be one of {list(ai_providers.THINKING_LEVELS)}"
+    if AI_REVIEW_ACK_FIELD in patch and not isinstance(patch[AI_REVIEW_ACK_FIELD], bool):
+        return f"ai_review.{AI_REVIEW_ACK_FIELD} must be a boolean"
     if "enabled" in patch and not isinstance(patch["enabled"], bool):
         return "ai_review.enabled must be a boolean"
     if "base_url" in patch and not _valid_base_url(patch["base_url"]):
@@ -1268,22 +1321,67 @@ def set_ai_review(patch: dict, path: Path | None = None) -> dict:
     can no longer clobber each other."""
 
     def merge(raw: object) -> dict:
-        cur = _coerce_ai_review(raw)
         # Against the LOCK-CURRENT block (#956): a check before the lock could pass against
         # origin A, lose a race to a save of origin B + key B, and then pair URL A with key B.
-        # Raising here aborts before `_mutate` writes anything.
-        why = key_origin_violation(cur, patch)
-        if why is not None:
-            raise KeyOriginError(why)
-        new = _merge_ai_review(cur, patch)
-        if any(new[k] != cur[k] for k in ("base_url", "api_key", "model")):
-            # A fresh, never-reused token on every endpoint change (#1305): anything bound to the
-            # resolved endpoint (the API agent's paused edit approvals) cannot be revived by
-            # changing the key A → B → A, which a digest of the key alone would allow.
-            new["endpoint_revision"] = uuid.uuid4().hex
-        return new
+        # Raising here aborts before `_mutate` writes anything. The same holds for the egress
+        # acknowledgement (#1657): it is bound to the provider + origin read under this lock.
+        return apply_ai_review_patch(_coerce_ai_review(raw), patch)
 
     return _mutate("ai_review", merge, path)
+
+
+def apply_ai_review_patch(cur: dict, patch: dict) -> dict:
+    """The whole `ai_review` write rule as ONE pure function of the current block: the provider's
+    URL, the key-origin policy, the merge, the server-owned egress acknowledgement and the egress
+    gate. `set_ai_review` runs it inside the prefs lock (authoritative); `/api/prefs` runs it on a
+    snapshot first only so a multi-block patch fails before any block is written. Raises a
+    `KeyOriginError` (or subclass) and returns nothing on refusal."""
+    eff = dict(patch)
+    provider = eff.get("provider", cur["provider"])
+    row = ai_providers.get(provider)
+    if row.hosted:
+        # A hosted provider's URL is the table's, never the patch's.
+        if "base_url" in eff and str(eff["base_url"] or "").strip() != row.base_url:
+            raise ProviderUrlError(f"{row.label} is reached at {row.base_url} — the URL is fixed")
+        if provider != cur["provider"] or "base_url" in eff:
+            eff["base_url"] = row.base_url
+        if provider != cur["provider"] and "model_mode" not in eff and "model" not in eff:
+            eff["model_mode"], eff["model"] = "auto", ""
+    elif ai_providers.get(cur["provider"]).hosted and "base_url" not in eff:
+        # Leaving a hosted provider must say where requests go now — keeping the vendor's URL
+        # under another row would send to it without that row's rules.
+        raise ProviderUrlError("enter the base URL for the new connection")
+    if str(eff.get("model") or "").strip() and "model_mode" not in eff:
+        # Naming a model is choosing it: Auto never overrides a model the operator picked
+        # (today's Settings page saves a bare `{model}`).
+        eff["model_mode"] = "specific"
+    why = key_origin_violation(cur, eff)
+    if why is not None:
+        raise KeyOriginError(why)
+    new = _merge_ai_review(cur, eff)
+    moved = new["provider"] != cur["provider"] or endpoint_origin(
+        new["base_url"]
+    ) != endpoint_origin(cur["base_url"])
+    if moved:
+        new["egress_ack"] = None  # consent never carries over to another recipient
+    if AI_REVIEW_ACK_FIELD in patch:
+        new["egress_ack"] = (
+            ai_providers.make_ack(
+                new["provider"], new["base_url"], datetime.now(UTC).isoformat(timespec="seconds")
+            )
+            if patch[AI_REVIEW_ACK_FIELD]
+            else None
+        )
+    if (moved or AI_REVIEW_ACK_FIELD in patch) and str(new["base_url"]).strip():
+        why = ai_providers.egress_violation(new)
+        if why is not None:
+            raise EgressConsentError(why)
+    if any(new[k] != cur[k] for k in ("base_url", "api_key", "model", "provider", "model_mode")):
+        # A fresh, never-reused token on every endpoint change (#1305): anything bound to the
+        # resolved endpoint (the API agent's paused edit approvals) cannot be revived by
+        # changing the key A → B → A, which a digest of the key alone would allow.
+        new["endpoint_revision"] = uuid.uuid4().hex
+    return new
 
 
 def _merge_ai_review(cur: dict, patch: dict) -> dict:
@@ -1296,6 +1394,9 @@ def _merge_ai_review(cur: dict, patch: dict) -> dict:
         "interval_minutes",
         "max_input_chars",
         "request_timeout",  # None passes through = unset (env/default applies)
+        "provider",
+        "model_mode",
+        "thinking",
     ):
         if k in patch:
             new[k] = patch[k].strip() if isinstance(patch[k], str) else patch[k]

@@ -124,8 +124,8 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Theme, accent, terminal scheme / font / size, API look | POST /api/prefs (+ localStorage) | P2 W (server value; another device's stored choice wins there, as today) |
 | Motion, link-open mode | localStorage | device |
 | HQ contact | POST /api/prefs `hq_contact` | P2 W |
-| AI endpoint URL and key; remove key; test | POST /api/prefs `ai_review`, POST /api/ai-review/endpoint/test | **never** (decides where HQ's own requests go; `ai-key-origin.md`) |
-| AI model, request timeout; list models | POST /api/prefs `ai_review.model`, GET /api/ai-review/models | P2 W/R (model from the server's own list only) |
+| AI endpoint provider, URL and key; the egress acknowledgement; remove key; test | POST /api/prefs `ai_review`, POST /api/ai-review/endpoint/test | **never** (decides where HQ's own requests go, and who receives session content; `ai-key-origin.md`, `ai-providers.md`) |
+| AI model (Auto or specific), thinking level, request timeout; list models; the provider table | POST /api/prefs `ai_review.model`, `ai_review.model_mode`, `ai_review.thinking`, GET /api/ai-review/models, GET /api/ai-review/providers | P2 W/R (model from the server's own list only) |
 | Session review: enable, interval, depth, notify, rename sessions | POST /api/prefs `ai_review.enabled`, `session_review` | P2 W |
 | Auto-sort settings | POST /api/prefs `auto_sort` | P2 W |
 | Orchestrator: thresholds, interval, notify, stale hours, nudge text | POST /api/prefs `orchestrator.*` | P2 W |
@@ -250,6 +250,7 @@ PATCH  /api/agents/{engine_id}/endpoint                                         
 POST   /api/agents/{engine_id}/endpoint/test                                      never  # credential + where requests go
 POST   /api/ai-review/endpoint/test                                               never  # decides where HQ's requests go
 GET    /api/ai-review/models                                                      P2  # read
+GET    /api/ai-review/providers                                                   P2  # read: the static provider table
 GET    /api/ai/activity                                                           P2  # read
 GET    /api/ask/conversations                                                     n/a  # HQ itself
 POST   /api/ask/conversations                                                     n/a  # HQ itself
@@ -584,8 +585,11 @@ ai_review.enabled               P2
 ai_review.interval_minutes      P2
 ai_review.max_input_chars       P2
 ai_review.model                 P2  # from the server's own model list only
+ai_review.model_mode            P2  # Auto or specific
 ai_review.prompt                never  # prompt text (legacy field; prompts are never)
+ai_review.provider              never  # decides who receives session content (`ai-providers.md`)
 ai_review.request_timeout       P2
+ai_review.thinking              P2
 analytics_consent               never  # consent is the operator's own act
 api_look                        P2
 auto_sort                       P2

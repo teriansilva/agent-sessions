@@ -33,7 +33,7 @@ import json
 import os
 from pathlib import Path
 
-from . import prefs, prompts, template_secrets
+from . import ai_providers, prefs, prompts, template_secrets
 
 BLOCK = "chat_agents"
 PROMPT_ID = "chat_agent"
@@ -162,7 +162,14 @@ def _shared(engine_id: str, block: dict, path: Path | None) -> tuple[dict | None
     base, key = str(ai.get("base_url") or "").strip(), str(ai.get("api_key") or "")
     if not base or not key:
         return None, "uses your AI settings, which have no endpoint — configure Settings → AI"
-    model = block["model"].strip() or str(ai.get("model") or "").strip()
+    model = block["model"].strip()
+    if not model:
+        # Settings → AI's model, or its "Auto" resolution for a hosted provider (#1657).
+        model = (
+            ai_providers.auto_model(ai, ai_providers.fingerprint(key))
+            if ai_providers.is_auto(ai)
+            else str(ai.get("model") or "").strip()
+        )
     if not model:
         return None, "set a model in Settings → AI, or a model override here"
     try:
@@ -178,12 +185,28 @@ def _shared(engine_id: str, block: dict, path: Path | None) -> tuple[dict | None
             "block": block,
             "base_url": base,
             "origin": prefs.endpoint_origin(base),
-            "model": model,
+            # Auto is bound as Auto, not as whatever it resolved to today: the provider's list
+            # arriving must not invalidate a pending approval (the endpoint revision still
+            # changes on every real model or provider change).
+            "model": f"auto:{ai.get('provider')}"
+            if not block["model"].strip() and ai_providers.is_auto(ai)
+            else model,
             "revision": ai.get("endpoint_revision") or "",
             "key": digest,
         }
     )
-    return {"base_url": base, "api_key": key, "model": model, "binding": bound}, None
+    # The provider travels with the resolved endpoint (#1657): the transport picks the dialect,
+    # the auth header and the thinking field from it, and holds the request to its egress gate.
+    provider = {k: ai.get(k) for k in ("provider", "model_mode", "thinking", "egress_ack")}
+    if block["model"].strip():
+        provider["model_mode"] = "specific"  # the agent's own override is never re-resolved
+    return {
+        "base_url": base,
+        "api_key": key,
+        "model": model,
+        "binding": bound,
+        "provider": provider,
+    }, None
 
 
 def _all(path: Path | None = None) -> dict:
@@ -445,6 +468,7 @@ def snapshot(engine_id: str, path: Path | None = None) -> dict | None:
             return None
         base_url, key, model = shared["base_url"], shared["api_key"], shared["model"]
         bound = shared["binding"]
+        provider = shared["provider"]
     else:
         if not (b["base_url"].strip() and b["model"].strip() and b["key_envelope"]):
             return None
@@ -452,7 +476,9 @@ def snapshot(engine_id: str, path: Path | None = None) -> dict | None:
         if not key:
             return None
         base_url, model, bound = b["base_url"], b["model"], binding(b)
+        provider = {}  # the agent's own endpoint is OpenAI-compatible (Custom)
     return {
+        **provider,
         "base_url": base_url,
         "api_key": key,
         "binding": bound,
