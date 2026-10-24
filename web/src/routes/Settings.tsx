@@ -52,6 +52,7 @@ import { AiEndpointSetup } from "./AiEndpointSetup";
 import { AiReviewSettings } from "./AiReviewSettings";
 import { ForgeSettings } from "./ForgeSettings";
 import { AutoSortSettings } from "./AutoSortSettings";
+import { HqCallsSettings } from "./HqCallsSettings";
 import { OrchestratorSettings } from "./OrchestratorSettings";
 import { PromptsSettings } from "./PromptsSettings";
 import { PulseSettings } from "./PulseSettings";
@@ -2124,6 +2125,7 @@ export function Settings() {
           </>
         )}
         {/* Every system prompt, in one catalog (#824). */}
+        {section === "ai-hq-calls" && <HqCallsSettings />}
         {section === "ai-prompts" && <PromptsSettings />}
         {section === "ai-activity" && <AiActivityPanel />}
 

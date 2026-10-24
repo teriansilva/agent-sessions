@@ -105,6 +105,7 @@ import {
 } from "./AskCards";
 import { ASK_SEEN_EVENT, placeUpdates } from "./askUpdates";
 import { AskComposer } from "./AskComposer";
+import { ASK_DRAWER_MQ, useAskPanel } from "./askPanel";
 import { mapBatch, matchRoute, matchSeed } from "./askMatches";
 import a from "./AskConsole.module.css";
 import type { AskStep } from "./askStep";
@@ -115,6 +116,8 @@ import { contactById } from "../hq/contacts";
 import { HqPortrait } from "../hq/HqPortrait";
 import { useHqContact } from "../hq/useHqContact";
 import { RevealText } from "./RevealText";
+import { CallButton } from "../call/CallButton";
+import { ASK_OPEN_CONVERSATION_EVENT, takeAskConversation } from "../call/callContext";
 
 export interface AskTurn {
   /** The server's `turn_id`. */
@@ -365,6 +368,15 @@ export function AskConsole({
   const loadedFor = useRef<string | null>(null);
   /** The conversation on screen — read at RESOLUTION time, never captured. */
   const cidRef = useRef<string | null>(null);
+  // A call started from HQ's phone drawer (#1640 review 6907): the drawer closes first, so the
+  // call panel owns focus instead of the drawer's trap, and the call hands focus back to HQ's
+  // corner icon (the drawer's own button is hidden by then).
+  const askPanel = useAskPanel();
+  const leaveDrawerForCall = () => {
+    if (!(window.matchMedia?.(ASK_DRAWER_MQ).matches ?? false)) return undefined;
+    askPanel.close();
+    return askPanel.triggerRef.current;
+  };
   const current = (id: string | null) => live.current && cidRef.current === id;
 
   /** The stream being watched. Aborting it stops WATCHING; the server's turn goes on. */
@@ -466,6 +478,17 @@ export function AskConsole({
     },
     [load],
   );
+  // A call's "Continue in text" / "Type" (#1397): HQ opens on the call's conversation, also when
+  // the request came before this console mounted (the first open of HQ).
+  useEffect(() => {
+    const open = (id: string | null) => {
+      if (typeof id === "string" && id && id !== cidRef.current) openConversation(id);
+    };
+    open(takeAskConversation());
+    const on = () => open(takeAskConversation());
+    window.addEventListener(ASK_OPEN_CONVERSATION_EVENT, on);
+    return () => window.removeEventListener(ASK_OPEN_CONVERSATION_EVENT, on);
+  }, [openConversation]);
 
   /** An empty thread: nothing on screen and no conversation chosen; the first question creates
    *  one. What New conversation does, and where a deleted conversation leaves the operator. */
@@ -948,6 +971,8 @@ export function AskConsole({
             if (id !== cidRef.current) openConversation(id);
           }}
         />
+        {/* Calling HQ (#1397): a call from here continues THIS conversation by voice. */}
+        <CallButton variant="icon" testId="ask-call" conversationId={cid} beforeStart={leaveDrawerForCall} />
         <button
           type="button"
           className={a.newBtn}

@@ -463,8 +463,8 @@ test.each([
 
 test("the registry and the pages agree: every section id renders something", () => {
   // A registry entry with no body in Settings.tsx would be a nav link to a blank page.
-  // Resources has its own submenu, separate from Host (#1386).
-  expect(SETTINGS_SECTIONS).toHaveLength(21);
+  // Resources has its own submenu, separate from Host (#1386). HQ calls joined the AI group (#1397).
+  expect(SETTINGS_SECTIONS).toHaveLength(22);
 });
 
 // ---- Usage analytics (#1009) ----------------------------------------------------------------

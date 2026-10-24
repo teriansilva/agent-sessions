@@ -24,6 +24,13 @@
   font: inherit;
   cursor: pointer;
 }
+/* The card with Call under it (#1397): one grid item, the card and the control full width. */
+.withCall {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
 .card:hover {
   --nj-edge: var(--hud);
 }

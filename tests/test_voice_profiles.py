@@ -483,3 +483,102 @@ def test_an_unproven_detection_never_relaxes_the_confirmation_gate(
     call.detects_language = det if isinstance(det, bool) else None  # as admission does
     call.heard_language = None
     assert call._confirmation_language_ok() is False
+
+
+def test_a_draft_probe_with_remove_token_sends_no_token(auth_cfg, monkeypatch):
+    """#1640 review: "Remove token" sends `api_key: null`; a draft probe must then run WITHOUT a
+    token — never with the stored one it is about to drop on the same origin."""
+    from fastapi.testclient import TestClient
+
+    from agent_sessions import speech_conformance
+    from agent_sessions.main import create_app
+
+    hs.save({**BASE, "stt": {**BASE["stt"], "api_key": "sk-stored-0123456789abcdef"}})
+    seen: dict = {}
+
+    async def fake_check(stt, tts, voice):
+        seen["stt_token"] = stt.api_key
+        return speech_conformance.Report()
+
+    monkeypatch.setattr(speech_conformance, "check", fake_check)
+    c = TestClient(create_app(auth_cfg), base_url="https://testserver")
+    c.post("/login", data={"username": "marcus", "password": "hunter2"}, follow_redirects=False,
+           headers={"Origin": auth_cfg.origin})  # fmt: skip
+    hdr = {"X-CSRF-Token": c.get("/api/config").json()["csrf"], "Origin": auth_cfg.origin}
+    draft = {"stt": {**BASE["stt"], "api_key": None}, "tts": BASE["tts"], "voice": "aria"}
+    assert c.post("/api/voice/test", json=draft, headers=hdr).status_code == 200
+    assert seen["stt_token"] == ""
+    draft["stt"].pop("api_key")  # no api_key at all: the stored token, as before
+    assert c.post("/api/voice/test", json=draft, headers=hdr).status_code == 200
+    assert seen["stt_token"] == "sk-stored-0123456789abcdef"
+
+
+@pytest.mark.parametrize("accepts", [True, False])
+def test_a_language_preview_speaks_that_language(auth_cfg, monkeypatch, accepts):
+    """#1640 review: "Preview in German" speaks a FIXED German line, with the call's synthesis
+    arguments (a `language` only where the server proved it takes the field); a language with no
+    line is refused, never previewed in English under its name."""
+    from fastapi.testclient import TestClient
+
+    from agent_sessions.main import create_app
+
+    seen: list[dict] = []
+
+    def handler(r: httpx.Request):
+        seen.append(json.loads(r.content))
+        return httpx.Response(
+            200, content=b"\\x00\\x00" * 2400, headers={"content-type": "audio/pcm"}
+        )
+
+    monkeypatch.setattr(speech_endpoints, "_TRANSPORT", httpx.MockTransport(handler))
+    hs.save({**BASE, "tts_accepts_language": accepts})
+    c = TestClient(create_app(auth_cfg), base_url="https://testserver")
+    c.post("/login", data={"username": "marcus", "password": "hunter2"}, follow_redirects=False,
+           headers={"Origin": auth_cfg.origin})  # fmt: skip
+    hdr = {"X-CSRF-Token": c.get("/api/config").json()["csrf"], "Origin": auth_cfg.origin}
+    r = c.post("/api/voice/preview", json={"contact": "russia-man", "voice": "kerstin",
+                                           "language": "de"}, headers=hdr)  # fmt: skip
+    assert r.status_code == 200
+    assert seen[-1]["input"].startswith("Kommandant, hier spricht General")
+    assert seen[-1]["voice"] == "kerstin"
+    assert seen[-1].get("language") == ("de" if accepts else None)
+    r = c.post("/api/voice/preview", json={"contact": "russia-man", "language": "sw"}, headers=hdr)
+    assert r.status_code == 422 and r.json()["code"] == "no_preview_line"
+    r = c.post(
+        "/api/voice/preview", json={"contact": "russia-man", "language": "de\n"}, headers=hdr
+    )
+    assert r.status_code == 422
+
+
+def test_every_language_settings_offers_previews(auth_cfg, monkeypatch):
+    """#1640 review 6906: Settings offered Hindi and Korean (its own fallback list) while the route
+    had no sentence for them, so their Preview failed every time. The route now publishes its
+    languages as `preview_languages`, Settings offers exactly those when the server lists none, and
+    each one previews with its own fixed line naming the General."""
+    from fastapi.testclient import TestClient
+
+    from agent_sessions.main import create_app
+
+    seen: list[dict] = []
+
+    def handler(r: httpx.Request):
+        seen.append(json.loads(r.content))
+        return httpx.Response(
+            200, content=b"\\x00\\x00" * 2400, headers={"content-type": "audio/pcm"}
+        )
+
+    monkeypatch.setattr(speech_endpoints, "_TRANSPORT", httpx.MockTransport(handler))
+    hs.save(BASE)
+    c = TestClient(create_app(auth_cfg), base_url="https://testserver")
+    c.post("/login", data={"username": "marcus", "password": "hunter2"}, follow_redirects=False,
+           headers={"Origin": auth_cfg.origin})  # fmt: skip
+    hdr = {"X-CSRF-Token": c.get("/api/config").json()["csrf"], "Origin": auth_cfg.origin}
+    langs = c.get("/api/voice/settings").json()["preview_languages"]
+    assert langs[0] == "en" and {"de", "hi", "ko"} <= set(langs)
+    name = hq_contacts.get("asia-woman").name
+    for lang in langs:
+        r = c.post("/api/voice/preview", json={"contact": "asia-woman", "language": lang},
+                   headers=hdr)  # fmt: skip
+        assert r.status_code == 200, (lang, r.text)
+        assert name in seen[-1]["input"], lang
+    assert len({s["input"] for s in seen}) == len(langs)  # a sentence of its own per language

@@ -37,6 +37,7 @@ the same list.
 |---|---|---|---|---|---|
 | `app/App.css` | css | 4 | done | route:dashboard route:new-session route:boot popup:session-row-menu headers:topbar headers:topbar-menu | sector fade-in (Full), boot power-on, ≤800px drawer slide-in + backdrop |
 | `components/brand/Brand.module.css` | css | 4 | done | route:settings-about popup:whats-new popup:tour headers:topbar | none: the brand kit's logo (#1590) is a still image |
+| `components/call/call.module.css` | css | 4 | done | popup:hq-call | the call panel fades in (Full), none in Reduced/Off; LEDs carry the call state (steady outside Full); no other motion |
 | `components/agents/Roster.module.css` | css | 11 | done | route:settings-agents route:settings-agents-defaults | the filter Seg lights its segment; status LEDs steady; the usage Gauge is lit at read, no loop |
 | `components/agents/SessionDefaults.module.css` | css | 11 | todo |  |  |
 | `components/ask/AskCards.module.css` | css | 4 | done | popup:hq | card deploy-in, LED change flash |
@@ -118,6 +119,7 @@ the same list.
 | `routes/AgentsSettings.module.css` | css | 11 | todo |  |  |
 | `routes/Appearance.module.css` | css | 11 | todo |  |  |
 | `routes/Ask.module.css` | css | 4 | done | popup:hq | none (layout) |
+| `routes/HqCallsSettings.module.css` | css | 11 | done | route:settings-hq-calls | none (layout); the Seg marker and switch knob are the primitives' own |
 | `routes/Checklists.module.css` | css | 8 | done | route:checklists route:checklists-list route:checklists-editor popup:checklists-leave | step form fades open (Reduced: 120 ms fade; Off: none), plate and row hover tints |
 | `routes/Memory.module.css` | css | 10 | done | route:memory route:memory-graph route:memory-quarantine route:memory-off route:memory-acquiring popup:memory-erase | the View / view-tab marker slides; the memory switch's knob slides; the list and inspector fade in; the first read is Acquiring, then skeleton rows |
 | `routes/NewProject.module.css` | css | 10 | todo |  |  |
@@ -144,6 +146,7 @@ the same list.
 | `app/App.tsx` | popup | 4 | done | popup:session-row-menu | ≤800px drawer slide-in + backdrop |
 | `components/ask/AskSidebar.tsx` | popup | 4 | done | popup:hq | drawer slide-in + scrim (≤800px) |
 | `components/ask/AskSwitcher.tsx` | popup | 4 | done | popup:hq | listbox deploy-in |
+| `components/call/CallLayer.tsx` | popup | 4 | done | popup:hq-call | the call panel fades in (Full); 0 ms in Reduced/Off |
 | `components/ask/NeedsYouDetailsDialog.tsx` | popup | 3 | done | popup:needs-you-details | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/ask/RecentWork.tsx` | popup | 3 | done | popup:recent-work | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/automations/ConsentDialog.tsx` | popup | 3 | done | popup:consent | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |

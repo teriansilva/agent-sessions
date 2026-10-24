@@ -252,6 +252,28 @@ def configured(block: dict) -> bool:
     )
 
 
+#: A General's preview line PER LANGUAGE (#1640 review): fixed text, never from the request, so a
+#: voice for German is heard speaking German. A language with no line here is refused, not
+#: previewed in English under its name. `public()` publishes the codes as `preview_languages`:
+#: they are the languages Settings offers when the TTS server lists none, and a server-listed
+#: language outside them shows no Preview.
+PREVIEW_CONTACT_LINES = {
+    "en": "Commander, this is {name}. All units report ready.",
+    "de": "Kommandant, hier spricht {name}. Alle Einheiten melden Bereitschaft.",
+    "fr": "Commandant, ici {name}. Toutes les unités sont prêtes.",
+    "es": "Comandante, le habla {name}. Todas las unidades están listas.",
+    "it": "Comandante, qui {name}. Tutte le unità sono pronte.",
+    "pt": "Comandante, aqui fala {name}. Todas as unidades estão prontas.",
+    "nl": "Commandant, hier spreekt {name}. Alle eenheden zijn gereed.",
+    "pl": "Dowódco, tu {name}. Wszystkie jednostki gotowe.",
+    "ru": "Командир, говорит {name}. Все подразделения готовы.",
+    "ja": "司令官、{name}です。全部隊、準備完了です。",
+    "zh": "指挥官，我是{name}。所有部队已准备就绪。",
+    "hi": "कमांडर, यह {name} है। सभी यूनिट तैयार हैं।",
+    "ko": "사령관님, {name}입니다. 모든 부대 준비 완료.",
+}
+
+
 def public(path: Path | None = None) -> dict:
     block = get(path)
     out = {k: v for k, v in block.items() if k not in SIDES}
@@ -268,6 +290,7 @@ def public(path: Path | None = None) -> dict:
         c.id: {"group": c.voice_group or "woman", "style": c.call_style, "speed": c.call_speed}
         for c in hq_contacts.CONTACTS
     }
+    out["preview_languages"] = list(PREVIEW_CONTACT_LINES)
     return out
 
 

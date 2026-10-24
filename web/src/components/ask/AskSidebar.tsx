@@ -25,7 +25,7 @@ import { coerceRecentWindowDays } from "../../lib/recentWindow";
 import { useModalDrawer } from "../pulse/useModalDrawer";
 import { api } from "../../lib/api";
 import { AskConsole } from "./AskConsole";
-import { useAskPanel } from "./askPanel";
+import { ASK_DRAWER_MQ, useAskPanel } from "./askPanel";
 import { ASK_SEEN_EVENT } from "./askUpdates";
 import { NeedsYouDetailsDialog } from "./NeedsYouDetailsDialog";
 import { needsYouIds } from "./needsYouLabels";
@@ -35,7 +35,6 @@ import bell from "../pulse/NotificationBell.module.css";
 
 /** The shell's own mobile line (`useIsMobile`, docs/design.md §5), not the bell's 640px: between
  *  641 and 800px a 440px panel covers most of the page, so there it is a modal drawer too. */
-const DRAWER_MQ = "(max-width: 800px)";
 
 /** How often the icon asks whether a followed session has an unseen update (#1443 Phase 4). */
 export const UNREAD_POLL_MS = 60_000;
@@ -133,10 +132,10 @@ export function AskSidebar() {
   if (open && !mounted) setMounted(true);
 
   const [drawer, setDrawer] = useState(
-    () => window.matchMedia?.(DRAWER_MQ).matches ?? false,
+    () => window.matchMedia?.(ASK_DRAWER_MQ).matches ?? false,
   );
   useEffect(() => {
-    const mq = window.matchMedia?.(DRAWER_MQ);
+    const mq = window.matchMedia?.(ASK_DRAWER_MQ);
     if (!mq) return;
     const on = () => setDrawer(mq.matches);
     mq.addEventListener("change", on);

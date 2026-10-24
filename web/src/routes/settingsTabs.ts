@@ -32,6 +32,8 @@ export const SETTINGS_SECTIONS = [
   { id: "ai-session-review", label: "Session review", group: "ai" },
   { id: "ai-auto-sort", label: "Auto-sort", group: "ai" },
   { id: "ai-mission-control", label: "Mission control", group: "ai" },
+  // Calling HQ (#1397): speech endpoints, voices and how a call feels.
+  { id: "ai-hq-calls", label: "HQ calls", group: "ai" },
   { id: "ai-prompts", label: "Prompts", group: "ai" },
   { id: "ai-activity", label: "Activity", group: "ai" },
   // AGENTS (#853 P4, #1128): the roster keeps the `/settings/agents` URL it had as "Agents &

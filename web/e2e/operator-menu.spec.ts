@@ -75,10 +75,14 @@ test("the corner names the operator beside the bell, and no gear or ? of its own
   expect(tb.x).toBeGreaterThan(bb.x);
 
   // Settings and Help are IN the tile's menu since #1085 — the corner is Ask (#1294), the bell and
-  // the tile, at every width, with no ⚙ link or ? button of their own.
+  // the tile, at every width, with no ⚙ link or ? button of their own. Plus, on a wide screen,
+  // the ☎ that calls HQ (#1397), hidden at ≤880px (the dashboard card and HQ's header carry it there).
   await expect(actions.getByRole("link", { name: "Settings" })).toHaveCount(0);
   await expect(actions.getByRole("button", { name: "Help" })).toHaveCount(0);
-  await expect(actions.locator(":scope > *")).toHaveCount(3);
+  await expect(actions.locator(":scope > *")).toHaveCount(4);
+  await expect(actions.locator(":scope > *:visible")).toHaveCount(
+    (page.viewportSize()?.width ?? 1440) <= 880 ? 3 : 4,
+  );
 });
 
 test("the panel opens ABOVE the terminal pane and its items are actually clickable (#752/#987)", async ({
@@ -93,16 +97,22 @@ test("the panel opens ABOVE the terminal pane and its items are actually clickab
 
   // THE ASSERTION THAT MATTERS: the topmost element at the item's own centre is the item (or
   // inside it), not the pane painting over it. `toBeVisible` passed against the bug.
+  // Polled: on a phone the menu is a sheet that slides up, so a single read can land mid-slide
+  // (a flake late in long local runs). The bug this guards (the pane painting over the menu)
+  // keeps it false however long it is asked.
   const item = panel.getByRole("menuitem", { name: "Settings" });
-  const box = (await item.boundingBox())!;
-  const owns = await page.evaluate(
-    ([x, y]) => {
-      const el = document.elementFromPoint(x as number, y as number);
-      return !!el?.closest('[data-testid="operator-menu-panel"]');
-    },
-    [box.x + box.width / 2, box.y + box.height / 2],
-  );
-  expect(owns).toBe(true);
+  await expect
+    .poll(async () => {
+      const box = (await item.boundingBox())!;
+      return page.evaluate(
+        ([x, y]) => {
+          const el = document.elementFromPoint(x as number, y as number);
+          return !!el?.closest('[data-testid="operator-menu-panel"]');
+        },
+        [box.x + box.width / 2, box.y + box.height / 2],
+      );
+    })
+    .toBe(true);
 
   // …and the click lands where it looks like it will.
   await item.click();

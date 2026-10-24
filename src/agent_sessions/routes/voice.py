@@ -109,6 +109,10 @@ def _draft_side(stored: dict, raw: object) -> speech_endpoints.Endpoint | str:
     if not isinstance(base, str) or not base.strip() or not prefs.is_valid_ai_base_url(base):
         return "each side needs an http(s) base_url"
     model = raw.get("model") if isinstance(raw.get("model"), str) else ""
+    if "api_key" in raw and raw["api_key"] is None:
+        # The operator chose Remove token: the draft is probed WITHOUT one — never with the stored
+        # token it is about to drop (else a probe passes that the saved endpoint will fail).
+        return speech_endpoints.Endpoint(base.strip(), model.strip(), "")
     token, why = hq_calls_settings.resolve_test_token(stored, base, raw.get("api_key"))
     if why:
         return why
@@ -234,6 +238,7 @@ def register(
         extra: dict = {}
         speed = None
         line = None
+        language = None
         if contact is not None:
             # A contact's own profile (#1397 P3), in a FIXED line naming them.
             if contact not in hq_contacts.IDS:
@@ -244,7 +249,19 @@ def register(
             if prof.get("style"):
                 extra["style"] = prof["style"]
             speed = prof.get("speed")
-            line = f"Commander, this is {hq_contacts.get(contact).name}. All units report ready."
+            lang = body.get("language")
+            if lang is None:
+                lang = "en"
+            if not (isinstance(lang, str) and hq_calls_settings.LANG_RE.match(lang)):
+                return JSONResponse({"detail": "language must be a two-letter code"}, 422)
+            if lang not in hq_calls_settings.PREVIEW_CONTACT_LINES:
+                return JSONResponse({"detail": f"there is no preview sentence for “{lang}” yet",
+                                     "code": "no_preview_line"}, status_code=422)  # fmt: skip
+            name = hq_contacts.get(contact).name
+            line = hq_calls_settings.PREVIEW_CONTACT_LINES[lang].format(name=name)
+            # The call's own synthesis arguments: a language only where the server proved it
+            # takes the field (as a call sends it), the profile's style and speed.
+            language = lang if block.get("tts_accepts_language") is True else None
         if group not in hq_contacts.VOICE_GROUPS:
             return JSONResponse({"detail": "group must be woman or man"}, status_code=422)
         if not hq_calls_settings.side_configured(block["tts"]):
@@ -263,6 +280,7 @@ def register(
                 voice=voice.strip(),
                 out_rate=voice_calls.OUT_RATE,
                 speed=speed,
+                language=language,
                 extra=extra or None,
                 # A server refusing speed/style still previews the voice, as a call would speak.
                 plain_fallback=lambda: None,

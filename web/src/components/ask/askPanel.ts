@@ -17,6 +17,9 @@ export interface AskPanel {
   triggerRef: RefObject<HTMLButtonElement | null>;
 }
 
+/** Where HQ's panel is a modal drawer instead of a sidebar beside the page. */
+export const ASK_DRAWER_MQ = "(max-width: 800px)";
+
 const noop = () => undefined;
 
 /** Outside a shell (a unit test rendering one route) the panel is simply closed and inert. */

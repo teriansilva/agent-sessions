@@ -27,7 +27,11 @@ mkdirSync(OUT, { recursive: true });
 const WIDTHS_OPT = opt("widths", "").split(",").filter(Boolean).map(Number);
 const widths = WIDTHS_OPT.length ? WIDTHS_OPT : FULL ? WIDTHS : [1440, 390];
 const ratios = FULL ? PIXEL_RATIOS : [1];
-const browser = await chromium.launch();
+// A fake microphone, granted only where a capture asks (`grant: ["microphone"]`): the call panel
+// gets past the microphone to the state it is meant to show (#1640 review 6912).
+const browser = await chromium.launch({
+  args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
+});
 const failures = [];
 for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
   // A page the Python server renders (#1596): photographed by its own real-server spec, not here.

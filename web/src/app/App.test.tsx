@@ -406,7 +406,9 @@ test("a work route keeps the sidebar and its toggle — the removal is Settings-
 test("the New project wizard renders without the session sidebar too (#1187)", async () => {
   window.history.replaceState(null, "", "/projects/new");
   const { container } = render(<App />);
-  await screen.findByRole("heading", { name: "Name the project" });
+  // A lazy route: its chunk is transformed on first import, which on a loaded CI runner can take
+  // longer than findBy's 1 s default (a #1640 CI run timed out here with the shell rendered).
+  await screen.findByRole("heading", { name: "Name the project" }, { timeout: 10_000 });
   const app = container.querySelector(".app") as HTMLElement;
   expect(app).toHaveClass("noSidebar");
   expect(container.querySelector("header .navToggle")).toBeNull();

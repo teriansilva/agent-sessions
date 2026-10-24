@@ -265,6 +265,21 @@ export const SWEEP = [
     open: [{ testId: "hq-primary-contact" }],
     expectCss: '[data-testid="ask-sidebar"][data-open="true"]',
   },
+  // Calling HQ (#1397): the call panel, opened by the dashboard card's Call. With a (fake,
+  // granted) microphone the call is admitted and dials; the sweep has no call socket that answers,
+  // so the panel holds its dialing state — the panel chrome, controls and copy — asserted below.
+  {
+    id: "popup:hq-call",
+    path: "/dashboard",
+    ready: "hq-primary-call",
+    grant: ["microphone"],
+    api: {
+      "/api/voice/capabilities": { configured: true, runtime: true, available: true, reason: "", captions: true, mic: "open", active_call: null, destinations: { stt: "lan", tts: "lan", ai: "lan", stt_host: "gpu-1.lan:8000", tts_host: "gpu-1.lan:8880", ai_host: "llm.lan" } },
+      "/api/voice/calls": { status: 201, json: { id: "c1", conversation_id: "a".repeat(32), contact: "asia-woman", state: "dialing", muted: false, elapsed_s: 0, ended_reason: "" } },
+    },
+    open: [{ testId: "hq-primary-call" }],
+    expectCss: '[data-testid="call-panel"][data-phase="dialing"]',
+  },
   // The rest of the overlays (Phase 3). Each is opened by its real control, on both widths unless
   // the surface exists on one only.
   { id: "popup:head-menu", path: S1, widths: ["phone"], open: [{ testId: "head-actions-menu" }], expect: "menu" },
@@ -838,6 +853,20 @@ export const SWEEP = [
   { id: "route:settings-terminal", path: "/settings/terminal-appearance" },
   { id: "route:settings-session-defaults", path: "/settings/session-defaults" },
   { id: "route:settings-endpoint", path: "/settings/ai-endpoint" },
+  {
+    id: "route:settings-hq-calls",
+    path: "/settings/ai-hq-calls",
+    api: {
+      // The COMPLETE public settings shape (the profiles section reads every list): a partial
+      // fixture captured a page that throws, not the page. `contact_defaults` is what the server
+      // returns (hq_calls_settings.public: each General's own group, style and speed).
+      "/api/voice/settings": { stt: { base_url: "http://gpu-1.lan:8000/v1", model: "whisper-1", api_key_set: false }, tts: { base_url: "http://gpu-1.lan:8880/v1", model: "kokoro", api_key_set: true }, voices: { woman: "af_heart", man: "am_michael" }, turn_taking: "natural", interrupt: true, mic: "open", answers: "brief", captions: true, configured: true, contacts: {}, contact_defaults: {"asia-woman": {"group": "woman", "style": "calm", "speed": 1.0}, "asia-man": {"group": "man", "style": "serious", "speed": 0.95}, "europe-woman": {"group": "woman", "style": "narrator", "speed": 1.0}, "europe-man": {"group": "man", "style": "neutral", "speed": 1.0}, "russia-woman": {"group": "woman", "style": "serious", "speed": 1.0}, "russia-man": {"group": "man", "style": "dramatic", "speed": 1.0}, "us-woman": {"group": "woman", "style": "energetic", "speed": 1.05}, "us-man": {"group": "man", "style": "dramatic", "speed": 1.0}, "africa-woman": {"group": "woman", "style": "energetic", "speed": 1.0}, "africa-man": {"group": "man", "style": "calm", "speed": 0.95}, "southamerica-woman": {"group": "woman", "style": "dramatic", "speed": 1.05}, "southamerica-man": {"group": "man", "style": "calm", "speed": 1.0}, "romania-woman": {"group": "woman", "style": "dramatic", "speed": 1.0}}, language: "auto", tts_styles: ["calm", "dramatic"], tts_languages: ["en", "de", "fr"], tts_voices: ["af_heart", "am_michael"], preview_languages: ["en", "de", "fr", "es", "it", "pt", "nl", "pl", "ru", "ja", "zh", "hi", "ko"], stt_detects_language: true, tts_accepts_language: true },
+      "/api/voice/capabilities": { configured: true, runtime: true, available: true, reason: "", captions: true, mic: "open", active_call: null, destinations: { stt: "lan", tts: "lan", ai: "lan", stt_host: "gpu-1.lan:8000", tts_host: "gpu-1.lan:8880", ai_host: "llm.lan" } },
+      "/api/voice/local": { installed: { runtime: true, server: true }, token: true, settings_token_mismatch: false, unit: true, systemd: true, stt: "base", last_error: null, stale: null, url: "http://127.0.0.1:8766/v1", limits: "hard", running: true, in_use: false, voices: { woman: "af_heart", man: "am_michael" } },
+    },
+    // The capture counts only once the route's own content rendered (each General's row).
+    present: "[data-testid='hq-calls-contacts']",
+  },
   // A failed check: a new key (masked — a fake fixture value) and the endpoint refusing it.
   {
     id: "route:settings-endpoint-failed",

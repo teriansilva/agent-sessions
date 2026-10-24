@@ -1,0 +1,378 @@
+/* Settings → AI → HQ calls (#1397). Rides `Settings.module.css` for the section frame, fields
+ * and buttons; this sheet only lays out what is specific to calls. Tokens only, 44 px rows. */
+
+.side {
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-3) 0 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+.legend {
+  padding: 0;
+  font: 600 var(--fs-label) / 1.4 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.what {
+  font-family: inherit;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-muted);
+}
+.optional {
+  margin-left: var(--sp-2);
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+.turnRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  min-height: 44px;
+  margin-top: var(--sp-3);
+  border-top: 1px solid var(--line);
+  padding-top: var(--sp-2);
+}
+.fixed {
+  font: 400 var(--fs-row) / 1.4 var(--font-mono);
+  color: var(--text-2);
+}
+
+.report {
+  margin-top: var(--sp-3);
+  padding: var(--sp-3);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+}
+.reportHead {
+  margin: 0 0 var(--sp-2);
+}
+.checks {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.checks li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-row);
+  color: var(--text-1);
+}
+.checkId {
+  font-family: var(--font-mono);
+  color: var(--text-2);
+}
+.checkWord {
+  font: 600 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.checkNote {
+  flex-basis: 100%;
+  padding-left: var(--sp-4);
+  color: var(--text-muted);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 200px) minmax(0, 1fr);
+  gap: var(--sp-3);
+  align-items: center;
+  min-height: 44px;
+  padding: var(--sp-2) 0;
+  border-top: 1px solid var(--line);
+}
+.lab {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.lab b {
+  font-weight: 500;
+  font-size: var(--fs-body);
+  color: var(--text-1);
+}
+.lab span {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+}
+.switchRow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 44px;
+  font-size: var(--fs-row);
+  color: var(--text-2);
+}
+
+.dest {
+  display: grid;
+  grid-template-columns: minmax(0, 200px) minmax(0, 1fr);
+  gap: var(--sp-2) var(--sp-3);
+  margin: 0;
+  font-size: var(--fs-row);
+}
+.dest dt {
+  font: 500 var(--fs-micro) / 1.6 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.dest dd {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-1);
+}
+.host {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 800px) {
+  .row,
+  .dest {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* #1397 P4: speech on this machine. */
+.local {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+.localHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font-size: var(--fs-row);
+  color: var(--text-1);
+}
+.localHead b {
+  font-weight: 500;
+}
+.cmd {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+}
+/* Wraps on a narrow screen: visual only, Copy puts the literal command on the clipboard. */
+.cmdText {
+  flex: 1;
+  min-width: 0;
+  font: 400 var(--fs-row) / 1.5 var(--font-mono);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--sp-2) var(--sp-3);
+  margin: 0;
+}
+.facts dt {
+  font: 500 var(--fs-micro) / 1.6 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.facts dd {
+  margin: 0;
+  font: 400 var(--fs-row) / 1.4 var(--font-mono);
+  color: var(--text-1);
+}
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* #1397 P3: each General's voice. */
+.plist {
+  margin: var(--sp-3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.prow {
+  display: grid;
+  /* Two lines on a desktop: the General and their actions, then the voice, style and speed. The
+   * actions get a track of their own, so a Reset never squeezes the name or a select's label. */
+  grid-template-columns: 30px minmax(100px, 0.7fr) minmax(170px, 1fr) minmax(150px, 1fr);
+  grid-template-areas:
+    "pic name name acts"
+    "pic voice style speed";
+  gap: var(--sp-2);
+  align-items: center;
+  padding: var(--sp-2) 0;
+  border-top: 1px solid var(--line);
+}
+.noStyle {
+  grid-template-columns: 30px minmax(120px, 1fr) minmax(150px, 1fr);
+  grid-template-areas:
+    "pic name acts"
+    "pic voice speed";
+}
+.pvoice {
+  grid-area: voice;
+}
+.pstyle {
+  grid-area: style;
+}
+.pspeed {
+  grid-area: speed;
+}
+.ppic {
+  grid-area: pic;
+  align-self: start;
+  width: 30px;
+  height: 40px;
+  object-fit: cover;
+  border: 1px solid var(--line-strong);
+}
+.pname {
+  grid-area: name;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.pname b {
+  font-weight: 500;
+  font-size: var(--fs-body);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pname span {
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.pfield {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.pfield input {
+  min-width: 0;
+  flex: 1;
+}
+.pacts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+}
+/* Only the General's own actions take the row's `acts` area (the language rows reuse `.pacts`). */
+.prow > .pacts {
+  grid-area: acts;
+}
+.pnote {
+  grid-column: 2 / -1;
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.lv {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--line-strong);
+  background: var(--surface-3);
+}
+.lvh {
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.lvrow {
+  display: grid;
+  grid-template-columns: 44px minmax(110px, 1fr) auto;
+  gap: var(--sp-2);
+  align-items: center;
+}
+.lang {
+  font: 500 var(--fs-meta) / 1 var(--font-mono);
+  letter-spacing: 0.08em;
+}
+.lvnote {
+  /* Under the voice field: the Missing stamp and what speaks instead. */
+  grid-column: 2 / -1;
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.lvadd {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(110px, 1fr) auto;
+  gap: var(--sp-2);
+  align-items: center;
+}
+.unsup {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: flex-start;
+  margin: var(--sp-2) 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-3);
+  font-size: var(--fs-row);
+  color: var(--text-2);
+}
+@media (max-width: 800px) {
+  /* A phone: the General's name beside the portrait, then each field, then the actions, each on
+   * its own full-width row, so nothing squeezes the name. */
+  .prow,
+  .noStyle {
+    grid-template-columns: 30px minmax(0, 1fr);
+    grid-template-areas:
+      "pic name"
+      "voice voice"
+      "style style"
+      "speed speed"
+      "acts acts";
+  }
+  .noStyle {
+    grid-template-areas:
+      "pic name"
+      "voice voice"
+      "speed speed"
+      "acts acts";
+  }
+  .prow > .pacts {
+    justify-content: flex-start;
+  }
+  .pname b {
+    white-space: normal;
+  }
+  .pnote,
+  .lv {
+    grid-column: 1 / -1;
+  }
+  .lvadd {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

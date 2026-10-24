@@ -160,11 +160,14 @@ function outcome(p: AskNudgeCard): { word: string; tone: Tone; detail: string } 
 export function NudgeCard({
   p,
   deciding,
+  error = null,
   onApprove,
   onDismiss,
 }: {
   p: AskNudgeCard;
   deciding: boolean;
+  /** Why the last Send/Dismiss was refused (shown on the card, as the other cards do). */
+  error?: string | null;
   onApprove: () => void;
   onDismiss: () => void;
 }) {
@@ -187,6 +190,11 @@ export function NudgeCard({
         <div className={c.verbatim} data-testid="ask-nudge-text">
           {p.text}
         </div>
+        {error ? (
+          <div className={c.note} role="alert" data-testid="ask-nudge-error">
+            <span>{error}</span>
+          </div>
+        ) : null}
         {!out ? (
           <div className={c.note}>
             <Eye size={14} aria-hidden="true" />

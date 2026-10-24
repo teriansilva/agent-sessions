@@ -262,15 +262,23 @@ export function useModalDrawer({
   useEffect(() => {
     if (!active) return;
     const trigger = triggerRef.current;
+    const panel = panelRef.current;
     initialFocusRef.current?.focus();
     return () => {
       // The restore waits a frame. On the Escape path a synchronous `focus()` sticks, but when
       // the drawer is dismissed by a TAP the browser is still settling focus from that pointer
       // sequence and finishes after this passive cleanup — landing on <body> and silently undoing
       // the restore. A frame later the event is done and the trigger keeps it.
-      requestAnimationFrame(() => trigger?.focus());
+      requestAnimationFrame(() => {
+        // A surface that CLAIMS focus as the drawer closes keeps it: the call panel opening as
+        // HQ's drawer steps aside (#1640). Anything else — a tap outside that left focus on what
+        // it hit included — still goes back to the trigger.
+        const now = document.activeElement;
+        if (now?.closest("[data-focus-claim]") && !panel?.contains(now)) return;
+        trigger?.focus();
+      });
     };
-  }, [active, initialFocusRef, triggerRef]);
+  }, [active, initialFocusRef, triggerRef, panelRef]);
 
   // `containFocus` gates the CALL rather than living inside the hook: the menu's opt-out is a
   // statement about this drawer, while the hook is a primitive three other surfaces now share.

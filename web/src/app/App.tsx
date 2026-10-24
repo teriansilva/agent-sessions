@@ -18,6 +18,10 @@ import {
 } from "react-router-dom";
 import { NotificationBell } from "../components/pulse/NotificationBell";
 import { AskSidebar, AskToggle } from "../components/ask/AskSidebar";
+import { CallButton } from "../components/call/CallButton";
+import { CallLayer } from "../components/call/CallLayer";
+import { CallProvider } from "../components/call/CallProvider";
+import { callActive, useCall } from "../components/call/callContext";
 import {
   AskPanelContext,
   useAskPanel,
@@ -185,6 +189,7 @@ const LEGACY_VIEW_KEY = "tr-sidebar-view";
  *  The session lives in the URL (/s/:engine/:id); "/" is the new-session landing. */
 function Layout() {
   const [navOpen, setNavOpen] = useState(false);
+  const call = useCall();
   // Footer version surface (#661): the running version + the tap-to-reload update chip.
   const version = useAppVersion();
   // The boot sequence (#1531): once per visit, Full motion only; the panels power on under it.
@@ -315,8 +320,16 @@ function Layout() {
   // desktop collapse (>800px). This stops the mobile hamburger from mutating/persisting
   // the desktop-collapse flag (Hermes #128).
   const toggle = () => {
-    if (isMobile) setNavOpen((o) => !o);
-    else setCollapsed((c) => !c);
+    if (isMobile) {
+      // On a phone the call panel covers the page (above the shell's own stacking context), so
+      // opening the navigation folds a live call into its on-call bar — the call goes on — and
+      // closes an ended call's panel: the drawer is never opened UNDER the call (#1640).
+      if (!navOpen) {
+        if (callActive(call.snap)) call.setMinimized(true);
+        else if (call.snap.phase !== "idle") call.dismiss();
+      }
+      setNavOpen((o) => !o);
+    } else setCollapsed((c) => !c);
   };
   // "Open" state of whichever surface the toggle controls (for the icon + aria-expanded).
   const surfaceOpen = isMobile ? navOpen : !collapsed;
@@ -598,6 +611,9 @@ function Layout() {
                 Home Free relay, the connection's plate leads the corner (#1658); elsewhere it renders
                 nothing. */}
             <RelayChip />
+            {/* Calling HQ (#1397): ☎ beside HQ's own icon; it opens the call while one runs. On a
+                phone the dashboard card and HQ's header carry Call: the bar has no width to spare. */}
+            <CallButton variant="icon" testId="topbar-call" wideOnly />
             <AskToggle />
             <NotificationBell />
             {/* LAST, hard against the edge, and it KEEPS ITS PLACE on a phone (#1058): the bell
@@ -617,6 +633,9 @@ function Layout() {
             </span>
           </span>
         </header>
+        {/* The on-call bar's row (#1397): under the top bar on every route while a call is
+            minimised. It TAKES room in the grid, so it never covers a composer or a map window. */}
+        <CallLayer />
         {/* `role="dialog"` + `aria-modal` ONLY while this is the off-canvas drawer (#940). A
             breakpoint is not a modal, and a docked column that claims to be one hides the rest of
             the page from assistive tech. */}
@@ -983,7 +1002,10 @@ export default function App() {
                       navigations they exist to be resilient to, and a provider inside the routed
                       tree would be remounted by exactly those. */}
                     <WorkspaceProvider>
-                      <RouterProvider router={router} />
+                      {/* ABOVE the router (#1397): a call to HQ survives navigation. */}
+                      <CallProvider>
+                        <RouterProvider router={router} />
+                      </CallProvider>
                     </WorkspaceProvider>
                   </SessionsProvider>
                   </DashboardRetentionProvider>

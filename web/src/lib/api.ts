@@ -119,6 +119,17 @@ import type {
   UploadResult,
 } from "../types/api";
 import { clearSent } from "./sentHistory";
+import type {
+  ConformanceReport,
+  VoiceCall,
+  VoiceCapabilities,
+  VoiceLists,
+  VoiceLocal,
+  VoiceLocalUse,
+  VoiceSettings,
+  VoiceSettingsPatch,
+  SpeechSidePatch,
+} from "../types/voice";
 import { announceActionResolved } from "./actionEvents";
 
 /** OpenCode maintenance keeps unknown measurements distinct from zero. */
@@ -765,7 +776,68 @@ function announceProjects<T>(p: Promise<T>): Promise<T> {
   return p.finally(() => projectPickerStore.invalidate());
 }
 
+/** POST a JSON body and get the answer as raw bytes (a WAV preview, #1397). Errors carry the
+ *  server's `detail` like `mutateJson`. */
+async function postForBlob(path: string, body: unknown): Promise<Blob> {
+  const r = await apiFetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify(body),
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) {
+    let detail = "";
+    try {
+      detail = ((await r.json()) as { detail?: string })?.detail ?? "";
+    } catch {
+      /* non-JSON body */
+    }
+    throw new ApiError(r.status, detail || `POST ${path} → ${r.status}`);
+  }
+  return await r.blob();
+}
+
+/** The CSRF token the call socket proves itself with in its first message (#1397): a WebSocket
+ *  carries no custom headers, so it is sent in-band. */
+export function currentCsrfToken(): string {
+  return csrfToken;
+}
+
 export const api = {
+  // Calling HQ (#1397 P1). Speech endpoints are configured like the AI endpoint: tokens never
+  // come back (`api_key_set`), a blank keeps the stored one and `null` removes it.
+  voiceSettings: () => getJson<VoiceSettings>("/api/voice/settings"),
+  saveVoiceSettings: (patch: VoiceSettingsPatch) =>
+    mutateJson<VoiceSettings>("POST", "/api/voice/settings", patch),
+  /** The compatibility check against a DRAFT pair of endpoints; nothing is saved. */
+  testVoice: (body: { stt: SpeechSidePatch; tts: SpeechSidePatch; voice: string }) =>
+    mutateJson<ConformanceReport>("POST", "/api/voice/test", body),
+  /** A draft endpoint's model (and, for TTS, voice) lists; `null` = enter it by hand. */
+  voiceLists: (side: "stt" | "tts", endpoint: SpeechSidePatch) =>
+    mutateJson<VoiceLists>("POST", "/api/voice/voices", { side, endpoint }),
+  /** One fixed line in a voice, as a WAV the page plays. */
+  voicePreview: (group: "woman" | "man", voice?: string) =>
+    postForBlob("/api/voice/preview", voice ? { group, voice } : { group }),
+  /** A General's own line in their profile (#1397 P3); `voice` previews another voice for them. */
+  /** A General's fixed preview line — in `language` when given (a voice per language). */
+  voicePreviewContact: (contact: string, voice?: string, language?: string) =>
+    postForBlob("/api/voice/preview", {
+      contact,
+      ...(voice ? { voice } : {}),
+      ...(language ? { language } : {}),
+    }),
+  /** Speech on this machine (#1397 P4). */
+  voiceLocal: () => getJson<VoiceLocal>("/api/voice/local"),
+  /** Point both speech sides at this machine's server, server-side (the token never comes back).
+   *  A 409 carries `{detail, code}`; a 502 carries `{detail, report}` on the ApiError's record. */
+  useLocalVoice: () => mutateJson<VoiceLocalUse>("POST", "/api/voice/local/use"),
+  voiceCapabilities: () => getJson<VoiceCapabilities>("/api/voice/capabilities"),
+  /** Admit a call into an HQ conversation (a new one unless `conversation_id`). 409 while another
+   *  call runs, or when calls are not available (`detail` says why). */
+  startCall: (body: { contact?: string; conversation_id?: string | null }) =>
+    mutateJson<VoiceCall>("POST", "/api/voice/calls", body),
+  endCall: (id: string) => mutateJson<VoiceCall>("DELETE", `/api/voice/calls/${enc(id)}`),
   // Public share links (#1404 P4). `createShare` is the ONLY call whose answer carries a link's
   // URL — the server keeps its digest, so it is shown once. A `send` link needs `accept_risk`.
   shares: (session?: string) =>

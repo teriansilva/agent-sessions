@@ -6,12 +6,15 @@
  *  "No HQ contact", and two actions, *Open HQ →* and *Select contact* (Settings → Interface → the
  *  gallery). Two actions make that card a container, not a button.
  *
+ *  Calling HQ (#1397): a Call control sits under the card (Set up calls until calls are set up).
+ *
  *  Desktop places it in the headline row's last column, which is the *Plan quota* tile's column
  *  (`Dashboard.module.css .top` shares the KPI strip's columns); ≤800px it is a full-width row. */
 import { Link } from "react-router-dom";
 
 import { settingsPath } from "../../routes/settingsTabs";
 import { useAskPanel } from "../ask/askPanel";
+import { CallButton } from "../call/CallButton";
 import { HqPortrait } from "./HqPortrait";
 import { useHqContact } from "./useHqContact";
 import s from "./PrimaryContact.module.css";
@@ -71,9 +74,11 @@ export function PrimaryContact({ className = "" }: { className?: string }) {
     );
   }
   return (
+    // Calling HQ (#1397): Call sits under the card, its own control — a button cannot hold one.
+    <div className={`${s.withCall} ${className}`}>
     <button
       type="button"
-      className={`${s.card} ${className}`}
+      className={s.card}
       aria-label={`Open HQ — ${contact.name}`}
       onClick={openAsk}
       data-testid="hq-primary-contact"
@@ -93,5 +98,7 @@ export function PrimaryContact({ className = "" }: { className?: string }) {
         </span>
       </span>
     </button>
+    <CallButton variant="card" testId="hq-primary-call" />
+    </div>
   );
 }

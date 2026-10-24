@@ -27,8 +27,10 @@ It says what it will download (about 700 MB) and asks first. Then it installs:
 - a small **speech server**: faster-whisper to hear you, and Kokoro for HQ's voices;
 - its **models**. Each one is checked against a pinned checksum before it is used.
 
-The speech server runs as a user service (`agent-sessions-speech`). It listens on `127.0.0.1` only,
-behind a random access key, and has a budget of 2 CPUs and 3 GB of memory. In Settings, press
+The speech server runs as a user service (`agent-sessions-speech`). It opens no network port: it
+answers only on a private socket file that only your user can open, behind a random access key, and
+has a budget of 2 CPUs and 3 GB of memory. (Settings shows it as `http://127.0.0.1:8766/v1`, but
+BattleLab sends those requests to the socket, never to that port.) In Settings, press
 **Use this machine**. That fills in both speech services and the two starting voices; the access
 key never leaves the server.
 

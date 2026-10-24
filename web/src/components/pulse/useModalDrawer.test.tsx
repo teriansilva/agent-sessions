@@ -82,3 +82,43 @@ test("the default is unchanged for a caller that names neither option", () => {
   render(<Panel />);
   expect(tabFromLast()).toBe(true);
 });
+
+/** A drawer that opens, then closes, with focus left somewhere outside it when it does. */
+function Closing({ active }: { active: boolean }) {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const firstRef = useRef<HTMLButtonElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  useModalDrawer({ active, panelRef, initialFocusRef: firstRef, triggerRef, onClose: () => {} });
+  return (
+    <div>
+      <button ref={triggerRef} data-testid="trigger">
+        trigger
+      </button>
+      <button data-testid="tapped">tapped outside</button>
+      <section data-focus-claim="" tabIndex={-1} data-testid="claim">
+        a call panel
+      </section>
+      <div ref={panelRef}>
+        <button ref={firstRef}>first</button>
+      </div>
+    </div>
+  );
+}
+
+const frame = () => new Promise((r) => requestAnimationFrame(() => r(undefined)));
+
+test("on close, focus returns to the trigger, even from what a tap outside landed on (#1640)", async () => {
+  const { rerender } = render(<Closing active />);
+  screen.getByTestId("tapped").focus();
+  rerender(<Closing active={false} />);
+  await frame();
+  expect(screen.getByTestId("trigger")).toHaveFocus();
+});
+
+test("on close, a surface that claims focus keeps it (the call panel, #1640)", async () => {
+  const { rerender } = render(<Closing active />);
+  screen.getByTestId("claim").focus();
+  rerender(<Closing active={false} />);
+  await frame();
+  expect(screen.getByTestId("claim")).toHaveFocus();
+});

@@ -21,9 +21,11 @@
    * shrinks the terminal instead of overflowing it (#7) and window-resize reflow works (#8).
    * The deck panels take margins (below) so they float on the atmosphere with their frames
    * fully visible. */
-  grid-template-rows: var(--app-header-height) minmax(0, 1fr) 28px;
+  /* The `callbar` row (#1397) is `auto`: empty (0 px) unless a minimised call shows its bar. */
+  grid-template-rows: var(--app-header-height) auto minmax(0, 1fr) 28px;
   grid-template-areas:
     "topbar   topbar"
+    "callbar  callbar"
     "sidebar  pane"
     "classbar classbar";
   height: 100dvh;
@@ -60,6 +62,7 @@
     grid-template-columns: 1fr;
     grid-template-areas:
       "topbar"
+      "callbar"
       "pane"
       "classbar";
   }
@@ -806,7 +809,7 @@
 }
 @media (max-width: 800px) {
   .app {
-    grid-template-rows: var(--app-header-height) minmax(0, 1fr) 28px;
+    grid-template-rows: var(--app-header-height) auto minmax(0, 1fr) 28px;
   }
   /* ONE TILE on a phone: every control in the row — the list toggle, the four sections, HQ, the bell
      and the operator — is the same plate, --tb-tile wide and 44px tall; a sub-menu's chevron adds
