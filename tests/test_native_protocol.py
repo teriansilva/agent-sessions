@@ -1301,7 +1301,9 @@ def test_claude_without_lifecycle_frames_never_proves_the_fence():
     "stray",
     [
         lambda op: _life("9d1f0b8e-1c2d-4e3f-8a9b-0c1d2e3f4a5b", "started"),  # never submitted
-        lambda op: _life(op, "completed"),  # completed before its result
+        # Completed before its result, and then something that is not that result (#1644: the
+        # result naming it may still follow, `test_claude_send_now_captured`).
+        lambda op: [_life(op, "completed"), _say("later")],
         lambda op: _life(op, "failed"),  # a state we do not know
     ],
     ids=["unknown-command", "completed-early", "unknown-state"],
@@ -1313,7 +1315,9 @@ def test_claude_a_lifecycle_frame_outside_the_cycle_makes_the_fence_unknown(stra
     codec.submit("go", NEXT)
     codec.feed(_life(NEXT, "queued"))
     codec.feed(_life(NEXT, "started"))
-    codec.feed(stray(NEXT))
+    frames = stray(NEXT)
+    for frame in frames if isinstance(frames, list) else [frames]:
+        codec.feed(frame)
     assert not codec.lifecycle_proven
 
 
@@ -1600,6 +1604,10 @@ def test_claude_an_input_ended_without_its_result_completes_visibly(ending, stat
     events = []
     for frame in (_life(NEXT, "queued"), _life(NEXT, "started"), _life(NEXT, ending)):
         events += codec.feed(frame)
+    if ending == "completed":
+        # Its result may still follow (#1644): the next frame that is not that result ends it.
+        assert not [e for e in events if e.kind == "turn_completed"]
+        events += codec.feed(_say("later"))
     (completed,) = [e for e in events if e.kind == "turn_completed"]
     assert completed.data["operation_id"] == NEXT and completed.data["state"] == state
     assert codec.operation_id is None and not codec.lifecycle_proven

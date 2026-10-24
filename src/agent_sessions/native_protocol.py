@@ -1090,6 +1090,20 @@ class CodexCodec(_Codec):
 
 # How the CLI's lifecycle ends an input: answered, or interrupted (#1427).
 _LIFECYCLE_ENDED = frozenset({"completed", "cancelled"})
+# What may come between an input's `completed` and the result naming it without ending the wait
+# (#1644): bookkeeping that is no turn's output. Anything else ends the input without its result.
+_BETWEEN_END_AND_RESULT = frozenset(
+    {"task_started", "task_progress", "task_notification", "task_updated", "thinking_tokens"}
+)
+
+
+def _between_end_and_result(frame: dict) -> bool:
+    kind = frame.get("type")
+    if kind in {"rate_limit_event", "control_response"}:
+        return True
+    return kind == "system" and frame.get("subtype") in _BETWEEN_END_AND_RESULT
+
+
 _DROPPED = frozenset({"cancelled", "discarded"})  # an input the CLI never ran
 
 
@@ -1341,6 +1355,13 @@ class ClaudeCodec(_Codec):
                 # The CLI runs one turn at a time: this one starts only after any turn the agent
                 # was running for itself has ended.
                 return self._agent_turn(False) if state == "started" else []
+            if state == "completed" and self._cycle == "started":
+                # A message written while the agent runs a turn of its own (a task notification)
+                # is taken INTO that turn: its `completed` comes BEFORE the result naming it, and
+                # that result carries the notification's origin (captured, #1644). Wait for it:
+                # the next frame that is not that result ends the input as below.
+                self._cycle = "ended"
+                return []
             if state in _LIFECYCLE_ENDED and self._cycle == "started":
                 # The CLI ended this input without the result that names it: complete it
                 # visibly, never leave it running for ever, and trust the fence no longer.
@@ -1557,6 +1578,21 @@ class ClaudeCodec(_Codec):
             )
         ]
 
+    def frame_lost(self) -> list[NativeEvent]:
+        """A frame too large to read was dropped (the worker's bound): if it was the result an
+        ended input waits for, that input ends now rather than running for ever (#1644)."""
+        if self._cycle != "ended":
+            return []
+        return self._ended_without_result("completed")
+
+    def _awaited_result(self, frame: dict) -> bool:
+        return (
+            self._cycle == "ended"
+            and frame.get("type") == "result"
+            and frame.get("parent_tool_use_id") is None
+            and frame.get("user_message_uuid") == self.operation_id
+        )
+
     def feed(self, message: dict[str, Any]) -> list[NativeEvent]:
         if self._closed:
             raise ProtocolError("native connection is closed")
@@ -1564,6 +1600,14 @@ class ClaudeCodec(_Codec):
         kind = frame.get("type")
         if frame.get("session_id") is not None and frame.get("session_id") != self.native_id:
             raise ProtocolError("native session identity changed")
+        if (
+            self._cycle == "ended"
+            and not self._awaited_result(frame)
+            and not _between_end_and_result(frame)
+        ):
+            # Not the result the ended input waits for (#1644): end it as one without its
+            # result, then read this frame as usual.
+            return [*self._ended_without_result("completed"), *self.feed(message)]
         if kind == "control_request":
             return self._control(frame)
         if kind == "control_cancel_request":
@@ -1718,6 +1762,11 @@ class ClaudeCodec(_Codec):
             # Retain idle and background results too: observing them before submission is
             # not permission to attribute a later replay to the next operator turn.
             self._results[result_id] = digest
+        if self._awaited_result(frame):
+            # The result naming an input whose lifecycle already completed (#1644): it ends that
+            # input whatever origin the turn it ran in had. A clean, correlated cycle proves the
+            # fence exactly as the usual order (result, then `completed`) does.
+            return self._result(frame, proven=not self._tainted)
         background = frame.get("parent_tool_use_id") is not None or (
             isinstance(origin, dict) and origin.get("kind") != "human"
         )
@@ -1756,27 +1805,35 @@ class ClaudeCodec(_Codec):
             return [*out, _event("background", state="activity", active=True)]
         common = {"operation_id": self.operation_id, "native_turn_id": self.native_turn_id}
         if kind == "result":
-            state = _result_state(frame)
-            clean = self._cycle == "started" and not self._tainted
-            self._closing = self.operation_id if clean else None
-            self._cycle = None
-            self.operation_id = None
-            self.native_turn_id = None
-            self._approvals.clear()
-            self._promote_ahead()
-            return [
-                _event(
-                    "turn_completed",
-                    **common,
-                    state=state,
-                    text=_text(frame.get("result")),
-                    background_active=bool(self._background)
-                    or self._session_state in {"running", "requires_action", "unknown"},
-                    native_state=self._session_state,
-                    error="" if state == "interrupted" else _summary(frame.get("errors")),
-                )
-            ]
+            return self._result(frame)
         return self._output(frame, kind, common)
+
+    def _result(self, frame: dict, *, proven: bool = False) -> list[NativeEvent]:
+        """The operator turn's own result. Normally its `completed` follows and proves the fence
+        (`_closing`); ``proven``: that `completed` already came, cleanly (#1644)."""
+        common = {"operation_id": self.operation_id, "native_turn_id": self.native_turn_id}
+        state = _result_state(frame)
+        clean = self._cycle == "started" and not self._tainted
+        self._closing = self.operation_id if clean else None
+        if proven:
+            self.lifecycle_proven = True
+        self._cycle = None
+        self.operation_id = None
+        self.native_turn_id = None
+        self._approvals.clear()
+        self._promote_ahead()
+        return [
+            _event(
+                "turn_completed",
+                **common,
+                state=state,
+                text=_text(frame.get("result")),
+                background_active=bool(self._background)
+                or self._session_state in {"running", "requires_action", "unknown"},
+                native_state=self._session_state,
+                error="" if state == "interrupted" else _summary(frame.get("errors")),
+            )
+        ]
 
     def _own_output(self, frame: dict, kind: str) -> list[NativeEvent]:
         """What the agent does in a turn of its own (#1438), named by that turn's target. A

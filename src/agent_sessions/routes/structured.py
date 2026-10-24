@@ -256,8 +256,18 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
         fields = {"operation_id", "turn_id", "queued_turn_id"}
-        body = await _json(request, fields, fields)
-        return JSONResponse(await _run(structured_runtime.send_now(key, **body)), status_code=202)
+        body = await _json(request, fields | {"stop_all"}, fields)
+        try:
+            result = await structured_runtime.send_now(key, **body)
+        except structured_runtime.StructuredError as exc:
+            if exc.reason is None:
+                raise HTTPException(status_code=exc.status, detail=exc.detail) from None
+            # A closed reason the pane acts on (#1644): Wait or Stop all and send, or confirm
+            # again. Never free text.
+            return JSONResponse(
+                {"detail": exc.detail, "reason": exc.reason}, status_code=exc.status
+            )
+        return JSONResponse(result, status_code=202)
 
     @app.post("/api/structured/sessions/{key}/withdraw")
     async def structured_withdraw(

@@ -1813,6 +1813,9 @@ export interface StructuredSnapshot {
     background_tasks?: StructuredBackgroundTask[];
     /** Advertised by this running worker, absent on older workers. */
     send_now?: "steer" | "interrupt";
+    /** What Send now would do right now, as the live worker last reported it (#1644): a display
+     *  hint, never authority. `unknown`: no live worker or no report yet. Absent on older servers. */
+    send_now_state?: "ready" | "would_stop_background" | "unknown";
     /** A turn the agent runs for itself (a task notification) that Send now can interrupt
      *  (#1427), or null. Only from a worker advertising `send_now_background`. */
     background_turn?: string | null;

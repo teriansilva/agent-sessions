@@ -98,10 +98,12 @@ _ERRORS = {
 
 
 class NativeError(Exception):
-    def __init__(self, status: int, detail: str):
+    def __init__(self, status: int, detail: str, reason: str | None = None):
         super().__init__(detail)
         self.status = status
         self.detail = detail
+        # A closed refusal reason the pane acts on (#1644, `native_ipc.SEND_NOW_REFUSALS`).
+        self.reason = reason
 
 
 # --- systemd and the host: one seam so tests can substitute a fake service manager -------------
@@ -674,7 +676,9 @@ async def _call(gen: Generation, action: str, params: dict, *, timeout: float = 
         ) from None
     if "error" in response:
         error = response["error"]
-        raise NativeError(_ERRORS.get(error["code"], 503), error["message"])
+        raise NativeError(
+            _ERRORS.get(error["code"], 503), error["message"], reason=error.get("reason")
+        )
     return response["result"]
 
 
@@ -2491,6 +2495,12 @@ def _snapshot_sync(engine_id: str, session_id: str) -> dict:
         view["native"]["send_now"] = mode
     # Send now against a turn the agent runs for itself (#1427), only from a worker that says it
     # can; an older worker's target is never offered.
+    # What Send now would do right now (#1644), as the live worker last reported it: a display
+    # hint for the composer, never authority. Unknown without a live worker or a report.
+    state = life.get("send_now_state")
+    view["native"]["send_now_state"] = (
+        state if live and state in {"ready", "would_stop_background"} else "unknown"
+    )
     if life.get("send_now_background") == "interrupt":
         view["native"]["send_now_background"] = "interrupt"
         # Its Interrupt button (#1438), only from a worker that accepts the direct request.
@@ -2881,13 +2891,35 @@ async def interrupt(engine_id: str, session_id: str, *, operation_id: str, turn_
     return receipt
 
 
+STOP_ALL_CHANGED = (
+    "The agent's background tasks or turn changed since you confirmed; "
+    "review them and confirm again"
+)
+
+
 async def send_now(
-    engine_id: str, session_id: str, *, operation_id: str, turn_id: str, queued_turn_id: str
+    engine_id: str,
+    session_id: str,
+    *,
+    operation_id: str,
+    turn_id: str,
+    queued_turn_id: str,
+    stop_all: dict | None = None,
 ) -> dict:
-    """One deliberate selection of an existing message; no relaunch or duplicate submit."""
+    """One deliberate selection of an existing message; no relaunch or duplicate submit.
+
+    ``stop_all`` (#1644): the operator confirmed ending these background tasks of this worker
+    (``{"worker": id, "task_ids": [...]}``) if only a Stop can cut the turn. The worker checks
+    it against what runs, before and after the claim; any change refuses ``inventory_changed``."""
     prov, _ = await asyncio.to_thread(_session, engine_id, session_id)
     journal = await asyncio.to_thread(_journal, prov, session_id)
     previous = journal.operations.get(operation_id)
+    confirm = {}
+    if stop_all is not None:
+        confirm = {
+            "confirm_worker_id": stop_all["worker"],
+            "confirm_tasks": native_ipc.tasks_digest(stop_all["task_ids"]),
+        }
     if previous is not None and previous.request["action"] == "send_now":
         mode = previous.request["params"]["mode"]
     else:
@@ -2903,7 +2935,16 @@ async def send_now(
                 raise NativeError(409, "Send now is available in newly started sessions")
         if mode not in {"steer", "interrupt"}:
             raise NativeError(409, "Send now is available in newly started sessions")
+        if stop_all is not None:
+            # Only a worker whose Send now can be a Stop has background tasks to confirm.
+            if mode != "interrupt":
+                raise NativeError(409, "Stop all and send is not available for this agent")
+            if stop_all["worker"] != live:
+                raise NativeError(409, STOP_ALL_CHANGED, reason="inventory_changed")
+            mode = "stop_all"
     params = {"turn_id": turn_id, "queued_turn_id": queued_turn_id, "mode": mode}
+    if mode == "stop_all":
+        params.update(confirm)
     immutable = native_ipc.normalize_immutable_request({"action": "send_now", "params": params})
 
     async def send(_journal_now, revision):
@@ -2915,6 +2956,9 @@ async def send_now(
 
     receipt = await _revisioned(prov, session_id, operation_id, immutable, None, send)
     if receipt["handoff"] == "not_sent":
+        if mode == "stop_all":
+            # Rechecked after the claim (#1644): what was confirmed no longer runs.
+            raise NativeError(409, STOP_ALL_CHANGED, reason="inventory_changed")
         raise NativeError(409, "Send now was not applied; check the current message state")
     return receipt
 

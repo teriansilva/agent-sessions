@@ -15,7 +15,15 @@ from dataclasses import asdict, dataclass
 from functools import partial
 from types import MappingProxyType
 
-from . import chat_config, chat_runtime, chat_store, engines, native_attachments, native_runtime
+from . import (
+    chat_config,
+    chat_runtime,
+    chat_store,
+    engines,
+    native_attachments,
+    native_protocol,
+    native_runtime,
+)
 from .engine_errors import EngineError
 from .plugins import api_source, kinds
 from .structured_types import ExecutionGuard, normalize_context
@@ -28,10 +36,11 @@ SNAPSHOT_TEXT_BUDGET = 200_000
 class StructuredError(Exception):
     """A safe refusal at the common client boundary."""
 
-    def __init__(self, status: int, detail: str):
+    def __init__(self, status: int, detail: str, reason: str | None = None):
         super().__init__(detail)
         self.status = status
         self.detail = detail
+        self.reason = reason  # closed (#1644): `native_ipc.SEND_NOW_REFUSALS`
 
 
 @dataclass(frozen=True)
@@ -194,7 +203,7 @@ async def _native(fn, *args, **kwargs):
     try:
         return await fn(*args, **kwargs)
     except native_runtime.NativeError as exc:
-        raise StructuredError(exc.status, exc.detail) from None
+        raise StructuredError(exc.status, exc.detail, exc.reason) from None
     except native_journal.JournalError as exc:
         raise StructuredError(
             503, f"the conversation journal is unavailable: {exc.detail}"
@@ -737,17 +746,41 @@ async def enable_bypass(session_key: str, *, operation_id: str, user: str) -> di
     return await snapshot(f"{engine}:{native}")
 
 
+def _stop_all(value) -> dict | None:
+    """Stop all and send's confirmation (#1644): the live worker and the exact background task
+    ids the operator saw. Shape only; whether it still matches is the worker's to say."""
+    if value is None:
+        return None
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"worker", "task_ids"}
+        or not isinstance(value["task_ids"], list)
+        or not value["task_ids"]
+        or len(value["task_ids"]) > native_protocol.MAX_PENDING
+        or not all(isinstance(t, str) and 0 < len(t) <= 256 for t in value["task_ids"])
+    ):
+        raise StructuredError(422, "invalid Stop all and send confirmation")
+    return {"worker": _operation_id(value["worker"]), "task_ids": list(value["task_ids"])}
+
+
 async def send_now(
-    session_key: str, *, operation_id: str, turn_id: str, queued_turn_id: str
+    session_key: str,
+    *,
+    operation_id: str,
+    turn_id: str,
+    queued_turn_id: str,
+    stop_all: dict | None = None,
 ) -> dict:
     """Deliver queued guidance sooner using the live adapter's declared native behavior."""
     engine, native = _key(session_key)
+    confirm = _stop_all(stop_all)
     result = await _adapter(engine, "send_now").send_now(
         engine,
         native,
         operation_id=_operation_id(operation_id),
         turn_id=_operation_id(turn_id),
         queued_turn_id=_operation_id(queued_turn_id),
+        **({"stop_all": confirm} if confirm is not None else {}),
     )
     return {"session_key": f"{engine}:{native}", **result}
 

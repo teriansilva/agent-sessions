@@ -61,6 +61,10 @@ SEND_NOW_WOULD_STOP = (
     "Send now would also stop this agent's background agents here; "
     "the message is sent when the current turn ends"
 )
+INVENTORY_CHANGED = (
+    "the agent's background tasks or turn changed since you confirmed; "
+    "review them and confirm again"
+)
 FLUSH_INTERVAL = 0.2
 STDERR_TAIL = 4096
 _URGENT = frozenset(
@@ -383,6 +387,7 @@ class Worker:
         self.terminated = False
         self.last_activity = time.monotonic()
         self.idle_timeout = float(config.get("idle_timeout") or IDLE_TIMEOUT)
+        self.reported_send_now: str | None = None
 
     # --- lifecycle -------------------------------------------------------------------------
 
@@ -671,6 +676,22 @@ class Worker:
                     waiter.set_result(event)
         self.record([*events, *delivery_events])
         self.queue_wake.set()
+        await self.report_send_now_state()
+
+    def send_now_state(self) -> str:
+        """What Send now would do right now (#1644), for the composer: ``ready`` (nothing in the
+        background is stopped; a protocol without that distinction is never refused for it) or
+        ``would_stop_background``. A display hint only: every Send now is decided at its own
+        admission."""
+        would_stop = getattr(self.codec, "send_now_would_stop_background", None)
+        return "would_stop_background" if would_stop is not None and would_stop() else "ready"
+
+    async def report_send_now_state(self) -> None:
+        state = self.send_now_state()
+        if state == self.reported_send_now:
+            return
+        self.reported_send_now = state
+        await asyncio.to_thread(self.report, send_now_state=state)
 
     @contextlib.contextmanager
     def queued_admission(self):
@@ -772,6 +793,7 @@ class Worker:
                     if not dropping:
                         self.dropped_frame()
                     dropping = False
+                    yield b""  # the dropped frame has ended: the codec may be waiting for it
                     continue
                 yield line
         if buffer and not dropping:
@@ -798,6 +820,11 @@ class Worker:
         assert self.proc is not None and self.proc.stdout is not None
         try:
             async for line in self.lines():
+                if not line:
+                    # A frame was dropped (#1644): an input waiting for its result ends now.
+                    lost = getattr(self.codec, "frame_lost", None)
+                    await self.handle_events(lost() if lost is not None else [])
+                    continue
                 try:
                     events = self.codec.feed(native_protocol.decode(line))
                 except native_protocol.ProtocolError as exc:
@@ -976,12 +1003,16 @@ class Worker:
             "result": result,
         }
 
-    def error(self, request: dict, code: str, message: str) -> dict:
+    def error(self, request: dict, code: str, message: str, reason: str | None = None) -> dict:
         return {
             **self.binding.envelope("response"),
             "request_id": request["request_id"],
             "action": request["action"],
-            "error": {"code": code, "message": message[:2000]},
+            "error": {
+                "code": code,
+                "message": message[:2000],
+                **({"reason": reason} if reason is not None else {}),
+            },
         }
 
     def _pending(self, params: dict):
@@ -1122,23 +1153,35 @@ class Worker:
                 return self.error(
                     request, "busy", "a message is already waiting for this response to stop"
                 )
+            # Stop all and send (#1644): a turn or queued head that moved is a changed binding
+            # like the tasks are, so the operator is asked again for what runs now.
+            changed = "inventory_changed" if params["mode"] == "stop_all" else None
             if queued is None or not (background or self.codec.operation_id == params["turn_id"]):
                 return self.error(
-                    request, "stale", "the message is no longer queued behind that turn"
+                    request, "stale", "the message is no longer queued behind that turn", changed
                 )
             # FIFO is the contract (#1442): only the head of the queue goes now, so nothing ever
             # jumps the messages before it. An old tab offering a later one is refused here.
             if not self._queue_head(queued):
-                return self.error(request, "stale", "only the first queued message can be sent now")
+                return self.error(
+                    request, "stale", "only the first queued message can be sent now", changed
+                )
             if not background and self.codec.native_turn_id is None:
                 return self.error(
                     request, "busy", "the agent has not acknowledged the active turn yet"
                 )
             expected = self.codec.send_now_background if background else self.codec.send_now_mode
-            if params["mode"] != expected:
+            stop_all = params["mode"] == "stop_all"
+            if expected != "interrupt" if stop_all else params["mode"] != expected:
                 return self.error(request, "unsupported", "this worker uses another delivery mode")
-            if self._send_now_would_stop_background():
-                return self.error(request, "unsupported", SEND_NOW_WOULD_STOP)
+            if stop_all and not self._confirmed(params):
+                return self.error(request, "stale", INVENTORY_CHANGED, "inventory_changed")
+            if self._send_now_would_stop_background() and not (
+                stop_all and self._confirmed(params)  # rechecked after every await before it
+            ):
+                return self.error(
+                    request, "unsupported", SEND_NOW_WOULD_STOP, "would_stop_background"
+                )
             if self.priority_turn == params["turn_id"]:
                 return self.error(
                     request, "busy", "a message is already waiting for this response to stop"
@@ -1152,10 +1195,16 @@ class Worker:
                 # Native output is read independently while the claim fsyncs. Never cancel a
                 # newer response, or consume a queued message when its observed turn ended.
                 if (
-                    not self._background_target(params["turn_id"])
-                    if background
-                    else self.codec.operation_id != params["turn_id"]
-                ) or not self._queue_head(queued):
+                    (
+                        not self._background_target(params["turn_id"])
+                        if background
+                        else self.codec.operation_id != params["turn_id"]
+                    )
+                    or not self._queue_head(queued)
+                    # Stop all and send (#1644): what was confirmed is checked again HERE, after
+                    # the claim; a task that started or ended meanwhile never authorizes it.
+                    or (stop_all and not self._confirmed(params))
+                ):
                     receipt = await asyncio.to_thread(
                         native_journal.record_handoff,
                         self.journal_root,
@@ -1197,9 +1246,11 @@ class Worker:
                         handoff,
                     )
                 elif self._native_send_now():
+                    # Also for Stop all and send: the CLI's own way ends no background task, so
+                    # it is taken whenever it is there; the confirmation only permits the Stop.
                     receipt = await self._send_now_native(queued, params, receipt)
                 else:
-                    receipt = await self._send_now_by_interrupt(params, receipt)
+                    receipt = await self._send_now_by_interrupt(params, receipt, stop_all=stop_all)
                 self.queue_wake.set()
                 return self.receipt(request, receipt)
         except (native_state.LockBusy, storage.LockBusy):
@@ -1223,11 +1274,24 @@ class Worker:
         would_stop = getattr(self.codec, "send_now_would_stop_background", None)
         return would_stop is not None and would_stop()
 
-    async def _send_now_by_interrupt(self, params: dict, receipt: dict) -> dict:
+    def _confirmed(self, params: dict) -> bool:
+        """Is what the operator confirmed for Stop all and send what runs now (#1644)? The
+        generation and the exact set of background tasks; the turn and the queued head are
+        checked beside it. Labels are never compared: two tasks may share one."""
+        return params.get("confirm_worker_id") == self.worker_id and params.get(
+            "confirm_tasks"
+        ) == native_ipc.tasks_digest(getattr(self.codec, "_background", ()))
+
+    async def _send_now_by_interrupt(
+        self, params: dict, receipt: dict, *, stop_all: bool = False
+    ) -> dict:
         """Send now on a serial protocol without its own: cancel the turn, and let the existing
         dispatcher deliver the message after terminal evidence. Never while that cancellation,
-        a Stop, would also end background agents (#1526): the message keeps its place."""
-        if self._send_now_would_stop_background():
+        a Stop, would also end background agents (#1526): the message keeps its place, unless
+        the operator confirmed exactly those tasks (Stop all and send, #1644)."""
+        if self._send_now_would_stop_background() and not (
+            stop_all and self._confirmed(params)  # rechecked after every await before it
+        ):
             return await asyncio.to_thread(
                 native_journal.record_handoff,
                 self.journal_root,
@@ -1255,7 +1319,9 @@ class Worker:
         current = await self._answer_current(queued)
         if not self._native_send_now():
             # The connection changed while the journal was read (its fence was lost).
-            return await self._send_now_by_interrupt(params, receipt)
+            return await self._send_now_by_interrupt(
+                params, receipt, stop_all=params["mode"] == "stop_all"
+            )
         self.queued.remove(queued)
         self.sent_now.discard(queued["operation_id"])
         if current:

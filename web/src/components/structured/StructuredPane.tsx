@@ -41,6 +41,7 @@ import {
 import { substituteFields, uploadStoredName } from "../../lib/templateMessage";
 import { shareLink } from "../../lib/shareLink";
 import type { TermStatus } from "../../lib/termSocket";
+import { humanDuration } from "../../lib/format";
 import { useCompactHead, useIsMobile } from "../../lib/useIsMobile";
 import { SESSIONS_PATH } from "../../lib/routes";
 import { reloadRoster } from "../../app/reloadRoster";
@@ -62,6 +63,7 @@ import term from "../terminal/Terminal.module.css";
 import type {
   Containment,
   Template,
+  StructuredBackgroundTask,
   StructuredRequest,
   StructuredAgentTurn,
   StructuredRisk,
@@ -158,6 +160,33 @@ const uuid = () => crypto.randomUUID();
 
 function detail(e: unknown, fallback: string): string {
   return e instanceof ApiError && e.message ? e.message : fallback;
+}
+
+/** How long a queued message has waited (#1644), from the time it was queued as the server keeps
+ *  it (its header shows that time): a refresh or a reconnect shows the same wait, never a timer
+ *  that restarts with the page. */
+function QueuedSince({ ts }: { ts: number }) {
+  const [now, setNow] = useState(() => Date.now() / 1000);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now() / 1000), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+  return (
+    <p className={styles.queuedSince} data-testid="structured-queued-since">
+      Queued for {humanDuration(Math.max(0, now - ts))}
+    </p>
+  );
+}
+
+/** The closed reason a Send now refusal carries (#1644), or null for any other refusal. */
+function refusalReason(e: unknown): "would_stop_background" | "inventory_changed" | null {
+  const reason = e instanceof ApiError ? (e.record as { reason?: unknown } | undefined)?.reason : null;
+  return reason === "would_stop_background" || reason === "inventory_changed" ? reason : null;
+}
+
+/** A task as the Stop all and send choice names it: its own description, else its id. */
+function taskLabel(task: StructuredBackgroundTask): string {
+  return task.description || task.summary || task.task_type || task.task_id;
 }
 
 /** A server answer (4xx) means the request was NOT taken; anything else may have been. */
@@ -1128,6 +1157,7 @@ function TurnView({
               </span>
             )}
           </div>
+          {typeof turn.ts === "number" && turn.ts > 0 && <QueuedSince ts={turn.ts} />}
           {turn.delivery === "interrupt_failed" && (
             <p className={styles.activityFailed} role="alert">
               Couldn’t interrupt: {turn.delivery_reason}. This message is still queued.
@@ -1345,6 +1375,14 @@ export function StructuredPane({
   const recoveringSendNow = sendNowUnknown?.key === key ? sendNowUnknown : null;
   const sendNowIds = useRef(new Map<string, { id: string; turnId: string }>());
   const sendNowBusy = useRef(false);
+  // Send now refused because only a Stop could cut the turn (#1644): the operator chooses Wait or
+  // Stop all and send. `previous`: the tasks a confirmation named that no longer match.
+  const [stopChoice, setStopChoice] = useState<{
+    key: string;
+    queuedTurnId: string;
+    previous: StructuredBackgroundTask[] | null;
+  } | null>(null);
+  const [stoppingAll, setStoppingAll] = useState(false);
   const [alwaysSendNow, setAlwaysSendNow] = useAlwaysSendNow();
   // Always send now (#1447) presses Send now once per queued head; a refusal the agent may
   // outgrow (its turn not acknowledged yet) is retried when the journal moves, a few times.
@@ -2038,8 +2076,12 @@ export function StructuredPane({
       if (definite(e) && !recoveringSendNow) {
         sendNowIds.current.delete(target);
         setSendNowUnknown(null);
-        // An automatic attempt retries on its own; only its last refusal is worth showing.
-        if (!auto || (autoTries.current.get(target)?.tries ?? 0) >= AUTO_SEND_TRIES) {
+        if (!auto && refusalReason(e) === "would_stop_background") {
+          // Only a Stop could cut it now (#1644): a choice, never a dead end. Always send now
+          // never offers it; its hint above the composer says why the message waits.
+          setStopChoice({ key, queuedTurnId, previous: null });
+        } else if (!auto || (autoTries.current.get(target)?.tries ?? 0) >= AUTO_SEND_TRIES) {
+          // An automatic attempt retries on its own; only its last refusal is worth showing.
           setActionError(`Send now not applied: ${detail(e, "refused")}`);
         }
       } else {
@@ -2048,6 +2090,55 @@ export function StructuredPane({
     } finally {
       await load();
       setSendingNow(null);
+      sendNowBusy.current = false;
+    }
+  };
+
+  /** Stop all and send (#1644): the operator confirmed ending exactly the tasks shown. The
+   *  worker checks the generation, the turn, the queued head and the task ids again, after its
+   *  claim too; any change answers `inventory_changed` and the choice is shown again. */
+  const stopAllAndSend = async () => {
+    const choice = stopChoice?.key === key ? stopChoice : null;
+    if (!choice || !snap || sendNowBusy.current || readOnly) return;
+    const sendTarget = sendNowTarget(snap);
+    const worker = snap.native?.worker;
+    const tasks = snap.native?.background_tasks ?? [];
+    if (!sendTarget || !worker || tasks.length === 0) return;
+    sendNowBusy.current = true;
+    setStoppingAll(true);
+    setActionError(null);
+    try {
+      // A new identity each time: what it confirms is part of the request.
+      await act(api.structuredSendNow(key, uuid(), sendTarget.turnId, choice.queuedTurnId, {
+        worker,
+        task_ids: tasks.map((t) => t.task_id),
+      }));
+      setStopChoice(null);
+    } catch (e) {
+      if (definite(e) && refusalReason(e) === "inventory_changed") {
+        // The tasks, the turn, the queued head or the worker moved: ask again about what runs
+        // NOW, for the message that is first in line now (Hermes on #1650).
+        const fresh = await load();
+        const head = fresh
+          ? [...queuePositions(fresh)].find(([, position]) => position === 1)?.[0] ?? null
+          : null;
+        if (fresh && head && sendNowTarget(fresh)) {
+          setStopChoice({ key, queuedTurnId: head, previous: tasks });
+        } else {
+          setStopChoice(null);
+          setActionError(head
+            ? "Stop all and send not needed: the agent’s turn ended, and your message is next in line."
+            : "Stop all and send not applied: no message is waiting any more.");
+        }
+      } else {
+        setStopChoice(null);
+        setActionError(definite(e)
+          ? `Stop all and send not applied: ${detail(e, "refused")}`
+          : "Stop all and send: no answer from the agent, so it may have been applied. Check the conversation before you try again.");
+      }
+    } finally {
+      await load();
+      setStoppingAll(false);
       sendNowBusy.current = false;
     }
   };
@@ -2075,7 +2166,10 @@ export function StructuredPane({
     }
   };
 
+  // Not while the worker says Send now would stop background tasks (#1644): every attempt would
+  // be refused. It goes once that changes; the composer says why it waits meanwhile.
   const autoHead = alwaysSendNow && !readOnly && !permissionPending && !recoveringSendNow && !sendingNow
+    && snap?.native?.send_now_state !== "would_stop_background"
     ? autoSendNowHead(snap)
     : null;
   useEffect(() => {
@@ -2088,6 +2182,86 @@ export function StructuredPane({
     // sendNow reads the current snapshot itself; the head and revision are the triggers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoHead, snap?.revision, key]);
+
+  // Send now refused because only a Stop could cut the turn (#1644): Wait, or Stop all and send
+  // naming every task it ends. Shown while that message is still the one waiting.
+  const choice = stopChoice?.key === key ? stopChoice : null;
+  const choiceQueued = choice && snap
+    ? operatorTurns(snap).find((t) => t.turn_id === choice.queuedTurnId)?.state === "queued"
+    : false;
+  const choiceTasks = snap?.native?.background_tasks ?? [];
+  // Which message the choice sends: it may have been rebound to a new head after a change.
+  const choiceFull = choice && snap
+    ? operatorTurns(snap).find((t) => t.turn_id === choice.queuedTurnId)?.text ?? ""
+    : "";
+  const choiceText = choiceFull.length > 80 ? `${choiceFull.slice(0, 79)}…` : choiceFull;
+  const stopChoiceView = choice && choiceQueued && !readOnly ? (() => {
+    const before = new Set((choice.previous ?? []).map((t) => t.task_id));
+    const now = new Set(choiceTasks.map((t) => t.task_id));
+    const gone = (choice.previous ?? []).filter((t) => !now.has(t.task_id));
+    const changed = choice.previous !== null;
+    return (
+      <section className={styles.stopChoice} role="dialog" aria-labelledby="structured-stop-choice-title"
+        data-testid="structured-stop-choice">
+        <h4 id="structured-stop-choice-title" className={styles.stopChoiceTitle}>
+          {changed ? "Background tasks changed" : "Send now would stop background tasks"}
+        </h4>
+        {choiceText && <p className={styles.stopChoiceFor}>For “{choiceText}”</p>}
+        {choiceTasks.length === 0 ? (
+          <p>The background tasks have ended: Send now no longer stops anything.</p>
+        ) : (
+          <p>{changed
+            ? "Since you asked, the agent’s background tasks changed. Confirm against the current list:"
+            : "Cutting this turn now would also end:"}</p>
+        )}
+        {(choiceTasks.length > 0 || gone.length > 0) && (
+          <ul className={styles.stopChoiceList} data-testid="structured-stop-choice-tasks">
+            {choiceTasks.map((t) => (
+              <li key={t.task_id} className={changed && !before.has(t.task_id) ? styles.stopChoiceAdded : undefined}>
+                {changed && !before.has(t.task_id) ? "+ " : ""}{taskLabel(t)}
+              </li>
+            ))}
+            {gone.map((t) => (
+              <li key={`gone:${t.task_id}`} className={styles.stopChoiceGone}>{taskLabel(t)} (ended)</li>
+            ))}
+          </ul>
+        )}
+        <div className={styles.stopChoiceActions}>
+          <button type="button" className={styles.sendNow} disabled={stoppingAll}
+            onClick={() => setStopChoice(null)}>
+            Wait — send after this turn
+          </button>
+          {choiceTasks.length === 0 ? (
+            <button type="button" className={styles.sendNow} disabled={stoppingAll || !!sendingNow}
+              onClick={() => { setStopChoice(null); void sendNow(choice.queuedTurnId); }}>
+              Send now
+            </button>
+          ) : (
+            <button type="button" className={styles.stopAll} disabled={stoppingAll}
+              onClick={() => void stopAllAndSend()}>
+              {stoppingAll
+                ? "Stopping…"
+                : changed ? `Stop these ${choiceTasks.length} and send` : "Stop all and send"}
+            </button>
+          )}
+        </div>
+      </section>
+    );
+  })() : null;
+  // What Send now would do right now (#1644), BEFORE sending: only where the operator expects it
+  // to cut in (Always send now, or a message waiting for it), and only for a Stop-style Send now.
+  const sendNowState = snap?.native?.send_now_state;
+  const stopStyle = sendNowTarget(snap)?.mode === "interrupt";
+  const waitingHead = !!snap && operatorTurns(snap).some((t) => t.state === "queued");
+  const sendNowHint = !readOnly && isActive(snap) && stopStyle && (alwaysSendNow || waitingHead)
+    && (sendNowState === "would_stop_background" || sendNowState === "unknown") && !stopChoiceView ? (
+      <p role="status" data-testid="structured-sendnow-hint" data-state={sendNowState}
+        className={`${styles.sendNowHint} ${sendNowState === "unknown" ? styles.sendNowHintUnknown : styles.sendNowHintBlocked}`}>
+        {sendNowState === "unknown"
+          ? "Send now status unknown (the agent hasn’t reported it yet). Send queues until it is known."
+          : `Send now unavailable: the agent has ${choiceTasks.length === 1 ? "a background task" : choiceTasks.length > 1 ? `${choiceTasks.length} background tasks` : "background work"} running. Send queues behind its current turn.`}
+      </p>
+    ) : null;
 
   const turnOnAlwaysSendNow = (queuedTurnId: string) => {
     setAlwaysSendNow(true);
@@ -3116,6 +3290,8 @@ export function StructuredPane({
         </div>
         {veil && <TermUplinkVeil veil={veil} title={row?.title} input="outbox" />}
       </div>
+      {stopChoiceView}
+      {sendNowHint}
       {(sendError || actionError) && (
         <p className={chat.sendError} role="alert" data-testid="structured-error">
           {sendError ?? actionError}
@@ -3166,6 +3342,9 @@ export function StructuredPane({
                   ? "This session didn’t start"
                   : notStarted
                   ? "Start this session first"
+                  : active && alwaysSendNow && sendNowTarget(snap)
+                      && snap?.native?.send_now_state === "would_stop_background"
+                    ? `Message ${agent} — queues behind the agent’s current turn.`
                   : active && alwaysSendNow && sendNowTarget(snap)
                     ? sendNowTarget(snap)?.mode === "steer"
                       ? `Message ${agent} — sends now, into the current turn.`

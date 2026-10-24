@@ -800,3 +800,55 @@
   display: flex;
   flex-direction: column;
 }
+/* Send now refused because only a Stop could cut the turn (#1644): Wait (the queue, as always) or
+ * Stop all and send, naming every task it ends. The destructive choice is never the default. */
+.stopChoice {
+  margin: 0 12px 8px;
+  padding: 12px 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--status-degraded);
+}
+.stopChoiceTitle {
+  margin: 0 0 6px;
+  font: 600 calc(12px * var(--api-scale, 1)) var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+.stopChoice p { margin: 0 0 8px; line-height: 1.5; color: var(--text); }
+.stopChoiceList {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  font: calc(12px * var(--api-scale, 1)) var(--font-mono);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.stopChoiceAdded { color: var(--warn-text); }
+.stopChoiceGone { color: var(--text-muted); text-decoration: line-through; }
+.stopChoiceActions { display: flex; flex-wrap: wrap; gap: 8px; }
+.stopAll {
+  min-height: 44px;
+  padding: 0 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--status-down);
+  color: var(--danger-text);
+  font: 600 calc(12px * var(--api-scale, 1)) var(--font-mono);
+  cursor: pointer;
+}
+.stopAll:disabled { opacity: 0.5; cursor: default; }
+.stopAll:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* What Send now would do right now (#1644), shown before sending: a hint, never authority. */
+.sendNowHint {
+  margin: 0 12px 6px;
+  font: calc(12px * var(--api-scale, 1)) var(--font-mono);
+  line-height: 1.5;
+}
+.sendNowHintBlocked { color: var(--warn-text); }
+.sendNowHintUnknown { color: var(--text-muted); }
+/* A queued message's wait, from its persisted submit time (#1644). */
+.queuedSince { margin: 4px 0 0; color: var(--text-muted); }
+.stopChoice .stopChoiceFor { color: var(--text-muted); overflow-wrap: anywhere; }

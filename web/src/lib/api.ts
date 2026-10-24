@@ -885,8 +885,22 @@ export const api = {
   ) => mutateJson<unknown>("POST", `${structuredPath(key)}/decisions`, body),
   structuredInterrupt: (key: string, operation_id: string, turn_id: string) =>
     mutateJson<unknown>("POST", `${structuredPath(key)}/interrupt`, { operation_id, turn_id }),
-  structuredSendNow: (key: string, operation_id: string, turn_id: string, queued_turn_id: string) =>
-    mutateJson<unknown>("POST", `${structuredPath(key)}/send-now`, { operation_id, turn_id, queued_turn_id }),
+  /** `stop_all` (#1644): the operator confirmed ending exactly these background tasks of this
+   *  worker if only a Stop can cut the turn. The worker checks it again; a change answers 409
+   *  with `reason: "inventory_changed"`. */
+  structuredSendNow: (
+    key: string,
+    operation_id: string,
+    turn_id: string,
+    queued_turn_id: string,
+    stop_all?: { worker: string; task_ids: string[] },
+  ) =>
+    mutateJson<unknown>("POST", `${structuredPath(key)}/send-now`, {
+      operation_id,
+      turn_id,
+      queued_turn_id,
+      ...(stop_all ? { stop_all } : {}),
+    }),
   /** Remove one still-queued message before it is sent (#1447). Replays by operation id. */
   structuredWithdraw: (key: string, operation_id: string, queued_turn_id: string) =>
     mutateJson<unknown>("POST", `${structuredPath(key)}/withdraw`, { operation_id, queued_turn_id }),

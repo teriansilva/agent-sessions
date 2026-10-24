@@ -64,6 +64,19 @@ REASON_CODES = frozenset(
         "unexpected",
     }
 )
+#: Why Send now was refused (#1644), closed: `would_stop_background` — only a Stop, which also ends
+#: the agent's background tasks, could cut the turn now; `inventory_changed` — what the operator
+#: confirmed for Stop all and send (worker, turn, queued head or tasks) is no longer what runs.
+SEND_NOW_REFUSALS = frozenset({"would_stop_background", "inventory_changed"})
+
+
+def tasks_digest(task_ids) -> str:
+    """The identity of a set of background tasks, as confirmed and as rechecked (#1644)."""
+    import hashlib
+
+    return hashlib.sha256("\n".join(sorted(set(task_ids))).encode()).hexdigest()
+
+
 EFFECT_ACTIONS = frozenset({"submit", "decide", "interrupt", "send_now", "withdraw", "stop"})
 _ENGINE = re.compile(r"[a-z][a-z0-9-]{1,23}\Z", re.ASCII)
 _NATIVE = re.compile(r"[A-Za-z0-9_.:-]{1,258}\Z", re.ASCII)
@@ -325,8 +338,14 @@ def _params(action, value, *, immutable=False):
         (keys[action] & {"actor"} if immutable else set())
         | ({"attachments", "reply_to"} if action == "submit" else set())
         | ({"grant", "answers"} if action == "decide" else set())
+        # Stop all and send (#1644): what the operator confirmed, part of the request's identity.
+        | ({"confirm_worker_id", "confirm_tasks"} if action == "send_now" else set())
     )
     _object(value, required, optional)
+    if action == "send_now" and (value.get("mode") == "stop_all") != (
+        "confirm_worker_id" in value and "confirm_tasks" in value
+    ):
+        raise IPCError("a confirmation goes with Stop all and send, and only with it")
     if action == "decide" and (value.get("decision") == "always") != ("grant" in value):
         raise IPCError("a standing grant goes with an always decision, and only with one")
     if action == "decide" and (value.get("decision") == "answer") != ("answers" in value):
@@ -359,12 +378,12 @@ def _params(action, value, *, immutable=False):
                 out[key] = normalize_context(item)
             except ValueError:
                 raise IPCError("invalid private IPC correlation") from None
-        elif key == "payload_digest":
+        elif key in {"payload_digest", "confirm_tasks"}:
             out[key] = _digest(item)
         elif key == "decision":
             out[key] = _choice(item, {"approve", "reject", "cancel", "always", "answer"})
         elif key == "mode":
-            out[key] = _choice(item, {"steer", "interrupt"})
+            out[key] = _choice(item, {"steer", "interrupt", "stop_all"})
         elif key == "answers":
             try:
                 out[key] = native_questions.answer_shape(item)
@@ -554,7 +573,7 @@ def _event(value):
             "complete",
         }:
             out[key] = _boolean(item)
-        elif key == "payload_digest":
+        elif key in {"payload_digest", "confirm_tasks"}:
             out[key] = _digest(item)
         elif kind == "background" and key in TASK_METADATA_LIMITS:
             out[key] = _text(item, TASK_METADATA_LIMITS[key])
@@ -701,7 +720,10 @@ def validate_response(value, *, expected: Binding | None = None):
     if ("result" in value) == ("error" in value):
         raise IPCError("private IPC response requires exactly one outcome")
     if "error" in value:
-        error = _object(value["error"], {"code", "message"})
+        error = _object(value["error"], {"code", "message"}, {"reason"})
+        if "reason" in error:
+            # A closed refusal reason (#1644) the pane acts on; never free text.
+            out["error_reason"] = _choice(error["reason"], SEND_NOW_REFUSALS)
         out["error"] = {
             "code": _choice(
                 error["code"],
@@ -716,6 +738,7 @@ def validate_response(value, *, expected: Binding | None = None):
                 },
             ),
             "message": _text(error["message"], 2000),
+            **({"reason": out.pop("error_reason")} if "error_reason" in out else {}),
         }
     else:
         out["result"] = _result(action, value["result"])
