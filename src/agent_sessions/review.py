@@ -188,7 +188,11 @@ def _client(timeout: float) -> httpx.AsyncClient:
 
 
 def _require_config() -> dict:
-    cfg = prefs.get_ai_review()
+    try:
+        # A pre-#1671 block is migrated first: lazily, under the lock, failing closed.
+        cfg = prefs.get_ai_review_migrated()
+    except prefs.LegacyMigrationError as e:
+        raise EgressRefusedError(str(e)) from None
     if not str(cfg["base_url"]).strip() or not cfg["api_key"]:
         raise NotConfiguredError("AI review endpoint is not configured")
     _require_egress(cfg)
@@ -204,7 +208,20 @@ def _require_config() -> dict:
 
 def _require_egress(cfg: dict) -> None:
     """The egress gate (#1657): nothing — no completion, no model list — goes to a provider that
-    receives session content without the operator's acknowledgement for it."""
+    receives session content without the operator's acknowledgement for it.
+
+    A config resolved from a pre-#1671 block (`schema` < 2: the API chat agent's snapshot, say)
+    runs the legacy migration first and is judged by the ack it wrote — which only ever names the
+    stored provider and origin, so a snapshot pointing anywhere else is still refused."""
+    if (
+        cfg.get("schema", prefs.AI_REVIEW_SCHEMA) < prefs.AI_REVIEW_SCHEMA
+        and ai_providers.egress_violation(cfg) is not None
+    ):
+        try:
+            stored = prefs.get_ai_review_migrated()
+        except prefs.LegacyMigrationError as e:
+            raise EgressRefusedError(str(e)) from None
+        cfg = {**cfg, "egress_ack": stored.get("egress_ack"), "schema": stored.get("schema")}
     why = ai_providers.egress_violation(cfg)
     if why is not None:
         raise EgressRefusedError(why)

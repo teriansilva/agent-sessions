@@ -56,7 +56,15 @@ def _reset_activity():
 def configured_ai(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "prefs.json"))
     monkeypatch.setattr(review, "_TRANSPORT", None)
-    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": BASE,
+            "api_key": SECRET,
+            "model": "m",
+        }
+    )
     return tmp_path
 
 
@@ -590,7 +598,15 @@ def test_ask_unconfigured_is_409_with_configured_false(auth_cfg, fake_jsonl):
 
 
 def test_ask_endpoint_down_is_502_with_detail(auth_cfg, fake_jsonl, monkeypatch):
-    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": BASE,
+            "api_key": SECRET,
+            "model": "m",
+        }
+    )
     monkeypatch.setattr(
         review, "_TRANSPORT", httpx.MockTransport(lambda request: httpx.Response(502))
     )
@@ -626,7 +642,15 @@ def test_ask_requires_login(auth_cfg, fake_jsonl):
 
 
 def test_concurrent_ask_is_409_with_activity_snapshot(auth_cfg, fake_jsonl, monkeypatch):
-    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": BASE,
+            "api_key": SECRET,
+            "model": "m",
+        }
+    )
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
@@ -718,7 +742,15 @@ def _ndjson(r) -> list[dict]:
 
 
 def test_stream_route_sends_ndjson_events(auth_cfg, fake_jsonl, monkeypatch):
-    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": BASE,
+            "api_key": SECRET,
+            "model": "m",
+        }
+    )
 
     async def fake_events(query, history=None, *, working_keys=None):
         # The single-flight is held while the stream is being produced.
@@ -748,7 +780,15 @@ def test_stream_route_sends_ndjson_events(auth_cfg, fake_jsonl, monkeypatch):
 
 
 def test_stream_route_failure_after_start_is_one_error_line(auth_cfg, fake_jsonl, monkeypatch):
-    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": BASE,
+            "api_key": SECRET,
+            "model": "m",
+        }
+    )
     monkeypatch.setattr(
         review, "_TRANSPORT", httpx.MockTransport(lambda request: httpx.Response(502))
     )
@@ -773,7 +813,15 @@ def test_stream_route_refuses_before_streaming(auth_cfg, fake_jsonl, monkeypatch
     # Unconfigured is a 409 the UI pre-gates on, not a stream.
     r = c.post("/api/pulse/ask/stream", json={"query": "q"}, headers=hdr)
     assert r.status_code == 409 and r.json()["configured"] is False
-    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": BASE,
+            "api_key": SECRET,
+            "model": "m",
+        }
+    )
     # The body bounds are the plain route's.
     assert c.post("/api/pulse/ask/stream", json={}, headers=hdr).status_code == 422
     long = "x" * (pulse_chat.QUERY_MAX + 1)
@@ -810,7 +858,15 @@ def test_stream_delivers_stage1_before_stage2_and_holds_the_gate_across_it(
     """Through the route's own body iterator, with Stage 2 PAUSED: the Stage-1 answer line is out
     while Stage 2 has not finished, the single-flight is held for exactly that span, and a plain
     `/api/pulse/ask` meanwhile is a 409 — the two routes share one gate."""
-    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": BASE,
+            "api_key": SECRET,
+            "model": "m",
+        }
+    )
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
@@ -866,7 +922,15 @@ def test_a_client_that_leaves_mid_stream_releases_the_gate(auth_cfg, fake_jsonl,
     """A disconnect closes the body iterator (Starlette cancels the response). Whether it happens
     after the first line or while Stage 2 is in flight, the gate must come free — otherwise one
     abandoned tab blocks every later question with a 409."""
-    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": BASE,
+            "api_key": SECRET,
+            "model": "m",
+        }
+    )
     c = _client(auth_cfg)
 
     async def hanging_events(query, history=None, *, working_keys=None):

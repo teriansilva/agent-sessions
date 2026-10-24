@@ -34,7 +34,9 @@ def _reset_review(monkeypatch):
 def ai_prefs(tmp_home, monkeypatch):
     """Point prefs at tmp and store a configured ai_review block."""
     monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_home / "prefs.json"))
-    prefs.set_ai_review({"base_url": BASE, "api_key": SECRET, "model": "test-model"})
+    prefs.set_ai_review(
+        {"egress_acknowledged": True, "base_url": BASE, "api_key": SECRET, "model": "test-model"}
+    )
     return tmp_home
 
 

@@ -274,7 +274,9 @@ def test_guard_holds_even_when_the_operator_blanks_the_prompt(tmp_home):
 def test_legacy_prompts_keep_their_existing_home(tmp_home):
     """No migration: the three that lived in a feature block still write there, and the rest
     of that block (the API key!) survives the write."""
-    prefs.set_ai_review({"api_key": "sk-keep-me", "base_url": "https://ai.example/v1"})
+    prefs.set_ai_review(
+        {"egress_acknowledged": True, "api_key": "sk-keep-me", "base_url": "https://ai.example/v1"}
+    )
     prompts.set_value("tail_review", "Summarize the tail.")
     doc = json.loads((tmp_home / "prefs.json").read_text())
     assert doc["ai_review"]["prompt"] == "Summarize the tail."
@@ -293,7 +295,9 @@ def test_new_prompts_share_one_block_keyed_by_id(tmp_home):
 
 def test_a_prompt_save_does_not_clobber_a_concurrent_block_write(tmp_home):
     """Both writes merge under the prefs lock, so neither erases the other."""
-    prefs.set_ai_review({"base_url": "https://ai.example/v1", "api_key": "sk-x"})
+    prefs.set_ai_review(
+        {"egress_acknowledged": True, "base_url": "https://ai.example/v1", "api_key": "sk-x"}
+    )
     barrier = threading.Barrier(2)
 
     def save_prompt():

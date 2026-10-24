@@ -112,7 +112,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         if isinstance(api_key, str) and len(api_key) > prefs.AI_REVIEW_KEY_MAX:
             raise HTTPException(status_code=422, detail="api_key is too long")
 
-        stored = prefs.get_ai_review()  # ONE snapshot decides both the origin and the key
+        try:
+            # ONE snapshot decides both the origin and the key; a pre-#1671 block is migrated
+            # first, so its legacy ack can cover a test of that same endpoint.
+            stored = prefs.get_ai_review_migrated()
+        except prefs.LegacyMigrationError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from None
         key, why = prefs.resolve_test_key(stored, base_url, api_key)
         if why is not None:
             raise HTTPException(status_code=422, detail=why)

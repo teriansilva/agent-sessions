@@ -69,7 +69,14 @@ def upstream(monkeypatch):
 
 @pytest.fixture
 def stored():
-    prefs.set_ai_review({"base_url": STORED_BASE, "api_key": STORED_KEY, "model": "m-a"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "base_url": STORED_BASE,
+            "api_key": STORED_KEY,
+            "model": "m-a",
+        }
+    )
 
 
 def _prefs_bytes() -> bytes:
@@ -83,7 +90,11 @@ def test_a_test_never_persists_anything(auth_cfg, fake_jsonl, stored, upstream):
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
     before = _prefs_bytes()
-    r = c.post(TEST_URL, json={"base_url": OTHER_BASE, "api_key": "sk-new"}, headers=hdr)
+    r = c.post(
+        TEST_URL,
+        json={"egress_acknowledged": True, "base_url": OTHER_BASE, "api_key": "sk-new"},
+        headers=hdr,
+    )
     assert r.status_code == 200
     assert r.json() == {"models": ["m-a", "m-b"], "listing": "ok"}
     assert _prefs_bytes() == before
@@ -98,7 +109,9 @@ def test_another_origin_without_a_new_key_is_refused_before_any_request(
     calls, _ = upstream
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
-    r = c.post(TEST_URL, json={"base_url": OTHER_BASE, **key}, headers=hdr)
+    r = c.post(
+        TEST_URL, json={"egress_acknowledged": True, "base_url": OTHER_BASE, **key}, headers=hdr
+    )
     assert r.status_code == 422
     assert calls == []  # the stored key never left the server
     assert STORED_KEY not in r.text
@@ -108,11 +121,15 @@ def test_a_fresh_install_needs_the_key_in_the_request(auth_cfg, fake_jsonl, upst
     calls, _ = upstream
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
-    r = c.post(TEST_URL, json={"base_url": STORED_BASE}, headers=hdr)
+    r = c.post(TEST_URL, json={"egress_acknowledged": True, "base_url": STORED_BASE}, headers=hdr)
     assert r.status_code == 422
     assert "API key is required" in r.json()["detail"]
     assert calls == []
-    ok = c.post(TEST_URL, json={"base_url": STORED_BASE, "api_key": "sk-first"}, headers=hdr)
+    ok = c.post(
+        TEST_URL,
+        json={"egress_acknowledged": True, "base_url": STORED_BASE, "api_key": "sk-first"},
+        headers=hdr,
+    )
     assert ok.status_code == 200
     assert calls[-1].headers["authorization"] == "Bearer sk-first"
 
@@ -121,7 +138,11 @@ def test_a_new_key_is_sent_instead_of_the_stored_one(auth_cfg, fake_jsonl, store
     calls, _ = upstream
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
-    r = c.post(TEST_URL, json={"base_url": STORED_BASE, "api_key": " sk-new "}, headers=hdr)
+    r = c.post(
+        TEST_URL,
+        json={"egress_acknowledged": True, "base_url": STORED_BASE, "api_key": " sk-new "},
+        headers=hdr,
+    )
     assert r.status_code == 200
     assert calls[-1].headers["authorization"] == "Bearer sk-new"
 
@@ -134,7 +155,7 @@ def test_the_same_origin_reuses_the_stored_key(auth_cfg, fake_jsonl, stored, ups
     calls, _ = upstream
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
-    r = c.post(TEST_URL, json={"base_url": same_origin}, headers=hdr)
+    r = c.post(TEST_URL, json={"egress_acknowledged": True, "base_url": same_origin}, headers=hdr)
     assert r.status_code == 200, r.text
     assert calls[-1].headers["authorization"] == f"Bearer {STORED_KEY}"
 
@@ -153,7 +174,7 @@ def test_a_changed_scheme_port_or_host_is_another_origin(
     calls, _ = upstream
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
-    r = c.post(TEST_URL, json={"base_url": other_origin}, headers=hdr)
+    r = c.post(TEST_URL, json={"egress_acknowledged": True, "base_url": other_origin}, headers=hdr)
     assert r.status_code == 422
     assert calls == []
 
@@ -166,7 +187,7 @@ def test_an_endpoint_that_cannot_list_models_is_unsupported_not_rejected(
     reply["status"], reply["json"] = status, {"error": "no such route"}
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
-    r = c.post(TEST_URL, json={"base_url": STORED_BASE}, headers=hdr)
+    r = c.post(TEST_URL, json={"egress_acknowledged": True, "base_url": STORED_BASE}, headers=hdr)
     assert r.status_code == 200
     assert r.json() == {"models": [], "listing": "unsupported"}
 
@@ -179,7 +200,7 @@ def test_a_rejection_is_a_502_carrying_the_gateway_reason_without_the_key(
     reply["json"] = {"error": {"message": f"Invalid API key: {STORED_KEY}"}}
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
-    r = c.post(TEST_URL, json={"base_url": STORED_BASE}, headers=hdr)
+    r = c.post(TEST_URL, json={"egress_acknowledged": True, "base_url": STORED_BASE}, headers=hdr)
     assert r.status_code == 502
     assert "Invalid API key" in r.json()["detail"]
     assert STORED_KEY not in r.text
@@ -188,10 +209,18 @@ def test_a_rejection_is_a_502_carrying_the_gateway_reason_without_the_key(
 def test_the_route_needs_a_session_and_a_csrf_token(auth_cfg, fake_jsonl, stored, upstream):
     calls, _ = upstream
     c = _client(auth_cfg)
-    anon = c.post(TEST_URL, json={"base_url": STORED_BASE}, headers={"Origin": auth_cfg.origin})
+    anon = c.post(
+        TEST_URL,
+        json={"egress_acknowledged": True, "base_url": STORED_BASE},
+        headers={"Origin": auth_cfg.origin},
+    )
     assert anon.status_code in (401, 403)
     _login(c, auth_cfg)
-    no_csrf = c.post(TEST_URL, json={"base_url": STORED_BASE}, headers={"Origin": auth_cfg.origin})
+    no_csrf = c.post(
+        TEST_URL,
+        json={"egress_acknowledged": True, "base_url": STORED_BASE},
+        headers={"Origin": auth_cfg.origin},
+    )
     assert no_csrf.status_code in (401, 403)
     assert calls == []
 
@@ -204,7 +233,11 @@ def test_prefs_refuses_moving_a_stored_key_to_another_origin(auth_cfg, fake_json
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
     before = _prefs_bytes()
-    r = c.post("/api/prefs", json={"ai_review": {"base_url": OTHER_BASE, **key}}, headers=hdr)
+    r = c.post(
+        "/api/prefs",
+        json={"ai_review": {"egress_acknowledged": True, "base_url": OTHER_BASE, **key}},
+        headers=hdr,
+    )
     assert r.status_code == 422
     assert "enter the API key" in r.json()["detail"]
     assert _prefs_bytes() == before
@@ -215,7 +248,13 @@ def test_prefs_accepts_a_new_origin_with_its_own_key(auth_cfg, fake_jsonl, store
     hdr = _login(c, auth_cfg)
     r = c.post(
         "/api/prefs",
-        json={"ai_review": {"base_url": OTHER_BASE, "api_key": "sk-other"}},
+        json={
+            "ai_review": {
+                "egress_acknowledged": True,
+                "base_url": OTHER_BASE,
+                "api_key": "sk-other",
+            }
+        },
         headers=hdr,
     )
     assert r.status_code == 200
@@ -227,7 +266,9 @@ def test_prefs_accepts_a_new_origin_that_clears_the_key(auth_cfg, fake_jsonl, st
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
     r = c.post(
-        "/api/prefs", json={"ai_review": {"base_url": OTHER_BASE, "api_key": None}}, headers=hdr
+        "/api/prefs",
+        json={"ai_review": {"egress_acknowledged": True, "base_url": OTHER_BASE, "api_key": None}},
+        headers=hdr,
     )
     assert r.status_code == 200
     got = prefs.get_ai_review()
@@ -235,10 +276,14 @@ def test_prefs_accepts_a_new_origin_that_clears_the_key(auth_cfg, fake_jsonl, st
 
 
 def test_with_no_stored_key_any_origin_is_accepted(auth_cfg, fake_jsonl):
-    prefs.set_ai_review({"base_url": STORED_BASE})
+    prefs.set_ai_review({"egress_acknowledged": True, "base_url": STORED_BASE})
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
-    r = c.post("/api/prefs", json={"ai_review": {"base_url": OTHER_BASE}}, headers=hdr)
+    r = c.post(
+        "/api/prefs",
+        json={"ai_review": {"egress_acknowledged": True, "base_url": OTHER_BASE}},
+        headers=hdr,
+    )
     assert r.status_code == 200
 
 
@@ -246,7 +291,9 @@ def test_staying_on_the_origin_keeps_the_key(auth_cfg, fake_jsonl, stored):
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
     r = c.post(
-        "/api/prefs", json={"ai_review": {"base_url": "https://ai.example.io/v2"}}, headers=hdr
+        "/api/prefs",
+        json={"ai_review": {"egress_acknowledged": True, "base_url": "https://ai.example.io/v2"}},
+        headers=hdr,
     )
     assert r.status_code == 200
     assert prefs.get_ai_review()["api_key"] == STORED_KEY
@@ -257,7 +304,11 @@ def test_clearing_the_url_while_the_key_stays_is_refused(auth_cfg, fake_jsonl, s
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
     before = _prefs_bytes()
-    r = c.post("/api/prefs", json={"ai_review": {"base_url": "", **key}}, headers=hdr)
+    r = c.post(
+        "/api/prefs",
+        json={"ai_review": {"egress_acknowledged": True, "base_url": "", **key}},
+        headers=hdr,
+    )
     assert r.status_code == 422
     assert "clear the API key too" in r.json()["detail"]
     assert _prefs_bytes() == before
@@ -266,7 +317,11 @@ def test_clearing_the_url_while_the_key_stays_is_refused(auth_cfg, fake_jsonl, s
 def test_clearing_the_url_together_with_the_key_is_allowed(auth_cfg, fake_jsonl, stored):
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
-    r = c.post("/api/prefs", json={"ai_review": {"base_url": "", "api_key": None}}, headers=hdr)
+    r = c.post(
+        "/api/prefs",
+        json={"ai_review": {"egress_acknowledged": True, "base_url": "", "api_key": None}},
+        headers=hdr,
+    )
     assert r.status_code == 200
     got = prefs.get_ai_review()
     assert (got["base_url"], got["api_key"]) == ("", "")
@@ -280,9 +335,17 @@ def test_clear_then_rebind_cannot_carry_the_key_to_another_host(
     calls, _ = upstream
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
-    cleared = c.post("/api/prefs", json={"ai_review": {"base_url": ""}}, headers=hdr)
-    rebound = c.post("/api/prefs", json={"ai_review": {"base_url": OTHER_BASE}}, headers=hdr)
-    tested = c.post(TEST_URL, json={"base_url": OTHER_BASE}, headers=hdr)
+    cleared = c.post(
+        "/api/prefs", json={"ai_review": {"egress_acknowledged": True, "base_url": ""}}, headers=hdr
+    )
+    rebound = c.post(
+        "/api/prefs",
+        json={"ai_review": {"egress_acknowledged": True, "base_url": OTHER_BASE}},
+        headers=hdr,
+    )
+    tested = c.post(
+        TEST_URL, json={"egress_acknowledged": True, "base_url": OTHER_BASE}, headers=hdr
+    )
     assert (cleared.status_code, rebound.status_code, tested.status_code) == (422, 422, 422)
     assert calls == []
     got = prefs.get_ai_review()
@@ -294,13 +357,25 @@ def test_a_key_stored_under_an_unparseable_url_stays_bound(auth_cfg, fake_jsonl,
     path = prefs._default_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps({"ai_review": {"base_url": "https://ai.example.io:bad/v1", "api_key": "sk-x"}})
+        json.dumps(
+            {
+                "ai_review": {
+                    "egress_acknowledged": True,
+                    "base_url": "https://ai.example.io:bad/v1",
+                    "api_key": "sk-x",
+                }
+            }
+        )
     )
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
-    r = c.post("/api/prefs", json={"ai_review": {"base_url": OTHER_BASE}}, headers=hdr)
+    r = c.post(
+        "/api/prefs",
+        json={"ai_review": {"egress_acknowledged": True, "base_url": OTHER_BASE}},
+        headers=hdr,
+    )
     assert r.status_code == 422
-    t = c.post(TEST_URL, json={"base_url": OTHER_BASE}, headers=hdr)
+    t = c.post(TEST_URL, json={"egress_acknowledged": True, "base_url": OTHER_BASE}, headers=hdr)
     assert t.status_code == 422
     assert calls == []
 
@@ -309,10 +384,18 @@ def test_a_key_stored_without_any_url_binds_to_the_first_url(auth_cfg, fake_json
     prefs.set_ai_review({"api_key": "sk-unbound"})
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
-    r = c.post("/api/prefs", json={"ai_review": {"base_url": OTHER_BASE}}, headers=hdr)
+    r = c.post(
+        "/api/prefs",
+        json={"ai_review": {"egress_acknowledged": True, "base_url": OTHER_BASE}},
+        headers=hdr,
+    )
     assert r.status_code == 200
     # ...and from then on it is bound to that origin.
-    again = c.post("/api/prefs", json={"ai_review": {"base_url": STORED_BASE}}, headers=hdr)
+    again = c.post(
+        "/api/prefs",
+        json={"ai_review": {"egress_acknowledged": True, "base_url": STORED_BASE}},
+        headers=hdr,
+    )
     assert again.status_code == 422
 
 
@@ -331,13 +414,22 @@ def test_an_in_lock_refusal_leaves_every_other_block_of_the_patch_unwritten(
         calls["n"] += 1
         verdict = real(cur, patch)
         if calls["n"] == 1:  # the route's pre-check: passes, then another save lands
-            prefs.set_ai_review({"base_url": "https://b.example.net/v1", "api_key": "sk-b"})
+            prefs.set_ai_review(
+                {
+                    "egress_acknowledged": True,
+                    "base_url": "https://b.example.net/v1",
+                    "api_key": "sk-b",
+                }
+            )
         return verdict
 
     monkeypatch.setattr(prefs, "key_origin_violation", racing)
     r = c.post(
         "/api/prefs",
-        json={"theme": "dark", "ai_review": {"base_url": "https://ai.example.io/v9"}},
+        json={
+            "theme": "dark",
+            "ai_review": {"egress_acknowledged": True, "base_url": "https://ai.example.io/v9"},
+        },
         headers=hdr,
     )
     assert r.status_code == 422
@@ -360,10 +452,16 @@ def test_a_malformed_url_is_a_422_before_any_request(auth_cfg, fake_jsonl, store
     calls, _ = upstream
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)
-    r = c.post(TEST_URL, json={"base_url": bad, "api_key": "sk-x"}, headers=hdr)
+    r = c.post(
+        TEST_URL,
+        json={"egress_acknowledged": True, "base_url": bad, "api_key": "sk-x"},
+        headers=hdr,
+    )
     assert r.status_code == 422
     saved = c.post(
-        "/api/prefs", json={"ai_review": {"base_url": bad, "api_key": "sk-x"}}, headers=hdr
+        "/api/prefs",
+        json={"ai_review": {"egress_acknowledged": True, "base_url": bad, "api_key": "sk-x"}},
+        headers=hdr,
     )
     assert saved.status_code == 422
     assert calls == []
@@ -385,7 +483,9 @@ def test_the_in_lock_check_wins_the_race_a_pre_check_would_lose(stored):
     assert prefs.validate_ai_review_patch(stale) is None
     assert prefs.key_origin_violation(prefs.get_ai_review(), stale) is None  # passes pre-lock
 
-    prefs.set_ai_review({"base_url": "https://b.example.net/v1", "api_key": "sk-b"})
+    prefs.set_ai_review(
+        {"egress_acknowledged": True, "base_url": "https://b.example.net/v1", "api_key": "sk-b"}
+    )
 
     with pytest.raises(prefs.KeyOriginError):
         prefs.set_ai_review(stale)

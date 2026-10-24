@@ -222,7 +222,13 @@ def ready(app, monkeypatch):
     c, hdr, cfg = app
     c.post("/api/voice/settings", json=FULL, headers=hdr)
     prefs.set_ai_review(
-        {"enabled": True, "base_url": "https://ai.test/v1", "api_key": "k", "model": "m"}
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": "https://ai.test/v1",
+            "api_key": "k",
+            "model": "m",
+        }
     )
 
     async def yes():

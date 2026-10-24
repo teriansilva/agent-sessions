@@ -117,6 +117,7 @@ import type {
   UpdateSettings,
   UploadBatch,
   UploadResult,
+  AiProvider,
 } from "../types/api";
 import { clearSent } from "./sentHistory";
 import type {
@@ -1660,6 +1661,9 @@ export const api = {
    *  (the Settings dropdown falls back to free-text entry). */
   /** The endpoint-validation probe (#394): `getJsonWithDetail` so a 502 arrives as the
    *  gateway's own message — the panel renders it verbatim (#382, #834). */
+  /** The static provider table the Settings picker renders (#1657). */
+  aiProviders: () =>
+    getJsonWithDetail<{ providers: AiProvider[] }>("/api/ai-review/providers"),
   aiReviewModels: (opts?: { refresh?: boolean }) =>
     getJsonWithDetail<{ models: string[] }>(
       `/api/ai-review/models${opts?.refresh ? "?refresh=1" : ""}`,
@@ -1668,7 +1672,14 @@ export const api = {
    *  only when `base_url` is on the origin it was saved for; any other origin needs `api_key`
    *  (422 otherwise, with no request made). `listing: "unsupported"` = the endpoint answered but
    *  can't list models; a 502 carries the gateway's own (key-redacted) reason. */
-  testAiEndpoint: (body: { base_url: string; api_key?: string }) =>
+  testAiEndpoint: (body: {
+    base_url: string;
+    api_key?: string;
+    /** #1657: the draft's provider row; a hosted row's URL must be the table's. */
+    provider?: string;
+    /** #1671: the operator ticked the egress acknowledgement for THIS draft's recipient. */
+    egress_acknowledged?: boolean;
+  }) =>
     mutateJson<{ models: string[]; listing: "ok" | "unsupported" }>(
       "POST",
       "/api/ai-review/endpoint/test",

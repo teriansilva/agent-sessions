@@ -1924,7 +1924,13 @@ async def _reviewable_api_session(monkeypatch, tmp_home, project, source, calls,
     """One API session with a settled turn, AI review configured against a mock endpoint."""
     monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_home / "prefs.json"))
     prefs.set_ai_review(
-        {"enabled": True, "base_url": "https://ai.test/v1", "api_key": "sk-t", "model": "m"}
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": "https://ai.test/v1",
+            "api_key": "sk-t",
+            "model": "m",
+        }
     )
     monkeypatch.setattr(
         review, "_TRANSPORT", test_ai_review_loop._chat_transport(calls, **transport)

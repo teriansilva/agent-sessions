@@ -17,6 +17,15 @@ const AI_REVIEW = {
   max_input_chars: 24000,
   api_key_set: true,
   configured: true,
+  // A saved remote endpoint always carries the server's acknowledgement since #1671 (ticked, or
+  // carried over by the migration); these tests stay on that origin, so it keeps covering them.
+  provider: "custom",
+  egress_ack: {
+    provider: "custom",
+    origin: "https://ai.example.io:443",
+    at: "t",
+    source: "operator",
+  },
 };
 
 const AUTO_SORT = {

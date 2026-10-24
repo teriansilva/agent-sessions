@@ -19,6 +19,14 @@ vi.mock("../lib/api", () => ({
     createProject: vi.fn(),
     aiReviewModels: vi.fn(),
     testAiEndpoint: vi.fn(),
+    // #1657: the provider table the Endpoint & model picker renders (self-hosted presets included).
+    aiProviders: vi.fn(async () => ({
+      providers: [
+        { id: "custom", label: "Custom (OpenAI-compatible)", group: "custom", kind: "openai-chat", base_url: "", url_editable: true, vendor: "", thinking_supported: true, auto_model: "", key_hint: "" },
+        { id: "ollama", label: "Ollama", group: "self-hosted", kind: "openai-chat", base_url: "http://localhost:11434/v1", url_editable: true, vendor: "", thinking_supported: true, auto_model: "", key_hint: "" },
+        { id: "lmstudio", label: "LM Studio", group: "self-hosted", kind: "openai-chat", base_url: "http://localhost:1234/v1", url_editable: true, vendor: "", thinking_supported: true, auto_model: "", key_hint: "" },
+      ],
+    })),
     // #1009: the Usage analytics step saves through this, and reconciles a failure with config().
     setAnalyticsConsent: vi.fn(),
     config: vi.fn(),
@@ -291,9 +299,15 @@ test("AI step: Save connection checks, then saves, then refreshes config — and
 
   await user.type(screen.getByLabelText(/Base URL/i), "https://api.openai.com/v1");
   await user.type(screen.getByLabelText(/API key/i), "sk-secret");
+  // A remote endpoint waits for the egress acknowledgement (#1671).
+  await user.click(screen.getByRole("checkbox", { name: /I understand session content is sent to/ }));
   await user.click(screen.getByRole("button", { name: "Save connection" }));
 
-  const body = { base_url: "https://api.openai.com/v1", api_key: "sk-secret" };
+  const body = {
+    base_url: "https://api.openai.com/v1",
+    api_key: "sk-secret",
+    egress_acknowledged: true,
+  };
   expect(api.testAiEndpoint).toHaveBeenCalledWith(body);
   await waitFor(() =>
     expect(api.setPrefs).toHaveBeenCalledWith({ ai_review: body }),
@@ -323,6 +337,8 @@ test("AI step: a failed check says why and never blocks setup (#692/#956)", asyn
   await gotoAiStep();
   await user.type(screen.getByLabelText(/Base URL/i), "https://api.openai.com/v1");
   await user.type(screen.getByLabelText(/API key/i), "sk-bad");
+  // A remote endpoint waits for the egress acknowledgement (#1671).
+  await user.click(screen.getByRole("checkbox", { name: /I understand session content is sent to/ }));
   await user.click(screen.getByRole("button", { name: "Save connection" }));
   expect(
     await screen.findByText("✗ Not saved — 401 Unauthorized"),
@@ -629,8 +645,10 @@ test("with an AI endpoint the contact step follows AI, and a pick is written to 
   expect(
     within(gallery).getByRole("radio", { name: /random/i }),
   ).toHaveAttribute("aria-checked", "true");
+  // Anchored: the Random card reads "Today: <name>", so on a day whose contact is Harlan an
+  // unanchored match finds that card too (date-dependent).
   await userEvent.click(
-    within(gallery).getByRole("radio", { name: /general jack harlan/i }),
+    within(gallery).getByRole("radio", { name: /^general jack harlan/i }),
   );
   await waitFor(() =>
     expect(api.setPrefs).toHaveBeenCalledWith({ hq_contact: "us-man" }),
@@ -682,15 +700,16 @@ test("a local preset fills the Base URL draft and saves nothing", async () => {
   vi.mocked(api.testAiEndpoint).mockClear();
   renderWizard();
   await gotoAiStep();
-  const presets = screen.getByRole("group", { name: /local ai on the battlelab host/i });
-  await userEvent.click(within(presets).getByRole("button", { name: "Ollama" }));
+  // Presets are the self-hosted tiles of the provider picker since #1671.
+  const presets = await screen.findByRole("radiogroup", { name: /self-hosted/i });
+  await userEvent.click(await within(presets).findByRole("radio", { name: "Ollama" }));
   expect(screen.getByLabelText(/base url/i)).toHaveValue(
     "http://localhost:11434/v1",
   );
   expect(
-    within(presets).getByRole("button", { name: "Ollama" }),
-  ).toHaveAttribute("aria-pressed", "true");
-  await userEvent.click(within(presets).getByRole("button", { name: "LM Studio" }));
+    within(presets).getByRole("radio", { name: "Ollama" }),
+  ).toHaveAttribute("aria-checked", "true");
+  await userEvent.click(within(presets).getByRole("radio", { name: "LM Studio" }));
   expect(screen.getByLabelText(/base url/i)).toHaveValue(
     "http://localhost:1234/v1",
   );

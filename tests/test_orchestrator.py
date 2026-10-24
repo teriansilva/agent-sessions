@@ -82,7 +82,15 @@ def _isolate(tmp_path, monkeypatch):
 
 @pytest.fixture
 def configured_ai():
-    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": BASE,
+            "api_key": SECRET,
+            "model": "m",
+        }
+    )
 
 
 def _setup(monkeypatch, sessions, meta=None):
@@ -634,7 +642,15 @@ def test_loop_skips_when_disabled_unconfigured_and_unchanged(monkeypatch):
     assert asyncio.run(orchestrator_loop.sweep())["skipped"] == "disabled"
     prefs.set_orchestrator({"enabled": True})
     assert asyncio.run(orchestrator_loop.sweep())["skipped"] == "unconfigured"
-    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": BASE,
+            "api_key": SECRET,
+            "model": "m",
+        }
+    )
     monkeypatch.setattr(orchestrator, "eligible_cards", lambda **k: ([], {}))
     assert asyncio.run(orchestrator_loop.sweep())["skipped"] == "empty"
 
@@ -1314,7 +1330,15 @@ def test_the_chat_route_delivers_its_own_yolo_approvals(auth_cfg, fake_jsonl, mo
     """
     from agent_sessions import actuator
 
-    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": BASE,
+            "api_key": SECRET,
+            "model": "m",
+        }
+    )
     prefs.set_orchestrator({"enabled": True, "autonomy": "yolo"})
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
@@ -1379,7 +1403,15 @@ def test_the_chat_response_matches_the_ledger_when_another_caller_wins(  # noqa:
     """
     from agent_sessions import actuator
 
-    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": BASE,
+            "api_key": SECRET,
+            "model": "m",
+        }
+    )
     prefs.set_orchestrator({"enabled": True, "autonomy": "yolo"})
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
@@ -1433,7 +1465,15 @@ def test_a_history_question_never_reaches_the_actuator(auth_cfg, fake_jsonl, mon
     """
     from agent_sessions import actuator
 
-    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": BASE,
+            "api_key": SECRET,
+            "model": "m",
+        }
+    )
     prefs.set_orchestrator({"enabled": True, "autonomy": "yolo"})  # the dangerous tier
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)

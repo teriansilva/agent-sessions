@@ -197,7 +197,9 @@ def _shared(engine_id: str, block: dict, path: Path | None) -> tuple[dict | None
     )
     # The provider travels with the resolved endpoint (#1657): the transport picks the dialect,
     # the auth header and the thinking field from it, and holds the request to its egress gate.
-    provider = {k: ai.get(k) for k in ("provider", "model_mode", "thinking", "egress_ack")}
+    provider = {
+        k: ai.get(k) for k in ("provider", "model_mode", "thinking", "egress_ack", "schema")
+    }
     if block["model"].strip():
         provider["model_mode"] = "specific"  # the agent's own override is never re-resolved
     return {
@@ -476,7 +478,9 @@ def snapshot(engine_id: str, path: Path | None = None) -> dict | None:
         if not key:
             return None
         base_url, model, bound = b["base_url"], b["model"], binding(b)
-        provider = {}  # the agent's own endpoint is OpenAI-compatible (Custom)
+        # The agent's OWN endpoint: OpenAI-compatible, configured and consented to on its own
+        # page, so Settings → AI's egress gate does not apply (#1671). Only this line sets it.
+        provider = {ai_providers.OWN_ENDPOINT_EXEMPT: True}
     return {
         **provider,
         "base_url": base_url,
@@ -515,6 +519,9 @@ def saved_test_draft(engine_id: str, path: Path | None = None) -> tuple[dict | N
     if shared is None:
         return None, why
     return {
+        # The provider travels with it (#1671): the test is held to the same egress gate and uses
+        # the same acknowledgement as a send.
+        **shared["provider"],
         "base_url": shared["base_url"],
         "api_key": shared["api_key"],
         "request_timeout": None,
@@ -543,4 +550,10 @@ def draft_for_test(
         key = template_secrets.decrypt(_secret_name(engine_id), b["key_envelope"])
         if not key:
             return None, "the stored API key cannot be read — enter it again"
-    return {"base_url": base_url.strip(), "api_key": key, "request_timeout": None}, None
+    # A draft of the agent's OWN endpoint: consented to on its own page, like its sends (#1671).
+    return {
+        ai_providers.OWN_ENDPOINT_EXEMPT: True,
+        "base_url": base_url.strip(),
+        "api_key": key,
+        "request_timeout": None,
+    }, None

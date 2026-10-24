@@ -36,6 +36,9 @@ OWN_KEY = "sk-own-key-0123456789"
 
 
 def set_ai(**fields) -> None:
+    # A remote Settings → AI endpoint needs the operator's acknowledgement since #1671.
+    if fields.get("base_url"):
+        fields.setdefault("egress_acknowledged", True)
     prefs.set_ai_review(fields)
 
 
@@ -192,7 +195,7 @@ def test_the_picker_follows_ai_settings_live():
     assert not registry.can_start(prov)
     set_ai(base_url=AI_URL, api_key=AI_KEY, model="ai-model")
     assert registry.can_start(prov)
-    prefs.set_ai_review({"base_url": "", "api_key": None})
+    prefs.set_ai_review({"egress_acknowledged": True, "base_url": "", "api_key": None})
     assert not registry.can_start(prov)
 
 
@@ -217,7 +220,7 @@ async def test_a_rotated_key_reaches_the_next_turn_and_a_cleared_source_stops_ne
         await task
     assert auth(endpoint.requests[-1]) == "Bearer sk-rotated-0123456789"
 
-    prefs.set_ai_review({"base_url": "", "api_key": None})
+    prefs.set_ai_review({"egress_acknowledged": True, "base_url": "", "api_key": None})
     with pytest.raises(chat_runtime.ChatError) as refused:
         await chat_runtime.new_session(ENGINE, str(project))
     assert refused.value.status == 409

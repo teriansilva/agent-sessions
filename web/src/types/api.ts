@@ -284,6 +284,45 @@ export interface AiReviewConfig {
   api_key_set: boolean;
   /** Base URL + key present — the /models proxy + Review now are usable. */
   configured: boolean;
+  /** The provider row (#1657); absent on an older server = Custom. */
+  provider?: string;
+  /** `auto` follows a hosted provider's recommended model; `specific` sends `model`. */
+  model_mode?: AiModelMode;
+  thinking?: AiThinkingLevel;
+  /** The server-owned acknowledgement that session content may go to this recipient. */
+  egress_ack?: AiEgressAck | null;
+  /** The saved endpoint is not on this host, so it needs an acknowledgement. */
+  egress_required?: boolean;
+  /** The saved endpoint may be used: loopback, or acknowledged for exactly this recipient. */
+  egress_allowed?: boolean;
+}
+
+export type AiModelMode = "auto" | "specific";
+export type AiThinkingLevel = "auto" | "off" | "low" | "medium" | "high";
+
+export interface AiEgressAck {
+  provider: string;
+  origin: string;
+  at: string;
+  /** `operator` = ticked in Settings; `legacy` = carried over from before #1671. */
+  source: "operator" | "legacy" | string;
+}
+
+/** One row of the static provider table (#1657) — `GET /api/ai-review/providers`. */
+export interface AiProvider {
+  id: string;
+  label: string;
+  /** `custom` | `self-hosted` | `api` */
+  group: string;
+  kind: string;
+  /** Fixed for hosted rows; the preset's suggestion for self-hosted; "" for Custom. */
+  base_url: string;
+  url_editable: boolean;
+  /** The company the egress warning names ("" for Custom / self-hosted). */
+  vendor: string;
+  thinking_supported: boolean;
+  auto_model: string;
+  key_hint: string;
 }
 
 /** One row of the prompt catalog (#824) — `GET /api/prompts`.

@@ -129,16 +129,19 @@ def test_the_ack_is_bound_to_provider_and_origin():
 
 
 def test_a_legacy_block_reads_as_custom_with_its_model():
-    prefs.set_ai_review({"base_url": CUSTOM_BASE, "api_key": CUSTOM_KEY, "model": "m-1"})
+    _write_raw_ai_review({"base_url": CUSTOM_BASE, "api_key": CUSTOM_KEY, "model": "m-1"})
     full = prefs.get_ai_review()
     assert (full["provider"], full["model_mode"], full["thinking"]) == (
         "custom",
         "specific",
         "auto",
     )
-    assert full["egress_ack"] is None
+    assert full["egress_ack"] is None and full["schema"] == 1
+    # Grandfathered by the one-time migration (#1671): still allowed, now with a legacy ack.
+    prefs.migrate_ai_review_egress()
     pub = prefs.public_ai_review()
-    assert pub["egress_required"] is False and pub["egress_allowed"] is True
+    assert pub["egress_required"] is True and pub["egress_allowed"] is True
+    assert pub["egress_ack"]["source"] == "legacy"
 
 
 def test_a_legacy_custom_request_is_byte_identical(wire):
@@ -148,7 +151,7 @@ def test_a_legacy_custom_request_is_byte_identical(wire):
     state["reply"] = lambda req: httpx.Response(
         200, json={"choices": [{"message": {"content": '{"ok": true}'}, "finish_reason": "stop"}]}
     )
-    prefs.set_ai_review({"base_url": CUSTOM_BASE, "api_key": CUSTOM_KEY, "model": "m-1"})
+    _write_raw_ai_review({"base_url": CUSTOM_BASE, "api_key": CUSTOM_KEY, "model": "m-1"})
     msgs = [_system(), {"role": "user", "content": "hi"}]
     assert asyncio.run(review.complete_json(msgs)) == {"ok": True}
     assert len(calls) == 1
@@ -227,10 +230,18 @@ def test_leaving_a_hosted_provider_must_name_the_new_url():
     _save_openai()
     with pytest.raises(prefs.ProviderUrlError):
         prefs.set_ai_review({"provider": "custom", "api_key": CUSTOM_KEY})
+    # Consent never carries to another recipient: the remote Custom host needs its own ack.
+    with pytest.raises(prefs.EgressConsentError):
+        prefs.set_ai_review({"provider": "custom", "base_url": CUSTOM_BASE, "api_key": CUSTOM_KEY})
     full = prefs.set_ai_review(
-        {"provider": "custom", "base_url": CUSTOM_BASE, "api_key": CUSTOM_KEY}
+        {
+            "provider": "custom",
+            "base_url": CUSTOM_BASE,
+            "api_key": CUSTOM_KEY,
+            "egress_acknowledged": True,
+        }
     )
-    assert full["egress_ack"] is None  # consent never carries to another recipient
+    assert full["egress_ack"]["provider"] == "custom"
 
 
 def test_withdrawing_the_ack_is_refused_while_the_provider_stays():
@@ -572,3 +583,291 @@ def test_replayed_tool_call_arguments_are_redacted(monkeypatch):
     ]
     out = template_secrets.redact_messages(msgs)
     assert SECRET_VALUE not in json.dumps(out)
+
+
+# --- P1b (#1671): every non-loopback origin, and the one-time legacy migration ------------------
+
+LEGACY_BASE = "https://legacy.example.io/v1"
+LEGACY_KEY = "sk-legacy-key-000555"
+
+
+def _write_raw_ai_review(block: dict) -> None:
+    """A block exactly as an older version stored it — no migration has run on it."""
+    path = prefs._default_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = json.loads(path.read_text()) if path.exists() else {}
+    doc["ai_review"] = block
+    path.write_text(json.dumps(doc))
+
+
+def _raw_ai_review() -> dict:
+    return json.loads(prefs._default_path().read_text())["ai_review"]
+
+
+def test_a_remote_custom_url_now_needs_the_acknowledgement():
+    with pytest.raises(prefs.EgressConsentError):
+        prefs.set_ai_review({"base_url": CUSTOM_BASE, "api_key": CUSTOM_KEY, "model": "m"})
+    full = prefs.set_ai_review(
+        {"base_url": CUSTOM_BASE, "api_key": CUSTOM_KEY, "model": "m", "egress_acknowledged": True}
+    )
+    assert full["egress_ack"]["provider"] == "custom"
+    assert full["egress_ack"]["origin"] == "https://ai.example.io:443"
+    assert prefs.public_ai_review()["egress_required"] is True
+
+
+@pytest.mark.parametrize("url", ["http://localhost:11434/v1", "http://127.0.0.1:8000/v1"])
+def test_a_loopback_url_needs_nothing(url):
+    full = prefs.set_ai_review({"base_url": url, "api_key": "local", "model": "m"})
+    assert full["egress_ack"] is None
+    pub = prefs.public_ai_review()
+    assert pub["egress_required"] is False and pub["egress_allowed"] is True
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        pytest.param(
+            {"base_url": LEGACY_BASE, "api_key": LEGACY_KEY, "model": "m"}, id="no-provider"
+        ),
+        pytest.param(
+            {"provider": "custom", "base_url": LEGACY_BASE, "api_key": LEGACY_KEY, "model": "m"},
+            id="p1a-saved-custom",
+        ),
+        pytest.param(
+            {"provider": "vllm", "base_url": LEGACY_BASE, "model": "m"}, id="self-hosted-no-key"
+        ),
+        pytest.param({"base_url": LEGACY_BASE, "enabled": False}, id="disabled-no-key"),
+    ],
+)
+def test_the_migration_grandfathers_every_legacy_remote_shape(stored):
+    _write_raw_ai_review(stored)
+    prefs.migrate_ai_review_egress()
+    raw = _raw_ai_review()
+    assert raw["schema"] == prefs.AI_REVIEW_SCHEMA
+    ack = raw["egress_ack"]
+    assert ack["source"] == "legacy" and ack["origin"] == "https://legacy.example.io:443"
+    assert ack["provider"] == stored.get("provider", "custom")
+    assert raw["base_url"] == LEGACY_BASE  # the recipient never changes
+
+
+def test_the_migration_writes_no_ack_for_loopback_or_hosted():
+    _write_raw_ai_review({"base_url": "http://localhost:11434/v1", "api_key": "x"})
+    prefs.migrate_ai_review_egress()
+    assert _raw_ai_review()["schema"] == 2 and _raw_ai_review().get("egress_ack") is None
+    # A hosted row was already consented to under P1a's rules: never grandfathered.
+    _write_raw_ai_review({"provider": "openai", "base_url": OPENAI_URL, "api_key": OPENAI_KEY})
+    prefs.migrate_ai_review_egress()
+    assert _raw_ai_review().get("egress_ack") is None
+
+
+def test_the_migration_runs_once():
+    _write_raw_ai_review({"base_url": LEGACY_BASE, "api_key": LEGACY_KEY})
+    prefs.migrate_ai_review_egress()
+    first = _raw_ai_review()
+    prefs.migrate_ai_review_egress()
+    assert _raw_ai_review() == first
+
+
+def test_a_save_racing_the_migration_never_pairs_the_legacy_ack_with_another_origin():
+    """The save applies the migration to the block it read under the lock, so the legacy ack can
+    only ever name the legacy origin — moving to another host still needs a new acknowledgement."""
+    _write_raw_ai_review({"base_url": LEGACY_BASE, "api_key": LEGACY_KEY, "model": "m"})
+    with pytest.raises(prefs.EgressConsentError):
+        prefs.set_ai_review({"base_url": CUSTOM_BASE, "api_key": CUSTOM_KEY})
+    assert _raw_ai_review()["base_url"] == LEGACY_BASE
+    # An unrelated save on the legacy block migrates it in the same locked write.
+    full = prefs.set_ai_review({"enabled": True})
+    assert full["egress_ack"]["origin"] == "https://legacy.example.io:443"
+    assert full["egress_ack"]["source"] == "legacy" and full["schema"] == 2
+
+
+def test_a_concurrent_migration_and_save_always_end_consistent():
+    import threading
+
+    for _ in range(20):
+        _write_raw_ai_review({"base_url": LEGACY_BASE, "api_key": LEGACY_KEY})
+        errors: list[BaseException] = []
+
+        def save(errors=errors):
+            try:
+                prefs.set_ai_review(
+                    {"base_url": CUSTOM_BASE, "api_key": CUSTOM_KEY, "egress_acknowledged": True}
+                )
+            except BaseException as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [
+            threading.Thread(target=prefs.migrate_ai_review_egress),
+            threading.Thread(target=save),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors
+        raw = _raw_ai_review()
+        assert raw["base_url"] == CUSTOM_BASE
+        assert raw["egress_ack"]["origin"] == "https://ai.example.io:443"
+        assert raw["egress_ack"]["source"] == "operator"
+
+
+def test_the_first_call_after_the_upgrade_goes_to_the_same_endpoint(wire):
+    """No startup migration ran: the transport migrates lazily and sends to the stored endpoint."""
+    calls, state = wire
+    state["reply"] = lambda req: _openai_text('{"ok": true}')
+    _write_raw_ai_review({"base_url": LEGACY_BASE, "api_key": LEGACY_KEY, "model": "m"})
+    assert asyncio.run(review.complete_json([_system(), {"role": "user", "content": "x"}])) == {
+        "ok": True
+    }
+    assert str(calls[0].url) == LEGACY_BASE + "/chat/completions"
+    assert _raw_ai_review()["egress_ack"]["source"] == "legacy"
+
+
+def test_the_model_list_migrates_lazily_too(wire):
+    calls, state = wire
+    state["reply"] = lambda req: httpx.Response(200, json={"data": [{"id": "m"}]})
+    _write_raw_ai_review({"base_url": LEGACY_BASE, "api_key": LEGACY_KEY, "model": "m"})
+    assert asyncio.run(review.list_models(force=True)) == ["m"]
+    assert str(calls[0].url) == LEGACY_BASE + "/models"
+
+
+def test_an_ai_settings_chat_agent_migrates_lazily_and_keeps_its_recipient(wire):
+    calls, state = wire
+    state["reply"] = lambda req: _openai_text("hello")
+    _write_raw_ai_review({"base_url": LEGACY_BASE, "api_key": LEGACY_KEY, "model": "m"})
+    chat_config.set_config("apichat", {"source": "ai-settings"})
+    snap = chat_config.snapshot("apichat")
+    assert snap["schema"] == 1  # resolved before any migration ran
+    body = {"model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 64}
+    r = asyncio.run(review.post_chat_response(snap, body))
+    assert r.json()["choices"][0]["message"]["content"] == "hello"
+    assert str(calls[0].url) == LEGACY_BASE + "/chat/completions"
+    # A schema-1 snapshot pointing ELSEWHERE is not covered by the legacy ack of the stored one.
+    elsewhere = {**snap, "base_url": CUSTOM_BASE}
+    with pytest.raises(review.EgressRefusedError):
+        asyncio.run(review.post_chat_response(elsewhere, body))
+    assert len(calls) == 1
+
+
+def test_the_draft_test_uses_the_legacy_ack_only_for_its_own_origin(auth_cfg, fake_jsonl, wire):
+    calls, state = wire
+    state["reply"] = lambda req: httpx.Response(200, json={"data": [{"id": "m"}]})
+    _write_raw_ai_review({"base_url": LEGACY_BASE, "api_key": LEGACY_KEY, "model": "m"})
+    c = _client(auth_cfg)
+    hdr = _login(c, auth_cfg)
+    r = c.post("/api/ai-review/endpoint/test", json={"base_url": LEGACY_BASE}, headers=hdr)
+    assert r.status_code == 200, r.text
+    r = c.post(
+        "/api/ai-review/endpoint/test",
+        json={"base_url": CUSTOM_BASE, "api_key": CUSTOM_KEY},
+        headers=hdr,
+    )
+    assert r.status_code == 409 and "acknowledge" in r.json()["detail"]
+    assert len(calls) == 1
+
+
+def _unwritable(monkeypatch):
+    def refuse(*a, **k):
+        raise PermissionError("read-only prefs")
+
+    monkeypatch.setattr(prefs, "atomic_write_json", refuse)
+
+
+def test_an_unwritable_migration_fails_closed_everywhere_then_heals(wire, monkeypatch):
+    calls, state = wire
+    state["reply"] = lambda req: _openai_text('{"ok": true}')
+    _write_raw_ai_review({"base_url": LEGACY_BASE, "api_key": LEGACY_KEY, "model": "m"})
+    chat_config.set_config("apichat", {"source": "ai-settings"})
+    snap = chat_config.snapshot("apichat")
+    body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+    with monkeypatch.context() as m:
+        _unwritable(m)
+        for attempt in (
+            lambda: review.complete_json([_system(), {"role": "user", "content": "x"}]),
+            lambda: review.list_models(force=True),
+            lambda: review.post_chat_response(snap, body),
+        ):
+            with pytest.raises(review.EgressRefusedError, match="save Settings"):
+                asyncio.run(attempt())
+    assert calls == []  # nothing was sent anywhere
+    # Writable again: the next call migrates once and goes to the same recipient.
+    asyncio.run(review.complete_json([_system(), {"role": "user", "content": "x"}]))
+    assert str(calls[0].url) == LEGACY_BASE + "/chat/completions"
+    assert _raw_ai_review()["egress_ack"]["origin"] == "https://legacy.example.io:443"
+
+
+def test_an_unwritable_stamp_of_a_loopback_block_does_not_block_it(wire, monkeypatch):
+    calls, state = wire
+    state["reply"] = lambda req: _openai_text('{"ok": true}')
+    _write_raw_ai_review({"base_url": "http://localhost:11434/v1", "api_key": "x", "model": "m"})
+    _unwritable(monkeypatch)
+    asyncio.run(review.complete_json([_system(), {"role": "user", "content": "x"}]))
+    assert len(calls) == 1
+
+
+def test_the_chat_agents_own_endpoint_is_exempt(wire):
+    calls, state = wire
+    state["reply"] = lambda req: _openai_text("own")
+    chat_config.set_config(
+        "apichat", {"base_url": "https://own.example.io/v1", "api_key": "sk-own-1", "model": "m"}
+    )
+    snap = chat_config.snapshot("apichat")
+    assert snap[ai_providers.OWN_ENDPOINT_EXEMPT] is True
+    r = asyncio.run(
+        review.post_chat_response(
+            snap, {"model": "m", "messages": [{"role": "user", "content": "x"}]}
+        )
+    )
+    assert r.json()["choices"][0]["message"]["content"] == "own"
+
+
+def test_the_exemption_cannot_be_supplied_from_outside(auth_cfg, fake_jsonl, wire):
+    calls, _ = wire
+    key = ai_providers.OWN_ENDPOINT_EXEMPT
+    assert "unknown" in prefs.validate_ai_review_patch({key: True})
+    with pytest.raises(chat_config.ChatConfigError):
+        chat_config.validate_patch({key: True})
+    c = _client(auth_cfg)
+    hdr = _login(c, auth_cfg)
+    r = c.post(
+        "/api/ai-review/endpoint/test",
+        json={"base_url": CUSTOM_BASE, "api_key": CUSTOM_KEY, key: True},
+        headers=hdr,
+    )
+    assert r.status_code == 422 and calls == []
+
+
+def test_only_chat_config_sets_the_exemption():
+    import pathlib
+
+    src = pathlib.Path(ai_providers.__file__).parent
+    users = sorted(
+        p.relative_to(src).as_posix()
+        for p in src.rglob("*.py")
+        if "OWN_ENDPOINT_EXEMPT" in p.read_text()
+    )
+    assert users == ["ai_providers.py", "chat_config.py"]
+
+
+def test_specific_needs_a_model_on_a_hosted_provider():
+    """Hermes on #1672: Auto → Specific with no model picked would save an empty model and send
+    every request without one."""
+    prefs.set_ai_review({"provider": "openai", "api_key": OPENAI_KEY, "egress_acknowledged": True})
+    assert prefs.get_ai_review()["model_mode"] == "auto"
+    with pytest.raises(prefs.ModelChoiceError):
+        prefs.set_ai_review({"model_mode": "specific", "model": ""})
+    with pytest.raises(prefs.ModelChoiceError):
+        prefs.set_ai_review({"model_mode": "specific"})
+    assert prefs.get_ai_review()["model_mode"] == "auto"
+    full = prefs.set_ai_review({"model_mode": "specific", "model": "gpt-4.1"})
+    assert (full["model_mode"], full["model"]) == ("specific", "gpt-4.1")
+
+
+def test_the_prefs_route_refuses_an_empty_specific_model(auth_cfg, fake_jsonl, wire):
+    prefs.set_ai_review({"provider": "openai", "api_key": OPENAI_KEY, "egress_acknowledged": True})
+    c = _client(auth_cfg)
+    hdr = _login(c, auth_cfg)
+    r = c.post(
+        "/api/prefs", json={"ai_review": {"model_mode": "specific", "model": ""}}, headers=hdr
+    )
+    assert r.status_code == 422 and "pick a model" in r.json()["detail"]

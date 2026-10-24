@@ -22,6 +22,8 @@ async function mockApp(page: Page) {
     request_timeout: null as number | null,
     api_key_set: false,
     configured: false,
+    // The server's acknowledgement for a remote endpoint (#1671), written when a save carries it.
+    egress_ack: null as null | Record<string, string>,
   };
   let onboarded = false;
 
@@ -44,6 +46,7 @@ async function mockApp(page: Page) {
           request_timeout: ai.request_timeout,
           api_key_set: ai.api_key_set,
           configured: ai.configured,
+          egress_ack: ai.egress_ack,
         },
       },
     }),
@@ -92,12 +95,20 @@ async function mockApp(page: Page) {
         api_key?: string;
         model?: string;
         request_timeout?: number | null;
+        egress_acknowledged?: boolean;
       };
     };
     if (body.onboarded) onboarded = true;
     if (body.ai_review) {
       const p = body.ai_review;
       if (p.base_url !== undefined) ai.base_url = p.base_url;
+      if (p.egress_acknowledged)
+        ai.egress_ack = {
+          provider: "custom",
+          origin: "https://api.openai.com:443",
+          at: "t",
+          source: "operator",
+        };
       if (p.api_key) ai.api_key_set = true;
       if (p.model !== undefined) ai.model = p.model;
       if (p.request_timeout !== undefined) ai.request_timeout = p.request_timeout;
@@ -114,6 +125,7 @@ async function mockApp(page: Page) {
           request_timeout: ai.request_timeout,
           api_key_set: ai.api_key_set,
           configured: ai.configured,
+          egress_ack: ai.egress_ack,
         },
       },
     });
@@ -144,6 +156,8 @@ test("wizard AI setup persists and Settings reflects it live — no reload (#692
   ).toHaveCount(0);
   await dialog.getByLabel(/Base URL/i).fill("https://api.openai.com/v1");
   await dialog.getByLabel(/API key/i).fill("sk-secret");
+  // A remote endpoint waits for the egress acknowledgement (#1671).
+  await dialog.getByRole("checkbox", { name: /I understand session content is sent to/ }).check();
   await dialog.getByRole("button", { name: "Save connection" }).click();
   const wizModel = dialog.getByRole("combobox", { name: "Model" });
   await expect(wizModel).toBeVisible();

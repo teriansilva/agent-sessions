@@ -37,7 +37,15 @@ def prefs_at_tmp(tmp_path, monkeypatch):
 
 @pytest.fixture
 def configured(prefs_at_tmp):
-    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": BASE,
+            "api_key": SECRET,
+            "model": "m",
+        }
+    )
     return prefs_at_tmp
 
 

@@ -8,8 +8,23 @@ import {
   recordEndpointCheck,
   useEndpointLed,
 } from "../lib/aiEndpointStatus";
+import {
+  ackCovers,
+  CUSTOM_ID,
+  CUSTOM_ROW,
+  groups,
+  isHosted,
+  isLoopback,
+  needsConsent,
+  recipient,
+} from "../lib/aiProviders";
 import { api, ApiError } from "../lib/api";
-import type { AiReviewConfig } from "../types/api";
+import type {
+  AiModelMode,
+  AiProvider,
+  AiReviewConfig,
+  AiThinkingLevel,
+} from "../types/api";
 import styles from "./Settings.module.css";
 
 /** What the key field shows while a key is stored. Blank and the mask mean "keep the stored
@@ -27,21 +42,30 @@ const FALLBACK: AiReviewConfig = {
   configured: false,
 };
 
-/** One-tap local servers for the setup wizard (#1544). "localhost" is the machine BattleLab runs on —
- *  the server makes every AI call. A preset only fills the Base URL draft; nothing is saved until
- *  Save connection, and the key-origin rule (`docs/invariants/ai-key-origin.md`) applies as typed. */
-const LOCAL_PRESETS: readonly { label: string; url: string }[] = [
-  { label: "Ollama", url: "http://localhost:11434/v1" },
-  { label: "LM Studio", url: "http://localhost:1234/v1" },
-  { label: "llama.cpp", url: "http://localhost:8080/v1" },
-  { label: "vLLM", url: "http://localhost:8000/v1" },
+/** The provider table (#1657) comes from the server — `GET /api/ai-review/providers` — and is
+ *  never copied here. Cached for the page's life: it is static per build. A failed load leaves
+ *  Custom alone, which is exactly the pre-#1657 form. */
+let catalogCache: AiProvider[] | null = null;
+
+const THINKING_LEVELS: readonly { id: AiThinkingLevel; label: string }[] = [
+  { id: "auto", label: "Auto" },
+  { id: "off", label: "Off" },
+  { id: "low", label: "Low" },
+  { id: "medium", label: "Medium" },
+  { id: "high", label: "High" },
 ];
 
 const TIMEOUT_MIN = 10;
 const TIMEOUT_MAX = 600;
 
-/** The connection exactly as it was when Test or Save was pressed. */
-type Snapshot = { base_url: string; key: string };
+/** The connection exactly as it was when Test or Save was pressed. `ack` = the operator ticked
+ *  the egress acknowledgement for THIS draft's recipient (#1671). */
+type Snapshot = {
+  base_url: string;
+  key: string;
+  provider: string;
+  ack: boolean;
+};
 
 type Outcome =
   | { kind: "idle" }
@@ -164,11 +188,68 @@ export function AiEndpointSetup({
     if (!urlEdited) setUrlDraft(block.base_url);
     setSeededUrl(block.base_url);
   }
-  /** The live drafts, readable from an async continuation (#836). */
-  const draftRef = useRef<Snapshot>({ base_url: urlDraft, key: keyDraft });
+  // ---- provider (#1657) -----------------------------------------------------------------
+  const [catalog, setCatalog] = useState<AiProvider[]>(
+    catalogCache ?? [CUSTOM_ROW],
+  );
   useEffect(() => {
-    draftRef.current = { base_url: urlDraft, key: keyDraft };
-  }, [urlDraft, keyDraft]);
+    if (catalogCache) return;
+    let live = true;
+    // Any failure, even a synchronous one, leaves Custom alone: today's form.
+    Promise.resolve()
+      .then(() => api.aiProviders())
+      .then((d) => {
+        if (!live || !Array.isArray(d?.providers) || d.providers.length === 0)
+          return;
+        catalogCache = d.providers;
+        setCatalog(d.providers);
+      })
+      .catch(() => {
+        /* Custom alone: today's form */
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+  const savedProvider = block.provider ?? CUSTOM_ID;
+  const [providerDraft, setProviderDraft] = useState(savedProvider);
+  const providerRev = useRef(0);
+  const [providerEdited, setProviderEdited] = useState(false);
+  const [seededProvider, setSeededProvider] = useState(savedProvider);
+  if (seededProvider !== savedProvider) {
+    if (!providerEdited) setProviderDraft(savedProvider);
+    setSeededProvider(savedProvider);
+  }
+  const row: AiProvider = catalog.find((r) => r.id === providerDraft) ?? {
+    ...CUSTOM_ROW,
+    id: providerDraft,
+  };
+  const hosted = isHosted(row);
+
+  // ---- egress acknowledgement (#1671) -----------------------------------------------------
+  // Feedback only: the server binds consent to the lock-current provider + origin on every save,
+  // test and send. A stored ack that names this draft's recipient covers it (a `legacy` one too);
+  // any change of provider or URL unticks an operator tick, so consent never carries over.
+  const [ackTicked, setAckTicked] = useState(false);
+  const draftNeedsConsent = needsConsent(urlDraft);
+  const storedAckCovers = ackCovers(block.egress_ack, providerDraft, urlDraft);
+  const ackOk = !draftNeedsConsent || storedAckCovers || ackTicked;
+
+  /** The live drafts, readable from an async continuation (#836). */
+  const draftRef = useRef<Snapshot>({
+    base_url: urlDraft,
+    key: keyDraft,
+    provider: providerDraft,
+    ack: ackTicked,
+  });
+  useEffect(() => {
+    draftRef.current = {
+      base_url: urlDraft,
+      key: keyDraft,
+      provider: providerDraft,
+      ack: ackTicked,
+    };
+  }, [urlDraft, keyDraft, providerDraft, ackTicked]);
 
   const hostChanged =
     block.api_key_set &&
@@ -181,10 +262,16 @@ export function AiEndpointSetup({
   const keyInputShown =
     !block.api_key_set || keyEditing || hostChanged || keyDraft !== "";
   const keyEdit = keyInputShown ? keyDraft.trim() : "";
+  // A tick for a recipient no stored ack covers is a change to save: the saved endpoint whose
+  // acknowledgement could not be recorded (#1671) is fixed by ticking and saving it once.
   const connectionDirty =
-    urlDraft.trim() !== block.base_url || isNewKey(keyEdit);
+    urlDraft.trim() !== block.base_url ||
+    isNewKey(keyEdit) ||
+    providerDraft !== savedProvider ||
+    (ackTicked && !storedAckCovers && draftNeedsConsent);
   const keyMissing = hostChanged && !isNewKey(keyEdit);
-  const canCheck = urlDraft.trim() !== "" && !keyMissing;
+  // Test, model discovery, Save and Save without testing all wait for the acknowledgement.
+  const canCheck = urlDraft.trim() !== "" && !keyMissing && ackOk;
 
   const [outcome, setOutcome] = useState<Outcome>({ kind: "idle" });
   const busy = outcome.kind === "testing" || outcome.kind === "saving";
@@ -244,12 +331,48 @@ export function AiEndpointSetup({
     if (!timeoutEdited) setTimeoutDraft(timeoutText(block.request_timeout));
     setSeededModel({ model: block.model, timeout: block.request_timeout });
   }
+  // Model "Auto" and the thinking level (#1657), for the SAVED provider: this card configures the
+  // saved connection, like the model list it shows.
+  const savedRow: AiProvider = catalog.find((r) => r.id === savedProvider) ?? {
+    ...CUSTOM_ROW,
+    id: savedProvider,
+  };
+  const savedHosted = isHosted(savedRow);
+  const savedMode: AiModelMode = block.model_mode ?? "specific";
+  const savedThinking: AiThinkingLevel = block.thinking ?? "auto";
+  const [modeDraft, setModeDraft] = useState<AiModelMode>(savedMode);
+  const [thinkingDraft, setThinkingDraft] =
+    useState<AiThinkingLevel>(savedThinking);
+  const [seededChoice, setSeededChoice] = useState({
+    mode: savedMode,
+    thinking: savedThinking,
+  });
+  const choiceRev = useRef(0);
+  const [choiceEdited, setChoiceEdited] = useState(false);
+  if (
+    seededChoice.mode !== savedMode ||
+    seededChoice.thinking !== savedThinking
+  ) {
+    if (!choiceEdited) {
+      setModeDraft(savedMode);
+      setThinkingDraft(savedThinking);
+    }
+    setSeededChoice({ mode: savedMode, thinking: savedThinking });
+  }
+  const autoModel = savedHosted && modeDraft === "auto";
+  /** Specific with nothing picked would send every request without a model (Hermes on #1672);
+   *  the server refuses it too. */
+  const specificMissing = savedHosted && modeDraft === "specific" && !modelDraft.trim();
   const parsedTimeout = parseTimeout(timeoutDraft);
   const modelDirty =
-    modelDraft.trim() !== block.model ||
+    (!autoModel && modelDraft.trim() !== block.model) ||
+    (savedHosted && modeDraft !== savedMode) ||
+    thinkingDraft !== savedThinking ||
     (parsedTimeout !== undefined && parsedTimeout !== block.request_timeout) ||
     parsedTimeout === undefined;
-  const modelLocked = !block.configured || connectionDirty;
+  // The model list is an outbound call too: locked while the SAVED endpoint is not allowed (#1671).
+  const savedAllowed = block.egress_allowed !== false;
+  const modelLocked = !block.configured || connectionDirty || !savedAllowed;
   const [modelSave, setModelSave] = useState<ModelSave>({ kind: "idle" });
 
   const loadModels = useCallback(
@@ -298,23 +421,29 @@ export function AiEndpointSetup({
     if (
       !block.configured ||
       connectionDirty ||
+      !savedAllowed ||
       listedFor.current === connectionKey
     )
       return;
     listedFor.current = connectionKey;
     void Promise.resolve().then(() => loadModels(false));
-  }, [block.configured, connectionDirty, connectionKey, loadModels]);
+  }, [block.configured, connectionDirty, savedAllowed, connectionKey, loadModels]);
 
   // ---- actions -------------------------------------------------------------------------
   const snapshot = (): Snapshot => ({
     base_url: urlDraft.trim(),
     key: isNewKey(keyEdit) ? keyEdit : "",
+    provider: providerDraft,
+    ack: ackTicked && !storedAckCovers,
   });
 
   const check = (snap: Snapshot) =>
     api.testAiEndpoint({
       base_url: snap.base_url,
       ...(snap.key ? { api_key: snap.key } : {}),
+      // Custom is the route's default: a Custom draft's request stays exactly what it was.
+      ...(snap.provider !== CUSTOM_ID ? { provider: snap.provider } : {}),
+      ...(snap.ack ? { egress_acknowledged: true } : {}),
     });
 
   const test = async () => {
@@ -348,8 +477,12 @@ export function AiEndpointSetup({
     listed: string[],
   ) => {
     const patch: Record<string, unknown> = { base_url: snap.base_url };
+    // Only a CHANGED provider is sent, so an unchanged Custom save is exactly today's patch.
+    if (snap.provider !== savedProvider) patch.provider = snap.provider;
     if (snap.key) patch.api_key = snap.key;
+    if (snap.ack) patch.egress_acknowledged = true;
     const rev = urlRev.current;
+    const pRev = providerRev.current;
     if (!beginWrite()) {
       if (g === gen.current) setOutcome({ kind: "idle" });
       return;
@@ -371,6 +504,11 @@ export function AiEndpointSetup({
         // Not edited since it was submitted: the draft IS what was saved, so it follows the echo.
         setUrlDraft(next.base_url);
         setUrlEdited(false);
+      }
+      if (providerRev.current === pRev) {
+        setProviderDraft(next.provider ?? CUSTOM_ID);
+        setProviderEdited(false);
+        setAckTicked(false); // the stored ack now speaks for this recipient
       }
       setBlock(next);
       refreshConfig();
@@ -473,8 +611,20 @@ export function AiEndpointSetup({
     setModelSave({ kind: "saving" });
     const revs = { model: modelRev.current, timeout: timeoutRev.current };
     try {
+      const choice = choiceRev.current;
       const r = (await api.setPrefs({
-        ai_review: { model: modelDraft.trim(), request_timeout: parsedTimeout },
+        ai_review: {
+          // Auto sends no model: the server resolves the provider's recommended one.
+          model: autoModel ? "" : modelDraft.trim(),
+          request_timeout: parsedTimeout,
+          // Sent only when changed: an untouched Save model is exactly today's patch.
+          ...(savedHosted && modeDraft !== savedMode
+            ? { model_mode: modeDraft }
+            : {}),
+          ...(thinkingDraft !== savedThinking
+            ? { thinking: thinkingDraft }
+            : {}),
+        },
       })) as { ai_review?: AiReviewConfig };
       const next = r.ai_review;
       if (next) {
@@ -487,6 +637,11 @@ export function AiEndpointSetup({
         if (timeoutRev.current === revs.timeout) {
           setTimeoutDraft(timeoutText(next.request_timeout));
           setTimeoutEdited(false);
+        }
+        if (choiceRev.current === choice) {
+          setModeDraft(next.model_mode ?? "specific");
+          setThinkingDraft(next.thinking ?? "auto");
+          setChoiceEdited(false);
         }
         setBlock(next);
         refreshConfig();
@@ -502,11 +657,39 @@ export function AiEndpointSetup({
     }
   };
 
+  // ---- provider + URL edits --------------------------------------------------------------
+  /** Any change of recipient unticks the operator's acknowledgement (#1671). */
+  const editUrl = (v: string) => {
+    setUrlDraft(v);
+    urlRev.current += 1;
+    setUrlEdited(true);
+    setAckTicked(false);
+    onDraftEdit();
+  };
+  const chooseProvider = (r: AiProvider) => {
+    if (r.id === providerDraft) return;
+    setProviderDraft(r.id);
+    providerRev.current += 1;
+    setProviderEdited(true);
+    // A hosted row and a preset bring their own URL; Custom keeps a typed one, but never a
+    // hosted vendor's (its rules would not follow it).
+    const nextUrl = r.base_url || (hosted ? "" : urlDraft);
+    if (nextUrl !== urlDraft) editUrl(nextUrl);
+    else {
+      setAckTicked(false);
+      onDraftEdit();
+    }
+  };
+  const who = recipient(row, urlDraft);
+
   // ---- copy ----------------------------------------------------------------------------
   const draftHost = hostOf(urlDraft) || urlDraft.trim();
   const connectionNote: { cls: string; text: string } | null =
     outcome.kind === "testing"
-      ? { cls: styles.hint, text: `Testing ${draftHost}… nothing is saved yet.` }
+      ? {
+          cls: styles.hint,
+          text: `Testing ${draftHost}… nothing is saved yet.`,
+        }
       : outcome.kind === "saving"
         ? { cls: styles.hint, text: `Testing ${draftHost}, then saving…` }
         : outcome.kind === "failed"
@@ -533,36 +716,44 @@ export function AiEndpointSetup({
                 }
               : outcome.kind === "untested"
                 ? { cls: styles.warn, text: "Saved without testing." }
-                : keyMissing
+                : !ackOk
                   ? {
                       cls: styles.warn,
-                      text: `Enter the API key for ${draftHost} to test or save.`,
+                      text: "Tick the acknowledgement to test or save. Nothing is sent before.",
                     }
-                  : connectionDirty
+                  : keyMissing
                     ? {
                         cls: styles.warn,
-                        text: "● Unsaved — Save connection tests it, then stores it.",
+                        text: `Enter the API key for ${draftHost} to test or save.`,
                       }
-                    : !block.configured
+                    : connectionDirty
                       ? {
-                          cls: styles.hint,
-                          text: "Enter the base URL and an API key, then Save connection.",
+                          cls: styles.warn,
+                          text: "● Unsaved — Save connection tests it, then stores it.",
                         }
-                      : models.kind === "loading"
-                        ? { cls: styles.hint, text: "Checking the saved connection…" }
-                        : models.kind === "error"
-                          ? { cls: styles.err, text: `✗ ${models.message}` }
-                          : models.kind === "ok"
-                            ? {
-                                cls: styles.ok,
-                                text: `✓ Connected — ${models.models.length} model${models.models.length === 1 ? "" : "s"} available.`,
-                              }
-                            : models.kind === "unlisted"
+                      : !block.configured
+                        ? {
+                            cls: styles.hint,
+                            text: "Enter the base URL and an API key, then Save connection.",
+                          }
+                        : models.kind === "loading"
+                          ? {
+                              cls: styles.hint,
+                              text: "Checking the saved connection…",
+                            }
+                          : models.kind === "error"
+                            ? { cls: styles.err, text: `✗ ${models.message}` }
+                            : models.kind === "ok"
                               ? {
                                   cls: styles.ok,
-                                  text: "✓ Saved — this endpoint doesn’t list models.",
+                                  text: `✓ Connected — ${models.models.length} model${models.models.length === 1 ? "" : "s"} available.`,
                                 }
-                              : null;
+                              : models.kind === "unlisted"
+                                ? {
+                                    cls: styles.ok,
+                                    text: "✓ Saved — this endpoint doesn’t list models.",
+                                  }
+                                : null;
 
   const active = block.model || "no active model yet";
   const timeoutLabel =
@@ -576,6 +767,8 @@ export function AiEndpointSetup({
         ? { cls: styles.hint, text: "Saving…" }
         : !block.configured
           ? { cls: styles.hint, text: "Save a connection first." }
+          : specificMissing && !modelLocked
+            ? { cls: styles.warn, text: "Pick a model, or switch back to Auto." }
           : modelLocked
             ? { cls: styles.hint, text: `Active: ${active}` }
             : parsedTimeout === undefined
@@ -584,13 +777,19 @@ export function AiEndpointSetup({
                   text: `Request timeout must be ${TIMEOUT_MIN}–${TIMEOUT_MAX} seconds, or empty.`,
                 }
               : modelDirty
-                ? { cls: styles.warn, text: `● Unsaved — active is still ${active}.` }
+                ? {
+                    cls: styles.warn,
+                    text: `● Unsaved — active is still ${active}.`,
+                  }
                 : modelSave.kind === "saved"
                   ? {
                       cls: styles.ok,
                       text: `✓ Model saved — active: ${active} · ${timeoutLabel}. The next AI request uses it.`,
                     }
-                  : { cls: styles.hint, text: `Active: ${active} · ${timeoutLabel}` };
+                  : {
+                      cls: styles.hint,
+                      text: `Active: ${active} · ${timeoutLabel}`,
+                    };
 
   const cardClass = `${variant === "settings" ? styles.section : styles.endpointPlain} ${styles.endpointCard}`;
   const enterSaves = (e: React.KeyboardEvent) => {
@@ -631,71 +830,81 @@ export function AiEndpointSetup({
           Connection
         </h2>
         <p className={styles.hint}>
-          Where AI requests go, and the key they carry. One OpenAI-compatible
-          endpoint powers every AI feature: session review and recaps, handoff
-          briefs, auto-sort, the mission-control scan, the orchestrator and
-          mission turns. The key is stored server-side and never sent to the
-          browser.
+          Where AI requests go, and the key they carry. One provider powers
+          every AI feature: HQ, session review and recaps, handoff briefs,
+          auto-sort, the mission-control scan, the orchestrator and mission
+          turns. The key is stored server-side and never sent to the browser.
         </p>
 
-        {variant === "wizard" && (
-          <div className={styles.aiField}>
-            <span className={styles.aiFieldLabel} id={`${idp}-local-h`}>
-              Local AI on the BattleLab host
-            </span>
+        <div className={styles.aiField}>
+          <span className={styles.aiFieldLabel} id={`${idp}-provider-h`}>
+            Provider
+          </span>
+          {groups(catalog).map((g) => (
             <div
-              className={styles.aiPresets}
-              role="group"
-              aria-labelledby={`${idp}-local-h`}
+              key={g.title}
+              className={styles.aiProviderGroup}
+              role="radiogroup"
+              aria-label={g.title}
             >
-              {LOCAL_PRESETS.map((p) => (
-                <button
-                  key={p.label}
-                  type="button"
-                  className={styles.secBtnGhost}
-                  aria-pressed={urlDraft.trim() === p.url}
-                  onClick={() => {
-                    setUrlDraft(p.url);
-                    urlRev.current += 1;
-                    setUrlEdited(true);
-                    onDraftEdit();
-                  }}
-                >
-                  {p.label}
-                </button>
-              ))}
+              <span className={styles.aiProviderGroupTitle} aria-hidden="true">
+                {g.title}
+              </span>
+              <div className={styles.aiPresets}>
+                {g.rows.map((r) => (
+                  <button
+                    key={r.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={r.id === providerDraft}
+                    className={styles.secBtnGhost}
+                    data-provider={r.id}
+                    onClick={() => chooseProvider(r)}
+                  >
+                    {r.label}
+                  </button>
+                ))}
+              </div>
             </div>
+          ))}
+          {variant === "wizard" && !hosted && (
             <p className={styles.hint}>
               <code>localhost</code> is the machine BattleLab runs on, not this
               browser&apos;s device. A preset fills in the server&apos;s usual
-              address — check the port, then Save connection. A local server that
-              doesn&apos;t check keys still needs one here: type any text, like{" "}
-              <code>local</code>. A hosted endpoint receives the session content
-              these features send it.
+              address — check the port, then Save connection. A local server
+              that doesn&apos;t check keys still needs one here: type any text,
+              like <code>local</code>.
+            </p>
+          )}
+        </div>
+
+        {hosted ? (
+          <div className={styles.aiField}>
+            <span className={styles.aiFieldLabel}>Endpoint</span>
+            <p
+              className={styles.aiFixedEndpoint}
+              data-testid="ai-fixed-endpoint"
+            >
+              {hostOf(row.base_url)} · fixed by BattleLab
             </p>
           </div>
+        ) : (
+          <div className={styles.aiField}>
+            <label className={styles.aiFieldLabel} htmlFor={`${idp}-base-url`}>
+              Base URL (OpenAI-compatible)
+            </label>
+            <input
+              id={`${idp}-base-url`}
+              className={styles.aiInput}
+              type="url"
+              spellCheck={false}
+              placeholder="https://ai.example.io/v1"
+              value={urlDraft}
+              onChange={(e) => editUrl(e.target.value)}
+              onKeyDown={enterSaves}
+            />
+          </div>
         )}
-
-        <div className={styles.aiField}>
-          <label className={styles.aiFieldLabel} htmlFor={`${idp}-base-url`}>
-            Base URL (OpenAI-compatible)
-          </label>
-          <input
-            id={`${idp}-base-url`}
-            className={styles.aiInput}
-            type="url"
-            spellCheck={false}
-            placeholder="https://ai.example.io/v1"
-            value={urlDraft}
-            onChange={(e) => {
-              setUrlDraft(e.target.value);
-              urlRev.current += 1;
-              setUrlEdited(true);
-              onDraftEdit();
-            }}
-            onKeyDown={enterSaves}
-          />
-        </div>
 
         <div className={styles.aiField}>
           <label
@@ -723,10 +932,10 @@ export function AiEndpointSetup({
                 spellCheck={false}
                 placeholder={
                   hostChanged
-                    ? `key for ${draftHost}`
+                    ? `key for ${draftHost}${row.key_hint ? ` (${row.key_hint})` : ""}`
                     : block.api_key_set
                       ? "new key"
-                      : "sk-…"
+                      : row.key_hint || "sk-…"
                 }
                 value={keyDraft}
                 onChange={(e) => {
@@ -781,6 +990,81 @@ export function AiEndpointSetup({
               : "Write-only: the stored key is never shown."}
           </p>
         </div>
+
+        {urlDraft.trim() !== "" &&
+          (draftNeedsConsent ? (
+            <div
+              className={styles.aiEgress}
+              role="group"
+              aria-labelledby={`${idp}-egress-h`}
+              data-testid="ai-egress"
+            >
+              <p className={styles.aiEgressHead} id={`${idp}-egress-h`}>
+                <span className="hud-led attention" aria-hidden="true" />
+                Session data leaves this host
+              </p>
+              {hosted ? (
+                <p className={styles.aiEgressText}>
+                  With <b>{who}</b> every AI feature sends what it reads to{" "}
+                  <b>{who}</b>: session transcripts, terminal output, unsent
+                  drafts, mission and HQ conversations. Stored secrets are still
+                  redacted first.
+                </p>
+              ) : (
+                <p className={styles.aiEgressText}>
+                  <b>{who}</b> is not on this host. Every AI feature sends what
+                  it reads there: session transcripts, terminal output, unsent
+                  drafts, mission and HQ conversations. Stored secrets are still
+                  redacted first.
+                </p>
+              )}
+              <ul className={styles.aiEgressList}>
+                {hosted ? (
+                  <>
+                    <li>
+                      {who}&apos;s terms, retention and data location apply, not
+                      BattleLab&apos;s.
+                    </li>
+                    <li>Usage is billed to your {who} account.</li>
+                  </>
+                ) : (
+                  <li>
+                    Whoever runs {who} decides what is kept and for how long.
+                    Check that host&apos;s terms and retention policy, not
+                    BattleLab&apos;s.
+                  </li>
+                )}
+              </ul>
+              <label className={styles.aiAck}>
+                <input
+                  type="checkbox"
+                  checked={ackOk}
+                  // A stored acknowledgement for this exact recipient stays: withdrawing it
+                  // while keeping the provider is refused server-side.
+                  disabled={storedAckCovers}
+                  onChange={(e) => {
+                    setAckTicked(e.target.checked);
+                    onDraftEdit();
+                  }}
+                />
+                <span>I understand session content is sent to {who}.</span>
+              </label>
+              {storedAckCovers && block.egress_ack?.source === "legacy" && (
+                <p className={styles.hint} data-testid="ai-egress-legacy">
+                  Carried over from before this version: you configured this
+                  endpoint earlier, so it kept working on upgrade. Change the
+                  URL or provider and you are asked again.
+                </p>
+              )}
+            </div>
+          ) : (
+            isLoopback(urlDraft) && (
+              <p className={styles.hint} data-testid="ai-egress-local">
+                <b>{who}</b> is this host (loopback): no session content leaves
+                it.
+              </p>
+            )
+          ))}
 
         <div className={styles.cardFoot}>
           {connectionNote ? (
@@ -839,9 +1123,47 @@ export function AiEndpointSetup({
           </p>
         )}
 
-        <div className={styles.aiField}>
+        {savedHosted && (
+          <div className={styles.aiField}>
+            <span className={styles.aiFieldLabel} id={`${idp}-mode-h`}>
+              Model
+            </span>
+            <div
+              className={styles.aiSeg}
+              role="radiogroup"
+              aria-labelledby={`${idp}-mode-h`}
+            >
+              {(["auto", "specific"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  role="radio"
+                  aria-checked={modeDraft === m}
+                  disabled={modelLocked}
+                  onClick={() => {
+                    setModeDraft(m);
+                    choiceRev.current += 1;
+                    setChoiceEdited(true);
+                    setModelSave({ kind: "idle" });
+                  }}
+                >
+                  {m === "auto" ? "Auto" : "Specific"}
+                </button>
+              ))}
+            </div>
+            <p className={styles.hint}>
+              {modeDraft === "auto"
+                ? `Auto (default) uses ${savedRow.label}'s recommended model${
+                    savedRow.auto_model ? ` (${savedRow.auto_model} today)` : ""
+                  } and follows it when that model is retired.`
+                : `Specific: pick one from ${savedRow.label}'s own list.`}
+            </p>
+          </div>
+        )}
+
+        <div className={styles.aiField} hidden={autoModel}>
           <label className={styles.aiFieldLabel} htmlFor={`${idp}-model`}>
-            Model
+            {savedHosted ? "Specific model" : "Model"}
           </label>
           <div className={styles.aiModelRow}>
             {models.kind === "ok" ? (
@@ -905,6 +1227,40 @@ export function AiEndpointSetup({
         </div>
 
         <div className={styles.aiField}>
+          <span className={styles.aiFieldLabel} id={`${idp}-thinking-h`}>
+            Thinking
+          </span>
+          <div
+            className={styles.aiSeg}
+            role="radiogroup"
+            aria-labelledby={`${idp}-thinking-h`}
+          >
+            {THINKING_LEVELS.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="radio"
+                aria-checked={thinkingDraft === t.id}
+                disabled={modelLocked || !savedRow.thinking_supported}
+                onClick={() => {
+                  setThinkingDraft(t.id);
+                  choiceRev.current += 1;
+                  setChoiceEdited(true);
+                  setModelSave({ kind: "idle" });
+                }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <p className={styles.hint} data-testid="ai-thinking-hint">
+            {!savedRow.thinking_supported
+              ? `${savedRow.label} has no thinking setting. Requests are sent without one.`
+              : "Auto (default): background passes (reviews, recaps, sorting) run without thinking so they stay fast; HQ and chat use the provider's default. A level applies everywhere and makes answers slower and costlier."}
+          </p>
+        </div>
+
+        <div className={styles.aiField}>
           <label className={styles.aiFieldLabel} htmlFor={`${idp}-timeout`}>
             Request timeout
           </label>
@@ -942,7 +1298,7 @@ export function AiEndpointSetup({
             <button
               type="button"
               className={`${styles.secBtn} shine`}
-              disabled={modelLocked || !modelDirty || writing}
+              disabled={modelLocked || !modelDirty || writing || specificMissing}
               onClick={() => void saveModel()}
             >
               Save model

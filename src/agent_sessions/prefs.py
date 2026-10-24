@@ -1079,6 +1079,11 @@ class EgressConsentError(KeyOriginError):
     every route that already refuses a key-origin violation refuses this the same way (422)."""
 
 
+class ModelChoiceError(KeyOriginError):
+    """A hosted provider on model `specific` with no model named: every request would go out
+    with an empty model (Hermes on #1672). Refused like the other write rules (422)."""
+
+
 class ProviderUrlError(KeyOriginError):
     """A patch names a base URL a hosted provider does not use, or leaves a hosted provider
     without saying where requests go instead (#1657)."""
@@ -1179,9 +1184,14 @@ def _coerce_ai_review(raw: object) -> dict:
     out["endpoint_revision"] = ""
     # Server-owned too (#1657): the acknowledgement record, written only by `set_ai_review`.
     out["egress_ack"] = None
+    # Server-owned (#1671): 2 once the legacy egress migration has run on this block.
+    out["schema"] = 1
     if isinstance(raw, dict):
         if isinstance(raw.get("endpoint_revision"), str):
             out["endpoint_revision"] = raw["endpoint_revision"]
+        s = raw.get("schema")
+        if isinstance(s, int) and not isinstance(s, bool) and s >= 1:
+            out["schema"] = s
         ack = raw.get("egress_ack")
         if isinstance(ack, dict) and all(
             isinstance(ack.get(k), str) for k in ("provider", "origin", "at", "source")
@@ -1235,7 +1245,7 @@ def public_ai_review(path: Path | None = None) -> dict:
     pub = {
         k: v
         for k, v in full.items()
-        if k not in ("api_key", "prompt", "endpoint_revision", "egress_ack")
+        if k not in ("api_key", "prompt", "endpoint_revision", "egress_ack", "schema")
     }
     pub["api_key_set"] = bool(full["api_key"])
     pub["configured"] = bool(str(full["base_url"]).strip() and full["api_key"])
@@ -1330,12 +1340,79 @@ def set_ai_review(patch: dict, path: Path | None = None) -> dict:
     return _mutate("ai_review", merge, path)
 
 
+# --- The legacy egress migration (#1671) -----------------------------------------------------
+# Since P1b every non-loopback origin needs the operator's acknowledgement. A block stored before
+# that (`schema` < 2) whose Custom or self-hosted URL is remote is GRANDFATHERED once: the operator
+# chose that host already, and an upgrade must not stop a working install. It covers both stored
+# shapes — no `provider` at all, and the `provider: "custom"` / self-hosted id P1a writes on any
+# save — with or without a key, enabled or not. Hosted rows never need it (P1a required their ack).
+AI_REVIEW_SCHEMA = 2
+
+LEGACY_MIGRATION_FAILED = (
+    "BattleLab could not record the endpoint you configured before this version — "
+    "save Settings → AI once"
+)
+
+
+class LegacyMigrationError(OSError):
+    """The legacy egress migration could not be written: the caller fails closed (#1671)."""
+
+
+def _with_legacy_ack(cur: dict) -> dict:
+    """PURE: the coerced block at schema 2, with the legacy ack when it qualifies. Applied to the
+    block read under the lock, so the ack is bound to exactly that provider and origin."""
+    if cur.get("schema", 1) >= AI_REVIEW_SCHEMA:
+        return cur
+    new = dict(cur, schema=AI_REVIEW_SCHEMA)
+    row = ai_providers.get(cur.get("provider"))
+    base = str(cur.get("base_url") or "").strip()
+    if (
+        not row.hosted
+        and cur.get("egress_ack") is None
+        and ai_providers.needs_consent(row.id, base)
+    ):
+        new["egress_ack"] = ai_providers.make_ack(
+            row.id, base, datetime.now(UTC).isoformat(timespec="seconds"), source="legacy"
+        )
+    return new
+
+
+def migrate_ai_review_egress(path: Path | None = None) -> None:
+    """One-time, idempotent, under the prefs lock: grandfather a pre-#1671 remote endpoint.
+    Writes nothing when there is no block or it is already at schema 2. Raises
+    `LegacyMigrationError` when the write fails."""
+    raw = _load(path or _default_path()).get("ai_review")
+    if not isinstance(raw, dict):
+        return
+    cur = _coerce_ai_review(raw)
+    if cur["schema"] >= AI_REVIEW_SCHEMA:
+        return
+    try:
+        _mutate("ai_review", lambda r: _with_legacy_ack(_coerce_ai_review(r)), path)
+    except OSError as e:
+        # Only a block that NEEDS the legacy ack fails closed; one that would merely be stamped
+        # schema 2 (no URL, or a loopback one) sends to nobody it hasn't been told about.
+        if _with_legacy_ack(cur).get("egress_ack") != cur.get("egress_ack"):
+            raise LegacyMigrationError(LEGACY_MIGRATION_FAILED) from e
+
+
+def get_ai_review_migrated(path: Path | None = None) -> dict:
+    """`get_ai_review` for an outbound path: a pre-#1671 block is migrated first (lazily, under the
+    lock), so a startup migration that failed is retried here rather than stranding the install —
+    and a failure to write it raises `LegacyMigrationError` before anything is sent."""
+    migrate_ai_review_egress(path)
+    return get_ai_review(path)
+
+
 def apply_ai_review_patch(cur: dict, patch: dict) -> dict:
     """The whole `ai_review` write rule as ONE pure function of the current block: the provider's
     URL, the key-origin policy, the merge, the server-owned egress acknowledgement and the egress
     gate. `set_ai_review` runs it inside the prefs lock (authoritative); `/api/prefs` runs it on a
     snapshot first only so a multi-block patch fails before any block is written. Raises a
     `KeyOriginError` (or subclass) and returns nothing on refusal."""
+    # The legacy migration first, on the lock-current block: a save racing the startup migration
+    # can then never pair the legacy ack with a different origin (#1671).
+    cur = _with_legacy_ack(cur)
     eff = dict(patch)
     provider = eff.get("provider", cur["provider"])
     row = ai_providers.get(provider)
@@ -1372,6 +1449,12 @@ def apply_ai_review_patch(cur: dict, patch: dict) -> dict:
             if patch[AI_REVIEW_ACK_FIELD]
             else None
         )
+    if (
+        ai_providers.get(new["provider"]).hosted
+        and new["model_mode"] == "specific"
+        and not str(new["model"] or "").strip()
+    ):
+        raise ModelChoiceError("pick a model, or use Auto — Specific needs a model id")
     if (moved or AI_REVIEW_ACK_FIELD in patch) and str(new["base_url"]).strip():
         why = ai_providers.egress_violation(new)
         if why is not None:

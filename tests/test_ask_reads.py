@@ -418,6 +418,7 @@ def _plant_everything():
     data.update(
         {
             "ai_review": {
+                "egress_acknowledged": True,
                 "enabled": True,
                 "api_key": CANARIES["api_key"],
                 "base_url": CANARIES["base_url"],

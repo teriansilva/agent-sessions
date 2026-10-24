@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx, ConfigRefreshCtx } from "../app/config";
@@ -22,16 +22,32 @@ vi.mock("../lib/api", async () => {
 
 type Listing = { models: string[]; listing: "ok" | "unsupported" };
 
+/** The server's acknowledgement for a remote recipient (#1671): a saved remote endpoint always
+ *  carries one — ticked by the operator, or carried over (`legacy`) by the migration. */
+function ackFor(baseUrl: string, provider = "custom", source = "operator") {
+  const u = new URL(baseUrl);
+  const port = u.port || (u.protocol === "https:" ? "443" : "80");
+  return {
+    provider,
+    origin: `${u.protocol.slice(0, -1)}://${u.hostname}:${port}`,
+    at: "t",
+    source,
+  };
+}
+
 function aiBlock(over: Partial<AiReviewConfig> = {}): AiReviewConfig {
+  const base_url = over.base_url ?? "https://ai.example.io/v1";
   return {
     enabled: false,
-    base_url: "https://ai.example.io/v1",
+    base_url,
     model: "m-a",
     interval_minutes: 5,
     max_input_chars: 24000,
     request_timeout: null,
     api_key_set: true,
     configured: true,
+    provider: "custom",
+    egress_ack: base_url ? ackFor(base_url) : null,
     ...over,
   };
 }
@@ -48,9 +64,16 @@ function echo(
   patch: Record<string, unknown>,
   base: AiReviewConfig = aiBlock(),
 ): { ai_review: AiReviewConfig } {
+  const originOf = (u: string) => (u ? ackFor(u).origin : "");
+  const moved =
+    (typeof patch.base_url === "string" &&
+      originOf(patch.base_url) !== originOf(base.base_url)) ||
+    (typeof patch.provider === "string" &&
+      patch.provider !== (base.provider ?? "custom"));
   const next: AiReviewConfig = {
     ...base,
     ...(typeof patch.base_url === "string" ? { base_url: patch.base_url } : {}),
+    ...(typeof patch.provider === "string" ? { provider: patch.provider } : {}),
     ...(typeof patch.model === "string" ? { model: patch.model } : {}),
     ...("request_timeout" in patch
       ? { request_timeout: patch.request_timeout as number | null }
@@ -58,6 +81,11 @@ function echo(
     ...("api_key" in patch ? { api_key_set: patch.api_key !== null } : {}),
   };
   next.configured = next.base_url !== "" && next.api_key_set;
+  // The server's ack rule (#1671): consent never carries to another recipient; a patch's own
+  // acknowledgement is bound to the new one.
+  if (moved) next.egress_ack = null;
+  if (patch.egress_acknowledged === true && next.base_url)
+    next.egress_ack = ackFor(next.base_url, next.provider ?? "custom");
   return { ai_review: next };
 }
 
@@ -93,6 +121,13 @@ const apiKey = () => screen.getByLabelText(/API key/i);
 const saveConnection = () =>
   screen.getByRole("button", { name: "Save connection" });
 const connected = () => screen.findByText(/✓ Connected — 2 models available/);
+/** A new remote recipient waits for the egress acknowledgement (#1671). */
+const acknowledge = (user: ReturnType<typeof userEvent.setup>) =>
+  user.click(
+    screen.getByRole("checkbox", {
+      name: /I understand session content is sent to/,
+    }),
+  );
 
 beforeEach(() => {
   resetEndpointStatus();
@@ -155,10 +190,15 @@ test("Save connection checks the draft first, then stores exactly what it checke
   const user = userEvent.setup();
   const { refresh } = renderSetup(UNCONFIGURED);
   await user.type(baseUrl(), "https://ai.example.io/v1");
+  await acknowledge(user);
   await user.type(apiKey(), "sk-new");
   await user.click(saveConnection());
 
-  const body = { base_url: "https://ai.example.io/v1", api_key: "sk-new" };
+  const body = {
+    base_url: "https://ai.example.io/v1",
+    api_key: "sk-new",
+    egress_acknowledged: true,
+  };
   await waitFor(() =>
     expect(api.setPrefs).toHaveBeenCalledWith({ ai_review: body }),
   );
@@ -181,6 +221,7 @@ test("a failed check saves nothing, says why, and offers Save without testing", 
   );
   renderSetup(UNCONFIGURED);
   await user.type(baseUrl(), "https://ai.example.io/v1");
+  await acknowledge(user);
   await user.type(apiKey(), "sk-x");
   await user.click(saveConnection());
 
@@ -189,10 +230,16 @@ test("a failed check saves nothing, says why, and offers Save without testing", 
   ).toBeInTheDocument();
   expect(api.setPrefs).not.toHaveBeenCalled();
 
-  await user.click(screen.getByRole("button", { name: "Save without testing" }));
+  await user.click(
+    screen.getByRole("button", { name: "Save without testing" }),
+  );
   await waitFor(() =>
     expect(api.setPrefs).toHaveBeenCalledWith({
-      ai_review: { base_url: "https://ai.example.io/v1", api_key: "sk-x" },
+      ai_review: {
+        base_url: "https://ai.example.io/v1",
+        api_key: "sk-x",
+        egress_acknowledged: true,
+      },
     }),
   );
   expect(await screen.findByText("Saved without testing.")).toBeInTheDocument();
@@ -205,6 +252,7 @@ test("a request the SERVER refuses offers no Save without testing — it would b
   );
   renderSetup(UNCONFIGURED);
   await user.type(baseUrl(), "https://ai.example.io/v1");
+  await acknowledge(user);
   await user.type(apiKey(), "sk-x");
   await user.click(saveConnection());
   expect(
@@ -223,10 +271,13 @@ test("an endpoint that can't list models is saved, and step 02 takes a typed id"
   });
   renderSetup(UNCONFIGURED);
   await user.type(baseUrl(), "https://gw.example.org/openai");
+  await acknowledge(user);
   await user.type(apiKey(), "sk-x");
   await user.click(saveConnection());
   expect(
-    await screen.findByText(/Saved — this endpoint doesn’t list models; type the model id below/),
+    await screen.findByText(
+      /Saved — this endpoint doesn’t list models; type the model id below/,
+    ),
   ).toBeInTheDocument();
   expect(api.setPrefs).toHaveBeenCalledTimes(1);
   const model = screen.getByRole("textbox", { name: "Model" });
@@ -243,12 +294,15 @@ test("moving to another host asks for that host's key before Test or Save, and T
   expect(screen.getByText(/New host — enter its API key/)).toBeInTheDocument();
   expect(saveConnection()).toBeDisabled();
   expect(screen.getByRole("button", { name: "Test" })).toBeDisabled();
+  // A new recipient also waits for the acknowledgement (#1671).
+  await acknowledge(user);
 
   await user.type(apiKey(), "sk-other");
   await user.click(screen.getByRole("button", { name: "Test" }));
   expect(api.testAiEndpoint).toHaveBeenCalledWith({
     base_url: "https://other.example.org/v1",
     api_key: "sk-other",
+    egress_acknowledged: true,
   });
   expect(await screen.findByText(/Not saved yet/)).toBeInTheDocument();
   expect(api.setPrefs).not.toHaveBeenCalled();
@@ -288,7 +342,9 @@ test("the model step is locked, and says why, while the connection has unsaved e
   await connected();
   await user.type(baseUrl(), "x");
   expect(
-    screen.getByText(/Save the connection first — this list belongs to the saved endpoint/),
+    screen.getByText(
+      /Save the connection first — this list belongs to the saved endpoint/,
+    ),
   ).toBeInTheDocument();
   expect(screen.getByRole("combobox", { name: "Model" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Save model" })).toBeDisabled();
@@ -385,7 +441,10 @@ test("a save the server already ACCEPTED is adopted, and a newer edit stays dirt
   expect(baseUrl()).toHaveValue("https://ai.example.io/v2-next");
   expect(screen.getByText(/● Unsaved/)).toBeInTheDocument();
   // Undo the newer edit: the draft now equals what was SAVED, so nothing is unsaved.
-  await user.type(baseUrl(), "{Backspace}{Backspace}{Backspace}{Backspace}{Backspace}");
+  await user.type(
+    baseUrl(),
+    "{Backspace}{Backspace}{Backspace}{Backspace}{Backspace}",
+  );
   expect(screen.queryByText(/● Unsaved/)).toBeNull();
 });
 
@@ -415,6 +474,7 @@ test("first setup: a key typed while the first save is in flight stays visible, 
   const post = deferred<{ ai_review: AiReviewConfig }>();
   renderSetup(UNCONFIGURED);
   await user.type(baseUrl(), "https://ai.example.io/v1");
+  await acknowledge(user);
   await user.type(apiKey(), "sk-a");
   vi.mocked(api.setPrefs).mockReturnValue(
     post.promise as unknown as Promise<Record<string, unknown>>,
@@ -426,7 +486,11 @@ test("first setup: a key typed while the first save is in flight stays visible, 
   await act(async () => {
     post.resolve(
       echo(
-        { base_url: "https://ai.example.io/v1", api_key: "sk-a" },
+        {
+          base_url: "https://ai.example.io/v1",
+          api_key: "sk-a",
+          egress_acknowledged: true,
+        },
         UNCONFIGURED,
       ),
     );
@@ -444,6 +508,7 @@ test("host switch: a newer key typed while the save for the new host is in fligh
   await connected();
   await user.clear(baseUrl());
   await user.type(baseUrl(), "https://other.example.org/v1");
+  await acknowledge(user);
   await user.type(apiKey(), "sk-other");
   vi.mocked(api.setPrefs).mockReturnValue(
     post.promise as unknown as Promise<Record<string, unknown>>,
@@ -453,7 +518,11 @@ test("host switch: a newer key typed while the save for the new host is in fligh
   await user.type(apiKey(), "-2");
   await act(async () => {
     post.resolve(
-      echo({ base_url: "https://other.example.org/v1", api_key: "sk-other" }),
+      echo({
+        base_url: "https://other.example.org/v1",
+        api_key: "sk-other",
+        egress_acknowledged: true,
+      }),
     );
   });
   expect(apiKey()).toHaveValue("sk-other-2");
@@ -604,6 +673,265 @@ test("timeout: clearing back to the server default while Save model is in flight
   await waitFor(() =>
     expect(api.setPrefs).toHaveBeenLastCalledWith({
       ai_review: { model: "m-a", request_timeout: null },
+    }),
+  );
+});
+
+// ---- the provider picker and the egress acknowledgement (#1657 P1b, #1671) -----------------
+
+const CATALOG = [
+  {
+    id: "custom",
+    label: "Custom (OpenAI-compatible)",
+    group: "custom",
+    kind: "openai-chat",
+    base_url: "",
+    url_editable: true,
+    vendor: "",
+    thinking_supported: true,
+    auto_model: "",
+    key_hint: "",
+  },
+  {
+    id: "ollama",
+    label: "Ollama",
+    group: "self-hosted",
+    kind: "openai-chat",
+    base_url: "http://localhost:11434/v1",
+    url_editable: true,
+    vendor: "",
+    thinking_supported: true,
+    auto_model: "",
+    key_hint: "",
+  },
+  {
+    id: "openai",
+    label: "OpenAI",
+    group: "api",
+    kind: "openai-chat",
+    base_url: "https://api.openai.com/v1",
+    url_editable: false,
+    vendor: "OpenAI",
+    thinking_supported: true,
+    auto_model: "gpt-5-mini",
+    key_hint: "sk-…",
+  },
+  {
+    id: "mistral",
+    label: "Mistral",
+    group: "api",
+    kind: "openai-chat",
+    base_url: "https://api.mistral.ai/v1",
+    url_editable: false,
+    vendor: "Mistral AI",
+    thinking_supported: false,
+    auto_model: "mistral-medium-latest",
+    key_hint: "",
+  },
+];
+
+function withCatalog() {
+  (api as unknown as { aiProviders: unknown }).aiProviders = vi
+    .fn()
+    .mockResolvedValue({ providers: CATALOG });
+}
+
+const tile = (name: string) => screen.findByRole("radio", { name });
+const ackBox = () =>
+  screen.getByRole("checkbox", {
+    name: /I understand session content is sent to/,
+  });
+
+test("the picker renders the server's catalog, grouped, with no client-side table", async () => {
+  withCatalog();
+  renderSetup(UNCONFIGURED);
+  expect(await tile("OpenAI")).toBeInTheDocument();
+  expect(
+    screen.getByRole("radiogroup", { name: "Self-hosted · your server" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("radiogroup", { name: "API · your key" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("radio", { name: "Custom (OpenAI-compatible)" }),
+  ).toHaveAttribute("aria-checked", "true");
+  expect(
+    screen.queryByRole("radio", { name: /Anthropic|subscription/i }),
+  ).toBeNull();
+});
+
+test("a hosted provider shows its fixed endpoint and locks Test and Save until acknowledged", async () => {
+  withCatalog();
+  const user = userEvent.setup();
+  vi.mocked(api.testAiEndpoint).mockResolvedValue({
+    models: ["gpt-4.1"],
+    listing: "ok",
+  });
+  renderSetup(UNCONFIGURED);
+  await user.click(await tile("OpenAI"));
+  expect(screen.getByTestId("ai-fixed-endpoint")).toHaveTextContent(
+    "api.openai.com · fixed by BattleLab",
+  );
+  expect(screen.queryByLabelText(/Base URL/i)).toBeNull();
+  await user.type(apiKey(), "sk-o");
+  expect(screen.getByTestId("ai-egress")).toHaveTextContent(
+    "OpenAI's terms, retention and data location apply",
+  );
+  expect(saveConnection()).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Test" })).toBeDisabled();
+  expect(
+    screen.getByText(/Tick the acknowledgement to test or save/),
+  ).toBeInTheDocument();
+  await user.click(ackBox());
+  await user.click(screen.getByRole("button", { name: "Test" }));
+  expect(api.testAiEndpoint).toHaveBeenCalledWith({
+    base_url: "https://api.openai.com/v1",
+    api_key: "sk-o",
+    provider: "openai",
+    egress_acknowledged: true,
+  });
+});
+
+test("changing the recipient unticks the acknowledgement", async () => {
+  withCatalog();
+  const user = userEvent.setup();
+  renderSetup(UNCONFIGURED);
+  await user.type(
+    await screen.findByLabelText(/Base URL/i),
+    "https://a.example.io/v1",
+  );
+  await user.click(ackBox());
+  expect(ackBox()).toBeChecked();
+  await user.type(baseUrl(), "x"); // still remote, but a different URL draft
+  expect(ackBox()).not.toBeChecked();
+  await user.click(ackBox());
+  await user.click(await tile("Mistral"));
+  expect(ackBox()).not.toBeChecked();
+});
+
+test("a remote Custom URL warns with the host's own policy; loopback needs nothing", async () => {
+  withCatalog();
+  const user = userEvent.setup();
+  renderSetup(UNCONFIGURED);
+  await user.type(
+    await screen.findByLabelText(/Base URL/i),
+    "https://gpu.example.net/v1",
+  );
+  expect(screen.getByTestId("ai-egress")).toHaveTextContent(
+    "Whoever runs gpu.example.net decides what is kept and for how long",
+  );
+  await user.click(await tile("Ollama"));
+  expect(screen.queryByTestId("ai-egress")).toBeNull();
+  expect(screen.getByTestId("ai-egress-local")).toHaveTextContent(
+    "localhost is this host",
+  );
+});
+
+test("a carried-over (legacy) acknowledgement renders ticked with its note, and a URL edit unticks it", async () => {
+  withCatalog();
+  const user = userEvent.setup();
+  renderSetup(
+    aiBlock({
+      egress_ack: ackFor("https://ai.example.io/v1", "custom", "legacy"),
+    }),
+  );
+  await connected();
+  expect(ackBox()).toBeChecked();
+  expect(ackBox()).toBeDisabled(); // withdrawing it while keeping the endpoint is refused server-side
+  expect(screen.getByTestId("ai-egress-legacy")).toHaveTextContent(
+    "Carried over from before this version",
+  );
+  await user.clear(baseUrl());
+  await user.type(baseUrl(), "https://elsewhere.example.org/v1");
+  expect(ackBox()).not.toBeChecked();
+  expect(screen.queryByTestId("ai-egress-legacy")).toBeNull();
+});
+
+test("Thinking is offered per provider, and saved only when changed", async () => {
+  withCatalog();
+  const user = userEvent.setup();
+  renderSetup(
+    aiBlock({
+      provider: "openai",
+      base_url: "https://api.openai.com/v1",
+      egress_ack: ackFor("https://api.openai.com/v1", "openai"),
+      model_mode: "auto",
+      thinking: "auto",
+    }),
+  );
+  await connected();
+  const thinking = await screen.findByRole("radiogroup", { name: "Thinking" });
+  expect(within(thinking).getByRole("radio", { name: "Auto" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await user.click(within(thinking).getByRole("radio", { name: "High" }));
+  await user.click(screen.getByRole("button", { name: "Save model" }));
+  await waitFor(() =>
+    expect(api.setPrefs).toHaveBeenLastCalledWith({
+      ai_review: { model: "", request_timeout: null, thinking: "high" },
+    }),
+  );
+});
+
+test("a provider without a thinking setting disables the levels and says so", async () => {
+  withCatalog();
+  renderSetup(
+    aiBlock({
+      provider: "mistral",
+      base_url: "https://api.mistral.ai/v1",
+      egress_ack: ackFor("https://api.mistral.ai/v1", "mistral"),
+    }),
+  );
+  await connected();
+  await screen.findByRole("radio", { name: "Mistral" });
+  expect(screen.getByRole("radio", { name: "High" })).toBeDisabled();
+  expect(screen.getByTestId("ai-thinking-hint")).toHaveTextContent(
+    "Mistral has no thinking setting",
+  );
+});
+
+test("an endpoint whose acknowledgement could not be recorded is fixed by ticking and saving once", async () => {
+  withCatalog();
+  const user = userEvent.setup();
+  vi.mocked(api.testAiEndpoint).mockResolvedValue({ models: ["m-a"], listing: "ok" });
+  renderSetup(aiBlock({ egress_ack: null, egress_allowed: false }));
+  await screen.findByRole("radio", { name: "OpenAI" });
+  // The model list is an outbound call too: nothing is listed while the saved endpoint is refused.
+  expect(api.aiReviewModels).not.toHaveBeenCalled();
+  expect(saveConnection()).toBeDisabled();
+  await user.click(ackBox());
+  expect(saveConnection()).toBeEnabled();
+  await user.click(saveConnection());
+  await waitFor(() =>
+    expect(api.setPrefs).toHaveBeenCalledWith({
+      ai_review: { base_url: "https://ai.example.io/v1", egress_acknowledged: true },
+    }),
+  );
+});
+
+test("Specific waits for a model: no empty model is ever saved (Hermes on #1672)", async () => {
+  withCatalog();
+  const user = userEvent.setup();
+  renderSetup(
+    aiBlock({
+      provider: "openai",
+      base_url: "https://api.openai.com/v1",
+      egress_ack: ackFor("https://api.openai.com/v1", "openai"),
+      model: "",
+      model_mode: "auto",
+    }),
+  );
+  await connected();
+  const mode = await screen.findByRole("radiogroup", { name: "Model" });
+  await user.click(within(mode).getByRole("radio", { name: "Specific" }));
+  expect(screen.getByRole("button", { name: "Save model" })).toBeDisabled();
+  expect(screen.getByText("Pick a model, or switch back to Auto.")).toBeInTheDocument();
+  await user.selectOptions(screen.getByRole("combobox", { name: "Specific model" }), "m-b");
+  await user.click(screen.getByRole("button", { name: "Save model" }));
+  await waitFor(() =>
+    expect(api.setPrefs).toHaveBeenLastCalledWith({
+      ai_review: { model: "m-b", request_timeout: null, model_mode: "specific" },
     }),
   );
 });

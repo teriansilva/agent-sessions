@@ -65,7 +65,9 @@ def test_prefs_file_is_chmod_0600_on_write(tmp_home, monkeypatch):
 
 def test_masked_sentinel_round_trip(tmp_home, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_home / "prefs.json"))
-    prefs.set_ai_review({"api_key": SECRET, "base_url": "https://ai.example/v1"})
+    prefs.set_ai_review(
+        {"egress_acknowledged": True, "api_key": SECRET, "base_url": "https://ai.example/v1"}
+    )
     assert prefs.get_ai_review()["api_key"] == SECRET
     # "" and the mask both mean "unchanged".
     prefs.set_ai_review({"api_key": ""})
@@ -174,7 +176,12 @@ def test_api_prefs_validates_and_masks(auth_cfg, tmp_home, monkeypatch):
         c,
         auth_cfg,
         csrf,
-        {"base_url": "https://ai.example/v1", "api_key": SECRET, "model": "m2"},
+        {
+            "base_url": "https://ai.example/v1",
+            "api_key": SECRET,
+            "model": "m2",
+            "egress_acknowledged": True,
+        },
     )
     assert r.status_code == 200
     echoed = r.json()["ai_review"]
@@ -218,7 +225,9 @@ def test_concurrent_partial_saves_never_revert_a_stored_key(tmp_home, monkeypatc
     from contextlib import contextmanager
 
     monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_home / "prefs.json"))
-    prefs.set_ai_review({"base_url": "https://ai.example.io/v1", "api_key": "sk-OLD"})
+    prefs.set_ai_review(
+        {"egress_acknowledged": True, "base_url": "https://ai.example.io/v1", "api_key": "sk-OLD"}
+    )
 
     # Pause the key reader until the model writer reaches the real lock. If the model
     # reads outside that lock, it now holds a stale snapshot. Keep its write after the

@@ -120,7 +120,15 @@ class Script:
 
 @pytest.fixture
 def ai(monkeypatch):
-    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": KEY, "model": "m"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": BASE,
+            "api_key": KEY,
+            "model": "m",
+        }
+    )
 
     def install(*replies) -> Script:
         script = Script(*replies)

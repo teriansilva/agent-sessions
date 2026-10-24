@@ -205,7 +205,13 @@ def test_pulse_defaults_and_validation(prefs_at_tmp):
 def test_public_pulse_reports_endpoint_readiness(prefs_at_tmp):
     assert prefs.public_pulse()["configured"] is False
     prefs.set_ai_review(
-        {"enabled": True, "base_url": "https://ai.test/v1", "api_key": "k", "model": "m"}
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": "https://ai.test/v1",
+            "api_key": "k",
+            "model": "m",
+        }
     )
     pub = prefs.public_pulse()
     assert pub["configured"] is True  # mirrors the reused ai_review endpoint

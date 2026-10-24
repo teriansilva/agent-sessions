@@ -139,7 +139,16 @@ test("a real-looking API key never renders on Endpoint & model — stored, typed
         new_session_engines: [],
         terminal_backend: "ws",
         auth_mode: "none",
-        ai_review: { enabled: true, base_url: "https://api.example.com/v1", model: "m", api_key_set: true, configured: true },
+        // A saved remote endpoint carries the server's acknowledgement since #1671.
+        ai_review: {
+          enabled: true,
+          base_url: "https://api.example.com/v1",
+          model: "m",
+          api_key_set: true,
+          configured: true,
+          provider: "custom",
+          egress_ack: { provider: "custom", origin: "https://api.example.com:443", at: "t", source: "operator" },
+        },
       },
     }),
   );

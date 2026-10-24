@@ -571,7 +571,12 @@ def test_a_paste_whose_enter_fails_says_typed_not_submitted(tmp_home, monkeypatc
 def ai(tmp_home, monkeypatch):
     monkeypatch.setattr(review, "_TRANSPORT", None)
     prefs.set_ai_review(
-        {"base_url": "https://ai.test/v1", "api_key": "sk-test-key-1234", "model": "m"}
+        {
+            "egress_acknowledged": True,
+            "base_url": "https://ai.test/v1",
+            "api_key": "sk-test-key-1234",
+            "model": "m",
+        }
     )
     sent: list[dict] = []
 

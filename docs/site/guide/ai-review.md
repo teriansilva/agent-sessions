@@ -3,8 +3,13 @@
 AI review reads your running sessions and tells you which ones need attention — the one that hit an
 error, the one waiting on a question, the one that quietly finished twenty minutes ago.
 
-It is **off until you configure it**, and it works against any OpenAI-compatible endpoint. That
-includes a local model: point it at your own server and no session content leaves your host.
+It is **off until you configure it**. Pick a **provider**:
+
+- **Custom**: any OpenAI-compatible URL.
+- **Self-hosted**: Ollama, LM Studio, llama.cpp or vLLM.
+- **Hosted, with your own key**: OpenAI, Google Gemini, OpenRouter, Mistral, DeepSeek or xAI. Claude is available through OpenRouter.
+
+A local model on the BattleLab host keeps every session on your machine: no session content leaves your host.
 
 ## Configuration
 
@@ -12,8 +17,8 @@ AI review is set up on two Settings pages under **AI**, and its prompt lives in 
 
 | Setting | Where | Key |
 |---|---|---|
-| Base URL · key | Endpoint & model → Connection | `base_url` · `api_key` |
-| Model · request timeout | Endpoint & model → Model | `model` · `request_timeout` (10–600 s) |
+| Provider · base URL · key | Endpoint & model → Connection | `provider` · `base_url` · `api_key` |
+| Model (Auto or specific) · thinking · request timeout | Endpoint & model → Model | `model_mode` · `model` · `thinking` · `request_timeout` (10–600 s) |
 | Periodic review on or off | Session review | `enabled` |
 | How often it runs | Session review | `interval_minutes` |
 | Sessions excluded from review | Session review (exclude one from its row actions) | — |
@@ -31,6 +36,28 @@ hosted API. The model-list call (`/models`) keeps its own much shorter budget of
 `AGENT_SESSIONS_AI_REVIEW_LOOP=0` is a hard kill-switch: the background task is never started,
 overriding the Settings toggle. Manual **Review now** is unaffected — which is the point of having
 both.
+
+## Where your session content goes
+
+Every AI feature sends what it reads to the endpoint you picked: session transcripts, terminal output, unsent drafts, and mission and HQ conversations. Stored template secrets are always redacted first.
+
+**Only an endpoint on this host stays private.** That means `localhost` or a loopback address such as `127.0.0.1`. Anything else needs your explicit acknowledgement before BattleLab sends it anything; that includes another machine on your LAN, a hosted vendor, or a URL you typed. Settings → AI → Connection shows a warning with a checkbox. Until it is ticked:
+
+- **Test**, the model list, **Save connection** and **Save without testing** stay locked;
+- the server refuses every save, test and request to that recipient.
+
+The acknowledgement names one provider and one host:
+
+- Switching to another provider or host asks again.
+- For a hosted vendor, that vendor's terms, retention and data location apply, and usage is billed to your account with them.
+- For a remote Custom or self-hosted URL, whoever runs that host decides what is kept. Check its terms and retention policy.
+
+**Upgrading keeps working setups working.** A remote endpoint you configured before acknowledgements existed is carried over once, marked "carried over from before this version". Change its URL or provider and you are asked again.
+
+## Model and thinking
+
+- **Model: Auto** (the default for a hosted provider) uses the provider's recommended model and follows it to the provider's current one when it is retired. **Specific** picks one from the provider's own list. Naming a model always means Specific.
+- **Thinking: Auto** (the default) keeps background passes (reviews, recaps, sorting) thinking-off so they stay fast, and gives HQ and chat the provider's default. **Off**, **Low**, **Medium** and **High** apply everywhere, in the provider's own setting. A provider without a thinking setting shows it as not supported.
 
 ## What gets sent
 

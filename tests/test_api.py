@@ -1961,7 +1961,14 @@ def test_ai_recap_on_rows_and_api_key_never_leaks(auth_cfg, fake_jsonl):
 
     secret = "sk-must-not-leak-9999"  # noqa: S105 — test fixture value
     sid = "claude:11111111-1111-1111-1111-111111111111"  # exists in fake_jsonl
-    prefs.set_ai_review({"base_url": "https://ai.test/v1", "api_key": secret, "model": "m"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "base_url": "https://ai.test/v1",
+            "api_key": secret,
+            "model": "m",
+        }
+    )
     metadata.patch(sid, ai_recap="Cloned the repo, then fixed the bug.")
 
     c = _client(auth_cfg)

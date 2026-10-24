@@ -51,7 +51,15 @@ def configured_ai(tmp_path, monkeypatch):
 
     monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "prefs.json"))
     monkeypatch.setattr(review, "_TRANSPORT", None)
-    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": BASE,
+            "api_key": SECRET,
+            "model": "m",
+        }
+    )
     return tmp_path
 
 

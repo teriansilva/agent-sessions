@@ -39,7 +39,13 @@ def ai_prefs(tmp_home, monkeypatch):
     """Point prefs at tmp and store a configured + ENABLED ai_review block."""
     monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_home / "prefs.json"))
     prefs.set_ai_review(
-        {"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "test-model"}
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": BASE,
+            "api_key": SECRET,
+            "model": "test-model",
+        }
     )
     return tmp_home
 
@@ -188,7 +194,9 @@ def test_sweep_disabled_flag_makes_no_calls(ai_prefs, fake_jsonl, monkeypatch):
 
 def test_sweep_unconfigured_makes_no_calls(tmp_home, fake_jsonl, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_home / "prefs.json"))
-    prefs.set_ai_review({"enabled": True, "base_url": BASE})  # no API key stored
+    prefs.set_ai_review(
+        {"egress_acknowledged": True, "enabled": True, "base_url": BASE}
+    )  # no API key stored
     calls = []
     monkeypatch.setattr(review, "_TRANSPORT", _chat_transport(calls))
     assert _sweep(_FakeRegistry([_row(SID)])) == ([], 0)

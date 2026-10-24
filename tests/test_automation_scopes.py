@@ -527,7 +527,13 @@ def test_model_result_keeps_its_original_authority(change, monkeypatch):
     from agent_sessions import review
 
     prefs.set_ai_review(
-        {"enabled": True, "base_url": "https://ai.test/v1", "api_key": "test-only", "model": "test"}
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": "https://ai.test/v1",
+            "api_key": "test-only",
+            "model": "test",
+        }
     )
     prefs.set_orchestrator({"enabled": True, "autonomy": "yolo"})
     mid = mission()

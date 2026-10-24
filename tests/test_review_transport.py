@@ -43,7 +43,9 @@ def _reset_transport(monkeypatch):
 @pytest.fixture
 def ai_prefs(tmp_home, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_home / "prefs.json"))
-    prefs.set_ai_review({"base_url": BASE, "api_key": SECRET, "model": "test-model"})
+    prefs.set_ai_review(
+        {"egress_acknowledged": True, "base_url": BASE, "api_key": SECRET, "model": "test-model"}
+    )
     return tmp_home
 
 
@@ -197,7 +199,8 @@ def test_memo_is_invalidated_by_config_change(ai_prefs, monkeypatch, patch):
     monkeypatch.setattr(review, "_TRANSPORT", _recording(handler, sent))
     asyncio.run(_complete())
     assert not _thinking_off(sent[-1])
-    prefs.set_ai_review(patch)
+    # A new remote origin needs the operator's acknowledgement since #1671.
+    prefs.set_ai_review({**patch, "egress_acknowledged": True} if "base_url" in patch else patch)
     asyncio.run(_complete())
     changed = next(iter(patch))
     assert _thinking_off(sent[2]), f"a changed {changed} must re-probe, not inherit the verdict"

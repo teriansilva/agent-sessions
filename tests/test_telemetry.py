@@ -255,7 +255,11 @@ def _post_through_transport(monkeypatch, body: dict, *, hq: bool) -> None:
     monkeypatch.setattr(
         review, "_client", lambda timeout: httpx.AsyncClient(transport=transport, timeout=timeout)
     )
-    cfg = {"base_url": "http://ai.test/v1", "api_key": "k", "model": "m"}
+    cfg = {
+        "base_url": "http://127.0.0.1:9/v1",
+        "api_key": "k",
+        "model": "m",
+    }  # loopback: no consent needed
 
     async def go():
         if hq:

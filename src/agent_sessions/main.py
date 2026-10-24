@@ -239,6 +239,12 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     with contextlib.suppress(Exception):
         prefs.migrate_default_project_id(_owner_id_for_cwd)
 
+    # One-time prefs migration (#1671): every non-loopback AI endpoint now needs the operator's
+    # acknowledgement, so one configured before that is grandfathered with a `legacy` ack. Best
+    # effort here; every outbound path retries it lazily and fails closed if it cannot be written.
+    with contextlib.suppress(Exception):
+        prefs.migrate_ai_review_egress()
+
     # Slice 2 of the session-stability foundation (#183): the registry is the
     # process-wide source of truth for every live dtach session. The lifespan
     # context discovers live sessions on startup (so the sidebar's working dot +

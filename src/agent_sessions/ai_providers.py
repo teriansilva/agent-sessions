@@ -15,8 +15,11 @@ a model-list probe, unless the stored block carries ``egress_ack`` naming exactl
 origin. The ack is server-owned: a patch can only say ``egress_acknowledged: true`` and the server
 binds it to the lock-current provider + origin; any provider or origin change clears it. The gate
 runs at every boundary — the save lock, ``review._post_chat``, ``review.list_models`` and the
-draft endpoint test. P1b extends it to remote Custom / self-hosted origins together with the UI
-that can tick the box; until then those rows behave exactly as before (#1660 scope split).
+draft endpoint test. Since P1b (#1671) it covers EVERY non-loopback origin, Custom and self-hosted
+included; an install configured before that is grandfathered once by
+``prefs.migrate_ai_review_egress`` (a ``legacy`` ack, lock-safe, retried lazily at the gate). The
+API chat agent's OWN endpoint (``chat_config``, ``source = "own"``) is the one exemption: its config
+carries :data:`OWN_ENDPOINT_EXEMPT`, which only ``chat_config.snapshot`` sets.
 
 **The trust boundary is this host**: only a literal loopback address or the name ``localhost``
 waives consent (:func:`is_loopback`). Nothing is resolved, and no name suffix ever counts.
@@ -300,18 +303,36 @@ def ack_matches(ack: object, provider_id: str, base_url: str) -> bool:
     return bool(origin) and ack.get("provider") == provider_id and ack.get("origin") == origin
 
 
+#: The key `chat_config.snapshot` puts in the API chat agent's OWN-endpoint config (#1671): that
+#: endpoint is configured and consented to separately (out of scope in #1657). Never a stored or
+#: patchable field: every validator rejects unknown keys, and a test pins that no other module
+#: sets it.
+OWN_ENDPOINT_EXEMPT = "egress_exempt_own_endpoint"
+
+
 def needs_consent(provider_id: object, base_url: object) -> bool:
-    """Whether sending to this provider + URL requires a matching ack. P1a gates the hosted
-    rows; Custom and self-hosted keep today's behaviour until P1b (#1660)."""
-    p = get(provider_id)
-    if not p.hosted:
-        return False
-    return not is_loopback(base_url)
+    """Whether sending to this URL requires a matching ack: every non-loopback origin, whatever
+    the row (#1671). An empty URL sends nothing, so it needs nothing."""
+    base = str(base_url or "").strip()
+    return bool(base) and not is_loopback(base)
+
+
+def recipient(cfg: dict) -> str:
+    """Who the egress warning names: a hosted vendor, or the host of a Custom/self-hosted URL."""
+    p = row_for(cfg)
+    if p.hosted:
+        return p.label
+    try:
+        return urlsplit(str(cfg.get("base_url") or "").strip()).hostname or p.label
+    except ValueError:
+        return p.label
 
 
 def egress_violation(cfg: dict) -> str | None:
     """Why nothing may be sent to `cfg`'s endpoint, or None. Pure; evaluated on ONE resolved
     snapshot at every boundary (save lock, transport, model list, draft test)."""
+    if cfg.get(OWN_ENDPOINT_EXEMPT) is True:
+        return None
     p = row_for(cfg)
     base = str(cfg.get("base_url") or "")
     if not needs_consent(p.id, base):
@@ -319,7 +340,7 @@ def egress_violation(cfg: dict) -> str | None:
     if ack_matches(cfg.get("egress_ack"), p.id, base):
         return None
     return (
-        f"acknowledge first: {p.label} receives the session content AI features send — "
+        f"acknowledge first: {recipient(cfg)} receives the session content AI features send — "
         "nothing is sent to it until you confirm in Settings → AI"
     )
 

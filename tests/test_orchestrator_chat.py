@@ -57,7 +57,15 @@ def _isolate(tmp_path, monkeypatch):
     # `continue` would validate to "no actions" and these assertions would measure nothing.
     monkeypatch.setattr(orchestrator.session_input, "is_live", lambda key: True)
     aitasks.reset()
-    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": BASE,
+            "api_key": SECRET,
+            "model": "m",
+        }
+    )
     yield
     aitasks.reset()
 

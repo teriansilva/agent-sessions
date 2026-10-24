@@ -83,6 +83,18 @@ async function mockApp(page: Page, opts: { aiConfigured: boolean }) {
     r.fulfill({ json: { path: "/home/u", home: "/home/u", dirs: [] } }),
   );
   await page.route("**/api/ai-review/models**", (r) => r.fulfill({ json: { models: MODELS } }));
+  // The provider table the picker renders (#1657): the server's, never a client copy.
+  await page.route("**/api/ai-review/providers", (r) =>
+    r.fulfill({
+      json: {
+        providers: [
+          { id: "custom", label: "Custom (OpenAI-compatible)", group: "custom", kind: "openai-chat", base_url: "", url_editable: true, vendor: "", thinking_supported: true, auto_model: "", key_hint: "" },
+          { id: "ollama", label: "Ollama", group: "self-hosted", kind: "openai-chat", base_url: "http://localhost:11434/v1", url_editable: true, vendor: "", thinking_supported: true, auto_model: "", key_hint: "" },
+          { id: "openai", label: "OpenAI", group: "api", kind: "openai-chat", base_url: "https://api.openai.com/v1", url_editable: false, vendor: "OpenAI", thinking_supported: true, auto_model: "gpt-5-mini", key_hint: "sk-…" },
+        ],
+      },
+    }),
+  );
   await page.route("**/api/ai-review/endpoint/test", (r) =>
     r.fulfill({ json: { models: MODELS, listing: "ok" } }),
   );
@@ -132,7 +144,9 @@ test("with AI configured, the contact step follows AI and a pick is stored as hq
     "aria-checked",
     "true",
   );
-  const harlan = gallery.getByRole("radio", { name: /general jack harlan/i });
+  // Anchored: the Random card reads "Today: <name>", so on a day whose contact is Harlan an
+  // unanchored match finds that card too (strict-mode failure, date-dependent).
+  const harlan = gallery.getByRole("radio", { name: /^general jack harlan/i });
   await harlan.scrollIntoViewIfNeeded();
   // A real tap target, not a sliver: the card is at least the 44px floor both ways.
   const box = await harlan.boundingBox();
@@ -156,13 +170,14 @@ test("without AI there is no contact step until the AI save lands; presets fill 
   const rail = dialog.getByRole("navigation", { name: /setup steps/i });
   await expect(rail.getByText("HQ contact")).toHaveCount(0);
 
-  // A preset fills the Base URL draft — and writes nothing.
-  const presets = dialog.getByRole("group", { name: /local ai on the battlelab host/i });
-  await presets.getByRole("button", { name: "Ollama" }).click();
+  // A preset fills the Base URL draft — and writes nothing. Presets are the self-hosted tiles of
+  // the provider picker since #1671.
+  const presets = dialog.getByRole("radiogroup", { name: /self-hosted/i });
+  await presets.getByRole("radio", { name: "Ollama" }).click();
   const url = dialog.getByRole("textbox", { name: /base url/i });
   await expect(url).toHaveValue("http://localhost:11434/v1");
-  await expect(presets.getByRole("button", { name: "Ollama" })).toHaveAttribute(
-    "aria-pressed",
+  await expect(presets.getByRole("radio", { name: "Ollama" })).toHaveAttribute(
+    "aria-checked",
     "true",
   );
   expect(state.writes).toEqual([]);

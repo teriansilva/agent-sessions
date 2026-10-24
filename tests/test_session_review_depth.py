@@ -310,7 +310,13 @@ def sweep_env(monkeypatch):
     orchestrator_loop.reset_state()
     aitasks.reset()
     prefs.set_ai_review(
-        {"enabled": True, "base_url": "https://ai.test/v1", "api_key": "sk-t", "model": "m"}
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": "https://ai.test/v1",
+            "api_key": "sk-t",
+            "model": "m",
+        }
     )
     prefs.set_orchestrator({"enabled": True})
     cards = [{"id": "claude:x", "state": "idle", "intervention_required": False}]

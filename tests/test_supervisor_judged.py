@@ -1006,7 +1006,14 @@ async def test_the_judge_request_on_the_WIRE_carries_the_registry_prompt_guarded
         return httpx.Response(200, json={"choices": [{"message": {"content": body}}]})
 
     monkeypatch.setattr(review, "_TRANSPORT", httpx.MockTransport(handler))
-    prefs.set_ai_review({"enabled": True, "base_url": "https://ai.test/v1", "api_key": "sk-t"})
+    prefs.set_ai_review(
+        {
+            "egress_acknowledged": True,
+            "enabled": True,
+            "base_url": "https://ai.test/v1",
+            "api_key": "sk-t",
+        }
+    )
     monkeypatch.setattr(mj, "gather", lambda mid, cwd: _inp())
     mid = _judged_mission()
     await _pass(mid)

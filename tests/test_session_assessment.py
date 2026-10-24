@@ -365,7 +365,9 @@ def test_projection_status_is_decided_per_source():
 @pytest.fixture
 def ai_prefs(monkeypatch, tmp_path):
     monkeypatch.setattr(review, "_TRANSPORT", None)
-    prefs.set_ai_review({"base_url": BASE, "api_key": SECRET, "model": "test-model"})
+    prefs.set_ai_review(
+        {"egress_acknowledged": True, "base_url": BASE, "api_key": SECRET, "model": "test-model"}
+    )
     return tmp_path
 
 
