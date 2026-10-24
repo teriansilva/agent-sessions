@@ -17,6 +17,17 @@ export const THEME_STORAGE_KEY = "tr-theme";
  *  write the attribute so the current theme is observable + the value round-trips. */
 export function applyTheme(id: ThemeId): void {
   document.documentElement.dataset.theme = id;
+  syncThemeColor();
+}
+
+/** Point the browser chrome (`<meta name="theme-color">`) at the theme's ground, `--bg-0`, as the
+ *  inline boot script in index.html does pre-paint (NIGHTJAR #1531). A page without the meta, or
+ *  without the tokens (a test environment), is left as it is. */
+function syncThemeColor(): void {
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (!meta) return;
+  const ground = getComputedStyle(document.documentElement).getPropertyValue("--bg-0").trim();
+  if (ground) meta.setAttribute("content", ground);
 }
 
 /** The media query `system` follows (#1494). Mirrored by the inline boot script in index.html

@@ -8,7 +8,7 @@
 }
 .tag {
   margin: 0 0 8px;
-  font: 600 11px var(--font-mono);
+  font: 600 var(--fs-label) var(--font-mono);
   letter-spacing: 0.12em;
   color: var(--text-3);
 }
@@ -86,7 +86,7 @@
   height: 6px;
   border-radius: 50%;
   background: var(--status-down);
-  box-shadow: 0 0 7px var(--status-down);
+  box-shadow: 0 0 var(--glow-led) var(--status-down);
   flex: none;
 }
 .message {
@@ -95,7 +95,7 @@
 }
 .detail {
   margin: 0 0 12px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-2);
 }
 .retry {
@@ -109,7 +109,7 @@
   min-height: 44px;
   margin-top: 4px;
   color: var(--accent-text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   text-decoration: underline;
 }
 .back:hover,

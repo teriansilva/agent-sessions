@@ -78,3 +78,35 @@ test("bootPageTheme follows the device when nothing is stored, and a stored choi
     light.mockRestore();
   }
 });
+
+test("applyTheme points the browser chrome at the new theme's ground (--bg-0, NIGHTJAR #1531)", () => {
+  const meta = document.createElement("meta");
+  meta.name = "theme-color";
+  meta.content = "#0d0e10";
+  const tokens = document.createElement("style");
+  tokens.textContent =
+    ':root[data-theme="dark"] { --bg-0: #0d0e10; } :root[data-theme="light"] { --bg-0: #e7e8ea; }';
+  document.head.append(meta, tokens);
+  try {
+    applyTheme("light");
+    expect(meta.content).toBe("#e7e8ea");
+    applyTheme("dark");
+    expect(meta.content).toBe("#0d0e10");
+  } finally {
+    meta.remove();
+    tokens.remove();
+  }
+});
+
+test("applyTheme leaves the theme-color alone where the tokens are absent", () => {
+  const meta = document.createElement("meta");
+  meta.name = "theme-color";
+  meta.content = "#0d0e10";
+  document.head.append(meta);
+  try {
+    applyTheme("light");
+    expect(meta.content).toBe("#0d0e10");
+  } finally {
+    meta.remove();
+  }
+});

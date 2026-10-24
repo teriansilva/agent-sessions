@@ -104,7 +104,7 @@ the same list.
 | `components/templates/TemplatePickerModal.module.css` | css | 3 | done | popup:template-picker | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/Compose.module.css` | css | 6 | done | route:session-compose route:session-pane popup:keybar | Talk recording: mic glyph opacity step (Full only), key menu appear / ≤800px sheet-up, Send glitch (.shine) |
 | `components/terminal/HandoffModal.module.css` | css | 3 | done | popup:hand-off | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
-| `components/terminal/RuntimeGate.module.css` | css | 6 | todo |  |  |
+| `components/terminal/RuntimeGate.module.css` | css | 6 | done | route:session-opening route:session-opening-failed route:session-not-found | opening pips step in opacity (Full; steady in Reduced and Off); the failed LED's halo is the theme's `--glow-led` |
 | `components/terminal/SentMessagesModal.module.css` | css | 3 | done | popup:sent-messages | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/SessionRecapModal.module.css` | css | 3 | done | popup:session-brief | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/TermUplinkVeil.module.css` | css | 6 | done | route:uplink-veil route:uplink-veil-api | veil fade in/out (--t-slow), log deploy (fade + 6 px rise), acquire bar; Reduced: 120 ms fade in and out via `.nj-fade-ok` + a Reduced exit rule; Off: none (#1570) |
@@ -113,7 +113,7 @@ the same list.
 | `components/updates/UpdateProgressPanel.module.css` | css | 11 | done | route:settings-updates | the Acquiring strip scans while the installer runs; the fill widens (--t-slow); Reduced/Off hold a still strip |
 | `components/updates/UpdateWhatsNew.module.css` | css | 11 | done | route:settings-updates | none |
 | `components/wizard/WizardShell.module.css` | css | 4 | done | route:new-project | progress fill, rail tint |
-| `index.css` | css | 1 | todo |  |  |
+| `index.css` | css | 1 | done | route:dashboard route:new-session | none: base rules and the token, font, motion and plate imports only |
 | `routes/AgentsSettings.module.css` | css | 11 | todo |  |  |
 | `routes/Appearance.module.css` | css | 11 | todo |  |  |
 | `routes/Ask.module.css` | css | 4 | done | popup:hq | none (layout) |
@@ -136,7 +136,7 @@ the same list.
 | `whatsnew/WhatsNewDialog.module.css` | css | 4 | done | popup:whats-new | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced; slide image fade |
 | `components/ui/menu.module.css` | css | 3 | done | popup:operator-menu popup:session-row-menu popup:dashboard-new | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
 | `components/ui/toast.module.css` | css | 3 | done | popup:toast | toast in (fade + 6 px rise), out at 120 ms |
-| `components/pulse/MissionTitle.module.css` | css | 8 | todo |  |  |
+| `components/pulse/MissionTitle.module.css` | css | 8 | done | popup:mission-title | the shared dialog chrome's (HudDialog.module.css): deploy-in, scrim fade, ≤800px sheet slide-up |
 | `components/shell/FooterTelemetry.module.css` | css | 4 | done | route:dashboard | value bump (filter step, Full only) |
 | `components/shell/BootSequence.module.css` | css | 4 | done | route:boot | boot: log lines fade in, acquire bar, layer fades out; panels power on (fade + rise) |
 | `app/ShellStates.module.css` | css | 4 | done | route:loading route:error | loader acquire bar (Full), failed panel deploy-in |
@@ -189,7 +189,7 @@ the same list.
 | `components/overview/OverviewCanvas.tsx (React Flow)` | canvas | 9 | done | route:map map:expanded map:folders-live map:chip-menu map:loading map:error map:empty map:empty-projects map:partial map:new-project-error map:group-error map:windows map:toolbar-error map:empty-windows | the shared theme (hud/reactFlow.css), `colorMode` from the theme; tactical grid (fine + major) on `<Background>`; live-edge packets; pan and zoom React Flow's own |
 | `components/memory/MemoryGraph.tsx (React Flow)` | canvas | 9 | done | canvas:memory-graph | the shared theme (hud/reactFlow.css), `colorMode` from the theme; no motion of its own (its page, memoryGraph.module.css, is Phase 10) |
 | `components/playbooks/PlaybookFlowCanvas.tsx (React Flow)` | canvas | 9 | done | canvas:playbook-flow | the shared theme (hud/reactFlow.css), `colorMode` from the theme; no motion of its own (the editor page is Phase 10) |
-| `web/index.html (SPA shell, pre-paint script)` | page | 1 | todo |  |  |
+| `web/index.html (SPA shell, pre-paint script)` | page | 1 | done | route:boot route:dashboard | none of its own: it pins `data-theme`, `data-motion` and the theme-color (the theme's `--bg-0`) before first paint |
 | `src/agent_sessions/templates/login.html` | page | 12 | done | page:login page:login-error page:login-qr | atmosphere (Full, dark; still under prefers-reduced-motion), caret blink, live LED on the QR status |
 | `src/agent_sessions/templates/login_totp.html` | page | 12 | done | page:totp page:totp-error | atmosphere (Full, dark), caret blink |
 | `src/agent_sessions/templates/change_password.html` | page | 12 | done | page:password page:password-error | atmosphere (Full, dark), caret blink |

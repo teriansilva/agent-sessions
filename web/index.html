@@ -5,6 +5,8 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <!-- iOS draws no transparency: the mark on the kit's dark ground (#1590). -->
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- The browser chrome takes the theme's ground (--bg-0, tokens.css): dark here, re-pointed
+         pre-paint by the script below and on every theme change by applyTheme.ts. -->
     <meta name="theme-color" content="#0d0e10" />
     <!-- interactive-widget=resizes-content: when the on-screen keyboard opens, shrink
          the layout viewport (not just the visual one) so the terminal refits above the
@@ -43,6 +45,10 @@
         // Always pin a valid data-theme so <html> never renders attribute-less or with an
         // unknown value; "dark" is the default (also matches the bare :root tokens).
         root.setAttribute("data-theme", t);
+        // The browser chrome on the same ground (NIGHTJAR #1531): tokens.css --bg-0 per theme,
+        // so a light operator's status bar is not the dark default before the bundle runs.
+        var tc = document.querySelector('meta[name="theme-color"]');
+        if (tc) tc.setAttribute("content", t === "light" ? "#e7e8ea" : "#0d0e10");
         // Brand accent (#211 Phase 2). A custom accent overrides --accent + --on-accent
         // pre-paint so there's no amber flash; the default is left to index.css. Mirrors
         // web/src/theme/applyAccent.ts + accent.ts (inline + tiny to run ahead of the bundle).

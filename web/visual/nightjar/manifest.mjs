@@ -408,6 +408,18 @@ export const SWEEP = [
   { id: "route:boot", path: "/dashboard", motion: "full", asPerson: true, at: 450, present: "[data-testid='boot-sequence']" },
   // #1570: the uplink veil over a terminal whose settled link (held > 750 ms) has been down past
   // its 5 s grace; every retry is accepted and refused at once (a flap), which keeps the outage.
+  // The session pane's own panels (RuntimeGate.module.css, #1502): a browser that has never loaded
+  // the agent list waits ("Opening…"), gives up after 8 s (Retry), and a 4404 whose lookup settled
+  // "missing" reads Not found over the terminal.
+  { id: "route:session-opening", path: S6, holdAsset: "/api/engines(\\?|$)", at: 1500, present: "[data-session-opening='opening']" },
+  { id: "route:session-opening-failed", path: S6, holdAsset: "/api/engines(\\?|$)", at: 9500, present: "[data-session-opening='failed']" },
+  {
+    id: "route:session-not-found",
+    path: "/s/claude/7c1e0000-5b2d-4c8e-9f31-0a6d2e8b40ff",
+    term: { closeCode: 4404, closeReason: "not found" },
+    at: 3000,
+    present: "[data-session-opening='not-found']",
+  },
   { id: "route:uplink-veil", path: S6, term: { dropAfter: 1500 }, at: 7600, present: "[data-testid='uplink-veil'][data-phase='lost']" },
   // #1570 follow-up: the same veil on an API session — its first read never succeeds, so after 3 s
   // the conversation area shows ESTABLISHING (reads answer 503, raw and encoded key forms).
