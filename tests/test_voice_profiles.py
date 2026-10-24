@@ -112,7 +112,7 @@ def test_every_contact_has_a_style_and_speed():
 def test_the_personas_are_unchanged_by_voice_profiles():
     # Tone lives in the persona text, which still forbids imitated accents.
     for c in hq_contacts.CONTACTS:
-        assert "no imitated accent or dialect spelling" in c.persona
+        assert "no imitated accent or dialect spelling" in c.persona.lower()
 
 
 def test_discovery_reads_voxcpm_health(monkeypatch):
