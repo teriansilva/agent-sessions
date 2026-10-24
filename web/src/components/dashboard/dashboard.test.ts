@@ -163,18 +163,68 @@ describe("forecastLine", () => {
     );
     expect(got?.tone).toBe("warn");
     expect(got?.text).toMatch(
-      /^runs out in ~15h \(.+\) at this pace — 33h before the reset$/,
+      /^week: runs out in ~15h \(.+\) at this pace — 33h before the reset$/,
     );
   });
 
   test("a lasting pace is muted and says where it lands", () => {
     expect(forecastLine(fc({ pct_at_reset: 64.4 }), NOW)).toEqual({
-      text: "on pace for ~64% at the reset",
+      text: "week: on pace for ~64% used at the reset",
       tone: "muted",
     });
     expect(forecastLine(fc({ window: null }), NOW)?.text).toBe(
       "on pace to stay under the limit",
     );
+  });
+
+  test("a forecast on another window than the meter's names it and carries its own figure", () => {
+    // The meter shows the session (nearest its limit); the forecast judges the week (runs out
+    // first). Read bare, the week's "runs out" sat under the session's 49 % as if it were its own.
+    const windows = [
+      { label: "session", used_pct: 51, resets_at: NOW + 3 * 3600 },
+      { label: "week", used_pct: 13, resets_at: NOW + 6 * 86400 },
+    ];
+    const got = forecastLine(
+      fc({
+        state: "exhausts",
+        runs_out_at: NOW + 33 * 3600,
+        resets_at: NOW + 6 * 86400,
+      }),
+      NOW,
+    );
+    expect(got?.text).toMatch(/^week: /);
+    const mixed = forecastLine(
+      {
+        ...fc({
+          state: "exhausts",
+          runs_out_at: NOW + 33 * 3600,
+          resets_at: NOW + 6 * 86400,
+        }),
+        windows,
+      },
+      NOW,
+    );
+    expect(mixed?.text).toMatch(
+      /^week, 87% left: runs out in ~33h \(.+\) at this pace — ~?5d before the reset$/,
+    );
+    // The meter's own window is named, without repeating the figure the meter already shows.
+    const same = forecastLine(
+      {
+        ...fc({
+          state: "exhausts",
+          window: "session",
+          runs_out_at: NOW + 3600 + 1800,
+          resets_at: NOW + 3 * 3600,
+        }),
+        windows,
+      },
+      NOW,
+    );
+    expect(same?.text).toMatch(/^session: runs out in ~2h /);
+    // A lasting window lands in % USED; next to its own "% left" it must say so.
+    expect(
+      forecastLine({ ...fc({ pct_at_reset: 64.4 }), windows }, NOW)?.text,
+    ).toBe("week, 87% left: on pace for ~64% used at the reset");
   });
 
   test("learning is never 'ok'", () => {

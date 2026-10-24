@@ -428,7 +428,7 @@ for (const theme of ["dark", "light"] as const) {
     const claude = page
       .locator('[data-testid="quota-row"][data-engine="claude"]')
       .getByTestId("quota-forecast");
-    await expect(claude).toContainText(/runs out in ~9h \(.+\) at this pace/);
+    await expect(claude).toContainText(/^weekly: runs out in ~9h \(.+\) at this pace/);
     await expect(claude).toContainText("15h before the reset");
     const colour = await claude.evaluate((el) => getComputedStyle(el).color);
     const degraded = await page.evaluate(() => {
@@ -454,6 +454,44 @@ for (const theme of ["dark", "light"] as const) {
     ).toHaveText("on pace to stay under the limit");
   });
 }
+
+test("quota: a week's forecast under a session meter says it is the week's", async ({
+  page,
+}) => {
+  // The meter shows the window nearest its limit (session); the forecast judges the one running
+  // out first (week). Unlabelled, the week's "runs out" read as the session's.
+  await mockAll(page, {
+    usage: {
+      json: {
+        ...USAGE,
+        agents: [
+          {
+            ...USAGE.agents[0],
+            windows: [
+              { label: "session", used_pct: 51, resets_at: NOW + 3 * 3600 },
+              { label: "week", used_pct: 13, resets_at: NOW + 6 * 86400 },
+            ],
+            used_pct: 51,
+            forecast: {
+              state: "exhausts",
+              window: "week",
+              resets_at: NOW + 6 * 86400,
+              runs_out_at: NOW + 33 * 3600,
+              pct_at_reset: null,
+              rate_per_h: 2.6,
+            },
+          },
+        ],
+      },
+    },
+  });
+  await page.goto("/dashboard");
+  const row = page.locator('[data-testid="quota-row"][data-engine="claude"]');
+  await expect(row).toContainText("49% left · session");
+  await expect(row.getByTestId("quota-forecast")).toHaveText(
+    /^week, 87% left: runs out in ~\d+h \(.+\) at this pace/,
+  );
+});
 
 test("a failing tile never blanks the page, and says it could not read — never '0'", async ({
   page,

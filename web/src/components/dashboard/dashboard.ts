@@ -88,13 +88,34 @@ export function untilText(seconds: number): string {
 export type ForecastTone = "over" | "warn" | "muted";
 
 /** The quota row's forecast line, or null when there is nothing to say. `warn` for a pace that
- *  runs out before the reset (it has NOT happened — degraded, not down), `over` once it has. */
+ *  runs out before the reset (it has NOT happened — degraded, not down), `over` once it has.
+ *
+ *  A plan forecast judges the window that runs out FIRST, while the row's meter shows the one
+ *  nearest its limit (`worstWindow`) — a session at 51 % and a week at 13 % that is running out
+ *  faster. So the line always names its window, and when that is not the meter's window it
+ *  carries the window's own figure too: a week's forecast under a session meter must not read as
+ *  the session's. */
 export function forecastLine(
   row: AgentUsageRow,
   now: number = Date.now() / 1000,
 ): { text: string; tone: ForecastTone } | null {
   const f = row.forecast;
   if (!f) return null;
+  const line = forecastText(f, now);
+  if (!line || !f.window || f.state === "learning") return line;
+  const own = (row.windows || []).find((w) => w.label === f.window);
+  const shown = worstWindow(row);
+  const prefix =
+    own && shown && shown.label !== own.label && Number.isFinite(own.used_pct)
+      ? `${own.label}, ${Math.round(Math.max(0, 100 - own.used_pct))}% left`
+      : f.window;
+  return { ...line, text: `${prefix}: ${line.text}` };
+}
+
+function forecastText(
+  f: NonNullable<AgentUsageRow["forecast"]>,
+  now: number,
+): { text: string; tone: ForecastTone } | null {
   switch (f.state) {
     case "out":
       return {
@@ -115,7 +136,8 @@ export function forecastLine(
       return {
         text:
           f.pct_at_reset !== null
-            ? `on pace for ~${Math.round(f.pct_at_reset)}% at the reset`
+            ? // USED, said so: the meter and the line's own prefix speak in % left.
+              `on pace for ~${Math.round(f.pct_at_reset)}% used at the reset`
             : "on pace to stay under the limit",
         tone: "muted",
       };
