@@ -144,8 +144,8 @@ EXPECTED_DEFAULT_SHA = {
     "hq_persona_southamerica_woman": "0a0d2b9278d9cf9b",
     "hq_persona_southamerica_man": "965ffa5b9e0e0e84",
     "hq_persona_romania_woman": "e87849be173ee7b0",
-    "hq_call": "9c5c7827a2b3a821",  # #1397; #1668: when the call is over, end_call
-    "hq_call_detailed": "71aae02e14907167",  # #1397 (#1626 review: answers); #1668: end_call
+    "hq_call": "ba7a61d7d1e836f6",  # #1397; #1668: end_call; #1681: readable proposal text
+    "hq_call_detailed": "c47168a87e1751e2",  # #1397 (#1626 review); #1668: end_call; #1681: same
     "hq_call_end": "4af567dd1abae1eb",  # #1668: on a call, do the words and HQ's answer end it?
     "hq_handover": "a27b7d563b8cb484",  # the Commander switched contact mid-conversation
     "hq_handover_plain": "2629dd59306634d4",  # the same, switched to Off
