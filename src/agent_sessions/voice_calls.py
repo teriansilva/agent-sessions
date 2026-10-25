@@ -138,7 +138,9 @@ from .voice_text import (  # noqa: E402,F401
     CHUNK_WORDS,
     card_sentences,
     classify_confirmation,
+    classify_decision,
     is_no_speech_phrase,
+    is_skip,
     pick_option,
     readback,
     readback_screen_only,
@@ -652,7 +654,12 @@ class Call:
     # -- spoken confirmation (#1397 P2) -------------------------------------------------------
 
     async def offer(
-        self, cards: list[dict], *, turn_id: str | None = None, gen: int | None = None
+        self,
+        cards: list[dict],
+        *,
+        turn_id: str | None = None,
+        gen: int | None = None,
+        queue: list[dict] | None = None,
     ) -> None:
         """Read the cards back; the challenge arms once that read-back has played. `gen`: the
         question this offer answers — checked with no await between it and installing the
@@ -674,7 +681,9 @@ class Call:
         # all meet the real challenge, whatever order the awaits resolve in (#1631 reviews).
         sid = uuid.uuid4().hex[:12]
         ch = {"cards": cards, "say_id": sid, "sent": False, "armed_at": None,
-              "expires_at": None, "gen": self.generation}  # fmt: skip
+              "expires_at": None, "gen": self.generation,
+              # The Needs-you items still to offer, one at a time, after this one (#1681 P2).
+              "queue": list(queue or [])}  # fmt: skip
         self.challenge = ch
         said = await self.say(readback(cards), kind="readback", turn_id=turn_id, sid=sid)
         if self.challenge is not ch:
@@ -707,30 +716,51 @@ class Call:
             # Fail closed: a turn not known to be English never confirms (the matcher is
             # English-only), whatever its words were transcribed as. The caller voids it.
             return False
-        verdict, idx = classify_confirmation(text, len(ch["cards"]))
+        first = ch["cards"][0]
+        if len(ch["cards"]) == 1 and first["kind"] in ("permission", "menu"):
+            # A Needs-you decision (#1681 P2): the reply names WHICH answer, of this row only.
+            verdict, choice = classify_decision(text, first)
+            idx = 0 if verdict == "choose" else None
+            if choice is not None:
+                first = {**first, "choice": choice}
+        elif len(ch["cards"]) == 1 and first["kind"] == "needs_you" and is_skip(text):
+            verdict, idx = "skip", None
+        else:
+            verdict, idx = classify_confirmation(text, len(ch["cards"]))
         if verdict == "other":
             return False
-        if verdict == "confirm" and idx is not None:
+        if verdict in ("confirm", "choose") and idx is not None:
             self.challenge = None  # single use: consumed BEFORE anything is awaited
-            card = ch["cards"][idx]
+            card = first if verdict == "choose" else ch["cards"][idx]
             await self.client(
                 {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text}
             )
             await self.client({"t": "challenge", "cards": []})
-            self._side(self._settle_if_still_wanted(card))
+            self._side(self._settle_then_next(card, ch["queue"], ch["gen"]))
+            return True
+        if verdict == "skip":
+            self.challenge = None
+            await self.client(
+                {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text}
+            )
+            await self.client({"t": "challenge", "cards": []})
+            if not await self._offer_next(ch["queue"], ch["gen"]):
+                await self.say("Okay. That was the last one, Commander.", kind="outcome")
             return True
         await self.client({"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text})
         if verdict == "cancel":
             await self.void_challenge()
             await self.say("Okay. It stays on your screen.", kind="outcome")
             return True
-        # "all" / "ambiguous": HQ answers, and the challenge waits for THAT line to have played
-        # before it arms again — so its own echo can never be taken for a confirmation.
-        line = (
-            "I can only confirm one at a time, Commander."
-            if verdict == "all"
-            else "Which one, Commander? Say confirm and the number."
-        )
+        # "all" / "ambiguous" / "broader" / "no_allow": HQ answers, and the challenge waits for
+        # THAT line to have played before it arms again — so its own echo can never be taken
+        # for a confirmation.
+        line = {
+            "all": "I can only confirm one at a time, Commander.",
+            "broader": "By voice I can only allow it once, Commander. Anything broader stays on"
+            " your screen.",
+            "no_allow": "I can't allow this one by voice, Commander. Say refuse it, or skip.",
+        }.get(verdict, "Which one, Commander? Say confirm and the number.")
         sid = uuid.uuid4().hex[:12]
         # Disarmed BEFORE the line is sent; it re-arms only once THIS line has played.
         ch.update(say_id=sid, sent=False, armed_at=None, expires_at=None)
@@ -738,6 +768,22 @@ class Call:
         said = await self.say(line, kind="outcome", sid=sid)
         if self.challenge is ch and said is None:
             await self.void_challenge()
+        return True
+
+    async def _settle_then_next(self, card: dict, queue: list[dict], gen: int) -> None:
+        """Settle one card, then offer the next queued Needs-you item — unless something newer
+        (a question, an offer) took the call meanwhile."""
+        await self._settle_if_still_wanted(card)
+        if self.challenge is None and gen == self.generation:
+            await self._offer_next(queue, gen)
+
+    async def _offer_next(self, queue: list[dict], gen: int) -> bool:
+        """Offer the first queued item not tapped meanwhile, the rest queued behind it. False when
+        none is left (or the call moved on)."""
+        rest = [c for c in queue if c["id"] not in self.tapped]
+        if not rest or gen != self.generation or self.state == "ended":
+            return False
+        await self.offer(rest[:1], gen=gen, queue=rest[1:])
         return True
 
     async def _settle_if_still_wanted(self, card: dict) -> None:
@@ -768,6 +814,12 @@ class Call:
         kind = card["kind"]
         if kind in ("nudge", "needs_you"):
             method, path, body = "POST", f"/api/pulse/actions/{card['id']}/approve", None
+        elif kind in ("permission", "menu"):
+            # The screen's own route and payload: the RECORDED option's number and label. The
+            # route re-checks the live screen against what the escalation recorded (#1213).
+            choice = card["choice"]
+            method, path = "POST", f"/api/pulse/actions/{card['id']}/choose"
+            body = {"option": choice["option"], "label": choice["label"]}
         elif kind == "session":
             method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
             body = {"decision": "start", "bypass": False}
@@ -831,7 +883,11 @@ class Call:
         # settle are then read back by `offer` itself — the read-back that arms the challenge.
         await self.say(told, kind="outcome")
         if cards and gen == self.generation:
-            await self.offer(cards, gen=gen)
+            if self.language not in (None, "en"):
+                await self.offer(cards, gen=gen)  # read for the screen: nothing arms
+            else:
+                # ONE row per challenge (#1681 P2): a reply can only name something of THAT row.
+                await self.offer(cards[:1], gen=gen, queue=cards[1:])
 
     async def _ack_later(self, gen: int) -> None:
         await asyncio.sleep(ACK_AFTER_S)
@@ -1021,6 +1077,9 @@ def confirmable_cards(view: dict) -> list[dict]:
 
 #: Needs-you items a call describes at most; the rest are counted ("and 7 more").
 NEEDS_YOU_TOLD = 5
+#: The longest permission dialog a call reads out (characters of the sentence): each part is read
+#: verbatim, and a dialog whose whole reading is longer is a screen decision.
+PERMISSION_TOLD_MAX = 900
 #: Options a menu may have to be read out; a longer menu is a screen decision.
 MENU_OPTIONS_TOLD = 5
 _NUMBER_WORDS = ("one", "two", "three", "four", "five")
@@ -1064,15 +1123,23 @@ def _permission_words(perm: object) -> str | None:
         return None  # a line of the dialog that can't be read: the whole dialog is screen-only
     if verbatim(f"{command} {said_note or ''}") is None:  # within one read-back's bound
         return None
-    if verbatim(str(perm.get("question") or "")) is None:
+    question = verbatim(str(perm.get("question") or ""))
+    if question is None:
         return None
     options = perm.get("options")
-    if not isinstance(options, list) or not options:
+    if not isinstance(options, list) or not (1 <= len(options) <= len(_NUMBER_WORDS)):
         return None
-    if any(not isinstance(o, dict) or verbatim(str(o.get("label") or "")) is None for o in options):
+    labels = [verbatim(str(o.get("label") or "")) if isinstance(o, dict) else None for o in options]
+    if any(lbl is None for lbl in labels):
         return None
+    # The WHOLE dialog is SAID, not only checked (Hermes 7021): the request, the question and
+    # every option — the broader grants included, so the Commander hears what stays on screen.
     line = f"asks permission for {tool}: {_sentence(command)}"
-    return f"{line} The dialog also says: {_sentence(said_note)}" if said_note else line
+    if said_note:
+        line += f" The dialog also says: {_sentence(said_note)}"
+    listed = "; ".join(f"{_NUMBER_WORDS[i]}, {lbl}" for i, lbl in enumerate(labels))
+    line += f" It asks: {_sentence(question)} The options are: {_sentence(listed)}"
+    return line if len(line) <= PERMISSION_TOLD_MAX else None
 
 
 def _menu_words(menu: object) -> tuple[str, list[str]] | None:
@@ -1102,7 +1169,74 @@ def _question_card(row: dict) -> dict | None:
     if answer is None:
         return None  # the answer that would be sent can't be read back in full: screen only
     line = _sentence(f"{_who(row)} asks a question. The suggested answer is: {answer}")
-    return {"id": a["id"], "kind": "needs_you", "verb": "send it", "line": line}
+    return {"id": a["id"], "kind": "needs_you", "verb": "send it", "line": line,
+            "ask": "Say confirm to send it, skip, or cancel."}  # fmt: skip
+
+
+def _escalation(row: dict) -> dict | None:
+    """The row's pending ESCALATION — the decision `/choose` answers — or None."""
+    a = row.get("action") if isinstance(row.get("action"), dict) else None
+    if not a or a.get("verb") != "escalate" or not isinstance(a.get("id"), str) or not a["id"]:
+        return None
+    return a
+
+
+def _recorded_option(options: list, n: object, as_: str) -> dict | None:
+    """Option ``n`` of a recorded list as a voice choice: its number and its label exactly as
+    recorded (what `/choose` compares), or None."""
+    if not isinstance(n, int) or isinstance(n, bool):
+        return None
+    hits = [o for o in options if isinstance(o, dict) and o.get("n") == n]
+    if len(hits) != 1 or not isinstance(hits[0].get("label"), str) or not hits[0]["label"]:
+        return None
+    return {"option": n, "label": hits[0]["label"], "as": as_}
+
+
+def _permission_card(row: dict) -> dict | None:
+    """A permission dialog a voice may decide (#1681 P2): ONLY one readable as a whole, with its
+    refusal identified (`_permission_words`). Refuse is always offered then; allow only with an
+    identified single-use option — never an option that grants more than this one call."""
+    a = _escalation(row)
+    if a is None or row.get("kind") not in ("choice", "approval"):
+        return None
+    perm = a.get("permission")
+    words = _permission_words(perm)
+    if words is None:
+        return None
+    options = perm["options"]  # type: ignore[index]
+    deny = _recorded_option(options, perm.get("deny"), "refuse")  # type: ignore[union-attr]
+    if deny is None:
+        return None
+    allow = _recorded_option(options, perm.get("once"), "allow")  # type: ignore[union-attr]
+    if allow is not None and any(
+        o.get("n") == allow["option"] and o.get("persistent") is not False for o in options
+    ):
+        allow = None  # only a single-use allow, and only when the dialog SAYS it is one
+    ask = (
+        "Say allow it to allow it once, refuse it, or skip." if allow else "Say refuse it, or skip."
+    )
+    return {"id": a["id"], "kind": "permission", "verb": "decide", "line": f"{_who(row)} {words}",
+            "allow": allow, "deny": deny, "ask": ask}  # fmt: skip
+
+
+def _menu_card(row: dict) -> dict | None:
+    """A menu a voice may answer (#1681 P2): the menu the escalation RECORDED (the one `/choose`
+    checks a reply against), every option read verbatim."""
+    a = _escalation(row)
+    if a is None or row.get("kind") != "choice" or "permission" in a:
+        return None
+    menu = a.get("menu")
+    words = _menu_words(menu)
+    if words is None:
+        return None
+    question, labels = words
+    options = [_recorded_option(menu["options"], o.get("n"), "pick") for o in menu["options"]]  # type: ignore[index]
+    if any(o is None for o in options):
+        return None
+    listed = "; ".join(f"{_NUMBER_WORDS[i]}, {lbl}" for i, lbl in enumerate(labels))
+    line = _sentence(f"{_who(row)} asks: {_sentence(question)} The options are: {listed}")
+    return {"id": a["id"], "kind": "menu", "verb": "decide", "line": line, "options": options,
+            "ask": "Say the option's number, or skip."}  # fmt: skip
 
 
 def needs_you_sentence(row: dict) -> str:
@@ -1139,18 +1273,30 @@ def needs_you_sentence(row: dict) -> str:
 
 def needs_you_readout(rows: list[dict], total: int) -> tuple[str, list[dict]]:
     """ "What needs me?" answered with content (#1681): how many, then up to NEEDS_YOU_TOLD items
-    in Needs-you order, then how many more (from the list's own ``total``). Items a voice may
-    settle are returned as cards instead, for `offer`'s read-back to describe — said once, in the
-    read-back that arms their challenge."""
+    in Needs-you order, then how many more (from the list's own ``total``). An item a voice may
+    decide is told in full here AND returned as a card, which `offer` reads back again — the
+    read-back that arms its challenge."""
     told = rows[:NEEDS_YOU_TOLD]
     cards: list[dict] = []
     parts = [f"{total} {'thing needs' if total == 1 else 'things need'} you."]
     for r in told:
-        card = _question_card(r) if len(cards) < 4 else None
+        card = (
+            (_question_card(r) or _permission_card(r) or _menu_card(r)) if len(cards) < 4 else None
+        )
         if card is not None:
+            # Named here in ONE line, in its place (#1683 review): if its offer is cancelled,
+            # expires or is talked over, the Commander still heard what it was.
+            # Its WHOLE content, in its place (Hermes 7021): if its offer is cancelled, expires or
+            # is talked over, the Commander still heard what it asks. The offer reads it again —
+            # the read-back that arms its challenge.
             cards.append(card)
+            parts.append(card["line"])
         else:
             parts.append(needs_you_sentence(r))
+    if cards:
+        parts.append(
+            "Let's decide that one." if len(cards) == 1 else "Let's take those one at a time."
+        )
     more = total - len(told)
     if more > 0:
         parts.append(f"And {more} more on your screen.")
@@ -1158,9 +1304,9 @@ def needs_you_readout(rows: list[dict], total: int) -> tuple[str, list[dict]]:
 
 
 def needs_you_cards(rows: list[dict]) -> list[dict]:
-    """The Needs-you rows a voice may settle, as cards: a QUESTION whose pending action answers it
-    with text. Permission prompts, menus and unread screens are described by
-    :func:`needs_you_readout`, and settled on the screen."""
+    """The Needs-you rows a voice may settle, as cards (#1681 P2): a QUESTION whose pending action
+    answers it with text, a permission dialog readable as a whole, a menu read in full. The rest
+    are described by :func:`needs_you_readout` and settled on the screen."""
     return needs_you_readout(rows, len(rows))[1]
 
 
@@ -1170,6 +1316,10 @@ def _result_state(card: dict, body: dict):
     if card["kind"] in ("session", "operation"):
         prop = body.get("proposal")
         return prop.get("state") if isinstance(prop, dict) else None
+    if card["kind"] in ("permission", "menu"):
+        # `/choose` answers the settled escalation, with the delivered choice under `choice`.
+        choice = body.get("choice")
+        return choice.get("state") if isinstance(choice, dict) else None
     return body.get("state")
 
 
@@ -1181,7 +1331,7 @@ def settled_ok(card: dict, resp) -> bool:
     if resp.status == 202:
         return True  # accepted; `_follow` says the end
     body = resp.body if isinstance(resp.body, dict) else {}
-    if card["kind"] in ("nudge", "needs_you"):
+    if card["kind"] in ("nudge", "needs_you", "permission", "menu"):
         return _result_state(card, body) == "delivered"
     return _result_state(card, body) in ("done", "started")
 
@@ -1198,7 +1348,30 @@ def outcome_sentence(card: dict, resp) -> str:
             if _result_state(card, body) == "delivered":
                 return "Sent."
             return "It wasn't sent, Commander. The card has the reason."
+        if card["kind"] in ("permission", "menu"):
+            if _result_state(card, body) != "delivered":
+                return "It wasn't sent, Commander. Check the session."
+            choice = card.get("choice") or {}
+            if choice.get("as") == "allow":
+                return "Allowed, once."
+            if choice.get("as") == "refuse":
+                return "Refused."
+            return _sentence(f"Chosen: {choice.get('label')}")
         return final_sentence(card, _result_state(card, body) or "unknown")
+    if card["kind"] in ("permission", "menu"):
+        # FIXED sentences, never the route's `detail` (#1683 review): a refusal can quote the
+        # live screen's label, which is the agent's text.
+        body = resp.body if isinstance(resp.body, dict) else {}
+        if body.get("state") == "indeterminate":
+            return (
+                "I can't tell whether that reached the session, Commander. Check it before "
+                "deciding again."
+            )
+        if resp.status in (404, 409):
+            return (
+                "Nothing was sent, Commander. The session changed, or it was already decided. "
+                "It's on your screen."
+            )
     if resp.status == 409:
         return "That card changed, so I didn't send it. It's on your screen."
     return f"That didn't go through ({resp.status}). It's still on your screen."

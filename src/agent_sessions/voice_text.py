@@ -272,6 +272,95 @@ def classify_confirmation(said: str, cards: int) -> tuple[str, int | None]:
     return "confirm", picked or 0
 
 
+# --- deciding ONE Needs-you item by voice (#1681 P2) -------------------------------------------
+#
+# A permission dialog or a menu is offered ONE row per challenge, so a reply can only ever name
+# something of THAT row. Same allowlist discipline as `classify_confirmation`: the whole
+# utterance must be fillers and one phrase from these lists — nothing else, no question.
+
+_ALLOW_PHRASES = frozenset({("allow",), ("allow", "it"), ("allow", "once"),
+                            ("allow", "it", "once"), ("allow", "it", "just", "once"),
+                            ("allow", "this", "once")})  # fmt: skip
+_REFUSE_PHRASES = frozenset({("refuse",), ("refuse", "it"), ("deny",), ("deny", "it"),
+                             ("reject",), ("reject", "it")})  # fmt: skip
+#: What asks for MORE than one use: never a decision, and said back as such.
+_BROADER = re.compile(r"\b(always|again|forever|session|everything|all|every)\b")
+_SKIP_PHRASES = frozenset({("skip",), ("skip", "it"), ("skip", "this", "one"), ("next",),
+                           ("next", "one")})  # fmt: skip
+#: Words a menu pick may carry around its number: "pick the second one", "option two".
+_PICK_WORDS = frozenset({"pick", "choose", "select", "take", "the", "option", "number", "please",
+                         "ok", "okay", "yes", "yeah"})  # fmt: skip
+_MENU_ORDINALS = {"first": 0, "second": 1, "third": 2, "fourth": 3, "fifth": 4}
+_MENU_CARDINALS = {"one": 0, "two": 1, "three": 2, "four": 3, "five": 4,
+                   "1": 0, "2": 1, "3": 2, "4": 3, "5": 4}  # fmt: skip
+
+
+def _words(said: str) -> tuple[str, list[str]]:
+    raw = said.translate(_APOSTROPHES).lower()
+    return raw, " ".join(re.sub(r"[^a-z0-9' ]", " ", raw).split()).split()
+
+
+def is_skip(said: str) -> bool:
+    """ "Skip" / "next": move on to the next item, leaving this one on the screen."""
+    raw, words = _words(said)
+    rest = tuple(w for w in words if w not in _FILLERS)
+    return "?" not in raw and rest in _SKIP_PHRASES
+
+
+def classify_decision(said: str, card: dict) -> tuple[str, dict | None]:
+    """What a spoken reply decides about ONE permission or menu card (#1681 P2):
+
+    - ``("choose", option)`` — the card's own recorded ``{"option", "label", "as"}``: its
+      single-use allow for "allow it" (only when the card offers one), its refusal for "refuse
+      it", or the menu option a bare number names ("the second one", "option two");
+    - ``("skip", None)``, ``("cancel", None)``, ``("all", None)``;
+    - ``("no_allow", None)`` — an allow phrase on a dialog that offers no single-use allow, and
+      ``("broader", None)`` — an allow that asks for more than once ("allow always"): neither
+      decides; HQ says why and the challenge re-arms;
+    - ``("other", None)`` — anything else, a number past the card's options included: a new
+      question, and the challenge is void.
+
+    Never "confirm": a permission is answered by saying WHICH answer, and a broader grant
+    ("allow always", "don't ask again") is not on the list, so it can never be said."""
+    raw, words = _words(said)
+    if not words:
+        return "other", None
+    if _CANCEL.match(" ".join(words)):
+        return "cancel", None
+    if "?" in raw or len(words) > CONFIRM_MAX_WORDS:
+        return "other", None
+    rest = tuple(w for w in words if w not in _FILLERS)
+    if rest in _SKIP_PHRASES:
+        return "skip", None
+    if rest in _ALL_TAILS or (rest[:1] in (("refuse",), ("pick",), ("choose",))
+                              and rest[1:] in _ALL_TAILS):  # fmt: skip
+        return "all", None
+    if card.get("kind") == "permission":
+        if rest in _ALLOW_PHRASES:
+            if isinstance(card.get("allow"), dict):
+                return "choose", card["allow"]
+            return "no_allow", None  # allow is not on offer for this dialog: say so
+        if rest[:1] == ("allow",) and _BROADER.search(" ".join(rest)):
+            return "broader", None  # "allow always" / "don't ask again": never by voice
+        if rest in _REFUSE_PHRASES and isinstance(card.get("deny"), dict):
+            return "choose", card["deny"]
+        return "other", None
+    if card.get("kind") == "menu":
+        options = card.get("options") if isinstance(card.get("options"), list) else []
+        pick = [w for w in words if w not in _PICK_WORDS]
+        if len(pick) == 2 and pick[0] in _MENU_ORDINALS and pick[1] == "one":
+            pick = pick[:1]  # "the second one"
+        if len(pick) != 1:
+            return "other", None
+        if pick[0] in ("one", "1") and rest != ("one",) and not {"option", "number"} & set(rest):
+            return "other", None  # "choose one" / "pick one" may mean "any": not option one
+        i = _MENU_ORDINALS.get(pick[0], _MENU_CARDINALS.get(pick[0]))
+        if i is None or i >= len(options):
+            return "other", None  # not a number, or one the menu does not have
+        return "choose", options[i]
+    return "other", None
+
+
 _ORDINAL_WORDS = ("first", "second", "third", "fourth")
 
 
@@ -281,6 +370,8 @@ def readback(cards: list[dict]) -> str:
         return ""
     if len(cards) == 1:
         c = cards[0]
+        if c.get("ask"):  # a Needs-you item decided by its own words (#1681 P2)
+            return f"{c['line']} {c['ask']}"
         return f"{c['line']} Say confirm to {c['verb']}, or cancel."
     parts = [f"{_ORDINAL_WORDS[i].capitalize()}: {c['line']}" for i, c in enumerate(cards)]
     return " ".join(parts) + " Say confirm and the number, or cancel."

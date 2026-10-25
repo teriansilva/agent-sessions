@@ -182,10 +182,28 @@ def test_a_row_carries_the_recorded_dialog_and_only_a_projection_of_it():
 
 
 def _one(card, pending, screen, monkeypatch) -> str:
+    """What is said about the one item: in the read-out, or — for an item a voice may decide
+    (#1681 P2) — in the read-back that offers it."""
     body = _rows([card], pending, {card["id"]: screen})
     said = _say_readout(body, monkeypatch)
+    if said[-2:-1] and said[-2].endswith("Let's decide that one."):
+        return said[-1]
     assert said[-1].startswith("1 thing needs you. "), said
     return said[-1].removeprefix("1 thing needs you. ")
+
+
+OFFER_PERMISSION = "Say allow it to allow it once, refuse it, or skip."
+#: The WHOLE claude Bash capture as said (Hermes 7021): request, note, question, every option.
+BASH_SAID = (
+    "asks permission for Bash command: mkdir -p probe-dir-1213 && touch probe-dir-1213/f.txt."
+    " The dialog also says: Create probe-dir-1213 directory and f.txt file inside it. It asks: Do"
+    " you want to proceed? The options are: one, Yes; two, Yes, and don't ask again for mkdir -p"
+    " probe-dir-1213 and touch probe-dir-1213/f.txt commands in"
+    " /home/operator-01/agentwork/agent-sessions/1213-notes/perm-1213-f5z9ahiu; three, No."
+)
+OC_OPTIONS = (
+    " It asks: Allow this? The options are: one, Allow once; two, Allow always; three, Reject."
+)
 
 
 CONFIRM = {"prompt_class": "confirm", "menu": None}
@@ -197,9 +215,7 @@ CONFIRM = {"prompt_class": "confirm", "menu": None}
         (
             "claude_permission_bash.raw",
             "claude",
-            "api-rebase in web asks permission for Bash command: mkdir -p probe-dir-1213 && touch"
-            " probe-dir-1213/f.txt. The dialog also says: Create probe-dir-1213 directory and"
-            " f.txt file inside it. It's on your screen.",
+            f"api-rebase in web {BASH_SAID} {OFFER_PERMISSION}",
         ),
         (
             # a Write's body is a path and a file preview (with its line-number gutter): not a
@@ -212,13 +228,13 @@ CONFIRM = {"prompt_class": "confirm", "menu": None}
             "opencode_permission_shell.raw",
             "opencode",
             "api-rebase in web asks permission for Shell command: mkdir -p probe-dir-1213."
-            " It's on your screen.",
+            f"{OC_OPTIONS} {OFFER_PERMISSION}",
         ),
         (
             "opencode_permission_grep.raw",
             "opencode",
             'api-rebase in web asks permission for Grep "(?i)mission": Pattern: (?i)mission.'
-            " It's on your screen.",
+            f"{OC_OPTIONS} {OFFER_PERMISSION}",
         ),
         (
             "opencode_permission_always_stage.raw",
@@ -291,7 +307,7 @@ def test_a_menu_reads_its_question_and_every_option(monkeypatch):
     said = _one(_card(sid, "docs"), [esc], {"prompt_class": "choice", "menu": MENU}, monkeypatch)
     assert said == (
         "docs in web asks: Which branch should I rebase onto? The options are: one, main; two,"
-        " release 2.0. It's on your screen."
+        " release 2.0. Say the option's number, or skip."
     )
 
 
@@ -332,10 +348,13 @@ def test_a_question_with_a_readable_answer_is_offered_and_read_back(monkeypatch)
     body = _rows([_card(sid, "api-rebase")], [_answer(sid, "Use main.")], {
         sid: {"prompt_class": "question", "menu": None}})  # fmt: skip
     said = _say_readout(body, monkeypatch)
-    assert said[-2] == "1 thing needs you."
+    assert said[-2] == (
+        "1 thing needs you. api-rebase in web asks a question. The suggested answer is: Use main."
+        " Let's decide that one."
+    )
     assert said[-1] == (
         "api-rebase in web asks a question. The suggested answer is: Use main."
-        " Say confirm to send it, or cancel."
+        " Say confirm to send it, skip, or cancel."
     )
 
 
@@ -399,17 +418,21 @@ def test_mixed_rows_describe_in_order_and_offer_only_what_a_voice_may_settle(mon
     async def go():
         await r.ask("What needs me?")
         told, readback = r.said_text()[-2:]
+        # What a voice may decide is offered, one row at a time, in Needs-you order; the rest is
+        # told (#1681 P2).
         assert told == (
-            "4 things need you."
-            " deploy in infra asks permission for Bash command: mkdir -p probe-dir-1213 && touch"
-            " probe-dir-1213/f.txt. The dialog also says: Create probe-dir-1213 directory and f.txt"
-            " file inside it."
-            " It's on your screen."
+            f"4 things need you. deploy in infra {BASH_SAID}"
+            " api-rebase in web asks a question. The suggested answer is: Use main."
             " docs in web asks: Which branch should I rebase onto? The options are: one, main;"
-            " two, release 2.0. It's on your screen."
+            " two, release 2.0."
             " nightly in web's screen needs a look — I couldn't read it."
+            " Let's take those one at a time."
         )
-        assert readback.startswith("api-rebase in web asks a question.")
+        assert readback.startswith("deploy in infra asks permission for Bash command:")
+        assert [c["id"] for c in r.call.challenge["cards"]] == [f"act-{p}"]
+        await r.readback_played()
+        await r.ask("Skip.")
+        assert r.said_text()[-1].startswith("api-rebase in web asks a question.")
         assert [c["id"] for c in r.call.challenge["cards"]] == [f"ans-{q}"]
         await r.readback_played()
         await r.ask("confirm")
@@ -479,6 +502,8 @@ def test_questions_past_the_five_told_are_not_offered():
     told, cards = voice_calls.needs_you_readout([q(i) for i in range(7)], 7)
     assert [c["id"] for c in cards] == ["a0", "a1", "a2", "a3"]
     assert told == (
-        "7 things need you. s4 asks a question. The suggested answer is: Yes. It's on your"
-        " screen. And 2 more on your screen."
+        "7 things need you."
+        + "".join(f" s{i} asks a question. The suggested answer is: Yes." for i in range(4))
+        + " s4 asks a question. The suggested answer is: Yes. It's on your screen."
+        " Let's take those one at a time. And 2 more on your screen."
     )

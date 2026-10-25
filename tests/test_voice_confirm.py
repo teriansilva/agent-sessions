@@ -10,9 +10,9 @@ scripted HQ turn and a recorded in-process route. Pinned:
 * strict phrases: a confirm verb, no negation, an ordinal when several cards are pending;
   "everything" is refused; "cancel" leaves the card untouched;
 * settlement is the card's existing route as the operator; what is said comes from its status;
-* an HQ operation that needs on-screen input is never offered; Needs-you offers only text answers
-  to questions — never permission prompts or menus (what the read-out SAYS about each item:
-  `test_voice_needs_you.py`).
+* an HQ operation that needs on-screen input is never offered (what the Needs-you read-out says
+  about each item: `test_voice_needs_you.py`; deciding its permissions and menus by voice:
+  `test_voice_needs_you_decide.py`).
 """
 
 from __future__ import annotations
@@ -324,7 +324,7 @@ def test_operations_that_need_input_are_never_offered():
     assert [c["id"] for c in cards] == ["op-2"]
 
 
-def test_needs_you_offers_only_text_answers_to_questions(monkeypatch):
+def test_needs_you_offers_no_row_it_cannot_read_in_full(monkeypatch):
     r = Rig(monkeypatch)
     r.needs_rows = [
         {"title": "api-rebase", "kind": "question",
@@ -338,9 +338,10 @@ def test_needs_you_offers_only_text_answers_to_questions(monkeypatch):
     async def go():
         await r.ask("What needs me right now?")
         assert r.said_text()[-2] == (
-            "3 things need you."
+            "3 things need you. api-rebase asks a question. The suggested answer is: Use main."
             " deploy wants you to confirm something I can't read out — it's on your screen."
             " docs is showing a menu I can't read out — it's on your screen."
+            " Let's decide that one."
         )
         assert "api-rebase asks a question" in r.said_text()[-1]
         await r.readback_played()

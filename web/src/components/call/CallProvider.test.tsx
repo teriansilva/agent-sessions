@@ -2,8 +2,10 @@
 import { act, render, screen } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 
+import { announceActionResolved } from "../../lib/actionEvents";
 import { api } from "../../lib/api";
 import type { VoiceCapabilities } from "../../types/voice";
+import { CallClient } from "./callClient";
 import { useCall } from "./callContext";
 import { CallProvider } from "./CallProvider";
 
@@ -52,3 +54,29 @@ for (const [older, newer] of [
     expect(screen.getByTestId("configured")).toHaveTextContent(String(newer));
   });
 }
+
+function Starter() {
+  const { start } = useCall();
+  return <button onClick={() => start()}>call</button>;
+}
+
+test("a decision tapped anywhere on the page closes the call's spoken window for it (#1681)", async () => {
+  const started = vi.spyOn(CallClient.prototype, "start").mockResolvedValue(undefined);
+  const decided = vi.spyOn(CallClient.prototype, "cardDecided").mockImplementation(() => undefined);
+  try {
+    render(
+      <CallProvider>
+        <Starter />
+      </CallProvider>,
+    );
+    announceActionResolved({ id: "esc-before" }); // no call yet: nothing to close
+    act(() => screen.getByRole("button", { name: "call" }).click());
+    await vi.waitFor(() => expect(started).toHaveBeenCalled());
+    act(() => void announceActionResolved({ id: "esc-1", state: "rejected" }));
+    act(() => void announceActionResolved({ state: "delivered" })); // no id: nothing named
+    expect(decided.mock.calls).toEqual([["esc-1"]]);
+  } finally {
+    started.mockRestore();
+    decided.mockRestore();
+  }
+});

@@ -27,7 +27,12 @@ export const ACTION_RESOLVED_EVENT = "agent-sessions:action-resolved";
  */
 export function announceActionResolved<T>(rec: T): T {
   try {
-    window.dispatchEvent(new CustomEvent(ACTION_RESOLVED_EVENT));
+    // The decided action's id rides along (#1681): a call's spoken window for that very decision
+    // closes when a tap anywhere on the page decides it.
+    const id = (rec as { id?: unknown } | null)?.id;
+    window.dispatchEvent(
+      new CustomEvent(ACTION_RESOLVED_EVENT, { detail: typeof id === "string" ? { id } : {} }),
+    );
   } catch {
     // no-op — the decision stands regardless of whether anything is listening
   }

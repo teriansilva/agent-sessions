@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { api, currentCsrfToken } from "../../lib/api";
+import { ACTION_RESOLVED_EVENT } from "../../lib/actionEvents";
 import { openAppSocket } from "../../lib/termSocket";
 import type { VoiceCapabilities } from "../../types/voice";
 import { useHqContact } from "../hq/useHqContact";
@@ -100,6 +101,18 @@ export function CallProvider({
     const t = trigger.current;
     trigger.current = null;
     if (t && t.isConnected) t.focus();
+  }, [client]);
+
+  // A tap that decides an action ANYWHERE on the page (a Needs-you row, its details dialog)
+  // closes the call's spoken window for that decision (#1681): the voice can't settle it twice.
+  useEffect(() => {
+    if (!client) return;
+    const onResolved = (e: Event) => {
+      const id = (e as CustomEvent<{ id?: unknown }>).detail?.id;
+      if (typeof id === "string") client.cardDecided(id);
+    };
+    window.addEventListener(ACTION_RESOLVED_EVENT, onResolved);
+    return () => window.removeEventListener(ACTION_RESOLVED_EVENT, onResolved);
   }, [client]);
 
   // Leaving the page ends the call (a reload, a sign-out's navigation, closing the tab).
