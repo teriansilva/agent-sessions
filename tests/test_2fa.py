@@ -9,6 +9,7 @@ secret/codes), forced-password-change precedence, and AUTH_MODE=none disabling 2
 from __future__ import annotations
 
 import json
+import time
 
 import pyotp
 import pytest
@@ -54,7 +55,7 @@ def _enable_2fa(c, cfg):
     _login(c, cfg)
     hdr = {"X-CSRF-Token": _csrf(c), "Origin": cfg.origin}
     info = c.post("/api/2fa/enroll", headers=hdr).json()
-    code = pyotp.TOTP(info["secret"]).now()
+    code = pyotp.TOTP(info["secret"]).generate_otp(int(time.time()) // 30)
     assert c.post("/api/2fa/confirm", json={"code": code}, headers=hdr).status_code == 204
     return info, hdr
 
@@ -121,13 +122,13 @@ def test_totp_login_happy_path_with_clock(twofa_env, monkeypatch):
     _login(setup, twofa_env)
     hdr = {"X-CSRF-Token": _csrf(setup), "Origin": twofa_env.origin}
     info = setup.post("/api/2fa/enroll", headers=hdr).json()
-    code = pyotp.TOTP(info["secret"]).at(clock["now"])
+    code = pyotp.TOTP(info["secret"]).generate_otp(int(clock["now"]) // 30)
     assert setup.post("/api/2fa/confirm", json={"code": code}, headers=hdr).status_code == 204
 
     clock["now"] += twofactor.STEP_SECONDS  # next step — the confirm code can't be reused
     c = _client(twofa_env)
     assert _login(c, twofa_env).status_code == 200
-    login_code = pyotp.TOTP(info["secret"]).at(clock["now"])
+    login_code = pyotp.TOTP(info["secret"]).generate_otp(int(clock["now"]) // 30)
     r = c.post(
         "/login/totp",
         data={"code": login_code, "next": "/"},
@@ -213,7 +214,7 @@ def test_disable_requires_fresh_proof(twofa_env):
 def test_disable_accepts_current_totp_as_proof(twofa_env):
     c = _client(twofa_env)
     info, hdr = _enable_2fa(c, twofa_env)
-    code = pyotp.TOTP(info["secret"]).now()
+    code = pyotp.TOTP(info["secret"]).generate_otp(int(time.time()) // 30)
     assert c.post("/api/2fa/disable", json={"code": code}, headers=hdr).status_code == 204
     assert c.get("/api/config").json()["two_factor_enabled"] is False
 
@@ -295,7 +296,7 @@ def _enroll_at(clock, twofa_env, monkeypatch):
     _login(setup, twofa_env)
     hdr = {"X-CSRF-Token": _csrf(setup), "Origin": twofa_env.origin}
     info = setup.post("/api/2fa/enroll", headers=hdr).json()
-    confirm = pyotp.TOTP(info["secret"]).at(clock["now"])
+    confirm = pyotp.TOTP(info["secret"]).generate_otp(int(clock["now"]) // 30)
     assert setup.post("/api/2fa/confirm", json={"code": confirm}, headers=hdr).status_code == 204
     return info
 
@@ -305,7 +306,7 @@ def test_replayed_code_reports_already_used_not_invalid(twofa_env, monkeypatch):
     clock = {"now": 1_700_000_000}
     info = _enroll_at(clock, twofa_env, monkeypatch)
     clock["now"] += twofactor.STEP_SECONDS  # next step — the confirm code can't be reused
-    shared = pyotp.TOTP(info["secret"]).at(clock["now"])
+    shared = pyotp.TOTP(info["secret"]).generate_otp(int(clock["now"]) // 30)
     post = dict(headers={"Origin": twofa_env.origin}, follow_redirects=False)
 
     tab1 = _client(twofa_env)
@@ -339,7 +340,7 @@ def test_replays_count_toward_the_same_lockout(twofa_env, monkeypatch):
     clock = {"now": 1_700_000_000}
     info = _enroll_at(clock, twofa_env, monkeypatch)
     clock["now"] += twofactor.STEP_SECONDS
-    shared = pyotp.TOTP(info["secret"]).at(clock["now"])
+    shared = pyotp.TOTP(info["secret"]).generate_otp(int(clock["now"]) // 30)
     post = dict(headers={"Origin": twofa_env.origin}, follow_redirects=False)
 
     winner = _client(twofa_env)

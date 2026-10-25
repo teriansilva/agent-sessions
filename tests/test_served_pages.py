@@ -14,6 +14,7 @@ missing from the package data fails there, not in production.
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 
 import pyotp
@@ -148,7 +149,7 @@ def _enable_2fa(c, cfg):
     _login(c, cfg)
     hdr = {"X-CSRF-Token": _csrf(c), "Origin": cfg.origin}
     info = c.post("/api/2fa/enroll", headers=hdr).json()
-    code = pyotp.TOTP(info["secret"]).now()
+    code = pyotp.TOTP(info["secret"]).generate_otp(int(time.time()) // 30)
     assert c.post("/api/2fa/confirm", json={"code": code}, headers=hdr).status_code == 204
     return info
 

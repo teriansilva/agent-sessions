@@ -208,7 +208,10 @@ def _match_step(secret: str, code: str, now: int | None = None) -> int | None:
     current = now // STEP_SECONDS
     matched: int | None = None
     for step in range(current - WINDOW, current + WINDOW + 1):
-        candidate = totp.at(step * STEP_SECONDS)
+        # The code for the epoch STEP itself, as an authenticator app counts. `totp.at(seconds)`
+        # goes through the host's local wall-clock time, which repeats an hour when the clocks go
+        # back: on a host observing daylight saving it rejected every code for that hour.
+        candidate = totp.generate_otp(step)
         if hmac.compare_digest(candidate, code):
             matched = step
     return matched

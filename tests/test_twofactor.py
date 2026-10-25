@@ -7,9 +7,12 @@ race), 0600 file perms, and the host clear() escape hatch.
 
 from __future__ import annotations
 
+import calendar
 import json
+import os
 import re
 import threading
+import time
 
 import pyotp
 import pytest
@@ -30,7 +33,7 @@ T0 = 1_700_000_000  # fixed base instant for deterministic step math
 def _enroll_and_confirm(store, now=T0):
     """Enroll and confirm at ``now``; the replay cursor is seeded with that step."""
     info = twofactor.begin_enrollment("marcus", store)
-    code = pyotp.TOTP(info["secret"]).at(now)
+    code = pyotp.TOTP(info["secret"]).generate_otp(int(now) // 30)
     assert twofactor.confirm_enrollment(code, store, now=now) is True
     return info
 
@@ -49,7 +52,8 @@ def test_enrollment_is_two_phase_and_confirm_only(store):
     assert twofactor.is_enabled(store) is False
     assert twofactor.confirm_enrollment("000000", store) is False
     assert twofactor.is_enabled(store) is False
-    assert twofactor.confirm_enrollment(pyotp.TOTP(info["secret"]).now(), store) is True
+    code = pyotp.TOTP(info["secret"]).generate_otp(int(time.time()) // 30)
+    assert twofactor.confirm_enrollment(code, store) is True
     assert twofactor.is_enabled(store) is True
 
 
@@ -67,9 +71,9 @@ def test_match_step_window(store):
     cur = now // twofactor.STEP_SECONDS
     # ±1 step all verify; ±2 does not.
     for off in (-1, 0, 1):
-        code = totp.at((cur + off) * twofactor.STEP_SECONDS)
+        code = totp.generate_otp(cur + off)
         assert twofactor._match_step(secret, code, now=now) == cur + off
-    far = totp.at((cur + 2) * twofactor.STEP_SECONDS)
+    far = totp.generate_otp(cur + 2)
     assert twofactor._match_step(secret, far, now=now) is None
     assert twofactor._match_step(secret, "not-a-code", now=now) is None
 
@@ -77,7 +81,7 @@ def test_match_step_window(store):
 def test_login_verify_then_replay_rejected(store):
     info = _enroll_and_confirm(store, now=T0)
     later = T0 + twofactor.STEP_SECONDS  # next step (the confirm code can't be reused)
-    code = pyotp.TOTP(info["secret"]).at(later)
+    code = pyotp.TOTP(info["secret"]).generate_otp(int(later) // 30)
     assert twofactor.login_totp_outcome(code, store, now=later) == twofactor.TOTP_OK
     assert twofactor.login_totp_outcome(code, store, now=later) == twofactor.TOTP_REPLAYED
 
@@ -85,14 +89,14 @@ def test_login_verify_then_replay_rejected(store):
 def test_confirm_code_cannot_be_replayed_at_login(store):
     """Seeding the cursor with the confirm step blocks reusing that same code to log in."""
     info = _enroll_and_confirm(store, now=T0)
-    confirm_code = pyotp.TOTP(info["secret"]).at(T0)
+    confirm_code = pyotp.TOTP(info["secret"]).generate_otp(int(T0) // 30)
     assert twofactor.login_totp_outcome(confirm_code, store, now=T0) == twofactor.TOTP_REPLAYED
 
 
 def test_replay_cursor_persists_across_reload(store):
     info = _enroll_and_confirm(store, now=T0)
     later = T0 + twofactor.STEP_SECONDS
-    code = pyotp.TOTP(info["secret"]).at(later)
+    code = pyotp.TOTP(info["secret"]).generate_otp(int(later) // 30)
     assert twofactor.login_totp_outcome(code, store, now=later) == twofactor.TOTP_OK
     # Simulate a process restart: nothing in-memory, only the file. The just-used step must
     # still be rejected (the cursor is persisted, not held in RAM).
@@ -135,7 +139,7 @@ def test_recovery_code_race_consumes_exactly_once(store):
 def test_check_totp_does_not_consume_or_advance(store):
     info = _enroll_and_confirm(store, now=T0)
     later = T0 + twofactor.STEP_SECONDS
-    code = pyotp.TOTP(info["secret"]).at(later)
+    code = pyotp.TOTP(info["secret"]).generate_otp(int(later) // 30)
     # Non-mutating proof check: repeatable, and does NOT block a later login with the same
     # step (check_totp must not advance the replay cursor).
     assert twofactor.check_totp(code, store, now=later) is True
@@ -220,7 +224,7 @@ def test_replay_is_reported_apart_from_invalid(store):
     """
     info = _enroll_and_confirm(store, now=T0)
     later = T0 + twofactor.STEP_SECONDS
-    code = pyotp.TOTP(info["secret"]).at(later)
+    code = pyotp.TOTP(info["secret"]).generate_otp(int(later) // 30)
     assert twofactor.login_totp_outcome(code, store, now=later) == twofactor.TOTP_OK
     assert twofactor.login_totp_outcome(code, store, now=later) == twofactor.TOTP_REPLAYED
     # A genuinely wrong code stays INVALID...
@@ -290,3 +294,33 @@ def test_default_recovery_code_format_is_unchanged(store):
     info = _enroll_and_confirm(store)
     for code in info["recovery_codes"]:
         assert re.fullmatch(r"[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}", code)
+
+
+@pytest.fixture
+def dst_host():
+    """The host's local time zone observes daylight saving (here Europe/Bucharest).
+    Set and restored by hand: `monkeypatch.undo()` would also drop conftest's store pins."""
+    old = os.environ.get("TZ")
+    os.environ["TZ"] = "Europe/Bucharest"
+    time.tzset()
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old
+        time.tzset()
+
+
+def test_a_code_matches_its_step_through_the_dst_change(dst_host):
+    """Authenticator apps count steps from epoch seconds. Through the night the clocks go back,
+    local wall-clock time repeats an hour; a check that went through local time rejected every
+    code for that hour (#1669 CI, 2026-10-25)."""
+    secret = pyotp.random_base32()
+    totp = pyotp.TOTP(secret)
+    start = calendar.timegm((2026, 10, 24, 23, 0, 0))  # 23:00 – 03:00 UTC: the change is at 01:00
+    for ts in range(start, start + 4 * 3600, 60):
+        step = ts // twofactor.STEP_SECONDS
+        code = totp.generate_otp(step)
+        assert twofactor._match_step(secret, code, now=ts) == step, ts
