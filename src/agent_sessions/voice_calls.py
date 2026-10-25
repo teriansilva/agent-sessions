@@ -1040,6 +1040,17 @@ def _sentence(s: str) -> str:
     return s if s.endswith((".", "!", "?")) else s + "."
 
 
+def _voice_operation(op_id: object) -> bool:
+    """May a voice confirm this HQ operation at all? Only one the catalog knows (an unknown id
+    fails closed) and that is not a Library operation. A Library card offers Confirm only once
+    its content is on screen (#1611), and enabling or widening an automation consents to a scope
+    the card shows: none of that is in its one-sentence summary, so a voice never confirms it."""
+    from . import ask_library, ask_operations
+
+    op = ask_operations.CATALOG.get(op_id) if isinstance(op_id, str) else None
+    return op is not None and op.group not in ask_library.GROUPS
+
+
 def confirmable_cards(view: dict) -> list[dict]:
     """The cards of a settled HQ turn that a voice may confirm: nudges, new sessions, and HQ
     operations that need no on-screen input. What will be SENT is read back in full, word for
@@ -1063,7 +1074,7 @@ def confirmable_cards(view: dict) -> list[dict]:
                 continue  # the brief is what starts: unheard, it stays a screen decision
             out.append({"id": pid, "kind": "session", "verb": "start it",
                         "line": _sentence(f"A new session in {title}: {brief}")})  # fmt: skip
-        elif kind == "operation" and not p.get("needs"):
+        elif kind == "operation" and not p.get("needs") and _voice_operation(p.get("op")):
             # The EFFECT is what is authorized (deleting a project loses its memory; archiving
             # stops its agents): it is read out in full, or the operation stays on screen.
             effect = verbatim(p.get("text") or "")

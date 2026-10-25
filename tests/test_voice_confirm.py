@@ -318,10 +318,38 @@ def test_operations_that_need_input_are_never_offered():
         {"kind": "operation", "action_id": "op-1", "title": "web", "label": "Move project",
          "needs": ["folder"]},
         {"kind": "operation", "action_id": "op-2", "title": "api", "label": "Archive session",
-         "needs": [], "text": "Archives the session api: its agent stops."},
+         "op": "session.archive", "needs": [],
+         "text": "Archives the session api: its agent stops."},
     ]}  # fmt: skip
     cards = voice_calls.confirmable_cards(view)
     assert [c["id"] for c in cards] == ["op-2"]
+
+
+def _library_view(op_id: str) -> dict:
+    card = {"kind": "operation", "action_id": "op-1", "title": "nightly", "label": "Enable",
+            "verb": "Enable", "op": op_id, "needs": [],
+            "text": "Turns it on. From then it starts agents by itself."}  # fmt: skip
+    return {"proposals": [card]}
+
+
+@pytest.mark.parametrize("op_id", [o.id for o in __import__("agent_sessions.ask_library",
+                                   fromlist=["library_ops"]).library_ops()])  # fmt: skip
+def test_a_library_operation_is_never_confirmed_by_voice(op_id):
+    """A Library card offers Confirm only once its content is on screen (#1611), and enabling or
+    widening an automation consents to the scope the card shows: none of it is in the one
+    sentence a call would read, so every Library operation is a screen decision."""
+    assert voice_calls.confirmable_cards(_library_view(op_id)) == []
+
+
+@pytest.mark.parametrize("op_id", [None, "", "session.nope", 7])
+def test_an_operation_the_catalog_does_not_know_is_never_confirmed_by_voice(op_id):
+    assert voice_calls.confirmable_cards(_library_view(op_id)) == []  # type: ignore[arg-type]
+
+
+def test_session_and_project_operations_stay_confirmable_by_voice():
+    view = _library_view("session.archive")
+    view["proposals"][0]["text"] = "Archives the session api: its agent stops."
+    assert [c["id"] for c in voice_calls.confirmable_cards(view)] == ["op-1"]
 
 
 def test_needs_you_offers_no_row_it_cannot_read_in_full(monkeypatch):
@@ -601,6 +629,7 @@ def test_an_interruption_during_the_read_back_voids_the_challenge(monkeypatch):
 
 DELETE = {"proposals": [{"kind": "operation", "action_id": "op-1", "title": "Data",
                          "label": "Delete project", "verb": "delete", "needs": [],
+                         "op": "project.delete",
                          "text": "Deletes the project Data: its shared memory and launch "
                                  "defaults are lost."}]}  # fmt: skip
 
