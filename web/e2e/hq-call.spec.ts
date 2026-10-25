@@ -278,3 +278,25 @@ test("a saved setup change shows on the Call buttons at once — no reload, no t
   await page.getByRole("link", { name: "Dashboard", exact: true }).click();
   await expect(page.getByTestId("hq-primary-call")).toHaveAttribute("data-call", "setup");
 });
+
+test("HQ's speech plays in a 24 kHz audio context, so its chunks are never resampled one by one", async ({ page }) => {
+  // At a 44.1 kHz device, 24 kHz chunks resampled one by one clicked at every 40 ms boundary
+  // (heard as stutter). The call opens a playback context at the speech's own rate.
+  await page.addInitScript(() => {
+    const Real = window.AudioContext;
+    const rates: number[] = [];
+    (window as unknown as { __ctxRates: number[] }).__ctxRates = rates;
+    window.AudioContext = class extends Real {
+      constructor(opts?: AudioContextOptions) {
+        super(opts);
+        rates.push(this.sampleRate);
+      }
+    } as typeof AudioContext;
+  });
+  const srv = await mockShell(page);
+  await connect(page, srv);
+  srv.connected[0] = true;
+  say(srv, { t: "connected" });
+  const rates = () => page.evaluate(() => (window as unknown as { __ctxRates: number[] }).__ctxRates);
+  await expect.poll(rates).toContain(24_000);
+});

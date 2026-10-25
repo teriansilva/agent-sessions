@@ -5,8 +5,12 @@
  *    `start()`: the UI says "Mic · not sending" in between, never "Off".
  *  - Echo cancellation, noise suppression and gain control are the browser's: HQ's voice through
  *    the speakers must not read as the operator talking over it.
- *  - Speech plays through scheduled buffers; `flush()` (on the server's `interrupt`) stops every
- *    queued and playing buffer at once.
+ *  - Speech plays through scheduled buffers in its OWN context at the speech's rate (24 kHz): the
+ *    browser converts that one continuous stream to the device's rate, instead of resampling each
+ *    40 ms chunk on its own — at a 44.1 kHz device that clicked at every chunk boundary, 25 times
+ *    a second (heard as stutter). A start-up cushion that grows after an underrun absorbs network
+ *    jitter (`PlaybackClock`). `flush()` (on the server's `interrupt`) stops every queued and
+ *    playing buffer at once.
  *  - `mark(id, onPlayed)` (#1397 P2) puts a marker at the end of the speech queued so far;
  *    `onPlayed` runs once the audio clock has passed it. `flush()` drops pending markers, so an
  *    interrupted say never reports itself played.
@@ -15,6 +19,7 @@
 // A real file, never inlined: the CSP's `script-src 'self'` refuses a `data:` worklet module.
 import captureWorkletUrl from "./captureWorklet.js?url&no-inline";
 import { Framer, OUT_RATE, pcm16ToFloat, rms } from "./pcm";
+import { PlaybackClock } from "./playbackClock";
 import { PlaybackMarkers } from "./playbackMarkers";
 
 /** How often pending markers are checked against the audio clock. */
@@ -45,8 +50,10 @@ export class BrowserCallAudio implements CallAudio {
   private send: ((frame: ArrayBuffer) => void) | null = null;
   private muted = false;
   private stopped = false;
+  /** HQ's speech plays here, at OUT_RATE (see the module note). */
+  private out: AudioContext | null = null;
   private playing: AudioBufferSourceNode[] = [];
-  private nextAt = 0;
+  private clock = new PlaybackClock();
   private inLevel = 0;
   private outLevels: { at: number; level: number }[] = [];
   private markers = new PlaybackMarkers();
@@ -83,6 +90,12 @@ export class BrowserCallAudio implements CallAudio {
     this.node.connect(sink).connect(ctx.destination);
     if (ctx.state === "suspended") await ctx.resume();
     this.endedWhileAwaiting(ctx);
+    // Playback in its own context at the speech's rate (#1397): no per-chunk resampling. A
+    // browser that can't open one at that rate gets its default (and plays as before).
+    const out = playbackContext();
+    this.out = out;
+    if (out.state === "suspended") await out.resume();
+    this.endedWhileAwaiting(ctx);
   }
 
   /** After an await in `prepare()`: if the call ended meanwhile, build nothing more — tear down
@@ -98,6 +111,8 @@ export class BrowserCallAudio implements CallAudio {
     if (this.node) this.node.port.onmessage = null;
     this.source = null;
     this.node = null;
+    void this.out?.close().catch(() => undefined);
+    this.out = null;
     this.releaseTracks();
     void ctx.close().catch(() => undefined);
     throw new Error("this call's audio has ended");
@@ -122,7 +137,7 @@ export class BrowserCallAudio implements CallAudio {
   }
 
   play(pcm: ArrayBuffer): void {
-    const ctx = this.ctx;
+    const ctx = this.out;
     if (!ctx || this.stopped) return;
     const samples = pcm16ToFloat(pcm);
     if (!samples.length) return;
@@ -131,9 +146,8 @@ export class BrowserCallAudio implements CallAudio {
     const src = ctx.createBufferSource();
     src.buffer = buffer;
     src.connect(ctx.destination);
-    const at = Math.max(ctx.currentTime + 0.03, this.nextAt);
+    const at = this.clock.schedule(ctx.currentTime, buffer.duration);
     src.start(at);
-    this.nextAt = at + buffer.duration;
     this.playing.push(src);
     this.outLevels.push({ at, level: rms(samples) });
     src.onended = () => {
@@ -142,9 +156,9 @@ export class BrowserCallAudio implements CallAudio {
   }
 
   mark(id: string, onPlayed: (id: string) => void): void {
-    const ctx = this.ctx;
+    const ctx = this.out;
     if (!ctx || this.stopped) return;
-    this.markers.add(id, Math.max(this.nextAt, ctx.currentTime));
+    this.markers.add(id, Math.max(this.clock.end, ctx.currentTime));
     this.onPlayed.set(id, onPlayed);
     if (this.markTimer === null) {
       this.markTimer = window.setInterval(() => this.checkMarkers(), MARK_POLL_MS);
@@ -152,7 +166,7 @@ export class BrowserCallAudio implements CallAudio {
   }
 
   private checkMarkers(): void {
-    const ctx = this.ctx;
+    const ctx = this.out;
     // A suspended or closed context is not playing: its clock is not proof of anything.
     if (ctx && !this.stopped && ctx.state === "running") {
       for (const id of this.markers.due(ctx.currentTime)) {
@@ -182,7 +196,7 @@ export class BrowserCallAudio implements CallAudio {
     }
     this.playing = [];
     this.outLevels = [];
-    this.nextAt = 0;
+    this.clock.flush();
   }
 
   private releaseTracks(): void {
@@ -204,6 +218,8 @@ export class BrowserCallAudio implements CallAudio {
     this.releaseTracks();
     void this.ctx?.close().catch(() => undefined);
     this.ctx = null;
+    void this.out?.close().catch(() => undefined);
+    this.out = null;
     this.inLevel = 0;
   }
 
@@ -212,10 +228,20 @@ export class BrowserCallAudio implements CallAudio {
   }
 
   outputLevel(): number {
-    const now = this.ctx?.currentTime ?? 0;
+    const now = this.out?.currentTime ?? 0;
     this.outLevels = this.outLevels.filter((l) => l.at + 0.25 > now);
     const current = this.outLevels.filter((l) => l.at <= now).pop();
     return this.playing.length ? (current?.level ?? 0) : 0;
+  }
+}
+
+/** A context at the speech's own rate, so its chunks are never resampled one by one; the
+ *  browser's default where a rate can't be chosen. */
+function playbackContext(): AudioContext {
+  try {
+    return new AudioContext({ sampleRate: OUT_RATE, latencyHint: "interactive" });
+  } catch {
+    return new AudioContext();
   }
 }
 

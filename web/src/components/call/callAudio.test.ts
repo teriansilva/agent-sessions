@@ -4,17 +4,23 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { BrowserCallAudio } from "./callAudio";
+import { PLAYBACK } from "./playbackClock";
 
 class FakeContext {
   static last: FakeContext;
+  static made: FakeContext[] = [];
+  options: AudioContextOptions | undefined;
   currentTime = 0;
   state: "running" | "suspended" | "closed" = "running";
   sampleRate = 48_000;
   destination = {};
   started: { at: number; stopped: boolean }[] = [];
   audioWorklet = { addModule: async () => undefined };
-  constructor() {
+  constructor(options?: AudioContextOptions) {
+    this.options = options;
+    if (options?.sampleRate) this.sampleRate = options.sampleRate;
     FakeContext.last = this;
+    FakeContext.made.push(this);
   }
   createMediaStreamSource() {
     return { connect: () => undefined, disconnect: () => undefined };
@@ -90,7 +96,8 @@ test("the marker acks only after the audio queued before it has played", () => {
   ctx.currentTime = 1.5; // half-way through the second buffer
   vi.advanceTimersByTime(200);
   expect(played).not.toHaveBeenCalled();
-  ctx.currentTime = 2.04; // both buffers (scheduled 30 ms ahead, ending at 2.03 s) have played
+  // Both buffers (scheduled the start-up cushion ahead, ending at 2 s + cushion) have played.
+  ctx.currentTime = 2 + PLAYBACK.startS + 0.01;
   vi.advanceTimersByTime(200);
   expect(played).toHaveBeenCalledExactlyOnceWith("s1");
   vi.advanceTimersByTime(1000);
@@ -122,11 +129,11 @@ test("a marker behind a later say still waits for that say's audio", () => {
   audio.play(SECOND);
   const second = vi.fn();
   audio.mark("b", second);
-  ctx.currentTime = 1.1;
+  ctx.currentTime = 1 + PLAYBACK.startS + 0.01; // the first say (after the cushion) has played
   vi.advanceTimersByTime(100);
   expect(first).toHaveBeenCalledOnce();
   expect(second).not.toHaveBeenCalled();
-  ctx.currentTime = 2.1;
+  ctx.currentTime = 2 + PLAYBACK.startS + 0.01;
   vi.advanceTimersByTime(100);
   expect(second).toHaveBeenCalledOnce();
 });
@@ -178,4 +185,30 @@ test("a hang-up while the worklet module loads builds no audio graph after it (#
   loaded();
   await expect(preparing).rejects.toThrow("ended");
   expect(sources).toEqual([]); // nothing was built (or connected) after the stop
+});
+
+test("HQ's speech plays in its own context at the speech's rate — never resampled chunk by chunk", async () => {
+  // The capture context runs at the device's rate; playback opens at 24 kHz, so 40 ms chunks are
+  // never converted one by one (that clicked at every boundary on 44.1 kHz devices).
+  const [capture, playback] = FakeContext.made.slice(-2);
+  expect(capture.options?.sampleRate).toBeUndefined();
+  expect(playback.options?.sampleRate).toBe(24_000);
+  audio.play(SECOND);
+  expect(playback.started).toHaveLength(1);
+  expect(capture.started).toHaveLength(0);
+});
+
+test("a browser that can't open a 24 kHz context plays in its default one", async () => {
+  class PickyContext extends FakeContext {
+    constructor(options?: AudioContextOptions) {
+      if (options?.sampleRate) throw new DOMException("unsupported rate", "NotSupportedError");
+      super(options);
+    }
+  }
+  vi.stubGlobal("AudioContext", PickyContext);
+  const a = new BrowserCallAudio();
+  await a.prepare();
+  a.play(SECOND);
+  expect(PickyContext.last.started).toHaveLength(1);
+  a.stop();
 });

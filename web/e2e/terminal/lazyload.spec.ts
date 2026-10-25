@@ -141,12 +141,21 @@ test("scroll to top → loading pill → older page above with anchor held → s
   );
 
   // 4. Keep going: the next (oldest) page arrives and at its top the quiet
-  //    start-of-history pill shows; the oldest content is reachable.
-  await scrollUpUntil(page, mobile, () =>
-    page.locator('[data-hist-pill="end"]').isVisible(),
-  );
-  await expect(page.locator('[data-hist-pill="end"]')).toContainText(
-    "start of history",
+  //    start-of-history pill shows; the oldest content is reachable. The pill is
+  //    checked in the same poll that sees it: it can show for a moment when the last
+  //    page latches "end" at the top, then the rewrite re-scrolls to the reader's
+  //    anchor (no longer at the top) and it goes until the next scroll-up. A separate
+  //    wait after the loop lost that race on a loaded runner (#1674 CI). Both reads
+  //    are non-waiting, so a pill that just went never stalls the poll.
+  const endPill = page.locator('[data-hist-pill="end"]');
+  await scrollUpUntil(
+    page,
+    mobile,
+    async () =>
+      (await endPill.isVisible()) &&
+      (await endPill.allTextContents()).some((t) =>
+        t.includes("start of history"),
+      ),
   );
   await scrollUpUntil(page, mobile, async () =>
     (await rowsText(page)).includes("OLDEST-PAGE-BEGIN"),
