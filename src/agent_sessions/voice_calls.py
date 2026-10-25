@@ -599,7 +599,14 @@ class Call:
         if self.state == "ended":
             return
         await self.client({"t": "turn", "turn": view})
-        if gen != self.generation:
+        # New Library drafts are offered with a spoken summary of their BOUND draft (#1681): read
+        # before the generation check below, so a question asked meanwhile still wins.
+        summaries = (
+            await draft_summaries(view)
+            if gen == self.generation and view.get("status") == "done"
+            else {}
+        )
+        if gen != self.generation or self.state == "ended":
             pass  # a newer question superseded this one: its answer is on screen, not spoken
         elif view.get("status") == "done":
             ask = view.get("ask")
@@ -609,7 +616,8 @@ class Call:
                 # A newer answer: an older question is no longer what a reply answers.
                 self.ask = None
             words = speakable(view.get("answer") or "")
-            cards = confirmable_cards(view)[:4]  # offered by voice; any more are screen-only
+            # offered by voice; any more are screen-only
+            cards = confirmable_cards(view, summaries=summaries)[:4]
             lines = list(card_sentences(view, skip={c["id"] for c in cards}))
             sid = uuid.uuid4().hex[:12]
             # HQ judged the call over (#1668): it ends once THIS farewell has played — never over
@@ -1051,7 +1059,138 @@ def _voice_operation(op_id: object) -> bool:
     return op is not None and op.group not in ask_library.GROUPS
 
 
-def confirmable_cards(view: dict) -> list[dict]:
+#: The Library operations a voice may confirm (#1681): NEW drafts that run nothing, each only
+#: with a spoken summary of its bound draft (`draft_summary`). Edits, copies, enabling and
+#: widening stay screen decisions.
+VOICE_DRAFTS = frozenset({"playbook.create", "skill.create"})
+#: The longest Library summary a call reads out (characters).
+DRAFT_TOLD_MAX = 700
+
+
+def draft_summary(op_id: str, files: dict) -> str | None:
+    """A new draft as a FIXED spoken summary (#1681), every field read verbatim — or ``None``
+    when anything it promises can't be said in full (the card stays on screen).
+
+    - playbook: "Save a new playbook, “{name}”: {summary}. It has {n} steps: {titles}." — or, with
+      several flows, every flow by its title with all of its steps (none is left unsaid);
+    - skill: "Save a new skill, “{name}”: {description}. It has {n} files: {paths}."
+    """
+    if (
+        not isinstance(files, dict)
+        or not files
+        or not all(isinstance(k, str) and isinstance(v, str) for k, v in files.items())
+    ):
+        return None
+    if op_id == "playbook.create":
+        from .playbooks import loader, store
+
+        try:
+            card = loader.card(loader.validate_tree(store.tree_from_files(files)))
+        except Exception:  # noqa: BLE001 — not a valid playbook: nothing to summarise
+            return None
+        name = _said_name(card.get("name"))
+        about = str(card.get("summary") or "")
+        said_about = verbatim(about) if about else ""
+        # EVERY flow and every step (review of 1420f59e): a step of a second flow is in the
+        # playbook too, so a summary that left it out would not be the playbook confirmed.
+        flows = sorted(card.get("flows") or [], key=lambda f: f.get("id") != card["default_flow"])
+        told = []
+        for f in flows:
+            steps = [verbatim(str(st.get("title") or "")) for st in f.get("steps") or []]
+            if not steps or any(t is None for t in steps):
+                return None
+            n = len(steps)
+            told.append((verbatim(str(f.get("title") or "")), f"{n} step{'s' if n != 1 else ''}: "
+                         + "; ".join(steps)))  # type: ignore[arg-type]  # fmt: skip
+        if name is None or said_about is None or not told:
+            return None
+        head = f"Save a new playbook, “{name}”" + (f": {_sentence(said_about)}" if about else ".")
+        if len(told) == 1:
+            line = f"{head} It has {told[0][1]}."
+        else:
+            if any(title is None for title, _ in told):
+                return None
+            parts = " ".join(f"{title}: {steps}." for title, steps in told)
+            line = f"{head} It has {len(told)} flows. {parts}"
+    elif op_id == "skill.create":
+        text = files.get("SKILL.md") or ""
+        name = _said_name(_front_matter(text, "name"))
+        about = _front_matter(text, "description")
+        said_about = verbatim(about) if about else ("" if about == "" else None)
+        paths = [verbatim(p) for p in sorted(files)]
+        if not name or said_about is None or any(p is None for p in paths):
+            return None
+        head = f"Save a new skill, “{name}”" + (f": {_sentence(said_about)}" if about else ".")
+        n = len(paths)
+        line = f"{head} It has {n} file{'s' if n != 1 else ''}: {', '.join(paths)}."  # type: ignore[arg-type]
+    else:
+        return None
+    return line if len(line) <= DRAFT_TOLD_MAX else None
+
+
+def _said_name(raw: object) -> str | None:
+    """A draft's name as said inside the summary's quotes: verbatim, and with no quote marks of
+    its own — a name can't close the quotes and read on as the summary's words."""
+    name = verbatim(str(raw or "")) if isinstance(raw, str) else None
+    if not name or any(q in name for q in '“”"'):
+        return None
+    return name
+
+
+def _front_matter(text: str, key: str) -> str | None:
+    """A SKILL.md front matter value, ``""`` when absent — or ``None`` when it can't be read as
+    one plain line: a value continued on the next line, or a block scalar, would be cut."""
+    if not text.startswith("---"):
+        return ""
+    lines = text.split("\n")[1:40]
+    for i, line in enumerate(lines):
+        if line.strip() == "---":
+            break
+        k, sep, v = line.partition(":")
+        if not sep or k.strip() != key:
+            continue
+        v = v.strip()
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        if not v or v[0] in "|>" or (nxt[:1] in (" ", "\t") and nxt.strip()):
+            return None  # a block, or a value that continues: not one line to read
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            v = v[1:-1]  # YAML's own quotes are not part of the value
+        return v
+    return ""
+
+
+async def draft_summaries(view: dict) -> dict[str, str]:
+    """The spoken summary of each new Library draft a turn proposed, read from its BOUND draft —
+    `ask_operations.content`, which serves it only while it still hashes to what the card is
+    bound to, so what is read is what a confirm would save."""
+    from . import ask_operations
+
+    out: dict[str, str] = {}
+    for p in view.get("proposals") or []:
+        pid = p.get("action_id")
+        if (
+            p.get("kind") != "operation"
+            or p.get("op") not in VOICE_DRAFTS
+            or not isinstance(pid, str)
+        ):
+            continue
+        try:
+            status, shown = await asyncio.to_thread(ask_operations.content, pid)
+        except Exception:  # noqa: BLE001 — unreadable: the card stays on screen
+            log.warning("a draft card's content could not be read", exc_info=True)
+            continue
+        if status != 200 or not isinstance(shown, dict) or shown.get("kind") != "files":
+            continue
+        files = {
+            f.get("path"): f.get("text") for f in shown.get("files") or [] if isinstance(f, dict)
+        }
+        summary = draft_summary(str(p["op"]), files)
+        if summary is not None:
+            out[pid] = summary
+    return out
+
+
+def confirmable_cards(view: dict, *, summaries: dict[str, str] | None = None) -> list[dict]:
     """The cards of a settled HQ turn that a voice may confirm: nudges, new sessions, and HQ
     operations that need no on-screen input. What will be SENT is read back in full, word for
     word (`voice_text.verbatim`); a card whose text can't be is left to the screen (#1631)."""
@@ -1074,6 +1213,13 @@ def confirmable_cards(view: dict) -> list[dict]:
                 continue  # the brief is what starts: unheard, it stays a screen decision
             out.append({"id": pid, "kind": "session", "verb": "start it",
                         "line": _sentence(f"A new session in {title}: {brief}")})  # fmt: skip
+        elif kind == "operation" and p.get("op") in VOICE_DRAFTS and not p.get("needs"):
+            # A new draft: its spoken SUMMARY of the bound draft is what is confirmed, or it stays
+            # on screen (#1681).
+            summary = (summaries or {}).get(pid)
+            if summary is None:
+                continue
+            out.append({"id": pid, "kind": "operation", "verb": "save it", "line": summary})
         elif kind == "operation" and not p.get("needs") and _voice_operation(p.get("op")):
             # The EFFECT is what is authorized (deleting a project loses its memory; archiving
             # stops its agents): it is read out in full, or the operation stays on screen.
