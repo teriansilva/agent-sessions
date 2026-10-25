@@ -308,3 +308,77 @@ test("HQ's speech plays in a 24 kHz audio context, so its chunks are never resam
   const rates = () => page.evaluate(() => (window as unknown as { __ctxRates: number[] }).__ctxRates);
   await expect.poll(rates).toContain(24_000);
 });
+
+test("the Audio sheet lists the browser's devices and switches the mic mid-call without dropping it (#1670)", async ({ page }) => {
+  const srv = await mockShell(page);
+  const panel = await connect(page, srv);
+  // Until the call is connected its audio isn't built yet: no sheet to show wrong state (#1678).
+  await expect(page.getByTestId("call-audio")).toBeDisabled();
+  srv.connected[0] = true;
+  say(srv, { t: "connected" });
+  await expect(panel).toHaveAttribute("data-phase", "connected");
+  await page.getByTestId("call-audio").click();
+  const sheet = page.getByTestId("call-audio-sheet");
+  await expect(sheet).toBeVisible();
+  const mics = sheet.getByRole("group", { name: "Microphone" }).getByRole("radio");
+  await expect.poll(() => mics.count()).toBeGreaterThan(1); // Chromium's fake devices
+  // Every choice is a 44 px row (the touch floor), on the phone as on the desktop.
+  for (const row of await sheet.locator("label").all()) {
+    expect((await row.boundingBox())!.height).toBeGreaterThanOrEqual(43.5);
+  }
+  const other = mics.nth(1);
+  // A controlled choice: it shows as checked once the switch has HAPPENED, never optimistically.
+  await other.click();
+  await expect(other).toBeChecked();
+  await expect(sheet.getByRole("alert")).toHaveCount(0);
+  // The call never dropped, and sound keeps flowing from the new microphone.
+  await expect(panel).toHaveAttribute("data-phase", "connected");
+  const before = srv.voiced[0];
+  await expect.poll(() => srv.voiced[0], { timeout: 15_000 }).toBeGreaterThan(before);
+  // The End control stays reachable with the sheet open.
+  await page.getByTestId("call-end").scrollIntoViewIfNeeded();
+  await expect(page.getByTestId("call-end")).toBeInViewport();
+});
+
+test("where the browser can't pick the speaker, the Audio sheet says how instead of listing speakers (#1670)", async ({ page }) => {
+  // iOS Safari (and Firefox without the API) has no AudioContext.setSinkId: the phone picks it.
+  await page.addInitScript(() => {
+    delete (AudioContext.prototype as unknown as { setSinkId?: unknown }).setSinkId;
+  });
+  const srv = await mockShell(page);
+  const panel = await connect(page, srv);
+  srv.connected[0] = true;
+  say(srv, { t: "connected" });
+  await expect(panel).toHaveAttribute("data-phase", "connected");
+  await page.getByTestId("call-audio").click();
+  const sheet = page.getByTestId("call-audio-sheet");
+  await expect(sheet.getByTestId("call-audio-output-note")).toContainText("picks the speaker");
+  await expect(sheet.getByRole("group", { name: "Speaker" })).toHaveCount(0);
+  await expect(sheet.getByRole("group", { name: "Microphone" })).toBeVisible();
+});
+
+test("where the browser has a speaker picker, 'Another speaker…' opens it from the tap (#1670)", async ({ page }) => {
+  // Chromium ships no `selectAudioOutput`; a stand-in records that the tap reached it.
+  await page.addInitScript(() => {
+    (navigator.mediaDevices as unknown as { selectAudioOutput: () => Promise<unknown> }).selectAudioOutput =
+      async () => {
+        (window as unknown as { __picked: boolean }).__picked = true;
+        return { deviceId: "default", label: "Picked speaker", kind: "audiooutput", groupId: "" };
+      };
+  });
+  const srv = await mockShell(page);
+  const panel = await connect(page, srv);
+  srv.connected[0] = true;
+  say(srv, { t: "connected" });
+  await expect(panel).toHaveAttribute("data-phase", "connected");
+  await page.getByTestId("call-audio").click();
+  const pick = page.getByTestId("call-audio-output-pick");
+  await expect(pick).toBeVisible();
+  expect((await pick.boundingBox())!.height).toBeGreaterThanOrEqual(43.5);
+  await pick.click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __picked?: boolean }).__picked)).toBe(true);
+  await expect(page.getByTestId("call-audio-output-error")).toHaveCount(0);
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("battlelab.call.devices") ?? ""))
+    .toContain("Picked speaker");
+});

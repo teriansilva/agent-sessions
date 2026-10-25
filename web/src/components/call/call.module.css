@@ -188,7 +188,7 @@
 .controls {
   margin-top: auto;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: var(--sp-2);
   padding: var(--sp-3);
   padding-bottom: calc(var(--sp-3) + env(safe-area-inset-bottom, 0px));
@@ -396,4 +396,85 @@
 .needsChip {
   min-height: 44px;
   padding: 0 var(--sp-3);
+}
+
+/* Choosing the call's microphone and speaker (#1670): an inline sheet in the call panel. */
+.audioSheet {
+  margin: var(--sp-3) var(--sp-3) 0;
+  padding: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+}
+.audioHead {
+  margin: 0;
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.devGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.devGroup > legend {
+  padding: 0;
+  margin-bottom: 6px;
+  font: 500 var(--fs-micro) / 1.6 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.devRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 44px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--line);
+  color: var(--text-1);
+  font-size: var(--fs-row);
+  cursor: pointer;
+}
+.devRow input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  flex: none;
+  accent-color: var(--accent-text);
+}
+.devRow:has(input:checked) {
+  border-color: var(--accent-text);
+}
+.devRow:has(input:focus-visible) {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.devName {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.devNote {
+  margin: 0;
+  font: 400 var(--fs-meta) / 1.45 var(--font-mono);
+  color: var(--text-2);
+}
+.devWarn,
+.devErr {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  font: 400 var(--fs-meta) / 1.45 var(--font-mono);
+  color: var(--text-1);
+  border-left: 3px solid var(--warn-text);
+  background: color-mix(in srgb, var(--warn-text) 10%, transparent);
+}
+.devErr {
+  border-left-color: var(--danger-text);
+  background: color-mix(in srgb, var(--danger-text) 10%, transparent);
 }

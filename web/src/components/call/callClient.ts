@@ -18,7 +18,7 @@
  *  a spoken "confirm" may settle and for how long; `settled` is what the card's route answered. A
  *  tap on any card during the call says `card_decided`, which voids the spoken window. */
 import type { CallServerMessage, CallState, CardSettlement } from "../../types/voice";
-import type { CallAudio } from "./callAudio";
+import type { CallAudio, DeviceAudio } from "./callAudio";
 
 export type CallPhase = "idle" | "starting" | "dialing" | "connected" | "ended";
 
@@ -387,6 +387,12 @@ export class CallClient {
 
   inputLevel(): number {
     return this.audio?.inputLevel() ?? 0;
+  }
+
+  /** The call's device controls (#1670), where the audio engine has them (a real browser). */
+  deviceAudio(): DeviceAudio | null {
+    const a = this.audio as Partial<DeviceAudio> | null;
+    return a && typeof a.setInput === "function" ? (a as DeviceAudio) : null;
   }
 
   outputLevel(): number {

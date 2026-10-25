@@ -126,6 +126,7 @@ export function CallProvider({
       captionsOn,
       setCaptionsOn,
       levels: () => ({ input: client?.inputLevel() ?? 0, output: client?.outputLevel() ?? 0 }),
+      audioDevices: () => client?.deviceAudio() ?? null,
     }),
     [snap, caps, refreshCaps, start, client, dismiss, minimized, captionsOn],
   );

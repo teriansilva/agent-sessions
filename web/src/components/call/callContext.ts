@@ -4,6 +4,7 @@ import { createContext, useContext } from "react";
 
 import type { VoiceCapabilities } from "../../types/voice";
 import { IDLE, type CallSnapshot } from "./callClient";
+import type { DeviceAudio } from "./callAudio";
 
 export interface CallContextValue {
   snap: CallSnapshot;
@@ -24,6 +25,8 @@ export interface CallContextValue {
   captionsOn: boolean;
   setCaptionsOn: (on: boolean) => void;
   levels: () => { input: number; output: number };
+  /** Choosing the microphone and speaker during a call (#1670); null without a call or support. */
+  audioDevices: () => DeviceAudio | null;
 }
 
 const noop = () => undefined;
@@ -44,6 +47,7 @@ export const CallContext = createContext<CallContextValue>({
   captionsOn: true,
   setCaptionsOn: noop,
   levels: () => ({ input: 0, output: 0 }),
+  audioDevices: () => null,
 });
 
 export function useCall(): CallContextValue {

@@ -15,15 +15,17 @@ import {
   PhoneOff,
   RotateCcw,
   Subtitles,
+  Volume2,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useAskPanel } from "../ask/askPanel";
 import { contactById } from "../hq/contacts";
 import { HqPortrait } from "../hq/HqPortrait";
 import b from "../ui/actionButton.module.css";
+import { AudioSheet } from "./AudioSheet";
 import { CallCards } from "./CallCards";
 import { endedText, normalEnd, phaseAnnouncement } from "./callClient";
 import { callActive, requestAskConversation, useCall } from "./callContext";
@@ -73,6 +75,10 @@ function CallPanel() {
   const contact = contactById(snap.contact);
   const live = callActive(snap);
   const now = useTick(live);
+  // Choosing the microphone and speaker (#1670): only where the audio engine supports it.
+  const devices = call.audioDevices();
+  const [audioOpen, setAudioOpen] = useState(false);
+  const audioId = useId();
   const [lv, setLv] = useState({ input: 0, output: 0 });
   useEffect(() => {
     if (snap.phase !== "connected") return;
@@ -322,6 +328,9 @@ function CallPanel() {
         </p>
       ) : null}
 
+      {live && audioOpen && devices && snap.phase === "connected" ? (
+        <AudioSheet api={devices} id={audioId} />
+      ) : null}
       {live ? (
         <div className={s.controls}>
           <div className={s.ctl}>
@@ -367,6 +376,23 @@ function CallPanel() {
             </button>
             <span className={s.ctlLabel} aria-hidden="true">
               Captions
+            </span>
+          </div>
+          <div className={s.ctl}>
+            <button
+              type="button"
+              className={`${b.ghost} ${s.ctlBtn}`}
+              aria-expanded={audioOpen}
+              aria-controls={audioId}
+              aria-label="Audio: microphone and speaker"
+              disabled={!devices || snap.phase !== "connected"}
+              onClick={() => setAudioOpen(!audioOpen)}
+              data-testid="call-audio"
+            >
+              <Volume2 size={20} aria-hidden="true" />
+            </button>
+            <span className={s.ctlLabel} aria-hidden="true">
+              Audio
             </span>
           </div>
           <div className={s.ctl}>
