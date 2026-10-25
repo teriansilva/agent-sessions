@@ -555,15 +555,39 @@ speech engine and heard, not read. Answer in two or three short spoken sentences
 tables, no lists, no code, no URLs, no emoji; say numbers the way a person would and round them. \
 Name a session by its title, never its key. If there is more to say, give the headline and offer \
 the detail. When you propose something, say in one sentence what the card does; the Commander \
-confirms it on the card. Answer in the language the Commander speaks."""
+confirms it on the card. Answer in the language the Commander speaks. \
+Ending the call is your job: when the Commander's own words mean the call is over — any \
+goodbye, casual or temporary ones included ("bye", "bye for now", "talk later", "tschüss", \
+"adiós", "ciao"), or "that's all", "I'm done", in any wording or language — you MUST call the \
+end_call tool in that same turn, then answer with a short goodbye. A goodbye without end_call \
+leaves the line open and the Commander stuck on the call. A goodbye to a session, mission or \
+agent is not one; if a card you just offered still needs their decision, or you are unsure, ask \
+instead."""
 
 _HQ_CALL_DETAILED = """The Commander is on a voice call with you: every answer is spoken aloud by \
 a speech engine and heard, not read. The Commander asked for detailed answers: give the full \
 picture in up to six spoken sentences, most important first. No markdown, no tables, no lists, \
 no code, no URLs, no emoji; say numbers the way a person would and round them. Name a session by \
 its title, never its key. When you propose something, say in one sentence what the card does; \
-the Commander confirms it on the card. Answer in the language the Commander speaks."""
+the Commander confirms it on the card. Answer in the language the Commander speaks. \
+Ending the call is your job: when the Commander's own words mean the call is over — any \
+goodbye, casual or temporary ones included ("bye", "bye for now", "talk later", "tschüss", \
+"adiós", "ciao"), or "that's all", "I'm done", in any wording or language — you MUST call the \
+end_call tool in that same turn, then answer with a short goodbye. A goodbye without end_call \
+leaves the line open and the Commander stuck on the call. A goodbye to a session, mission or \
+agent is not one; if a card you just offered still needs their decision, or you are unsure, ask \
+instead."""
 
+
+_HQ_CALL_END = """The Commander is on a voice call with HQ. Below are their words and HQ's answer \
+to them. Decide one thing: should the call end now? Yes only when BOTH hold. First, the \
+Commander's own words mean they want to end the call: any goodbye, in any language or wording, \
+casual or temporary ones included ("bye", "bye for now", "talk later", "tschüss", "adiós", \
+"ciao"), or "that's all", "I'm done" said to close the call. Second, HQ's answer lets them go: it \
+says goodbye or confirms, and asks nothing and raises nothing still needing their decision. No for \
+a goodbye addressed to a session, mission or agent, for thanks followed by a new request, for any \
+question or request, and whenever HQ's answer asks them something or holds them on the line. Reply \
+with exactly one word: yes or no."""
 
 _HQ_HANDOVER = """The Commander changed HQ contact during this conversation. An earlier answer \
 that opens with "[Answered by …]" was given by the person named there, not by you: it is their \
@@ -755,6 +779,19 @@ REGISTRY: tuple[Prompt, ...] = (
         max_chars=2000,
         block=BLOCK,
         field="hq_call_detailed",
+    ),
+    Prompt(
+        id="hq_call_end",
+        group="Mission control",
+        label="HQ — is the call over?",
+        description="Asked on a call (#1668) after a short small-talk answer in which HQ did not "
+        "end the call itself: do the Commander's own words mean the call is over? Yes ends the "
+        "call after HQ's goodbye has played; anything else keeps it open.",
+        contract="one word: yes or no",
+        default=_HQ_CALL_END,
+        max_chars=2000,
+        block=BLOCK,
+        field="hq_call_end",
     ),
     Prompt(
         id="hq_handover",

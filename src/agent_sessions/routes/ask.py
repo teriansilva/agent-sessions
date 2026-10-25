@@ -55,6 +55,7 @@ from .. import (
     ask_store,
     hq_contacts,
     prefs,
+    voice_calls,
 )
 
 # The latest `seen` time a client may send (2100-01-01): any later or unbounded value is refused.
@@ -212,7 +213,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return parsed
         turn_id, text, answers, option, contact = parsed
         try:
-            return await ask_orchestrator.begin(
+            started = await ask_orchestrator.begin(
                 cid,
                 turn_id,
                 text,
@@ -230,6 +231,21 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return _refused(e)
         except ask_orchestrator.TurnError as e:
             return JSONResponse({"detail": e.detail, **e.extra}, status_code=e.status)
+        call = voice_calls.REGISTRY.current
+        task = started[0]
+        if task is not None and call is not None and call.cid == cid and call.state != "ended":
+            # An ACCEPTED typed turn on the call's conversation (#1668): the Commander is there,
+            # and any farewell HQ planned is off. A refused one changed nothing, and a replay of a
+            # turn that already settled (`begin` returns no task) is not a new turn (Hermes 7010),
+            # and neither is a retry of one still running (the same task, counted once, 7012).
+            if call.on_typed_turn(task):
+                # Once it settles, a question it ends on is one a spoken reply may answer.
+                def settled(t: asyncio.Task, call=call) -> None:
+                    if not t.cancelled() and t.exception() is None:
+                        call.on_typed_settled(t.result())
+
+                task.add_done_callback(settled)
+        return started
 
     @app.post("/api/ask/conversations/{cid}/message")
     async def message(

@@ -769,7 +769,7 @@ def test_any_turn_error_is_spoken_and_the_queue_runs(monkeypatch):
     call._to_worker, call._to_client = to_worker, to_client
     asked: list = []
 
-    async def boom(turn_id, text, answers, option):
+    async def boom(turn_id, text, answers, option, **_kw):
         asked.append(text)
         if text == "first":
             raise RuntimeError("store read failed")
@@ -778,7 +778,7 @@ def test_any_turn_error_is_spoken_and_the_queue_runs(monkeypatch):
     monkeypatch.setattr(call, "_run_turn", boom)
 
     async def go():
-        call.queued = "second"
+        call.queued = ("second", None)
         await call._ask("first", call.generation)
         while call.turn_task is not None and not call.turn_task.done():
             await call.turn_task

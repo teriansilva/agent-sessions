@@ -59,8 +59,8 @@ def test_registry_covers_every_system_prompt():
     # #1443 added ask_orchestrator; #1525 the 13 HQ contact personas (unguarded: who speaks, sent
     # BEFORE the guarded ask_orchestrator, whose guard stays the last word); #1397 hq_call +
     # hq_call_detailed; hq_handover / hq_handover_plain, when the Commander switched contact
-    # mid-conversation
-    assert len(prompts.REGISTRY) == 39
+    # mid-conversation; #1668 hq_call_end (on a call: are the Commander's words a goodbye?)
+    assert len(prompts.REGISTRY) == 40
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -144,8 +144,9 @@ EXPECTED_DEFAULT_SHA = {
     "hq_persona_southamerica_woman": "0a0d2b9278d9cf9b",
     "hq_persona_southamerica_man": "965ffa5b9e0e0e84",
     "hq_persona_romania_woman": "e87849be173ee7b0",
-    "hq_call": "2a2d38ffdfc7bd9b",  # #1397
-    "hq_call_detailed": "bdfdfb789725e801",  # #1397 (#1626 review: the answers setting)
+    "hq_call": "9c5c7827a2b3a821",  # #1397; #1668: when the call is over, end_call
+    "hq_call_detailed": "71aae02e14907167",  # #1397 (#1626 review: answers); #1668: end_call
+    "hq_call_end": "4af567dd1abae1eb",  # #1668: on a call, do the words and HQ's answer end it?
     "hq_handover": "a27b7d563b8cb484",  # the Commander switched contact mid-conversation
     "hq_handover_plain": "2629dd59306634d4",  # the same, switched to Off
 }

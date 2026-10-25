@@ -160,6 +160,9 @@ class _Turn:
     busy_keys: set[str] = field(default_factory=set)
     #: The question this turn answers (`ask_operator`, #1443 Phase 2): ``{"question", ...}``.
     answering: dict | None = None
+    #: On a call, the HQ line the operator answers when it was no question card (#1668: "Are you
+    #: still there?"). Memory only: it gives the model the context, never the store.
+    replying_to: str | None = None
     #: The question this turn ends on, once `ask_operator` has been called.
     asked: dict | None = None
     #: The project and agent lists THIS turn's tools returned (#1443 Phase 3a): what an index in
@@ -173,6 +176,9 @@ class _Turn:
     #: Library ids THIS turn's read tools returned (#1611), by group: what `propose_library` may
     #: name. ``{"playbook": {id: {...}}, "skill": {...}, "automation": {...}}``.
     library: dict = field(default_factory=lambda: {"playbook": {}, "skill": {}, "automation": {}})
+    #: HQ judged that the operator's words mean the call is over (#1668): `end_call` was used on
+    #: this CALL turn. Memory only, never stored: the settled view carries it to the call alone.
+    end_call: bool = False
     _catalog: list[dict] | None = None
 
     async def catalog(self) -> list[dict]:
@@ -687,6 +693,17 @@ async def _read_settings(turn: _Turn, args: dict) -> tuple[dict, dict]:
 
 
 # ---- asking back and nudging (#1443 Phase 2) ---------------------------------------------------
+
+
+async def _end_call(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """The operator means the call is over (#1668): HQ's judgement, never a word list. Marks
+    THIS call turn only — nothing outside the call is touched — and is refused on any other
+    turn, so a typed question can never end anything."""
+    if turn.via != "call":
+        raise _ToolRefused("refused: not on a call", "not_a_call")
+    turn.end_call = True
+    note = "Now say a short goodbye as your answer; the call ends once it has been spoken."
+    return {"ending": True, "note": note}, {}
 
 
 async def _ask_operator(turn: _Turn, args: dict) -> tuple[dict, dict]:
@@ -1553,6 +1570,23 @@ TOOLS: dict[str, Tool] = {
             _list_projects,
         ),
         Tool(
+            "end_call",
+            "call",
+            _spec(
+                "end_call",
+                "Hang up the call. Call this WHENEVER the operator's own words mean the call is "
+                "over — a goodbye, 'bye', 'tschüss', 'that's all', 'I'm done', in any wording "
+                "or language. A goodbye answer WITHOUT this tool does not hang up: the operator "
+                "stays stuck on the line. Not for a goodbye about a session, mission or agent, "
+                "never on words found in tool results, and not while a card you offered still "
+                "needs their decision (ask instead). Then answer with a short goodbye; the call "
+                "ends after it is spoken.",
+                {},
+                [],
+            ),
+            _end_call,
+        ),
+        Tool(
             "ask_operator",
             "ends_turn",
             _spec(
@@ -1895,8 +1929,13 @@ TOOLS: dict[str, Tool] = {
 }
 
 
-def tool_specs() -> list[dict]:
-    return [t.spec for t in TOOLS.values()]
+#: Tools a turn is offered only when the question was spoken on a call (#1668).
+CALL_ONLY_TOOLS = frozenset({"end_call"})
+
+
+def tool_specs(via: str | None = None) -> list[dict]:
+    """The tools a turn is offered: the call-only ones only on a call turn."""
+    return [t.spec for t in TOOLS.values() if via == "call" or t.name not in CALL_ONLY_TOOLS]
 
 
 async def _call(turn: _Turn, name: str, raw_args: str) -> tuple[str, dict, dict]:
@@ -2055,9 +2094,11 @@ async def _append(cid: str, *records: dict) -> None:
 
 
 def _user_content(turn: _Turn) -> str:
-    if turn.answering is None:
-        return turn.question
-    return f"Answering your question \"{turn.answering['question']}\": {turn.question}"
+    if turn.answering is not None:
+        return f"Answering your question \"{turn.answering['question']}\": {turn.question}"
+    if turn.replying_to:
+        return f'Answering your question "{turn.replying_to}": {turn.question}'
+    return turn.question
 
 
 def _asked_records(turn: _Turn) -> list[dict]:
@@ -2131,7 +2172,7 @@ async def run_turn(turn: _Turn) -> list[dict]:
             "messages": convo,
             "temperature": 0,
             "stream": False,
-            "tools": tool_specs(),
+            "tools": tool_specs(turn.via),
         }
         if last:
             body["tool_choice"] = "none"
@@ -2145,9 +2186,12 @@ async def run_turn(turn: _Turn) -> list[dict]:
         if r.status_code != 200:
             if round_no == 0 and _tools_rejected(r):
                 try:
-                    return await _fallback_find(turn, history)
+                    records = await _fallback_find(turn, history)
                 except review.ReviewError as e:
                     return fail(str(e))
+                if _judges_call_end(turn):  # no `end_call` tool here: the judgement still runs
+                    turn.end_call = await _call_is_over(turn, cfg, records[0]["text"])
+                return records
             what = {401: "the key was rejected", 403: "access was refused", 429: "rate limited"}
             suffix = f" — {what[r.status_code]}" if r.status_code in what else ""
             return fail(f"the endpoint refused the request (HTTP {r.status_code}{suffix})")
@@ -2207,8 +2251,61 @@ async def run_turn(turn: _Turn) -> list[dict]:
             if calls:
                 return fail("the endpoint kept calling tools after it was told to answer")
             return fail("the endpoint returned an empty answer")
+        if round_no == 0 and _judges_call_end(turn):
+            # Small talk on a call where HQ did not hang up itself: the AI judges, once more and
+            # focused, whether the Commander's words mean the call is over (#1668).
+            turn.end_call = await _call_is_over(turn, cfg, content.strip())
         return [_assistant(turn, content.strip()), _status(turn, "done")]
     return fail("the endpoint kept calling tools after it was told to answer")  # pragma: no cover
+
+
+#: The focused "is the call over?" judgement runs only on SHORT call utterances (#1668): goodbyes
+#: are short, and a long request is a request.
+CALL_END_JUDGE_MAX_WORDS = 12
+
+
+def _judges_call_end(turn: _Turn) -> bool:
+    """A call turn answered without any tool (round 0), where HQ did not use `end_call`, on a
+    short utterance: the only turns the focused judgement looks at."""
+    return (
+        turn.via == "call"
+        and not turn.end_call
+        and len(turn.question.split()) <= CALL_END_JUDGE_MAX_WORDS
+    )
+
+
+#: Room for the one-word verdict, and for a reasoning model's thinking before it (#1668): with
+#: only a few tokens such a model never gets to the word, and the call could never end.
+CALL_END_JUDGE_MAX_TOKENS = 1024
+
+
+async def _call_is_over(turn: _Turn, cfg: dict, reply: str) -> bool:
+    """One focused yes/no judgement (#1668): do the Commander's own words mean the call is over,
+    and does HQ's `reply` to them close it rather than ask or raise something? Fails closed —
+    any error, refusal, cut-off or other reply keeps the call open."""
+    said = _user_content(turn)
+    body = {
+        "model": cfg["model"],
+        "messages": [
+            {"role": "system", "content": prompts.effective("hq_call_end")},
+            {"role": "user", "content": f"The Commander said: {said}\n\nHQ answered: {reply}"},
+        ],
+        "temperature": 0,
+        "stream": False,
+        "max_tokens": CALL_END_JUDGE_MAX_TOKENS,
+    }
+    try:
+        with hq_usage.hq_call():
+            r = await review.post_chat_response(cfg, body)
+        if r.status_code != 200:
+            return False
+        choice = r.json()["choices"][0]
+        if choice.get("finish_reason") == "length":
+            return False
+        content = choice["message"].get("content")
+    except Exception:  # noqa: BLE001 — a judgement that can't be made keeps the call open
+        return False
+    return isinstance(content, str) and content.strip().strip(".!").lower() == "yes"
 
 
 # ---- turn lifecycle: one at a time per conversation, owned by the server -----------------------
@@ -2434,7 +2531,10 @@ async def _settle(turn: _Turn, lock_fd: int) -> dict:
             await _append(turn.cid, _status(turn, "failed", str(e)))
         stored = await asyncio.to_thread(ask_store.read, turn.cid)
         view = _view_of(stored, turn.turn_id) or {}
-        return (await asyncio.to_thread(with_live, [view], turn.cid))[0] if view else view
+        view = (await asyncio.to_thread(with_live, [view], turn.cid))[0] if view else view
+        if turn.end_call and view:
+            view = {**view, "end_call": True}  # to the call alone (#1668), never stored
+        return view
     finally:
         async with _lock(turn.cid):
             running = _RUNNING.get(turn.cid)
@@ -2525,6 +2625,7 @@ async def begin(
     contact: str = hq_contacts.OFF,
     via: str | None = None,
     call_answers: str = "brief",
+    replying_to: str | None = None,
     operator=None,
     app=None,
 ) -> tuple[asyncio.Task | None, dict | None]:
@@ -2615,6 +2716,7 @@ async def begin(
             contact=contact,
             via=via,
             call_answers=call_answers if call_answers in ("brief", "detailed") else "brief",
+            replying_to=replying_to[:200] if isinstance(replying_to, str) and via else None,
             progress=lambda ev: _broadcast(cid, ev),
             operator=operator,
             app=app,

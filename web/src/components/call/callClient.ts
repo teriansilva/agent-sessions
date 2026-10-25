@@ -394,11 +394,21 @@ export class CallClient {
   }
 }
 
+/** Ends the operator chose (#1668): the hang-up, HQ ending the call on their goodbye, or no
+ *  answer to HQ's still-there question. Everything else is a dropped call. */
+export function normalEnd(reason: string): boolean {
+  return reason === "hung_up" || reason === "hq_ended" || reason === "no_answer";
+}
+
 /** What the dropped state says, from the server's reason and the configured hosts. */
 export function endedText(end: CallEnd, hosts: { stt: string; tts: string }): string {
   switch (end.reason) {
     case "hung_up":
       return "Call ended.";
+    case "hq_ended":
+      return "HQ ended the call.";
+    case "no_answer":
+      return "No answer — the call ended.";
     case "tts_failed":
       return `${hosts.tts || "The text-to-speech endpoint"} (text-to-speech) stopped answering.`;
     case "stt_failed":

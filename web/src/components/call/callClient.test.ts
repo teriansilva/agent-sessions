@@ -4,7 +4,7 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { CallAudio } from "./callAudio";
-import { CallClient, endedText, phaseAnnouncement, type CallDeps } from "./callClient";
+import { CallClient, endedText, normalEnd, phaseAnnouncement, type CallDeps } from "./callClient";
 
 class FakeAudio implements CallAudio {
   prepared = false;
@@ -396,4 +396,15 @@ test("the live region says the phase, not the captions", async () => {
   sock.msg({ t: "connected" });
   sock.msg({ t: "caption", who: "hq", id: "h", text: "anything" });
   expect(phaseAnnouncement(c.snapshot, "General Hana Seo")).toBe("Connected to HQ, General Hana Seo.");
+});
+
+test("HQ ending the call and no answer are ends the operator chose, not drops (#1668)", () => {
+  const hosts = { stt: "", tts: "" };
+  expect(endedText({ reason: "hq_ended", detail: "", endpoint: "" }, hosts)).toBe("HQ ended the call.");
+  expect(endedText({ reason: "no_answer", detail: "", endpoint: "" }, hosts)).toBe("No answer — the call ended.");
+  expect(normalEnd("hung_up")).toBe(true);
+  expect(normalEnd("hq_ended")).toBe(true);
+  expect(normalEnd("no_answer")).toBe(true);
+  expect(normalEnd("tts_failed")).toBe(false);
+  expect(normalEnd("worker_failed")).toBe(false);
 });

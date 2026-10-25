@@ -603,20 +603,19 @@ def register(
                         await call.worker({"t": "mute", "on": call.muted})
                         await call.client({"t": "muted", "on": call.muted})
                     if ev.get("t") == "played":
-                        call.last_activity = time.monotonic()
-                        # The browser has PLAYED a say out: a read-back may now arm (#1397 P2).
+                        # The browser has PLAYED a say out: a read-back may now arm (#1397 P2);
+                        # HQ was heard (the silence clock, #1668); a farewell may end the call.
                         await call.on_played(ev.get("id"))
 
         async def watchdog() -> None:
             while call.state != "ended":
                 await asyncio.sleep(min(RECHECK_S, 5.0))
-                now = time.monotonic()
-                if now - call.started > voice_calls.MAX_CALL_S:
-                    await call.end("max_duration")
-                elif now - call.last_activity > voice_calls.IDLE_S:
-                    await call.end("idle")
-                elif session_uid(cfg, ws) is None or must_change["v"]:
+                if session_uid(cfg, ws) is None or must_change["v"]:
                     await call.end("signed_out")
+                else:
+                    # No idle or duration end (#1668): HQ's farewell, or no answer to its
+                    # still-there question, are the only timed ends.
+                    await call.check_silence()
 
         async def teardown() -> None:
             """Everything this socket started, stopped — on any exit, cancellation included."""

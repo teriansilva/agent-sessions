@@ -16,9 +16,11 @@ What HQ says is HQ's STORED text: the answer as `ask_store.append` kept it (reda
 sentences rendered here for cards and questions. The model never speaks unstored prose, and raw
 tool output never reaches the TTS endpoint.
 
-Limits: one call per instance; MAX_CALL_S; IDLE_S without speech either way; bounded frames and
-queues. On transport loss the call ends: mic and playback stop on the client, nothing reconnects
-without a new tap.
+Limits: one call per instance; bounded frames and queues. A call ends when the operator ends it
+(#1668): the hang-up, or words HQ judges mean the call is over (`end_call`, after its farewell has
+played). No idle or duration limit: after SILENCE_ASK_S without real speech HQ asks once, and only
+no answer within NO_ANSWER_S of that question ends the call. On transport loss the call ends: mic
+and playback stop on the client, nothing reconnects without a new tap.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ import sys
 import tempfile
 import time
 import uuid
+import weakref
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,8 +47,37 @@ from . import ask_orchestrator, ask_store, hq_calls_settings, hq_contacts, voice
 
 log = logging.getLogger(__name__)
 
-MAX_CALL_S = 60 * 60
-IDLE_S = 5 * 60
+#: No automatic end (#1668): after this long without REAL speech (a heard utterance, or an HQ say
+#: the browser played), HQ asks whether the operator is still there…
+SILENCE_ASK_S = 30 * 60
+#: …and only no answer within this long of that question having played ends the call.
+NO_ANSWER_S = 60.0
+#: A say whose `played` ack never comes (a backgrounded tab) counts as played this long after the
+#: worker reported its audio sent (`said`), plus how long its words take to say: an
+#: UNCONFIRMED-playback end, not proof it was heard.
+PLAYBACK_FALLBACK_S = 10.0
+#: How fast speech is assumed to go when estimating how long a say takes to play (deliberately
+#: slow: a longer estimate only ends an unacked call later).
+SPEECH_CHARS_PER_S = 10.0
+STILL_THERE_LINE = "Are you still there, Commander?"
+
+
+def speech_seconds(text: str) -> float:
+    """About how long `text` takes to say (at `SPEECH_CHARS_PER_S`): the no-ack fallback waits
+    for it to have played."""
+    return len(text) / SPEECH_CHARS_PER_S
+
+
+def asks_something(text: str) -> bool:
+    """Whether HQ's answer asks the operator something (any script's question mark): an answer
+    that asks is never a farewell, whatever was judged (#1668)."""
+    return any(q in text for q in "?？؟")
+
+
+#: How many recent worker turns' starts a call remembers (`turn_starts`).
+TURN_STARTS_KEPT = 32
+#: How many recent say ids a call remembers to tell its own `played` acks from stale ones.
+SAY_IDS_KEPT = 64
 #: A client audio frame: 20–100 ms of 16 kHz PCM16 is 640–3200 bytes; anything past this is refused.
 MAX_AUDIO_FRAME = 64 * 1024
 MAX_CONTROL_FRAME = 8 * 1024
@@ -132,16 +164,51 @@ class Call:
     session_csrf: str = ""
     dial_timer: asyncio.Task | None = None
     started: float = field(default_factory=time.monotonic)
-    last_activity: float = field(default_factory=time.monotonic)
+    #: The last sign the operator is there (#1668): an utterance heard, a typed turn on the call's
+    #: conversation, or an HQ say the browser played. Voice activity alone (`user_started`, which
+    #: room noise can fire), worker housekeeping, progress and stale acks are not.
+    last_speech: float = field(default_factory=time.monotonic)
+    #: Every time the operator starts speaking (`user_started`): a farewell planned for an
+    #: utterance is dropped if they began speaking again before it was installed (#1668).
+    user_starts: int = 0
+    #: Every ACCEPTED typed turn on the call's conversation: a farewell planned for an earlier
+    #: utterance is off if the Commander typed after it (#1668).
+    typed_turns: int = 0
+    #: The typed turns' tasks already counted: a client retrying a turn that is still running gets
+    #: the same task back, and that is no new turn (Hermes 7012).
+    typed_tasks: weakref.WeakSet = field(default_factory=weakref.WeakSet, repr=False)
+    #: Every say this call sent (bounded): only their `played` acks count as HQ having spoken.
+    say_ids: list = field(default_factory=list)
+    #: HQ judged the call over (`end_call`): ``{"say_id", "gen", "heard", "said_at", "speech_s"}``
+    #: of its farewell. `heard` is what the bye's words were heard after; the call
+    #: ends only while it still holds (`_still_heard`).
+    ending: dict | None = None
+    #: The still-there question in flight: ``{"say_id", "sent_at", "said_at", "played_at",
+    #: "speech_s"}``.
+    still_there: dict | None = None
+    #: HQ's last question was the still-there one: the next utterance answers it. Kept apart
+    #: from `still_there`, which any sign of the operator (their voice) already clears.
+    replying_still_there: bool = False
+    #: …and `user_starts` when it was asked: only words BEGUN after it answer it (Hermes 7008).
+    still_there_since: int = 0
     state: str = "dialing"  # dialing | listening | thinking | speaking | ended
     ended_reason: str = ""
     muted: bool = False
-    #: The latest utterance heard while HQ was still answering the previous one.
-    queued: str | None = None
+    #: The latest utterance heard while HQ was still answering the previous one, with what it was
+    #: heard after (``(text, heard)``, see `on_utterance`).
+    queued: tuple | None = None
     #: Bumped by every new utterance: an answer from an older generation is not spoken.
     generation: int = 0
     turn_task: asyncio.Task | None = None
+    #: The `ask_operator` question the Commander can answer by voice: one HQ asked on this call, or
+    #: one a typed turn on its conversation put on screen (`on_typed_settled`)…
     ask: dict | None = None
+    #: …and `user_starts` when it was presented: only words the Commander BEGAN after that answer
+    #: it (#1668 review: words begun while HQ was still answering are a new request).
+    ask_since: int = 0
+    #: `user_starts` at each worker turn's start (bounded): what an utterance of that turn was begun
+    #: after, whenever its transcript lands.
+    turn_starts: dict = field(default_factory=dict, repr=False)
     #: The pending spoken confirmation (#1397 P2): `{cards, say_id, armed_at, expires_at}`. Server
     #: state only; armed when its read-back has played; one use; void on anything else.
     challenge: dict | None = None
@@ -226,6 +293,10 @@ class Call:
         if not text or self.state == "ended":
             return None
         sid = sid or uuid.uuid4().hex[:12]
+        # Known BEFORE anything is awaited (#1668, Hermes 6983): a short line can be played, and
+        # acked, while the sends below are still in flight.
+        self.say_ids.append(sid)
+        del self.say_ids[:-SAY_IDS_KEPT]
         await self.client({"t": "caption", "who": "hq", "id": sid, "text": text, "kind": kind,
                            "turn_id": turn_id})  # fmt: skip
         lang = self.language if self.tts_takes_language else None
@@ -240,16 +311,23 @@ class Call:
 
     async def on_worker_event(self, ev: dict) -> None:
         t = ev.get("t")
-        self.last_activity = time.monotonic()
         if t == "ready":
             await self.set_state("listening")
             await self.client({"t": "connected"})
             await self.greet()
         elif t == "user_started":
             self.user_started_at = time.monotonic()
+            self.user_starts += 1
+            self.ending = None  # speaking again after HQ's farewell: the call goes on (#1668)
+            # NOT a sign of the operator for the silence clock (Hermes 7000): voice activity fires
+            # on room noise too, and a forgotten tab must still be asked and hung up.
             n = _turn_number(ev.get("turn"))
             if n is not None and n > self.user_turn:
                 self.user_turn = n
+            if n is not None:
+                self.turn_starts[n] = self.user_starts
+                while len(self.turn_starts) > TURN_STARTS_KEPT:
+                    self.turn_starts.pop(next(iter(self.turn_starts)))
             ch = self.challenge
             if ch is not None and ch.get("armed_at") is None:
                 await self.void_challenge()  # talked over the read-back: never armed
@@ -260,10 +338,19 @@ class Call:
             ch = self.challenge
             if ch is not None and ev.get("id") == ch["say_id"]:
                 ch["sent"] = True  # BEFORE forwarding: the browser's `played` may come back at once
+            # The no-ack fallbacks (#1668) count from HERE, once its audio went out, not from when
+            # it was handed to the worker: a long farewell, or one queued behind another say, is
+            # never cut off while it is still playing.
+            for pending in (self.ending, self.still_there):
+                if pending is not None and ev.get("id") == pending["say_id"]:
+                    pending["said_at"] = time.monotonic()
             await self.client({"t": "said", "id": ev.get("id")})
         elif t == "user_stopped":
             await self.client({"t": "user", "speaking": False})
         elif t == "interrupt":
+            # The browser flushes what it had queued: those says never play, so their late or
+            # duplicate acks are not speech (#1668).
+            self.say_ids.clear()
             # Barge-in: the client drops what it has queued, at once — and a challenge whose
             # read-back was talked over is void. Pipecat sends this at EVERY user turn start, a
             # confirmation's too: an ARMED challenge's read-back has played out, so it stays.
@@ -317,6 +404,17 @@ class Call:
         """The browser played a say out to its end (its playback queue reached the `said` marker).
         The ONLY thing that arms a challenge: an interrupted, flushed, muted or suspended playback
         never acks, so it never arms (#1397 P2)."""
+        if say_id in self.say_ids and self.state != "ended":
+            self.say_ids.remove(say_id)  # heard ONCE: a duplicate or old ack is not new speech
+            now = time.monotonic()
+            self.last_speech = now  # HQ was heard: real speech (#1668)
+            st = self.still_there
+            if st is not None and st["say_id"] == say_id and st["played_at"] is None:
+                st["played_at"] = now
+            end = self.ending
+            if end is not None and end["say_id"] == say_id and self._ending_holds(end):
+                await self.end("hq_ended")
+                return
         ch = self.challenge
         if ch is None or ch.get("armed_at") is not None or not ch.get("sent"):
             return
@@ -375,6 +473,15 @@ class Call:
     async def on_utterance(self, text: str, *, late: bool = False, turn: int | None = None) -> None:
         if self.muted:
             return
+        # Answering HQ's still-there question (#1668): HQ is told what the words answer, and an
+        # older HQ question is no longer what they reply to.
+        began = None if late or turn is None else self.turn_starts.get(turn)
+        replying_to = (
+            STILL_THERE_LINE
+            if self.replying_still_there and began is not None and began > self.still_there_since
+            else None
+        )
+        self.touch()
         if await self._answer_challenge(text, late=late, turn=turn):
             return
         # A new question. Its generation is taken BEFORE anything is awaited — the void below
@@ -387,28 +494,97 @@ class Call:
         if NEEDS_YOU_ASK.search(text.lower()) and not self._turn_running():
             self._side(self.read_needs_you(gen))
             return
+        # What these words were heard after (#1668): how often the Commander had started speaking
+        # and typed, the worker's turn they belong to (none for a LATE transcript, whose turn is
+        # gone), when that turn BEGAN, and the HQ line they answer.
+        heard = {
+            "starts": self.user_starts,
+            "typed": self.typed_turns,
+            "turn": None if late else turn,
+            "began": began,
+            "replying_to": replying_to,
+        }
         if self._turn_running():
             # HQ is still answering the previous question: keep only the newest one and ask it
             # when the running turn settles; that turn's answer is no longer spoken.
-            self.queued = text
+            self.queued = (text, heard)
             return
-        self.turn_task = asyncio.create_task(self._ask(text, gen))
+        self.turn_task = asyncio.create_task(self._ask(text, gen, heard))
 
-    async def _ask(self, text: str, gen: int) -> None:
+    def on_typed_turn(self, task: object = None) -> bool:
+        """The Commander typed a turn on this call's conversation and it was ACCEPTED (#1668): they
+        are there, and a farewell HQ planned is off — they have more to say. Once per turn `task`:
+        a retry of one still running is no new turn. Whether this was the first time."""
+        if task is not None:
+            if task in self.typed_tasks:
+                return False
+            self.typed_tasks.add(task)
+        self.typed_turns += 1
+        self.touch()
+        self.ending = None
+        self.ask = None  # a newer turn: until it settles, no older question is what a reply answers
+        return True
+
+    def on_typed_settled(self, view: object) -> None:
+        """A typed turn on this call's conversation settled (#1668): if it ended on an
+        `ask_operator` question, that is the one a spoken reply begun from now on answers."""
+        if self.state == "ended" or not isinstance(view, dict) or view.get("status") != "done":
+            return
+        ask = view.get("ask")
+        if isinstance(ask, dict) and ask.get("question_id"):
+            self.ask, self.ask_since = ask, self.user_starts
+        else:
+            self.ask = None  # it settled without a question: no older one is still waiting
+
+    def touch(self) -> None:
+        """The operator is there (#1668): their words, or a typed turn. Restarts the silence clock
+        and answers any still-there question — a typed answer too, so the next spoken words are
+        not taken as its reply (Hermes 7002)."""
+        self.last_speech = time.monotonic()
+        self.still_there = None
+        self.replying_still_there = False
+
+    def _still_heard(self, heard: dict) -> bool:
+        """Nothing came after the words `heard` describes (#1668): the Commander has not started
+        speaking again (nor did a newer worker turn begin before they landed) and typed nothing.
+        Checked when a farewell is planned AND when it would end the call, whatever the order."""
+        turn = heard.get("turn")
+        return (
+            turn is not None  # a late transcript's turn is gone: it never ends the call
+            and self.user_starts == heard["starts"]
+            and self.typed_turns == heard["typed"]
+            and self.user_turn <= turn
+        )
+
+    def _ending_holds(self, end: dict) -> bool:
+        return end["gen"] == self.generation and self._still_heard(end["heard"])
+
+    async def _ask(self, text: str, gen: int, heard: dict | None = None) -> None:
+        """`heard`: what these words were heard after (`on_utterance`)."""
+        if heard is None:
+            heard = {"starts": self.user_starts, "typed": self.typed_turns, "turn": None,
+                     "began": None, "replying_to": None}  # fmt: skip
+        replying_to = heard["replying_to"]
         await self.set_state("thinking")
         option = None
         answers = None
-        if self.ask:
-            idx = pick_option(text, self.ask.get("options") or [])
+        # HQ's open question, if these words were BEGUN after it was presented (#1668): words begun
+        # while HQ was still answering, or a late transcript, are a new request. Never for a reply
+        # to the still-there question.
+        ask = None
+        began = heard.get("began")
+        if self.ask and replying_to is None and began is not None and began > self.ask_since:
+            ask, self.ask = self.ask, None
+        if ask:
+            idx = pick_option(text, ask.get("options") or [])
             if idx is not None:
-                option, answers, text = idx, self.ask["question_id"], ""
-            elif self.ask.get("allow_text"):
-                answers = self.ask["question_id"]
-            self.ask = None
+                option, answers, text = idx, ask["question_id"], ""
+            elif ask.get("allow_text"):
+                answers = ask["question_id"]
         turn_id = str(uuid.uuid4())
         ack_task = asyncio.create_task(self._ack_later(gen))
         try:
-            view = await self._run_turn(turn_id, text, answers, option)
+            view = await self._run_turn(turn_id, text, answers, option, replying_to=replying_to)
         except ask_orchestrator.TurnError as e:
             view = {"status": "failed", "detail": e.detail}
         except ask_store.StoreRefused:
@@ -425,11 +601,38 @@ class Call:
             pass  # a newer question superseded this one: its answer is on screen, not spoken
         elif view.get("status") == "done":
             ask = view.get("ask")
-            self.ask = ask if isinstance(ask, dict) and ask.get("question_id") else None
+            if isinstance(ask, dict) and ask.get("question_id"):
+                self.ask, self.ask_since = ask, self.user_starts  # presented now
+            else:
+                # A newer answer: an older question is no longer what a reply answers.
+                self.ask = None
             words = speakable(view.get("answer") or "")
-            await self.say(words, turn_id=view.get("turn_id"))
             cards = confirmable_cards(view)[:4]  # offered by voice; any more are screen-only
-            for line in card_sentences(view, skip={c["id"] for c in cards}):
+            lines = list(card_sentences(view, skip={c["id"] for c in cards}))
+            sid = uuid.uuid4().hex[:12]
+            # HQ judged the call over (#1668): it ends once THIS farewell has played — never over
+            # a card that still needs the operator, an empty answer, an answer that ASKS
+            # something, or once the operator started speaking again after these words (their
+            # next words may still be on the way). Installed BEFORE the farewell is sent: its ack
+            # can come back while the send is still in flight.
+            if (
+                view.get("end_call") is True
+                and words.strip()
+                and not cards
+                and not lines
+                and not asks_something(words)
+                and self._still_heard(heard)
+            ):
+                self.ending = {
+                    "say_id": sid,
+                    "gen": gen,
+                    "heard": heard,
+                    "said_at": None,
+                    "speech_s": speech_seconds(words),
+                }
+            if await self.say(words, turn_id=view.get("turn_id"), sid=sid) is None:
+                self.ending = None
+            for line in lines:
                 await self.say(line, turn_id=view.get("turn_id"))
             if cards:
                 await self.offer(cards, turn_id=view.get("turn_id"), gen=gen)
@@ -441,7 +644,8 @@ class Call:
             )
         nxt, self.queued = self.queued, None
         if nxt and self.state != "ended":
-            self.turn_task = asyncio.create_task(self._ask(nxt, self.generation))
+            text, heard = nxt
+            self.turn_task = asyncio.create_task(self._ask(text, self.generation, heard))
         elif self.state == "thinking":
             await self.set_state("listening")
 
@@ -635,7 +839,9 @@ class Call:
             self._ack_i += 1
             await self.say(line, kind="ack")
 
-    async def _run_turn(self, turn_id: str, text: str, answers, option) -> dict:
+    async def _run_turn(
+        self, turn_id: str, text: str, answers, option, *, replying_to: str | None = None
+    ) -> dict:
         from . import actuator  # the same snapshot the HQ route takes
 
         task, view = await ask_orchestrator.begin(
@@ -649,6 +855,7 @@ class Call:
             contact=self.contact,
             via="call",
             call_answers=self.answers,
+            replying_to=replying_to,
             operator=self.operator,
             app=self.app,
         )
@@ -675,6 +882,59 @@ class Call:
             ask_orchestrator.unlisten(self.cid, queue)
 
     # -- ending ---------------------------------------------------------------------------------
+
+    async def check_silence(self) -> None:
+        """The call's clock, ticked by the socket's watchdog (#1668). Ends the call only when HQ
+        judged it over and the farewell had its chance to play, or when nobody answered HQ's
+        still-there question. Nothing else ends a call on time."""
+        if self.state == "ended":
+            return
+        now = time.monotonic()
+        end = self.ending
+        if end is not None and end["gen"] == self.generation:
+            # Counted from when its audio went out (`said`), never from the send: a goodbye queued
+            # behind another say, or slow to synthesise, is not cut off. (An interruption that
+            # drops `said` comes with `user_started`, which keeps the call anyway.)
+            out = end["said_at"]
+            late = out is not None and now - out >= end["speech_s"] + PLAYBACK_FALLBACK_S
+            if late and self._ending_holds(end):
+                await self.end("hq_ended")  # unconfirmed playback
+            return
+        st = self.still_there
+        if st is None:
+            if now - self.last_speech >= SILENCE_ASK_S:
+                # Installed BEFORE it is sent (Hermes 6983): a reply landing during the send
+                # clears it, and it is never put back afterwards.
+                sid = uuid.uuid4().hex[:12]
+                self.still_there = {
+                    "say_id": sid,
+                    "sent_at": None,
+                    "said_at": None,
+                    "played_at": None,
+                    "speech_s": speech_seconds(STILL_THERE_LINE),
+                }
+                # The reply answers THIS question, not one HQ left open half an hour ago.
+                self.ask = None
+                self.replying_still_there = True
+                self.still_there_since = self.user_starts
+                said = await self.say(STILL_THERE_LINE, kind="still_there", sid=sid)
+                st = self.still_there
+                if st is not None and st["say_id"] == sid:
+                    if said is None:
+                        self.still_there = None
+                    else:
+                        st["sent_at"] = time.monotonic()
+            return
+        heard = st["played_at"]
+        if heard is None:  # no ack (a backgrounded tab): count it as played after the fallback
+            # From its audio going out (`said`), else from its send: noise interrupting it drops
+            # the worker's `said` marker, and a forgotten tab must still be hung up (#1668).
+            out = st["said_at"] or st["sent_at"]
+            if out is None:
+                return  # still being sent: no window has started yet
+            heard = out + st["speech_s"] + PLAYBACK_FALLBACK_S
+        if now - heard >= NO_ANSWER_S:
+            await self.end("no_answer")
 
     async def end(self, reason: str, *, detail: str = "", endpoint: str = "") -> None:
         if self.state == "ended":

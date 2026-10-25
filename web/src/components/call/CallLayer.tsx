@@ -25,7 +25,7 @@ import { contactById } from "../hq/contacts";
 import { HqPortrait } from "../hq/HqPortrait";
 import b from "../ui/actionButton.module.css";
 import { CallCards } from "./CallCards";
-import { endedText, phaseAnnouncement } from "./callClient";
+import { endedText, normalEnd, phaseAnnouncement } from "./callClient";
 import { callActive, requestAskConversation, useCall } from "./callContext";
 import s from "./call.module.css";
 
@@ -226,14 +226,14 @@ function CallPanel() {
 
       {ended && snap.ended ? (
         <section
-          className={`nj-panel is-sm ${snap.ended.reason === "hung_up" ? "" : "is-alert"} ${s.ended}`}
+          className={`nj-panel is-sm ${normalEnd(snap.ended.reason) ? "" : "is-alert"} ${s.ended}`}
           data-testid="call-ended"
           data-reason={snap.ended.reason}
         >
           <div className="nj-face">
             <span className="nj-rail" />
-            <p className={`${s.endedTitle} ${snap.ended.reason === "hung_up" ? "" : s.down}`}>
-              {snap.ended.reason === "hung_up" ? "Call ended" : "▲ Call dropped"}
+            <p className={`${s.endedTitle} ${normalEnd(snap.ended.reason) ? "" : s.down}`}>
+              {normalEnd(snap.ended.reason) ? "Call ended" : "▲ Call dropped"}
             </p>
             <p className={s.endedText} data-testid="call-ended-text">
               {endedText(snap.ended, hosts)}

@@ -78,8 +78,16 @@ enter that server's key again or remove it.
   (turn **Interrupt HQ** off if your room is noisy).
 - **Mute**, **Type** (say something by keyboard), **Captions** and **End** are on the call panel.
   The call bar follows you across the app.
-- A call ends when you hang up, after 60 minutes, after 5 minutes of silence, when you sign out, or
-  when a speech service fails (the reason is shown).
+- **A call ends when you end it:** hang up, or say anything that means you're done ("bye",
+  "that's all", "tschüss"…). HQ judges that from what you mean, not from a word list, says
+  goodbye and ends the call. A goodbye to a session ("say bye to the docs session") doesn't end
+  the call, and neither does saying goodbye while a card still waits for your decision (HQ asks
+  instead). If HQ's answer asks you something, or you start speaking again before it hangs up,
+  the call goes on.
+- **There is no time limit.** After 30 minutes without a sign of you (your words, or typing on
+  the call) HQ asks "Are you still there, Commander?"; only no answer within about a
+  minute ends the call.
+- A call also ends when you sign out or when a speech service fails (the reason is shown).
 
 ### Acting by voice
 

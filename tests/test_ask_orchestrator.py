@@ -268,6 +268,8 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "mission_status": "read",
         "list_projects": "read",
         "ask_operator": "ends_turn",
+        # #1668: on a CALL turn only, refused elsewhere: ends that call after its farewell.
+        "end_call": "call",
         "propose_nudge": "proposal",
         "list_agents": "read",
         "propose_session": "proposal",
@@ -290,8 +292,11 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "automation_detail": "read",
         "propose_library": "proposal",
     }
-    names = [s["function"]["name"] for s in ask_orchestrator.tool_specs()]
-    assert names == list(ask_orchestrator.TOOLS)
+    # A call turn is offered every tool; a typed turn all but the call-only ones (#1668).
+    on_call = [s["function"]["name"] for s in ask_orchestrator.tool_specs("call")]
+    assert on_call == list(ask_orchestrator.TOOLS)
+    typed = [s["function"]["name"] for s in ask_orchestrator.tool_specs()]
+    assert typed == [n for n in ask_orchestrator.TOOLS if n != "end_call"]
 
 
 def test_every_request_offers_exactly_the_read_tools_and_the_guarded_prompt(app, ai):
@@ -301,7 +306,11 @@ def test_every_request_offers_exactly_the_read_tools_and_the_guarded_prompt(app,
     r = app.ask(app.new(), "hi")
     assert r.status_code == 200, r.text
     body = script.bodies[0]
-    assert [t["function"]["name"] for t in body["tools"]] == list(ask_orchestrator.TOOLS)
+    # A typed turn: every tool except the call-only ones (#1668: `end_call`).
+    assert [t["function"]["name"] for t in body["tools"]] == [
+        n for n in ask_orchestrator.TOOLS if n not in ask_orchestrator.CALL_ONLY_TOOLS
+    ]
+    assert "end_call" not in [t["function"]["name"] for t in body["tools"]]
     assert body["messages"][0] == {
         "role": "system",
         "content": prompts.effective("ask_orchestrator"),
