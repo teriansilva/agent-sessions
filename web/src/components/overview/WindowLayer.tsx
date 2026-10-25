@@ -102,6 +102,14 @@ export function WindowLayer({
   // stale render and be wrong in a way nothing re-ran to correct.
   const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
   const lookup = useCallback((id: string) => byId.get(id), [byId]);
+  // Each window's box fitted to the overlay, computed once per windows/bounds change (#1688).
+  // This layer re-renders on every pan and zoom frame (the tethers re-project), and a fresh
+  // `clampRect` object per render broke `SessionWindow`'s memo — every frame re-rendered every
+  // window's terminal. A pan changes neither input, so every window keeps the same rect object.
+  const fitted = useMemo(
+    () => new Map(windows.map((w) => [w.key, clampRect(w.rect, bounds)])),
+    [windows, bounds],
+  );
 
   const tethers = useMemo(() => {
     const out: { key: string; d: string; from: Point; to: Point; focused: boolean }[] = [];
@@ -126,7 +134,7 @@ export function WindowLayer({
         }),
         bounds,
       );
-      const to = tetherAnchor(clampRect(w.rect, bounds), from);
+      const to = tetherAnchor(fitted.get(w.key) ?? clampRect(w.rect, bounds), from);
       out.push({ key: w.key, d: tetherPath(from, to), from, to, focused: w.key === focusedKey });
     }
     return out;
@@ -136,6 +144,7 @@ export function WindowLayer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     windows,
+    fitted,
     focusedKey,
     anchorCandidates,
     lookup,
@@ -197,7 +206,7 @@ export function WindowLayer({
             fresh={w.fresh}
             // Fitted to the box as it is NOW; `w.rect` stays the operator's intent, so a map
             // that shrinks and grows returns the window to the layout it had.
-            rect={clampRect(w.rect, bounds)}
+            rect={fitted.get(w.key) ?? clampRect(w.rect, bounds)}
             bounds={bounds}
             focused={focusedKey === w.key}
             role={w.role}

@@ -677,11 +677,46 @@ export function Terminal({
     // baseY (the bottom of the scrollback). Eight-line dead zone so a single
     // wheel click while live output is streaming doesn't flicker the FAB on/off.
     const SCROLL_DEAD_ZONE = 8;
-    const computeDomAtBottom = () => {
-      if (!vpEl) return true;
-      const rowHeight = vpEl.clientHeight / Math.max(1, term.rows || 24);
+    // #1688: ONE viewport sample per animation frame. The follow logic below asks the DOM
+    // viewport where it is many times per output chunk, and every ask after xterm dirtied the
+    // page (its textarea sync, its row render) is a full-document layout — with eight map
+    // windows streaming that was ~4,000 reads a second. The viewport's metrics only change at
+    // these points, so the sample is valid until the next one:
+    //   - a new animation frame (xterm projects buffer scrolls onto the DOM in its rAF), keyed
+    //     on `document.timeline.currentTime`, which is constant within a frame;
+    //   - the viewport's own `scroll` event (a reader's gesture, xterm's rAF scrollTop sync);
+    //   - a wheel in the terminal area: xterm's wheel handler writes `scrollTop` at once, and a
+    //     browser that dispatches wheel as an ordinary task (not frame-aligned like Chromium)
+    //     would otherwise let a same-frame chunk follow a reader who just scrolled up (#187);
+    //   - our own `scrollTop` writes and `fit.fit()` (xterm's `_afterResize` re-syncs the
+    //     scroll area synchronously).
+    // Buffer-only scrolls (`scrollToBottom`, `scrollToLine`, `term.onScroll` during parse) do
+    // NOT invalidate it: they reach the DOM in xterm's next frame, so a live read would see the
+    // same values — only after paying for a layout. No frame clock → no caching at all.
+    type VpMetrics = { top: number; height: number; client: number };
+    let vpSample: VpMetrics | null = null;
+    let vpSampleAt: number | null = null;
+    const frameStamp = (): number | null => {
+      const t = document.timeline?.currentTime;
+      return typeof t === "number" ? t : null;
+    };
+    const vpMetrics = (live = false): VpMetrics | null => {
+      if (!vpEl) return null;
+      const at = frameStamp();
+      if (!live && vpSample && at !== null && at === vpSampleAt) return vpSample;
+      vpSample = { top: vpEl.scrollTop, height: vpEl.scrollHeight, client: vpEl.clientHeight };
+      vpSampleAt = at;
+      return vpSample;
+    };
+    const dropVpSample = () => {
+      vpSample = null;
+    };
+    const computeDomAtBottom = (live = false) => {
+      const m = vpMetrics(live);
+      if (!m) return true;
+      const rowHeight = m.client / Math.max(1, term.rows || 24);
       const deadPx = SCROLL_DEAD_ZONE * Math.max(1, rowHeight);
-      return vpEl.scrollHeight - vpEl.clientHeight - vpEl.scrollTop <= deadPx;
+      return m.height - m.client - m.top <= deadPx;
     };
     // #1108: the ↓ jump asked for the tail and xterm's DOM viewport has not caught up yet. While
     // set, a buffer/DOM disagreement is that lag, never a reader off the tail: no anchor is
@@ -691,7 +726,8 @@ export function Terminal({
     const settleTailRequest = () => {
       if (!tailRequested) return;
       const buf = term.buffer.active;
-      if (buf.baseY - buf.viewportY > SCROLL_DEAD_ZONE || computeDomAtBottom())
+      // A live read: the operator asked for the tail and this is waiting for the DOM to land.
+      if (buf.baseY - buf.viewportY > SCROLL_DEAD_ZONE || computeDomAtBottom(true))
         tailRequested = false;
     };
     const computeAtBottom = () => {
@@ -1059,6 +1095,7 @@ export function Terminal({
         }
         if (vpEl && vpEl.scrollTop !== selectionPinTop) {
           vpEl.scrollTop = selectionPinTop;
+          dropVpSample();
           moved = true;
         }
       } finally {
@@ -1069,7 +1106,7 @@ export function Terminal({
     const atTopNow = () => {
       const buf = term.buffer.active;
       if (buf.type !== "normal" || buf.baseY <= 0) return false;
-      return buf.viewportY === 0 || (vpEl !== null && vpEl.scrollTop === 0);
+      return buf.viewportY === 0 || vpMetrics()?.top === 0;
     };
     // Auto-fetch arms only after a REAL scroll gesture (wheel / touch / keyboard paging).
     // During attach, xterm's layout fires viewport scroll events while scrollTop is still
@@ -1101,6 +1138,7 @@ export function Terminal({
     };
     const armOnWheel = (e: WheelEvent) => {
       if (!eventInTermArea(e.target)) return;
+      dropVpSample(); // xterm moves the viewport synchronously on this wheel (#1688)
       armHistory();
       // App-consuming sessions (claude/opencode): xterm forwards this wheel to the agent, whose
       // scroll position we can't read — track net up-notches ourselves so the FAB knows the agent
@@ -1163,18 +1201,19 @@ export function Terminal({
       !initialTailLock &&
       term.buffer.active.type === "normal" &&
       !computeAtBottom();
-    const hasDomReaderOffset = () =>
-      !!vpEl && vpEl.scrollTop > 0 && !computeDomAtBottom();
+    const hasDomReaderOffset = () => {
+      const m = vpMetrics();
+      return !!m && m.top > 0 && !computeDomAtBottom();
+    };
     const currentReaderAnchor = (): ViewportAnchor => {
-      const rowHeight = vpEl
-        ? Math.max(1, vpEl.clientHeight / Math.max(1, term.rows || 24))
-        : 1;
+      const m = vpMetrics();
+      const rowHeight = m ? Math.max(1, m.client / Math.max(1, term.rows || 24)) : 1;
       return {
         viewportY:
-          vpEl && !computeDomAtBottom()
-            ? Math.floor(vpEl.scrollTop / rowHeight)
+          m && !computeDomAtBottom()
+            ? Math.floor(m.top / rowHeight)
             : term.buffer.active.viewportY,
-        scrollTop: vpEl?.scrollTop ?? 0,
+        scrollTop: m?.top ?? 0,
       };
     };
     const captureReaderAnchor = (): ViewportAnchor | null => {
@@ -1199,20 +1238,33 @@ export function Terminal({
         return null;
       return readerAnchor;
     };
-    const restoreReaderAnchor = (anchor: ViewportAnchor | null) => {
+    /** `live`: read the viewport fresh. The refit's deferred restore needs it — it runs in the
+     *  rAF phase, where a sample taken at that frame's `scroll` event predates xterm's own
+     *  scroll-area sync for the new row count, so the clamp would use a stale height (#1688). */
+    const restoreReaderAnchor = (anchor: ViewportAnchor | null, live = false) => {
       if (!anchor) return;
       readerAnchor = anchor;
       const buf = term.buffer.active;
       const line = Math.min(Math.max(anchor.viewportY, 0), buf.baseY);
       term.scrollToLine(line);
-      if (vpEl) {
-        const maxTop = Math.max(0, vpEl.scrollHeight - vpEl.clientHeight);
-        vpEl.scrollTop = Math.min(anchor.scrollTop, maxTop);
+      const m = vpMetrics(live);
+      if (vpEl && m) {
+        const maxTop = Math.max(0, m.height - m.client);
+        const nextTop = Math.min(anchor.scrollTop, maxTop);
+        if (nextTop !== m.top) {
+          vpEl.scrollTop = nextTop;
+          dropVpSample();
+        }
       }
       updateAtBottom();
     };
+    // The viewport moved under us (a gesture, or xterm's own rAF scrollTop sync): resample.
+    const onViewportScroll = () => {
+      dropVpSample();
+      onScrolled();
+    };
     term.onScroll?.(onScrolled);
-    vpEl?.addEventListener("scroll", onScrolled, { passive: true });
+    vpEl?.addEventListener("scroll", onViewportScroll, { passive: true });
     // Document-level (capture): the coarse-pointer touch layer overlays the terminal
     // OUTSIDE host's subtree, so host-scoped listeners never see mobile gestures.
     document.addEventListener("wheel", armOnWheel, {
@@ -1367,10 +1419,11 @@ export function Terminal({
     const refit = (force = false) => {
       const readerAnchor = captureReaderAnchor();
       fit.fit();
+      dropVpSample(); // a resize re-syncs xterm's scroll area synchronously (#1688)
       if (force) lastCols = lastRows = 0; // bypass the dedupe so the new pty is sized
       sendResize();
       if (readerAnchor)
-        requestAnimationFrame(() => restoreReaderAnchor(readerAnchor));
+        requestAnimationFrame(() => restoreReaderAnchor(readerAnchor, true));
     };
     onConnected = () => refit(true);
     // Coalesce resize bursts (#227): mobile's address-bar show/hide fires a stream of
@@ -1487,6 +1540,7 @@ export function Terminal({
       if (sock !== sockRef.current) return; // superseded by a remount
       try {
         fit.fit();
+        dropVpSample();
       } catch {
         /* host not measurable yet → try again next frame */
       }
@@ -1697,7 +1751,7 @@ export function Terminal({
       if (resizeTimer != null) clearTimeout(resizeTimer);
       bootGate.dispose();
       vv?.removeEventListener("resize", onVV);
-      vpEl?.removeEventListener("scroll", onScrolled);
+      vpEl?.removeEventListener("scroll", onViewportScroll);
       clearJiggle();
       jiggleRef.current = () => {}; // stale REPAINT click must not resize a disposed socket (#485)
       refitSoonRef.current = () => {}; // …and neither must a late size change (#859)
