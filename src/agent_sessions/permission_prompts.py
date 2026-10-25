@@ -521,12 +521,85 @@ def summary(p: Permission) -> str:
     return f"{line} ({opts})"
 
 
+#: The two answers a CALL may name (#1681), per kind: the single-use allow and the refusal, each
+#: matched on its recorded label EXACTLY — never on a position. A kind or stage missing here (the
+#: opencode "Always allow" confirmation grants patterns) has neither, so it is a screen decision.
+_ANSWERS: dict[tuple[str, str | None], tuple[str, str]] = {
+    ("claude-permission", None): ("Yes", "No"),
+    ("opencode-permission", "Permission required"): ("Allow once", "Reject"),
+}
+
+
+def projection(p: object) -> dict | None:
+    """A recorded dialog as a Needs-you row may carry it (#1681): its display fields, its options,
+    which option is the single-use ``once`` and which the ``deny`` (``None`` when not identified),
+    and the ``command`` / ``note`` a call may read as the request (:func:`_request`). Fail-closed:
+    anything not shaped exactly as :func:`parse` returns, or over the display caps, is ``None`` —
+    never a partly-read dialog."""
+    if not isinstance(p, dict):
+        return None
+    out: dict = {}
+    for key, cap in (
+        ("parser", TITLE_MAX),
+        ("heading", TITLE_MAX),
+        ("title", TITLE_MAX),
+        ("detail", DETAIL_MAX),
+        ("question", QUESTION_MAX),
+    ):
+        v = p.get(key)
+        if not isinstance(v, str) or len(v) > cap:
+            return None
+        out[key] = v
+    options = p.get("options")
+    if not isinstance(options, list) or not (2 <= len(options) <= OPTIONS_MAX):
+        return None
+    shown: list[dict] = []
+    for i, o in enumerate(options, start=1):
+        if not isinstance(o, dict) or o.get("n") != i or isinstance(o.get("n"), bool):
+            return None
+        label, persistent = o.get("label"), o.get("persistent")
+        if not isinstance(label, str) or not label or len(label) > LABEL_MAX:
+            return None
+        if not isinstance(persistent, bool):
+            return None
+        shown.append({"n": i, "label": label, "persistent": persistent})
+    out["options"] = shown
+    names = _ANSWERS.get((out["parser"], None)) or _ANSWERS.get((out["parser"], out["heading"]))
+
+    def named(label: str | None) -> int | None:
+        hits = [o for o in shown if label is not None and o["label"] == label]
+        return hits[0]["n"] if len(hits) == 1 and not hits[0]["persistent"] else None
+
+    out["once"] = named(names[0] if names else None)
+    out["deny"] = named(names[1] if names else None)
+    out["command"], out["note"] = _request(out["parser"], out["heading"], out["detail"])
+    return out
+
+
+def _request(parser: str, heading: str, detail: str) -> tuple[str | None, str | None]:
+    """What a call may read as the REQUEST (#1681): the ``command``, and a ``note`` the dialog
+    draws under it — or ``(None, None)`` when this kind's body is not known to be a command.
+
+    claude draws a Bash command and the model's own description of it at the same indent, and a
+    long command wraps the same way, so neither line can be dropped: line 1 is the command and a
+    second line is the note, read as the dialog's words. A third line, or any other heading (a
+    Write's path and file preview, an Edit's diff), is not a command a call can read. opencode's
+    first stage draws the request on one line."""
+    lines = detail.split("\n") if detail else []
+    if parser == "claude-permission" and heading == "Bash command" and 1 <= len(lines) <= 2:
+        return lines[0], (lines[1] if len(lines) == 2 else None)
+    if parser == "opencode-permission" and heading == "Permission required" and len(lines) == 1:
+        return lines[0], None
+    return None, None
+
+
 __all__ = [
     "Permission",
     "PermissionOption",
     "digest",
     "keys",
     "parse",
+    "projection",
     "recognises",
     "same_prompt",
     "selected_of",

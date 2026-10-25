@@ -11,7 +11,8 @@ scripted HQ turn and a recorded in-process route. Pinned:
   "everything" is refused; "cancel" leaves the card untouched;
 * settlement is the card's existing route as the operator; what is said comes from its status;
 * an HQ operation that needs on-screen input is never offered; Needs-you offers only text answers
-  to questions — never permission prompts or menus.
+  to questions — never permission prompts or menus (what the read-out SAYS about each item:
+  `test_voice_needs_you.py`).
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ class Rig:
         self.asked: list[str] = []
         self.route_status = route_status
         self.needs_rows: list[dict] = []
+        self.needs_body: dict | None = None  # the whole Needs-you answer, when a test sets one
         self.view = view or {}
         self.turn = 0  # the worker's user-turn counter
 
@@ -41,7 +43,7 @@ class Rig:
         async def fake_call(app, operator, method, path, body, **kw):
             self.routes.append((method, path, body))
             if method == "GET" and path == "/api/pulse/needs-you":
-                return asgi_call.Response(200, {"rows": self.needs_rows})
+                return asgi_call.Response(200, self.needs_body or {"rows": self.needs_rows})
             # What the real routes answer on success: a delivery record, or the card's state.
             if path.startswith("/api/pulse/actions/"):
                 return asgi_call.Response(self.route_status, {"state": "delivered"})
@@ -335,7 +337,11 @@ def test_needs_you_offers_only_text_answers_to_questions(monkeypatch):
 
     async def go():
         await r.ask("What needs me right now?")
-        assert r.said_text()[-2] == "3 things need you. 2 of them are for your screen only."
+        assert r.said_text()[-2] == (
+            "3 things need you."
+            " deploy wants you to confirm something I can't read out — it's on your screen."
+            " docs is showing a menu I can't read out — it's on your screen."
+        )
         assert "api-rebase asks a question" in r.said_text()[-1]
         await r.readback_played()
         await r.ask("confirm")

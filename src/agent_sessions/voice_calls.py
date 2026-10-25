@@ -823,12 +823,13 @@ class Call:
         if not rows:
             await self.say("Nothing needs you right now, Commander.", kind="outcome")
             return
-        cards = needs_you_cards(rows)
-        rest = len(rows) - len(cards)
-        lead = f"{len(rows)} {'thing needs' if len(rows) == 1 else 'things need'} you."
-        if rest:
-            lead += f" {rest} of them {'is' if rest == 1 else 'are'} for your screen only."
-        await self.say(lead, kind="outcome")
+        total = resp.body.get("total")
+        if not isinstance(total, int) or isinstance(total, bool) or total < len(rows):
+            total = len(rows)
+        told, cards = needs_you_readout(rows, total)
+        # ONE utterance, so nothing newer can land between its sentences; the cards a voice may
+        # settle are then read back by `offer` itself — the read-back that arms the challenge.
+        await self.say(told, kind="outcome")
         if cards and gen == self.generation:
             await self.offer(cards, gen=gen)
 
@@ -1018,23 +1019,149 @@ def confirmable_cards(view: dict) -> list[dict]:
     return out
 
 
+#: Needs-you items a call describes at most; the rest are counted ("and 7 more").
+NEEDS_YOU_TOLD = 5
+#: Options a menu may have to be read out; a longer menu is a screen decision.
+MENU_OPTIONS_TOLD = 5
+_NUMBER_WORDS = ("one", "two", "three", "four", "five")
+_ICON = re.compile(r"^[^\w\s]{1,2}\s+(?=\w)")  # a tool line's glyph ("# Shell command", "✱ Grep")
+_PROMPT = re.compile(r"^\$\s+")  # a shell prompt mark before a command ("$ mkdir -p …")
+#: Said after an item the call describes but a voice cannot settle.
+_ON_SCREEN = "It's on your screen."
+
+
+def _who(row: dict) -> str:
+    """The session, and where it is: "{title} in {project}". A title or project name is the
+    agent's or the operator's text, so it is said only when `verbatim` reads it as written (and it
+    is short); otherwise "A session", and no project."""
+    title = verbatim(str(row.get("title") or ""))
+    if title is None or len(title) > 80:
+        return "A session"
+    project = row.get("project") if isinstance(row.get("project"), dict) else {}
+    name = verbatim(str(project.get("name") or ""))
+    return f"{title} in {name}" if name and len(name) <= 60 and name != title else title
+
+
+def _permission_words(perm: object) -> str | None:
+    """What the recorded permission dialog asks, as read out — ONLY when the dialog can be read as
+    a whole (#1681): the projection named its request (``command``, and the ``note`` drawn under
+    it), its tool line, request, question and every option label read back verbatim, and its
+    refusal identified. Otherwise ``None``: the dialog is a screen decision and only that is
+    said."""
+    if not isinstance(perm, dict):
+        return None
+    deny = perm.get("deny")
+    if not isinstance(deny, int) or isinstance(deny, bool):
+        return None
+    tool = verbatim(_ICON.sub("", str(perm.get("title") or "")))
+    raw = perm.get("command")
+    command = verbatim(_PROMPT.sub("", raw.strip())) if isinstance(raw, str) else None
+    if tool is None or command is None:
+        return None
+    note = perm.get("note")
+    said_note = verbatim(note) if isinstance(note, str) else None
+    if note is not None and said_note is None:
+        return None  # a line of the dialog that can't be read: the whole dialog is screen-only
+    if verbatim(f"{command} {said_note or ''}") is None:  # within one read-back's bound
+        return None
+    if verbatim(str(perm.get("question") or "")) is None:
+        return None
+    options = perm.get("options")
+    if not isinstance(options, list) or not options:
+        return None
+    if any(not isinstance(o, dict) or verbatim(str(o.get("label") or "")) is None for o in options):
+        return None
+    line = f"asks permission for {tool}: {_sentence(command)}"
+    return f"{line} The dialog also says: {_sentence(said_note)}" if said_note else line
+
+
+def _menu_words(menu: object) -> tuple[str, list[str]] | None:
+    """A menu's question and option labels, ONLY when every one reads back verbatim."""
+    if not isinstance(menu, dict):
+        return None
+    question = verbatim(str(menu.get("question") or ""))
+    options = menu.get("options")
+    if question is None or not isinstance(options, list):
+        return None
+    if not (1 <= len(options) <= MENU_OPTIONS_TOLD):
+        return None
+    labels = [verbatim(str(o.get("label") or "")) if isinstance(o, dict) else None for o in options]
+    if any(lbl is None for lbl in labels):
+        return None
+    return question, labels  # type: ignore[return-value]
+
+
+def _question_card(row: dict) -> dict | None:
+    """A QUESTION row whose pending action answers it with text a voice may send."""
+    a = row.get("action") if isinstance(row.get("action"), dict) else None
+    if not a or row.get("kind") != "question" or not a.get("can_approve"):
+        return None
+    if a.get("verb") != "answer" or not isinstance(a.get("id"), str):
+        return None
+    answer = verbatim(str(a.get("answer") or ""))
+    if answer is None:
+        return None  # the answer that would be sent can't be read back in full: screen only
+    line = _sentence(f"{_who(row)} asks a question. The suggested answer is: {answer}")
+    return {"id": a["id"], "kind": "needs_you", "verb": "send it", "line": line}
+
+
+def needs_you_sentence(row: dict) -> str:
+    """What one Needs-you item is waiting on, as FIXED sentences (#1681): the item's own words
+    inside them only where `verbatim` reads them in full, else a fixed screen-only line. A
+    rationale or summary is never read as the request."""
+    who = _who(row)
+    kind = row.get("kind")
+    action = row.get("action") if isinstance(row.get("action"), dict) else {}
+    if kind in ("choice", "approval") and "permission" in action:
+        words = _permission_words(action.get("permission"))
+        if words is None:
+            return f"{who} wants a permission I can't read out — it's on your screen."
+        return f"{who} {words} {_ON_SCREEN}"
+    if kind == "choice":
+        menu = _menu_words(row.get("menu"))
+        if menu is None:
+            return f"{who} is showing a menu I can't read out — it's on your screen."
+        question, labels = menu
+        listed = "; ".join(f"{_NUMBER_WORDS[i]}, {lbl}" for i, lbl in enumerate(labels))
+        return _sentence(f"{who} asks: {_sentence(question)} The options are: {listed}") + (
+            f" {_ON_SCREEN}"
+        )
+    if kind == "approval":
+        return f"{who} wants you to confirm something I can't read out — it's on your screen."
+    if kind == "question":
+        if action.get("verb") == "answer" and verbatim(str(action.get("answer") or "")):
+            answer = verbatim(str(action.get("answer") or ""))
+            line = _sentence(f"{who} asks a question. The suggested answer is: {answer}")
+            return f"{line} {_ON_SCREEN}"
+        return f"{who} asks a question — it's on your screen."
+    return f"{who}'s screen needs a look — I couldn't read it."
+
+
+def needs_you_readout(rows: list[dict], total: int) -> tuple[str, list[dict]]:
+    """ "What needs me?" answered with content (#1681): how many, then up to NEEDS_YOU_TOLD items
+    in Needs-you order, then how many more (from the list's own ``total``). Items a voice may
+    settle are returned as cards instead, for `offer`'s read-back to describe — said once, in the
+    read-back that arms their challenge."""
+    told = rows[:NEEDS_YOU_TOLD]
+    cards: list[dict] = []
+    parts = [f"{total} {'thing needs' if total == 1 else 'things need'} you."]
+    for r in told:
+        card = _question_card(r) if len(cards) < 4 else None
+        if card is not None:
+            cards.append(card)
+        else:
+            parts.append(needs_you_sentence(r))
+    more = total - len(told)
+    if more > 0:
+        parts.append(f"And {more} more on your screen.")
+    return " ".join(parts), cards
+
+
 def needs_you_cards(rows: list[dict]) -> list[dict]:
-    """Needs-you rows a voice may approve: a QUESTION whose pending action answers it with text.
-    Permission prompts (`approval`), menus (`choice`) and unread screens stay on the screen."""
-    out: list[dict] = []
-    for r in rows:
-        a = r.get("action") if isinstance(r.get("action"), dict) else None
-        if not a or r.get("kind") != "question" or not a.get("can_approve"):
-            continue
-        if a.get("verb") != "answer" or not isinstance(a.get("id"), str):
-            continue
-        title = str(r.get("title") or "a session").strip()[:80]
-        answer = verbatim(str(a.get("answer") or ""))
-        if answer is None:
-            continue  # the answer that would be sent can't be read back in full: screen only
-        line = _sentence(f"{title} asks a question. The suggested answer is: {answer}")
-        out.append({"id": a["id"], "kind": "needs_you", "verb": "send it", "line": line})
-    return out[:4]
+    """The Needs-you rows a voice may settle, as cards: a QUESTION whose pending action answers it
+    with text. Permission prompts, menus and unread screens are described by
+    :func:`needs_you_readout`, and settled on the screen."""
+    return needs_you_readout(rows, len(rows))[1]
 
 
 def _result_state(card: dict, body: dict):

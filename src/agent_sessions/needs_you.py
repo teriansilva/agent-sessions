@@ -32,6 +32,8 @@ import math
 import time
 from collections.abc import Callable, Iterable
 
+from . import permission_prompts
+
 # Rows returned at most. The list is a worklist of things waiting on one person; past this the
 # operator has a different problem, and the screen read below is per row.
 ROWS_MAX = 50
@@ -129,6 +131,11 @@ def _public_action(action: dict) -> dict:
     observed = action.get("observed_prompt")
     if isinstance(observed, dict) and isinstance(observed.get("menu"), dict):
         out["menu"] = observed["menu"]
+    # The tool-permission dialog it RECORDED (#1213) — the one `/choose` binds a tap to — as a
+    # bounded projection for a call to read out (#1681). Present-but-``None`` means "a permission
+    # dialog that cannot be shown": its words are never guessed at from a rationale.
+    if isinstance(observed, dict) and observed.get("permission") is not None:
+        out["permission"] = permission_prompts.projection(observed["permission"])
     return out
 
 
