@@ -18,6 +18,7 @@
  *    microphone again: a new call is a new tap and a new `CallAudio`. */
 // A real file, never inlined: the CSP's `script-src 'self'` refuses a `data:` worklet module.
 import captureWorkletUrl from "./captureWorklet.js?url&no-inline";
+import { NoiseGate } from "./noiseGate";
 import { Framer, OUT_RATE, pcm16ToFloat, rms } from "./pcm";
 import { PlaybackClock } from "./playbackClock";
 import { PlaybackMarkers } from "./playbackMarkers";
@@ -47,6 +48,8 @@ export class BrowserCallAudio implements CallAudio {
   private node: AudioWorkletNode | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
   private framer: Framer | null = null;
+  /** Room noise never reaches the worker's voice detector (#1667): silence goes in its place. */
+  private readonly gate = new NoiseGate();
   private send: ((frame: ArrayBuffer) => void) | null = null;
   private muted = false;
   private stopped = false;
@@ -121,17 +124,19 @@ export class BrowserCallAudio implements CallAudio {
   private onBlock(block: Float32Array): void {
     if (!this.send || this.muted || this.stopped || !this.framer) return;
     this.inLevel = rms(block);
-    for (const frame of this.framer.push(block)) this.send(frame);
+    for (const frame of this.framer.push(block)) for (const out of this.gate.push(frame)) this.send(out);
   }
 
   start(send: (frame: ArrayBuffer) => void): void {
     if (this.stopped) return;
     this.send = send;
+    this.gate.reset();
     for (const t of this.stream?.getAudioTracks() ?? []) t.enabled = !this.muted;
   }
 
   setMuted(on: boolean): void {
     this.muted = on;
+    this.gate.reset(); // a fresh start after a mute: queue and hold
     if (on) this.inLevel = 0;
     if (this.send) for (const t of this.stream?.getAudioTracks() ?? []) t.enabled = !on;
   }

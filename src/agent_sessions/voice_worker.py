@@ -78,7 +78,7 @@ from pipecat.workers.runner import WorkerRunner  # noqa: E402
 
 from . import speech_endpoints as se
 from .voice_synth import Synths
-from .voice_text import split_speech
+from .voice_text import call_language, split_speech
 from .voice_turns import Turns
 
 #: How long after the end of a turn we wait for its last transcript before giving up on it.
@@ -324,8 +324,7 @@ class Bridge(FrameProcessor):
     def _detect(self, heard: str | None, text: str) -> str | None:
         """The call's language: only a turn heard in one language, of 3+ words, may change it.
         The turn's own language (`heard_language`, any length) gates spoken confirmation."""
-        if heard and len(text.split()) >= 3:
-            self._bus.detected = heard
+        self._bus.detected = call_language(self._bus.detected, heard, text)
         return self._bus.detected
 
     async def _when_transcribed(

@@ -279,6 +279,14 @@ test("a saved setup change shows on the Call buttons at once — no reload, no t
   await expect(page.getByTestId("hq-primary-call")).toHaveAttribute("data-call", "setup");
 });
 
+test("the fake microphone's signal reaches the server as sound, through the noise gate (#1667)", async ({ page }) => {
+  const srv = await mockShell(page);
+  await connect(page, srv);
+  srv.connected[0] = true;
+  say(srv, { t: "connected" });
+  await expect.poll(() => srv.voiced[0], { timeout: 15_000 }).toBeGreaterThan(5);
+});
+
 test("HQ's speech plays in a 24 kHz audio context, so its chunks are never resampled one by one", async ({ page }) => {
   // At a 44.1 kHz device, 24 kHz chunks resampled one by one clicked at every 40 ms boundary
   // (heard as stutter). The call opens a playback context at the speech's own rate.

@@ -106,6 +106,7 @@ from .voice_text import (  # noqa: E402,F401
     CHUNK_WORDS,
     card_sentences,
     classify_confirmation,
+    is_no_speech_phrase,
     pick_option,
     readback,
     readback_screen_only,
@@ -279,6 +280,10 @@ class Call:
             await self.client({"t": "speaking", "id": ev.get("id"), "on": False})
             if self.state == "speaking":
                 await self.set_state("thinking" if self._turn_running() else "listening")
+        elif t == "utterance" and is_no_speech_phrase(str(ev.get("text") or "")):
+            # Room noise Whisper turned into a stock phrase (#1667): dropped BEFORE anything else
+            # — no HQ turn, no language change, an armed confirmation keeps waiting.
+            log.debug("voice call %s: dropped a no-speech phrase", self.id)
         elif t == "utterance":
             heard = ev.get("heard_language")
             self.heard_language = heard if isinstance(heard, str) and LANG.match(heard) else None

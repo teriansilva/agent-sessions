@@ -98,6 +98,8 @@ export interface Server {
   /** Binary frames the page sent, per socket, and how many arrived before `connected`. */
   binaries: number[];
   binariesBeforeConnected: number[];
+  /** Per socket: binary frames that carry sound (not the noise gate's silence). */
+  voiced: number[];
   connected: boolean[];
 }
 
@@ -113,6 +115,7 @@ export async function mockShell(page: Page, caps: Record<string, unknown> = AVAI
     texts: [],
     binaries: [],
     binariesBeforeConnected: [],
+    voiced: [],
     connected: [],
   };
   await page.route("**/api/**", (r) => r.fulfill({ json: {} }));
@@ -222,6 +225,7 @@ export async function mockShell(page: Page, caps: Record<string, unknown> = AVAI
     srv.texts.push([]);
     srv.binaries.push(0);
     srv.binariesBeforeConnected.push(0);
+    srv.voiced.push(0);
     srv.connected.push(false);
     ws.onMessage((m) => {
       if (typeof m === "string") {
@@ -230,6 +234,8 @@ export async function mockShell(page: Page, caps: Record<string, unknown> = AVAI
       } else {
         srv.binaries[i] += 1;
         if (!srv.connected[i]) srv.binariesBeforeConnected[i] += 1;
+        // A frame with any non-zero sample carries sound; the noise gate sends zeros (#1667).
+        if ((m as Buffer).some((b) => b !== 0)) srv.voiced[i] += 1;
       }
     });
   });

@@ -12,6 +12,54 @@ import re
 #: Bound on what one spoken answer may be (characters of stored text).
 SPOKEN_MAX = 1_500
 
+# --- what the microphone did NOT say (#1667) ----------------------------------------------------
+
+#: Whisper's stock phrases on near-silence and non-speech sound: what room noise turned into on the
+#: operator's first calls ("Thank you.", "好", "Tschüss.", "Obrigado."), plus the well-known
+#: subtitle credits it learnt from. Only a WHOLE utterance is matched. Never listed: confirmation
+#: or option words ("yes", "confirm", "stop", ordinals), and goodbyes ("bye", "tschüss", "ciao"):
+#: whether those mean the call is over is HQ's judgement, so they must reach it.
+NO_SPEECH_PHRASES = frozenset(
+    {
+        "thank you", "thank you very much", "thanks", "thanks for watching",
+        "thank you for watching", "you", "so", "hmm", "mm", "uh", "um",
+        "danke", "vielen dank", "danke schön",
+        "obrigado", "obrigada", "gracias", "merci", "merci beaucoup", "grazie",
+        "谢谢", "好", "嗯", "ご視聴ありがとうございました", "ありがとうございました",
+    }
+)  # fmt: skip
+#: Whisper's subtitle-credit hallucinations, WHOLE utterances only, as they read after `_PUNCT`
+#: (so "Amara.org" is "amara org"): a request that merely starts like one ("Subtitles by Friday,
+#: please …") is never dropped (#1669 review).
+_NO_SPEECH_CREDITS = re.compile(
+    r"^(?:untertitel (?:im auftrag des zdf(?: für funk)?(?: \d{4})?|der amara org community"
+    r"|von stephanie geiges)"
+    r"|subtitles by the amara org community"
+    r"|sous titres réalisés (?:par|para) la communauté d amara org"
+    r"|sous titrage (?:st 501|société radio canada))$"
+)
+_PUNCT = re.compile(r"[\s.,!?;:…。、！？，「」\"'()\[\]-]+")
+
+
+def is_no_speech_phrase(said: str) -> bool:
+    """Whether an utterance is NOTHING but a stock phrase Whisper invents from noise (#1667)."""
+    if not (said or "").strip():
+        return False  # empty: not a phrase, and the caller already skips it
+    text = " ".join(_PUNCT.sub(" ", said).split()).casefold()
+    if not text:
+        return True  # punctuation and nothing else ("."): no words were said
+    return text in NO_SPEECH_PHRASES or bool(_NO_SPEECH_CREDITS.match(text))
+
+
+def call_language(current: str | None, heard: str | None, text: str) -> str | None:
+    """The call's language after an utterance (#1397 P3): only a turn heard in one language, of
+    3+ words, may change it — and never a stock no-speech phrase (#1667: "Thanks for watching"
+    is three words of room noise)."""
+    if heard and len(text.split()) >= 3 and not is_no_speech_phrase(text):
+        return heard
+    return current
+
+
 # --- spoken text -------------------------------------------------------------------------------
 
 _MD = [

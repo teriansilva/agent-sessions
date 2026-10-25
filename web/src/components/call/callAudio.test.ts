@@ -55,7 +55,11 @@ class FakeContext {
 }
 
 class FakeWorkletNode {
-  port = { onmessage: null };
+  static last: FakeWorkletNode;
+  port: { onmessage: ((e: { data: Float32Array }) => void) | null } = { onmessage: null };
+  constructor() {
+    FakeWorkletNode.last = this;
+  }
   connect(x: unknown) {
     return x;
   }
@@ -185,6 +189,41 @@ test("a hang-up while the worklet module loads builds no audio graph after it (#
   loaded();
   await expect(preparing).rejects.toThrow("ended");
   expect(sources).toEqual([]); // nothing was built (or connected) after the stop
+});
+
+test("a near-silent room goes out as silence and speech as audio, at the device rate (#1667)", () => {
+  const sent: ArrayBuffer[] = [];
+  audio.start((f) => sent.push(f));
+  const port = FakeWorkletNode.last.port;
+  let seed = 42;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 0x100000000) * 2 - 1;
+  const block = (db: number, tone: boolean) => {
+    const f = new Float32Array(1024);
+    const a = Math.pow(10, db / 20);
+    for (let i = 0; i < f.length; i++)
+      f[i] = tone ? a * Math.SQRT2 * Math.sin((2 * Math.PI * 220 * i) / 48_000) : rnd() * a * Math.sqrt(3);
+    return f;
+  };
+  const silent = (b: ArrayBuffer) => new Int16Array(b).every((x) => x === 0);
+  for (let i = 0; i < 94; i++) port.onmessage!({ data: block(-65, false) }); // ~2 s of a quiet room at 48 kHz
+  expect(sent.length).toBeGreaterThan(80);
+  expect(sent.every(silent)).toBe(true); // the worker's VAD hears nothing
+  const before = sent.length;
+  for (let i = 0; i < 5; i++) port.onmessage!({ data: block(-20, true) }); // a word
+  expect(sent.slice(before).some((b) => !silent(b))).toBe(true);
+});
+
+test("muting resets the gate: after unmuting it starts afresh (#1667)", () => {
+  const sent: ArrayBuffer[] = [];
+  audio.start((f) => sent.push(f));
+  const port = FakeWorkletNode.last.port;
+  const tone = new Float32Array(1024).map((_, i) => 0.1 * Math.sin((2 * Math.PI * 220 * i) / 48_000));
+  for (let i = 0; i < 10; i++) port.onmessage!({ data: tone }); // speaking: open
+  audio.setMuted(true);
+  audio.setMuted(false);
+  const n = sent.length;
+  port.onmessage!({ data: new Float32Array(1024) }); // the first block after unmuting
+  expect(sent.length).toBe(n); // held as pre-roll by a fresh gate, not passed by the old open one
 });
 
 test("HQ's speech plays in its own context at the speech's rate — never resampled chunk by chunk", async () => {
