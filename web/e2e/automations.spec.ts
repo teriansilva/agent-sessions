@@ -337,7 +337,7 @@ test("Library names Automations beside Templates, Variables, Memory, Checklists,
   if ((await page.locator(".app.navOpen").count()) > 0) await page.keyboard.press("Escape");
   await page.locator('.hud-topbar [data-testid="section-menu-library"]').click();
   const menu = page.locator('[data-testid="section-menu-library-panel"]');
-  await expect(menu.locator("a[data-subsection]")).toHaveText(["Prompt Templates", "Variables", "Memory", "Automations", "Checklists", "Skills", "Playbooks"]);
+  await expect(menu.locator("a[data-subsection]")).toHaveText(["Prompt Templates", "Variables", "Memory", "Automations", "Skills", "Playbooks"]);
   await expect(menu.locator('a[data-subsection="automations"]')).toHaveAttribute("aria-current", "page");
 });
 
@@ -857,8 +857,11 @@ test("an out-of-date approval: Run now says so, offers Review and approve, and r
   expect(fake.requests.filter((r) => r.method === "POST" && r.path === "/a1/run")).toHaveLength(2);
 });
 
-test("a deleted checklist shows as missing, and Save waits for a live choice", async ({ page }) => {
+test("an automation approved with a checklist edits with no checklist field, asks consent saying why, and saves none (#1653)", async ({ page }) => {
+  const RETIRED =
+    "checklists were removed: its missions now get AI-written, supervisor-judged objectives instead of the approved checklist";
   const fake = await mockAutomations(page, {
+    widenOnPatch: [RETIRED],
     automations: [
       automation({
         action: {
@@ -872,17 +875,19 @@ test("a deleted checklist shows as missing, and Save waits for a live choice", a
     ],
   });
   await page.goto(automationEditPath("a1"));
-  const select = page.getByTestId("mission-checklist");
-  await expect(select.locator("option:checked")).toHaveText("Missing checklist (deleted)");
-  await expect(page.getByTestId("editor-problems")).toContainText("The checklist it used was deleted");
+  await expect(page.getByTestId("automation-name")).toBeVisible();
+  await expect(page.getByTestId("mission-checklist")).toHaveCount(0);
   await page.getByTestId("automation-name").fill("Renamed so the form is dirty");
-  await expect(page.getByTestId("editor-save")).toBeDisabled();
-  await select.selectOption("");
   await expect(page.getByTestId("editor-save")).toBeEnabled();
   await page.getByTestId("editor-save").click();
+  // The server names what changes; the operator confirms it before anything is saved.
+  const dialog = page.getByTestId("consent-dialog");
+  await expect(dialog.getByTestId("consent-widened")).toContainText(RETIRED);
+  await dialog.getByTestId("consent-agree").check();
+  await dialog.getByTestId("consent-confirm").click();
   await expect(page.getByTestId("editor-notice")).toContainText("Saved");
   const body = [...fake.requests].reverse().find((r) => r.method === "PATCH")!.body as {
-    action: { checklist_id: string | null };
+    action: Record<string, unknown>;
   };
-  expect(body.action.checklist_id).toBeNull();
+  expect(body.action).not.toHaveProperty("checklist_id");
 });

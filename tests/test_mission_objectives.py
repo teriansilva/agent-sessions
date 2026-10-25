@@ -1,22 +1,25 @@
-"""The planner may choose WHICH objective, never WHAT IT DOES (#883).
+"""The model may write WHAT done looks like, never HOW it is checked (#883, #1088, #1653).
 
 `http_status` and `http_revision` make a request, so if model output could reach a URL then
 untrusted text — the instruction, an issue body, a transcript the planner read — could choose an
 address the server fetches on a schedule. Server-side request forgery with a cadence attached.
 
-These assert the property that makes that impossible: there is no code path from model text to a
-probe target, so the acceptance test can be made **on the HTTP client** rather than on a stored
-row. A test that only checked the row would pass on a design that fetched first and stored badly.
+Checklists are gone (#1653), so every mission takes the path a mission that declined one used to:
+with an AI endpoint the model's outcomes become `supervisor_judged` gates (source `instruction`),
+without one they are notes. Neither can carry a probe or a target. These assert that on the HTTP
+client rather than on a stored row — a test that only checked the row would pass on a design that
+fetched first and stored badly.
 """
 
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 
 import pytest
 
 from agent_sessions import mission_objectives as mo
-from agent_sessions import missions, prefs
+from agent_sessions import missions
 
 
 def _pending_ids(**kw) -> list[str]:
@@ -29,37 +32,30 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_MISSIONS_DB", str(tmp_path / "m.db"))
     monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "p.json"))
     missions.reset_schema_cache_for_test()
-    prefs.set_mission_playbooks(
-        {
-            "default_id": "ship",
-            "playbooks": [
-                {
-                    "id": "ship",
-                    "label": "Ship",
-                    "objectives": [
-                        {
-                            "key": "pr_open",
-                            "title": "A PR is open",
-                            "probe": "forge_pr",
-                            "gate": True,
-                        },
-                        {
-                            "key": "live",
-                            "title": "It is live",
-                            "probe": "http_status",
-                            "probe_args": {"url": "https://app.example.com/healthz"},
-                            "gate": True,
-                        },
-                    ],
-                }
-            ],
-        }
-    )
-    return tmp_path / "m.db"
+    yield tmp_path / "m.db"
+    missions.reset_schema_cache_for_test()
 
 
 def _mission():
     return missions.create_mission("ship the thing")["id"]
+
+
+#: An ordinary reply in the one contract there is: outcomes, as notes.
+_NOTES = {"notes": [{"title": "A PR is open"}, {"title": "It is live"}]}
+
+
+def _unconfigured(monkeypatch):
+    """No AI endpoint — explicit, so the test does not depend on what the tmp prefs file holds."""
+    from agent_sessions import review
+
+    def _raise():
+        raise review.NotConfiguredError("no endpoint")
+
+    monkeypatch.setattr(mo.review, "_require_config", _raise)
+
+
+def _texts(mid) -> list[str]:
+    return [e.get("text") or "" for e in missions.get_mission(mid)["events"]]
 
 
 @pytest.fixture
@@ -91,139 +87,230 @@ def _reply(monkeypatch, obj):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("ai_built", [True, False])
 async def test_a_planner_that_asks_for_a_metadata_url_gets_NOTHING_executable(
-    store, no_requests, monkeypatch
+    store, no_requests, monkeypatch, ai_built
 ):
     """The instruction and the model both try to aim a probe at cloud metadata and loopback.
 
     There is no field for it, so the attempt cannot even be expressed — which is the point. It
     is asserted anyway, because "the schema has no field" is a claim about today's schema and
-    this is a claim about the behaviour.
+    this is a claim about the behaviour. Both producer paths: judged gates and plain notes.
     """
+    if ai_built:
+        _configured(monkeypatch)
+    else:
+        _unconfigured(monkeypatch)
     _reply(
         monkeypatch,
         {
+            # The removed template-selection contract, carrying targets: writes nothing.
             "objectives": [
-                # Every one of these is an attempt to author a target, and each one now REFUSES
-                # its whole row — the prompt's own promise ("any you add is ignored and the row
-                # is refused"). Stronger than substituting the template's probe: a selection that
-                # tried to author a target produces nothing at all (review on #884).
                 {
                     "template_index": 1,
                     "gate": True,
                     "probe": "http_status",
                     "probe_args": {"url": "http://169.254.169.254/latest/meta-data/"},
                 },
-                {
-                    "template_index": 0,
-                    "gate": True,
-                    "probe_args": {"url": "http://127.0.0.1:9200/"},
-                },
-                # …and a CLEAN selection alongside them still works, so the refusal is aimed at
-                # the attempt and not at the batch.
                 {"template_index": 0, "gate": True},
             ],
-            "notes": [{"title": "check http://169.254.169.254/ manually"}],
+            "notes": [
+                # A note that tries to author a target REFUSES its whole row…
+                {"title": "Healthy", "probe": "http_status"},
+                {"title": "Healthy", "probe_args": {"url": "http://127.0.0.1:9200/"}},
+                # …and a clean one alongside still lands: it can carry the text, never act on it.
+                {"title": "check http://169.254.169.254/ manually"},
+            ],
         },
     )
     mid = _mission()
     out = await mo.propose(mid)
 
-    rows = {o["key"]: o for o in out["objectives"]}
-    # BOTH target-authoring selections were refused outright — `live` (index 1) is absent
-    # entirely, not present with a substituted probe.
-    assert "live" not in rows, "a selection that tried to author a target produced a row"
-    assert out["dropped"] == 2, out
-    # The clean selection still landed, and it took its probe from the TEMPLATE.
-    assert rows["pr_open"]["probe"] == "forge_pr"
-    assert rows["pr_open"]["probe_args"] is None
-    # Nothing anywhere points at what the model asked for.
-    for o in out["objectives"]:
-        assert "169.254" not in str(o.get("probe_args") or "")
-        assert "127.0.0.1" not in str(o.get("probe_args") or "")
-    # The note is a note: it can carry the text, and it can never act on it.
-    note = next(o for o in out["objectives"] if o["key"].startswith(missions.NOTE_KEY_PREFIX))
-    assert note["probe"] == "none"
-    assert note["gate"] is False
-    assert note["probe_args"] is None
+    assert out["dropped"] == 4, out
+    [row] = out["objectives"]
+    assert row["title"] == "check http://169.254.169.254/ manually"
+    assert row["probe_args"] is None
+    if ai_built:
+        assert (row["probe"], row["gate"], row["source"]) == (
+            "supervisor_judged",
+            True,
+            "instruction",
+        )
+    else:
+        assert (row["probe"], row["gate"], row["source"]) == ("none", False, "model")
+    for o in missions.objectives(mid):
+        assert o.get("probe_args") is None
+        assert o["probe"] in ("supervisor_judged", "none")
     # …and the fixture asserts no request was issued at any point.
     assert no_requests == []
 
 
+# ---- every mission is an instruction mission now (#1653) -------------------------------------
+
+
 @pytest.mark.anyio
-async def test_an_invalid_template_index_is_dropped_never_invented(store, no_requests, monkeypatch):
-    """Out of range, negative, non-integer, and `True` — which is an `int` in Python and would
-    otherwise index element 1."""
+async def test_a_mission_with_NO_checklist_gets_instruction_objectives(
+    store, no_requests, monkeypatch
+):
+    """The regression for #1653: a plain mission — no `playbook_id` at all, which used to mean
+    "the operator's default checklist" — gets the outcomes the model wrote as judged gates. Before,
+    only a mission that declined a checklist (`":none"`) took this path."""
+    _configured(monkeypatch)
+    _reply(monkeypatch, _NOTES)
+    mid = _mission()
+    assert missions.get_mission(mid).get("playbook_id") in (None, "")
+    out = await mo.propose(mid)
+    rows = missions.objectives(mid)
+    assert [(o["key"], o["title"]) for o in rows] == [
+        (f"{missions.GOAL_KEY_PREFIX}1", "A PR is open"),
+        (f"{missions.GOAL_KEY_PREFIX}2", "It is live"),
+    ]
+    for o in rows:
+        assert (o["probe"], o["gate"], o["source"]) == ("supervisor_judged", True, "instruction")
+        assert o["probe_args"] is None and o.get("direction") is None
+    assert out["dropped"] == 0 and out["parameterised"] == 0
+    # Gates exist, so the "nothing gates" line is not written.
+    assert not any("no objective gates completion" in t for t in _texts(mid))
+
+
+@pytest.mark.anyio
+async def test_instruction_objectives_are_CAPPED(store, no_requests, monkeypatch):
+    """At most `INSTRUCTION_GATES_MAX` judged gates, however many the model writes; the rest are
+    counted as dropped and said once on the timeline."""
+    cap = missions.INSTRUCTION_GATES_MAX
+    _configured(monkeypatch)
+    _reply(monkeypatch, {"notes": [{"title": f"Outcome {i}"} for i in range(cap + 3)]})
+    mid = _mission()
+    out = await mo.propose(mid)
+    assert len(missions.objectives(mid)) == cap
+    assert out["dropped"] == 3
+    assert missions.get_mission(mid)["objectives_fit"] == {"dropped": 3, "parameterised": 0}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("reply", [{}, {"notes": []}, {"notes": [{"title": ""}]}, "not json"])
+async def test_a_reply_with_NO_usable_outcome_gets_the_fallback_gate(
+    store, no_requests, monkeypatch, reply
+):
+    """A mission with an AI endpoint is never unmeasured: one judged gate whose criterion is the
+    instruction itself."""
+    _configured(monkeypatch)
+    _reply(monkeypatch, reply)
+    mid = _mission()
+    await mo.propose(mid)
+    [row] = missions.objectives(mid)
+    assert (row["key"], row["title"]) == (
+        missions.DONE_AS_INSTRUCTED_KEY,
+        missions.DONE_AS_INSTRUCTED_TITLE,
+    )
+    assert (row["probe"], row["gate"], row["source"]) == ("supervisor_judged", True, "instruction")
+
+
+@pytest.mark.anyio
+async def test_a_FAILED_model_call_still_gets_the_fallback_gate_and_says_why(
+    store, no_requests, monkeypatch
+):
+    """The AI-endpoint fallback: a `ReviewError` from the model call is not a mission without
+    objectives — it gets the judged fallback gate, and the timeline says the model wrote none."""
+    _configured(monkeypatch)
+
+    async def boom(_messages, **_kw):
+        raise mo.review.ReviewError("endpoint returned HTTP 502")
+
+    monkeypatch.setattr(mo.review, "complete_json", boom)
+    mid = _mission()
+    await mo.propose(mid)
+    assert [o["key"] for o in missions.objectives(mid)] == [missions.DONE_AS_INSTRUCTED_KEY]
+    assert any(
+        "could not write the objectives" in t and "HTTP 502" in t for t in _texts(mid)
+    ), _texts(mid)
+
+
+@pytest.mark.anyio
+async def test_WITHOUT_an_endpoint_the_outcomes_are_notes_and_nothing_gates(
+    store, no_requests, monkeypatch
+):
+    """No endpoint means nobody can judge a gate, so a direct caller gets notes — `model` rows,
+    no probe, never a gate — and the timeline says, once, that nothing gates completion (#1063)."""
+    _unconfigured(monkeypatch)
+    _reply(monkeypatch, _NOTES)
+    mid = _mission()
+    await mo.propose(mid)
+    rows = missions.objectives(mid)
+    assert [o["key"] for o in rows] == [
+        f"{missions.NOTE_KEY_PREFIX}1",
+        f"{missions.NOTE_KEY_PREFIX}2",
+    ]
+    for o in rows:
+        assert (o["probe"], o["gate"], o["source"]) == ("none", False, "model")
+    said = [t for t in _texts(mid) if "no objective gates completion" in t]
+    assert len(said) == 1, _texts(mid)
+
+
+@pytest.mark.anyio
+async def test_a_double_submitted_create_instantiates_ONCE(store, no_requests, monkeypatch):
+    """Single-flight per mission: the second producer finds the first in flight and declines,
+    rather than racing it into a second batch."""
+    from agent_sessions import aitasks
+
+    aitasks.reset()
+    _configured(monkeypatch)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls: list[int] = []
+
+    async def slow(_messages, **_kw):
+        calls.append(1)
+        entered.set()
+        await release.wait()
+        return _NOTES
+
+    monkeypatch.setattr(mo.review, "complete_json", slow)
+    mid = _mission()
+    first = asyncio.ensure_future(mo.propose_for_new_mission(mid))
+    await asyncio.wait_for(entered.wait(), 10)
+    second = await mo.propose_for_new_mission(mid)
+    release.set()
+    out = await asyncio.wait_for(first, 10)
+
+    assert second["templates"] == "already_running"
+    assert calls == [1], "the model was asked twice"
+    assert len(out["objectives"]) == 2
+    assert [o["key"] for o in missions.objectives(mid)] == [
+        f"{missions.GOAL_KEY_PREFIX}1",
+        f"{missions.GOAL_KEY_PREFIX}2",
+    ]
+    assert _pending_ids() == [], "the winner did not settle the intent"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("ai_built", [True, False])
+async def test_the_OLD_template_selection_contract_writes_NOTHING(
+    store, no_requests, monkeypatch, ai_built
+):
+    """A model (or a cached prompt) still answering `{"objectives": [{"template_index": …}]}` gets
+    nothing written from those selections: there are no templates to select from, so each one is
+    counted as dropped. With an endpoint the mission still gets its fallback gate."""
+    if ai_built:
+        _configured(monkeypatch)
+    else:
+        _unconfigured(monkeypatch)
     _reply(
         monkeypatch,
         {
             "objectives": [
-                {"template_index": 99},
-                {"template_index": -1},
-                {"template_index": "0"},
-                {"template_index": True},
-                {"gate": True},
+                {"template_index": 0, "gate": True},
+                {"template_index": 1, "probe_args": {"branch": "main"}},
+                {"template_index": 0, "title": "A PR is open against main"},
             ]
         },
     )
-    out = await mo.propose(_mission())
-    assert out["objectives"] == []
-    assert out["dropped"] == 5
-
-
-@pytest.mark.anyio
-async def test_a_repeated_selection_is_deduplicated_not_refused(store, no_requests, monkeypatch):
-    _reply(monkeypatch, {"objectives": [{"template_index": 0}, {"template_index": 0}]})
-    out = await mo.propose(_mission())
-    assert [o["key"] for o in out["objectives"]] == ["pr_open"]
-    assert out["dropped"] == 0, "a restatement is not a refusal"
-
-
-@pytest.mark.anyio
-async def test_a_model_title_is_adapted_but_carries_no_authority(store, no_requests, monkeypatch):
-    _reply(
-        monkeypatch,
-        {"objectives": [{"template_index": 0, "title": "A PR is open against main"}]},
-    )
-    out = await mo.propose(_mission())
-    row = out["objectives"][0]
-    assert row["title"] == "A PR is open against main"
-    assert row["probe"] == "forge_pr", "the title changed; the probe did not"
-
-
-@pytest.mark.anyio
-async def test_a_gate_on_a_NON_PROBING_template_cannot_gate(store, no_requests, monkeypatch):
-    """A gating objective with no probe can never be met, so the mission could never complete.
-    Degrading a security problem into a liveness one is not a fix (#883)."""
-    prefs.set_mission_playbooks(
-        {
-            "default_id": "p",
-            "playbooks": [
-                {
-                    "id": "p",
-                    "label": "P",
-                    "objectives": [
-                        {"key": "manual", "title": "Manual", "probe": "none", "gate": False}
-                    ],
-                }
-            ],
-        }
-    )
-    _reply(monkeypatch, {"objectives": [{"template_index": 0, "gate": True}]})
-    out = await mo.propose(_mission())
-    assert out["objectives"][0]["gate"] is False
-
-
-@pytest.mark.anyio
-async def test_an_unknown_playbook_yields_notes_only_and_says_so(store, no_requests, monkeypatch):
-    _reply(monkeypatch, {"objectives": [{"template_index": 0}], "notes": [{"title": "n"}]})
-    mid = missions.create_mission("x", playbook_id="gone")["id"]
+    mid = _mission()
     out = await mo.propose(mid)
-    assert out["templates"] == "unknown_playbook"
-    # The selection had no templates to select FROM, so it is dropped; the note survives.
-    assert [o["key"] for o in out["objectives"]] == [f"{missions.NOTE_KEY_PREFIX}1"]
-    kinds = [e["kind"] for e in missions.get_mission(mid)["events"]]
-    assert "objective" in kinds, "the missing playbook id was not recorded"
+    assert out["dropped"] == 3, out
+    keys = [o["key"] for o in missions.objectives(mid)]
+    assert keys == ([missions.DONE_AS_INSTRUCTED_KEY] if ai_built else []), keys
+    assert all(o["source"] != "playbook" for o in missions.objectives(mid))
 
 
 # ---- the producer's LIFECYCLE call site (#883 review) -------------------------------
@@ -294,7 +381,7 @@ def _configured(monkeypatch):
 def test_CREATING_a_mission_instantiates_its_objectives(
     store, no_outbound, auth_cfg, tmp_home, tmp_path, monkeypatch
 ):
-    """The regression for the whole finding: POST a mission, read back a filled checklist.
+    """The regression for the whole finding: POST a mission, read back its objectives.
 
     It goes through the ROUTE rather than calling `propose()`, because the defect was not in
     `propose()` — that worked — but in nothing ever calling it. A test of the producer alone
@@ -304,8 +391,9 @@ def test_CREATING_a_mission_instantiates_its_objectives(
     _reply(
         monkeypatch,
         {
+            # A stale template selection beside the outcomes: the selection writes nothing.
             "objectives": [{"template_index": 0, "gate": True}],
-            "notes": [{"title": "ask about the rollback plan"}],
+            "notes": [{"title": "A PR is open"}, {"title": "The rollback plan is written"}],
         },
     )
     c, hdr, proj = _api(auth_cfg, tmp_path)
@@ -316,12 +404,12 @@ def test_CREATING_a_mission_instantiates_its_objectives(
     )
     assert r.status_code == 201, r.text
     rows = c.get(f"/api/missions/{r.json()['id']}/objectives", headers=hdr).json()["objectives"]
-    assert [o["key"] for o in rows] == ["pr_open", "note_1"], rows
-    # Authority per row, which is the reason instantiation is its own boundary.
-    assert [o["source"] for o in rows] == ["playbook", "model"]
-    # The template's probe came from the TEMPLATE; the note carries none and cannot gate.
-    assert (rows[0]["probe"], rows[0]["gate"]) == ("forge_pr", True)
-    assert (rows[1]["probe"], rows[1]["gate"]) == ("none", False)
+    assert [o["key"] for o in rows] == ["goal_1", "goal_2"], rows
+    # Authority per row, which is the reason instantiation is its own boundary: the model wrote
+    # the criterion, the supervisor judges it, and nothing the model wrote is a probe target.
+    assert [o["source"] for o in rows] == ["instruction", "instruction"]
+    for o in rows:
+        assert (o["probe"], o["gate"], o["probe_args"]) == ("supervisor_judged", True, None)
 
 
 def test_a_mission_is_still_created_when_the_planner_FAILS(
@@ -405,11 +493,11 @@ async def test_instantiating_an_unmet_GATE_reopens_a_mission_in_review(
         mid,
         [
             {
-                "key": "pr_open",
+                "key": f"{missions.GOAL_KEY_PREFIX}1",
                 "title": "A PR is open",
-                "probe": "forge_pr",
+                "probe": "supervisor_judged",
                 "gate": True,
-                "source": "playbook",
+                "source": "instruction",
             }
         ],
     )
@@ -425,105 +513,163 @@ async def test_instantiating_an_unmet_GATE_reopens_a_mission_in_review(
 
 # ---- what can change while the model is thinking (review on #884) --------------------------
 #
-# `propose()` resolves templates, awaits a model for many seconds, and then writes. Three things
-# the operator can do inside that window were unfenced: revoke the playbook, close the mission,
-# or send output the parser coerces instead of dropping.
-
-
-@pytest.mark.anyio
-async def test_a_playbook_REVOKED_mid_proposal_arms_nothing(store, no_requests, monkeypatch):
-    """The revocation race, which is the security-relevant one.
-
-    The operator deletes the playbook while the model is thinking. Instantiating from the
-    snapshot would persist a probe target they have just removed — and Phase 5 would then
-    schedule requests to it on a cadence.
-    """
-    mid = _mission()
-
-    async def revoke_then_answer(_messages, **_kw):
-        prefs.set_mission_playbooks({"default_id": "", "playbooks": []})
-        return {"objectives": [{"template_index": 0, "gate": True}]}
-
-    monkeypatch.setattr(mo.review, "complete_json", revoke_then_answer)
-    out = await mo.propose(mid)
-    assert out["objectives"] == [], "a revoked playbook's target was instantiated anyway"
-    assert missions.objectives(mid) == []
-    events = missions.get_mission(mid)["events"]
-    assert any("checklist changed" in (e.get("text") or "") for e in events), events
-
-
-@pytest.mark.anyio
-async def test_a_playbook_RETARGETED_mid_proposal_arms_nothing(store, no_requests, monkeypatch):
-    """Same fence, for the edit that keeps the id and moves the URL — the case a version counter
-    on the playbook id alone would miss."""
-    mid = _mission()
-
-    async def retarget_then_answer(_messages, **_kw):
-        pb = prefs.get_mission_playbooks()
-        pb["playbooks"][0]["objectives"][1]["probe_args"] = {"url": "https://new.example/healthz"}
-        prefs.set_mission_playbooks(pb)
-        return {"objectives": [{"template_index": 1, "gate": True}]}
-
-    monkeypatch.setattr(mo.review, "complete_json", retarget_then_answer)
-    out = await mo.propose(mid)
-    assert out["objectives"] == []
-    stored = [o.get("probe_args") for o in missions.objectives(mid)]
-    assert stored == [], f"a stale target was persisted: {stored}"
+# `propose()` awaits a model for many seconds and then writes. The checklist binding fence that
+# used to wrap the write went with checklists (#1653) and is NOT replaced: the write is fenced only
+# by `instantiate_objectives`' in-transaction checks — a closed mission, a key already written.
 
 
 @pytest.mark.anyio
 async def test_a_mission_CLOSED_mid_proposal_gets_no_late_gate(store, no_requests, monkeypatch):
-    """A `done` mission carrying a fresh PENDING gate is a checklist contradicting its own
+    """A `done` mission carrying a fresh PENDING gate is an objective list contradicting its own
     outcome — and `_finish_objective_write` cannot repair it, because it reopens `review` and
     nothing else. Refused rather than reopened: a late background task does not get to reopen a
     mission the operator closed."""
+    _configured(monkeypatch)
     mid = _mission()
 
     async def close_then_answer(_messages, **_kw):
         missions.set_state(mid, "draft", "planned")
         missions.set_state(mid, "planned", "abandoned", outcome="abandoned")
-        return {"objectives": [{"template_index": 0, "gate": True}]}
+        return _NOTES
 
     monkeypatch.setattr(mo.review, "complete_json", close_then_answer)
-    out = await mo.propose(mid)
-    assert out["objectives"] == []
+    out = await mo.propose(mid)  # does not raise
+    assert out["objectives"] == [] and out["templates"] == "stale"
     assert missions.objectives(mid) == [], "a gate was added to a closed mission"
     assert missions.get_mission(mid)["state"] == "abandoned", "a closed mission was reopened"
+    assert any(t.startswith("no objectives proposed: ") for t in _texts(mid)), _texts(mid)
 
 
+@pytest.mark.anyio
+async def test_a_mission_DISPATCHED_mid_proposal_gets_no_late_objectives(
+    store, no_requests, monkeypatch, tmp_path
+):
+    """Dispatch started while the model was thinking: what done means is fixed until the agent
+    starts, so the late batch is refused in the write transaction."""
+    _configured(monkeypatch)
+    mid = missions.create_mission("ship the thing", cwd=str(tmp_path))["id"]
+
+    async def dispatch_then_answer(_messages, **_kw):
+        missions.set_state(mid, "draft", "planned")
+        missions.set_state(mid, "planned", "dispatching")
+        return _NOTES
+
+    monkeypatch.setattr(mo.review, "complete_json", dispatch_then_answer)
+    out = await mo.propose(mid)  # does not raise
+    assert out["objectives"] == [] and out["templates"] == "stale"
+    assert missions.objectives(mid) == []
+    assert missions.get_mission(mid)["state"] == "dispatching"
+    assert any(t.startswith("no objectives proposed: ") for t in _texts(mid)), _texts(mid)
+
+
+@pytest.mark.anyio
+async def test_an_objective_the_OPERATOR_added_mid_proposal_is_not_added_to(
+    store, no_requests, monkeypatch
+):
+    """The operator wrote their own objective — under a key the model's batch does not use, so
+    no key collision can save it — while the model was thinking. A mission that already has
+    objectives is not appended to: nothing from the proposal lands, the call does not raise, and
+    the timeline says why."""
+    _configured(monkeypatch)
+    mid = _mission()
+
+    async def operator_adds_then_answer(_messages, **_kw):
+        missions.patch_objectives(
+            mid, [{"op": "add", "key": "mine", "title": "Mine", "gate": False}]
+        )
+        return _NOTES
+
+    monkeypatch.setattr(mo.review, "complete_json", operator_adds_then_answer)
+    out = await mo.propose(mid)  # does not raise
+    assert out["objectives"] == [] and out["templates"] == "stale"
+    assert [(o["key"], o["source"]) for o in missions.objectives(mid)] == [("mine", "operator")]
+    assert any(t.startswith("no objectives proposed: ") for t in _texts(mid)), _texts(mid)
+
+
+@pytest.mark.anyio
+async def test_objectives_another_PRODUCER_wrote_mid_proposal_are_not_added_to(
+    store, no_requests, monkeypatch
+):
+    """…and the same for a second producer's batch landing first: the late one writes nothing."""
+    _configured(monkeypatch)
+    mid = _mission()
+    theirs = [
+        {
+            "key": f"{missions.GOAL_KEY_PREFIX}1",
+            "title": "Theirs",
+            "probe": "supervisor_judged",
+            "gate": True,
+            "source": "instruction",
+        }
+    ]
+
+    async def write_then_answer(_messages, **_kw):
+        missions.instantiate_objectives(mid, theirs)
+        return _NOTES
+
+    monkeypatch.setattr(mo.review, "complete_json", write_then_answer)
+    out = await mo.propose(mid)  # does not raise
+    assert out["objectives"] == [] and out["templates"] == "stale"
+    assert [(o["key"], o["title"]) for o in missions.objectives(mid)] == [("goal_1", "Theirs")]
+    assert any(t.startswith("no objectives proposed: ") for t in _texts(mid)), _texts(mid)
+
+
+@pytest.mark.parametrize("source", ["operator", "bogus"])
+def test_instantiation_refuses_any_source_but_model_and_instruction(store, source):
+    """Only the producer's own sources (and the trusted `playbook` template row) pass."""
+    mid = _mission()
+    row = {"key": "k", "title": "T", "probe": "supervisor_judged", "gate": True, "source": source}
+    with pytest.raises(missions.MissionError):
+        missions.instantiate_objectives(mid, [row])
+    assert missions.objectives(mid) == []
+
+
+# ---- the reply contract: drift DROPS, never repairs -----------------------------------------
+
+BOTH = pytest.mark.parametrize("ai_built", [True, False])
+
+
+@BOTH
 @pytest.mark.parametrize(
     "reply",
     [
-        {"objectives": {"template_index": 0}},  # an object where a list belongs
-        {"objectives": "nope"},
-        {"notes": {"title": "x"}},
+        {"notes": {"title": "x"}},  # an object where a list belongs
         {"notes": 7},
+        {"notes": "nope"},
     ],
 )
-def test_malformed_CONTAINERS_drop_rather_than_raise(store, reply):
+def test_malformed_CONTAINERS_drop_rather_than_raise(store, reply, ai_built):
     """The stated contract is that drift DROPS rows. Slicing a dict raises `TypeError`, which is
     a parse failure escaping as a crash — the opposite."""
-    t = [{"key": "k", "title": "T", "probe": "forge_pr", "probe_args": None}]
-    rows, dropped = mo._rows_from_reply(reply, t)
+    rows, dropped = mo._rows_from_reply(reply, ai_built=ai_built)
     assert rows == [] and dropped >= 1
 
 
-@pytest.mark.parametrize("gate", ["false", "true", 1, 0, {}, {"a": 1}, [], None, "yes"])
-def test_a_NON_BOOLEAN_gate_DROPS_the_whole_selection(store, gate):
-    """Drift drops a row; it never degrades it into something with a different meaning.
+@BOTH
+@pytest.mark.parametrize("objectives", [{"template_index": 0}, "nope", 7])
+def test_a_malformed_OLD_objectives_container_writes_nothing_and_does_not_raise(
+    store, objectives, ai_built
+):
+    rows, _ = mo._rows_from_reply(
+        {"objectives": objectives, "notes": [{"title": "ok"}]}, ai_built=ai_built
+    )
+    assert [r["title"] for r in rows] == ["ok"]
 
-    `bool("false")` is `True`, so coercing could arm a gate nobody asked for. But the earlier fix
-    — keep the row and force `gate=False` — is wrong in the other direction: it turns an intended
-    REQUIRED outcome into an optional one, and the mission can then complete without it. #883's
-    contract is drop-and-count, and this is the only reading that cannot silently change what an
-    objective means (review on #884).
-    """
-    t = [{"key": "k", "title": "T", "probe": "forge_pr", "probe_args": None}]
-    rows, dropped = mo._rows_from_reply({"objectives": [{"template_index": 0, "gate": gate}]}, t)
+
+@BOTH
+@pytest.mark.parametrize("gate", ["false", "true", True, False, 1, 0, {}, [], None])
+def test_a_note_carrying_a_GATE_is_refused_whatever_its_value(store, gate, ai_built):
+    """Drift drops a row; it never degrades it into something with a different meaning. Whether
+    an outcome gates is decided by the producer path, never by the model — `bool("false")` is
+    `True`, and forcing a value would change what the outcome means (review on #884)."""
+    rows, dropped = mo._rows_from_reply(
+        {"notes": [{"title": "T", "gate": gate}]}, ai_built=ai_built
+    )
     assert rows == [], f"{gate!r} was repaired into a row instead of dropped"
     assert dropped == 1, "the refusal was not counted"
 
 
+@BOTH
 @pytest.mark.parametrize(
     "field",
     [
@@ -533,45 +679,38 @@ def test_a_NON_BOOLEAN_gate_DROPS_the_whole_selection(store, gate):
         "source",
         "key",
         # …and the ones only an ALLOWLIST catches: a typo, a hallucinated key, a future field.
-        # A denylist left every one of these silently accepted, so the row survived while nobody
-        # had checked what it said (review on #884).
+        "direction",
         "foo",
-        "template_idx",
-        "gate_",
+        "template_index",
         "state",
         "met_at",
     ],
 )
-def test_a_selection_carrying_a_FORBIDDEN_field_is_refused(store, field):
-    """The prompt says "any you add is ignored and the row is refused". It has to be true.
-
-    Keeping such a row (with the template's own probe substituted) made the prompt a promise the
-    operator could not check, and it is the weaker SSRF answer: a selection that TRIED to author a
-    target should produce nothing at all, not a sanitised objective.
-    """
-    t = [{"key": "k", "title": "T", "probe": "forge_pr", "probe_args": None}]
-    item = {"template_index": 0, field: "http_status" if field == "probe" else {"url": "http://x"}}
+def test_a_note_carrying_a_FORBIDDEN_field_is_refused(store, field, ai_built):
+    """A note is `{"title": ...}` and nothing else. A note that TRIED to author a target produces
+    nothing at all, not a sanitised objective — the weaker SSRF answer would keep the row."""
+    item = {"title": "T", field: "http_status" if field == "probe" else {"url": "http://x"}}
     # (the value never matters — the FIELD is what refuses the row)
-    rows, dropped = mo._rows_from_reply({"objectives": [item]}, t)
+    rows, dropped = mo._rows_from_reply({"notes": [item]}, ai_built=ai_built)
     assert rows == [] and dropped == 1
 
 
-def test_a_note_carrying_anything_but_a_title_is_refused(store):
-    """A note is `{"title": ...}` and nothing else — the same rule, so a note cannot smuggle a
-    field a selection may not carry."""
-    t = [{"key": "k", "title": "T", "probe": "forge_pr", "probe_args": None}]
+@BOTH
+def test_a_note_carrying_anything_but_a_title_is_refused_and_the_rest_survive(store, ai_built):
     rows, dropped = mo._rows_from_reply(
-        {"notes": [{"title": "ok"}, {"title": "x", "probe": "http_status"}]}, t
+        {"notes": [{"title": "ok"}, {"title": "x", "probe": "http_status"}]}, ai_built=ai_built
     )
     assert [r["title"] for r in rows] == ["ok"]
     assert dropped == 1
 
 
-def test_a_TRUE_gate_still_works(store):
-    """The control — the fence above must not make gating impossible."""
-    t = [{"key": "k", "title": "T", "probe": "forge_pr", "probe_args": None}]
-    rows, _ = mo._rows_from_reply({"objectives": [{"template_index": 0, "gate": True}]}, t)
-    assert rows[0]["gate"] is True
+def test_a_clean_note_still_GATES_on_the_judged_path(store):
+    """The control — the fences above must not make gating impossible."""
+    rows, dropped = mo._rows_from_reply({"notes": [{"title": "T"}]}, ai_built=True)
+    assert dropped == 0
+    assert [(r["key"], r["probe"], r["gate"], r["source"]) for r in rows] == [
+        ("goal_1", "supervisor_judged", True, "instruction")
+    ]
 
 
 def test_the_activity_kind_is_BOUNDED_not_one_per_mission(store):
@@ -612,132 +751,6 @@ def test_the_per_mission_single_flight_still_excludes(store):
     asyncio.run(_drive())
 
 
-def test_the_binding_is_digested_from_the_SAME_read_as_the_templates(store):
-    """A fence with a race inside it is not a fence.
-
-    Resolving templates and then digesting them in a SECOND read lets prefs change in between:
-    the digest describes the new config, the templates are the old ones, and the write-boundary
-    check compares new against new, passes, and writes the stale targets anyway. Caught in
-    self-review of the first version of this fix, not by the tests above — all of which pass
-    against the broken version, because they mutate prefs during the MODEL call rather than
-    during the resolve.
-    """
-    calls: list[int] = []
-    real = prefs.get_mission_playbooks
-
-    def counting_and_mutating():
-        calls.append(1)
-        out = real()
-        if len(calls) == 1:
-            # Whatever a second read would see is different from what the first one did.
-            prefs.set_mission_playbooks({"default_id": "", "playbooks": []})
-        return out
-
-    mid = _mission()
-    import agent_sessions.prefs as prefs_mod
-
-    prefs_mod.get_mission_playbooks = counting_and_mutating
-    try:
-        status, templates, binding = missions.templates_and_binding(mid)
-    finally:
-        prefs_mod.get_mission_playbooks = real
-
-    assert calls == [1], "templates and binding were resolved by two separate reads"
-    assert binding == missions._binding_digest(status, templates)
-
-
-def test_a_revocation_CANNOT_land_between_the_check_and_the_insert(store, tmp_path, monkeypatch):
-    """The check-then-write race, driven DETERMINISTICALLY at the vulnerable instant.
-
-    A first version started the revoker before instantiation and accepted either outcome, so
-    timing could put the revocation wholly before or after the check — and the review showed the
-    old vulnerable implementation still passing it. A concurrency test that does not force the
-    interleaving proves nothing about the interleaving.
-
-    This one fires the revocation from INSIDE `playbook_binding`, i.e. immediately after the
-    check the old code performed and before any insert, then observes — at the moment of the
-    insert — whether the revocation had completed:
-
-    * held lock (fixed): the revoker blocks on the prefs flock until this transaction commits,
-      so at insert time it has NOT completed. The write is of a target that was still configured.
-    * unheld lock (the bug): the revoker takes the flock immediately, completes, and the insert
-      then happens anyway — writing a target the operator has already removed.
-    """
-    import threading
-
-    mid = _mission()
-    status, templates, binding = missions.templates_and_binding(mid)
-    assert status == "ok"
-    rows = [
-        {
-            "key": templates[1]["key"],
-            "title": templates[1]["title"],
-            "probe": templates[1]["probe"],
-            "probe_args": templates[1]["probe_args"],
-            "gate": True,
-            "source": "playbook",
-        }
-    ]
-
-    revoked = threading.Event()
-    revoker: list[threading.Thread] = []
-    real_binding = missions.playbook_binding
-
-    def binding_then_revoke(mission_id, *, path=None):
-        """Compute the digest, then start the revocation at the exact vulnerable instant."""
-        out = real_binding(mission_id, path=path)
-        if not revoker:
-
-            def _go():
-                prefs.set_mission_playbooks({"default_id": "", "playbooks": []})
-                revoked.set()
-
-            t = threading.Thread(target=_go, daemon=True)
-            revoker.append(t)
-            t.start()
-        return out
-
-    monkeypatch.setattr(missions, "playbook_binding", binding_then_revoke)
-
-    seen_at_insert: list[bool] = []
-    real_op_add = missions._op_add
-
-    def spy_op_add(con, mission_id, op, source, ts):
-        """Hold the insert open and GIVE the revocation time to land.
-
-        This is what makes the test discriminate rather than race. If the prefs lock is held
-        across the transaction (fixed), the revoker is blocked for this whole wait and cannot
-        complete. If it was released after the check (the bug), the revoker takes the flock
-        immediately and finishes well inside it — and the insert then proceeds anyway, which is
-        exactly the defect. Without this wait the vulnerable window is sub-millisecond and the
-        observation misses it: the first version of this test passed against the old code.
-        """
-        revoked.wait(timeout=2.0)
-        seen_at_insert.append(revoked.is_set())
-        return real_op_add(con, mission_id, op, source, ts)
-
-    monkeypatch.setattr(missions, "_op_add", spy_op_add)
-
-    outcome = "committed"
-    try:
-        missions.instantiate_objectives(mid, rows, expect_binding=binding)
-    except missions.MissionError as e:
-        assert e.status == 409
-        outcome = "refused"
-
-    for t in revoker:
-        t.join(timeout=5)
-    assert revoked.is_set(), "the revoker never ran, so nothing was interleaved at all"
-
-    if outcome == "committed":
-        assert seen_at_insert and seen_at_insert[0] is False, (
-            "the revocation completed BEFORE the insert and the target was written anyway — "
-            "the check ran outside the lock that was supposed to hold it"
-        )
-    else:
-        assert missions.objectives(mid) == [], "a refused instantiation still wrote rows"
-
-
 # ---- objective production is a DURABLE intent, not an in-process hope (review on #884) ------
 
 
@@ -768,17 +781,17 @@ def test_every_terminal_outcome_closes_the_intent(store, state):
 
 @pytest.mark.anyio
 async def test_a_CRASHED_producer_is_recovered_at_boot(store, no_requests, monkeypatch):
-    """The regression for the whole finding: the mission exists, the checklist does not, and
+    """The regression for the whole finding: the mission exists, its objectives do not, and
     nothing in this process is going to fix it — until recovery runs."""
     _configured_direct(monkeypatch)
     mid = _mission()  # created, intent pending, producer never ran (the crash)
     assert missions.objectives(mid) == []
 
-    _reply(monkeypatch, {"objectives": [{"template_index": 0, "gate": True}]})
+    _reply(monkeypatch, _NOTES)
     out = await mo.recover_pending(older_than=0.0)
 
     assert out["recovered"] == [mid], out
-    assert [o["key"] for o in missions.objectives(mid)] == ["pr_open"]
+    assert [o["key"] for o in missions.objectives(mid)] == ["goal_1", "goal_2"]
     assert _pending_ids() == [], "the intent was not closed"
 
 
@@ -812,25 +825,33 @@ def _configured_direct(monkeypatch):
     monkeypatch.setattr(mo.review, "_require_config", lambda: {"base_url": "x", "api_key": "y"})
 
 
-@pytest.mark.parametrize("title", [7, 0, True, None, {"t": "x"}, ["x"], 1.5])
-def test_a_NON_STRING_title_DROPS_the_selection(store, title):
-    """`title: 7` was being repaired into the template's own title.
-
-    That produces an executable row from a reply that did not match the contract — the same
-    "degrade into a different meaning" the gate rule forbids, and #883 says drift DROPS
-    (review on #884).
-    """
-    t = [{"key": "k", "title": "T", "probe": "forge_pr", "probe_args": None}]
-    rows, dropped = mo._rows_from_reply({"objectives": [{"template_index": 0, "title": title}]}, t)
+@BOTH
+@pytest.mark.parametrize("title", [7, 0, True, None, {"t": "x"}, ["x"], 1.5, "", "   "])
+def test_a_NON_STRING_or_EMPTY_title_DROPS_the_note(store, title, ai_built):
+    """`title: 7` is not repaired into some default title: a reply that does not match the
+    contract drops the row (review on #884)."""
+    rows, dropped = mo._rows_from_reply({"notes": [{"title": title}]}, ai_built=ai_built)
     assert rows == [], f"title={title!r} was repaired into a row"
     assert dropped == 1
 
 
-def test_an_ABSENT_title_still_uses_the_template(store):
-    """The control: `title` is OPTIONAL, and omitting it is not drift."""
-    t = [{"key": "k", "title": "T", "probe": "forge_pr", "probe_args": None}]
-    rows, dropped = mo._rows_from_reply({"objectives": [{"template_index": 0}]}, t)
-    assert [r["title"] for r in rows] == ["T"] and dropped == 0
+@BOTH
+def test_an_ABSENT_title_DROPS_the_note(store, ai_built):
+    """There is no template to fall back on any more: a note without a title is nothing."""
+    rows, dropped = mo._rows_from_reply({"notes": [{}]}, ai_built=ai_built)
+    assert rows == [] and dropped == 1
+
+
+@pytest.mark.parametrize(
+    "title", ["x" * (missions.OBJECTIVE_TITLE_MAX + 1), "line\nbreak", "tab\there", "del\x7f"]
+)
+def test_a_judged_gate_title_breaking_the_title_rules_is_DROPPED_not_truncated(store, title):
+    """A judged gate's title IS its criterion, so one the store would refuse drops that row here,
+    rather than failing the whole atomic batch or being cut into a different criterion."""
+    rows, dropped = mo._rows_from_reply(
+        {"notes": [{"title": title}, {"title": "ok"}]}, ai_built=True
+    )
+    assert [r["title"] for r in rows] == ["ok"] and dropped == 1
 
 
 @pytest.mark.anyio
@@ -843,7 +864,7 @@ async def test_boot_recovery_takes_a_RECENT_pre_restart_intent(store, no_request
     """
     _configured_direct(monkeypatch)
     mid = _mission()  # stamped `pending` just now — a crash could have landed right here
-    _reply(monkeypatch, {"objectives": [{"template_index": 0, "gate": True}]})
+    _reply(monkeypatch, _NOTES)
 
     out = await mo.recover_pending()  # the boot call, with its production defaults
     assert out["recovered"] == [mid], out
@@ -856,7 +877,7 @@ async def test_boot_recovery_DRAINS_past_one_batch(store, no_requests, monkeypat
     _configured_direct(monkeypatch)
     ids = [_mission() for _ in range(25)]
     assert len(_pending_ids(limit=200)) == 25
-    _reply(monkeypatch, {"objectives": [{"template_index": 0, "gate": True}]})
+    _reply(monkeypatch, _NOTES)
 
     out = await mo.recover_pending(limit=10)
     assert sorted(out["recovered"]) == sorted(ids), out
@@ -874,37 +895,13 @@ async def test_recovery_STOPS_rather_than_spinning_on_an_unsettleable_mission(
     """
     _configured_direct(monkeypatch)
     mid = _mission()
-    _reply(monkeypatch, {"objectives": [{"template_index": 0, "gate": True}]})
+    _reply(monkeypatch, _NOTES)
     # The production attempt runs, but the intent never closes — the row stays on the worklist.
     monkeypatch.setattr(missions, "settle_objectives_state", lambda *a, **k: False)
 
     out = await mo.recover_pending(limit=5)
     assert out["recovered"] == [mid], "the stuck mission was not attempted exactly once"
     assert _pending_ids() == [mid], "it should still be pending"
-
-
-def test_a_stored_NULL_playbook_block_fails_CLOSED(tmp_path):
-    """Absence and an explicit `null` are different facts, and `.get()` collapses them.
-
-    A hand-edited `{"mission_playbooks": null}` read back as the SHIPPED templates — server
-    probe targets armed by a malformed value — instead of degrading to none. That is a fail-open
-    on operator policy: the rule is that only ABSENCE (the install never configured playbooks)
-    gets the defaults (review on #884).
-    """
-    from agent_sessions.atomicjson import atomic_write_json
-
-    p = tmp_path / "p.json"
-    atomic_write_json(p, {"mission_playbooks": None})
-    # `revision` is 0: nothing has ever been WRITTEN through the versioned path.
-    assert prefs.get_mission_playbooks(p) == {"default_id": "", "playbooks": [], "revision": 0}
-
-    # …and the control: the key genuinely absent still gets the shipped defaults.
-    q = tmp_path / "q.json"
-    atomic_write_json(q, {"theme": "dark"})
-    assert [x["id"] for x in prefs.get_mission_playbooks(q)["playbooks"]] == [
-        "ship_a_change",
-        "investigate",
-    ]
 
 
 @pytest.mark.anyio
@@ -917,7 +914,7 @@ async def test_recovery_has_NO_fixed_total_cap(store, no_requests, monkeypatch):
     """
     _configured_direct(monkeypatch)
     ids = [_mission() for _ in range(120)]
-    _reply(monkeypatch, {"objectives": [{"template_index": 0, "gate": True}]})
+    _reply(monkeypatch, _NOTES)
 
     out = await mo.recover_pending(limit=2)  # 60 batches — more than the old ceiling of 50
     assert len(out["recovered"]) == len(
@@ -944,7 +941,7 @@ async def test_a_full_page_of_STUCK_intents_does_not_starve_the_ones_behind_it(
     _configured_direct(monkeypatch)
     stuck = [_mission() for _ in range(20)]  # a full page at the production default
     later = _mission()
-    _reply(monkeypatch, {"objectives": [{"template_index": 0, "gate": True}]})
+    _reply(monkeypatch, _NOTES)
 
     real_settle = missions.settle_objectives_state
 
@@ -963,3 +960,109 @@ async def test_a_full_page_of_STUCK_intents_does_not_starve_the_ones_behind_it(
     assert (
         _pending_ids(limit=200) == stuck
     ), "the stuck page should still be pending, and nothing else"
+
+
+# ---- a mission created while checklists existed (#1653) -------------------------------------
+#
+# The `playbook_id` column stays and old rows keep their value, unread. Such a mission keeps the
+# objectives its checklist gave it; the producer never re-resolves the checklist, never fails on
+# the stale id, and never piles instruction objectives on top.
+
+_OLD_ROWS = [
+    {"key": "pr_open", "title": "A PR is open", "probe": "forge_pr", "gate": True},
+    {"key": "pr_open--2", "title": "A second PR is open", "probe": "forge_pr", "gate": True},
+]
+
+
+def _legacy_mission(db, *, with_objectives: bool, state: str | None) -> str:
+    """A mission as an old store row has it: `playbook_id` naming a checklist that no longer
+    exists anywhere, its checklist's objectives (if any), and an `objectives_state`."""
+    mid = _mission()
+    if with_objectives:
+        # Written the way the store can write rows today, then relabelled to what the checklist
+        # producer stored: `source = 'playbook'`, which instantiation no longer accepts.
+        missions.patch_objectives(mid, [{"op": "add", **r} for r in _OLD_ROWS])
+    con = sqlite3.connect(db)
+    try:
+        con.execute("UPDATE missions SET playbook_id='ship' WHERE id=?", (mid,))
+        con.execute("UPDATE mission_objectives SET source='playbook' WHERE mission_id=?", (mid,))
+        con.commit()
+    finally:
+        con.close()
+    if state is not None:
+        assert missions.settle_objectives_state(mid, state) is True
+    return mid
+
+
+def _objectives_state(db, mid) -> str | None:
+    con = sqlite3.connect(db)
+    try:
+        return con.execute("SELECT objectives_state FROM missions WHERE id=?", (mid,)).fetchone()[0]
+    finally:
+        con.close()
+
+
+def _snapshot(mid) -> list[tuple]:
+    return [
+        (o["key"], o["title"], o["probe"], o["gate"], o["source"]) for o in missions.objectives(mid)
+    ]
+
+
+@pytest.mark.anyio
+async def test_a_SETTLED_mission_with_an_old_checklist_id_keeps_its_objectives(
+    store, no_requests, monkeypatch
+):
+    _configured(monkeypatch)
+    _reply(monkeypatch, _NOTES)
+    mid = _legacy_mission(store, with_objectives=True, state="done")
+    before = _snapshot(mid)
+    assert missions.get_mission(mid)["playbook_id"] == "ship"
+
+    out = await mo.recover_pending()
+    assert out == {"recovered": [], "failed": []}
+    assert _snapshot(mid) == before
+    assert missions.get_mission(mid)["state"] == "draft", "the mission was held or moved"
+    assert _objectives_state(store, mid) == "done"
+    assert not any(t.startswith("no objectives proposed") for t in _texts(mid)), _texts(mid)
+
+
+@pytest.mark.anyio
+async def test_boot_recovery_of_an_old_checklist_mission_with_PENDING_objectives_adds_none(
+    store, no_requests, monkeypatch
+):
+    """The crash landed between the old producer's write and its settle: the checklist's rows are
+    there and the intent is still `pending`. Recovery must finish the intent without failing on the
+    stale `playbook_id` and without adding instruction objectives beside the checklist's own —
+    "a mission that already has objectives gets no new ones"."""
+    _configured(monkeypatch)
+    _reply(monkeypatch, _NOTES)
+    mid = _legacy_mission(store, with_objectives=True, state=None)
+    before = _snapshot(mid)
+    assert _pending_ids() == [mid]
+
+    out = await mo.recover_pending()
+    assert out["failed"] == [], out
+    assert _snapshot(mid) == before, "the producer added objectives to a mission that had some"
+    assert _objectives_state(store, mid) != "failed"
+    assert _pending_ids() == []
+    assert missions.get_mission(mid)["state"] == "draft"
+
+
+@pytest.mark.anyio
+async def test_an_old_checklist_mission_with_NO_objectives_yet_gets_instruction_ones(
+    store, no_requests, monkeypatch
+):
+    """…and one whose producer never ran is not re-resolved against the checklist it names: it
+    gets instruction objectives like any other mission, and settles."""
+    _configured(monkeypatch)
+    _reply(monkeypatch, _NOTES)
+    mid = _legacy_mission(store, with_objectives=False, state=None)
+
+    out = await mo.recover_pending()
+    assert out["recovered"] == [mid], out
+    assert [(o["key"], o["source"]) for o in missions.objectives(mid)] == [
+        ("goal_1", "instruction"),
+        ("goal_2", "instruction"),
+    ]
+    assert _objectives_state(store, mid) == "done"
+    assert missions.get_mission(mid)["playbook_id"] == "ship", "the stored column was rewritten"

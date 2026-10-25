@@ -34,7 +34,6 @@ function auto(over: Partial<Automation> = {}): Automation {
       kind: "start_mission",
       project_id: "p1",
       instruction: { text: "audit the deps" },
-      checklist_id: null,
       autonomy: "propose",
     },
     policy: {

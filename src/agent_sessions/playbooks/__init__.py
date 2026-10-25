@@ -1,9 +1,8 @@
 """Playbook bundles (#1096): the deployable "how this repository works" object.
 
 Naming (#1096, operator decision 2026-09-23): *playbook* is the BUNDLE this package reads. The
-older internal identifiers `playbook_id`, `prefs.mission_playbooks`, `prefs.PlaybookError` and
-`/settings/ai-playbooks` keep meaning *checklist* (#1091); they are not renamed (see
-`docs/invariants/playbook-format.md`).
+older `missions.playbook_id` column and the `prefs.json` `mission_playbooks` block named
+*checklists* (#1091); checklists were removed (#1653), and both are left in place, unread.
 
 Phase 1 (#1190) is the format: `schema` (the closed value space), `tree` (the node-policy walk),
 `validate` (manifest, flows, runbooks, templates, materials) and `loader` (fail-soft per bundle).

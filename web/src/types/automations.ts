@@ -39,7 +39,8 @@ export type AutomationAction =
       kind: "start_mission";
       project_id: string;
       instruction: AutomationMessage;
-      checklist_id: string | null;
+      /** A record approved before checklists were removed (#1653) may still carry one. Inert. */
+      checklist_id?: string | null;
       autonomy: Autonomy;
     }
   | {

@@ -700,7 +700,6 @@ export function MissionObjectives({
   onStandDown,
   busy = false,
   onDirection,
-  playbookId = null,
 }: {
   objectives: MissionObjective[];
   /** The console renders these once in the Follow-through disclosure. */
@@ -728,8 +727,6 @@ export function MissionObjectives({
   /** Send one direction op (#983 P2). Resolves to null when the server accepted it, or to its
    *  refusal in its own words, which the dialog shows. Absent ⇒ the ops go through `onOps`. */
   onDirection?: (op: DirectionOp) => Promise<string | null>;
-  /** The mission's playbook, which Reset copies from. Null ⇒ no Reset is offered. */
-  playbookId?: string | null;
 }) {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   /** Which objective's direction is being edited, by key. */
@@ -1179,7 +1176,6 @@ export function MissionObjectives({
               <ObjectiveDirectionDialog
                 key={target.key}
                 objective={target}
-                canReset={!!playbookId}
                 onApply={applyDirection}
                 onClose={() => setDirecting(null)}
               />

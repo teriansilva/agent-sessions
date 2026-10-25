@@ -24,7 +24,6 @@ export function ObjectivesPane({
   onStandDown,
   busy,
   onDirection,
-  playbookId,
 }: {
   objectives: MissionObjective[];
   showNotices?: boolean;
@@ -42,7 +41,6 @@ export function ObjectivesPane({
   busy?: boolean;
   /** #983 P2: one direction op, answered with the server's refusal in its own words. */
   onDirection?: (op: DirectionOp) => Promise<string | null>;
-  playbookId?: string | null;
 }) {
   return (
     <MissionObjectives
@@ -55,7 +53,6 @@ export function ObjectivesPane({
       onStandDown={onStandDown}
       busy={busy}
       onDirection={onDirection}
-      playbookId={playbookId}
     />
   );
 }

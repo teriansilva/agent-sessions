@@ -13,11 +13,8 @@ import {
   COPIED,
   type ConsoleServer,
   NUDGE_TEMPLATE,
-  PLAYBOOK_NOW,
-  SAVE_REFUSAL,
   THREAD,
   TYPED,
-  UNKNOWN,
   WHY,
   deferred,
   missionConsole,
@@ -25,17 +22,10 @@ import {
   nudgeAction,
   objectiveRows,
   openDirection,
-  playbookEditor,
   staleNudge,
 } from "./mission-directions";
 import { openMissionConversation, openMissionDetails } from "./mission-console";
 import { TOUCH_FLOOR } from "./touchTarget";
-
-/** Click a chip and wait for the caret to come back to the text, which it does on the next frame. */
-async function chip(field: Locator, name: string) {
-  await field.getByTestId(`objective-direction-chip-${name}`).click();
-  await expect(field.getByTestId("objective-direction-text")).toBeFocused();
-}
 
 /** Wait for the ONE patch a dialog action sends, then for the dialog to go. */
 async function patched(page: Page, server: ConsoleServer, n: number) {
@@ -43,74 +33,9 @@ async function patched(page: Page, server: ConsoleServer, n: number) {
   await expect(page.getByTestId("direction-dialog")).toHaveCount(0);
 }
 
-// --- the playbook editor ---------------------------------------------------------------------------
-
-test("D1: a direction is written with fact chips, previewed with example facts, and saved as typed", async ({
-  page,
-}) => {
-  const { field, text, previews, saves } = await playbookEditor(page);
-
-  // Only what a forge_checks objective can fill, in the server's order.
-  const chips = field.getByRole("group", { name: "Insert a checked fact" }).getByRole("button");
-  await expect(chips).toHaveText([/^\{pr\}/, /^\{checks\}/, /^\{repo\}/, /^\{branch\}/]);
-  await expect(field.getByTestId("objective-direction-chip-pr_state")).toHaveCount(0);
-  await expect(field.getByTestId("objective-direction-preview")).toHaveText(
-    "No direction: mission control sends your default nudge.",
-  );
-
-  await text.fill("PR #");
-  await chip(field, "pr");
-  await page.keyboard.type("'s checks are ");
-  await chip(field, "checks");
-  await page.keyboard.type(" on ");
-  await chip(field, "branch");
-  await page.keyboard.type(". Fix the cause and push.");
-  const DIRECTION = "PR #{pr}'s checks are {checks} on {branch}. Fix the cause and push.";
-  await expect(text).toHaveValue(DIRECTION);
-
-  await expect(field.getByText("Preview · with example facts")).toBeVisible();
-  await expect(field.getByTestId("objective-direction-preview")).toHaveText(
-    "PR #412's checks are failure on fix/upload-retry. Fix the cause and push.",
-  );
-  await expect.poll(() => previews.at(-1)).toEqual({ direction: DIRECTION, probe: "forge_checks" });
-
-  await page.getByTestId("playbook-save").click();
-  await expect.poll(() => saves.length).toBe(1);
-  expect(saves[0].mission_playbooks.playbooks[0].objectives[0]).toMatchObject({
-    key: "checks_green",
-    direction: DIRECTION,
-  });
-});
-
-test("D1: an unknown placeholder shows the server's refusal in its own words, in the preview and on save", async ({
-  page,
-}) => {
-  const { field, text, saves } = await playbookEditor(page);
-  await text.fill("Fix {nope} now");
-  await expect(field.getByTestId("objective-direction-preview")).toHaveText(UNKNOWN);
-  await expect(field.getByTestId("objective-direction-preview")).toHaveAttribute("data-state", "error");
-
-  await page.getByTestId("playbook-save").click();
-  await expect(page.getByTestId("playbook-error")).toHaveText(SAVE_REFUSAL);
-  expect(saves).toHaveLength(1);
-});
-
-test("D1: keyboard order runs from the text through each fact chip in order", async ({ page }) => {
-  const { field, text } = await playbookEditor(page);
-  await text.focus();
-  for (const name of ["pr", "checks", "repo", "branch"]) {
-    await page.keyboard.press("Tab");
-    await expect(field.getByTestId(`objective-direction-chip-${name}`)).toBeFocused();
-  }
-  // Enter on a chip inserts it and hands the caret back to the text.
-  await page.keyboard.press("Enter");
-  await expect(text).toBeFocused();
-  await expect(text).toHaveValue("{branch}");
-});
-
 // --- the objective menu ----------------------------------------------------------------------------
 
-test("D2: Edit direction keeps, resets, writes and clears, and rows with a direction are marked", async ({
+test("D2: Edit direction keeps, writes and clears, and rows with a direction are marked (no reset: #1653)", async ({
   page,
 }) => {
   const server = await missionConsole(page);
@@ -121,7 +46,7 @@ test("D2: Edit direction keeps, resets, writes and clears, and rows with a direc
   await expect(marks(1)).toHaveCount(0);
   await expect(marks(2)).toHaveText("direction");
 
-  // KEEP: the playbook's copy is the choice, it is shown, and there is nothing to save.
+  // KEEP: the copy a removed checklist left is the choice, it is shown, and there is nothing to save.
   let dialog = await openDirection(page, 0);
   await expect(dialog.getByTestId("direction-keep")).toBeChecked();
   await expect(dialog.getByTestId("direction-copied")).toHaveText(COPIED);
@@ -130,17 +55,20 @@ test("D2: Edit direction keeps, resets, writes and clears, and rows with a direc
   await expect(dialog).toHaveCount(0);
   expect(server.patches).toHaveLength(0);
 
-  // RESET: copy the playbook's CURRENT direction again.
+  // NO RESET: checklists were removed (#1653), so there is nothing to copy from again.
   dialog = await openDirection(page, 0);
-  await dialog.getByTestId("direction-reset").click();
-  await patched(page, server, 1);
-  expect(server.patches[0]).toEqual({ ops: [{ op: "reset_direction", key: "checks" }] });
+  await expect(dialog.getByTestId("direction-reset")).toHaveCount(0);
+  await expect(dialog.getByTestId("direction-choice-keep")).toContainText(
+    "copied from a checklist when this mission was created",
+  );
+  await dialog.getByTestId("direction-cancel").click();
+  await expect(dialog).toHaveCount(0);
 
   // WRITE ONE FOR THIS MISSION: starts from the current text, a chip inserts at the caret.
   dialog = await openDirection(page, 0);
   await dialog.getByTestId("direction-choice-write").click();
   const text = dialog.getByTestId("direction-field-text");
-  await expect(text).toHaveValue(PLAYBOOK_NOW);
+  await expect(text).toHaveValue(COPIED);
   await text.fill("PR #");
   await dialog.getByTestId("direction-field-chip-pr").click();
   await expect(text).toBeFocused();
@@ -150,8 +78,8 @@ test("D2: Edit direction keeps, resets, writes and clears, and rows with a direc
     "PR #412 keeps failing: fix the retry test, not the timeout.",
   );
   await dialog.getByTestId("direction-save").click();
-  await patched(page, server, 2);
-  expect(server.patches[1]).toEqual({
+  await patched(page, server, 1);
+  expect(server.patches[0]).toEqual({
     ops: [{ op: "set_direction", key: "checks", direction: WRITTEN }],
   });
 
@@ -169,8 +97,8 @@ test("D2: Edit direction keeps, resets, writes and clears, and rows with a direc
   // CLEAR: no direction, so a nudge types the default nudge; the row loses its mark.
   await dialog.getByTestId("direction-choice-none").click();
   await dialog.getByTestId("direction-save").click();
-  await patched(page, server, 4);
-  expect(server.patches[3]).toEqual({ ops: [{ op: "clear_direction", key: "review" }] });
+  await patched(page, server, 3);
+  expect(server.patches[2]).toEqual({ ops: [{ op: "clear_direction", key: "review" }] });
   await expect(marks(2)).toHaveCount(0);
 });
 
@@ -191,10 +119,8 @@ test("D2 / B6: the dialog is a sheet on a phone, holds focus in order, and Esc r
     expect(box!.y + box!.height).toBeLessThan(vp.height - 16);
   }
 
-  // Focus starts on the checked choice; the choices are one stop, then Reset, then the actions.
+  // Focus starts on the checked choice; the choices are one stop, then the actions.
   await expect(dialog.getByTestId("direction-keep")).toBeFocused();
-  await page.keyboard.press("Tab");
-  await expect(dialog.getByTestId("direction-reset")).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(dialog.getByTestId("direction-cancel")).toBeFocused();
   // Save is disabled with nothing to change, so the cycle stays inside the dialog.
@@ -365,23 +291,13 @@ function phoneOnly(testInfo: { project: { name: string } }) {
 }
 
 test.describe("44px targets on a phone", () => {
-  test("the editor's fact chips", async ({ page }, testInfo) => {
-    phoneOnly(testInfo);
-    const { field } = await playbookEditor(page);
-    await atLeast44(
-      field.getByRole("group", { name: "Insert a checked fact" }).getByRole("button"),
-      "chip",
-    );
-  });
-
-  test("the sheet's choices, Reset, chips and actions", async ({ page }, testInfo) => {
+  test("the sheet's choices, chips and actions", async ({ page }, testInfo) => {
     phoneOnly(testInfo);
     await missionConsole(page);
     await openMissionDetails(page, "objectives");
     const dialog = await openDirection(page, 0);
     await dialog.getByTestId("direction-choice-write").click();
     await atLeast44(dialog.locator('[data-testid^="direction-choice-"]'), "choice");
-    await atLeast44(dialog.getByTestId("direction-reset"), "reset");
     await atLeast44(dialog.locator('[data-testid^="direction-field-chip-"]'), "chip");
     await atLeast44(dialog.getByTestId("direction-cancel"), "cancel");
     await atLeast44(dialog.getByTestId("direction-save"), "save");
@@ -437,7 +353,7 @@ test("a pending Save freezes the text and its fact chips, so nothing typed while
   expect(server.patches).toEqual([{ ops: [{ op: "set_direction", key: "checks", direction: A }] }]);
 });
 
-for (const kind of ["reset", "clear"] as const) {
+for (const kind of ["clear"] as const) {
   test(`a pending ${kind} keeps Tab and Shift+Tab inside the dialog, with the background inert`, async ({
     page,
   }) => {
@@ -447,12 +363,8 @@ for (const kind of ["reset", "clear"] as const) {
 
     const gate = deferred();
     server.hold = gate.promise;
-    if (kind === "reset") {
-      await dialog.getByTestId("direction-reset").click();
-    } else {
-      await dialog.getByTestId("direction-choice-none").click();
-      await dialog.getByTestId("direction-save").click();
-    }
+    await dialog.getByTestId("direction-choice-none").click();
+    await dialog.getByTestId("direction-save").click();
     await expect.poll(() => server.patches.length).toBe(1);
     // Every control in the dialog is disabled while it is pending — the state the trap had no answer for.
     await expect(dialog.getByTestId("direction-cancel")).toBeDisabled();
@@ -470,7 +382,7 @@ for (const kind of ["reset", "clear"] as const) {
     gate.release();
     await expect(dialog).toHaveCount(0);
     expect(server.patches).toEqual([
-      { ops: [{ op: kind === "reset" ? "reset_direction" : "clear_direction", key: "checks" }] },
+      { ops: [{ op: "clear_direction", key: "checks" }] },
     ]);
     expect(await page.evaluate(() => document.getElementById("root")?.inert)).toBe(false);
   });

@@ -68,9 +68,9 @@ export function playbookPath(id: string): string {
 export const PLAYBOOK_NEW_PATH = `${PLAYBOOKS_PATH}/create/new`;
 export const playbookEditPath = (id: string) => `${playbookPath(id)}/edit`;
 
-/** The mission checklists editor, under Library in the nav (#1294; it was under Missions). It used to be a Settings
- *  tab (Settings → AI → Checklists); `/settings/ai-playbooks` still redirects here. */
-export const CHECKLISTS_PATH = `${MISSION_PATH}/checklists`;
+/** Where the checklists editor lived (#1294). Checklists were removed (#1653); this old address, and
+ *  `/settings/ai-playbooks` before it, redirect to Library → Playbooks. */
+export const LEGACY_CHECKLISTS_PATH = `${MISSION_PATH}/checklists`;
 
 /** Library → Automations (#1201, moved from Missions by #1294 — the URL stayed): missions and sessions that run on a schedule, once, or on Run
  *  now. The list lives here; one automation's run history is `automationPath(id)`, its editor

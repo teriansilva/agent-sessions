@@ -32,6 +32,7 @@ import { useEnableFlow } from "../components/automations/useEnableFlow";
 import { refreshOrigins } from "../app/automationOrigins";
 import { ApiError, api } from "../lib/api";
 import {
+  AUTONOMY_WORDS,
   errorWords,
   inFlightNote,
   actionLabel,
@@ -531,11 +532,7 @@ function Row({
   const act = a.action;
   const actDetail =
     act?.kind === "start_mission"
-      ? act.checklist_id === ":none"
-        ? "no checklist"
-        : act.checklist_id
-          ? `checklist ${act.checklist_id}`
-          : "default checklist"
+      ? AUTONOMY_WORDS[act.autonomy]
       : act?.kind === "start_session"
         ? `${act.engine} · default model`
         : act?.kind === "send_to_session"

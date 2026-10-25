@@ -28,7 +28,6 @@ import {
 import { MissionRailOnly } from "../components/automations/MissionRailOnly";
 import { useProjects } from "../components/automations/useAutomations";
 import { useEnableFlow } from "../components/automations/useEnableFlow";
-import { useConfig } from "../app/config";
 import { engineName, useEngineRoster } from "../app/engineRoster";
 import { ApiError, api } from "../lib/api";
 import {
@@ -142,7 +141,6 @@ function Editor({ routeId }: { routeId?: string }) {
   }, []);
   const navigate = useNavigate();
   const location = useLocation();
-  const config = useConfig();
   useEngineRoster();
   const projects = useProjects();
   const uid = useId();
@@ -355,21 +353,7 @@ function Editor({ routeId }: { routeId?: string }) {
     );
   }
 
-  const playbooks = config?.mission_playbooks?.playbooks ?? [];
-  // A saved checklist that no longer exists is shown AS missing, never as the default it is not
-  // (#1252 review), and Save waits for a live choice. Only once the checklists have been read.
-  const checklistMissing =
-    form.actionKind === "start_mission" &&
-    !!config?.mission_playbooks &&
-    form.checklistId != null &&
-    form.checklistId !== ":none" &&
-    !playbooks.some((p) => p.id === form.checklistId);
-  const problems = [
-    ...formProblems(form),
-    ...(checklistMissing
-      ? ["The checklist it used was deleted — choose another checklist, the default, or none"]
-      : []),
-  ];
+  const problems = formProblems(form);
   const engines = list.engines ?? [];
   const liveProjects = (projects ?? []).filter((p) => !p.archived || p.id === form.projectId);
   const msgWord =
@@ -629,30 +613,6 @@ function Editor({ routeId }: { routeId?: string }) {
                       {form.projectId && !liveProjects.some((p) => p.id === form.projectId) && (
                         <option value={form.projectId}>{form.projectId}</option>
                       )}
-                    </select>
-                  </div>
-                  <div className={styles.field}>
-                    <label className={styles.label} htmlFor={f("checklist")}>
-                      Checklist
-                    </label>
-                    <select
-                      id={f("checklist")}
-                      className={styles.control}
-                      value={form.checklistId ?? ""}
-                      onChange={(e) => set("checklistId", e.target.value === "" ? null : e.target.value)}
-                      aria-invalid={checklistMissing || undefined}
-                      data-testid="mission-checklist"
-                    >
-                      {checklistMissing && (
-                        <option value={form.checklistId ?? ""}>Missing checklist (deleted)</option>
-                      )}
-                      <option value="">The default checklist</option>
-                      <option value=":none">No checklist</option>
-                      {playbooks.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.label} · {p.objectives.length} {p.objectives.length === 1 ? "check" : "checks"}
-                        </option>
-                      ))}
                     </select>
                   </div>
                   <div className={`${styles.field} ${styles.full}`}>

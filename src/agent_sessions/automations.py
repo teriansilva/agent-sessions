@@ -18,8 +18,9 @@ slot id is the nominal local time either way, which is what makes it single-fire
 
 **Consent is a scope, compared field by field.** `scope_of` derives what an automation may do;
 `widened` names every way a new scope exceeds an old one. Widening needs fresh consent, narrowing
-does not. Content (the instruction, the template's pinned revision, the checklist's digest) is part
-of the scope: a changed instruction is a different grant.
+does not. Content (the instruction, the template's pinned revision) is part of the scope: a
+changed instruction is a different grant. A record approved before checklists were removed (#1653)
+keeps its checklist fields in its scope, inert, so its receipt still matches.
 
 Loop and webhook triggers are Phases 2–3: they are reserved names here, and saving one is refused.
 """
@@ -301,6 +302,8 @@ def validate_action(raw: object) -> dict:
         pid = a["project_id"]
         if not isinstance(pid, str) or not pid or len(pid) > 200:
             raise AutomationError("project_id must be a project id")
+        # Still accepted, so a record approved before checklists were removed (#1653) loads and its
+        # receipt (`scope_of` reads it) still matches. Nothing uses it to build the mission.
         checklist = a.get("checklist_id")
         if checklist is not None and (
             not isinstance(checklist, str) or not (checklist == ":none" or _ID_RE.match(checklist))
@@ -624,8 +627,7 @@ def message_of(action: dict) -> dict:
 
 def compute_pins(config: dict) -> dict:
     """What the unattended input is bound to: the template's revision, its library variables'
-    kinds and the checklist's digest. Server-written; a client can never supply one."""
-    from . import prefs
+    kinds and the working folder. Server-written; a client can never supply one."""
     from . import templates as tstore
 
     action = config["action"]
@@ -644,20 +646,8 @@ def compute_pins(config: dict) -> dict:
                 "library": _library_kinds(t),
                 "name": t.get("name"),
             }
-    if action["kind"] == "start_mission" and action.get("checklist_id") != ":none":
-        # `None` is "the operator's DEFAULT checklist" — resolved and pinned NOW, so a later change
-        # of the default (or of its contents) is a drift the operator re-approves, and the run
-        # creates the mission with exactly the pinned id.
-        block = prefs.get_mission_playbooks()
-        default = action.get("checklist_id") is None
-        cid = block["default_id"] if default else action["checklist_id"]
-        book = next((p for p in block["playbooks"] if p["id"] == cid), None) if cid else None
-        pins["checklist"] = {
-            "id": cid or None,
-            "default": default,
-            "label": book["label"] if book else "",
-            "digest": _digest(book) if book else ("none" if default and not cid else "missing"),
-        }
+    # No `checklist` pin any more: checklists were removed (#1653). A record approved before then
+    # keeps its stored pin, read as-is by `scope_of`, and nothing compares it (`pins_drift`).
     if action["kind"] == "start_mission":
         pins["cwd"] = resolve_mission_cwd(action["project_id"])
     elif action["kind"] == "start_session":
@@ -722,11 +712,8 @@ def pins_drift(stored: dict, current: dict) -> str:
         return "the template's name changed"
     if (st or {}).get("updated_at") != (ct or {}).get("updated_at"):
         return "the template was saved again since you approved this automation"
-    sc, cc = stored.get("checklist") or {}, current.get("checklist") or {}
-    if (sc.get("id"), sc.get("digest")) != (cc.get("id"), cc.get("digest")):
-        return "the checklist was edited since you approved this automation"
-    if sc.get("label") != cc.get("label"):
-        return "the checklist's name changed"
+    # A stored `checklist` pin (approved before checklists were removed, #1653) is not compared:
+    # the current pins never carry one, and the run no longer uses it.
     if stored.get("cwd") != current.get("cwd"):
         return "the working folder changed since you approved this automation"
     return ""
@@ -923,6 +910,15 @@ def _ladder_widens(key: str, old: object, new: object) -> bool:
     return n > o + (1e-9 if key == "runs_per_week" else 0)
 
 
+#: Scope fields that only a record approved before checklists were removed (#1653) can carry.
+_RETIRED_CHECKLIST_FIELDS = frozenset({"checklist", "checklist_name", "checklist_default"})
+#: What an edit of such a record changes, in the consent dialog's words.
+CHECKLIST_RETIRED = (
+    "checklists were removed: its missions now get AI-written, supervisor-judged objectives "
+    "instead of the approved checklist"
+)
+
+
 def widened(old: dict | None, new: dict) -> list[str]:
     """Every way ``new`` exceeds ``old``. Empty = equal or narrower (no fresh consent needed).
 
@@ -940,6 +936,22 @@ def widened(old: dict | None, new: dict) -> list[str]:
     for key in sorted(set(old) | set(new)):
         if key == "version":
             continue
+        # Checklists were removed (#1653): a record approved with one carries its fields, and an
+        # edit recomputes them as empty. That CHANGES what its missions are checked against —
+        # AI-written, supervisor-judged objectives instead of the approved checklist — so it asks
+        # for consent, said as what it is rather than "the checklist changed". (An unchanged
+        # record still runs: its receipt matches its stored pins.)
+        if key in _RETIRED_CHECKLIST_FIELDS and key in old and key in new and not new[key]:
+            if old[key]:
+                add(CHECKLIST_RETIRED)
+            continue
+        if key == "target" and isinstance(old.get(key), dict) and isinstance(new.get(key), dict):
+            if old[key].get("checklist_id") and not new[key].get("checklist_id"):
+                o = {k: v for k, v in old[key].items() if k != "checklist_id"}
+                n = {k: v for k, v in new[key].items() if k != "checklist_id"}
+                if o == n:
+                    add(CHECKLIST_RETIRED)
+                    continue
         if key in LADDER_FIELDS:
             if key not in old or key not in new:
                 add(_LADDER_WORDS[key])
@@ -1114,6 +1126,9 @@ def describe(scope: dict, preview: str | None = None) -> list[str]:
         lines.append("Permission bypass: off")
     else:
         lines.append("Permission bypass: unchanged — whatever that session already runs with")
+    # A STORED checklist (approved before checklists were removed, #1653) is still disclosed, since
+    # every digest field changes the consent lines, but as what it is now: removed and not used.
+    # Nothing the run does comes from it, so these lines must never read as a promise.
     cid = t.get("checklist_id")
     if (
         scope.get("checklist_default")
@@ -1123,16 +1138,16 @@ def describe(scope: dict, preview: str | None = None) -> list[str]:
     ):
         name = scope.get("checklist_name")
         if scope.get("checklist_default"):
-            label = f"{name} (your default)" if name else "none (you have no default)"
+            label = f"{name} (was your default)" if name else "none"
         elif cid == ":none":
             label = "none"
         elif name and cid and name != cid:
             label = f"{name} ({cid})"
         else:
             label = str(name or cid)
-        lines.append(f"Checklist: {label}")
+        lines.append(f"Checklist (removed, not used): {label}")
         if scope.get("checklist"):
-            lines.append(f"Checklist revision: {scope['checklist']}")
+            lines.append(f"Checklist revision (removed, not used): {scope['checklist']}")
     if scope.get("autonomy") is not None:
         lines.append(
             {

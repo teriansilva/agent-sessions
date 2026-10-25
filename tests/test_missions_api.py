@@ -700,15 +700,15 @@ def test_the_session_routes_refuse_to_archive_a_mission_owned_session(api):
 
 def _with_objective(c, hdr, proj, key="checks_green"):
     m = _create(c, hdr, project_id=proj.id)
-    missions.instantiate_objectives(
+    missions.patch_objectives(
         m["id"],
         [
             {
+                "op": "add",
                 "key": key,
                 "title": "Checks are green",
                 "probe": "forge_checks",
                 "gate": True,
-                "source": "playbook",
             }
         ],
     )
@@ -4148,95 +4148,153 @@ def test_a_QUESTION_OPENED_MID_READ_never_arrives_without_its_own_event(api, mon
     assert "question" in later["needs_you_why"]
 
 
-def test_a_CONCURRENT_playbook_save_is_refused_rather_than_overwriting(api):
-    """#900 review 5, finding 7. A whole-block write with no comparand is last-writer-wins over
-    everything another tab did — a playbook it added, a probe target it fixed, a gate it set —
-    deleted silently, with both operators told the save worked.
+# ---- checklists were removed (#1653) ----------------------------------------------------
 
-    Red against a `set_mission_playbooks` that ignores the revision it was handed.
-    """
+#: A `mission_playbooks` block as an install that used checklists has it in `prefs.json`.
+_OLD_BLOCK = {
+    "default_id": "ship",
+    "revision": 3,
+    "playbooks": [
+        {
+            "id": "ship",
+            "label": "Ship",
+            "objectives": [
+                {"key": "pr_open", "title": "A PR is open", "probe": "forge_pr", "gate": True}
+            ],
+        }
+    ],
+}
+
+
+def test_a_prefs_write_carrying_mission_playbooks_is_refused_and_persists_NOTHING(api):
+    """A cached older SPA can still post the block. It is a plain 422 — alone, or beside a key
+    that would otherwise be accepted — and the preflight refuses it before any key lands: the
+    file is byte-identical afterwards."""
     from agent_sessions import prefs
 
     c, hdr, proj = api
-    first = c.get("/api/config", headers=hdr).json()["mission_playbooks"]
-    rev = first["revision"]
-
-    # TAB A saves, and the revision moves.
-    a = c.post(
-        "/api/prefs",
-        json={
-            "mission_playbooks": {
-                "default_id": "",
-                "playbooks": [{"id": "from_a", "label": "A", "objectives": []}],
-                "revision": rev,
-            }
-        },
-        headers=hdr,
-    )
-    assert a.status_code == 200, a.text
-    assert a.json()["mission_playbooks"]["revision"] == rev + 1
-
-    # TAB B still holds the OLD revision, and its block does not contain A's playbook.
-    b = c.post(
-        "/api/prefs",
-        json={
-            "mission_playbooks": {
-                "default_id": "",
-                "playbooks": [{"id": "from_b", "label": "B", "objectives": []}],
-                "revision": rev,
-            }
-        },
-        headers=hdr,
-    )
-    assert b.status_code == 409, b.text
-    assert "another tab" in b.json()["detail"]
-
-    # A'S WORK SURVIVES, which is the whole point.
-    now = prefs.get_mission_playbooks()
-    assert [p["id"] for p in now["playbooks"]] == ["from_a"]
-
-    # …and B can save once it has read the current revision.
-    ok = c.post(
-        "/api/prefs",
-        json={
-            "mission_playbooks": {
-                "default_id": "",
-                "playbooks": [{"id": "from_b", "label": "B", "objectives": []}],
-                "revision": now["revision"],
-            }
-        },
-        headers=hdr,
-    )
-    assert ok.status_code == 200, ok.text
+    path = prefs._default_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"theme": "dark", "mission_playbooks": _OLD_BLOCK}))
+    before = path.read_bytes()
+    for payload in (
+        {"mission_playbooks": _OLD_BLOCK},
+        {"mission_playbooks": {"default_id": "", "playbooks": []}},
+        {"mission_playbooks": None},
+        {"theme": "light", "mission_playbooks": _OLD_BLOCK},
+        {"mission_playbooks": _OLD_BLOCK, "theme": "light"},
+    ):
+        r = c.post("/api/prefs", json=payload, headers=hdr)
+        assert r.status_code == 422, (payload, r.text)
+        assert "checklists were removed" in r.json()["detail"]
+        assert path.read_bytes() == before, f"a refused write changed prefs.json: {payload}"
+    assert prefs.get_theme() == "dark"
 
 
-def test_a_playbook_save_with_NO_revision_is_refused_at_the_route(api):
-    """#900 review 6, finding 2. `None` means "no comparand" and exists for the installer and the
-    shipped defaults, which have nothing to compare against — but over HTTP it made the whole
-    concurrency check OPTIONAL: an authenticated stale client, including an older cached PWA
-    build, could omit the field and overwrite a newer block wholesale.
+def test_config_has_no_mission_playbooks_and_the_stored_block_survives_a_prefs_write(api):
+    """The stored block is never read and never written (#1653, workflow §0): `GET /api/config`
+    does not carry it, and an ordinary prefs write leaves it exactly as it was."""
+    from agent_sessions import prefs
 
-    Red against a route that passes `None` through when the field is absent or mistyped.
-    """
     c, hdr, proj = api
-    block = {"default_id": "", "playbooks": [{"id": "x", "label": "X", "objectives": []}]}
+    path = prefs._default_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"mission_playbooks": _OLD_BLOCK}))
+    cfg = c.get("/api/config", headers=hdr).json()
+    assert "mission_playbooks" not in cfg
+    r = c.post("/api/prefs", json={"theme": "light"}, headers=hdr)
+    assert r.status_code == 200, r.text
+    assert "mission_playbooks" not in r.json()
+    stored = json.loads(path.read_text())
+    assert stored["theme"] == "light"
+    assert stored["mission_playbooks"] == _OLD_BLOCK
+    assert "mission_playbooks" not in c.get("/api/config", headers=hdr).json()
 
-    missing = c.post("/api/prefs", json={"mission_playbooks": block}, headers=hdr)
-    assert missing.status_code == 422, missing.text
-    assert "revision is required" in missing.json()["detail"]
 
-    for bad in ("3", True, None, 1.5):
-        r = c.post(
-            "/api/prefs",
-            json={"mission_playbooks": {**block, "revision": bad}},
-            headers=hdr,
+@pytest.mark.parametrize("sent", ["ship_a_change", ":none", "deleted_one", "", 7, None])
+def test_a_create_carrying_a_playbook_id_stores_NONE_and_gets_instruction_objectives(
+    api, monkeypatch, sent
+):
+    """An older client still sends the checklist it picked. The id is ignored — whatever its
+    shape — so the mission stores none, and the producer writes its objectives from the
+    instruction like any other mission's."""
+    from agent_sessions import review
+
+    monkeypatch.setattr(review, "_require_config", lambda: {"base_url": "x", "api_key": "k"})
+
+    async def model(messages, **kw):
+        return {"notes": [{"title": "The upload retries are fixed"}]}
+
+    monkeypatch.setattr(review, "complete_json", model)
+    c, hdr, proj = api
+    m = _create(c, hdr, "fix the upload retries", project_id=proj.id, playbook_id=sent)
+    con = sqlite3.connect(missions._db_path())
+    try:
+        stored = con.execute("SELECT playbook_id FROM missions WHERE id=?", (m["id"],)).fetchone()
+    finally:
+        con.close()
+    assert stored == (None,)
+    assert m.get("playbook_id") is None
+    rows = c.get(f"/api/missions/{m['id']}/objectives", headers=hdr).json()["objectives"]
+    assert [(o["key"], o["probe"], o["gate"], o["source"]) for o in rows] == [
+        ("goal_1", "supervisor_judged", True, "instruction")
+    ]
+
+
+def test_reset_direction_is_refused_by_the_route_as_an_unknown_op(api):
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    url = f"/api/missions/{m['id']}/objectives"
+    add = {"op": "add", "key": "checks", "title": "Checks", "probe": "forge_checks", "gate": True}
+    assert c.patch(url, json={"ops": [add]}, headers=hdr).status_code == 200
+    before = c.get(url, headers=hdr).json()["objectives"]
+    r = c.patch(url, json={"ops": [{"op": "reset_direction", "key": "checks"}]}, headers=hdr)
+    assert r.status_code == 422, r.text
+    assert "reset_direction" in r.json()["detail"]
+    assert c.get(url, headers=hdr).json()["objectives"] == before
+
+
+def test_a_direction_copied_from_a_removed_checklist_is_shown_and_editable_over_the_route(api):
+    """An old mission's row as #983 left it: `direction_source = "template"`, the mission naming its
+    checklist. The route shows the direction, and `set_direction` / `clear_direction` work."""
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    url = f"/api/missions/{m['id']}/objectives"
+    add = {"op": "add", "key": "checks", "title": "Checks", "probe": "forge_checks", "gate": True}
+    assert c.patch(url, json={"ops": [add]}, headers=hdr).status_code == 200
+    copied = "PR #{pr} checks are {checks}. Fix the failing check."
+    con = sqlite3.connect(missions._db_path())
+    try:
+        con.execute(
+            "UPDATE mission_objectives SET direction=?, direction_source='template', "
+            "source='playbook' WHERE mission_id=? AND key='checks'",
+            (copied, m["id"]),
         )
-        assert r.status_code == 422, (bad, r.text)
+        con.execute("UPDATE missions SET playbook_id='ship_a_change' WHERE id=?", (m["id"],))
+        con.commit()
+    finally:
+        con.close()
 
-    # …and a real one works.
-    rev = c.get("/api/config", headers=hdr).json()["mission_playbooks"]["revision"]
-    ok = c.post("/api/prefs", json={"mission_playbooks": {**block, "revision": rev}}, headers=hdr)
-    assert ok.status_code == 200, ok.text
+    (row,) = c.get(url, headers=hdr).json()["objectives"]
+    assert (row["direction"], row["direction_source"]) == (copied, "template")
+    (row,) = c.get(f"/api/missions/{m['id']}", headers=hdr).json()["objectives"]
+    assert (row["direction"], row["direction_source"]) == (copied, "template")
+
+    mine = "PR #{pr}: mine now"
+    r = c.patch(
+        url,
+        json={"ops": [{"op": "set_direction", "key": "checks", "direction": mine}]},
+        headers=hdr,
+    )
+    assert r.status_code == 200, r.text
+    (row,) = r.json()["objectives"]
+    assert (row["direction"], row["direction_source"]) == (mine, "operator")
+
+    r = c.patch(url, json={"ops": [{"op": "clear_direction", "key": "checks"}]}, headers=hdr)
+    assert r.status_code == 200, r.text
+    (row,) = r.json()["objectives"]
+    assert (row["direction"], row["direction_source"]) == (None, None)
+    assert (row["probe"], row["source"]) == ("forge_checks", "playbook")
 
 
 # =======================================================================================

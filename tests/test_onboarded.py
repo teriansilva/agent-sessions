@@ -117,142 +117,54 @@ def test_onboarded_must_be_boolean(tmp_home, auth_cfg, monkeypatch):
     assert r.status_code == 422
 
 
-# ---- mission_playbooks through POST /api/prefs (#883 review) -----------------------------
-#
-# The block was writable only by hand-editing `prefs.json`: a payload containing just this key
-# fell past every branch to "no known preference key" and 422'd. Settings had no way to save.
+# ---- checklists were removed (#1653): `mission_playbooks` is neither served nor written ----------
 
 
-def _PB(**over):
-    """A playbook block as the CLIENT sends one — `revision` included, because the route requires
-    it (#900 review 6, finding 2): a whole-block write with no comparand is last-writer-wins over
-    whatever another tab did. `0` is the revision of a store nothing has written yet."""
-    pb = {
-        "revision": 0,
-        "default_id": "p",
-        "playbooks": [
-            {
-                "id": "p",
-                "label": "P",
-                "objectives": [
-                    {
-                        "key": "live",
-                        "title": "It is live",
-                        "probe": "http_status",
-                        "probe_args": {"url": "https://app.example.com/healthz"},
-                        "gate": True,
-                    }
-                ],
-            }
-        ],
+def _seed_legacy_block() -> dict:
+    """An install that HAD checklists: the block as an old build wrote it into `prefs.json`."""
+    import json
+
+    path = prefs._default_path()
+    data = json.loads(path.read_text()) if path.exists() else {}
+    data["mission_playbooks"] = {
+        "revision": 3,
+        "default_id": "ship_a_change",
+        "playbooks": [{"id": "ship_a_change", "label": "Ship a change", "objectives": []}],
     }
-    pb.update(over)
-    return pb
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data))
+    return data["mission_playbooks"]
 
 
-def test_mission_playbooks_round_trips_through_the_prefs_API(auth_cfg, tmp_home):
-    c = _client(auth_cfg)
-    csrf = _login(c, auth_cfg)
-    r = c.post(
-        "/api/prefs",
-        json={"mission_playbooks": _PB()},
-        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["mission_playbooks"]["default_id"] == "p"
-    assert prefs.get_mission_playbooks()["playbooks"][0]["objectives"][0]["probe"] == "http_status"
+def _stored_block():
+    import json
+
+    return json.loads(prefs._default_path().read_text()).get("mission_playbooks")
 
 
-def test_the_prefs_API_refuses_a_malformed_playbook_rather_than_degrading_it(auth_cfg, tmp_home):
-    """Strict on write, lenient on read — the same split as `accent` and `term_font_size`.
-
-    Degrading here would take an operator's typo'd probe target and silently store a template
-    that can never gate, with the Settings panel showing it as saved.
-    """
-    c = _client(auth_cfg)
-    csrf = _login(c, auth_cfg)
-    bad = _PB()
-    bad["playbooks"][0]["objectives"][0]["probe_args"] = {"url": ["not", "a", "url"]}
-    r = c.post(
-        "/api/prefs",
-        json={"mission_playbooks": bad},
-        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
-    )
-    assert r.status_code == 422
-    assert "mission_playbooks" in r.json()["detail"]
-
-
-def test_a_MIXED_payload_with_a_bad_playbook_persists_NOTHING(auth_cfg, tmp_home):
-    """The preflight's whole reason to exist (#859): a 422 must mean nothing was written, not
-    that the keys before the bad one already landed."""
+def test_a_mission_playbooks_write_is_refused_and_a_mixed_payload_persists_nothing(
+    auth_cfg, tmp_home
+):
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
     c.post("/api/prefs", json={"theme": "dark"}, headers=hdr)
-    bad = _PB()
-    bad["playbooks"][0]["objectives"][0]["probe_args"] = {"url": "gopher://nope"}
-    r = c.post("/api/prefs", json={"theme": "light", "mission_playbooks": bad}, headers=hdr)
-    assert r.status_code == 422
-    assert prefs.get_theme() == "dark", "the valid key landed despite the request being refused"
-    # Still the shipped defaults: the refused playbook did not land. (Not `== []` — an install
-    # that has never configured playbooks reads as the defaults, which is the other half of this
-    # round of review.)
-    assert [pb["id"] for pb in prefs.get_mission_playbooks()["playbooks"]] == [
-        "ship_a_change",
-        "investigate",
-    ]
+    legacy = _seed_legacy_block()
+    block = {"revision": 3, "default_id": "", "playbooks": []}
+    for payload in ({"mission_playbooks": block}, {"theme": "light", "mission_playbooks": block}):
+        r = c.post("/api/prefs", json=payload, headers=hdr)
+        assert r.status_code == 422, r.text
+        assert "checklists were removed" in r.json()["detail"]
+    assert prefs.get_theme() == "dark", "a valid key landed despite the request being refused"
+    assert _stored_block() == legacy
 
 
-def test_the_prefs_API_refuses_an_explicit_null_playbook_block(auth_cfg, tmp_home):
-    """The write side of the absent-vs-null distinction.
-
-    A stored `null` fails CLOSED on read (it degrades to no playbooks), and the API refuses to
-    create one in the first place — the operator clears playbooks with an empty BLOCK, which is a
-    decision the store can represent, not with a null it cannot. Asserted because I reasoned this
-    from the strict path rather than observing it (review on #884).
-    """
-    c = _client(auth_cfg)
+def test_the_config_serves_no_checklists_and_the_stored_block_is_left_alone(auth_cfg, tmp_home):
+    legacy = _seed_legacy_block()
+    c = _client(auth_cfg)  # boot
     csrf = _login(c, auth_cfg)
+    assert "mission_playbooks" not in c.get("/api/config").json()
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
-
-    r = c.post("/api/prefs", json={"mission_playbooks": None}, headers=hdr)
-    assert r.status_code == 422, r.text
-    assert "mission_playbooks" in r.json()["detail"]
-
-    # …and the empty block IS accepted, so "clear my playbooks" remains expressible.
-    ok = c.post(
-        "/api/prefs",
-        json={"mission_playbooks": {"default_id": "", "playbooks": [], "revision": 0}},
-        headers=hdr,
-    )
-    assert ok.status_code == 200, ok.text
-    assert prefs.get_mission_playbooks() == {"default_id": "", "playbooks": [], "revision": 1}
-
-
-def test_a_MIXED_payload_with_a_REVISIONLESS_playbook_persists_NOTHING(auth_cfg, tmp_home):
-    """#900 review 7, finding 2. The required `revision` was checked at the WRITE, several
-    setters later — so `{theme, mission_playbooks}` with no revision answered 422 having already
-    changed the theme. That is precisely the all-or-nothing contract the preflight exists for.
-
-    Red against a revision check that lives only beside `set_mission_playbooks`.
-    """
-    c = _client(auth_cfg)
-    csrf = _login(c, auth_cfg)
-    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
-    c.post("/api/prefs", json={"theme": "dark"}, headers=hdr)
-
-    block = _PB()
-    block.pop("revision")
-    r = c.post("/api/prefs", json={"theme": "light", "mission_playbooks": block}, headers=hdr)
-    assert r.status_code == 422, r.text
-    assert "revision is required" in r.json()["detail"]
-    assert prefs.get_theme() == "dark", "the valid key landed despite the request being refused"
-    assert [pb["id"] for pb in prefs.get_mission_playbooks()["playbooks"]] == [
-        "ship_a_change",
-        "investigate",
-    ]
-    # …and a boolean is not an integer, on the same door.
-    block["revision"] = True
-    r = c.post("/api/prefs", json={"theme": "light", "mission_playbooks": block}, headers=hdr)
-    assert r.status_code == 422, r.text
-    assert prefs.get_theme() == "dark"
+    assert c.post("/api/prefs", json={"theme": "light"}, headers=hdr).status_code == 200
+    # Nothing migrates, rewrites or deletes it (workflow §0): the block is on disk, unread.
+    assert _stored_block() == legacy

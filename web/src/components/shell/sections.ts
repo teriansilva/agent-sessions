@@ -29,7 +29,6 @@ import {
   Crosshair,
   LayoutDashboard,
   Library,
-  ListChecks,
   TerminalSquare,
   Network,
   Workflow,
@@ -39,7 +38,6 @@ import {
 
 import {
   AUTOMATIONS_PATH,
-  CHECKLISTS_PATH,
   DASHBOARD_PATH,
   LEGACY_MISSION_PATH,
   MAP_PATH,
@@ -57,7 +55,7 @@ import {
 export type SectionId = "ask" | "sessions" | "mission" | "library";
 
 /** An entry inside a section's sub-menu: Sessions has the session view and its map; Library has
- *  templates, variables, automations, checklists, skills and playbooks (#1294). Skills and
+ *  templates, variables, memory, automations, skills and playbooks (#1294). Skills and
  *  Playbooks each hold their own Browse gallery view (#1440). */
 export type SubsectionId =
   | "sessions"
@@ -66,7 +64,6 @@ export type SubsectionId =
   | "variables"
   | "memory"
   | "automations"
-  | "checklists"
   | "playbooks"
   | "skills";
 
@@ -105,9 +102,9 @@ export const SECTIONS: Section[] = [
       { id: "map", label: "Sessions map", Icon: Network, to: MAP_PATH },
     ],
   },
-  // LIBRARY (#1294): what work is started FROM — templates, automations, the checklists that say
-  // what "done" means, and playbooks (#1096). Checklists and automations keep their
-  // `/mission/...` URLs: the server links automation-failure notifications to `automationPath()`.
+  // LIBRARY (#1294): what work is started FROM — templates, automations and playbooks (#1096).
+  // Automations keep their `/mission/...` URL: the server links automation-failure notifications
+  // to `automationPath()`. (Checklists were here until they were removed, #1653.)
   {
     id: "library",
     label: "Library",
@@ -118,7 +115,6 @@ export const SECTIONS: Section[] = [
       { id: "variables", label: "Variables", Icon: Braces, to: VARIABLES_PATH },
       { id: "memory", label: "Memory", Icon: Brain, to: MEMORY_PATH },
       { id: "automations", label: "Automations", Icon: CalendarClock, to: AUTOMATIONS_PATH },
-      { id: "checklists", label: "Checklists", Icon: ListChecks, to: CHECKLISTS_PATH },
       { id: "skills", label: "Skills", Icon: FileText, to: SKILLS_PATH },
       { id: "playbooks", label: "Playbooks", Icon: Workflow, to: PLAYBOOKS_PATH },
     ],
@@ -156,7 +152,6 @@ export function activeSubsection(pathname: string): SubsectionId | null {
     return "automations";
   if (pathname === VARIABLES_PATH) return "variables";
   if (pathname === MEMORY_PATH) return "memory";
-  if (pathname === CHECKLISTS_PATH) return "checklists";
   // The public gallery is a view of Skills / Playbooks (#1440); its old bare and digest links
   // land on Playbooks, so they light that entry while they redirect.
   if (pathname === SKILLS_PATH || pathname.startsWith(`${SKILLS_PATH}/`)) return "skills";

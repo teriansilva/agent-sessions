@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-from .. import missions, prefs, template_send, templates
+from .. import missions, template_send, templates
 from ..plugins import kinds as plugin_kinds
 from ..plugins import manifest as plugin_manifest
 
@@ -59,9 +59,11 @@ VARIABLE_NAME_RE = templates.FIELD_NAME_RE
 
 #: Checklist item keys follow the checklist store's own key rules, so a flow's items can become a
 #: mission's objectives (P4) without a second notion of a valid key.
-ITEM_KEY_RE = prefs._PLAYBOOK_ID_RE
-ITEM_KEY_MAX = prefs.PLAYBOOK_ID_MAX
-ITEM_TITLE_MAX = prefs.PLAYBOOK_TITLE_MAX
+# Item keys and titles keep the bounds checklist objectives had (#883), so an objective written
+# from either fits the same store; checklists themselves were removed (#1653).
+ITEM_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+ITEM_KEY_MAX = 64
+ITEM_TITLE_MAX = 200
 ITEM_KEY_RESERVED_PREFIXES = (missions.NOTE_KEY_PREFIX, missions.GOAL_KEY_PREFIX)
 ITEM_KEY_RESERVED = frozenset({missions.DONE_AS_INSTRUCTED_KEY})
 ITEM_KEY_FORBIDDEN_SUBSTRING = missions.MINTED_KEY_SEP

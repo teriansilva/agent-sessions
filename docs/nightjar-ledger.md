@@ -120,7 +120,6 @@ the same list.
 | `routes/Appearance.module.css` | css | 11 | todo |  |  |
 | `routes/Ask.module.css` | css | 4 | done | popup:hq | none (layout) |
 | `routes/HqCallsSettings.module.css` | css | 11 | done | route:settings-hq-calls | none (layout); the Seg marker and switch knob are the primitives' own |
-| `routes/Checklists.module.css` | css | 8 | done | route:checklists route:checklists-list route:checklists-editor popup:checklists-leave | step form fades open (Reduced: 120 ms fade; Off: none), plate and row hover tints |
 | `routes/Memory.module.css` | css | 10 | done | route:memory route:memory-graph route:memory-quarantine route:memory-off route:memory-acquiring popup:memory-erase | the View / view-tab marker slides; the memory switch's knob slides; the list and inspector fade in; the first read is Acquiring, then skeleton rows |
 | `routes/NewProject.module.css` | css | 10 | todo |  |  |
 | `routes/NewSessionLanding.module.css` | css | 6 | done | route:new-session newsession:loading newsession:list-failed newsession:no-folder newsession:no-project newsession:many newsession:api | route sector fade (App); tile lock-on (one-shot `nj-glitch-step` as a tile is chosen, Full only); Start press glitch (`.shine`, Full only); `nj-skeleton` scan band on the loading rows (Full only); edge and fill transitions at `--t-fast`; nothing moves in Off |

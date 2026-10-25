@@ -56,7 +56,7 @@ GROUPS = ("playbook", "skill", "automation")
 #: never model text: a revision, a scope digest, an origin pointer, the idempotency id, the routes'
 #: rendered scope lines, and the ids in an automation's action (built from this turn's lists). The
 #: draft guard skips exactly these paths; everything else, file names included, is guarded whole.
-_ACTION_IDS = ("project_id", "session_key", "engine", "folder", "checklist_id")
+_ACTION_IDS = ("project_id", "session_key", "engine", "folder")
 TRUSTED_DRAFT_PATHS: frozenset[tuple[str, ...]] = frozenset(
     {
         ("revision",),
@@ -487,7 +487,6 @@ def build_action(args: dict, *, projects, agents, keys, folder_of) -> dict:
             "kind": kind,
             "project_id": project["id"],
             "instruction": {"text": message},
-            "checklist_id": None,
             "autonomy": autonomy,
         }
     if kind == "start_session":

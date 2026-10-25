@@ -35,13 +35,13 @@ Every noun has one meaning. UI copy, docs and code comments use these words.
 | **Session** | One **instance** of a specialist on **one procedure step**: a separately fenced episode | — | Outlives its step as an identity, or carries context to another step | today as a session (one per step: target P6) |
 | **Mission plan** | A reusable plan: objectives, dependencies, project **slots**, role needs (skills and minimum grade) | — | Contains real projects, specialists or secret values | target (P7a) |
 | **Mission** | A plan bound to real projects and specialists, executing | Objectives, the team, the event log, the conversation | Bypasses a project's playbook | today (one project; objectives per project: target P4) |
-| **Objective** | One project, one of its procedures, and that procedure's inputs | Step states | — | today from a checklist (project + procedure: target P4) |
+| **Objective** | One project, one of its procedures, and that procedure's inputs | Step states | — | today written from the instruction by HQ, or added by the operator (project + procedure: target P4) |
 | **Patrol** | A session outside any mission: ad-hoc work. An API session by default; a terminal when chosen explicitly | — | — | today |
 | **Standing operation** | An ongoing mission: a pinned mission plan plus triggers (schedule, event, loop until a condition), standing consent, limits and a **ledger**. It stays open and launches sorties | Triggers, limits, ledger, sortie history | Does work itself | target (P7b) |
 | **Sortie** | One run of a standing operation: a normal, bounded mission launched by a trigger | Its objectives and outcome | Carries context to the next sortie except through the ledger | target (P7b) |
 | **Ledger** | A standing operation's **server-owned structured state** between sorties: cursors, a "done" set and totals, kept beside the automation's claims and watermarks. Read at the start of a sortie and written when it closes | — | Is project memory; holds secrets | target (P7b) |
 | **Automation** | A trigger source (schedule, loop, webhook). It fires sorties of a standing operation | — | Exceeds its consented scope | today (starts one-off missions or sessions; fires sorties: target P7b) |
-| ~~Checklist~~ | **To be retired (P1).** It becomes a procedure step's evidence | — | — | **today:** Library → Checklists, picked per mission. **Retired in P1** |
+| ~~Checklist~~ | **Removed (P1, #1653).** Objective templates return as playbook procedures (P4) | — | — | **Removed in P1**, with no migration |
 
 In short: a **skill** is how to do a task, a **playbook** is how this project works, a **mission
 plan** is what we achieve and in what order, and a **mission** is this work, now.
@@ -90,7 +90,7 @@ These rules are **target** (P2–P6) unless a rule says otherwise; §10 shows wh
 
 ## 4. Lifecycle
 
-**Today** a mission is created from an instruction plus a checklist, planned by a one-shot planner, and dispatched to terminal sessions. The lifecycle below is **target** (P4–P6):
+**Today** a mission is created from an instruction (HQ writes its objectives from it), planned by a one-shot planner, and dispatched to terminal sessions. The lifecycle below is **target** (P4–P6):
 
 1. **Plan.** The Commander and HQ draft objectives, from a mission plan or from scratch.
 2. **Bind.** Each objective gets a project and one of its procedures, or a mission-local procedure.
@@ -177,7 +177,7 @@ There are three public kinds: **playbooks** and **skills** (the existing feed), 
 | D7 | Missions run on API sessions only; patrols may be terminal or API | 2026-10-23 · derived (#1472 §2), confirmed by D17 |
 | D8 | Permission bypass stays off for mission step sessions | 2026-10-23 · derived, strictly safer (#1581) |
 | D9 | Every objective names a project; mission-local procedures are allowed, under the same validation | 2026-10-23 · derived (reversible) |
-| D10 | Checklists retire into procedure evidence, through a reversible migration | 2026-10-23 · operator ("checklists are probably redundant") |
+| D10 | Checklists are removed completely, with no migration | 2026-10-23 · operator ("checklists are probably redundant"); amended 2026-10-25, operator ("We don't need backwards compatibility for checklists. They can go completely.") |
 | D11 | Equipment binds to projects and lives only as long as one step's session | 2026-10-23 · derived, least privilege |
 | D12 | Service records and ranks count judged outcomes only, never tokens, time or session counts | 2026-10-23 · derived (honest gamification) |
 | D13 | The military vocabulary is a UI skin; the product nouns above stay plain | 2026-10-23 · derived (avoid naming churn) |
@@ -195,7 +195,7 @@ There are three public kinds: **playbooks** and **skills** (the existing feed), 
 | Concept | Today on `main` | Target, and the phase that delivers it |
 |---|---|---|
 | Glossary, this document | — | P0 |
-| Checklists | Library → Checklists; missions pick one | Retired into procedure evidence (P1) |
+| Checklists | Removed (P1, #1653): HQ writes a mission's objectives from the instruction | Objective templates return as playbook procedures (P4) |
 | Playbook steps | **Format 5 (P2, #1654):** an agent step names a role (skills + minimum grade); formats ≤4 keep their recorded engine/model read-only | Several procedures per project; filling roles from the pool (P3/P5) |
 | Project memory | The BattleLab memory tool, per project | Unchanged; plus specialist notes per specialist × project (P3) |
 | Specialists, the pool | Not present; skills are stored but turned on nowhere; client profiles per engine | A versioned pool on client profiles; skills activated per session (P3) |

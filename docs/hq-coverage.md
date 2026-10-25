@@ -83,7 +83,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 |---|---|---|
 | List / search / filter missions; one mission's status | GET /api/missions, GET /api/missions/{id} | have |
 | Mission objectives, context (folder, git, roster), "now" strip, live screen of a held session, older events | GET …/objectives, …/context, …/now, …/screen/{key}, ?events_before_seq | P5 R |
-| Create a mission (+ checklist) and dispatch its plan | POST /api/missions, POST …/dispatch | #1443 P3 |
+| Create a mission and dispatch its plan | POST /api/missions, POST …/dispatch | #1443 P3 |
 | Begin / mark done / start again / reopen / not yet / mark failed | POST …/state | P5 W |
 | Abandon | POST …/state → abandoned | P5 W (destructive) |
 | Archive (stops agents) / unarchive (record only, or restart agents) | POST …/archive, …/unarchive | P5 W (destructive / starts agents) |
@@ -167,7 +167,6 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Variables: create / edit / delete a text variable; collections create / edit / delete; enable shared variables | POST/PATCH/DELETE /api/variables*, /api/variable-collections*, POST /api/variables/migrate | P3 W |
 | Secrets: create / replace (value typed on the card), delete | POST/PATCH/DELETE /api/variables (kind secret) | P3 W (secret_input) |
 | Legacy template-variables routes (API-only) | /api/template-variables* | P3 (via the same store) |
-| Checklists: view; edit and save the whole block | GET /api/config `mission_playbooks`, POST /api/prefs `mission_playbooks` | P3 R/W (revision-checked) |
 | Memory: projects, notes, inbox, quarantine; export | GET /api/memory*, …/export | P3 R |
 | Memory: on/off, edit / delete note, clear all, quarantine rewrite / delete, import preview and import, ingest | PUT/PATCH/DELETE/POST /api/memory/{pid}/* | P3 W (clear is destructive) |
 | Playbooks: list, detail, authoring schema | GET /api/playbooks, /api/playbooks/{pid}, …/authoring/schema | have (`list_playbooks`, `playbook_detail`, `playbook_schema`, #1611) |
@@ -604,7 +603,6 @@ forge.kind                      never  # credential surface
 forge.owner                     never  # credential surface
 forge.token                     never  # credential
 hq_contact                      P2
-mission_playbooks               P3
 onboarded                       n/a  # onboarding flag
 orchestrator                    nested
 orchestrator.ai_direction_confidence_min P2  # raise only; lowering widens autonomy

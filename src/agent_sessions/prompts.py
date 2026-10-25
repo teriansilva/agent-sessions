@@ -336,34 +336,18 @@ def _with_locked(p: Prompt, text: str) -> str:
 # lifted out (effective() re-appends the canonical one), everything else is byte-identical.
 _ORCH_PASS = _strip_guard(prefs.DEFAULT_ORCH_PROMPT)
 
-_MISSION_OBJECTIVES = """You turn a mission instruction into a checklist of objectives.
-
-You are given the instruction and a NUMBERED LIST of objective templates the operator
-has written. Choose which of them this mission needs, in the order they should be done.
+_MISSION_OBJECTIVES = """You turn a mission instruction into the outcomes that show it is done.
 
 Reply with JSON only:
-{"objectives": [{"template_index": <int>, "gate": <bool>, "title": "<optional, adapted>",
-                 "probe_args": {"repo": "<optional>", "branch": "<optional>"}}],
- "notes": [{"title": "<something worth tracking that no template covers>"}],
- "drop": ["<key of an objective already on the mission that no longer applies>"]}
+{"notes": [{"title": "<a concrete, checkable outcome>"}]}
 
 Rules:
-- `template_index` is an index into the list you were given. Never invent one.
-- You may adapt a template's `title` to this instruction. You may NOT choose what kind of check
-  it is: there is no field for that, and any you add is ignored and the row is refused.
-- A template marked [may set: repo, branch] may carry `probe_args` with `repo` and/or `branch` —
-  ONLY a value that appears word for word in the instruction, as one token. Never invent or
-  complete one; if the instruction names no branch or repository, leave `probe_args` out. You may
-  select the same template once per branch the instruction names. Any other value refuses the row.
-- Anything worth tracking that no template covers goes in `notes`. A note is a reminder only —
-  it checks nothing and gates nothing.
-- If you are told the operator DECLINED a checklist, there are no templates. Then write in `notes`
-  the outcomes that would show the instruction is done — at most six, each a concrete, checkable
-  result ("the root cause is written down in the repository"), never a step. An independent
-  supervisor judges each one against what the agents actually produced, and together they decide
-  when the mission is proposed for review.
-- `gate` means the mission is not done until this holds. Use it for outcomes, not for steps.
-- Prefer few objectives. A checklist nobody reads is worse than three that matter."""
+- Write at most six outcomes, each a concrete, checkable result ("the root cause is written down in
+  the repository"), never a step. An independent supervisor judges each one against what the agents
+  actually produced, and together they decide when the mission is proposed for review.
+- A note is a title and nothing else. You may NOT choose what kind of check it is or name any
+  target: there is no field for that, and any you add refuses the row.
+- Prefer few outcomes. A list nobody reads is worse than three that matter."""
 _MISSION_PLAN = """You turn a mission instruction into a DISPATCH PROPOSAL. Nothing you write
 launches anything: an operator reads your proposal, edits it, and decides.
 
@@ -861,18 +845,22 @@ REGISTRY: tuple[Prompt, ...] = (
         group="Missions",
         label="Mission objectives",
         description=(
-            "Turns a mission instruction into a checklist, by SELECTING from the operator's "
-            "checklist templates. It never chooses what an objective checks."
+            "Turns a mission instruction into the outcomes that show it is done; an independent "
+            "supervisor judges each. It never chooses what an objective checks. An override saved "
+            "before checklists were removed was written for selecting their templates and is "
+            "retired (kept, not used)."
         ),
-        # Index-shaped on purpose: `probe` and `probe_args` are resolved server-side from the
-        # selected template and are refused as model input entirely, so there is no code path
-        # from model text to a probe target (#883, #840).
-        contract='{"objectives": [{"template_index": int, "gate": bool, "title": str}], '
-        '"notes": [{"title": str}], "drop": [str]}',
+        # Title-shaped on purpose: every row it writes is `supervisor_judged` with no arguments,
+        # and `probe`/`probe_args` are refused as model input entirely, so there is no code path
+        # from model text to a probe target (#883, #840; checklists removed, #1653).
+        contract='{"notes": [{"title": str}]}',
         default=_MISSION_OBJECTIVES,
         max_chars=6000,
         block=BLOCK,
-        field="mission_objectives",
+        # RETIRED OVERRIDES (#1653): the reply contract changed from template indices to notes,
+        # and an override written for the old one would make every reply drop to the fallback.
+        # A new field retires it — the old `ai_prompts.mission_objectives` text stays, unused.
+        field="mission_objectives_v2",
         # GUARDED. It emits no verbs, which is why an earlier draft called it unguarded — too
         # narrow a reading: an objective list is what the follow-through loop nudges against, so
         # text that shapes it shapes autonomous action a phase later (#840 §13).
@@ -886,10 +874,10 @@ REGISTRY: tuple[Prompt, ...] = (
             "Turns a mission instruction into a dispatch proposal — project, agent and brief — "
             "by SELECTING from server-built lists. It never writes a path or an agent name."
         ),
-        # Index-shaped, like `mission_objectives`, and here it is the difference between a wrong
-        # link and a path-traversal bug with an unattended agent on the end of it: the
-        # cwd is resolved server-side from the chosen project entity, so there is no code path
-        # from model text to a launch argument (#893, #840 §4).
+        # Index-shaped (as `mission_objectives` was, #883), and here it is the difference
+        # between a wrong link and a path-traversal bug with an unattended agent on the end of
+        # it: the cwd is resolved server-side from the chosen project entity, so there is no
+        # code path from model text to a launch argument (#893, #840 §4).
         contract='{"project_index": int|null, "engine_index": int|null, '
         '"engine_reason": str, "brief": str}',
         default=_MISSION_PLAN,
@@ -910,7 +898,7 @@ REGISTRY: tuple[Prompt, ...] = (
             "Asks the operator ONE bounded question with concrete options, instead of guessing. "
             "The model picks which server action each option maps to; it never authors one."
         ),
-        # INDEX-SHAPED, exactly like `mission_objectives` and for the same reason: the model
+        # INDEX-SHAPED, as `mission_objectives` was, and for the same reason: the model
         # selects from a server-built list, so there is no path from model text to something
         # executed. The `label` is display text and carries no authority — which is what makes
         # "an option's label is never executed" an assertable test rather than a hope (#840 §6).
@@ -934,7 +922,7 @@ REGISTRY: tuple[Prompt, ...] = (
             "has none. A draft waits for your tap unless you have turned on AI-written "
             "directions. It never closes anything."
         ),
-        # Key-shaped, like `mission_objectives` is index-shaped, and for the same reason: the
+        # Key-shaped, as `mission_objectives` was index-shaped, and for the same reason: the
         # model chooses WHICH objective to nudge about, never what is sent. The payload comes
         # from `actuator.render` against the existing verb, so there is no path from model text
         # to PTY bytes without a tap (#885, #840 §9). The one exception is `draft` (#983 P3): its

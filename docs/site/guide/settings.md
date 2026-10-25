@@ -159,12 +159,12 @@ Three panels, everything that tunes [Mission control](/guide/missions):
   is open" or "checks are green" are checked. Read-only; the token is stored server-side. Without
   one, forge objectives read as *unknown* rather than failed.
 
-### Checklists (moved to Missions)
+### Checklists (removed)
 
-The checklists a new mission starts with are no longer a Settings page: they live under **Library →
-Checklists** (the chevron beside Library in the top bar), beside templates, automations and playbooks — see
-the [missions guide](/guide/missions). The old address, `/settings/ai-playbooks`, still works and
-redirects there.
+Checklists, the objective templates a new mission used to start from, were removed. A mission now
+gets its objectives from its instruction — see the
+[missions guide](/guide/missions#where-objectives-come-from). The old addresses,
+`/settings/ai-playbooks` and `/mission/checklists`, redirect to **Library → Playbooks**.
 
 ### HQ calls · `ai-hq-calls`
 

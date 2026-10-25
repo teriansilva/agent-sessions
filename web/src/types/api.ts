@@ -1494,41 +1494,10 @@ export interface AppConfig {
       "judge_confidence_min" | "judge_confidence_floor" | "judge_confidence_max"
     > & { revision: string };
   };
-  /** The mission playbooks (#883), so Settings can edit them (#892). Normalized server-side, so
-   *  this is exactly the shape `POST /api/prefs` accepts back. */
-  mission_playbooks?: MissionPlaybooks;
   /** What each probe kind takes, FROM THE SERVER'S OWN SCHEMA — never a second copy here. The
    *  editor offers the right fields per kind so an unknown argument is prevented rather than
    *  refused on save; validation itself stays entirely server-side. */
   mission_probes?: MissionProbeSchema;
-}
-
-export interface MissionPlaybookObjective {
-  key: string;
-  title: string;
-  probe: string;
-  probe_args: Record<string, unknown> | null;
-  gate: boolean;
-  /** Operator text typed when mission control nudges about this objective, with placeholders from
-   *  the server's table (#983). Absent when the template has none. */
-  direction?: string | null;
-}
-
-export interface MissionPlaybook {
-  id: string;
-  label: string;
-  objectives: MissionPlaybookObjective[];
-}
-
-export interface MissionPlaybooks {
-  /** The playbook a new mission gets when none is named. `""` means notes-only — NOT "the first
-   *  one": substituting a playbook would arm gating objectives nobody chose (#883). */
-  default_id: string;
-  playbooks: MissionPlaybook[];
-  /** SERVER-OWNED and monotonic. A save sends back the one it read; a mismatch is a 409 rather
-   *  than a whole-block overwrite of whatever another tab did in the meantime (#900 review 5,
-   *  finding 7). Never chosen by the client — the server increments its own. */
-  revision?: number;
 }
 
 export interface MissionProbeSchema {

@@ -2332,63 +2332,119 @@ def test_a_consented_schedule_edit_counts_from_now_not_from_the_old_watermark(sp
     sched.release()
 
 
-def _set_books(*books, default: str = "") -> None:
-    cur = prefs.get_mission_playbooks()
-    prefs.set_mission_playbooks(
-        {"default_id": default, "playbooks": list(books)}, expect_revision=cur["revision"]
-    )
+def _stored(aid: str) -> dict:
+    row = store.get(aid)
+    return {k: json.dumps(row[k], sort_keys=True) for k in ("config", "pins", "consented_scope")}
 
 
-def _book(pid: str, title: str = "t") -> dict:
-    return {
-        "id": pid,
-        "label": pid.title(),
-        "objectives": [{"key": "k", "title": title, "probe": "none", "gate": False}],
-    }
+def _as_legacy_checklist_record(aid: str) -> dict:
+    """Make `aid` look like a record approved BEFORE checklists were removed (#1653): a stored
+    checklist pin, the action's `checklist_id`, and the receipt computed from both at the time."""
+    pin = {"id": "release", "default": True, "label": "Release", "digest": "d" * 16}
+
+    def legacy(row):
+        cfg = json.loads(json.dumps(row["config"]))
+        cfg["action"]["checklist_id"] = None
+        pins = {**row["pins"], "checklist": pin}
+        return {"config": cfg, "pins": pins, "consented_scope": model.scope_of(cfg, pins)}
+
+    store.mutate(aid, legacy)
+    return _stored(aid)
 
 
-def test_the_default_checklist_is_pinned_shown_and_used(mission_env):
-    _set_books(_book("release"), default="release")
+def test_a_legacy_checklist_record_runs_now_without_pause_or_rewrite(mission_env):
     aid = _made(_mission_config("propose"))
+    before = _as_legacy_checklist_record(aid)
+    # The live consent lines (current pins) mention no checklist at all; the stored receipt,
+    # where it is rendered, still discloses it, never as something the run will use.
     pub = routes.public(store.get(aid))
-    assert pub["pins"]["checklist"]["id"] == "release"
-    assert "Checklist: Release (your default)" in pub["scope_lines"]
+    assert not any(line.startswith("Checklist") for line in pub["scope_lines"])
+    receipt = model.describe(store.get(aid)["consented_scope"])
+    assert "Checklist (removed, not used): Release (was your default)" in receipt
+    assert not any(line.startswith("Checklist: ") for line in receipt)
     res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
-    assert missions.get_mission(res["run"]["mission_id"])["playbook_id"] == "release"
+    assert res["run"]["outcome"] == "ok", res["run"]
+    assert missions.get_mission(res["run"]["mission_id"])["playbook_id"] is None
+    assert not store.get(aid)["needs_reapproval"]
+    assert _stored(aid) == before
 
 
-@pytest.mark.parametrize("change", ["default", "contents"])
-def test_a_changed_default_checklist_needs_reapproval(mission_env, spawned, change):
-    _set_books(_book("release"), _book("other"), default="release")
+def test_a_legacy_checklist_record_fires_on_schedule_without_reapproval(mission_env, spawned):
     h = _hour_start()
     cfg = _mission_config("propose") | {"trigger": _hourly()["trigger"]}
     aid = _made(cfg, active_since=h + 60)
-    if change == "default":
-        _set_books(_book("release"), _book("other"), default="other")
-    else:
-        _set_books(_book("release", "edited"), _book("other"), default="release")
+    before = _as_legacy_checklist_record(aid)
     sched = automation_loop.Scheduler(clock=Clock(h + 3600 + 5), started_at=h)
-    assert asyncio.run(sched.tick())["fired"] == []
+    fired = asyncio.run(sched.tick())["fired"]
     sched.release()
-    assert store.get(aid)["needs_reapproval"] is True
+    assert len(fired) == 1, fired
+    row = store.get(aid)
+    assert not row["needs_reapproval"] and not row["reapproval_reason"]
+    assert _stored(aid) == before
 
 
-def test_a_checklist_edited_while_the_mission_is_created_is_not_dispatched(
-    mission_env, monkeypatch
-):
-    from agent_sessions.routes import missions as mroutes
+@pytest.mark.parametrize("named", [False, True])
+def test_editing_a_legacy_checklist_record_asks_consent_and_says_why(mission_env, named):
+    """#1653 review: an unchanged legacy record runs, but an EDIT moves its missions from the
+    approved checklist to AI-written objectives — consent, said as exactly that, then the receipt
+    follows the new scope."""
+    aid = _made(_mission_config("propose"))
+    _as_legacy_checklist_record(aid)
+    if named:
+        cfg = store.get(aid)["config"]
+        cfg = {**cfg, "action": {**cfg["action"], "checklist_id": "ship"}}
+        store.mutate(
+            aid, lambda r: {"config": cfg, "consented_scope": model.scope_of(cfg, r["pins"])}
+        )
+    row = store.get(aid)
+    action = {k: v for k, v in row["config"]["action"].items() if k != "checklist_id"}
+    change = {"revision": row["revision"], "name": "renamed", "action": action}
+    with pytest.raises(model.AutomationError) as e:
+        routes._patch(aid, change)
+    assert e.value.extra["widened"] == [model.CHECKLIST_RETIRED]
+    assert store.get(aid)["name"] != "renamed"
+    out = routes._patch(
+        aid, {**change, "consent": True, "scope_digest": e.value.extra["scope_digest"]}
+    )
+    assert out["name"] == "renamed"
+    after = store.get(aid)
+    assert after["consented_scope"] == model.scope_of(after["config"], after["pins"])
+    assert not after["consented_scope"]["checklist"]
 
-    _set_books(_book("release"), default="release")
-    aid = _made(_mission_config("dispatch"))
 
-    async def edit_during_create(mid):
-        _set_books(_book("release", "edited"), default="release")
+def test_a_retired_checklist_dropping_is_named_and_a_missing_key_still_widens():
+    old = {
+        "version": 1,
+        "target": {"project_id": "p1", "checklist_id": "ship", "cwd": "/srv/p"},
+        "checklist": "d" * 16,
+        "checklist_name": "Ship",
+        "checklist_default": False,
+    }
+    dropped = {
+        "version": 1,
+        "target": {"project_id": "p1", "checklist_id": None, "cwd": "/srv/p"},
+        "checklist": None,
+        "checklist_name": None,
+        "checklist_default": False,
+    }
+    assert model.widened(old, dropped) == [model.CHECKLIST_RETIRED]
+    moved = {**dropped, "target": {**dropped["target"], "project_id": "p2"}}
+    assert len(model.widened(old, moved)) == 2
+    # A record that never had a checklist edits without any checklist reason.
+    plain = {**dropped, "target": {**dropped["target"]}}
+    assert model.widened(plain, dropped) == []
 
-    monkeypatch.setattr(mroutes, "_produce_for_new_mission", edit_during_create)
+
+def test_a_new_record_with_a_checklist_id_promises_no_checklist(mission_env):
+    cfg = _mission_config("propose")
+    cfg["action"]["checklist_id"] = "release"  # a cached older editor still sends one
+    aid = _made(cfg)
+    pub = routes.public(store.get(aid))
+    assert not (pub["pins"] or {}).get("checklist")
+    assert not any(line.startswith("Checklist: ") for line in pub["scope_lines"])
     res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
-    assert res["run"]["outcome"] == "refused" and "checklist changed" in res["run"]["reason"]
-    assert mission_env == []
-    assert res["run"]["mission_id"]  # the mission exists, undispatched
+    assert res["run"]["outcome"] == "ok", res["run"]
+    assert missions.get_mission(res["run"]["mission_id"])["playbook_id"] is None
 
 
 def test_pausing_during_a_run_is_stopped_not_a_failure(live_target):
@@ -3561,26 +3617,10 @@ def test_run_now_after_a_template_rename_is_refused_and_flagged(live_target):
     assert store.get(aid)["needs_reapproval"] and live_target["writes"] == []
 
 
-def test_a_checklist_rename_is_flagged_for_reapproval(mission_env, spawned):
-    """Renaming the checklist an automation uses (same objectives) is a drift (#1201)."""
-    _set_books(_book("release"), default="release")
-    h = _hour_start()
-    aid = _made(_mission_config("propose") | {"trigger": _hourly()["trigger"]}, active_since=h + 60)
-    assert routes.public(store.get(aid))["pins"]["checklist"]["label"] == "Release"
-    _set_books({**_book("release"), "label": "Ship it"}, default="release")
-    sched = automation_loop.Scheduler(clock=Clock(h + 3600 + 5), started_at=h)
-    assert asyncio.run(sched.tick())["fired"] == []
-    sched.release()
-    row = store.get(aid)
-    assert row["needs_reapproval"] is True
-    assert "checklist" in row["reapproval_reason"]
-
-
-def test_a_checklist_label_alone_is_a_drift():
-    """The label is pinned on its own, not only through the digest: a stored pin whose label
-    differs from the current one is a drift even when the id and digest match (#1201)."""
+def test_a_stored_checklist_pin_is_never_a_drift():
+    """A pin approved before checklists were removed (#1653) is not compared: the current pins
+    never carry one, and a stored one differing in id, digest or label changes nothing."""
     pin = {"id": "release", "default": False, "label": "Release", "digest": "d" * 64}
-    base = {"template": None, "checklist": pin, "cwd": None}
-    assert model.pins_drift(base, base) == ""
-    renamed = {**base, "checklist": {**pin, "label": "Ship it"}}
-    assert model.pins_drift(base, renamed) == "the checklist's name changed"
+    stored = {"template": None, "checklist": pin, "cwd": None}
+    assert model.pins_drift(stored, {"template": None, "checklist": None, "cwd": None}) == ""
+    assert model.pins_drift(stored, {**stored, "checklist": {**pin, "label": "Ship it"}}) == ""

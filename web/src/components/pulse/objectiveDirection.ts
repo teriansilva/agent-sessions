@@ -1,15 +1,13 @@
 /** What the Edit direction dialog may send, decided without a DOM (#983 P2).
  *
- *  A mission objective's direction is COPIED from its playbook when the objective is created and is
- *  never live-linked. The operator can keep that copy, copy the playbook's current direction again
- *  (`reset_direction`), write one for this mission (`set_direction`), or remove it
- *  (`clear_direction`). The ops are the server's (`missions._op_*`); this only decides which one a
+ *  An objective written from a checklist (removed, #1653) may carry a direction COPIED from it when
+ *  the objective was created; it was never live-linked. The operator can keep that copy, write one
+ *  for this mission (`set_direction`), or remove it (`clear_direction`). The ops are the server's (`missions._op_*`); this only decides which one a
  *  choice means, and `null` when the choice changes nothing, so Save is never a no-op request. */
 import type { MissionObjective } from "../../types/api";
 
 export type DirectionOp =
   | { op: "set_direction"; key: string; direction: string }
-  | { op: "reset_direction"; key: string }
   | { op: "clear_direction"; key: string };
 
 /** `keep` the playbook's copy, `write` one for this mission, or `none`. */

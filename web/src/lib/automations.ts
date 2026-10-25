@@ -348,8 +348,6 @@ export interface EditorForm {
   day: number;
   actionKind: AutomationAction["kind"];
   projectId: string;
-  /** `null` = the project's default checklist, `":none"` = none, else a checklist id. */
-  checklistId: string | null;
   autonomy: Autonomy;
   engine: string;
   folder: string;
@@ -380,7 +378,6 @@ export function blankForm(tz: string): EditorForm {
     day: 1,
     actionKind: "start_mission",
     projectId: "",
-    checklistId: null,
     autonomy: "propose",
     engine: "",
     folder: "",
@@ -437,7 +434,6 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
     }
     if (act.kind === "start_mission") {
       f.projectId = act.project_id;
-      f.checklistId = act.checklist_id;
       f.autonomy = act.autonomy;
     } else if (act.kind === "start_session") {
       f.engine = act.engine;
@@ -486,7 +482,6 @@ export function formAction(f: EditorForm): AutomationAction {
       kind: "start_mission",
       project_id: f.projectId,
       instruction: message,
-      checklist_id: f.checklistId,
       autonomy: f.autonomy,
     };
   if (f.actionKind === "start_session")

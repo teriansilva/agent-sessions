@@ -1,10 +1,10 @@
-/** Library: Templates, Variables, Automations, Checklists, Skills and Playbooks, under one section.
+/** Library: Templates, Variables, Memory, Automations, Skills and Playbooks, under one section.
  *  The public gallery is a view inside Skills and Playbooks, not an entry of its own (#1440).
  *
  *  Library is a split control like Sessions: the label goes to Templates (its first child), and
- *  its chevron opens a menu naming all six. Checklists and Automations moved here from Missions
- *  but kept their `/mission/...` URLs, so on their routes LIBRARY is the section that lights up,
- *  not Missions. The old Settings address for checklists still redirects. A real browser, because
+ *  its chevron opens a menu naming all six. Automations moved here from Missions but kept its
+ *  `/mission/...` URL, so on its routes LIBRARY is the section that lights up, not Missions.
+ *  Checklists were removed (#1653): both of their old addresses land on Playbooks. A real browser, because
  *  the menu is a portalled popover in the top bar and "where am I" is `aria-current` on laid-out
  *  links.
  */
@@ -12,7 +12,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 import {
   AUTOMATIONS_PATH,
-  CHECKLISTS_PATH,
+  LEGACY_CHECKLISTS_PATH,
   MISSION_PATH,
   PLAYBOOKS_PATH,
   TEMPLATES_PATH,
@@ -40,7 +40,7 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-test("Library names Templates, Variables, Memory, Automations, Checklists, Skills and Playbooks; Missions has no menu", async ({
+test("Library names Templates, Variables, Memory, Automations, Skills and Playbooks; Missions has no menu", async ({
   page,
 }) => {
   await page.goto(MISSION_PATH);
@@ -53,15 +53,11 @@ test("Library names Templates, Variables, Memory, Automations, Checklists, Skill
     "Variables",
     "Memory",
     "Automations",
-    "Checklists",
     "Skills",
     "Playbooks",
   ]);
-  await menu.locator('a[data-subsection="checklists"]').click();
-
-  await expect(page).toHaveURL(new RegExp(`${CHECKLISTS_PATH}$`));
-  await expect(page.getByRole("heading", { level: 1, name: "Checklists" })).toBeVisible();
-  await expect(page.getByTestId("mission-playbooks")).toBeVisible();
+  await menu.locator('a[data-subsection="automations"]').click();
+  await expect(page).toHaveURL(new RegExp(`${AUTOMATIONS_PATH}$`));
   // On a child's route the parent says "you are in here", not "you are exactly here" — and it is
   // LIBRARY, not Missions, although the URL still starts with /mission.
   const bar = page.locator(".hud-topbar");
@@ -69,17 +65,13 @@ test("Library names Templates, Variables, Memory, Automations, Checklists, Skill
   await expect(bar.locator('[data-section="mission"]')).not.toHaveAttribute("aria-current");
 
   const again = await libraryMenu(page);
-  await expect(again.locator('a[data-subsection="checklists"]')).toHaveAttribute(
+  await expect(again.locator('a[data-subsection="automations"]')).toHaveAttribute(
     "aria-current",
     "page",
   );
-  await again.locator('a[data-subsection="automations"]').click();
-  await expect(page).toHaveURL(new RegExp(`${AUTOMATIONS_PATH}$`));
-  await expect(bar.locator('[data-section="library"]')).toHaveAttribute("aria-current", "true");
 
   // The label and the menu's first entry go to Templates.
-  const third = await libraryMenu(page);
-  await third.locator('a[data-subsection="templates"]').click();
+  await again.locator('a[data-subsection="templates"]').click();
   await expect(page).toHaveURL(new RegExp(`${TEMPLATES_PATH}$`));
   await expect(bar.locator('[data-section="library"]')).toHaveAttribute("aria-current", "page");
 });
@@ -114,12 +106,16 @@ test("Playbooks has a Library entry, your playbooks and a Browse gallery tab", a
   await expect(pg.getByRole("link", { name: "Browse gallery" })).toBeVisible();
 });
 
-test("the old Settings address redirects, and Settings no longer lists Checklists", async ({
+test("both old checklist addresses land on Playbooks (#1653), and Settings lists no Checklists", async ({
   page,
 }) => {
-  await page.goto("/settings/ai-playbooks");
-  await expect(page).toHaveURL(new RegExp(`${CHECKLISTS_PATH}$`));
-  await expect(page.getByTestId("mission-playbooks")).toBeVisible();
+  await page.route("**/api/playbooks", (r) => r.fulfill({ json: { playbooks: [], default: null, recovery_total: 0 } }));
+  for (const old of ["/settings/ai-playbooks", LEGACY_CHECKLISTS_PATH]) {
+    await page.goto(old);
+    await expect(page).toHaveURL(new RegExp(`${PLAYBOOKS_PATH}$`));
+    await expect(page.getByTestId("playbooks-page")).toBeVisible();
+    await expect(page.locator('.hud-topbar [data-section="library"]')).toHaveAttribute("aria-current", "true");
+  }
 
   // Settings' own navigation has rendered (it links its sections) and no longer links the old tab.
   await page.goto(settingsPath());

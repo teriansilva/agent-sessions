@@ -1414,16 +1414,6 @@ def test_a_v7_store_migrates_forward_to_v8(store):
 # ---------------------------------------------------------------- Phase 3a boundaries (#883)
 
 
-def _pb(**over):
-    """A playbook block with one template, valid unless a test breaks it deliberately."""
-    obj = {"key": "pr_open", "title": "A PR is open", "probe": "forge_pr", "gate": True}
-    obj.update(over.pop("objective", {}))
-    return {
-        "default_id": over.pop("default_id", "ship"),
-        "playbooks": [{"id": "ship", "label": "Ship", "objectives": [obj]}],
-    }
-
-
 def test_a_model_row_may_never_carry_a_probe(store, monkeypatch):
     """AUTHORITY BY SOURCE. A model row is a NOTE: it may name an objective and nothing else.
 
@@ -1452,7 +1442,7 @@ def test_a_model_row_may_never_carry_a_probe(store, monkeypatch):
 
 def test_instantiation_is_atomic_across_a_MIXED_batch(store):
     """No partial objective list survives a rejected batch — asserted for a mixed
-    playbook/model batch, because that is the one the instantiator actually writes.
+    instruction/model batch, because that is the one the instantiator actually writes.
 
     A half-instantiated plan the operator cannot tell is partial is worse than no plan.
     """
@@ -1461,7 +1451,13 @@ def test_instantiation_is_atomic_across_a_MIXED_batch(store):
         missions.instantiate_objectives(
             mid,
             [
-                {"key": "good", "title": "fine", "probe": "forge_pr", "source": "playbook"},
+                {
+                    "key": "goal_1",
+                    "title": "fine",
+                    "probe": "supervisor_judged",
+                    "gate": True,
+                    "source": "instruction",
+                },
                 {"key": "note_1", "title": "a note", "source": "model"},
                 # …and one that must take the whole batch down with it.
                 {"key": "bad", "title": "T", "probe": "http_status", "source": "model"},
@@ -1471,108 +1467,70 @@ def test_instantiation_is_atomic_across_a_MIXED_batch(store):
     assert missions.objectives(mid, path=store) == [], "a partial list survived"
 
 
-def test_instantiation_cannot_mint_operator_authority(store):
+@pytest.mark.parametrize("source", ["operator", None])
+def test_instantiation_cannot_mint_operator_authority(store, source):
     """The boundary assigns `source` itself; a caller cannot ask for one it should not have."""
     mid = missions.create_mission("do it", path=store)["id"]
     with pytest.raises(missions.MissionError) as e:
         missions.instantiate_objectives(
-            mid, [{"key": "k", "title": "T", "source": "operator"}], path=store
+            mid, [{"key": "k", "title": "T", "source": source}], path=store
         )
     assert e.value.status == 500
+    assert missions.objectives(mid, path=store) == []
 
 
-def test_an_ABSENT_playbook_id_uses_the_configured_default(store, monkeypatch, tmp_path):
-    from agent_sessions import prefs
+_GOAL = {
+    "key": "goal_1",
+    "title": "The finding is written down",
+    "probe": "supervisor_judged",
+    "gate": True,
+    "source": "instruction",
+}
 
-    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "p.json"))
-    prefs.set_mission_playbooks(_pb())
+
+def test_instantiation_into_a_mission_that_ALREADY_HAS_objectives_is_stale(store):
+    """A late PROPOSAL never appends to an objective list, whoever wrote it: a 409, under a key
+    that does not collide, and nothing is written. (Other trusted writes are not fenced so.)"""
     mid = missions.create_mission("do it", path=store)["id"]
-    status, tpl = missions.templates_for_mission(mid, path=store)
-    assert status == "ok"
-    assert [t["key"] for t in tpl] == ["pr_open"]
+    missions.patch_objectives(
+        mid, [{"op": "add", "key": "mine", "title": "My own", "gate": True}], path=store
+    )
+    before = missions.objectives(mid, path=store)
+    events = len(missions.get_mission(mid, path=store)["events"])
+    with pytest.raises(missions.MissionError) as e:
+        missions.instantiate_objectives(mid, [_GOAL], as_proposal=True, path=store)
+    assert e.value.status == 409
+    assert missions.objectives(mid, path=store) == before
+    assert len(missions.get_mission(mid, path=store)["events"]) == events
 
 
-def test_an_UNKNOWN_playbook_id_offers_NOTHING_rather_than_the_default(
-    store, monkeypatch, tmp_path
-):
-    """The asymmetry that matters. "You did not choose" and "what you chose is gone" are
-    different facts, and substituting the default on the second silently instantiates gating
-    objectives with operator-authored probe targets nobody picked for this mission."""
-    from agent_sessions import prefs
-
-    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "p.json"))
-    prefs.set_mission_playbooks(_pb())
-    mid = missions.create_mission("do it", playbook_id="deleted_one", path=store)["id"]
-    status, tpl = missions.templates_for_mission(mid, path=store)
-    assert status == "unknown_playbook"
-    assert tpl == [], "an unknown playbook fell back to the default"
-
-
-def test_a_STALE_default_id_offers_nothing_rather_than_the_first_playbook(
-    store, monkeypatch, tmp_path
-):
-    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "p.json"))
-    # Written through the raw store, because `set_mission_playbooks` is strict and would refuse
-    # this — which is exactly the hand-edited case the read path exists to survive.
-    from agent_sessions.atomicjson import atomic_write_json
-
-    atomic_write_json(tmp_path / "p.json", {"mission_playbooks": {**_pb(), "default_id": "gone"}})
-    mid = missions.create_mission("do it", path=store)["id"]
-    status, tpl = missions.templates_for_mission(mid, path=store)
-    assert status == "no_default"
-    assert tpl == []
+def test_instantiation_into_a_DISPATCHING_mission_is_stale(store):
+    """What done means is fixed while a mission is being dispatched, for a proposal as for the
+    operator's own edit."""
+    mid = missions.create_mission("do it", cwd="/repo", path=store)["id"]
+    missions.set_state(mid, "draft", "planned", path=store)
+    missions.set_state(mid, "planned", "dispatching", path=store)
+    with pytest.raises(missions.MissionError) as e:
+        missions.instantiate_objectives(mid, [_GOAL], as_proposal=True, path=store)
+    assert e.value.status == 409
+    assert missions.objectives(mid, path=store) == []
+    # …and once the agent has started, the same batch is written.
+    missions.set_state(mid, "dispatching", "running", path=store)
+    assert [
+        o["key"]
+        for o in missions.instantiate_objectives(mid, [_GOAL], as_proposal=True, path=store)
+    ] == ["goal_1"]
 
 
-# ---- the shipped defaults, and the ONE shared value contract (#883 review) ------------
-#
-# Three findings met here. `DEFAULT_MISSION_PLAYBOOKS` was declared and never consumed, so a
-# fresh install read `{"default_id": "", "playbooks": []}` and every mission fell through to
-# notes-only. `mission_playbooks` had no `POST /api/prefs` branch, so the only way to configure
-# one in production was hand-editing `prefs.json`. And `PROBE_ARG_SCHEMA` checked field NAMES
-# without checking VALUES, so both durable paths accepted a `url` that was a list.
+def test_create_mission_takes_no_checklist_and_stores_none(store):
+    """`playbook_id` named a checklist (#883); checklists were removed (#1653). The store no
+    longer accepts one, and a new mission's column is NULL."""
+    import inspect
 
-
-def test_a_FRESH_INSTALL_gets_the_shipped_playbooks(tmp_path):
-    """Absent means "never configured", and the shipped defaults are what that should read as."""
-    from agent_sessions import prefs
-
-    got = prefs.get_mission_playbooks(tmp_path / "nothing-here.json")
-    assert got["default_id"] == "ship_a_change"
-    assert [p["id"] for p in got["playbooks"]] == ["ship_a_change", "investigate"]
-
-
-def test_the_shipped_defaults_SURVIVE_STRICT_VALIDATION_unchanged(tmp_path):
-    """The constant obeys the rules it is handed to operators as an example of.
-
-    Asserted here rather than at import: validating in `prefs` would import `missions` while
-    `prefs` is still being defined.
-    """
-    from agent_sessions import prefs
-
-    strict = prefs._coerce_mission_playbooks(prefs.DEFAULT_MISSION_PLAYBOOKS, strict=True)
-    assert strict == prefs.get_mission_playbooks(tmp_path / "nothing-here.json")
-
-
-def test_a_PRESENT_but_malformed_block_still_fails_closed(tmp_path):
-    """Absence and corruption are different facts. Only the first gets the defaults — handing
-    them to a corrupt block would silently replace an operator's config with ours."""
-    from agent_sessions import prefs
-    from agent_sessions.atomicjson import atomic_write_json
-
-    p = tmp_path / "p.json"
-    atomic_write_json(p, {"mission_playbooks": {"playbooks": "not a list"}})
-    # `revision` is 0: nothing has ever been WRITTEN through the versioned path, and a corrupt
-    # block carries no version of its own to trust (#900 review 5, finding 7).
-    assert prefs.get_mission_playbooks(p) == {"default_id": "", "playbooks": [], "revision": 0}
-
-
-def test_an_operator_who_CLEARS_their_playbooks_does_not_get_them_back(tmp_path):
-    """The empty object is a decision, and it is distinguishable from never having decided."""
-    from agent_sessions import prefs
-
-    p = tmp_path / "p.json"
-    prefs.set_mission_playbooks({"default_id": "", "playbooks": []}, p)
-    assert prefs.get_mission_playbooks(p) == {"default_id": "", "playbooks": [], "revision": 1}
+    assert "playbook_id" not in inspect.signature(missions.create_mission).parameters
+    m = missions.create_mission("do it", path=store)
+    assert m["playbook_id"] is None
+    assert missions.get_mission(m["id"], path=store)["playbook_id"] is None
 
 
 @pytest.mark.parametrize(
@@ -1607,39 +1565,11 @@ def test_an_operator_who_CLEARS_their_playbooks_does_not_get_them_back(tmp_path)
         {"url": "http://example.com:8080x"},
     ],
 )
-def test_MALFORMED_probe_args_are_refused_by_BOTH_durable_paths(store, tmp_path, args):
-    """Paired, because a rule enforced on one path and not the other is not a rule.
-
-    A playbook and an operator objective edit are two different doors to the same stored column,
-    and the Phase 5 runner reads the column — it cannot tell which door a target came through,
-    so both have to be shut.
+def test_MALFORMED_probe_args_are_refused_by_the_objective_write(store, args):
+    """The operator's objective edit is the one door left to the stored probe-args column (the
+    checklist write was the other, removed with #1653), and the Phase 5 runner reads the column,
+    so it has to refuse every malformed target.
     """
-    from agent_sessions import prefs
-
-    # Door 1: the playbook prefs write.
-    with pytest.raises(prefs.PlaybookError):
-        prefs.set_mission_playbooks(
-            {
-                "default_id": "p",
-                "playbooks": [
-                    {
-                        "id": "p",
-                        "label": "P",
-                        "objectives": [
-                            {
-                                "key": "live",
-                                "title": "It is live",
-                                "probe": "http_status",
-                                "probe_args": args,
-                            }
-                        ],
-                    }
-                ],
-            },
-            tmp_path / "p.json",
-        )
-
-    # Door 2: the public objective route's write path.
     mid = missions.create_mission("do it", path=store)["id"]
     with pytest.raises(missions.MissionError) as e:
         missions.patch_objectives(
@@ -1659,42 +1589,6 @@ def test_MALFORMED_probe_args_are_refused_by_BOTH_durable_paths(store, tmp_path,
     assert missions.objectives(mid, path=store) == []
 
 
-def test_a_hand_edited_malformed_template_DEGRADES_on_read_and_cannot_gate(tmp_path):
-    """`prefs.json` is a file a person can edit, so the read path has to say what a bad template
-    BECOMES — and a gating objective with no probe can never be met, which would wedge the
-    mission rather than protect it."""
-    from agent_sessions import prefs
-    from agent_sessions.atomicjson import atomic_write_json
-
-    p = tmp_path / "p.json"
-    atomic_write_json(
-        p,
-        {
-            "mission_playbooks": {
-                "default_id": "p",
-                "playbooks": [
-                    {
-                        "id": "p",
-                        "label": "P",
-                        "objectives": [
-                            {
-                                "key": "live",
-                                "title": "It is live",
-                                "probe": "http_status",
-                                "probe_args": {"url": ["nope"]},
-                                "gate": True,
-                            }
-                        ],
-                    }
-                ],
-            }
-        },
-    )
-    (obj,) = prefs.get_mission_playbooks(p)["playbooks"][0]["objectives"]
-    assert (obj["probe"], obj["probe_args"], obj["gate"]) == ("none", None, False)
-    assert obj["title"] == "It is live", "the operator's intent stayed visible"
-
-
 @pytest.mark.parametrize(
     "url",
     [
@@ -1708,61 +1602,6 @@ def test_LEGITIMATE_urls_still_pass(url):
     """The control. A host contract that also refuses IPv6 literals or punycode would be a
     different bug wearing the fix's clothes."""
     missions.validate_probe_args("http_status", {"url": url})
-
-
-@pytest.mark.parametrize("gate", ["false", "true", 1, 0, {}, [], None])
-def test_a_playbook_write_REFUSES_a_non_boolean_gate(tmp_path, gate):
-    """`bool("false")` is `True`, so a client that stringifies a false value would silently
-    create a MANDATORY gate — and a gate nobody intended can strand a mission short of
-    completion for ever (review on #884)."""
-    from agent_sessions import prefs
-
-    with pytest.raises(prefs.PlaybookError):
-        prefs.set_mission_playbooks(
-            {
-                "default_id": "p",
-                "playbooks": [
-                    {
-                        "id": "p",
-                        "label": "P",
-                        "objectives": [
-                            {"key": "k", "title": "T", "probe": "forge_pr", "gate": gate}
-                        ],
-                    }
-                ],
-            },
-            tmp_path / "p.json",
-        )
-
-
-def test_a_hand_edited_non_boolean_gate_DEGRADES_on_read(tmp_path):
-    """The forgiving half. `prefs.json` is a file a person can edit, and a whole install must not
-    lose its playbooks over one bad value — but the row degrades explicitly rather than being
-    coerced into whichever gate the truthiness happened to give."""
-    from agent_sessions import prefs
-    from agent_sessions.atomicjson import atomic_write_json
-
-    p = tmp_path / "p.json"
-    atomic_write_json(
-        p,
-        {
-            "mission_playbooks": {
-                "default_id": "p",
-                "playbooks": [
-                    {
-                        "id": "p",
-                        "label": "P",
-                        "objectives": [
-                            {"key": "k", "title": "T", "probe": "forge_pr", "gate": "false"}
-                        ],
-                    }
-                ],
-            }
-        },
-    )
-    (obj,) = prefs.get_mission_playbooks(p)["playbooks"][0]["objectives"]
-    assert (obj["probe"], obj["gate"]) == ("none", False)
-    assert obj["title"] == "T", "the operator's intent stayed visible"
 
 
 def test_the_objectives_intent_UPGRADE_does_not_backfill_history(tmp_path, monkeypatch):
@@ -1849,17 +1688,9 @@ def test_the_v9_to_v10_UPGRADE_adds_the_supervisor_tables(tmp_path, monkeypatch)
 def _ensure_objective(mid, key="k", *, path=None):
     """A lifecycle write needs a real objective (#888 review, finding 2) — create it once."""
     if not any(o.get("key") == key for o in missions.objectives(mid, path=path)):
-        missions.instantiate_objectives(
+        missions.patch_objectives(
             mid,
-            [
-                {
-                    "key": key,
-                    "title": key,
-                    "probe": "forge_pr",
-                    "gate": True,
-                    "source": "playbook",
-                }
-            ],
+            [{"op": "add", "key": key, "title": key, "probe": "forge_pr", "gate": True}],
             path=path,
         )
 
@@ -2138,43 +1969,32 @@ def test_every_probe_ARGUMENT_publishes_the_json_type_it_takes():
     assert missions.PROBE_ARG_TYPES["http_status"]["expect_status"] == "int"
 
 
-def test_an_integer_status_ROUND_TRIPS_through_a_playbook_while_the_string_is_refused(tmp_path):
+def test_an_integer_status_ROUND_TRIPS_through_an_objective_while_the_string_is_refused(store):
     """The round trip the review asked for: what the editor now sends is what the store takes."""
-    from agent_sessions import prefs
-
-    p = tmp_path / "p.json"
-    good = {
-        "default_id": "ship",
-        "playbooks": [
-            {
-                "id": "ship",
-                "label": "Ship it",
-                "objectives": [
-                    {
-                        "key": "live",
-                        "title": "It is live",
-                        "probe": "http_status",
-                        "probe_args": {"url": "https://example.test/healthz", "expect_status": 204},
-                        "gate": True,
-                    }
-                ],
-            }
-        ],
+    mid = missions.create_mission("do it", path=store)["id"]
+    add = {
+        "op": "add",
+        "key": "live",
+        "title": "It is live",
+        "probe": "http_status",
+        "probe_args": {"url": "https://example.test/healthz", "expect_status": 204},
+        "gate": True,
     }
-    prefs.set_mission_playbooks(good, p)
-    back = prefs.get_mission_playbooks(p)
-    args = back["playbooks"][0]["objectives"][0]["probe_args"]
+    missions.patch_objectives(mid, [add], path=store)
+    (row,) = missions.objectives(mid, path=store)
+    args = row["probe_args"]
+    if isinstance(args, str):
+        import json
+
+        args = json.loads(args)
     assert args["expect_status"] == 204
     assert isinstance(args["expect_status"], int) and not isinstance(args["expect_status"], bool)
 
     # ...and the UI-shaped string is still refused, rather than quietly coerced at the boundary.
-    import copy
-
-    bad = copy.deepcopy(good)
-    bad["playbooks"][0]["objectives"][0]["probe_args"]["expect_status"] = "204"
-    with pytest.raises(Exception) as e:
-        prefs.set_mission_playbooks(bad, p)
-    assert "integer" in str(e.value)
+    bad = {**add, "key": "live2", "probe_args": {**add["probe_args"], "expect_status": "204"}}
+    with pytest.raises(missions.MissionError) as e:
+        missions.patch_objectives(mid, [bad], path=store)
+    assert e.value.status == 422 and "integer" in str(e.value)
 
 
 def test_a_MIGRATION_STEP_survives_a_store_that_never_had_the_table(tmp_path, monkeypatch):

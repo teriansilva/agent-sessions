@@ -2072,12 +2072,6 @@ export const api = {
       `/api/missions/${encodeURIComponent(id)}/objectives`,
       { ops: [{ op: "set_direction", key, direction }] },
     ),
-  /** Copy the playbook's CURRENT direction for this objective again. A copy, never a link. */
-  resetObjectiveDirection: (id: string, key: string) =>
-    patchJson<{ objectives: MissionObjective[] }>(
-      `/api/missions/${encodeURIComponent(id)}/objectives`,
-      { ops: [{ op: "reset_direction", key }] },
-    ),
   /** No direction: a nudge for this objective types the default nudge. */
   clearObjectiveDirection: (id: string, key: string) =>
     patchJson<{ objectives: MissionObjective[] }>(

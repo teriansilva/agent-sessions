@@ -30,11 +30,6 @@ import styles from "./mission.module.css";
 import { renderTemplate } from "../../lib/templateMessage";
 import { TemplatePickerModal } from "../templates/TemplatePickerModal";
 
-/** `missions.PLAYBOOK_DECLINED`: this mission gets no checklist (#1061). With an AI endpoint the
- *  orchestrator writes its objectives and the supervisor judges them (#1088); without one, notes
- *  only. */
-export const PLAYBOOK_DECLINED = ":none";
-
 /** The server's instruction cap (`missions.INSTRUCTION_MAX`). It truncates silently, so the form
  *  refuses to start over it rather than letting the tail of a brief disappear (#948). */
 const INSTRUCTION_MAX = 8000;
@@ -86,13 +81,9 @@ export function NewMissionForm({
 
   const [instruction, setInstruction] = useState("");
   const [projectId, setProjectId] = useState(initialProjectId);
-  /** The checklist for THIS mission (#1061). `null` = untouched, so the pre-selection follows the
-   *  configured default even when the config lands after mount; a pick is the operator's and
-   *  sticks. */
-  const [pickedPlaybook, setPickedPlaybook] = useState<string | null>(null);
   const config = useConfig();
-  /** Whether "No checklist" means AI-written, supervisor-judged objectives (#1088) — true only with
-   *  an AI endpoint; without one it is notes only, and the copy says so. */
+  /** Whether the objectives are AI-written and supervisor-judged (#1088; every mission since
+   *  checklists were removed, #1653) — true only with an AI endpoint; without one, none are written. */
   const aiBuilt = config?.ai_review?.configured === true;
   const missionPolicy = config?.automation?.version === 1
     ? config.automation.mission
@@ -102,19 +93,6 @@ export function NewMissionForm({
     missionPolicy?.judge_confidence_floor ??
     0.9
   ).toFixed(2);
-  const playbookBlock = config?.mission_playbooks;
-  const playbooks = playbookBlock?.playbooks ?? [];
-  const defaultPlaybook = playbooks.some(
-    (p) => p.id === playbookBlock?.default_id,
-  )
-    ? playbookBlock!.default_id
-    : PLAYBOOK_DECLINED;
-  const playbookId =
-    pickedPlaybook !== null &&
-    (pickedPlaybook === PLAYBOOK_DECLINED ||
-      playbooks.some((p) => p.id === pickedPlaybook))
-      ? pickedPlaybook
-      : defaultPlaybook;
   const [projects, setProjects] = useState<ProjectEntity[] | null>(null);
   /** The list could not be READ — a different fact from an empty one, and with a different fix. */
   const [projectsError, setProjectsError] = useState(false);
@@ -181,11 +159,6 @@ export function NewMissionForm({
         const m = await api.createMission({
           instruction: text,
           project_id: projectId,
-          // SENT EXPLICITLY whenever there is anything to choose, so the mission records the
-          // checklist the operator saw selected — including "No checklist" — instead of whatever
-          // the Settings default becomes later. With no playbooks configured nothing is sent and
-          // the server's own default applies, exactly as before.
-          ...(playbooks.length ? { playbook_id: playbookId } : {}),
         });
         // FENCED AT RESOLUTION, ON THE VISIT. The operator may have moved to another mission, or
         // flipped Active → Archived while this was in flight. The last of
@@ -199,7 +172,6 @@ export function NewMissionForm({
         const focus = liveRef.current && isVisitCurrent(at);
         setInstruction("");
         setProjectId("");
-        setPickedPlaybook(null);
         onCreated(m, { focus });
       } catch (err) {
         // The server's own `detail` — a project with no folder to work in, an unresolvable
@@ -222,8 +194,6 @@ export function NewMissionForm({
       onCreated,
       visit,
       isVisitCurrent,
-      playbooks.length,
-      playbookId,
     ],
   );
 
@@ -300,27 +270,6 @@ export function NewMissionForm({
                 </option>
               ))}
             </select>
-            {/* WHICH CHECKLIST, per mission (#1061). Hidden when no playbook is configured: there
-                is nothing to choose, and an empty picker would only say so in the way. */}
-            {playbooks.length ? (
-              <select
-                className={`${styles.newMissionProject} ${styles.newMissionPlaybook}`}
-                value={playbookId}
-                onChange={(e) => setPickedPlaybook(e.target.value)}
-                aria-label="Checklist"
-                title="The objectives this mission is checked against"
-                data-testid="new-mission-playbook"
-              >
-                {playbooks.map((pb) => (
-                  <option key={pb.id} value={pb.id}>
-                    {`Checklist: ${pb.label}`}
-                  </option>
-                ))}
-                <option value={PLAYBOOK_DECLINED}>
-                  {aiBuilt ? "No checklist — AI writes the objectives" : "No checklist"}
-                </option>
-              </select>
-            ) : null}
           </div>
           <div className={styles.footTrail}>
             <button
@@ -374,49 +323,27 @@ export function NewMissionForm({
           />
         ) : null}
       </form>
-      {/* WHAT THE CHOSEN CHECKLIST MEANS (#1061), under the box as the issue's mockup draws it: the
-          playbook's own objective titles, or — for "No checklist" — its cost, in the text-safe amber,
-          because a mission with nothing to check can never confirm itself finished. */}
-      {playbooks.length ? (
-        playbookId === PLAYBOOK_DECLINED ? (
-          <div
-            className={`${styles.playbookNote} ${styles.playbookNoteWarn} ${styles.boxNote}`}
-            data-testid="new-mission-playbook-note"
-          >
-            {aiBuilt ? (
-              <>
-                No checklist — the orchestrator writes the objectives from your
-                instruction, and the supervisor judges them. When it is at least{" "}
-                {judgeAt} sure the work is done, the mission moves to review. You
-                close it.
-              </>
-            ) : (
-              <>
-                No checklist — notes only: nothing can be checked, so the mission
-                can never confirm itself finished. You close it.
-              </>
-            )}
-          </div>
+      {/* HOW THIS MISSION IS MEASURED (#1088; checklists were removed, #1653), under the box: the
+          orchestrator writes the objectives and the supervisor judges them, or — with no AI
+          endpoint — that none are written, in the text-safe amber, because such a mission can never confirm
+          itself finished. */}
+      <div
+        className={`${styles.playbookNote} ${styles.playbookNoteWarn} ${styles.boxNote}`}
+        data-testid="new-mission-objectives-note"
+      >
+        {aiBuilt ? (
+          <>
+            The orchestrator writes the objectives from your instruction, and the
+            supervisor judges them. When it is at least {judgeAt} sure the work is
+            done, the mission moves to review. You close it.
+          </>
         ) : (
-          <div
-            className={`${styles.playbookNote} ${styles.boxNote}`}
-            data-testid="new-mission-playbook-note"
-          >
-            {(() => {
-              const pb = playbooks.find((p) => p.id === playbookId)!;
-              const titles = pb.objectives.map((o) => o.title).filter(Boolean);
-              return (
-                <>
-                  <strong>{pb.label}</strong>
-                  {titles.length
-                    ? ` — ${titles.join(" · ")}. Checked by the server; fitted to your instruction.`
-                    : " — no objectives in this checklist yet."}
-                </>
-              );
-            })()}
-          </div>
-        )
-      ) : null}
+          <>
+            No AI endpoint, so no objectives are written for you: the mission can
+            never confirm itself finished. Add your own, and close it yourself.
+          </>
+        )}
+      </div>
       {/* Under the box: what the form needs from the operator, never inside the row. */}
       {note ? (
         <div

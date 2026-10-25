@@ -25,14 +25,13 @@ describe("activeSection", () => {
     ["/dashboard", "ask"],
     // The map is a view OF sessions since #1069: its parent section is Sessions.
     ["/overview", "sessions"],
-    // Library (#1294) owns templates, automations, checklists and playbooks — automations and
-    // checklists keep their `/mission/...` URLs but are NOT the Missions section any more.
+    // Library (#1294) owns templates, automations and playbooks — automations keep their
+    // `/mission/...` URL but are NOT the Missions section any more.
     ["/templates", "library"],
     ["/templates/new", "library"],
     ["/templates/tpl_1", "library"],
     ["/mission/automations", "library"],
     ["/mission/automations/abc123", "library"],
-    ["/mission/checklists", "library"],
     ["/library/playbooks", "library"],
     ["/library/gallery", "library"],
     ["/library/gallery/abc", "library"],
@@ -65,7 +64,6 @@ describe("activeSection", () => {
     ["/ask", null],
     ["/templates", "templates"],
     ["/templates/tpl_1", "templates"],
-    ["/mission/checklists", "checklists"],
     ["/library/playbooks", "playbooks"],
     // #1440: the gallery is a view of Playbooks and Skills; old links light Playbooks.
     ["/library/gallery", "playbooks"],
@@ -133,12 +131,12 @@ describe("SectionNav", () => {
     );
   });
 
-  test("Library holds Templates, Variables, Memory, Automations, Checklists, Skills and Playbooks — no separate Gallery (#1294, #1440); Missions and Dashboard have no menu", async () => {
+  test("Library holds Templates, Variables, Memory, Automations, Skills and Playbooks — no separate Gallery (#1294, #1440) and no Checklists (#1653); Missions and Dashboard have no menu", async () => {
     render(
       <MemoryRouter>
         <SectionNav
           active="library"
-          activeSub="checklists"
+          activeSub="skills"
           sessionsPath="/"
           onNavigate={() => {}}
         />
@@ -161,7 +159,6 @@ describe("SectionNav", () => {
       ["Variables", "/library/variables"],
       ["Memory", "/library/memory"],
       ["Automations", "/mission/automations"],
-      ["Checklists", "/mission/checklists"],
       ["Skills", "/library/skills"],
       ["Playbooks", "/library/playbooks"],
     ]);

@@ -14,7 +14,6 @@ import { resolve } from "node:path";
 import { expect, type Page } from "@playwright/test";
 
 import { DIRECTION_PREVIEW_PATH } from "../src/lib/apiPaths";
-import { CHECKLISTS_PATH } from "../src/lib/routes";
 import { settingsPath } from "../src/routes/settingsTabs";
 import {
   MISSION,
@@ -47,7 +46,6 @@ const EXAMPLES: Record<string, string> = {
 export const UNKNOWN =
   "unknown placeholder {nope}; the placeholders are {pr}, {pr_state}, {checks}, {review}, {repo}, {branch}";
 /** …and `prefs` wrapping them for a playbook save. */
-export const SAVE_REFUSAL = `objective 'checks_green' has an invalid direction — ${UNKNOWN}`;
 
 export const NUDGE_TEMPLATE =
   "Please continue with the task you were working on. If you finished it, say so and stop.";
@@ -71,26 +69,6 @@ export const ORCH = {
   ai_direction_confidence_min: 0.9,
   ai_direction_confidence_floor: 0.9,
   ai_direction_confidence_max: 1,
-};
-
-export const PLAYBOOKS = {
-  default_id: "ship",
-  revision: 3,
-  playbooks: [
-    {
-      id: "ship",
-      label: "Ship a change",
-      objectives: [
-        {
-          key: "checks_green",
-          title: "Checks are green on the PR",
-          probe: "forge_checks",
-          probe_args: { branch: "fix/upload-retry" },
-          gate: true,
-        },
-      ],
-    },
-  ],
 };
 
 const PROBES = {
@@ -120,7 +98,6 @@ export const CONFIG = {
   projects_hidden: [],
   onboarded: true,
   pulse: { configured: true },
-  mission_playbooks: PLAYBOOKS,
   mission_probes: PROBES,
   orchestrator: ORCH,
 };
@@ -194,56 +171,10 @@ export async function commonMocks(page: Page) {
   return { previews };
 }
 
-// --- the playbook editor ---------------------------------------------------------------------------
-
-/** Missions → Checklists, with a prefs route that records each save and refuses `{nope}`. */
-export async function playbookEditor(
-  page: Page,
-  opts: { refuse?: boolean } = {},
-) {
-  const common = await commonMocks(page);
-  const saves: { mission_playbooks: typeof PLAYBOOKS }[] = [];
-  await page.route("**/api/pulse/orchestrator", (r) =>
-    r.fulfill({ status: 500, json: { detail: "off" } }),
-  );
-  await page.route("**/api/prefs", (r) => {
-    const body = r.request().postDataJSON() as {
-      mission_playbooks: typeof PLAYBOOKS;
-    };
-    saves.push(body);
-    const sent = JSON.stringify(body.mission_playbooks);
-    if (opts.refuse || sent.includes("{nope}")) {
-      return r.fulfill({ status: 422, json: { detail: SAVE_REFUSAL } });
-    }
-    return r.fulfill({
-      json: {
-        mission_playbooks: {
-          ...body.mission_playbooks,
-          revision: PLAYBOOKS.revision + 1,
-        },
-      },
-    });
-  });
-  await page.goto(CHECKLISTS_PATH);
-  // The page opens on the LIST of checklists (#1221): open the first one, then its first step.
-  await page.getByTestId("playbook-card").first().click();
-  await page.getByTestId("objective-toggle").first().click();
-  const field = page.getByTestId("objective-direction").first();
-  await expect(field).toBeVisible();
-  return {
-    ...common,
-    saves,
-    field,
-    text: field.getByTestId("objective-direction-text"),
-  };
-}
-
 // --- the mission console ---------------------------------------------------------------------------
 
 export const COPIED =
   "PR #{pr}'s checks are {checks} on {branch}. Open the failing check, fix the cause, push.";
-export const PLAYBOOK_NOW =
-  "PR #{pr} checks are {checks}. Open the failing check first.";
 export const OWN = "Ask a reviewer on PR #{pr}.";
 
 type ObjectiveRow = Record<string, unknown> & { key: string };
@@ -498,11 +429,6 @@ export async function missionConsole(
           Object.assign(row, {
             direction: op.direction,
             direction_source: "operator",
-          });
-        if (op.op === "reset_direction")
-          Object.assign(row, {
-            direction: PLAYBOOK_NOW,
-            direction_source: "template",
           });
         if (op.op === "clear_direction")
           Object.assign(row, { direction: null, direction_source: null });

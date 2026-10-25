@@ -48,13 +48,10 @@ working directory from it, and a mission with no project stays a `draft` — leg
 start work — so **Start mission** stays disabled until you pick one, rather than letting you find
 out later.
 
-If you have any checklists configured, the same row has a **Checklist** picker: your default is
-preselected (No checklist, if you have not set a default), you can pick another, or pick **No checklist**. The line under the box says what the
-choice means — the chosen checklist's objectives, or, for No checklist, what happens instead. With
-an AI endpoint configured the option reads **No checklist — AI writes the objectives**: the
-orchestrator writes the objectives from your instruction and the supervisor judges them (see
-[No checklist](#no-checklist) below). Without an endpoint it is notes only, and the mission can
-never confirm itself finished.
+There is no objective list to pick. With an AI endpoint configured, the orchestrator writes the
+objectives from your instruction and the supervisor judges them (see
+[Where objectives come from](#where-objectives-come-from) below). Without an endpoint they are notes
+only, and the mission can never confirm itself finished.
 
 Objectives arrive a moment after the mission does; see below.
 
@@ -88,15 +85,13 @@ running mission with nothing in it has nothing to follow through on.
 
 ## Objectives — what "done" means, decided before the work
 
-A mission carries a checklist, and the point is that it is written **before** the work rather than
+A mission carries an objective list, and the point is that it is written **before** the work rather than
 argued about after. "The agent said it's done" is a report about one turn; an objective list is a
 set of facts.
 
-Objectives come from a **checklist** — an operator-authored template list, edited in **Library →
-Checklists** (the chevron beside Library in the top bar) and chosen per mission on the new-mission form. The shipped `Ship a change`
-checklist gates on: a branch exists, a PR is open, checks are green, it has been reviewed, it is
-merged. The shipped `Investigate` checklist gates on *a finding is written down*, which the
-supervisor judges (below); *you have confirmed it* stays yours to settle and does not gate.
+Objectives are written from your instruction when the mission is created — see
+[Where objectives come from](#where-objectives-come-from). (Checklists, the operator-authored
+template lists missions used to pick from, were removed.)
 
 You can edit the list at any time: add, rename, reorder, remove, or mark one **NOT REQUIRED**.
 
@@ -109,7 +104,7 @@ are the next section.
 
 ### The four meanings of an empty list
 
-A mission is created before its objectives exist, so an empty checklist is not evidence that there
+A mission is created before its objectives exist, so an empty list is not evidence that there
 are none. The pane says which case you are in: still being worked out, none proposed, could not be
 produced, or genuinely empty.
 
@@ -127,13 +122,14 @@ That third case is why a forge outage does not look like your work going backwar
 nobody could check has not been shown to be unmet.
 
 Probes that talk to a forge need a [forge connection](/guide/settings); without one they answer
-*unknown* rather than failing. Probe targets can only ever come from a checklist a person typed —
-there is no path from model output to an address the server will fetch.
+*unknown* rather than failing. Probe targets can only ever come from text a person typed (on
+missions created before checklists were removed, the checklist they used) — there is no path from
+model output to an address the server will fetch.
 
 ### Judged objectives
 
 Some objectives have no fact a server can fetch — *a finding is written down*, *every issue tagged
-`type:bug` is closed*. For those the checklist uses the **Supervisor judges** kind
+`type:bug` is closed*. For those the objective uses the **Supervisor judges** kind
 (`supervisor_judged`; older configurations say `agent_judged`, which still reads correctly).
 
 - **Who judges.** The supervisor, in a separate model call with its own prompt. The working agent
@@ -236,16 +232,16 @@ visibly unmet.
 ### Directions
 
 A nudge types your text, never the model's. By default that is the global nudge from Settings. An
-objective can carry a **direction** instead: text you write on the checklist template, or for one
-mission, such as `PR #{pr} checks are {checks} on {branch}. Open the failing check and fix it.`
+objective can carry a **direction** instead: text you write for that objective on one mission,
+such as `PR #{pr} checks are {checks} on {branch}. Open the failing check and fix it.`
 
 - **Placeholders are a closed list.** `{pr}`, `{pr_state}`, `{checks}` and `{review}` come from
   that objective's own latest probe observation; `{repo}` and `{branch}` come from its probe
   arguments. An unknown placeholder, or one the objective's probe cannot fill, is refused when you
   save. Probe detail text, titles, the checkout's own branch and session content are never used.
-- **Copied, not linked.** A mission copies the template's direction when its objectives are
-  created. Editing the checklist later changes no running mission; you can reset one to the
-  checklist's current direction, write your own, or clear it.
+- **Copied directions stay.** A mission created before checklists were removed may carry a
+  direction copied from its checklist. It stays as it was: you can keep it, write your own, or
+  clear it.
 - **Never half-filled.** If a fact is missing, stale, or was observed for a different target or
   head, the nudge is held and the mission asks for you. It is not sent with blanks, and it does not
   fall back to the global nudge.
@@ -254,12 +250,12 @@ mission, such as `PR #{pr} checks are {checks} on {branch}. Open the failing che
   the time it is approved or sent automatically, including an edit to the global nudge, it is not
   sent. A re-probe that finds the same facts changes nothing, so a proposal waits for you as long
   as its facts hold and are fresh. A nudge without a direction never goes stale on a re-probe.
-- **Where you write one.** In **Library → Checklists**, each objective has a **Direction**
-  field. Tap a fact chip to insert a placeholder that objective's check can fill. The preview shows
-  the text filled with example facts, and an unknown placeholder is refused there in the same words a
-  save uses. For a single mission, use an objective's ⋯ → **Edit direction**. You can keep the copy,
-  reset it to the checklist's current direction, write your own, or have none. Objectives with a
-  direction carry a small *direction* mark.
+- **Where you write one.** Use an objective's ⋯ → **Edit direction**. You can keep a copied
+  direction (**Keep the copied direction**, only where there is one), write your own, or have none.
+  Writing one opens a **Direction** field: tap a fact chip to insert a placeholder that objective's
+  check can fill. The preview shows the text filled with example facts, and an unknown placeholder
+  is refused there in the same words a save uses. Objectives with a direction carry a small
+  *direction* mark.
 - **What you approve is what is typed.** On Suggest, the decision shows **Will type**: the exact
   text, the facts it was filled with and when they were checked. The AI's *Why now* is kept
   separate. If the text is no longer true, the decision says **not sendable** and offers only
@@ -286,10 +282,9 @@ yours. It lists the required objectives by how they hold — **observed** (a pro
 **judged** (the supervisor's reading, with its confidence) and **waived** (you marked it not
 required) — because those are different claims.
 
-### No checklist
+### Where objectives come from
 
-"At least one" is the point. What a mission started with **No checklist** gets depends on whether
-an AI endpoint is configured:
+"At least one" is the point. What a mission gets depends on whether an AI endpoint is configured:
 
 - **With an endpoint**, the orchestrator writes the objectives from your instruction — at most six,
   each a concrete outcome — and every one of them is a required, **judged** objective. If it writes
@@ -298,9 +293,9 @@ an AI endpoint is configured:
   hold. The model only ever chooses the wording of these objectives: it cannot give one a probe or
   an address, and the most a judgment can do is propose review. You close the mission, or drop any
   objective you do not want judged.
-- **Without an endpoint**, it gets notes-only objectives: nothing on it can be checked and nothing
-  is required, so it is unmeasured rather than finished, and it never proposes its own completion.
-  You close it.
+- **Without an endpoint**, no objectives are written for it: nothing on it is checked or required
+  until you add your own, so it is unmeasured rather than finished, and it never proposes its own
+  completion. You close it.
 
 Objectives you add to a list later from the console are notes — the add row takes a title, not a
 check.
@@ -378,7 +373,7 @@ Commit `f5611f0` — `src/agent_sessions/missions.py § STATES, _ALLOWED, PROBE_
 `src/agent_sessions/mission_supervisor.py § NUDGE_BUDGET, assess`;
 #1088 — `src/agent_sessions/mission_judge.py`; `src/agent_sessions/missions.py § PROBE_ALIASES, observe_objective, judgment_counts, _op_reject_judgment, INSTRUCTION_GATES_MAX`;
 `src/agent_sessions/mission_objectives.py § propose`; `src/agent_sessions/prefs.py § ORCH_JUDGE_CONF_*`;
-`src/agent_sessions/mission_probes.py`; `src/agent_sessions/prefs.py § DEFAULT_MISSION_PLAYBOOKS, ORCH_AI_DIRECTION_CONF_*`;
+`src/agent_sessions/mission_probes.py`; `src/agent_sessions/prefs.py § ORCH_AI_DIRECTION_CONF_*`;
 `src/agent_sessions/actuator.py § draft_auto_allowed, _announce_auto_direction`;
 `web/src/lib/routes.ts § ASK_PATH`; `web/src/components/shell/sections.ts`;
 `web/src/components/pulse/{NewMissionForm,MissionConsole,MissionRail,MissionObjectives,MissionThreadEvent}.tsx`;

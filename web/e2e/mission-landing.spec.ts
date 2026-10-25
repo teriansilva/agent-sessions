@@ -17,7 +17,6 @@ import {
   mockMissions,
   openMissionRail,
 } from "./mission-console";
-import { TOUCH_FLOOR } from "./touchTarget";
 
 const NEEDY = "msn_" + "1".repeat(32);
 const OTHER = "msn_" + "2".repeat(32);
@@ -405,18 +404,17 @@ test("a template appends to an existing brief on a new line, and a cancelled pic
   );
 });
 
-test("the checklist is chosen per mission: default pre-selected, the pick is what is sent (#1061)", async ({
+test("a new mission has no checklist: no picker, no playbook_id, and the line under the box says how it is measured (#1653)", async ({
   page,
 }) => {
+  // A config from an old server (or a stale cache) can still carry a checklist block: nothing
+  // offers it any more.
   await setup(page, {
     config: {
       mission_playbooks: {
         default_id: "pr",
         revision: 1,
-        playbooks: [
-          { id: "pr", label: "Ship a PR", objectives: [] },
-          { id: "audit", label: "Dependency audit", objectives: [] },
-        ],
+        playbooks: [{ id: "pr", label: "Ship a PR", objectives: [] }],
       },
     },
   });
@@ -427,88 +425,17 @@ test("the checklist is chosen per mission: default pre-selected, the pick is wha
     return r.fulfill({ status: 201, json: { ...MISSION, id: CREATED, title: "Created mission" } });
   });
   await page.goto(MISSION_PATH);
-  const pick = page.getByTestId("new-mission-playbook");
-  await expect(pick).toHaveValue("pr");
-  await expect(pick.locator("option")).toHaveText([
-    "Checklist: Ship a PR",
-    "Checklist: Dependency audit",
-    "No checklist",
-  ]);
-
-  // It sits in the composer footer and stays inside it, phone included.
-  const foot = await page.getByTestId("composer-foot").boundingBox();
-  const box = await pick.boundingBox();
-  expect(box!.x).toBeGreaterThanOrEqual(foot!.x - 0.5);
-  expect(box!.x + box!.width).toBeLessThanOrEqual(foot!.x + foot!.width + 0.5);
-  expect(box!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  await expect(page.getByTestId("new-mission-instruction")).toBeVisible();
+  await expect(page.getByTestId("new-mission-playbook")).toHaveCount(0);
+  const note = page.getByTestId("new-mission-objectives-note");
+  await expect(note).toBeVisible();
+  await expect(note).not.toContainText(/checklist/i);
+  // The note stays inside the page on a phone too.
   const vw = page.viewportSize()!.width;
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(vw);
-
-  await expect(page.getByTestId("new-mission-playbook-note")).toContainText("Ship a PR —");
-  await pick.selectOption(":none");
-  // Declining states its cost under the box, in the text-safe amber.
-  const warn = page.getByTestId("new-mission-playbook-note");
-  await expect(warn).toContainText("never confirm itself finished");
-  const colours = await warn.evaluate((el) => {
-    const probe = document.createElement("span");
-    probe.style.color = "var(--warn-text)";
-    document.body.appendChild(probe);
-    const want = getComputedStyle(probe).color;
-    probe.remove();
-    return [getComputedStyle(el).color, want];
-  });
-  expect(colours[0]).toBe(colours[1]);
   await page.getByTestId("new-mission-instruction").fill("tidy the readme");
   await page.getByTestId("new-mission-project").selectOption("p1");
   await page.getByTestId("new-mission-start").click();
   await expect.poll(() => creates.length).toBe(1);
-  expect(creates[0]).toMatchObject({ instruction: "tidy the readme", project_id: "p1", playbook_id: ":none" });
-});
-
-test("the AI 'No checklist' label gives way in the footer, never onto Template", async ({
-  page,
-}, testInfo) => {
-  // #1133. With an AI endpoint the closed label is "No checklist — AI writes the objectives"
-  // (#1088) — wider than any playbook name, and wider than what the landing leaves beside
-  // Template: the box caps at 720px, the lead is squeezed (min-width: 0) and the picker used to
-  // refuse to shrink, so it overflowed its lead 22px ONTO the Template button. It gives way like
-  // the project picker now. The single-row branch only exists above the 660px container
-  // breakpoint (the wrapped branch gives the picker a row of its own), so this is a desktop-width
-  // assertion.
-  test.skip(testInfo.project.name !== "desktop", "the collision is the single-row footer branch, a >660px box");
-  await setup(page, {
-    config: {
-      ai_review: { configured: true },
-      mission_playbooks: {
-        default_id: ":none",
-        revision: 1,
-        playbooks: [{ id: "pr", label: "Ship a PR", objectives: [] }],
-      },
-    },
-  });
-  await page.setViewportSize({ width: 1280, height: 720 });
-  await page.goto(MISSION_PATH);
-  const pick = page.getByTestId("new-mission-playbook");
-  await expect(pick).toHaveValue(":none");
-
-  const rects = await page.evaluate(() => {
-    const r = (t: string) =>
-      document.querySelector(`[data-testid="${t}"]`)!.getBoundingClientRect();
-    return {
-      pick: r("new-mission-playbook"),
-      template: r("new-mission-template"),
-      foot: r("composer-foot"),
-      start: r("new-mission-start"),
-      scrollW: document.documentElement.scrollWidth,
-    };
-  });
-  // The branch this pins: ONE footer row — picker and Template share it. (On the wrapped branch
-  // the horizontal ranges legitimately overlap; it is a different row.)
-  expect(Math.abs(rects.pick.y - rects.template.y)).toBeLessThan(2);
-  // No collision: the picker's right edge stops short of Template's left edge …
-  expect(rects.pick.right).toBeLessThanOrEqual(rects.template.x + 0.5);
-  // … and nothing leaves the footer or the page.
-  expect(rects.template.right).toBeLessThanOrEqual(rects.foot.right + 0.5);
-  expect(rects.start.right).toBeLessThanOrEqual(rects.foot.right + 0.5);
-  expect(rects.scrollW).toBeLessThanOrEqual(1280);
+  expect(creates[0]).toEqual({ instruction: "tidy the readme", project_id: "p1" });
 });

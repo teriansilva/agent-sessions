@@ -59,9 +59,9 @@ export function scopeLines(config: Json): string[] {
     lines.push(`Starts a mission in project ${action.project_id}, in /repo`);
     lines.push("The agent is chosen by the mission planner");
     lines.push("Permission bypass: off (automated missions never bypass)");
-    if (action.checklist_id == null) lines.push("Checklist: Ship a change (your default)");
-    else if (action.checklist_id === ":none") lines.push("Checklist: none");
-    else lines.push(`Checklist: ${action.checklist_id}`);
+    // #1653: a new automation has no checklist; a record approved with one says it is inert.
+    if (action.checklist_id && action.checklist_id !== ":none")
+      lines.push(`Checklist (removed, not used): ${action.checklist_id}`);
     lines.push(AUTONOMY_LINE[String(action.autonomy)] ?? "Autonomy: unknown");
     lines.push(messageLine("Instruction", action.instruction as Json));
   } else if (action.kind === "start_session") {

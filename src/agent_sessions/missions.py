@@ -96,49 +96,10 @@ OBJECTIVE_TITLE_MAX = 200
 #: direction would have been filled from it (#983).
 OBSERVED_MAX = 2000
 OBJECTIVE_KEY_MAX = 64
-#: A mission that DECLINED a checklist (#1061) — the third state of `playbook_id`, beside absent
-#: (the operator's default) and a playbook id. The leading colon cannot occur in a playbook id
-#: (`prefs._PLAYBOOK_ID_RE`), so it can never collide with a real one, and "you declined" stays a
-#: different fact from "what you chose is gone" (`unknown_playbook`).
-PLAYBOOK_DECLINED = ":none"
-#: How a template's SECOND and later uses on one mission are keyed (#1061): `merged--2`. A double
-#: hyphen, because a single one is ordinary in playbook keys — a playbook may define both
-#: `merged` and `merged-2`, and a minted `merged-2` would then be indistinguishable from the real
-#: one when the panel resets a row's direction to its template. Playbook writes refuse `--` in an
-#: objective key.
+#: Reserved in objective and playbook item keys: `--` was how a checklist template's second use
+#: on one mission was keyed (#1061). Checklists are gone (#1653), but objectives written then still
+#: carry such keys, and playbook items still refuse it so none can collide with them.
 MINTED_KEY_SEP = "--"
-_MINTED_RE = re.compile(r"^(?P<base>.+)--(?P<n>[2-9]|[1-9][0-9]+)$")
-
-
-def minted_key(base: str, n: int) -> str:
-    """The key for the n-th (n ≥ 2) use of template `base` on one mission; fits the key limit."""
-    return f"{base[: OBJECTIVE_KEY_MAX - 5]}{MINTED_KEY_SEP}{n}"
-
-
-def template_for_key(templates: dict[str, dict], key: str) -> dict | None:
-    """The playbook template an objective row came from — its own key, or the base of a minted one.
-
-    Exact match first, so a real template key always wins. A minted key resolves to the template it
-    was minted from; one whose base was truncated to fit resolves only when exactly one template
-    key starts with that base. Anything else is `None` — no guessing about which template it meant.
-    """
-    t = templates.get(key)
-    if t is not None:
-        return t
-    m = _MINTED_RE.match(key)
-    if not m:
-        return None
-    base = m["base"]
-    if base in templates:
-        return templates[base]
-    if len(base) == OBJECTIVE_KEY_MAX - 5:
-        hits = [v for k, v in templates.items() if k.startswith(base)]
-        if len(hits) == 1:
-            return hits[0]
-    return None
-
-
-_PLAYBOOK_REF_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 PROBE_ARGS_MAX = 2000
 #: Bound on one `GET /api/missions/{id}` timeline page.
 EVENTS_PAGE_MAX = 200
@@ -2849,7 +2810,6 @@ def create_mission(
     cwd: str | None = None,
     engine: str | None = None,
     engine_source: str | None = None,
-    playbook_id: str | None = None,
     now: float | None = None,
     path: Path | None = None,
 ) -> dict:
@@ -2861,16 +2821,6 @@ def create_mission(
     text = _cap(instruction, INSTRUCTION_MAX)
     if not text:
         raise MissionError("instruction is required", status=422)
-    # THREE SHAPES, validated in the store so every caller gets it (#1061): absent ⇒ the operator's
-    # default; `PLAYBOOK_DECLINED` ⇒ no checklist for this mission; otherwise a well-formed playbook
-    # id. Whether that id still EXISTS is decided when templates resolve, deliberately — a playbook
-    # can be deleted after the mission is created, and that is recorded as `unknown_playbook`.
-    if playbook_id is not None and playbook_id != "":
-        if not isinstance(playbook_id, str) or not (
-            playbook_id == PLAYBOOK_DECLINED
-            or (len(playbook_id) <= 200 and _PLAYBOOK_REF_RE.match(playbook_id))
-        ):
-            raise MissionError('playbook_id must be a checklist id or ":none"', status=422)
     ts = time.time() if now is None else now
     mission_id = new_id()
     with _write_lock:
@@ -2894,7 +2844,9 @@ def create_mission(
                     _cap_or_none(cwd, 4096),
                     _cap_or_none(engine, 40),
                     _cap_or_none(engine_source, 20),
-                    _cap_or_none(playbook_id, 200),
+                    # `playbook_id` named a checklist (#883); checklists were removed (#1653), so a
+                    # new mission stores none. Old rows keep theirs, unread.
+                    None,
                     ts,
                     ts,
                     ts,
@@ -7489,84 +7441,6 @@ def advance_checkpoint(
 # ---------------------------------------------------------------- objectives
 
 
-def _binding_digest(status: str, templates: list[dict]) -> str:
-    """The digest, as a PURE function of one resolution.
-
-    Separated from the read so a caller can digest exactly the templates it is going to use.
-    Computing the two with separate reads is a race of precisely the kind this fence exists to
-    close: prefs changing between them yields a digest of the NEW config beside the OLD
-    templates, the write-boundary check then compares new against new and passes, and the stale
-    templates are written anyway.
-    """
-    payload = json.dumps([status, templates], sort_keys=True, default=str)
-    return hashlib.sha256(payload.encode()).hexdigest()[:32]
-
-
-def templates_and_binding(
-    mission_id: str, *, path: Path | None = None
-) -> tuple[str, list[dict], str]:
-    """`(status, templates, binding)` from ONE resolution — what a producer should call."""
-    status, templates = templates_for_mission(mission_id, path=path)
-    return status, templates, _binding_digest(status, templates)
-
-
-def playbook_binding(mission_id: str, *, path: Path | None = None) -> str:
-    """A digest identifying WHICH templates a mission resolves to, right now.
-
-    **The revocation fence for a producer that spans a model call (#883 review).**
-    `propose()` resolves templates, awaits the model for many seconds, and then writes. If the
-    operator deletes or edits the bound playbook inside that window, instantiating from the
-    snapshot persists a probe target they have just revoked — and Phase 5 would then schedule
-    requests to it. "Re-read the policy at the WRITE boundary" is the same rule `deliver_auto`
-    follows for the orchestrator tier, applied to the thing that authorizes a probe.
-
-    It digests the resolved templates rather than a version counter, so ANY change that matters
-    — deleting the playbook, retargeting a URL, adding or reordering an objective — changes it,
-    with nothing to remember to bump. Indices are positional, so reordering MUST invalidate:
-    a selection of index 2 means a different objective afterwards.
-    """
-    return _binding_digest(*templates_for_mission(mission_id, path=path))
-
-
-def templates_for_mission(mission_id: str, *, path: Path | None = None) -> tuple[str, list[dict]]:
-    """`(status, templates)` — the objective templates in play for this mission (#883).
-
-    `status` is one of `"ok"` / `"no_default"` / `"unknown_playbook"` / `"declined"`. The caller
-    records every non-`ok` one — naming the id for `unknown_playbook`, so the operator can see
-    WHICH playbook went missing rather than wondering why a mission got no objectives.
-
-    **The two failure modes are deliberately different**, and collapsing them is how probes get
-    armed for a mission nobody chose them for:
-
-    * ``playbook_id`` ABSENT ⇒ the operator's configured `default_id`. Still their decision, made
-      once in Settings rather than silently per mission.
-    * ``playbook_id`` SET but UNKNOWN ⇒ **nothing**. The config changed under the mission, and
-      substituting another playbook would instantiate gating objectives with operator-authored
-      probe targets that were never chosen here. "You did not choose" and "what you chose is
-      gone" are different facts.
-
-    Reads the prefs block through the normalizer, so a hand-edited or legacy entry is already
-    degraded (non-probing, non-gating) before it can be offered as a template.
-    """
-    from . import prefs
-
-    row = get_mission(mission_id, path=path)
-    if row is None:
-        raise MissionNotFound(mission_id)
-    block = prefs.get_mission_playbooks()
-    by_id = {p["id"]: p for p in block["playbooks"]}
-    wanted = str(row.get("playbook_id") or "")
-    if wanted == PLAYBOOK_DECLINED:
-        # DECLINED for this mission (#1061) — not missing, not the default: the operator said no
-        # checklist. No templates, so the model can add notes and nothing that checks or gates.
-        return ("declined", [])
-    if wanted:
-        pb = by_id.get(wanted)
-        return ("ok", list(pb["objectives"])) if pb else ("unknown_playbook", [])
-    pb = by_id.get(block["default_id"]) if block["default_id"] else None
-    return ("ok", list(pb["objectives"])) if pb else ("no_default", [])
-
-
 def _finish_objective_write(
     con,
     mission_id: str,
@@ -7617,35 +7491,6 @@ def _finish_objective_write(
     )
     con.execute("UPDATE missions SET updated_at=? WHERE id=?", (ts, mission_id))
     return reopened
-
-
-@contextlib.contextmanager
-def _playbook_policy_held(mission_id: str, expect_binding: str | None, *, path: Path | None = None):
-    """Hold the PREFS write lock across a mission write, and verify the binding inside it.
-
-    **Lock order is MISSIONS -> PREFS, and prefs is a leaf.** Nothing under `json_write_lock`
-    opens the missions database — `prefs`' playbook validation calls only pure helpers from this
-    module (`NOTE_KEY_PREFIX`, `NON_GATING_PROBES`, `validate_probe_args`) — so this edge cannot
-    close a cycle with the LEDGER -> MISSIONS order #862 fixed.
-
-    A `None` expectation takes no prefs lock at all: a caller that is not instantiating from a
-    playbook snapshot has no policy to pin, and holding a global file lock for it would serialize
-    unrelated writes for nothing.
-    """
-    if expect_binding is None:
-        yield
-        return
-    from .atomicjson import json_write_lock
-    from .prefs import _default_path as _prefs_path
-
-    with json_write_lock(_prefs_path()):
-        if playbook_binding(mission_id, path=path) != expect_binding:
-            raise MissionError(
-                "the mission's checklist changed while its objectives were being proposed; "
-                "nothing was instantiated",
-                status=409,
-            )
-        yield
 
 
 # ---------------------------------------------------------------- the dispatch proposal (#893)
@@ -9617,11 +9462,14 @@ def instantiate_objectives(
     mission_id: str,
     rows: list[dict],
     *,
-    expect_binding: str | None = None,
+    as_proposal: bool = False,
     now: float | None = None,
     path: Path | None = None,
 ) -> list[dict]:
     """Write a mixed playbook/model objective batch in ONE transaction (#883).
+
+    ``as_proposal`` marks the objective producer's write (`mission_objectives.propose`), which
+    spans a model call and is therefore fenced against everything that can happen meanwhile.
 
     **This is the trusted boundary, and it exists because authority is per ROW.**
     `patch_objectives` takes one `source` for a whole batch, and the tempting fix — widening it
@@ -9635,19 +9483,7 @@ def instantiate_objectives(
     """
     validate_id(mission_id)
     ts = time.time() if now is None else now
-    with _write_lock, _playbook_policy_held(mission_id, expect_binding, path=path):
-        # THE REVOCATION FENCE, and it is a real fence rather than a narrow window (#883 review).
-        #
-        # An earlier version checked the digest and THEN took the write lock, which is
-        # check-then-write across two stores: a revocation could commit under the prefs flock
-        # after the equality check and before the insert, and the revoked target was persisted
-        # anyway. Reproduced by forcing that ordering.
-        #
-        # `_playbook_policy_held` holds the PREFS write lock across the check AND this
-        # transaction, so a concurrent `set_mission_playbooks` blocks until the mission write
-        # finishes. The revocation therefore lands strictly before the check (and it fails) or
-        # strictly after the commit (and it is a revocation of something already written, which
-        # is what revocation means). There is no in-between left.
+    with _write_lock:
         con = _ready(path)
         try:
             con.execute("BEGIN IMMEDIATE")
@@ -9671,12 +9507,34 @@ def instantiate_objectives(
                     f"instantiated into a closed mission",
                     status=409,
                 )
+            # …AND, FOR A PROPOSAL, THE TWO OTHER LATE-ARRIVAL CASES, in the same transaction
+            # (#1653 review): a mission being DISPATCHED has what done means fixed until its agent
+            # starts, and a mission that already HAS objectives — the operator's own, or an
+            # earlier proposal's — is not something a late proposal appends to. Both are 409s:
+            # the proposal is stale.
+            if as_proposal and state_row["state"] == "dispatching":
+                raise MissionError(
+                    "this mission is being dispatched; objectives are not instantiated now",
+                    status=409,
+                )
+            if (
+                as_proposal
+                and con.execute(
+                    "SELECT 1 FROM mission_objectives WHERE mission_id=? LIMIT 1", (mission_id,)
+                ).fetchone()
+            ):
+                raise MissionError(
+                    "the mission already has objectives; the proposal wrote nothing",
+                    status=409,
+                )
             added_unmet_gate = False
             applied: list[dict] = []
             for row in rows:
                 if not isinstance(row, dict):
                     raise MissionError("each objective must be an object", status=422)
                 src = row.get("source")
+                # `playbook` names an operator-authored template row; no producer writes one since
+                # checklists were removed (#1653), but the trusted boundary still admits it.
                 if src not in ("playbook", "model", "instruction"):
                     # Not a client-facing message: reaching it means a caller inside this module
                     # tried to mint an authority it does not have.
@@ -9824,18 +9682,7 @@ def patch_objectives(
     if not isinstance(ops, list) or not ops:
         raise MissionError("ops (a non-empty list) is required", status=422)
     ts = time.time() if now is None else now
-    # RESET copies the playbook's CURRENT direction (#983), so the templates are resolved once, up
-    # front, and pinned for the write the way instantiation pins them: `_playbook_policy_held`
-    # holds the prefs lock and refuses if the playbook moved in between. Only when a reset is asked
-    # for — nothing else here reads a playbook, and a global lock for it would be for nothing.
-    resets = any(isinstance(op, dict) and op.get("op") == "reset_direction" for op in ops)
-    templates: dict[str, dict] = {}
-    binding: str | None = None
-    if resets:
-        status, tlist, binding = templates_and_binding(mission_id, path=path)
-        if status == "ok":
-            templates = {str(t.get("key")): t for t in tlist}
-    with _write_lock, _playbook_policy_held(mission_id, binding, path=path):
+    with _write_lock:
         con = _ready(path)
         try:
             con.execute("BEGIN IMMEDIATE")
@@ -9871,8 +9718,6 @@ def patch_objectives(
                     _op_reorder(con, mission_id, op)
                 elif kind == "set_direction":
                     _op_set_direction(con, mission_id, op, source)
-                elif kind == "reset_direction":
-                    _op_reset_direction(con, mission_id, op, source, templates)
                 elif kind == "clear_direction":
                     _op_clear_direction(con, mission_id, op)
                 elif kind == "reject_judgment":
@@ -9942,40 +9787,6 @@ def _op_set_direction(con, mission_id: str, op: dict, source: str) -> None:
     _invalidate_if_criterion_moved(con, mission_id, key, before)
 
 
-def _op_reset_direction(
-    con, mission_id: str, op: dict, source: str, templates: dict[str, dict]
-) -> None:
-    """COPY the playbook's CURRENT direction for this objective — again, and still not a link.
-
-    The template is the one with the same key in the mission's playbook, resolved before the
-    transaction and pinned by `_playbook_policy_held`. A template that no longer exists, or that now
-    checks something different from this objective, has nothing to reset to and is refused rather
-    than guessed at.
-    """
-    key, probe = _direction_target(con, mission_id, op, source)
-    # A row fitted to a branch carries a MINTED key (#1061); its template is the one it was minted
-    # from, and the probe check below still refuses one that now checks something different.
-    t = template_for_key(templates, key)
-    if t is None:
-        raise MissionError(
-            f"the mission's checklist has no objective {key} to reset the direction from",
-            status=409,
-        )
-    if str(t.get("probe") or "none") != probe:
-        raise MissionError(
-            f"the checklist's objective {key} now checks something different; nothing was reset",
-            status=409,
-        )
-    direction = _validate_direction(t.get("direction"), probe)
-    before = _criterion_of(con, mission_id, key)
-    con.execute(
-        "UPDATE mission_objectives SET direction=?, direction_source=? "
-        "WHERE mission_id=? AND key=?",
-        (direction, None if direction is None else "template", mission_id, key),
-    )
-    _invalidate_if_criterion_moved(con, mission_id, key, before)
-
-
 def _op_clear_direction(con, mission_id: str, op: dict) -> None:
     """No direction: a supervisor nudge for this objective types the global nudge again."""
     key = _cap(op.get("key"), OBJECTIVE_KEY_MAX)
@@ -9999,9 +9810,9 @@ _OP_FIELDS: dict[str, frozenset[str]] = {
     "retitle": frozenset({"op", "key", "title"}),
     "waive": frozenset({"op", "key"}),
     "reorder": frozenset({"op", "keys"}),
-    # #983. Write this mission's own direction, copy the playbook's current one, or remove it.
+    # #983. Write this mission's own direction, or remove it. (Copying a checklist template's
+    # direction, `reset_direction`, went with checklists, #1653.)
     "set_direction": frozenset({"op", "key", "direction"}),
-    "reset_direction": frozenset({"op", "key"}),
     "clear_direction": frozenset({"op", "key"}),
     # #1088. "Not met — judge again": the ONE operator op that may move a met row back to pending,
     # and only a row the supervisor judged. `episode` is the one the row was rendered at.
@@ -10013,7 +9824,10 @@ _SETTLED_BY_OBSERVATION = frozenset({"state", "met_at", "observed"})
 
 def _check_op_fields(op: dict) -> None:
     kind = op.get("op")
-    allowed = _OP_FIELDS.get(kind, frozenset())
+    if kind not in _OP_FIELDS:
+        # Said as what it is — including `reset_direction`, which went with checklists (#1653).
+        raise MissionError(f"unknown objective op {kind!r}", status=422)
+    allowed = _OP_FIELDS[kind]
     extra = set(op) - allowed
     settled = extra & _SETTLED_BY_OBSERVATION
     if settled:
@@ -10057,13 +9871,14 @@ def _op_add(con, mission_id: str, op: dict, source: str, ts: float) -> bool:
     ):
         raise MissionError("a model-proposed objective may not carry a probe", status=422)
     # …and the same for a DIRECTION (#983): it is typed into a session, so it is operator text —
-    # from a playbook template or the operator's own edit — and a model row carrying one is refused.
+    # the operator's own edit — and a model row carrying one is refused.
     if source == "model" and op.get("direction") is not None:
         raise MissionError("a model-proposed objective may not carry a direction", status=422)
     # AN `instruction` ROW IS A JUDGED CRITERION THE ORCHESTRATOR WROTE (#1088), so its authority
-    # is exactly one thing: `supervisor_judged`, no arguments, no direction, only on a mission that
-    # DECLINED a checklist, and at most `INSTRUCTION_GATES_MAX` of them. A model never names a
-    # mechanical probe or a target through it — that is the SSRF rule `model` rows already keep.
+    # is exactly one thing: `supervisor_judged`, no arguments, no direction, and at most
+    # `INSTRUCTION_GATES_MAX` of them (on any mission since checklists were removed, #1653). A
+    # model never names a mechanical probe or a target through it — that is the SSRF rule `model`
+    # rows already keep.
     if source == "instruction":
         if (
             canonical_probe(op.get("probe")) != "supervisor_judged"
@@ -10073,13 +9888,6 @@ def _op_add(con, mission_id: str, op: dict, source: str, ts: float) -> bool:
             raise MissionError(
                 "an objective written from the instruction is judged by the supervisor and "
                 "carries no probe arguments or direction",
-                status=422,
-            )
-        mrow = con.execute("SELECT playbook_id FROM missions WHERE id=?", (mission_id,)).fetchone()
-        if mrow is None or str(mrow["playbook_id"] or "") != PLAYBOOK_DECLINED:
-            raise MissionError(
-                "only a mission that declined a checklist gets objectives written from its "
-                "instruction",
                 status=422,
             )
         held = con.execute(
@@ -10117,7 +9925,9 @@ def _op_add(con, mission_id: str, op: dict, source: str, ts: float) -> bool:
                 # old name, and this is what says so to anything holding a reference.
                 uuid.uuid4().hex,
                 direction,
-                None if direction is None else ("template" if source == "playbook" else "operator"),
+                # `template` was a checklist's copy (#983); checklists were removed (#1653), so a
+                # direction written here is always the operator's.
+                None if direction is None else "operator",
             ),
         )
     except sqlite3.IntegrityError:

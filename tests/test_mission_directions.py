@@ -510,31 +510,36 @@ async def test_an_unfillable_direction_is_held_and_escalated_and_never_half_fill
 # ---- saving a direction ---------------------------------------------------------------
 
 
-def _playbook(direction):
-    obj = {"key": "checks", "title": "Checks are green", "probe": "forge_checks", "gate": True}
-    if direction is not None:
-        obj["direction"] = direction
-    return {
-        "default_id": "ship",
-        "playbooks": [{"id": "ship", "label": "Ship", "objectives": [obj]}],
-    }
+#: Directions no write path may store: unknown or free-text placeholders, an empty one, an
+#: over-long text and a paste terminator.
+BAD_DIRECTIONS = ("PR #{pr} {title}", "{detail}", "{}", "PR {review}", "x" * 1001, "go\x1b[201~")
 
 
-def test_an_unknown_placeholder_is_refused_when_a_playbook_is_saved(env):
-    assert all(
-        "direction" not in o
-        for p in prefs.get_mission_playbooks()["playbooks"]
-        for o in p["objectives"]
-    ), "the shipped defaults gained a direction"
-    for bad in ("PR #{pr} {title}", "{detail}", "{}", "PR {review}", "x" * 1001, "go\x1b[201~"):
-        with pytest.raises(prefs.PlaybookError, match="direction"):
-            prefs.set_mission_playbooks(_playbook(bad))
-    saved = prefs.set_mission_playbooks(_playbook(DIRECTION))
-    assert saved["playbooks"][0]["objectives"][0]["direction"] == DIRECTION
-    # A hand-edited file degrades to NO direction, keeping the objective itself intact.
-    read = prefs._coerce_mission_playbooks(_playbook("{nope}"))
-    o = read["playbooks"][0]["objectives"][0]
-    assert "direction" not in o and (o["probe"], o["gate"]) == ("forge_checks", True)
+def test_an_unknown_placeholder_is_refused_when_a_direction_is_saved(env):
+    """Both operator doors to the stored direction — an `add` carrying one and `set_direction` —
+    refuse what the preview refuses, and leave the row as it was. (Checklists, the third door,
+    were removed with #1653.)"""
+    mid = _mission()
+    for bad in BAD_DIRECTIONS:
+        with pytest.raises(missions.MissionError) as e:
+            _add(mid, "checks", "forge_checks", direction=bad)
+        assert e.value.status == 422, bad
+    assert missions.objectives(mid) == []
+    _add(mid, "checks", "forge_checks")
+    for bad in BAD_DIRECTIONS:
+        with pytest.raises(missions.MissionError) as e:
+            missions.patch_objectives(
+                mid, [{"op": "set_direction", "key": "checks", "direction": bad}]
+            )
+        assert e.value.status == 422, bad
+    assert (_row(mid, "checks")["direction"], _row(mid, "checks")["direction_source"]) == (
+        None,
+        None,
+    )
+    missions.patch_objectives(
+        mid, [{"op": "set_direction", "key": "checks", "direction": DIRECTION}]
+    )
+    assert _row(mid, "checks")["direction"] == DIRECTION
 
 
 def test_the_objectives_route_refuses_an_unknown_placeholder_with_a_422(
@@ -584,40 +589,44 @@ def _reply(monkeypatch, obj):
     monkeypatch.setattr(mo.review, "complete_json", fake)
 
 
-@pytest.mark.anyio
-async def test_a_template_direction_is_copied_at_creation_and_never_live_linked(env, monkeypatch):
-    prefs.set_mission_playbooks(_playbook(DIRECTION))
-    mid = missions.create_mission("ship it", cwd="/tmp")["id"]
-    _reply(monkeypatch, {"objectives": [{"template_index": 0}], "notes": [{"title": "Tell me"}]})
-    out = await mo.propose(mid)
-    rows = {o["key"]: o for o in out["objectives"]}
-    assert (rows["checks"]["direction"], rows["checks"]["direction_source"]) == (
-        DIRECTION,
-        "template",
+def _as_copied_from_a_checklist(mid, key="checks", direction=DIRECTION, playbook="ship_a_change"):
+    """Make a row look the way a mission created before #1653 left it: its direction COPIED from
+    a checklist template (`direction_source = "template"`) and the mission's `playbook_id` naming
+    that checklist. Written with raw SQL, because no code path writes either any more."""
+    _sql(
+        "UPDATE mission_objectives SET direction=?, direction_source='template', "
+        "source='playbook' WHERE mission_id=? AND key=?",
+        (direction, mid, key),
     )
-    note = rows[f"{missions.NOTE_KEY_PREFIX}1"]
-    assert (note["direction"], note["direction_source"]) == (
-        None,
-        None,
-    ), "a model row got a direction"
+    _sql("UPDATE missions SET playbook_id=? WHERE id=?", (playbook, mid))
 
-    newer = "PR #{pr}: the playbook's newer direction"
-    prefs.set_mission_playbooks(_playbook(newer))
-    assert (
-        _row(mid, "checks")["direction"] == DIRECTION
-    ), "a playbook edit reached a running mission"
+
+def test_a_direction_copied_from_a_removed_checklist_stays_readable_and_editable(env):
+    """#1653: checklists are gone, but a direction an old mission copied from one is the mission's
+    own text now. It still shows, the operator can still rewrite it or remove it, and nothing
+    re-resolves the checklist it came from."""
+    mid = _mission()
+    _add(mid, "checks", "forge_checks")
+    _as_copied_from_a_checklist(mid)
+
+    r = _row(mid, "checks")
+    assert (r["direction"], r["direction_source"]) == (DIRECTION, "template")
+    shown = next(o for o in missions.get_mission(mid)["objectives"] if o["key"] == "checks")
+    assert (shown["direction"], shown["direction_source"]) == (DIRECTION, "template")
 
     missions.patch_objectives(
         mid, [{"op": "set_direction", "key": "checks", "direction": "Mine {pr}"}]
     )
     r = _row(mid, "checks")
     assert (r["direction"], r["direction_source"]) == ("Mine {pr}", "operator")
-    missions.patch_objectives(mid, [{"op": "reset_direction", "key": "checks"}])
-    r = _row(mid, "checks")
-    assert (r["direction"], r["direction_source"]) == (newer, "template")
+
+    _as_copied_from_a_checklist(mid)
     missions.patch_objectives(mid, [{"op": "clear_direction", "key": "checks"}])
     r = _row(mid, "checks")
     assert (r["direction"], r["direction_source"]) == (None, None)
+    # The row itself — its probe, its source, its key — is untouched by either edit.
+    assert (r["probe"], r["source"], r["key"]) == ("forge_checks", "playbook", "checks")
+    assert missions.get_mission(mid)["playbook_id"] == "ship_a_change"
     with pytest.raises(missions.MissionError) as e:
         missions.patch_objectives(
             mid, [{"op": "set_direction", "key": "checks", "direction": "{title}"}]
@@ -625,9 +634,32 @@ async def test_a_template_direction_is_copied_at_creation_and_never_live_linked(
     assert e.value.status == 422
 
 
+def test_reset_direction_is_refused_as_an_unknown_op_and_changes_nothing(env):
+    """`reset_direction` copied a checklist template's CURRENT direction (#983). With checklists
+    removed (#1653) there is nothing to copy from, so the store refuses it like any op it does not
+    know — on a row with a copied direction and on one the operator wrote — and the batch it rode
+    in on is not applied."""
+    mid = _mission()
+    _add(mid, "checks", "forge_checks")
+    _add(mid, "mine", "forge_checks", direction="Mine {pr}")
+    _as_copied_from_a_checklist(mid)
+    before = missions.objectives(mid)
+    for key in ("checks", "mine"):
+        with pytest.raises(missions.MissionError) as e:
+            missions.patch_objectives(
+                mid,
+                [
+                    {"op": "retitle", "key": key, "title": "renamed in the same batch"},
+                    {"op": "reset_direction", "key": key},
+                ],
+            )
+        assert e.value.status == 422, key
+        assert "reset_direction" in str(e.value)
+    assert missions.objectives(mid) == before, "a refused batch was partly applied"
+
+
 @pytest.mark.anyio
 async def test_the_model_cannot_author_a_direction(env, monkeypatch):
-    prefs.set_mission_playbooks(_playbook(DIRECTION))
     mid = missions.create_mission("ship it", cwd="/tmp")["id"]
     _reply(
         monkeypatch,
@@ -1643,6 +1675,8 @@ def test_the_preview_is_the_one_renderer_over_example_facts_and_reads_no_store(
 
 def test_the_preview_refuses_exactly_what_a_save_refuses_in_the_same_words(env):
     md = _md()
+    mid = _mission()
+    _add(mid, "checks", "forge_checks")
     for bad in (
         "PR #{pr} {title}",
         "{detail}",
@@ -1652,9 +1686,11 @@ def test_the_preview_refuses_exactly_what_a_save_refuses_in_the_same_words(env):
     ):
         with pytest.raises(md.DirectionError) as previewed:
             md.preview(bad, "forge_checks")
-        with pytest.raises(prefs.PlaybookError) as saved:
-            prefs.set_mission_playbooks(_playbook(bad))
-        assert str(previewed.value) in str(saved.value), bad
+        with pytest.raises(missions.MissionError) as saved:
+            missions.patch_objectives(
+                mid, [{"op": "set_direction", "key": "checks", "direction": bad}]
+            )
+        assert str(previewed.value) == str(saved.value), bad
     assert md.preview(DIRECTION, "forge_checks")["text"] == FILLED
 
 

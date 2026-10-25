@@ -478,8 +478,6 @@ function MissionBody({
         try {
           if (op.op === "set_direction")
             await api.setObjectiveDirection(missionId, op.key, op.direction);
-          else if (op.op === "reset_direction")
-            await api.resetObjectiveDirection(missionId, op.key);
           else await api.clearObjectiveDirection(missionId, op.key);
         } catch (err) {
           refusal =
@@ -518,7 +516,6 @@ function MissionBody({
       onStandDown={editable ? onStandDown : undefined}
       busy={mutating}
       onDirection={editable ? onDirection : undefined}
-      playbookId={d.mission?.playbook_id ?? null}
     />
   );
   /** CONTEXT IS ITS OWN TAB (#942). It used to be the third heading inside OBJECTIVES; the props

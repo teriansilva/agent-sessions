@@ -100,7 +100,7 @@ EXPECTED_DEFAULT_SHA = {
     # #1061 P2: a selection may carry `probe_args` — only `repo`/`branch`, only on a template marked
     # [may set: repo, branch], only a value that appears word for word in the instruction.
     # #1088: a declined checklist's notes are the outcomes the supervisor judges.
-    "mission_objectives": "60010e413ccd8954",
+    "mission_objectives": "afb697151b7dd75f",
     "mission_question": "047f41d72b0e206b",
     "tail_review": "96d2b5fe33d5acee",
     "session_recap": "7438fbcf5328734f",
@@ -254,6 +254,22 @@ def test_an_upgraded_install_does_not_look_edited(tmp_home):
     # …and the runtime prompt is still guarded exactly once.
     eff = prompts.effective("orchestrator_pass")
     assert eff.count(prompts.GUARD_CLAUSE) == 1 and eff.endswith(prompts.GUARD_CLAUSE)
+
+
+def test_an_objectives_override_saved_for_the_template_contract_is_retired(tmp_home):
+    """#1653: an override written when the producer selected checklist templates asks for
+    `objectives[template_index]`, which the producer now drops, so every mission would fall back
+    to one generic gate. It is retired, not deleted: the text stays, unused."""
+    old = 'Reply {"objectives": [{"template_index": 0, "gate": true}], "notes": []}.'
+    (tmp_home / "prefs.json").write_text(json.dumps({prompts.BLOCK: {"mission_objectives": old}}))
+    assert prompts.is_default("mission_objectives") is True
+    assert old not in prompts.effective("mission_objectives")
+    assert "retired" in prompts.entry("mission_objectives")["description"]
+    # A new override is stored under the new field and used; the old text is left as it was.
+    prompts.set_value("mission_objectives", "Write the outcomes.")
+    assert prompts.effective("mission_objectives").startswith("Write the outcomes.")
+    stored = json.loads((tmp_home / "prefs.json").read_text())[prompts.BLOCK]
+    assert stored["mission_objectives"] == old
 
 
 def test_storage_never_keeps_a_clause_the_editor_cannot_show(tmp_home):

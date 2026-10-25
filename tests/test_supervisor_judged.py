@@ -124,48 +124,6 @@ def test_the_rejected_fingerprint_is_never_published(store):
     assert "abc123" not in json.dumps(missions.get_mission(mid))
 
 
-# ---- P1a: the saved checklists ------------------------------------------------------
-
-
-def _checklist(probe: str, gate: bool) -> dict:
-    return {
-        "default_id": "inv",
-        "playbooks": [
-            {
-                "id": "inv",
-                "label": "Investigate",
-                "objectives": [
-                    {"key": "finding", "title": "A finding", "probe": probe, "gate": gate}
-                ],
-            }
-        ],
-    }
-
-
-def test_a_saved_checklist_with_the_old_name_is_READ_as_the_new_one_and_not_rewritten(tmp_path):
-    p = tmp_path / "prefs.json"
-    p.write_text(json.dumps({"mission_playbooks": _checklist("agent_judged", False)}))
-    got = prefs.get_mission_playbooks(p)
-    assert got["playbooks"][0]["objectives"][0]["probe"] == "supervisor_judged"
-    # Read-lenient, write-strict: nothing rewrote the file on read.
-    assert "agent_judged" in p.read_text()
-    # The NEXT SAVE writes the new name.
-    prefs.set_mission_playbooks(_checklist("agent_judged", False), p)
-    assert "agent_judged" not in p.read_text()
-    assert "supervisor_judged" in p.read_text()
-
-
-def test_a_non_gating_kind_is_refused_as_a_gate_by_the_checklist_writer(tmp_path, monkeypatch):
-    """Strict write refuses; the forgiving read degrades the row to non-gating (P1a's guarantee,
-    kept as a mechanism for any future non-gating kind)."""
-    monkeypatch.setattr(missions, "NON_GATING_PROBES", frozenset({"supervisor_judged"}))
-    p = tmp_path / "prefs.json"
-    with pytest.raises(prefs.PlaybookError):
-        prefs.set_mission_playbooks(_checklist("supervisor_judged", True), p)
-    p.write_text(json.dumps({"mission_playbooks": _checklist("agent_judged", True)}))
-    assert prefs.get_mission_playbooks(p)["playbooks"][0]["objectives"][0]["gate"] is False
-
-
 # ---- P1a: the threshold ------------------------------------------------------------
 
 
@@ -326,10 +284,6 @@ async def _pass(mid, **kw):
 def test_supervisor_judged_may_now_gate_and_the_floor_is_the_prefs_one():
     assert missions.NON_GATING_PROBES == frozenset()
     assert missions.JUDGE_CONFIDENCE_FLOOR == prefs.ORCH_JUDGE_CONF_LO
-    inv = next(p for p in prefs.DEFAULT_MISSION_PLAYBOOKS["playbooks"] if p["id"] == "investigate")
-    by_key = {o["key"]: o for o in inv["objectives"]}
-    assert (by_key["finding"]["probe"], by_key["finding"]["gate"]) == ("supervisor_judged", True)
-    assert (by_key["confirmed"]["probe"], by_key["confirmed"]["gate"]) == ("none", False)
 
 
 @pytest.mark.anyio
@@ -1025,15 +979,26 @@ async def test_the_judge_request_on_the_WIRE_carries_the_registry_prompt_guarded
     assert _row(mid)["state"] == "met"
 
 
-# ---- "No checklist": the orchestrator writes the objectives (the operator's call) -------
+# ---- The orchestrator writes the objectives (the operator's call) -----------------------
+#
+# This was the "declined a checklist" path (#1088). Checklists were removed (#1653), so it is now
+# EVERY mission's path: a plain mission behaves as a declined one did.
 
 from agent_sessions import mission_objectives as mo  # noqa: E402
 
 
-def _declined(instruction="find out why reconnects storm and write it down"):
-    return missions.create_mission(instruction, cwd="/tmp", playbook_id=missions.PLAYBOOK_DECLINED)[
-        "id"
-    ]
+def _plain(instruction="find out why reconnects storm and write it down"):
+    return missions.create_mission(instruction, cwd="/tmp")["id"]
+
+
+def _set_playbook_id(store, mid, value):
+    """Give a row the `playbook_id` an old mission carries (no code path writes one any more)."""
+    con = sqlite3.connect(store)
+    try:
+        con.execute("UPDATE missions SET playbook_id=? WHERE id=?", (value, mid))
+        con.commit()
+    finally:
+        con.close()
 
 
 @pytest.fixture
@@ -1053,13 +1018,13 @@ def endpoint(store, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_a_DECLINED_mission_with_an_endpoint_gets_GATING_judged_objectives_from_the_model(
+async def test_a_mission_with_an_endpoint_gets_GATING_judged_objectives_from_the_model(
     endpoint,
 ):
     endpoint["reply"] = {
         "notes": [{"title": "The root cause is written down"}, {"title": "A fix is proposed"}]
     }
-    mid = _declined()
+    mid = _plain()
     out = await mo.propose(mid)
     rows = missions.objectives(mid)
     assert [(r["key"], r["probe"], r["gate"], r["source"]) for r in rows] == [
@@ -1067,22 +1032,14 @@ async def test_a_DECLINED_mission_with_an_endpoint_gets_GATING_judged_objectives
         ("goal_2", "supervisor_judged", True, "instruction"),
     ]
     assert out["dropped"] == 0
-    # The model was told the checklist was declined — in the USER message, never a system one.
-    user = endpoint["seen"][0][1]["content"]
-    assert "DECLINED a checklist" in user
-    assert endpoint["seen"][0][0]["content"] == prompts.effective("mission_objectives")
+    # The instruction goes in the USER message, never a system one — and nothing in either
+    # message offers a checklist or a template list any more (#1653).
+    system, user = endpoint["seen"][0][0]["content"], endpoint["seen"][0][1]["content"]
+    assert user == "Instruction:\nfind out why reconnects storm and write it down"
+    assert system == prompts.effective("mission_objectives")
+    assert "template" not in (system + user).lower()
     texts = [e.get("text") or "" for e in missions.get_mission(mid)["events"]]
-    assert not any("nothing on this checklist gates completion" in t for t in texts)
-
-
-@pytest.mark.anyio
-async def test_a_CHECKLIST_missions_model_rows_stay_notes(endpoint):
-    endpoint["reply"] = {"notes": [{"title": "Tell the team"}]}
-    mid = missions.create_mission("ship it", cwd="/tmp")["id"]  # the default checklist
-    await mo.propose(mid)
-    notes = [r for r in missions.objectives(mid) if r["source"] == "model"]
-    assert notes and all(r["probe"] == "none" and r["gate"] is False for r in notes)
-    assert not any(r["source"] == "instruction" for r in missions.objectives(mid))
+    assert not any("checklist" in t for t in texts), texts
 
 
 @pytest.mark.anyio
@@ -1100,7 +1057,7 @@ async def test_a_CHECKLIST_missions_model_rows_stay_notes(endpoint):
 )
 async def test_a_model_row_that_breaks_the_contract_is_DROPPED_never_degraded(endpoint, item):
     endpoint["reply"] = {"notes": [item, {"title": "The finding is written down"}]}
-    mid = _declined()
+    mid = _plain()
     out = await mo.propose(mid)
     rows = missions.objectives(mid)
     assert [r["title"] for r in rows] == ["The finding is written down"]
@@ -1111,7 +1068,7 @@ async def test_a_model_row_that_breaks_the_contract_is_DROPPED_never_degraded(en
 @pytest.mark.anyio
 async def test_the_AI_built_gates_are_CAPPED(endpoint):
     endpoint["reply"] = {"notes": [{"title": f"Outcome {i}"} for i in range(9)]}
-    mid = _declined()
+    mid = _plain()
     out = await mo.propose(mid)
     assert len(missions.objectives(mid)) == missions.INSTRUCTION_GATES_MAX == 6
     assert out["dropped"] == 3
@@ -1132,7 +1089,7 @@ async def test_ZERO_usable_objectives_fall_back_to_ONE_judged_gate_from_the_inst
     endpoint, reply
 ):
     endpoint["reply"] = reply
-    mid = _declined()
+    mid = _plain()
     await mo.propose(mid)
     rows = missions.objectives(mid)
     assert [(r["key"], r["title"], r["probe"], r["gate"], r["source"]) for r in rows] == [
@@ -1147,12 +1104,12 @@ async def test_ZERO_usable_objectives_fall_back_to_ONE_judged_gate_from_the_inst
 
 
 @pytest.mark.anyio
-async def test_a_declined_mission_with_NO_endpoint_is_unchanged_notes_only(store, monkeypatch):
+async def test_a_mission_with_NO_endpoint_gets_nothing_and_is_settled_skipped(store, monkeypatch):
     def not_configured():
         raise review.NotConfiguredError("not configured")
 
     monkeypatch.setattr(review, "_require_config", not_configured)
-    mid = _declined()
+    mid = _plain()
     out = await mo.propose_for_new_mission(mid)
     assert out["templates"] == "not_configured"
     assert missions.objectives(mid) == []
@@ -1162,52 +1119,52 @@ async def test_a_declined_mission_with_NO_endpoint_is_unchanged_notes_only(store
 
 
 def test_the_STORE_refuses_an_instruction_row_that_is_not_a_bare_judged_criterion(store):
-    declined = _declined()
-    checklist = missions.create_mission("x", cwd="/tmp")["id"]
+    mid = _plain()
     base = {"key": "goal_1", "title": "t", "probe": "supervisor_judged", "gate": True}
-    for mid, row in (
-        (declined, {**base, "probe": "forge_merged"}),
-        (declined, {**base, "probe": "http_status", "probe_args": {"url": "http://x.test/"}}),
-        (declined, {**base, "direction": "do it"}),
-        (checklist, base),  # only a DECLINED mission gets objectives written from its instruction
+    for row in (
+        {**base, "probe": "forge_merged"},
+        {**base, "probe": "http_status", "probe_args": {"url": "http://x.test/"}},
+        {**base, "direction": "do it"},
     ):
         with pytest.raises(missions.MissionError):
             missions.instantiate_objectives(mid, [{**row, "source": "instruction"}])
-    # …and the cap holds at the store too.
-    missions.instantiate_objectives(
-        declined,
-        [{**base, "key": f"goal_{i}", "source": "instruction"} for i in range(1, 7)],
-    )
-    with pytest.raises(missions.MissionError):
+    assert missions.objectives(mid) == []
+    # …and the cap holds at the store too: a batch of seven is refused whole.
+    with pytest.raises(missions.MissionError) as e:
         missions.instantiate_objectives(
-            declined, [{**base, "key": "goal_7", "source": "instruction"}]
+            mid, [{**base, "key": f"goal_{i}", "source": "instruction"} for i in range(1, 8)]
         )
+    assert e.value.status == 422
+    assert missions.objectives(mid) == []
 
 
-def test_the_reserved_keys_are_refused_as_checklist_template_keys(tmp_path):
-    for key in ("done_as_instructed", "goal_1"):
-        with pytest.raises(prefs.PlaybookError):
-            prefs.set_mission_playbooks(
-                {
-                    "default_id": "p",
-                    "playbooks": [
-                        {
-                            "id": "p",
-                            "label": "P",
-                            "objectives": [{"key": key, "title": "t", "probe": "none"}],
-                        }
-                    ],
-                },
-                tmp_path / "p.json",
-            )
+@pytest.mark.parametrize("stored", [None, ":none", "ship_a_change", "deleted_one"])
+def test_ANY_mission_may_get_instruction_rows_whatever_its_old_playbook_id(store, stored):
+    """#1653: the `playbook_id == ":none"` precondition is gone. A new mission (NULL), one that
+    declined a checklist, one bound to a shipped checklist and one bound to a since-deleted one all
+    take the same bare judged rows, under the same cap."""
+    base = {"title": "t", "probe": "supervisor_judged", "gate": True, "source": "instruction"}
+    full = [{**base, "key": f"goal_{i}"} for i in range(1, missions.INSTRUCTION_GATES_MAX + 1)]
+
+    over = _plain()
+    _set_playbook_id(store, over, stored)
+    with pytest.raises(missions.MissionError) as e:
+        missions.instantiate_objectives(over, [*full, {**base, "key": "goal_99"}])
+    assert e.value.status == 422 and "at most" in str(e.value)
+
+    mid = _plain()
+    _set_playbook_id(store, mid, stored)
+    rows = missions.instantiate_objectives(mid, full)
+    assert [r["source"] for r in rows] == ["instruction"] * missions.INSTRUCTION_GATES_MAX
+    assert missions.get_mission(mid)["playbook_id"] == stored, "the old value was rewritten"
 
 
 @pytest.mark.anyio
-async def test_a_declined_mission_is_PROPOSED_for_review_once_its_AI_built_gates_are_judged(
+async def test_a_mission_is_PROPOSED_for_review_once_its_AI_built_gates_are_judged(
     endpoint, monkeypatch
 ):
     endpoint["reply"] = {"notes": [{"title": "The root cause is written down"}]}
-    mid = _declined()
+    mid = _plain()
     await mo.propose(mid)
     missions.set_state(mid, "draft", "planned")
     missions.set_state(mid, "planned", "dispatching")
@@ -1218,6 +1175,108 @@ async def test_a_declined_mission_is_PROPOSED_for_review_once_its_AI_built_gates
     await _sweep_one(mid)  # proposed on the next pass
     m = missions.get_mission(mid)
     assert m["state"] == "review"
+
+
+# ---- an OLD mission whose `playbook_id` still names a checklist (#1653) -------------------
+
+
+def _objectives_state(store, mid) -> str | None:
+    con = sqlite3.connect(store)
+    try:
+        return con.execute("SELECT objectives_state FROM missions WHERE id=?", (mid,)).fetchone()[0]
+    finally:
+        con.close()
+
+
+def _pend(store, mid):
+    """Put the producer intent back to `pending`, as a crash before the model call leaves it."""
+    con = sqlite3.connect(store)
+    try:
+        con.execute(
+            "UPDATE missions SET objectives_state='pending', objectives_at=0 WHERE id=?", (mid,)
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+@pytest.mark.anyio
+async def test_boot_recovery_of_an_old_checklist_mission_with_NO_objectives_writes_instruction_ones(
+    endpoint, store
+):
+    """A mission created before #1653, bound to a checklist that no code reads any more, with its
+    objective production interrupted. Recovery treats it as any mission: the model writes judged
+    objectives from the instruction, nothing resolves (or reports on) the old checklist, and the
+    intent settles `done` — not `failed`, not left pending, not held."""
+    endpoint["reply"] = {"notes": [{"title": "The root cause is written down"}]}
+    mid = _plain()
+    _set_playbook_id(store, mid, "ship_a_change")
+    _pend(store, mid)
+
+    out = await mo.recover_pending()
+    assert out == {"recovered": [mid], "failed": []}
+    rows = missions.objectives(mid)
+    assert [(r["key"], r["probe"], r["gate"], r["source"]) for r in rows] == [
+        ("goal_1", "supervisor_judged", True, "instruction")
+    ]
+    assert _objectives_state(store, mid) == "done"
+    user = endpoint["seen"][0][1]["content"]
+    assert "ship_a_change" not in user and "template" not in user.lower()
+    m = missions.get_mission(mid)
+    assert m["state"] == "draft" and m["playbook_id"] == "ship_a_change"
+    texts = [e.get("text") or "" for e in m["events"]]
+    assert not any("checklist" in t for t in texts), texts
+
+
+@pytest.mark.anyio
+async def test_an_old_checklist_mission_KEEPS_its_objectives_and_works_as_any_mission(
+    endpoint, store
+):
+    """The same old mission, but its checklist's objectives were already written (copied from the
+    template, `source = "playbook"`). A late proposal — recovery after a crash — writes nothing
+    over them and settles `done`; the rows are byte-identical afterwards; and the operator's edits
+    and the lifecycle work on the mission as on any other."""
+    mid = _plain()
+    missions.patch_objectives(
+        mid,
+        [
+            {
+                "op": "add",
+                "key": "pr_open",
+                "title": "A PR is open",
+                "probe": "forge_pr",
+                "gate": True,
+            },
+            {"op": "add", "key": "finding", "title": "A finding", "probe": "supervisor_judged"},
+        ],
+    )
+    con = sqlite3.connect(store)
+    try:
+        con.execute("UPDATE mission_objectives SET source='playbook' WHERE mission_id=?", (mid,))
+        con.commit()
+    finally:
+        con.close()
+    _set_playbook_id(store, mid, "ship_a_change")
+    _pend(store, mid)
+    before = missions.objectives(mid)
+    endpoint["reply"] = {"notes": [{"title": "Something new"}]}
+
+    out = await mo.recover_pending()
+    assert out["failed"] == []
+    assert missions.objectives(mid) == before, "a late proposal changed an old mission's objectives"
+    assert _objectives_state(store, mid) == "done"
+
+    missions.patch_objectives(mid, [{"op": "retitle", "key": "finding", "title": "The finding"}])
+    missions.set_state(mid, "draft", "planned")
+    missions.set_state(mid, "planned", "dispatching")
+    missions.set_state(mid, "dispatching", "running")
+    m = missions.get_mission(mid)
+    assert m["state"] == "running" and m["playbook_id"] == "ship_a_change"
+    assert [(o["key"], o["source"]) for o in m["objectives"]] == [
+        ("pr_open", "playbook"),
+        ("finding", "playbook"),
+    ]
+    assert next(o for o in m["objectives"] if o["key"] == "finding")["title"] == "The finding"
 
 
 @pytest.mark.anyio

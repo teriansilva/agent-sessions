@@ -771,7 +771,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     title=body.get("title") or "",
                     project_id=project_id,
                     cwd=cwd,
-                    playbook_id=body.get("playbook_id"),
+                    # `playbook_id` (a checklist, #883) is ignored: checklists were removed
+                    # (#1653), and a cached older client still sends one. Dropping it loses
+                    # nothing — there is nothing left for it to name.
                 )
             )
             # THE OBJECTIVE PRODUCER'S CALL SITE (#883). A mission is created with an empty

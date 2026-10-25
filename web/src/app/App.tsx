@@ -80,7 +80,7 @@ import {
   SESSIONS_PATH,
   AUTOMATION_NEW_PATH,
   AUTOMATIONS_PATH,
-  CHECKLISTS_PATH,
+  LEGACY_CHECKLISTS_PATH,
   DASHBOARD_PATH,
   LEGACY_MISSION_PATH,
   MISSION_PATH,
@@ -122,11 +122,6 @@ const MissionControl = lazyWithReload(() => import("../routes/Pulse"), "pulse");
 const Templates = lazyWithReload(
   () => import("../routes/Templates"),
   "templates",
-);
-// MISSIONS → CHECKLISTS — the mission playbooks editor, moved out of Settings. Lazy like the others.
-const Checklists = lazyWithReload(
-  () => import("../routes/Checklists"),
-  "checklists",
 );
 // MISSIONS → AUTOMATIONS (#1201): the list, one automation's run history, and its editor.
 const Automations = lazyWithReload(
@@ -349,12 +344,9 @@ function Layout() {
    *  one screen, one opening sessions and one opening missions. */
   // `/pulse` is the pre-#948 path, still live as a redirect; counting it here keeps the sidebar
   // from flashing the session list for the one render before the redirect lands.
-  // …and Missions → Checklists (#1221): a Missions page carries the mission sidebar, not the
-  // session list. The checklists page mounts the console's rail on its own (`railOnly`).
   const missionRoute =
     location.pathname === MISSION_PATH ||
     location.pathname === LEGACY_MISSION_PATH ||
-    location.pathname === CHECKLISTS_PATH ||
     location.pathname === AUTOMATIONS_PATH ||
     location.pathname.startsWith(`${AUTOMATIONS_PATH}/`);
   const railInSidebar = missionRoute;
@@ -825,10 +817,10 @@ function Layout() {
                   {/* Canonical Settings form is /settings/:tab (#357); the bare path mounts the
                   same component, which replace-redirects to the first tab (state preserved). */}
                   <Route path="/settings" element={<Settings />} />
-                  {/* The checklists were a Settings tab until they moved under Missions. */}
+                  {/* Checklists were removed (#1653): both of their old addresses land on Playbooks. */}
                   <Route
                     path="/settings/ai-playbooks"
-                    element={<Navigate to={CHECKLISTS_PATH} replace />}
+                    element={<Navigate to={PLAYBOOKS_PATH} replace />}
                   />
                   <Route path="/settings/:tab" element={<Settings />} />
                   {/* #1128: an agent's own page, and the agent Defaults, under the roster. */}
@@ -837,7 +829,10 @@ function Layout() {
                   <Route path="/overview" element={<Overview />} />
                   <Route path={MISSION_PATH} element={<MissionControl />} />
                   <Route path={LEGACY_MISSION_PATH} element={<LegacyMissionRedirect />} />
-                  <Route path={CHECKLISTS_PATH} element={<Checklists />} />
+                  <Route
+                    path={LEGACY_CHECKLISTS_PATH}
+                    element={<Navigate to={PLAYBOOKS_PATH} replace />}
+                  />
                   <Route path={AUTOMATIONS_PATH} element={<Automations />} />
                   <Route path={AUTOMATION_NEW_PATH} element={<AutomationEditor />} />
                   <Route path={`${AUTOMATIONS_PATH}/:id`} element={<AutomationRuns />} />

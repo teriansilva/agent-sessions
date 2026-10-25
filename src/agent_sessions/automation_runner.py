@@ -18,7 +18,7 @@ There is no second launcher here. Each action goes through the path a manual sta
 folder or session, a present non-retiring engine, a live target for a send. A failed check is a run
 REFUSED with its reason — never a fallback to some other target.
 
-**Pinned inputs.** Before any effect the template/checklist the operator approved is compared with
+**Pinned inputs.** Before any effect the template the operator approved is compared with
 what is stored now; a difference marks the automation *needs re-approval*, pauses it and refuses the
 run. Library text values are data and are re-read at every run.
 
@@ -299,34 +299,6 @@ def _real_still_pinned(pinned: dict) -> str:
 # ---- actions ------------------------------------------------------------------------------------
 
 
-def _playbook_for(action: dict, pins: dict) -> str | None:
-    """The checklist the mission is created with: EXACTLY the pinned one (a default resolved at
-    consent is passed by id, so a later change of the default cannot swap it)."""
-    if action.get("checklist_id") == missions.PLAYBOOK_DECLINED:
-        return missions.PLAYBOOK_DECLINED
-    ck = pins.get("checklist") or {}
-    return ck.get("id") or missions.PLAYBOOK_DECLINED
-
-
-def _checklist_drift(mid: str, pins: dict) -> str:
-    """After the mission is created: its checklist still resolves to the approved one."""
-    ck = pins.get("checklist")
-    if not ck or ck.get("digest") == "none":
-        return ""
-    status, templates = missions.templates_for_mission(mid)
-    book = next(
-        (p for p in prefs.get_mission_playbooks()["playbooks"] if p["id"] == ck["id"]), None
-    )
-    if (
-        status != "ok"
-        or book is None
-        or model._digest(book) != ck["digest"]
-        or templates != book["objectives"]
-    ):
-        return "the checklist changed while the mission was being created; it was not dispatched"
-    return ""
-
-
 def _mission_fence(run: dict, pinned: dict, project_id: str | None):
     """The automation's check INSIDE the dispatch fence (with the fence's own realpath compare)."""
     from .routes import missions as mroutes
@@ -384,7 +356,6 @@ async def _start_mission(run: dict, config: dict, pins: dict, *, registry) -> tu
                 title=config["name"],
                 project_id=project_id,
                 cwd=cwd,
-                playbook_id=_playbook_for(action, pins),
             )
         )
         mid = row["id"]
@@ -403,9 +374,6 @@ async def _start_mission(run: dict, config: dict, pins: dict, *, registry) -> tu
             if plan
             else f"planning: {(mission or {}).get('plan_state') or 'unknown'}",
         )
-        drift = await missions.run_admitted(lambda: _checklist_drift(mid, pins))
-        if drift:
-            return "refused", drift
         if action["autonomy"] == "propose":
             if plan is None:
                 return "failed", "the mission was created but no plan was produced"

@@ -1,10 +1,9 @@
 /** Edit direction: one objective's direction for THIS mission (#983 P2, D2 / B6).
  *
- *  A mission copies its playbook's directions when its objectives are created, and later playbook
- *  edits never change it. So the choices are exactly the server's ops: keep the copy, copy the
- *  playbook's current direction again (`reset_direction`), write one for this mission
- *  (`set_direction`), or have none (`clear_direction`), in which case a nudge types the operator's
- *  default nudge.
+ *  An objective written from a checklist (removed, #1653) may carry the direction copied from it
+ *  when the mission was created. So the choices are exactly the server's ops: keep that copy,
+ *  write one for this mission (`set_direction`), or have none (`clear_direction`), in which case a
+ *  nudge types the operator's default nudge.
  *
  *  Drawn with the Hand off dialog's sheet (`HudDialog.module.css`), which is a bottom sheet at
  *  ≤800px, and its shared action buttons. A refusal is shown here in the server's own words and the
@@ -40,13 +39,10 @@ import { useHoldFocusWhileBusy } from "../templates/useHoldFocusWhileBusy";
 
 export function ObjectiveDirectionDialog({
   objective,
-  canReset,
   onApply,
   onClose,
 }: {
   objective: MissionObjective;
-  /** The mission has a playbook to copy from. The server still decides whether this objective is in it. */
-  canReset: boolean;
   /** Send one op. Resolves to `null` when the server accepted it, or its refusal in its own words. */
   onApply: (op: DirectionOp) => Promise<string | null>;
   onClose: () => void;
@@ -149,11 +145,8 @@ export function ObjectiveDirectionDialog({
                   data-testid="direction-keep"
                 />
                 <span className={d.choiceText}>
-                  Use the checklist&rsquo;s direction
-                  <small>
-                    copied when this mission was created · checklist edits do not
-                    change it
-                  </small>
+                  Keep the copied direction
+                  <small>copied from a checklist when this mission was created</small>
                 </span>
               </label>
               {choice === "keep" ? (
@@ -162,17 +155,6 @@ export function ObjectiveDirectionDialog({
                 </pre>
               ) : null}
             </>
-          ) : null}
-          {canReset ? (
-            <button
-              type="button"
-              className={d.link}
-              disabled={busy}
-              onClick={() => void submit({ op: "reset_direction", key: objective.key })}
-              data-testid="direction-reset"
-            >
-              Reset to the checklist&rsquo;s current direction
-            </button>
           ) : null}
           <label className={d.choice} data-testid="direction-choice-write">
             <input
