@@ -43,8 +43,21 @@ export interface MemoryQuarantined extends MemoryRefused {
   masked: string;
 }
 
+/** A specialist's own notebook in one project (#1693 S3): its own memory scope. */
+export interface MemoryNotebook {
+  /** `<project_id>~<specialist_id>`: the id every memory route takes for it. */
+  scope: string;
+  specialist: string;
+  title: string;
+  notes: number;
+}
+
 export interface MemoryView {
   project: { id: string; name: string; color: string };
+  /** The specialist whose notebook this is, or null for the project's own. */
+  specialist: string | null;
+  /** The project's specialist notebooks (empty on a notebook's own view). */
+  notebooks: MemoryNotebook[];
   enabled: boolean;
   notes: MemoryNote[];
   pending: MemoryPending[];

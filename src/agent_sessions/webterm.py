@@ -684,7 +684,7 @@ async def run(
         # Shared project memory (#1441) reaches a NEW agent process only: an attach is a dtach
         # client, and the running agent's environment was fixed when it started. Never inherited
         # from the app's own environment — absent unless this launch was given it.
-        for name in memory.ENV_KEYS:
+        for name in memory.ALL_ENV_KEYS:  # incl. a specialist's notebook (#1693)
             env.pop(name, None)
         env.update(launch_env or {})
 

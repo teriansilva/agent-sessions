@@ -44,7 +44,12 @@ _REAL_HOME = pwd.getpwuid(os.getuid()).pw_dir
 # A suite run INSIDE a BattleLab session with shared memory on inherits that session's memory
 # variables (#1471); the app scrubs them at `create_app`, but tests that never build an app would
 # see them. They are never the suite's own.
-for _k in ("BATTLELAB_MEMORY", "BATTLELAB_MEMORY_INBOX"):
+for _k in (
+    "BATTLELAB_MEMORY",
+    "BATTLELAB_MEMORY_INBOX",
+    "BATTLELAB_MEMORY_SPECIALIST",  # #1693 S3
+    "BATTLELAB_MEMORY_SPECIALIST_INBOX",
+):
     os.environ.pop(_k, None)
 
 # Store env var → sub-path under the sandbox (mirroring the production default layout). Values

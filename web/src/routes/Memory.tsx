@@ -225,9 +225,53 @@ export default function Memory() {
     </div>
   );
 
+  // A specialist's notebook for this project (#1693 S3): its own bar — no switch (it follows the
+  // project's), the way back to the project, and the same Export / Clear as any notebook.
+  const notebookTitle = view?.specialist
+    ? views[view.project.id]?.notebooks?.find(n => n.specialist === view.specialist)?.title ?? view.specialist
+    : "";
+  // What Clear names and asks to be typed: the notebook it clears, never its project (#1693).
+  const clearName = view?.specialist ? `${notebookTitle} · ${view.project.name}` : view?.project.name ?? "";
+  const notebookBar = view && view.specialist && (
+    <div className={styles.projectBar} aria-label={`Specialist notebook ${notebookTitle}`} role="group" data-testid="memory-notebook-bar">
+      <div className={styles.projectMain}>
+        <div className={styles.projectTitle}>
+          <span className={styles.swatch} style={{ background: view.project.color || "var(--engine-slate)" }} aria-hidden="true" />
+          <h2>{notebookTitle} · {view.project.name}</h2>
+          {!mobile && <span className={styles.meta}>{notes.length} / {view.limits.notes} notes</span>}
+        </div>
+        <span className={styles.hint}>
+          This specialist's own notes for {view.project.name} only. On while the project's memory is on.{" "}
+          <Link className={styles.notebookLink} to={{ search: `?project=${encodeURIComponent(view.project.id)}` }}>Back to {view.project.name}</Link>
+        </span>
+      </div>
+      <div className={styles.barActions}>
+        {!mobile && <div className={styles.seg} role="group" aria-label="View">
+          <button type="button" aria-pressed={shown === "graph"} onClick={() => setMode("graph")}>Graph</button>
+          <button type="button" aria-pressed={shown === "list"} onClick={() => setMode("list")}>List</button>
+        </div>}
+        <a className={buttons.ghost} href={api.memoryExportUrl(pid ?? "")} download><Download size={14} aria-hidden="true" /> Export</a>
+        <button type="button" className={`${buttons.ghost} ${styles.dangerButton}`} disabled={busy} onClick={e => pid && setConfirm({ kind: "clear", pid, returnTo: e.currentTarget })}>Clear…</button>
+      </div>
+    </div>
+  );
+  // The project's specialist notebooks, beside its own notes.
+  const notebooksCard = view && !view.specialist && (view.notebooks?.length ?? 0) > 0 && (
+    <section className={styles.tray} aria-label="Specialist notebooks" data-testid="memory-notebooks">
+      <h3>Specialist notebooks</h3>
+      <p className={styles.small}>Each specialist's own notes for this project.</p>
+      {view.notebooks.map(n => (
+        <div key={n.scope} className={styles.trayItem}>
+          <Link className={styles.notebookLink} to={{ search: `?project=${encodeURIComponent(n.scope)}` }}>{n.title}</Link>
+          <span className={styles.meta}>{n.notes} {n.notes === 1 ? "note" : "notes"}</span>
+        </div>
+      ))}
+    </section>
+  );
+
   // Existing memory (#1471): one card per project — `key` drops everything it held when the
   // project changes, so a late answer for one project never shows under another.
-  const importCard = view && pid && (
+  const importCard = view && pid && !view.specialist && (
     <ImportCard key={pid} pid={pid} projectName={view.project.name} disabled={busy} onImported={refresh} />
   );
 
@@ -335,14 +379,21 @@ export default function Memory() {
     </aside>
   );
 
-  const offState = view && !view.enabled && notes.length === 0 && (
+  const offState = view && !view.enabled && notes.length === 0 && (view.specialist ? (
+    // A specialist's notebook has no switch of its own (#1693): it follows its project's.
+    <section className={styles.off} aria-label="Notebook is off">
+      <h2>This notebook is off</h2>
+      <p className={styles.muted}>It is on while {view.project.name}'s shared memory is on.</p>
+      <div className={styles.actions}><Link className={buttons.primary} to={{ search: `?project=${encodeURIComponent(view.project.id)}` }}>Go to {view.project.name}</Link></div>
+    </section>
+  ) : (
     <section className={styles.off} aria-label="Memory is off">
       <h2>Shared memory is off for this project</h2>
       <p className={styles.muted}>Turn it on and every new session in this project gets the BattleLab memory tool, or two environment variables (<code>BATTLELAB_MEMORY</code> to read notes, <code>BATTLELAB_MEMORY_INBOX</code> to leave new ones) where the agent can't load the tool.</p>
       <div className={styles.actions}><button type="button" className={buttons.primary} disabled={busy} onClick={toggle}>Turn memory on</button></div>
       <p className={styles.small}>Notes stay outside your repo, in BattleLab's config folder. Anything that looks like a credential is held back for you to review. Any agent in the project can read what another wrote — it's a shared notebook, so only turn it on where you want that.</p>
     </section>
-  );
+  ));
 
   return (
     <div className={styles.page}>
@@ -371,7 +422,7 @@ export default function Memory() {
             ) : <>
               <h2 className={styles.eyebrow}>Projects</h2>
               {projects.map(p => (
-              <button key={p.id} type="button" className={styles.project} aria-pressed={p.id === pid} disabled={busy} onClick={() => setParams({ project: p.id })}>
+              <button key={p.id} type="button" className={styles.project} aria-pressed={p.id === (pid?.split("~")[0] ?? pid)} disabled={busy} onClick={() => setParams({ project: p.id })}>
                 <span className={styles.swatch} style={{ background: p.color || "var(--engine-slate)" }} aria-hidden="true" />
                 <span className={styles.projectName}>{p.name}</span>
                 <span className={styles.count}>{p.enabled ? p.notes : "—"}</span>
@@ -383,11 +434,13 @@ export default function Memory() {
           <main className={styles.main}>
             {!view && !error && <Loader kind="skeleton" rows={4} label="Loading notes…" className={styles.reading} />}
             {projectBar}
+            {notebookBar}
             {view && (offState ? (
               <>
                 {offState}
                 {/* The desktop side column carries Agent access; on a phone the off state must, too —
                     it says what turning memory off does and doesn't do. */}
+                {mobile && notebooksCard}
                 {mobile && importCard}
                 {mobile && access}
                 {/* Turning memory off keeps what was held: it must stay inspectable and droppable. */}
@@ -416,6 +469,7 @@ export default function Memory() {
                     )}
                     {shown === "list" && list}
                     {(shown === "trays" || !mobile) && traysView}
+                    {mobile && shown === "trays" && notebooksCard}
                     {mobile && shown === "trays" && importCard}
                     {mobile && shown === "trays" && access}
                   </>
@@ -426,6 +480,7 @@ export default function Memory() {
           {!mobile && view && (
             <div className={styles.side}>
               {!offState && (inspector ?? <p className={styles.placeholder}>Select a note to see who wrote it and what it links to.</p>)}
+              {notebooksCard}
               {importCard}
               {access}
             </div>
@@ -435,18 +490,18 @@ export default function Memory() {
       {confirm && (
         <ConfirmDialog
           tag={confirm.kind === "clear" ? "CLEAR MEMORY" : confirm.kind === "delete" ? "DELETE NOTE" : "DELETE QUARANTINED"}
-          title={confirm.kind === "clear" ? `Clear memory — ${view?.project.name ?? ""}?` : confirm.kind === "delete" ? `Delete “${confirm.note.name}”?` : `Delete ${confirm.filename}?`}
+          title={confirm.kind === "clear" ? `Clear memory — ${clearName}?` : confirm.kind === "delete" ? `Delete “${confirm.note.name}”?` : `Delete ${confirm.filename}?`}
           confirmLabel={confirm.kind === "clear" ? "Clear memory" : "Delete"}
           danger
           busy={busy}
           returnFocusTo={confirm.returnTo}
-          confirmDisabled={confirm.kind === "clear" && typed.trim() !== (view?.project.name ?? "")}
+          confirmDisabled={confirm.kind === "clear" && typed.trim() !== clearName}
           onCancel={() => { setConfirm(null); setTyped(""); setError(null); }}
           onConfirm={doConfirm}
         >
           {confirm.kind === "clear" && view && <>
-            <p>Deletes all {view.notes.length} notes, drops {view.pending.length} pending inbox files and {view.quarantine.length} quarantined items. Running sessions keep their paths; nothing old comes back. This can't be undone — <a href={api.memoryExportUrl(view.project.id)} download>export first</a> if you want a copy.</p>
-            <label className={styles.field}><span>Type <b>{view.project.name}</b> to confirm</span><input value={typed} onChange={e => setTyped(e.target.value)} autoComplete="off" /></label>
+            <p>Deletes all {view.notes.length} notes, drops {view.pending.length} pending inbox files and {view.quarantine.length} quarantined items. Running sessions keep their paths; nothing old comes back. This can't be undone — <a href={api.memoryExportUrl(confirm.pid)} download>export first</a> if you want a copy.</p>
+            <label className={styles.field}><span>Type <b>{clearName}</b> to confirm</span><input value={typed} onChange={e => setTyped(e.target.value)} autoComplete="off" /></label>
           </>}
           {confirm.kind === "delete" && <p>The note is removed from memory. A retry of the same file never brings it back.</p>}
           {confirm.kind === "drop" && <p>The held-back file is discarded and never taken in.</p>}

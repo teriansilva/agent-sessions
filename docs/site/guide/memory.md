@@ -114,6 +114,15 @@ Without frontmatter the first heading becomes the name. A note with the same nam
 
 New notes are taken in every 30 seconds, and whenever the page opens.
 
+### Specialist notebooks
+
+A session started from a [specialist](./specialists.md) also gets that specialist's own notebook for
+this project: the memory tool's read and write take `notebook: "mine"`, and agents without the tool
+get two more variables, `BATTLELAB_MEMORY_SPECIALIST` and `BATTLELAB_MEMORY_SPECIALIST_INBOX`. A
+project lists its specialist notebooks on the Memory page; each opens like the project's own, with
+the same trays, export and clear. A notebook has no switch of its own: it is on while the project's
+memory is on, and it is deleted with the project.
+
 ## Importing existing memory
 
 Agents may already keep memory of their own. Claude Code, for one, writes notes per folder under

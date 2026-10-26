@@ -246,13 +246,13 @@ def memory_environment(config: dict) -> dict[str, str]:
     Bound by the web process at generation launch and passed explicitly — never read from this
     process's environment. Both variables or neither, absolute paths, nothing else.
     """
-    from .memory import ENV_KEYS
+    from .memory import ALL_ENV_KEYS, ENV_KEYS
 
     value = config.get("memory_env", {})
     if not isinstance(value, dict):
         raise WorkerError("invalid memory environment")
     if value and (
-        set(value) != set(ENV_KEYS)
+        set(value) not in (set(ENV_KEYS), set(ALL_ENV_KEYS))
         or any(
             not isinstance(path, str) or not path.startswith("/") or "\0" in path or "\n" in path
             for path in value.values()

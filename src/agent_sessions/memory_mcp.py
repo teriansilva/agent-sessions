@@ -47,6 +47,8 @@ from .memory import (
     ENTRY_MAX_BYTES,
     ENV_INBOX,
     ENV_READ,
+    ENV_SPECIALIST_INBOX,
+    ENV_SPECIALIST_READ,
     INBOX_MAX_PENDING,
     OPERATOR_MAX_BYTES,
     SCOPE_MAX_NOTES,
@@ -280,19 +282,95 @@ def framed(text: str) -> str:
     return f"{FRAME}\n\n{text}"
 
 
-class Server:
-    """One agent's memory tool. ``notes`` and ``inbox`` are the two launch paths."""
+#: The two notebooks a session can hold (#1693 S3): the project's, and — for a session started from
+#: a specialist — that specialist's own notes for this project.
+PROJECT, MINE = "project", "mine"
 
-    def __init__(self, notes: str, inbox: str) -> None:
+
+class Server:
+    """One agent's memory tool. ``notes`` and ``inbox`` are the two launch paths; ``mine_notes``
+    and ``mine_inbox``, the specialist notebook's, when this session was started from one."""
+
+    def __init__(
+        self,
+        notes: str,
+        inbox: str,
+        mine_notes: str | None = None,
+        mine_inbox: str | None = None,
+    ) -> None:
         self.notes, self.inbox = notes, inbox
         self.notes_id = _pin(notes)
         self.inbox_id = _pin(inbox)
+        self.books: dict[str, tuple[str, tuple | None, str, tuple | None]] = {
+            PROJECT: (notes, self.notes_id, inbox, self.inbox_id)
+        }
+        if mine_notes is not None and mine_inbox is not None:
+            self.books[MINE] = (mine_notes, _pin(mine_notes), mine_inbox, _pin(mine_inbox))
+
+    def _book(self, args: dict) -> str:
+        """The notebook a call names (``project`` by default). ``mine`` only where it is bound."""
+        book = args.pop("notebook", PROJECT) if isinstance(args, dict) else PROJECT
+        # A string, checked BEFORE the lookup: an unhashable value would raise TypeError, which
+        # no caller catches, and end the server for the rest of the session.
+        if not isinstance(book, str) or book not in self.books:
+            raise ToolError(
+                "notebook must be 'project'" + (" or 'mine'" if MINE in self.books else "")
+            )
+        return book
+
+    def tools(self) -> list[dict]:
+        """`TOOLS`, with the notebook choice on read, search and write when one is bound."""
+        if MINE not in self.books:
+            return TOOLS
+        prop = {
+            "type": "string",
+            "enum": [PROJECT, MINE],
+            "description": (
+                "'project' (default): the project's shared notes. 'mine': your own notes as "
+                "this specialist, for this project only."
+            ),
+        }
+        out = []
+        for tool in TOOLS:
+            tool = json.loads(json.dumps(tool))
+            if tool["name"] in ("memory_read", "memory_write"):
+                tool["inputSchema"]["properties"]["notebook"] = prop
+            if tool["name"] == "memory_index":
+                tool["description"] += " Also lists your own notes as this specialist."
+            if tool["name"] == "memory_search":
+                tool["description"] += " Searches your own notes as this specialist too."
+            out.append(tool)
+        return out
+
+    def instructions(self) -> str:
+        if MINE not in self.books:
+            return INSTRUCTIONS
+        return INSTRUCTIONS + (
+            " You were started as a specialist: you also have your OWN notebook for this "
+            "project (notebook: 'mine') — what you, in this role, should remember here next "
+            "time. Shared findings still belong in the project notebook."
+        )
 
     # ---- the four tools -----------------------------------------------------------------------
 
     def memory_index(self, args: dict) -> str:
         _no_args(args)
-        dfd = self._notes()
+        if MINE not in self.books:
+            return framed(self._index(PROJECT, NOTE_MAX_BYTES))
+        # Two indexes in one result: each gets its own half, each truncated (and saying so) on
+        # its own, so neither can push the other out of the result.
+        half = NOTE_MAX_BYTES // 2
+        text = self._index(PROJECT, half)
+        try:
+            mine = self._index(MINE, half)
+        except ToolError as exc:
+            # Every notebook is created WITH its index (`memory._seed_index`): a missing one is
+            # unavailable, never "empty" — say which.
+            mine = f"_(your notebook's index is unavailable right now: {exc})_\n"
+        return framed(f"{text}\n\n## Your notes as this specialist (this project only)\n\n{mine}")
+
+    def _index(self, book: str, budget: int) -> str:
+        dfd = self._notes(book)
         try:
             fd = _open_file(dfd, "MEMORY.md")
             if fd is None:
@@ -306,15 +384,17 @@ class Server:
         finally:
             os.close(dfd)
         text = clean(data.decode("utf-8", "replace"))
-        if len(data) > NOTE_MAX_BYTES:
-            # The index of a large scope outgrows one result: cut at a whole line and say so.
-            text = text[: text.rfind("\n", 0, NOTE_MAX_BYTES - 200) + 1]
+        if len(data) > budget or len(text) > budget:
+            # The index of a large scope outgrows its share: cut at a whole line and say so.
+            text = text[: text.rfind("\n", 0, budget - 200) + 1]
             text += "\n_(index truncated — use memory_search to find more notes)_\n"
-        return framed(text)
+        return text
 
     def memory_read(self, args: dict) -> str:
+        args = dict(args) if isinstance(args, dict) else args
+        book = self._book(args)
         slug = _slug(args)
-        dfd = self._notes()
+        dfd = self._notes(book)
         try:
             data = read_file(dfd, f"{slug}.md", NOTE_MAX_BYTES)
         finally:
@@ -329,8 +409,23 @@ class Server:
         terms = [t for t in terms if len(t) >= 2][:QUERY_TERMS_MAX]
         if not terms:
             raise ToolError("query needs at least one word of two or more characters")
-        dfd = self._notes()
         hits = []
+        eligible: list[str] = []
+        searched: list[str] = []
+        for book in self.books:
+            try:
+                dfd = self._notes(book)
+            except ToolError:
+                if book == PROJECT:
+                    raise
+                continue  # your own notebook holds nothing yet
+            label = "" if book == PROJECT else "[mine] "
+            found_e, found_s = self._search_one(dfd, terms, hits, label)
+            eligible += found_e
+            searched += found_s
+        return self._search_result(hits, eligible, searched)
+
+    def _search_one(self, dfd: int, terms: list[str], hits: list, label: str):
         try:
             # Eligible note names first, then the cap: a cap applied to the raw listing let
             # anything else in the directory push real notes out of the search.
@@ -352,9 +447,12 @@ class Server:
                     len(matched),
                     sum(3 * low_title.count(t) + low_body.count(t) for t in matched),
                 )
-                hits.append((score, m.group(1), title, _excerpt(body, matched[0])))
+                hits.append((score, label + m.group(1), title, _excerpt(body, matched[0])))
         finally:
             os.close(dfd)
+        return eligible, searched
+
+    def _search_result(self, hits: list, eligible: list[str], searched: list[str]) -> str:
         partial = (
             f"\n(searched {len(searched)} of {len(eligible)} notes)"
             if len(searched) < len(eligible)
@@ -370,9 +468,11 @@ class Server:
         return framed("\n".join(shown) + tail + partial)
 
     def memory_write(self, args: dict) -> str:
-        allowed = {"title", "body", "type"}
+        allowed = {"title", "body", "type", "notebook"}
         if not isinstance(args, dict) or set(args) - allowed:
             raise ToolError("memory_write takes title, body and an optional type")
+        args = dict(args)
+        book = self._book(args)
         raw_title = _string(args, "title", 4 * TITLE_MAX)
         title = one_line(raw_title, 4 * TITLE_MAX)
         if not title:
@@ -389,7 +489,7 @@ class Server:
         data = text.encode("utf-8")
         if len(data) > ENTRY_MAX_BYTES:
             raise ToolError(f"a note is at most {ENTRY_MAX_BYTES} bytes, title included")
-        durable = self._write(slugify(title)[:56].strip("-") or "note", data)
+        durable = self._write(slugify(title)[:56].strip("-") or "note", data, book)
         saved = (
             "Saved for review; it appears to other sessions after BattleLab takes it in "
             "(a credential or a stored secret holds it back)."
@@ -402,13 +502,15 @@ class Server:
 
     # ---- confinement --------------------------------------------------------------------------
 
-    def _notes(self) -> int:
+    def _notes(self, book: str = PROJECT) -> int:
+        notes, notes_id, _inbox, _inbox_id = self.books[book]
         try:
-            return _open_pinned(self.notes, self.notes_id)
+            return _open_pinned(notes, notes_id)
         except ToolError as exc:
-            raise ToolError(f"project memory is unavailable ({exc})") from None
+            what = "project memory" if book == PROJECT else "your specialist notebook"
+            raise ToolError(f"{what} is unavailable ({exc})") from None
 
-    def _write(self, stem: str, data: bytes) -> bool:
+    def _write(self, stem: str, data: bytes, book: str = PROJECT) -> bool:
         """Publish ``data`` as ``<stem>.md`` (else ``<stem>-2.md``, …) in this launch's inbox.
 
         **The final name only ever appears complete.** The note is written to a dot-named temp
@@ -429,8 +531,9 @@ class Server:
 
         The name is the title's slug and nothing random: ingestion judges a file's NAME with its
         text, and a random suffix reads as a credential-shaped run (measured on #1506's smoke)."""
+        _notes, _notes_id, inbox, inbox_id = self.books[book]
         try:
-            dfd = _open_pinned(self.inbox, self.inbox_id)
+            dfd = _open_pinned(inbox, inbox_id)
         except ToolError as exc:
             raise ToolError(f"this session's memory inbox is unavailable ({exc})") from None
         try:
@@ -456,7 +559,7 @@ class Server:
             # The inbox must STILL be the one this session was given. If the path was swapped
             # while writing, the note sits in a directory no pass will read: take it back.
             try:
-                os.close(_open_pinned(self.inbox, self.inbox_id))
+                os.close(_open_pinned(inbox, inbox_id))
             except ToolError:
                 try:
                     os.unlink(name, dir_fd=dfd)
@@ -499,13 +602,13 @@ class Server:
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": False}},
                     "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-                    "instructions": INSTRUCTIONS,
+                    "instructions": self.instructions(),
                 },
             )
         if method == "ping":
             return _result(rid, {})
         if method == "tools/list":
-            return _result(rid, {"tools": TOOLS})
+            return _result(rid, {"tools": self.tools()})
         if method == "tools/call":
             return _result(rid, self.call(params.get("name"), params.get("arguments")))
         return _error(rid, -32601, "method not found")
@@ -707,8 +810,17 @@ def main() -> int:
             "paths; BattleLab sets them when it starts an agent with project memory on\n"
         )
         return 2
+    # A session started from a specialist (#1693 S3): both of its notebook paths, or neither.
+    mine_notes = _path_from_env(ENV_SPECIALIST_READ)
+    mine_inbox = _path_from_env(ENV_SPECIALIST_INBOX)
+    if (mine_notes is None) != (mine_inbox is None):
+        sys.stderr.write(
+            f"battlelab memory tool: {ENV_SPECIALIST_READ} and {ENV_SPECIALIST_INBOX} must be set "
+            "together\n"
+        )
+        return 2
     try:
-        serve(sys.stdin.buffer, sys.stdout.buffer, Server(notes, inbox))
+        serve(sys.stdin.buffer, sys.stdout.buffer, Server(notes, inbox, mine_notes, mine_inbox))
     except (BrokenPipeError, KeyboardInterrupt):
         pass
     return 0

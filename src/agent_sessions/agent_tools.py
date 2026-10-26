@@ -111,11 +111,13 @@ def mcp_kind(manifest) -> str | None:
 def server(memory_env: Mapping[str, str] | None) -> Server | None:
     """The memory tool for a launch given ``memory_env``, or None when it got no memory paths.
 
-    Both memory variables or nothing, each an absolute path without NUL or newline — the shape
-    `memory.launch_env` returns and `native_worker.memory_environment` validates."""
+    Both memory variables or nothing — plus, for a session started from a specialist, both of
+    that specialist's notebook variables (#1693 S3) — each an absolute path without NUL or
+    newline: the shape `memory.launch_env` returns and `native_worker.memory_environment`
+    validates."""
     if not memory_env:
         return None
-    if set(memory_env) != set(memory.ENV_KEYS) or any(
+    if set(memory_env) not in (set(memory.ENV_KEYS), set(memory.ALL_ENV_KEYS)) or any(
         not isinstance(v, str) or not v.startswith("/") or "\0" in v or "\n" in v
         for v in memory_env.values()
     ):
@@ -124,7 +126,7 @@ def server(memory_env: Mapping[str, str] | None) -> Server | None:
     exe = _interpreter("memory tool")
     if exe is None:
         return None
-    env = {name: memory_env[name] for name in memory.ENV_KEYS}
+    env = {name: memory_env[name] for name in memory.ALL_ENV_KEYS if name in memory_env}
     return Server(command=exe, args=("-I", "-m", MODULE), env=_with_base_env(env))
 
 

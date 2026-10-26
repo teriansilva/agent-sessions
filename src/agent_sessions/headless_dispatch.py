@@ -784,7 +784,7 @@ async def dispatch(
         # authentication or admission never mints an inbox.
         from . import memory
 
-        for name in memory.ENV_KEYS:
+        for name in memory.ALL_ENV_KEYS:  # incl. a specialist's notebook (#1693)
             env.pop(name, None)
         # OWNERSHIP STARTS HERE, not at `transfer()` (#898 review 5, finding 2).
         #

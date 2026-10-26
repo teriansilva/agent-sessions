@@ -41,7 +41,14 @@ it isn't one model.
 
 Changing a grade re-grades every specialist on that model at once.
 
+## Specialist notes
+
+A specialist keeps its own notes **for each project**: what it learned working there, separate from
+the project's shared notes. They live in the project's memory, follow the project's memory switch,
+and never travel to another project. Open **Library → Memory**, pick the project, and its
+specialist notebooks are listed beside its own notes.
+
 ## Coming next
 
-Skills reaching each session, per-project specialist notes, capacity limits, and starting a session
-from a specialist are on their way.
+Capacity limits and starting a session from a specialist (which brings its skills and its notes
+into that session) are on their way.

@@ -638,3 +638,11 @@ a.writer {
 .reading {
   margin: var(--sp-3) 0;
 }
+
+/* A specialist notebook's link (#1693): a real touch target on a phone. */
+.notebookLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--accent-text);
+}
