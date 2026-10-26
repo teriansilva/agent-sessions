@@ -406,7 +406,7 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
         "context": dict(turn.get("context") or {}),
         "requires_authority": bool(turn.get("execution_binding")),
         "tools": _tools(turn, reply),
-        "tools_truncated": len(turn.get("tools") or []) > 64,
+        "tools_truncated": len(turn.get("tools") or []) > native_runtime.TOOLS_SHOWN,
         "usage": turn.get("usage"),
         **(
             {"questions": turn["questions"], "question_id": turn["question_id"]}
@@ -420,7 +420,7 @@ def _tools(turn: dict, reply: str | None) -> list[dict]:
     """The newest 64 calls. A call placed past the part of the reply shown sits at its end."""
     return [
         {**t, "at": min(t["at"], len(reply or ""))} if isinstance(t.get("at"), int) else t
-        for t in list(turn.get("tools") or [])[-64:]
+        for t in list(turn.get("tools") or [])[-native_runtime.TOOLS_SHOWN :]
     ]
 
 
@@ -439,7 +439,7 @@ def _agent_turn(turn: dict, bounded) -> dict:
         "reply_truncated": reply_cut,
         **({"reason": turn["reason"]} if turn.get("reason") else {}),
         "tools": _tools(turn, reply),
-        "tools_truncated": len(turn.get("tools") or []) > 64,
+        "tools_truncated": len(turn.get("tools") or []) > native_runtime.TOOLS_SHOWN,
         **(
             {"questions": turn["questions"], "question_id": turn["question_id"]}
             if turn.get("questions")

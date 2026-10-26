@@ -61,6 +61,7 @@ from .plugins import api_source, kinds, storage
 log = logging.getLogger("agent_sessions.native_runtime")
 
 READY_TIMEOUT = 120.0
+TOOLS_SHOWN = 64  # the newest calls of a turn a snapshot sends (`structured_runtime._tools`)
 SHUTTING_DOWN = "the native worker is shutting down; retry"
 WORKER_IDLE_TIMEOUT = 1800.0  # an idle worker exits; the next turn resumes the native history
 STOP_TIMEOUT = 30.0
@@ -2196,7 +2197,10 @@ def project(
                 "summary": (data.get("summary") or "")[:500],
                 "id": data["item_id"],
             }
-            existing = next((t for t in turn["tools"] if t["id"] == entry["id"]), None)
+            # Indexed (not a scan of every earlier call): a long turn has tens of thousands.
+            index = turn.setdefault("_tool_index", {})
+            found = index.get(entry["id"])
+            existing = None if found is None else found[1]
             if existing is not None and not data.get("tool"):
                 entry["name"] = existing["name"]
             if entry["name"] == "execute" and data.get("summary"):
@@ -2210,6 +2214,10 @@ def project(
                     key: turn.get(f"{key}_cut", 0) + len(turn[key]) for key in ("reply", "partial")
                 }
                 turn["tools"].append(entry)
+                index[entry["id"]] = (len(turn["tools"]) - 1, entry)
+                if len(turn["tools"]) > TOOLS_SHOWN:
+                    # Fell out of the calls a snapshot shows: its risk is never asked for.
+                    turn["tools"][-TOOLS_SHOWN - 1].pop("_risk_sources", None)
             else:
                 # A result names only the call it answers (Claude's carry no tool): it keeps the
                 # call's name rather than the placeholder (#1438).
@@ -2217,12 +2225,16 @@ def project(
                     entry.pop("name")
                 existing.update({k: v for k, v in entry.items() if v})
             # The same advisory classifier as a pending card (#1339): a tool row that ran a
-            # command — asked or, in a skip-permissions session, never asked — says so.
+            # command — asked or, in a skip-permissions session, never asked — says so. Only a
+            # call a snapshot can show (the newest TOOLS_SHOWN) is classified, once, after the
+            # walk (`_classify_tools`): classifying every call of a 19,000-call turn on every
+            # read took ~20 s per snapshot.
             row = existing if existing is not None else entry
-            if data.get("summary"):
-                risk = _tool_risk(row["name"], data["summary"], cwd)
-                if risk is not None:
-                    row["risk"] = risk
+            place = len(turn["tools"]) - 1 if existing is None else found[0]
+            if data.get("summary") and len(turn["tools"]) - place <= TOOLS_SHOWN:
+                # With the name the call had THEN: a later event may report the same call under
+                # another kind, which must not reclassify an earlier command (Hermes on #1711).
+                row.setdefault("_risk_sources", []).append((row["name"], data["summary"]))
         elif kind == "input_accepted":
             turn["completed"] = True
             turn["status"], turn["delivery"] = "delivered", "steered"
@@ -2256,6 +2268,7 @@ def project(
             if not turn["completed"]:
                 turn["status"], turn["code"] = "failed", "uncertain"
                 turn["reason"] = data.get("message") or "the native connection closed"
+    _classify_tools([*turns.values(), *agents.values()], cwd)
     in_flight = None
     requests = []
     for turn in [*turns.values(), *agents.values()]:
@@ -2372,6 +2385,7 @@ def project(
             "position",
             "reply_cut",
             "partial_cut",
+            "_tool_index",
         ):
             turn.pop(key, None)
     return {
@@ -2482,6 +2496,19 @@ def _offered(adapter: str | None, approval: dict, cwd: str | None) -> dict:
     return native_grants.derive(
         adapter or "", approval.get("tool"), _payload(approval["summary"]), cwd
     )
+
+
+def _classify_tools(turns: list[dict], cwd: str | None) -> None:
+    """The advisory risk of each call a snapshot can show (its turn's newest TOOLS_SHOWN): the
+    newest of its events that classifies, under the name the call had at that event, as when
+    every event was classified on arrival."""
+    for turn in turns:
+        for row in turn["tools"][-TOOLS_SHOWN:]:
+            for name, summary in reversed(row.pop("_risk_sources", None) or ()):
+                risk = _tool_risk(name, summary, cwd)
+                if risk is not None:
+                    row["risk"] = risk
+                    break
 
 
 def _tool_risk(name: str, summary: str, cwd: str | None) -> dict | None:
