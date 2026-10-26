@@ -13,7 +13,8 @@ operator taken from the socket that opened the call — so a call reaches exactl
 reaches, through the same tools, limits and confirm routes (no new authority).
 
 What HQ says is HQ's STORED text: the answer as `ask_store.append` kept it (redacted), plus fixed
-sentences rendered here for cards and questions. The model never speaks unstored prose, and raw
+sentences rendered here for cards and questions, and — while a slow turn runs — fixed status lines
+built from the turn's own progress events (#1702). The model never speaks unstored prose, and raw
 tool output never reaches the TTS endpoint.
 
 Limits: one call per instance; bounded frames and queues. A call ends when the operator ends it
@@ -107,16 +108,96 @@ ACKS = (
     "Checking now, Commander.",
     "Stand by, Commander.",
 )
-PROGRESS_LINES = {
-    "find_sessions": "Looking through your sessions.",
-    "list_sessions": "Looking through your sessions.",
-    "session_status": "Checking that session.",
-    "session_brief": "Checking that session.",
-    "list_missions": "Checking your missions.",
-    "mission_status": "Checking that mission.",
-    "fleet_status": "Checking the fleet.",
-    "agent_usage": "Checking your usage.",
+#: What each HQ tool is doing, as a fixed phrase (#1702): keyed by the tool's NAME only — never
+#: its arguments or result. Every HQ tool but `end_call` has one (a test ratchets it).
+TOOL_ACTIVITY = {
+    "find_sessions": "looking through your sessions",
+    "list_sessions": "looking through your sessions",
+    "session_status": "checking that session",
+    "session_brief": "checking that session",
+    "list_missions": "checking your missions",
+    "mission_status": "checking that mission",
+    "fleet_status": "checking the fleet",
+    "agent_usage": "checking your usage",
+    "list_projects": "reading your projects",
+    "list_agents": "reading your agents",
+    "list_folders": "reading your folders",
+    "list_playbooks": "reading your playbooks",
+    "playbook_detail": "reading that playbook",
+    "playbook_schema": "reading the playbook format",
+    "list_skills": "reading your skills",
+    "skill_detail": "reading that skill",
+    "list_automations": "reading your automations",
+    "automation_detail": "reading that automation",
+    "read_settings": "reading your settings",
+    "ask_operator": "preparing a question for you",
+    "propose_nudge": "preparing a card for you",
+    "propose_session": "preparing a card for you",
+    "propose_session_change": "preparing a card for you",
+    "propose_project_change": "preparing a card for you",
+    "propose_library": "preparing a card for you",
 }
+#: Said once per turn as a tool starts (the lookups worth naming at once).
+PROGRESS_LINES = {
+    name: TOOL_ACTIVITY[name].capitalize() + "."
+    for name in (
+        "find_sessions",
+        "list_sessions",
+        "session_status",
+        "session_brief",
+        "list_missions",
+        "mission_status",
+        "fleet_status",
+        "agent_usage",
+    )
+}
+#: While an HQ turn runs on a call, HQ never goes quiet for long (#1702): a fixed status line once
+#: HQ has been quiet this long (counted from when its last line had time to play)…
+FIRST_PROGRESS_S = 12.0
+#: …then after every this much quiet…
+PROGRESS_EVERY_S = 25.0
+#: …and, once the model has kept HQ waiting this long, a stall line every STALL_EVERY_S.
+STALL_S = 90.0
+STALL_EVERY_S = 45.0
+PROGRESS_TICK_S = 1.0
+#: `pulse_chat`'s sub-steps (the find pipeline, also the no-tools fallback): looking through
+#: sessions.
+FIND_STEPS = frozenset({"catalog", "content"})
+
+
+def spoken_duration(seconds: float) -> str:
+    """An elapsed time as said on a call: "15 seconds" (to the nearest 5) under a minute, then
+    "over 2 minutes"."""
+    if seconds < 60:
+        return f"{max(5, min(55, int(5 * round(seconds / 5))))} seconds"
+    minutes = int(seconds // 60)
+    return f"over {minutes} minute{'s' if minutes != 1 else ''}"
+
+
+def progress_line(work: dict, now: float) -> str:
+    """The fixed status line for an HQ turn still in flight (#1702), from its real state only:
+    which tool step runs (a fixed phrase by tool NAME), how many steps have returned, and how long
+    the current wait (this tool, or this model request) has lasted. Never model text, tool
+    arguments or tool output."""
+    phase = work.get("phase")
+    waited = now - work.get("phase_since", now)
+    if phase == "tool":
+        activity = TOOL_ACTIVITY.get(str(work.get("tool") or ""), "working on that step")
+        return f"Still {activity}, {spoken_duration(waited)} so far."
+    if phase == "model":
+        if waited >= STALL_S:
+            return (
+                "The model hasn't answered yet, Commander. "
+                f"{spoken_duration(waited).capitalize()} so far, still waiting."
+            )
+        steps = int(work.get("done") or 0)
+        if steps:
+            return (
+                f"{steps} step{'s' if steps != 1 else ''} done, "
+                f"waiting on the model, {spoken_duration(waited)} so far."
+            )
+        return f"Still waiting on the model, {spoken_duration(waited)} so far."
+    return f"Still working on it, {spoken_duration(now - work.get('since', now))} so far."
 
 
 #: How long ending a call waits on each socket send before giving up on it.
@@ -168,7 +249,8 @@ class Call:
     started: float = field(default_factory=time.monotonic)
     #: The last sign the operator is there (#1668): an utterance heard, a typed turn on the call's
     #: conversation, or an HQ say the browser played. Voice activity alone (`user_started`, which
-    #: room noise can fire), worker housekeeping, progress and stale acks are not.
+    #: room noise can fire), worker housekeeping, progress, status lines (#1702) and stale acks
+    #: are not.
     last_speech: float = field(default_factory=time.monotonic)
     #: Every time the operator starts speaking (`user_started`): a farewell planned for an
     #: utterance is dropped if they began speaking again before it was installed (#1668).
@@ -246,6 +328,15 @@ class Call:
     _to_client: Callable[[dict | bytes], Awaitable[None]] | None = None
     _to_worker: Callable[[dict | bytes], Awaitable[None]] | None = None
     _ack_i: int = 0
+    #: The HQ turn in flight on this call (#1702): ``{"since", "phase", "phase_since", "tool",
+    #: "steps" (started), "done" (returned), "updates", "stalled", "unsaid" (the status line whose
+    #: audio has not gone out yet)}`` from its own progress events; None between turns.
+    work: dict | None = None
+    #: When HQ's last line will have had time to play (sent + `speech_seconds`): the quiet the
+    #: progress lines are counted from.
+    hq_quiet_at: float = 0.0
+    #: The Commander is mid-utterance (`user_started` … `user_stopped`): no status line over them.
+    user_speaking: bool = False
     _ended: asyncio.Event = field(default_factory=asyncio.Event)
     #: Set once nothing of this call runs any more (its worker stopped, or it never had one): only
     #: then may the registry admit the next call.
@@ -290,15 +381,20 @@ class Call:
         kind: str = "answer",
         turn_id: str | None = None,
         sid: str | None = None,
+        heard: bool = True,
     ) -> str | None:
+        """`heard=False`: its `played` ack is no sign of the operator (#1702 status lines — HQ
+        talking while it waits proves nobody is listening)."""
         text = text.strip()
         if not text or self.state == "ended":
             return None
         sid = sid or uuid.uuid4().hex[:12]
+        self.hq_quiet_at = max(self.hq_quiet_at, time.monotonic() + speech_seconds(text))
         # Known BEFORE anything is awaited (#1668, Hermes 6983): a short line can be played, and
         # acked, while the sends below are still in flight.
-        self.say_ids.append(sid)
-        del self.say_ids[:-SAY_IDS_KEPT]
+        if heard:
+            self.say_ids.append(sid)
+            del self.say_ids[:-SAY_IDS_KEPT]
         await self.client({"t": "caption", "who": "hq", "id": sid, "text": text, "kind": kind,
                            "turn_id": turn_id})  # fmt: skip
         lang = self.language if self.tts_takes_language else None
@@ -320,6 +416,7 @@ class Call:
         elif t == "user_started":
             self.user_started_at = time.monotonic()
             self.user_starts += 1
+            self.user_speaking = True
             self.ending = None  # speaking again after HQ's farewell: the call goes on (#1668)
             # NOT a sign of the operator for the silence clock (Hermes 7000): voice activity fires
             # on room noise too, and a forgotten tab must still be asked and hung up.
@@ -343,16 +440,22 @@ class Call:
             # The no-ack fallbacks (#1668) count from HERE, once its audio went out, not from when
             # it was handed to the worker: a long farewell, or one queued behind another say, is
             # never cut off while it is still playing.
+            work = self.work
+            if work is not None and ev.get("id") == work.get("unsaid"):
+                work["unsaid"] = None  # its audio went out: the next status line may follow
             for pending in (self.ending, self.still_there):
                 if pending is not None and ev.get("id") == pending["say_id"]:
                     pending["said_at"] = time.monotonic()
             await self.client({"t": "said", "id": ev.get("id")})
         elif t == "user_stopped":
+            self.user_speaking = False
             await self.client({"t": "user", "speaking": False})
         elif t == "interrupt":
             # The browser flushes what it had queued: those says never play, so their late or
             # duplicate acks are not speech (#1668).
             self.say_ids.clear()
+            if self.work is not None:
+                self.work["unsaid"] = None  # flushed: it will never be said
             # Barge-in: the client drops what it has queued, at once — and a challenge whose
             # read-back was talked over is void. Pipecat sends this at EVERY user turn start, a
             # confirmation's too: an ARMED challenge's read-back has played out, so it stays.
@@ -361,11 +464,17 @@ class Call:
                 await self.void_challenge()
             await self.client({"t": "interrupt"})
             if self.state == "speaking":
-                await self.set_state("listening")
+                # Back to what HQ is doing: a turn still running is still `thinking`, so its status
+                # lines (#1702) carry on after a barge-in over the ack or a status line.
+                await self.set_state("thinking" if self._turn_running() else "listening")
         elif t == "bot_started":
+            self.hq_quiet_at = max(self.hq_quiet_at, time.monotonic())
             await self.set_state("speaking")
             await self.client({"t": "speaking", "id": ev.get("id"), "on": True})
         elif t == "bot_stopped":
+            # HQ's audio really stopped NOW (a say queued behind TTS plays later than its send
+            # suggested): status lines count their quiet from here at the earliest (#1702).
+            self.hq_quiet_at = max(self.hq_quiet_at, time.monotonic())
             await self.client({"t": "speaking", "id": ev.get("id"), "on": False})
             if self.state == "speaking":
                 await self.set_state("thinking" if self._turn_running() else "listening")
@@ -374,6 +483,7 @@ class Call:
             # — no HQ turn, no language change, an armed confirmation keeps waiting.
             log.debug("voice call %s: dropped a no-speech phrase", self.id)
         elif t == "utterance":
+            self.user_speaking = False
             heard = ev.get("heard_language")
             self.heard_language = heard if isinstance(heard, str) and LANG.match(heard) else None
             lang = ev.get("language")
@@ -584,7 +694,10 @@ class Call:
             elif ask.get("allow_text"):
                 answers = ask["question_id"]
         turn_id = str(uuid.uuid4())
-        ack_task = asyncio.create_task(self._ack_later(gen))
+        now = time.monotonic()
+        self.work = {"since": now, "phase": None, "phase_since": now, "tool": None, "steps": 0,
+                     "done": 0, "updates": 0}  # fmt: skip
+        ack_task = asyncio.create_task(self._report_progress(gen))
         try:
             view = await self._run_turn(turn_id, text, answers, option, replying_to=replying_to)
         except ask_orchestrator.TurnError as e:
@@ -596,6 +709,7 @@ class Call:
             view = {"status": "failed", "detail": ""}
         finally:
             ack_task.cancel()
+            self.work = None
         if self.state == "ended":
             return
         await self.client({"t": "turn", "turn": view})
@@ -897,12 +1011,65 @@ class Call:
                 # ONE row per challenge (#1681 P2): a reply can only name something of THAT row.
                 await self.offer(cards[:1], gen=gen, queue=cards[1:])
 
-    async def _ack_later(self, gen: int) -> None:
+    async def _report_progress(self, gen: int) -> None:
+        """While HQ's turn runs: the ack, then a fixed status line whenever HQ has been quiet too
+        long (#1702), so a slow model never reads as a dropped call. Cancelled as the turn
+        settles."""
         await asyncio.sleep(ACK_AFTER_S)
         if gen == self.generation and self.state == "thinking":
             line = ACKS[self._ack_i % len(ACKS)]
             self._ack_i += 1
             await self.say(line, kind="ack")
+        while self.state != "ended":
+            await asyncio.sleep(PROGRESS_TICK_S)
+            await self.progress_tick()
+
+    def _track(self, ev: dict) -> None:
+        """What the running turn is doing now, from its own progress events (#1702)."""
+        work = self.work
+        if work is None:
+            return
+        step = ev.get("step")
+        now = time.monotonic()
+        if step == "thinking":
+            # A model round starts only once the previous round's tools have all returned: every
+            # step started so far is DONE (a tool's own event comes before it runs).
+            work.update(phase="model", phase_since=now, tool=None, done=work["steps"])
+        elif step == "tool":
+            work.update(phase="tool", phase_since=now, tool=str(ev.get("tool") or ""))
+            work["steps"] += 1
+        elif step in FIND_STEPS and work["phase"] != "tool":
+            # The no-tools fallback runs the find pipeline without a `tool` event.
+            work.update(phase="tool", phase_since=now, tool="find_sessions")
+            work["steps"] += 1
+
+    async def progress_tick(self) -> None:
+        """Say where the running turn is, if HQ has been quiet long enough (#1702): FIRST_PROGRESS_S
+        before the first status line, PROGRESS_EVERY_S between them, STALL_EVERY_S after a stall
+        line. Only while HQ is thinking (never over its own audio), the Commander isn't speaking
+        and the last status line has gone out — a best-effort cadence of ELIGIBLE quiet, never a
+        guarantee of audible speech by a deadline."""
+        work = self.work
+        if work is None or self.state != "thinking" or self.user_speaking:
+            return
+        if work.get("unsaid"):
+            # The last status line hasn't gone out yet (TTS or the worker is slow): never queue
+            # another behind it — at most one is ever waiting.
+            return
+        now = time.monotonic()
+        if not work["updates"]:
+            need = FIRST_PROGRESS_S
+        else:
+            # The stall line comes at the usual pace; only the lines after it slow down.
+            need = STALL_EVERY_S if work.get("stalled") else PROGRESS_EVERY_S
+        if now - self.hq_quiet_at < need:
+            return
+        work["updates"] += 1
+        work["stalled"] = work["phase"] == "model" and now - work["phase_since"] >= STALL_S
+        sid = uuid.uuid4().hex[:12]
+        work["unsaid"] = sid  # BEFORE the send: its `said` can come back while it is in flight
+        if await self.say(progress_line(work, now), kind="progress", sid=sid, heard=False) is None:
+            work["unsaid"] = None
 
     async def _run_turn(
         self, turn_id: str, text: str, answers, option, *, replying_to: str | None = None
@@ -934,6 +1101,7 @@ class Call:
                 done, _ = await asyncio.wait({get, task}, return_when=asyncio.FIRST_COMPLETED)
                 if get in done:
                     ev = get.result()
+                    self._track(ev)
                     step = ev.get("tool") or ev.get("step")
                     line = PROGRESS_LINES.get(str(step))
                     if line and line not in said and self.state == "thinking":
