@@ -12,8 +12,12 @@ below allows a server to differ in.
 - Synthesis: ``POST <base>/audio/speech``, JSON ``{model, input, voice, response_format: "pcm"}``
   (+ ``speed``, ``language``). The reply is EITHER raw 16-bit mono PCM at 24 kHz (what OpenAI sends
   for ``pcm``) OR a WAV file (servers that ignore ``pcm``, e.g. VoxCPM's 48 kHz WAV). Which one is
-  decided by the bytes (a ``RIFF`` header) and the content type, never assumed. A streamed reply is
-  consumed as it arrives, so a server that streams gives earlier first audio.
+  decided by the bytes (a ``RIFF`` header) and the content type, never assumed. A reply LABELLED
+  compressed (``audio/mpeg`` …) is never played: some gateways put that label on the PCM too, and
+  raw PCM can't be told from compressed audio by its bytes, so the sentence is asked for again
+  with ``response_format: "wav"`` and that endpoint configuration is asked for WAV from then on
+  (#1709). A
+  streamed reply is consumed as it arrives, so a server that streams gives earlier first audio.
 - Discovery: ``GET <base>/models``; voices from ``GET <base>/audio/voices`` (Kokoro-FastAPI) or
   ``GET <base>/health`` (``voices``), else none: the operator enters the voice by hand.
 - Token: optional. Sent only as ``Authorization: Bearer`` to the endpoint's own origin.
@@ -343,6 +347,35 @@ def pcm16_to_wav(pcm: bytes, rate: int) -> bytes:
     return out.getvalue()
 
 
+#: Labels that claim compressed audio. Some gateways put `audio/mpeg` on EVERY reply, the PCM
+#: asked for included — and raw PCM has no reserved bytes, so no sniff can tell the two apart
+#: (#1709: every heuristic tried was beaten by a valid PCM reply). Such a reply is never played:
+#: the sentence is asked for again as WAV, whose RIFF header says what it is.
+COMPRESSED_LABELS = ("mpeg", "mp3", "ogg", "opus", "aac", "flac")
+#: Endpoint configurations whose PCM came back labelled compressed: asked for WAV from then on,
+#: for this process. Keyed by the WHOLE request target — base URL, model, credential AND voice
+#: (Hermes 7139, 7149: one key's or one voice's gateway route may differ from another's) — as a
+#: digest, so no credential is held here. Bounded; forgetting one only costs one more retry.
+_WAV_ENDPOINTS: set[str] = set()
+_WAV_ENDPOINTS_MAX = 64
+
+
+class _CompressedLabel(SpeechError):
+    """A `pcm` request answered with a compressed label, before any audio was played."""
+
+
+def _wav_key(ep: Endpoint, voice: str) -> str:
+    import hashlib
+
+    return hashlib.sha256("\0".join((ep.base, ep.model, ep.api_key, voice)).encode()).hexdigest()
+
+
+def _remember_wav(ep: Endpoint, voice: str) -> None:
+    if len(_WAV_ENDPOINTS) >= _WAV_ENDPOINTS_MAX:
+        _WAV_ENDPOINTS.clear()
+    _WAV_ENDPOINTS.add(_wav_key(ep, voice))
+
+
 def parse_wav_header(head: bytes) -> tuple[int, int, int, int] | None:
     """`(sample_rate, channels, bits, data_offset)` from the start of a RIFF/WAVE stream, or None
     when `head` is not (yet) a complete header. Tolerates extra chunks before `data` and a
@@ -569,8 +602,8 @@ async def synthesize(
     got = False
     try:
         async with contextlib.aclosing(
-            _synthesize(ep, text, voice=voice, out_rate=out_rate, speed=speed,
-                        language=language, extra=extra)
+            _synthesize_any(ep, text, voice=voice, out_rate=out_rate, speed=speed,
+                            language=language, extra=extra)
         ) as chunks:  # fmt: skip
             async for chunk in chunks:
                 got = True
@@ -580,10 +613,58 @@ async def synthesize(
             raise
         plain_fallback()
         async with contextlib.aclosing(
-            _synthesize(ep, text, voice=voice, out_rate=out_rate)
+            _synthesize_any(ep, text, voice=voice, out_rate=out_rate)
         ) as chunks:
             async for chunk in chunks:
                 yield chunk
+
+
+async def _synthesize_any(ep: Endpoint, text: str, **kw) -> AsyncIterator[bytes]:
+    """`pcm`, as always — or `wav` where a reply labelled compressed showed the target mislabels
+    its PCM (#1709): that reply is dropped unplayed and the sentence asked for again as WAV.
+
+    The target (URL, model, credential and voice) is remembered as WAV only once a WAV reply has
+    PLAYED. A remembered target whose WAV fails before any audio is forgotten and asked for PCM in
+    the same call — a reply labelled compressed is still never played (second review, Hermes
+    7149). A WAV retry that fails before any audio reports the ORIGINAL refusal ("the endpoint
+    returned audio/mpeg"), with no HTTP status, so it is never taken for a refused optional field
+    (`plain_fallback`)."""
+    key = _wav_key(ep, kw["voice"])
+    if key in _WAV_ENDPOINTS:
+        played = False
+        try:
+            async with contextlib.aclosing(
+                _synthesize(ep, text, response_format="wav", **kw)
+            ) as chunks:
+                async for chunk in chunks:
+                    played = True
+                    yield chunk
+            return
+        except SpeechError:
+            if played:
+                raise
+            _WAV_ENDPOINTS.discard(key)  # it stopped taking WAV: ask it for PCM below
+    try:
+        async with contextlib.aclosing(_synthesize(ep, text, **kw)) as chunks:
+            async for chunk in chunks:
+                yield chunk
+        return
+    except _CompressedLabel as e:
+        label = SpeechError(e.code, e.detail)
+    played = False
+    try:
+        async with contextlib.aclosing(
+            _synthesize(ep, text, response_format="wav", **kw)
+        ) as chunks:
+            async for chunk in chunks:
+                if not played:
+                    played = True
+                    _remember_wav(ep, kw["voice"])
+                yield chunk
+    except SpeechError:
+        if played:
+            raise
+        raise label from None
 
 
 async def _synthesize(
@@ -595,6 +676,7 @@ async def _synthesize(
     speed: float | None = None,
     language: str | None = None,
     extra: dict | None = None,
+    response_format: str = "pcm",
 ) -> AsyncIterator[bytes]:
     text = text.strip()[:TEXT_MAX]
     if not text:
@@ -603,7 +685,7 @@ async def _synthesize(
         "model": ep.model or "tts-1",
         "input": text,
         "voice": voice,
-        "response_format": "pcm",
+        "response_format": response_format,
     }
     if speed is not None:
         body["speed"] = speed
@@ -638,8 +720,12 @@ async def _synthesize(
                 return (rate, channels, bits), head[off:]
             if len(head) < 12 and not final and b"RIFF".startswith(head[:4]):
                 return None  # could still become a RIFF header
-            if any(t in ctype for t in ("mpeg", "mp3", "ogg", "opus", "aac", "flac")):
-                raise SpeechError("unsupported_audio", f"the endpoint returned {ctype}")
+            if response_format == "wav":  # asked for WAV: nothing else is played
+                raise SpeechError("unsupported_audio", f"the endpoint returned {ctype or 'no WAV'}")
+            if any(t in ctype for t in COMPRESSED_LABELS):
+                # Compressed audio, or PCM a gateway mislabelled: no byte sniff tells them apart,
+                # so neither is played — `_synthesize_any` asks for WAV instead.
+                raise _CompressedLabel("unsupported_audio", f"the endpoint returned {ctype}")
             return (OPENAI_PCM_RATE, 1, 16), head
 
         def produce(chunk: bytes) -> list[bytes]:

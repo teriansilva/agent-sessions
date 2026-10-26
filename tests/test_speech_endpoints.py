@@ -220,6 +220,226 @@ def test_synthesize_refuses_compressed_audio(monkeypatch):
     assert e.value.code == "unsupported_audio"
 
 
+# --- a compressed LABEL is never played: the sentence is asked for again as WAV (#1709) ---------
+
+PCM = _tone(0.2, 24000)
+LOUD_FREE_FORMAT_LOOKALIKE = struct.pack("<2h", -1, 0) + struct.pack(
+    "<4800h", *(12000 if (i // 12) % 2 else -12000 for i in range(4800))
+)  # Hermes 7131: PCM a byte sniff took for a free-format MP3 frame
+MP3 = (b"\xff\xfb\x90\x64" + b"\x00" * 413) * 3
+
+
+@pytest.fixture(autouse=True)
+def _fresh_wav_memory():
+    se._WAV_ENDPOINTS.clear()
+    yield
+    se._WAV_ENDPOINTS.clear()
+
+
+def _gateway(monkeypatch, *, pcm: bytes, wav: bytes, ctype: str = "audio/mpeg"):
+    """A gateway that labels every reply `ctype`, answering a `pcm` request with `pcm` and a
+    `wav` request with `wav`. Returns the formats asked for, in order."""
+    asked: list[str] = []
+
+    def reply(r: httpx.Request) -> httpx.Response:
+        fmt = json.loads(r.content)["response_format"]
+        asked.append(fmt)
+        return httpx.Response(200, content=wav if fmt == "wav" else pcm,
+                              headers={"content-type": ctype})  # fmt: skip
+
+    _mount(monkeypatch, reply)
+    return asked
+
+
+def _say(ep=None, **kw) -> bytes:
+    ep = ep or se.Endpoint(BASE)
+    return run(_collect(se.synthesize(ep, "Hallo", voice="v", out_rate=24000, **kw)))
+
+
+@pytest.mark.parametrize(
+    "pcm",
+    [PCM, LOUD_FREE_FORMAT_LOOKALIKE, b"\xff\xff" * 4800, MP3],
+    ids=["pcm", "loud-free-format-lookalike", "pcm-ffff", "real-mp3"],
+)
+@pytest.mark.parametrize("ctype", ["audio/mpeg", "audio/aac", "audio/ogg; codecs=opus"])
+def test_a_compressed_label_is_never_played_the_wav_is(monkeypatch, pcm, ctype):
+    """Whatever the bytes under a compressed label are, none of them is played: the sentence is
+    asked for again as WAV, and only the WAV's samples come out."""
+    asked = _gateway(monkeypatch, pcm=pcm, wav=_wav(PCM, 24000), ctype=ctype)
+    assert _say() == PCM
+    assert asked == ["pcm", "wav"]
+
+
+def test_the_endpoint_is_asked_for_wav_from_then_on(monkeypatch):
+    asked = _gateway(monkeypatch, pcm=PCM, wav=_wav(PCM, 24000))
+    assert _say() == PCM and _say() == PCM
+    assert asked == ["pcm", "wav", "wav"]
+    other = se.Endpoint("http://other.lan:8000/v1")  # remembered per endpoint, not globally
+    _say(other)
+    assert asked[-2:] == ["pcm", "wav"]
+
+
+def test_the_wav_memory_is_per_credential_too(monkeypatch):
+    """Hermes 7139: two keys on one URL and model can reach different gateway routes. Key A's
+    mislabelled PCM must not switch key B — whose PCM is labelled honestly and which refuses WAV —
+    to WAV."""
+    asked: list[tuple[str, str]] = []
+
+    def reply(r: httpx.Request) -> httpx.Response:
+        key = r.headers.get("authorization", "")
+        fmt = json.loads(r.content)["response_format"]
+        asked.append((key[-1:], fmt))
+        if key.endswith("B"):
+            if fmt == "wav":
+                return httpx.Response(400, json={"error": "pcm only"})
+            return httpx.Response(200, content=PCM, headers={"content-type": "audio/pcm"})
+        content = _wav(PCM, 24000) if fmt == "wav" else PCM
+        return httpx.Response(200, content=content, headers={"content-type": "audio/mpeg"})
+
+    _mount(monkeypatch, reply)
+    a, b = se.Endpoint(BASE, "tts-1", "key-A"), se.Endpoint(BASE, "tts-1", "key-B")
+    assert _say(a) == PCM and _say(b) == PCM and _say(b) == PCM
+    assert asked == [("A", "pcm"), ("A", "wav"), ("B", "pcm"), ("B", "pcm")]
+    assert not any("key-" in k for k in se._WAV_ENDPOINTS)  # no credential held
+
+
+def test_a_failed_wav_retry_never_switches_another_voice(monkeypatch):
+    """Second review: voice x comes back as real MP3 and the gateway refuses WAV; that must not
+    switch voice y — honest PCM on the same endpoint — to WAV."""
+    asked: list[tuple[str, str]] = []
+
+    def reply(r: httpx.Request) -> httpx.Response:
+        body = json.loads(r.content)
+        asked.append((body["voice"], body["response_format"]))
+        if body["response_format"] == "wav":
+            return httpx.Response(400, json={"error": "no wav"})
+        if body["voice"] == "x":
+            return httpx.Response(200, content=MP3, headers={"content-type": "audio/mpeg"})
+        return httpx.Response(200, content=PCM, headers={"content-type": "audio/pcm"})
+
+    _mount(monkeypatch, reply)
+    ep = se.Endpoint(BASE)
+    with pytest.raises(se.SpeechError) as e:
+        run(_collect(se.synthesize(ep, "Hi", voice="x", out_rate=24000)))
+    assert e.value.code == "unsupported_audio" and "audio/mpeg" in e.value.detail
+    assert run(_collect(se.synthesize(ep, "Hi", voice="y", out_rate=24000))) == PCM
+    assert asked == [("x", "pcm"), ("x", "wav"), ("y", "pcm")] and not se._WAV_ENDPOINTS
+
+
+def test_a_refused_wav_retry_is_not_blamed_on_the_optional_fields(monkeypatch):
+    """Second review: a WAV retry's 400 must surface as the original refusal, never trigger the
+    #1635 plain fallback (which would drop speed/language for the whole call)."""
+
+    def reply(r: httpx.Request) -> httpx.Response:
+        if json.loads(r.content)["response_format"] == "wav":
+            return httpx.Response(400, json={"error": "no wav"})
+        return httpx.Response(200, content=MP3, headers={"content-type": "audio/mpeg"})
+
+    _mount(monkeypatch, reply)
+    told: list[bool] = []
+    with pytest.raises(se.SpeechError) as e:
+        _say(speed=1.1, plain_fallback=lambda: told.append(True))
+    assert told == [] and e.value.code == "unsupported_audio" and e.value.status is None
+    assert "audio/mpeg" in e.value.detail
+
+
+def test_a_remembered_target_whose_wav_fails_falls_back_to_pcm_in_the_same_call(monkeypatch):
+    se._remember_wav(se.Endpoint(BASE), "v")
+    asked = _gateway(monkeypatch, pcm=PCM, wav=PCM, ctype="audio/pcm")  # WAV now answered raw
+    assert _say() == PCM  # the raw "WAV" is refused unplayed; PCM, labelled honestly, plays
+    assert asked == ["wav", "pcm"] and not se._WAV_ENDPOINTS
+    assert _say() == PCM and asked[-1] == "pcm"
+
+
+def test_a_successful_wav_retry_never_switches_another_voice(monkeypatch):
+    """Hermes 7149: voice x mislabels its PCM and takes WAV; voice y labels PCM honestly and refuses
+    WAV. After x is switched, y still gets PCM."""
+    asked: list[tuple[str, str]] = []
+
+    def reply(r: httpx.Request) -> httpx.Response:
+        body = json.loads(r.content)
+        voice, fmt = body["voice"], body["response_format"]
+        asked.append((voice, fmt))
+        if voice == "y":
+            if fmt == "wav":
+                return httpx.Response(400, json={"error": "pcm only"})
+            return httpx.Response(200, content=PCM, headers={"content-type": "audio/pcm"})
+        content = _wav(PCM, 24000) if fmt == "wav" else PCM
+        return httpx.Response(200, content=content, headers={"content-type": "audio/mpeg"})
+
+    _mount(monkeypatch, reply)
+    ep = se.Endpoint(BASE)
+
+    def say(voice: str) -> bytes:
+        return run(_collect(se.synthesize(ep, "Hi", voice=voice, out_rate=24000)))
+
+    assert say("y") == PCM and say("x") == PCM and say("y") == PCM and say("x") == PCM
+    assert asked == [("y", "pcm"), ("x", "pcm"), ("x", "wav"), ("y", "pcm"), ("x", "wav")]
+
+
+@pytest.mark.parametrize("wav", [PCM, MP3, b"ID3\x04" + b"\x00" * 200], ids=["pcm", "mp3", "id3"])
+def test_what_is_not_wav_when_wav_was_asked_for_is_refused(monkeypatch, wav):
+    """An endpoint that answers WAV with anything else — compressed audio included — plays
+    nothing: refused, as compressed audio always was."""
+    _gateway(monkeypatch, pcm=MP3, wav=wav)
+    with pytest.raises(se.SpeechError) as e:
+        _say()
+    assert e.value.code == "unsupported_audio"
+
+
+@pytest.mark.parametrize("ctype", ["application/octet-stream", "audio/pcm", ""])
+def test_raw_bytes_answering_a_wav_request_are_never_played(monkeypatch, ctype):
+    """Raw bytes answering a WAV request are refused whatever their label — never played as PCM.
+    A remembered target then falls back to a PCM request, and only ITS reply is played."""
+    se._remember_wav(se.Endpoint(BASE), "v")
+    other = _tone(0.1, 24000)[::-1]  # the PCM reply, distinguishable from the raw "WAV" one
+    asked = _gateway(monkeypatch, pcm=other, wav=PCM, ctype=ctype)
+    assert _say() == other and asked == ["wav", "pcm"]
+
+
+@pytest.mark.parametrize("ctype", ["audio/pcm", "application/octet-stream", ""])
+def test_a_reply_not_labelled_compressed_is_the_pcm_asked_for(monkeypatch, ctype):
+    """Hermes 7115: a reply labelled PCM (or nothing) plays as PCM — one request, no sniffing."""
+    for content in (b"\xff\xfb\x90\x64" + PCM, LOUD_FREE_FORMAT_LOOKALIKE, PCM[:100]):
+        asked = _gateway(monkeypatch, pcm=content, wav=b"", ctype=ctype)
+        assert _say() == content
+        assert asked == ["pcm"]
+
+
+def test_a_mislabelled_reply_streamed_bytewise_still_plays_only_the_wav(monkeypatch):
+    asked: list[str] = []
+
+    def reply(r: httpx.Request) -> httpx.Response:
+        fmt = json.loads(r.content)["response_format"]
+        asked.append(fmt)
+        body = _wav(PCM, 24000) if fmt == "wav" else LOUD_FREE_FORMAT_LOOKALIKE
+        parts = [body[i : i + 1] for i in range(len(body))]
+        return httpx.Response(200, stream=_Split(parts), headers={"content-type": "audio/mpeg"})
+
+    _mount(monkeypatch, reply)
+    assert _say() == PCM and asked == ["pcm", "wav"]
+
+
+def test_optional_fields_refused_then_wav_still_works(monkeypatch):
+    """The plain-fallback retry (#1635) and the WAV retry compose: refused optional fields,
+    then a mislabelled PCM reply, then the WAV."""
+    asked: list[tuple[str, bool]] = []
+    told: list[bool] = []
+
+    def reply(r: httpx.Request) -> httpx.Response:
+        body = json.loads(r.content)
+        asked.append((body["response_format"], "language" in body))
+        if "language" in body:
+            return httpx.Response(422, json={"error": "no language"})
+        content = _wav(PCM, 24000) if body["response_format"] == "wav" else PCM
+        return httpx.Response(200, content=content, headers={"content-type": "audio/mpeg"})
+
+    _mount(monkeypatch, reply)
+    assert _say(language="de", plain_fallback=lambda: told.append(True)) == PCM
+    assert told == [True]
+    assert asked == [("pcm", True), ("pcm", False), ("wav", False)]
+
+
 def test_synthesize_bounds_the_audio(monkeypatch):
     monkeypatch.setattr(se, "SPEECH_MAX_BYTES", 1000)
     _mount(
