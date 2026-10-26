@@ -174,6 +174,16 @@ async function dragWindow(
   if (!hold) await page.mouse.up();
 }
 
+/** "+ New session" with the map up (#1648): the form opens OVER the map in a modal — the map, its
+ *  windows and their sockets stay — so its Start is the modal's. */
+async function openNewSessionModal(page: Page) {
+  await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
+  await expect(page.getByTestId("new-session-modal")).toBeVisible();
+  await expect(page).toHaveURL(/\/overview$/);
+}
+const modalStart = (page: Page, name: RegExp = /start session/i) =>
+  page.getByTestId("new-session-modal").getByRole("button", { name });
+
 async function openMap(page: Page) {
   await page.goto("/overview");
   await expect(chip(page, 1)).toBeVisible();
@@ -388,11 +398,10 @@ test.describe("map workspace", () => {
     const conns = await mockApp(page, { engines: ["claude"] });
     await openMap(page);
 
-    await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
-    await expect(page).toHaveURL(NEW_SESSION_PATH);
-    await page.getByRole("button", { name: /start session/i }).click();
+    await openNewSessionModal(page);
+    await modalStart(page).click();
 
-    // Back on the map, as a window — not full screen.
+    // On the map, as a window — not full screen, and the map never left (#1648).
     await expect(page).toHaveURL(/\/overview$/);
     const fresh = page.locator("[data-session-window]");
     await expect(fresh).toHaveCount(1);
@@ -412,8 +421,8 @@ test.describe("map workspace", () => {
     const conns = await mockApp(page, { engines: ["opencode"] });
     await openMap(page);
 
-    await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
-    await page.getByRole("button", { name: /start session/i }).click();
+    await openNewSessionModal(page);
+    await modalStart(page).click();
     await expect(page).toHaveURL(/\/overview$/);
     // It launched under the placeholder, then adopted the id the engine minted.
     await expect.poll(() => conns.filter((c) => c.launched).length).toBe(1);
@@ -454,8 +463,8 @@ test.describe("map workspace", () => {
     await mockApp(page, { engines: ["opencode"] });
     await openMap(page);
 
-    await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
-    await page.getByRole("button", { name: /start session/i }).click();
+    await openNewSessionModal(page);
+    await modalStart(page).click();
     await expect(page).toHaveURL(/\/overview$/);
     const w = page.locator("[data-session-window]");
     await expect(w).toHaveCount(1);
@@ -484,8 +493,10 @@ test.describe("map workspace", () => {
     await chip(page, 1).click();
     await expect(page.locator("[data-session-window]")).toHaveCount(1);
 
-    await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
-    await page.getByRole("button", { name: /start session/i }).click();
+    // The modal knows before Start (#1648): it says the map is full, and Start says full screen.
+    await openNewSessionModal(page);
+    await expect(page.getByTestId("new-session-map-full")).toBeVisible();
+    await modalStart(page, /start full screen/i).click();
 
     // Full screen, and it really launched.
     await expect(page).toHaveURL(/\/s\/opencode\//);
@@ -511,12 +522,14 @@ test.describe("map workspace", () => {
     const conns = await mockApp(page, { engines: ["opencode"] });
     await openMap(page);
 
-    await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
-    await expect(page).toHaveURL(NEW_SESSION_PATH);
+    // In the modal (#1648) the map stays mounted, so a viewport that shrinks while the form is open
+    // is measured: Start then opens full screen, or (if the measurement lags) the drain hands the
+    // queued open back. Either way the session launches once, full screen.
+    await openNewSessionModal(page);
     // Too short to host a window at its 560×320 floor, while still far wider than the ≤800px
     // mobile breakpoint — the exact gap a width-only gate leaves open.
     await page.setViewportSize({ width: 1920, height: 400 });
-    await page.getByRole("button", { name: /start session/i }).click();
+    await modalStart(page).click();
 
     // Handed back to the full-screen route, carrying its launch params — the session exists.
     await expect(page).toHaveURL(/\/s\/opencode\//);
@@ -549,7 +562,12 @@ test.describe("map workspace", () => {
     await expect(page.locator("[data-session-window]")).toHaveCount(1);
     await page.waitForTimeout(700); // let the debounced layout write settle
 
-    await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
+    // The PAGE form's map return (`returnTo`), which the New project wizard's round trip still uses
+    // (#1648 moved the sidebar's entry into a modal): entered with that router state directly.
+    await page.evaluate((path) => {
+      history.pushState({ usr: { returnTo: "/overview" }, key: "nsr", idx: 1 }, "", path);
+      dispatchEvent(new PopStateEvent("popstate", { state: history.state }));
+    }, NEW_SESSION_PATH);
     await expect(page).toHaveURL(NEW_SESSION_PATH);
     await page.reload(); // fresh provider, layout unhydrated, history keeps returnTo
     await page.getByRole("button", { name: /start session/i }).click();
@@ -570,10 +588,9 @@ test.describe("map workspace", () => {
     const conns = await mockApp(page, { engines: ["opencode"] });
     await openMap(page);
 
-    await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
-    await expect(page).toHaveURL(NEW_SESSION_PATH);
+    await openNewSessionModal(page);
     await page.setViewportSize({ width: 1920, height: 120 });
-    await page.getByRole("button", { name: /start session/i }).click();
+    await modalStart(page).click();
 
     await expect(page).toHaveURL(/\/s\/opencode\//);
     await expect.poll(() => conns.filter((c) => c.launched).length).toBe(1);
@@ -635,10 +652,9 @@ test.describe("map workspace", () => {
     });
 
     await openMap(page);
-    // From the map: "+ New session" → the landing → back as a window.
-    await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
-    await expect(page).toHaveURL(NEW_SESSION_PATH);
-    await page.getByRole("button", { name: /start session/i }).click();
+    // From the map: "+ New session" → the modal over the map (#1648) → a window in place.
+    await openNewSessionModal(page);
+    await modalStart(page).click();
     await expect(page).toHaveURL(/\/overview/);
     await expect(page.locator("[data-session-window]")).toHaveCount(1);
     await expect(page.locator('[aria-label="Session window: New session"]')).toBeVisible();

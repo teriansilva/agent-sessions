@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx } from "../../app/config";
+import { WorkspaceCommandsCtx, type WorkspaceCommands } from "../../app/workspaceWindows";
 import { api, ApiError } from "../../lib/api";
 import { projectColor } from "../../lib/format";
 import type { AppConfig, Session, SessionsPage } from "../../types/api";
@@ -1108,4 +1109,41 @@ test("a row shows the model its launch requested; a default row shows none (#118
   expect(tags[0]).toHaveTextContent("claude-sonnet-5");
   // A REQUEST, and the tooltip says so — never presented as what ran.
   expect(tags[0]).toHaveAttribute("title", "Requested model: claude-sonnet-5");
+});
+
+// #1648: on the map, "+ New session" opens the form OVER the map, so no window disconnects.
+function Where() {
+  return <span data-testid="where">{useLocation().pathname}</span>;
+}
+function renderOn(path: string, onNavigate = vi.fn()) {
+  const ws = { mapReady: false, openNewSession: vi.fn() } as unknown as WorkspaceCommands;
+  render(
+    <WorkspaceCommandsCtx.Provider value={ws}>
+      <MemoryRouter initialEntries={[path]}>
+        <SessionList onNavigate={onNavigate} />
+        <Where />
+      </MemoryRouter>
+    </WorkspaceCommandsCtx.Provider>,
+  );
+  return { ws, onNavigate };
+}
+
+test("on the map, New session opens the modal there, even where the map cannot host a window", async () => {
+  const user = userEvent.setup();
+  mockSessions.mockResolvedValue(pageOf([]));
+  const { ws, onNavigate } = renderOn("/overview"); // mapReady false: a phone's map
+  const link = screen.getByRole("link", { name: /new session/i });
+  await user.click(link);
+  expect(ws.openNewSession).toHaveBeenCalledWith(link);
+  expect(onNavigate).toHaveBeenCalledTimes(1); // the phone's drawer closes
+  expect(screen.getByTestId("where")).toHaveTextContent("/overview"); // the map stays
+});
+
+test("a modified click on the map, or a click elsewhere, keeps the New session link", async () => {
+  const user = userEvent.setup();
+  mockSessions.mockResolvedValue(pageOf([]));
+  const { ws } = renderOn("/s/claude/a");
+  await user.click(screen.getByRole("link", { name: /new session/i }));
+  expect(ws.openNewSession).not.toHaveBeenCalled();
+  expect(screen.getByTestId("where")).toHaveTextContent("/new");
 });

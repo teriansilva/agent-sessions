@@ -274,3 +274,51 @@ test("a row without a declared alias never moves the URL (#1405)", async () => {
   expect(screen.getByTestId("loc").textContent).toBe(`/s/codex/${NATIVE}`);
   expect(screen.getByTestId("term").textContent).toBe(`codex:${NATIVE}`);
 });
+
+// #1648: the map's drain handed a refused window back to this page because the map was full.
+test("an arrival handed back by a full map says why it is full screen, until dismissed", async () => {
+  render(
+    <MemoryRouter
+      initialEntries={[
+        { pathname: "/s/claude/cla_2222", state: { fresh: { cwd: "/x", bypass: true }, mapFull: true } },
+      ]}
+    >
+      <Routes>
+        <Route path="/s/:engine/:id" element={<SessionView />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  const notice = screen.getByTestId("map-full-notice");
+  expect(notice).toHaveAttribute("role", "status");
+  expect(notice).toHaveTextContent("The map was full — opened full screen.");
+  await act(async () => {
+    screen.getByRole("button", { name: "Dismiss" }).click();
+  });
+  expect(screen.queryByTestId("map-full-notice")).toBeNull();
+});
+
+test("an ordinary arrival shows no map-full notice", () => {
+  renderAt("/s/claude/cla_2222");
+  expect(screen.queryByTestId("map-full-notice")).toBeNull();
+});
+
+test("the map-full notice stays with the handed-back session: another session does not inherit it (Hermes on #1717)", async () => {
+  const user = userEvent.setup();
+  render(
+    <MemoryRouter
+      initialEntries={[{ pathname: "/s/opencode/ses_realreal0000", state: { mapFull: true } }]}
+    >
+      <Routes>
+        <Route path="/s/:engine/:id" element={<SessionView />} />
+      </Routes>
+      <Nav />
+    </MemoryRouter>,
+  );
+  expect(screen.getByTestId("map-full-notice")).toBeInTheDocument();
+  // The route instance is reused across sessions (only the params change).
+  await user.click(screen.getByRole("button", { name: "go-claude" }));
+  expect(screen.queryByTestId("map-full-notice")).toBeNull();
+  // ...and coming back to the handed-back session does not bring it back either.
+  await user.click(screen.getByRole("button", { name: "go-back" }));
+  expect(screen.queryByTestId("map-full-notice")).toBeNull();
+});

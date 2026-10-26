@@ -26,6 +26,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (ready !== null) setHostable((cur) => (cur === ready ? cur : ready));
   }, []);
   const { requestOpen } = ws;
+  // New session over the map (#1648). The sidebar opens it; the map route renders it.
+  const [newSession, setNewSession] = useState<{ trigger: HTMLElement | null } | null>(null);
+  const openNewSession = useCallback((trigger: HTMLElement | null) => setNewSession({ trigger }), []);
+  const closeNewSession = useCallback(() => setNewSession(null), []);
   const openInMap = useCallback(
     (seed: WindowSeed) => {
       if (!mapReady) return false;
@@ -70,8 +74,30 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   // new identity on every window rect update, and the sidebar is a consumer — one context would
   // re-render the whole session list on every frame of a window drag.
   const commands = useMemo(
-    () => ({ mapReady, hostable, hasRoom, room, openKeys, requestOpen, openInMap }),
-    [mapReady, hostable, hasRoom, room, openKeys, requestOpen, openInMap],
+    () => ({
+      mapReady,
+      hostable,
+      hasRoom,
+      room,
+      openKeys,
+      requestOpen,
+      openInMap,
+      newSession,
+      openNewSession,
+      closeNewSession,
+    }),
+    [
+      mapReady,
+      hostable,
+      hasRoom,
+      room,
+      openKeys,
+      requestOpen,
+      openInMap,
+      newSession,
+      openNewSession,
+      closeNewSession,
+    ],
   );
   return (
     <WorkspaceCtx.Provider value={value}>

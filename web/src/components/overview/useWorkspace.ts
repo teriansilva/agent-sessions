@@ -50,6 +50,10 @@ export interface WindowRequest {
    *  record for the life of the window and NEVER persisted — replaying a launch on reload is
    *  the one thing the storage layer must not do. */
   fresh?: FreshSession;
+  /** Set on a REFUSED request only (#1648): why the drain could not open it. `cap` = the map was
+   *  at its window cap; `host` = the map could not host a window at all (too small, a phone). The
+   *  full-screen hand-back says "the map was full" for `cap` only. */
+  reason?: "cap" | "host";
 }
 
 /** One open window. `key` is the engine-qualified session id (`engine:uuid`) — the app's own
@@ -418,7 +422,7 @@ function reduce(state: State, action: Action): State {
         return {
           ...state,
           pending: [],
-          rejected: [...state.rejected, ...state.pending],
+          rejected: [...state.rejected, ...state.pending.map((r) => ({ ...r, reason: "host" as const }))],
         };
       let next: State = { ...state, pending: [] };
       const rejected: WindowRequest[] = [];
@@ -435,7 +439,7 @@ function reduce(state: State, action: Action): State {
           action.bounds,
           req.fresh,
         );
-        if (!held && next.windows.length === before) rejected.push(req);
+        if (!held && next.windows.length === before) rejected.push({ ...req, reason: "cap" });
       }
       return rejected.length
         ? { ...next, rejected: [...next.rejected, ...rejected] }

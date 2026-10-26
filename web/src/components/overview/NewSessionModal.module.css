@@ -1,0 +1,44 @@
+/* New session over the map (#1648): THE dialog's chrome (HudDialog), widened for the form's two
+ * columns. The form scrolls inside its own pane and keeps its Start bar pinned, so the dialog is a
+ * fixed-height flex frame that does not scroll itself. Tokens only. */
+.backdrop {
+  /* Above the map's window overlay (`--z-dialog` is the shared dialog layer). */
+  z-index: var(--z-dialog);
+}
+.dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(1040px, 100%);
+  height: min(90vh, 920px);
+  max-height: none;
+  overflow: hidden;
+  padding: var(--sp-4) 0 0;
+}
+.head {
+  padding: 0 var(--sp-5);
+}
+.note {
+  margin: 0 0 var(--sp-2);
+  padding: 0 var(--sp-5);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* Mobile (≤800px): a FULL-HEIGHT sheet, not the shared 88vh bottom sheet. The form is a page's
+ * worth of fields; its own pane scrolls and its Start bar stays on screen. */
+@media (max-width: 800px) {
+  .backdrop {
+    align-items: stretch;
+  }
+  .dialog {
+    width: 100%;
+    height: 100dvh;
+    max-height: none;
+    padding-bottom: 0;
+  }
+}

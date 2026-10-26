@@ -373,8 +373,10 @@ test.describe("New project wizard (#1187)", () => {
     });
     await page.goto(MAP_PATH);
     await expect(page.locator(".tr-overview .tr-ov-chip").first()).toBeVisible();
+    // #1648: from the map the form opens in a modal over it; the wizard is a full page, so the
+    // detour leaves the map — and the launch still goes back there as a window.
     await page.locator(`.sidebar .sidebarBody a[href="${NEW_SESSION_PATH}"]`).first().click();
-    await expect(page.getByRole("heading", { name: "Start a new session" })).toBeVisible();
+    await expect(page.getByTestId("new-session-modal")).toBeVisible();
     await agentPicker(page).selectOption("codex");
     await page.getByRole("checkbox", { name: /skip permission/i }).uncheck();
 

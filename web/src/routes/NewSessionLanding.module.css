@@ -406,3 +406,32 @@
   padding: 2px 5px;
   color: var(--hud-text);
 }
+
+/* In the map's New session modal (#1648): a full map says so before Start, on its own line above
+ * the summary, in the degraded status colour (the map really is at its cap). */
+.startBar:has(.mapFull) {
+  flex-wrap: wrap;
+}
+.mapFull {
+  flex-basis: 100%;
+  order: -1;
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 3px solid var(--warn-text);
+  background: color-mix(in srgb, var(--warn-text) 10%, transparent);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+}
+/* A detour out of the modal (Settings → Projects, the wizard) is a full page: it says it leaves. */
+.leavesMap {
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+  white-space: nowrap;
+}
+/* A create in flight holds every route-leaving link (#1648, Hermes on #1717): leaving would drop
+ * the session the create is about to answer with. Dimmed, and the form's capture handler
+ * cancels the click (keyboard included). */
+.form[data-creating] a[href]:not([data-during-create]) {
+  opacity: 0.55;
+  cursor: progress;
+}

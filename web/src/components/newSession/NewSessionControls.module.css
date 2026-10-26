@@ -270,3 +270,11 @@
     height: 355px;
   }
 }
+
+/* In the map's New session modal (#1648): the wizard is a full page, so the link says it leaves. */
+.leavesMap {
+  margin-left: var(--sp-2);
+  color: var(--text-2);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}

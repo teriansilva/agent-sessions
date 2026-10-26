@@ -11,6 +11,7 @@ import { isNewSessionPlaceholder } from "../app/sessionsStore";
 import { useSessionRow } from "../app/useSessionRow";
 import { sessionPathFromKey } from "../lib/format";
 import { MAP_PATH, useMapWindows } from "../app/workspaceWindows";
+import { MapFullNotice } from "../components/overview/MapFullNotice";
 import {
   loadPanelState,
   migratePanelState,
@@ -43,6 +44,13 @@ export function SessionView() {
   const location = useLocation();
   const navigate = useNavigate();
   const fresh = (location.state as { fresh?: FreshSession } | null)?.fresh;
+  // Handed back by the map's drain because the map was full (#1648): say so here, once. Read at
+  // mount: arriving from the map always mounts this route, and the later `replace` navigations
+  // (the placeholder converge, a staged template) drop router state, so it is captured now.
+  const [mapFull, setMapFull] = useState(
+    () => !!(location.state as { mapFull?: boolean } | null)?.mapFull,
+  );
+  const dismissMapFull = useCallback(() => setMapFull(false), []);
   const liveKey = `${engine ?? ""}:${id ?? ""}`;
   // #905 P3: the gallery's USE lands here with a template staged in router state. It is read
   // ONCE, consumed out of the history entry (so a reload lands with nothing staged — the safe
@@ -71,6 +79,9 @@ export function SessionView() {
   if (liveKey !== shownKey && engine && id && !converged.has(liveKey)) {
     // A real navigation to a different session → show it (the new key remounts Terminal).
     setShown({ engine, id });
+    // The map-full notice belonged to the session the map handed back (#1648, Hermes on #1717):
+    // this route instance is reused across sessions, so it goes with that session, for good.
+    if (mapFull) setMapFull(false);
     // Drop the converge-suppression now that we've left the placeholder: it only ever guards
     // the in-place placeholder→real swap of the *currently shown* session. Without this, a
     // real id stayed in the set forever, so navigating away and later BACK to that same real
@@ -283,6 +294,7 @@ export function SessionView() {
   };
   return (
     <div className={panel.sessionRow} ref={rowRef}>
+      {mapFull && <MapFullNotice onDismiss={dismissMapFull} />}
       <div className={panel.sessionTerm}>
         {/* The same host facts reach a non-terminal pane through the gate (#1332). */}
         <RuntimeGate

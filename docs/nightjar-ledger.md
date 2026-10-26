@@ -52,6 +52,9 @@ the same list.
 | `components/files/filePanel.module.css` | css | 7 | todo |  |  |
 | `components/files/mediaPreview.module.css` | css | 7 | todo |  |  |
 | `components/FolderPickerModal.module.css` | css | 3 | done | popup:folder-picker | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
+| `components/overview/NewSessionModal.module.css` | css | 9 | done | popup:new-session-map | the shared dialog chrome's (HudDialog.module.css): deploy-in (fade + 6 px rise + scan), scrim fade; ≤800px a full-height sheet sliding up; 120 ms fade in Reduced |
+| `components/overview/NewSessionModal.tsx` | popup | 9 | done | popup:new-session-map | the shared dialog chrome's (HudDialog.module.css): deploy-in (fade + 6 px rise + scan), scrim fade; ≤800px a full-height sheet sliding up; 120 ms fade in Reduced |
+| `components/overview/MapFullNotice.module.css` | css | 9 | todo |  |  |
 | `components/gallery/gallery.module.css` | css | 10 | done | route:skills route:skills-empty route:gallery-compare route:gallery-browse | gallery cards arrive once (slide + tint flash, Full); a file disclosure turns its chevron; the pressed segment lights in the chrome |
 | `components/gallery/viewTabs.module.css` | css | 10 | done | route:playbooks route:skills | the current tab underlines in the chrome on a short colour fade (no sliding marker: the tabs are links) |
 | `components/hq/HqContactGallery.module.css` | css | 11 | done | route:settings-hq-gallery | none of its own: the selection is an edge, never motion; portraits are posters off Full |

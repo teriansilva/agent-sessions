@@ -303,6 +303,7 @@ describe("useWorkspace", () => {
     expect(result.current.rejected.map((r) => r.seed.key)).toEqual(["claude:brand-new"]);
     // The launch parameters travel with it — that is the whole point of not dropping it.
     expect(result.current.rejected[0].fresh).toEqual(fresh);
+    expect(result.current.rejected[0].reason).toBe("cap"); // #1648: the hand-back says "full"
     act(() => result.current.clearRejected());
     expect(result.current.rejected).toEqual([]);
   });
@@ -320,6 +321,29 @@ describe("useWorkspace", () => {
       "claude:s1",
       "claude:s2",
     ]);
+    // Not "full" (#1648): the map could not host a window at all.
+    expect(result.current.rejected.map((r) => r.reason)).toEqual(["host", "host"]);
+  });
+
+  it("room lost between the request and the drain: refused as a CAP refusal, launch intact (#1648)", () => {
+    // The New session modal checks room at Start, then queues; a window opened in between (another
+    // entry point, a restore) fills the cap before the canvas drains. Deterministic here.
+    const { result } = setup();
+    act(() => result.current.setCap(2));
+    act(() => result.current.open(session(1), null, BOUNDS));
+    expect(result.current.windows.length).toBeLessThan(2); // room at the moment of the request
+    const fresh = { cwd: "/w", bypass: false };
+    act(() =>
+      result.current.requestOpen(
+        { key: "claude:from-modal", engine: "claude", id: "from-modal", title: "New session" },
+        fresh,
+      ),
+    );
+    act(() => result.current.open(session(2), null, BOUNDS)); // the cap fills before the drain
+    act(() => result.current.drain(new Map(), BOUNDS, true));
+    expect(result.current.windows.map((w) => w.key)).toEqual(["claude:s1", "claude:s2"]);
+    expect(result.current.rejected).toHaveLength(1);
+    expect(result.current.rejected[0]).toMatchObject({ reason: "cap", fresh });
   });
 
   it("a request for a session that is ALREADY open counts as honoured, not refused", () => {

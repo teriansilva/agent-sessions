@@ -16,7 +16,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, NavLink, useMatch, useNavigate } from "react-router-dom";
+import { Link, NavLink, useLocation, useMatch, useNavigate } from "react-router-dom";
 import { useConfig } from "../../app/config";
 import { MAP_PATH, useMapWindows } from "../../app/workspaceWindows";
 import { useSessionsStore } from "../../app/sessionsStore";
@@ -506,7 +506,29 @@ export function SessionList({
   // Does "+ New session" hand its result back to the map? Only when a map is actually up and
   // can host a window — the same single boolean the rows use, so the two entrances can never
   // disagree about whether window mode is available.
-  const newSessionReturnsToMap = useMapWindows()?.mapReady ?? false;
+  const mapWindows = useMapWindows();
+  const newSessionReturnsToMap = mapWindows?.mapReady ?? false;
+  // On the map, "+ New session" opens the form OVER the map (#1648), so no window disconnects.
+  // Keyed on the ROUTE, not `mapReady`: a phone shows the map but cannot host a window, and it
+  // gets the sheet too. A modified click (new tab or window) keeps the link.
+  const onMap = useLocation().pathname === MAP_PATH;
+  const openNewSessionHere = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    if (
+      !onMap ||
+      !mapWindows ||
+      e.button !== 0 ||
+      e.metaKey ||
+      e.ctrlKey ||
+      e.shiftKey ||
+      e.altKey
+    ) {
+      onNavigate?.();
+      return;
+    }
+    e.preventDefault();
+    onNavigate?.(); // a phone's drawer closes, as for any navigation
+    mapWindows.openNewSession(e.currentTarget);
+  };
   const {
     sessions,
     total,
@@ -727,7 +749,7 @@ export function SessionList({
         to={SESSIONS_PATH}
         state={newSessionReturnsToMap ? { returnTo: MAP_PATH } : undefined}
         className={`${styles.newBtn} shine`}
-        onClick={onNavigate}
+        onClick={openNewSessionHere}
       >
         <Plus size={16} />
         New session

@@ -544,6 +544,15 @@ export const SWEEP = [
   { id: "route:checklists", path: "/mission/checklists" },
   { id: "route:automations", path: "/mission/automations" },
   { id: "route:map", path: "/overview" },
+  // New session over the map (#1648): the sidebar's real link opens the form in THE dialog over
+  // the mounted map (a full-height sheet on a phone, reached through the drawer).
+  {
+    id: "popup:new-session-map",
+    path: "/overview",
+    phoneFirst: DRAWER,
+    open: [{ role: "link", name: "New session" }],
+    expect: "dialog",
+  },
   // ---- PR4a map ----
   // The map (#1573 Phase 9): sector-framed clusters on the tactical grid, session chips (the
   // working ping, the needs-you "!"), Controls, the minimap, the toolbar; the windows over it; the

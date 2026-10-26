@@ -46,6 +46,9 @@ import {
   type SpecialistBinding,
 } from "../lib/specialistLaunch";
 import type { SpecialistList } from "../types/specialists";
+import type { WindowSeed } from "../components/overview/useWorkspace";
+import type { FreshSession } from "../lib/termUrl";
+import { openFullScreen, type LaunchOutcome } from "../lib/newSessionLaunch";
 import styles from "./NewSessionLanding.module.css";
 
 /** Landing at "/" — no session selected. Pick an engine + project and start a new session: a
@@ -124,17 +127,64 @@ function isStoredAttempt(attempt: PendingCreate): boolean {
     sameSpecialist(current.specialist, attempt.specialist);
 }
 
+/** The page host (`/new`, #1648): today's behaviour. Back to the map as a window when the map
+ *  sent the operator here (`returnTo`, which the New project wizard's round trip carries) AND the
+ *  workspace has room; otherwise full screen. The map's modal is the other host
+ *  (`NewSessionModal`). */
 export function NewSessionLanding() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const workspace = useMapWindows();
+  // Note it is NOT `mapReady`: this form replaced the map, so the map is unmounted and `mapReady`
+  // is already false. The request survives that because it is queued on the provider above the
+  // router, and the canvas drains it when it comes back. The `hasRoom` half is not a nicety: at
+  // capacity the map would refuse the open, and the launch — with the choices just made on this
+  // form — would only come back through the drain's hand-back (Hermes on #939, finding 2).
+  const returnToMap = (location.state as { returnTo?: string } | null)?.returnTo === MAP_PATH;
+  const onLaunched = (outcome: LaunchOutcome) => {
+    if (returnToMap && workspace?.requestOpen && workspace.hasRoom) {
+      if (outcome.fresh) workspace.requestOpen(outcome.seed, outcome.fresh);
+      else workspace.requestOpen(outcome.seed);
+      navigate(MAP_PATH);
+      return;
+    }
+    openFullScreen(navigate, outcome);
+  };
+  return <NewSessionForm host="page" onLaunched={onLaunched} />;
+}
+
+/** The New session form (#1648): one form, two hosts — the page (`NewSessionLanding`) and the
+ *  map's modal (`NewSessionModal`). The create, its operation id, its single-flight guard and its
+ *  recovery slot live HERE and are the same for both. The form never decides where a launched
+ *  session opens: it emits the outcome (`onLaunched`) and its host decides. `host` only changes
+ *  the presentation (the modal drops the page's display heading, says when the map is full, and
+ *  marks the detours that leave the map). `onBusy` reports a create in flight, so the modal
+ *  cannot be closed under it. */
+export function NewSessionForm({
+  host = "page",
+  onLaunched,
+  onBusy,
+}: {
+  host?: "page" | "map";
+  onLaunched: (outcome: LaunchOutcome) => void;
+  onBusy?: (busy: boolean) => void;
+}) {
   const config = useConfig();
   const navigate = useNavigate();
   const location = useLocation();
   const workspace = useMapWindows();
+  const inModal = host === "map";
   // Where the operator pressed the button, recorded in router state by the sidebar. Note it is
   // NOT `mapReady`: this form replaced the map, so by the time it renders the map is unmounted
   // and `mapReady` is already false. The request survives that because it is queued on the
-  // provider above the router, and the canvas drains it when it comes back.
+  // provider above the router, and the canvas drains it when it comes back. In the modal the
+  // map is right there, so the map is where it returns (a detour to the wizard carries it).
   const returnToMap =
-    (location.state as { returnTo?: string } | null)?.returnTo === MAP_PATH;
+    inModal || (location.state as { returnTo?: string } | null)?.returnTo === MAP_PATH;
+  // In the modal the map is mounted, so `mapReady` is the live answer to "can it host a window",
+  // and `hasRoom` to "is there room". Full = a map that could host one but has no room: Start then
+  // says it opens full screen, before anything is created (#1648).
+  const mapFull = inModal && !!workspace?.mapReady && !workspace.hasRoom;
   // Back from the New project wizard (#1187): its router state restores this form as the operator
   // left it, and — on finish only — selects the project just created. Read ONCE, on mount.
   const [restore] = useState(() => readLandingRestore(location.state));
@@ -521,6 +571,22 @@ export function NewSessionLanding() {
   // has left the form.
   const chatStarting = useRef(false);
   const [startingChat, setStartingChat] = useState(false);
+  // A create in flight holds the modal open (#1648): closing it would drop the outcome's window.
+  useEffect(() => onBusy?.(startingChat), [startingChat, onBusy]);
+  // ...and so does every route-leaving link in this form (Hermes on #1717): a detour (New
+  // project, Settings, a previous session) unmounts the form, and the create's answer would then
+  // open nothing although the server made the session. Caught on the way DOWN, so neither the
+  // link's own handler nor its navigation runs; a keyboard Enter on a link is a click too.
+  // The one exception is "Open previous session" (`data-during-create`): it opens the very create
+  // this one is retrying, under the same operation id, and its recovery slot outlives the form
+  // (#1373), so leaving loses nothing.
+  const holdLinksWhileCreating = (e: MouseEvent<HTMLDivElement>) => {
+    if (!startingChat) return;
+    const link = (e.target as Element).closest?.("a[href]");
+    if (!link || link.hasAttribute("data-during-create")) return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
   const forgetRecovered = () => {
     // Opening may navigate during a retry, but its identity must survive a lost response.
     if (!recovered || chatStarting.current) return;
@@ -546,12 +612,7 @@ export function NewSessionLanding() {
       const { id: key } = await api.chatNew(engine, cwd);
       if (!mounted.current) return;
       const id = key.slice(key.indexOf(":") + 1);
-      if (returnToMap && workspace?.requestOpen && workspace.hasRoom) {
-        workspace.requestOpen({ key, engine, id, title: "New session" });
-        navigate(MAP_PATH);
-      } else {
-        navigate(`/s/${engine}/${id}`);
-      }
+      openLaunched({ key, engine, id, title: "New session" });
       const owningId = owningProjectId(cwd, entities);
       if (projectSel && projectSel !== owningId) {
         api.setSessionProject(key, projectSel).catch(() => {});
@@ -631,12 +692,7 @@ export function NewSessionLanding() {
       }
       if (!mounted.current) return;
       const id = key.slice(key.indexOf(":") + 1);
-      if (returnToMap && workspace?.requestOpen && workspace.hasRoom) {
-        workspace.requestOpen({ key, engine, id, title: "New session" });
-        navigate(MAP_PATH);
-      } else {
-        navigate(`/s/${engine}/${id}`);
-      }
+      openLaunched({ key, engine, id, title: "New session" });
       const owningId = owningProjectId(cwd, entities);
       if (projectSel && projectSel !== owningId) {
         api.setSessionProject(key, projectSel).catch(() => {});
@@ -666,6 +722,10 @@ export function NewSessionLanding() {
     }
   };
 
+  /** The launched session, handed to the host, which decides where it opens (#1648). */
+  const openLaunched = (seed: WindowSeed, fresh?: FreshSession) =>
+    onLaunched(fresh ? { seed, fresh } : { seed });
+
   const start = () => {
     if (!canStart) return;
     if (engineInfo(engine)?.runtime === "api") {
@@ -692,17 +752,10 @@ export function NewSessionLanding() {
     // The `hasRoom` half is not a nicety: at capacity the map would refuse the open and raise a
     // notice, and the launch — with the cwd and bypass choice just made on this form — would be
     // gone (Hermes on #939, finding 2). Starting the session is the operator's actual intent, so
-    // a full workspace falls back to the ordinary full-screen launch rather than losing it. Note
-    // it does NOT consult `mapReady`: this form replaced the map, so that is already false.
-    if (returnToMap && workspace?.requestOpen && workspace.hasRoom) {
-      workspace.requestOpen(
-        { key: `${engine}:${id}`, engine, id, title: "New session" },
-        fresh,
-      );
-      navigate(MAP_PATH);
-    } else {
-      navigate(`/s/${engine}/${id}`, { state: { fresh } });
-    }
+    // a full workspace falls back to the ordinary full-screen launch rather than losing it. On the
+    // page it does NOT consult `mapReady` (this form replaced the map, so that is already false);
+    // in the map's modal it does, since the map is right there (#1648, `openLaunched`).
+    openLaunched({ key: `${engine}:${id}`, engine, id, title: "New session" }, fresh);
     // Stamp the project only when it's an explicit choice folder-resolution wouldn't already
     // produce (#361): a redundant owning entity isn't stamped; "" never stamps.
     const owningId = owningProjectId(cwd, entities);
@@ -725,7 +778,10 @@ export function NewSessionLanding() {
     if ((e.target as Element).closest?.("a[href]")) return;
     // Nothing starts while a modal is up — whatever has focus: a dialog renders outside this form,
     // and until it moves focus into itself the focus can still sit on a control in here (#1437).
-    if (document.querySelector('[aria-modal="true"]')) return;
+    // The modal that HOSTS this form (#1648) is not such a dialog: any other one still blocks.
+    const own = e.currentTarget.closest('[aria-modal="true"]');
+    const modals = Array.from(document.querySelectorAll('[aria-modal="true"]'));
+    if (modals.some((m) => m !== own)) return;
     e.preventDefault();
     start();
   };
@@ -741,16 +797,26 @@ export function NewSessionLanding() {
 
   return (
     <div className={styles.landing}>
-      <div className={styles.form} data-new-session-form onKeyDown={onFormKeyDown}>
+      <div
+        className={styles.form}
+        data-new-session-form
+        data-creating={startingChat || undefined}
+        onKeyDown={onFormKeyDown}
+        onClickCapture={holdLinksWhileCreating}
+      >
         <div className={styles.scroll}>
         <div className={styles.card}>
-        <div className={styles.brandHero}>
-          <div className={styles.wordmark}>
-            Battle<b>Lab</b>
-          </div>
-          <p className={styles.tagline}>Command &amp; Code</p>
-        </div>
-        <h1>Start a new session</h1>
+        {!inModal && (
+          <>
+            <div className={styles.brandHero}>
+              <div className={styles.wordmark}>
+                Battle<b>Lab</b>
+              </div>
+              <p className={styles.tagline}>Command &amp; Code</p>
+            </div>
+            <h1>Start a new session</h1>
+          </>
+        )}
 
         {/* Two columns on a wide screen (#1473): what runs on the left, where it runs on
             the right. A narrower pane stacks them; Start stays in the pane's footer. */}
@@ -977,6 +1043,7 @@ export function NewSessionLanding() {
             newProjectState={wizardState}
             onNewProject={(e) => void openWizard(e)}
             onChange={chooseProject}
+            leavesMap={inModal}
           />
 
           {/* What the project's sessions start with (#1508) — the fields it fills are badged. */}
@@ -1022,6 +1089,7 @@ export function NewSessionLanding() {
               <Link
                 to={`/s/${recovered.engine}/${recovered.id}`}
                 onClick={forgetRecovered}
+                data-during-create=""
               >
                 Open previous session
               </Link>
@@ -1074,12 +1142,18 @@ export function NewSessionLanding() {
             ) : selectedProject ? (
               <>
                 “{selectedProject.name}” has no default folder — set one in{" "}
-                <Link to={settingsPath("projects")}>Settings → Projects</Link>.
+                <Link to={settingsPath("projects")}>Settings → Projects</Link>
+                {inModal && <span className={styles.leavesMap}> ↗ leaves the map</span>}.
               </>
             ) : (
               "Pick a project to start in."
             )}
           </p>
+          {mapFull && (
+            <p className={styles.mapFull} role="status" data-testid="new-session-map-full">
+              <b>The map is full.</b> Close a window to start here, or start it full screen.
+            </p>
+          )}
           <button
             type="button"
             className={`${styles.start} shine`}
@@ -1087,7 +1161,7 @@ export function NewSessionLanding() {
             onClick={start}
             aria-keyshortcuts="Control+Enter Meta+Enter"
           >
-            Start session
+            {startingChat ? "Starting…" : mapFull ? "Start full screen" : "Start session"}
           </button>
         </div>
       </div>

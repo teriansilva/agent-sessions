@@ -77,6 +77,7 @@ import { ProjectGroupNode } from "./ProjectGroupNode";
 import { SessionNode } from "./SessionNode";
 import { STATE_WORD, type UnitState } from "./unitState";
 import type { WindowRequest, WindowSeed } from "./useWorkspace";
+import { handBack } from "./handBack";
 import { WindowLayer } from "./WindowLayer";
 import {
   canHostWindow,
@@ -484,10 +485,9 @@ function OverviewCanvasInner({
     }
     const [first] = rejected;
     clearRejected();
-    navigate(
-      `/s/${encodeURIComponent(first.seed.engine)}/${encodeURIComponent(first.seed.id)}`,
-      first.fresh ? { state: { fresh: first.fresh } } : undefined,
-    );
+    // `mapFull` only for a cap refusal (#1648): the destination says why it is full screen.
+    const back = handBack(first);
+    navigate(back.to, Object.keys(back.state).length ? { state: back.state } : undefined);
   }, [rejected, clearRejected, refuseRejected, navigate]);
 
   // Renames reach an OPEN window's chrome through the MAP's list: the live index goes to the

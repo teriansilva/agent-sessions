@@ -134,6 +134,7 @@ export function ProjectList({
   newProjectState,
   onNewProject,
   onChange,
+  leavesMap = false,
 }: {
   /** `null` = never loaded: skeleton rows of the final height, so nothing jumps when it lands. */
   projects: ProjectPickerEntity[] | null;
@@ -146,6 +147,8 @@ export function ProjectList({
   newProjectState: unknown;
   onNewProject: (e: MouseEvent<HTMLAnchorElement>) => void;
   onChange: (id: string) => void;
+  /** In the map's New session modal (#1648): the wizard is a full page, so say it leaves the map. */
+  leavesMap?: boolean;
 }) {
   const [filter, setFilter] = useState("");
   const filterRef = useRef<HTMLInputElement>(null);
@@ -254,6 +257,7 @@ export function ProjectList({
           onClick={onNewProject}
         >
           + New project…
+          {leavesMap && <span className={styles.leavesMap}> ↗ leaves the map</span>}
         </Link>
         {failed && (
           <p className={`${styles.note} ${styles.listNote}`} role="status">
