@@ -1196,6 +1196,60 @@ def test_an_identical_repeated_patch_keeps_the_pending_request():
     assert codec.decide(key, "reject") == {"id": 5, "result": {"decision": "decline"}}
 
 
+def _edit_item(n, method):
+    change = {"path": f"f{n}.py", "kind": {"type": "update"}, "diff": f"-a\n+{n}\n"}
+    status = "completed" if method == "item/completed" else "inProgress"
+    return {
+        "method": method,
+        "params": {
+            "threadId": SESSION,
+            "turnId": TURN,
+            "item": {
+                "id": f"edit-{n}",
+                "type": "fileChange",
+                "status": status,
+                "changes": [change],
+            },
+        },
+    }
+
+
+def test_a_long_turn_of_finished_edits_never_fills_the_patch_capacity():
+    """codex-api 9471d32e: two turns of exactly 128 edits, then the 129th killed the worker with
+    "native file change capacity exceeded". A completed change has nothing left to present."""
+    from agent_sessions.native_protocol import MAX_PENDING
+
+    codec = codex_running()
+    for n in range(MAX_PENDING * 3):
+        codec.feed(_edit_item(n, "item/started"))
+        codec.feed(_edit_item(n, "item/completed"))
+    assert codec._patches == {}
+    assert codec.operation_id == OPERATION  # the turn is still running
+
+
+def test_in_progress_file_changes_stay_bounded():
+    from agent_sessions.native_protocol import MAX_PENDING
+
+    codec = codex_running()
+    for n in range(MAX_PENDING):
+        codec.feed(_edit_item(n, "item/started"))
+    with pytest.raises(ProtocolError, match="file change capacity"):
+        codec.feed(_edit_item(MAX_PENDING, "item/started"))
+
+
+def test_a_completed_change_keeps_the_patch_its_pending_approval_presents():
+    codec = codex_running()
+    codec.feed(_patch("-a\n+b\n"))
+    key = codec.feed(_file_change())[0].data["request_id"]
+    completed = _edit_item(1, "item/completed")
+    completed["params"]["item"].update(
+        id="edit-1", changes=[{"path": "a.py", "kind": {"type": "update"}, "diff": "-a\n+b\n"}]
+    )
+    codec.feed(completed)
+    assert "edit-1" in codec._patches  # still presented by the open approval
+    assert codec.decide(key, "reject") == {"id": 5, "result": {"decision": "decline"}}
+
+
 # --- #1427: the command lifecycle fences an operator turn's output ------------------------------
 # Frame sequences from the real CLI (`stream-json --verbose`, the worker's own argv), recorded on
 # #1427 (comments 94438, 94477, 94505): every operator input gets `command_lifecycle` queued →

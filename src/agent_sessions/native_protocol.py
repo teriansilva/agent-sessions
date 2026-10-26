@@ -920,6 +920,17 @@ class CodexCodec(_Codec):
             "arguments": _copy_frame({"a": item["arguments"]})["a"],
         }
 
+    def _forget_patch(self, item_id: str) -> None:
+        """A completed file change has nothing left to present or invalidate: forget its patch.
+
+        Only in-progress changes count toward MAX_PENDING. Kept until turn end, every edit of a long
+        turn filled it, and the 129th killed the worker mid-turn ("native file change capacity
+        exceeded", codex-api 9471d32e: two turns of exactly 128 edits). A patch an approval still
+        presents is kept: that approval is settled or cancelled first, as before."""
+        if any(a["params"].get("itemId") == item_id for a in self._approvals.values()):
+            return
+        self._patches.pop(item_id, None)
+
     def _patch(self, params: dict) -> list[NativeEvent]:
         item_id = _identity(params.get("itemId"))
         changes = params.get("changes")
@@ -1071,6 +1082,8 @@ class CodexCodec(_Codec):
                 prior = []
                 if kind == "fileChange" and isinstance(item.get("changes"), list):
                     prior = self._patch({"itemId": item_id, "changes": item["changes"]})
+                if kind == "fileChange" and method == "item/completed":
+                    self._forget_patch(item_id)
                 if kind == "mcpToolCall":
                     self._track_mcp_call(item_id, item, done=method == "item/completed")
                 return prior + [
