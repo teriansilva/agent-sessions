@@ -607,8 +607,9 @@ def test_a_usage_question_settles_and_stores_no_figures(app, ai, usage, monkeypa
     assert r.json()["turn"]["status"] == "done"
     tools = [rec for rec in ask_store.read(cid) if rec["type"] == "tool"]
     assert [t["name"] for t in tools] == ["agent_usage"]
-    # The store keeps the tool's metadata, never the row figures it returned.
-    assert "63.5" not in json.dumps(tools)
+    # The store keeps the tool's metadata, never the row figures it returned. Its own `ts` is a
+    # wall-clock float that contains "63.5" whenever the clock does (1793029963.52…): not a figure.
+    assert "63.5" not in json.dumps([{k: v for k, v in t.items() if k != "ts"} for t in tools])
     for p in (ask_store.root()).rglob("*"):
         if p.is_file() and p.suffix == ".json":
             assert "resets_in_hours" not in p.read_text()
