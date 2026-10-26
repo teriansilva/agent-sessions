@@ -776,3 +776,70 @@ def test_owner_of_answers_bound_rows_only_and_writes_nothing(state, source, tmp_
 def test_owner_of_refuses_an_invalid_source(state, source):
     forged = dataclasses.replace(source, key="0" * 64)
     rejected("invalid", ownership.owner_of, forged, uid())
+
+
+def _hold_a_reader(db, seconds):
+    """A concurrent ledger reader (a discovery read) holding SQLite's SHARED lock for `seconds`."""
+    import threading
+
+    reader = sqlite3.connect(db, isolation_level=None, check_same_thread=False)
+    reader.execute("BEGIN")
+    reader.execute("SELECT COUNT(*) FROM ownership").fetchone()
+    release = threading.Timer(seconds, lambda: (reader.rollback(), reader.close()))
+    release.start()
+    return release
+
+
+def test_a_reservation_waits_out_a_brief_concurrent_reader(state, source):
+    """#1647: at 0.25 s a burst of discovery reads failed a skip start's `reserve` with a 503 that
+    Start again then passed. A writer now waits SQLite's own busy handler out (2 s)."""
+    ownership.reserve(**reservation(source))  # the ledger exists
+    _, db = paths(state)
+    release = _hold_a_reader(db, 0.8)
+    try:
+        intent = ownership.reserve(**reservation(source))
+    finally:
+        release.join()
+    assert intent.state == "pending"
+
+
+def test_a_binding_waits_out_a_brief_concurrent_reader(state, source):
+    args = reservation(source)
+    ownership.reserve(**args)
+    _, db = paths(state)
+    release = _hold_a_reader(db, 0.8)
+    try:
+        bound = bind(args, uid())
+    finally:
+        release.join()
+    assert bound.state == "bound"
+
+
+def test_a_reservation_still_fails_closed_past_the_writer_budget(state, source):
+    ownership.reserve(**reservation(source))
+    _, db = paths(state)
+    release = _hold_a_reader(db, ownership.WRITE_BUSY_TIMEOUT + 1.5)
+    try:
+        started = time.monotonic()
+        rejected("unavailable", ownership.reserve, **reservation(source))
+        assert time.monotonic() - started >= ownership.WRITE_BUSY_TIMEOUT * 0.9
+    finally:
+        release.join()
+
+
+def test_reads_keep_the_short_busy_timeout(state, source, monkeypatch):
+    """#1312: one slow reader must never hide every source session behind a long wait."""
+    ownership.reserve(**reservation(source))
+    seen = []
+    real = ownership._connect
+
+    def spy(db, *, timeout=ownership.READ_BUSY_TIMEOUT):
+        seen.append(timeout)
+        return real(db, timeout=timeout)
+
+    monkeypatch.setattr(ownership, "_connect", spy)
+    ownership.source_snapshot(source)
+    ownership.lookup(f"native-api:{uid()}")
+    assert seen == [ownership.READ_BUSY_TIMEOUT] * 2
+    ownership.reserve(**reservation(source))
+    assert seen[-1] == ownership.WRITE_BUSY_TIMEOUT

@@ -1803,6 +1803,8 @@ export interface StructuredSnapshot {
   start_incomplete?: boolean;
   /** It waited too long and was never launched. */
   start_expired?: boolean;
+  /** Discarded before it ever started (#1647): it takes no message and never runs. */
+  start_discarded?: boolean;
   /** A launched skip worker that is not ready yet (#1505): no Start, nothing "didn't run". */
   start_in_flight?: boolean;
   /** The skip start failed (#1505), with its bounded reason when known: Start again reconciles. */

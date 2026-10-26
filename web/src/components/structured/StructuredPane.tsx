@@ -150,6 +150,9 @@ const AUTO_SEND_TRIES = 5;
 const STOPPING_RETRY_MS = 10_000;
 /** Reconnect back-off ceiling after failed reads. */
 const MAX_BACKOFF_MS = 15_000;
+/** How long a read gap during a start is held from the uplink veil (#1647); the veil then adds its
+ *  own LOST_GRACE_MS, so the gap shows after 15 s in all. */
+export const START_VEIL_HOLD_MS = 10_000;
 /** Files/pictures per message — the server checks the same shared four-attachment cap. */
 const MAX_ATTACHMENTS = 4;
 
@@ -1582,6 +1585,20 @@ export function StructuredPane({
     outbox.some((e) => e.phase === "sending" || e.phase === "unknown");
   // Starting, or a start request still in flight: the snapshot itself is read every tick.
   const readSnapshotEachTick = launchStarting || startSending;
+  // #1647: a start on a loaded host can take tens of seconds, and its Starting state is already
+  // the loading state. A read gap inside it reaches the veil only after START_VEIL_HOLD_MS plus
+  // the veil's own LOST_GRACE_MS (15 s together), so a short gap never flashes LINK LOST and then
+  // RESTORED over a session that is simply starting. A longer one still shows: delayed, never
+  // hidden. Only this pane's status is held; the veil's rules and the terminals' are unchanged.
+  const [startVeilDue, setStartVeilDue] = useState(false);
+  const startGap = readSnapshotEachTick && (reconnecting || needFresh);
+  useEffect(() => {
+    setStartVeilDue(false);
+    if (!startGap) return;
+    const timer = setTimeout(() => setStartVeilDue(true), START_VEIL_HOLD_MS);
+    return () => clearTimeout(timer);
+  }, [startGap]);
+  const startQuiet = readSnapshotEachTick && !!snap && !startVeilDue;
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -1680,7 +1697,8 @@ export function StructuredPane({
 
   const readOnly = !!snap?.read_only;
   // An unstarted (or expired) skip creation takes no message: nothing runs until Start (#1339).
-  const notStarted = !!snap?.pending_start || !!snap?.start_expired;
+  // Nor does a discarded one (#1647): the server refuses every send to it, so the box is off.
+  const notStarted = !!snap?.pending_start || !!snap?.start_expired || !!snap?.start_discarded;
   const permissionPending = enablingPermissions || snap?.permission_change?.state === "stopping";
 
   // Push-to-talk (#1332 Phase 3c): the terminal composer's own recognizer lifecycle, writing into
@@ -2552,7 +2570,7 @@ export function StructuredPane({
   };
 
   const live = !!snap?.native?.worker;
-  const workerChip = reconnecting
+  const workerChip = reconnecting && !startQuiet
     ? { cls: styles.ledWarn, text: "reconnecting" }
     : launchStarting
       ? { cls: styles.ledIdle, text: "starting" }
@@ -2580,7 +2598,7 @@ export function StructuredPane({
     : // Still down until a fresh snapshot is APPLIED, not merely once the cursor answers (Hermes on
       // #1592): the veil and the outbox hold on the same condition, so RESTORED is never announced
       // over a conversation that cannot be read yet.
-      reconnecting || needFresh
+      (reconnecting || needFresh) && !startQuiet
       ? { kind: "reconnecting", attempt: Math.max(1, failures) }
       : snap
         ? { kind: "connected" }
@@ -2738,7 +2756,9 @@ export function StructuredPane({
 
   // The composer's chips, in the terminal's order where they overlap (attach, Sent, Templates).
   // The terminal-only keys (arrows, esc, tab, collapse) have nothing to drive here.
-  const toolsBusy = busy || uploading || dictating;
+  // A session that takes no message (unstarted, expired, discarded) takes nothing into its box
+  // either: every writer of the draft is off with the textarea (#1647).
+  const toolsBusy = busy || uploading || dictating || notStarted;
   const keyActions: KeyAction[] =
     readOnly || !snap
       ? []
@@ -2750,7 +2770,7 @@ export function StructuredPane({
                   aria: snap.files ? "Attach files" : "Attach images",
                   title: snap.files ? "Attach files" : "Attach images",
                   icon: <Paperclip size={16} />,
-                  disabled: busy || attachments.length + inFlight >= MAX_ATTACHMENTS,
+                  disabled: busy || notStarted || attachments.length + inFlight >= MAX_ATTACHMENTS,
                   run: () => fileRef.current?.click(),
                 },
               ]
@@ -3133,6 +3153,11 @@ export function StructuredPane({
           </button>
         </div>
       )}
+      {snap?.start_discarded && (
+        <p className={styles.banner} role="status" data-testid="structured-start-discarded">
+          This session was discarded before it started. Nothing ran.
+        </p>
+      )}
       {snap?.start_expired && (
         <p className={styles.banner} role="status" data-testid="structured-start-expired">
           This session’s start expired before it was confirmed. It never ran.
@@ -3281,7 +3306,7 @@ export function StructuredPane({
               <p className={styles.queueHint}>Checks the original request without sending it twice.</p>
             </div>
           )}
-          {reconnecting && snap && (
+          {reconnecting && snap && !startQuiet && (
             <p className={chat.notice} data-testid="structured-reconnecting">
               Connection to BattleLab lost. The turn keeps running on the server; this view resumes
               from event {snap.event_cursor} when it reconnects. Nothing was cancelled or re-sent.
@@ -3340,6 +3365,8 @@ export function StructuredPane({
                 ? "This conversation is read only"
                 : createFailed
                   ? "This session didn’t start"
+                  : snap?.start_discarded
+                  ? "This session was discarded"
                   : notStarted
                   ? "Start this session first"
                   : active && alwaysSendNow && sendNowTarget(snap)
@@ -3405,7 +3432,7 @@ export function StructuredPane({
                     : "Start voice input — hold to talk"
               }
               aria-pressed={dictListening}
-              aria-disabled={dictFinalizing || busy}
+              aria-disabled={dictFinalizing || busy || notStarted}
               title={
                 dictListening
                   ? "Release to stop — the last phrase still lands"
@@ -3413,7 +3440,7 @@ export function StructuredPane({
                     ? "Finishing transcription…"
                     : "Hold to talk"
               }
-              disabled={busy}
+              disabled={busy || notStarted}
               {...micHandlers}
             >
               <Mic size={16} aria-hidden />

@@ -243,10 +243,20 @@ CREATE INDEX source_ownership ON ownership(source_key);
 """
 
 
-def _connect(db: Path) -> sqlite3.Connection:
+#: SQLite busy timeouts. Reads stay short (one slow reader must never hide every source session,
+#: #1312). A writer (`reserve` / `bind`, under launch admission) waits longer: in this rollback
+#: journal its COMMIT needs every concurrent reader to finish, and at 0.25 s a burst of discovery
+#: reads failed a skip start with a 503 that Start again then passed (#1647). `reserve`, `bind`
+#: and `discharge` write; every other transaction is a read. SQLite's own busy
+#: handler does the retrying, so only BUSY/LOCKED waits; any other error is terminal as before.
+READ_BUSY_TIMEOUT = 0.25
+WRITE_BUSY_TIMEOUT = 2.0
+
+
+def _connect(db: Path, *, timeout: float = READ_BUSY_TIMEOUT) -> sqlite3.Connection:
     before = _private(db)
     _sidecars(db)
-    con = sqlite3.connect(db.as_uri() + "?mode=rw", uri=True, timeout=0.25, isolation_level=None)
+    con = sqlite3.connect(db.as_uri() + "?mode=rw", uri=True, timeout=timeout, isolation_level=None)
     try:
         after = _private(db)
         if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
@@ -296,8 +306,11 @@ _VERIFIED: tuple | None = None
 
 
 @contextlib.contextmanager
-def _ledger(*, initialize: bool = False):
+def _ledger(*, initialize: bool = False, write: bool = False):
     """No launch lock: callers must never acquire one while holding this short transaction.
+
+    ``write`` (and ``initialize``) selects the writer's longer SQLite busy timeout; it changes no
+    locking (#1647).
 
     Initialization and creation intents serialize on the ledger's own lock. Reads (and `bind`,
     whose caller already holds launch admission, which also orders every `reserve`) use a plain
@@ -309,13 +322,17 @@ def _ledger(*, initialize: bool = False):
             with storage.locked("native-ownership"), _open(initialize=True) as con:
                 yield con
             return
+        busy = WRITE_BUSY_TIMEOUT if write else READ_BUSY_TIMEOUT
         try:
-            with _open(initialize=False) as con:
+            with _open(initialize=False, busy=busy) as con:
                 yield con
         except _Initializing:
             # Initialization writes the marker before the database. A reader in that one-time
             # window waits for the initializer instead of reporting initialized state missing.
-            with storage.locked("native-ownership"), _open(initialize=False, locked=True) as con:
+            with (
+                storage.locked("native-ownership"),
+                _open(initialize=False, locked=True, busy=busy) as con,
+            ):
                 yield con
     except OwnershipError:
         raise
@@ -328,7 +345,7 @@ class _Initializing(Exception):
 
 
 @contextlib.contextmanager
-def _open(*, initialize: bool, locked: bool = False):
+def _open(*, initialize: bool, locked: bool = False, busy: float | None = None):
     global _VERIFIED
     marker, db = _paths()
     _private(marker, missing=True)
@@ -352,7 +369,9 @@ def _open(*, initialize: bool, locked: bool = False):
         _uuid(identity["ledger_id"], "ledger id")
     except OwnershipError:
         raise ValueError("ownership initialization marker is invalid") from None
-    con = _connect(db)
+    if busy is None:
+        busy = WRITE_BUSY_TIMEOUT if initialize else READ_BUSY_TIMEOUT
+    con = _connect(db, timeout=busy)
     try:
         if con.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
             raise ValueError("unsupported ownership schema")
@@ -654,7 +673,7 @@ def bind(
     with (
         _binding_worker_guard(),
         _console_binding_guard(current.source, native_id, fresh_create=fresh_create),
-        _ledger() as con,
+        _ledger(write=True) as con,
     ):
         if con is None:
             raise OwnershipError("unavailable", _UNAVAILABLE)
@@ -695,7 +714,7 @@ def discharge(app_session_key: str, *, operation_id: str, owner_token: str) -> b
     _app_key(app_session_key)
     _uuid(operation_id, "operation id")
     _uuid(owner_token, "owner token")
-    with _ledger() as con:
+    with _ledger(write=True) as con:
         if con is None:
             return False
         row = con.execute(

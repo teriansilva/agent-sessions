@@ -519,6 +519,8 @@ def _snapshot(session_key: str, raw: dict) -> dict:
         ),
         **({"start_incomplete": True} if raw.get("start_incomplete") else {}),
         **({"start_expired": True} if raw.get("start_expired") else {}),
+        # Discarded before it ever started (#1647): it takes no message, so the composer is off.
+        **({"start_discarded": True} if raw.get("start_discarded") else {}),
         # Starting vs failed (#1505): a launched worker that is not ready yet, or a start that
         # failed, with its bounded reason. Neither offers or implies anything on its own.
         **({"start_in_flight": True} if raw.get("start_in_flight") else {}),

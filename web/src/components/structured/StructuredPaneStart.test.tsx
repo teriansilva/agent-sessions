@@ -535,3 +535,86 @@ test("Start again after a failure: a read sent before it never overwrites its vi
   expect(screen.queryByTestId("structured-starting")).toBeNull();
   expect(screen.queryByTestId("structured-pending-start")).toBeNull();
 });
+
+// #1647: a skip start on a loaded host waits tens of seconds in admission. Its Starting state is
+// the loading state: a read gap inside it reaches the veil (and the lost-connection notice) only
+// after 15 s, never as LINK LOST and then RESTORED over a session that is simply starting.
+/** Time passes in small acts, as a browser renders each tick: one long act would batch every
+ *  state change to its end and start the hold's own timer late. */
+async function elapse(ms: number) {
+  for (let t = 0; t < ms; t += 250) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+  }
+}
+
+test("a read gap during a start is held from the veil for 15 s, then shows", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.mocked(api.structuredSnapshot)
+    .mockResolvedValueOnce(starting({ bypass: true, start_in_flight: true }))
+    .mockRejectedValue(new TypeError("offline"));
+  renderPane();
+  expect(await screen.findByTestId("structured-starting")).toBeInTheDocument();
+  await elapse(1_000); // the first read after mount fails: the gap starts here
+  await elapse(9_000); // inside the hold
+  expect(screen.queryByTestId("uplink-veil")).toBeNull();
+  expect(screen.queryByTestId("structured-reconnecting")).toBeNull();
+  expect(screen.getByTestId("structured-worker")).toHaveTextContent("starting");
+  expect(screen.getByTestId("structured-starting")).toBeInTheDocument();
+  await elapse(4_000); // 13 s into the gap: past the hold, inside the veil's own grace
+  expect(screen.queryByTestId("uplink-veil")).toBeNull();
+  expect(screen.getByTestId("structured-reconnecting")).toBeInTheDocument();
+  await elapse(2_500); // 15.5 s: a real outage still shows
+  expect(await screen.findByTestId("uplink-veil")).toHaveAttribute("data-phase", "lost");
+});
+
+test("a short read gap during a start never shows the veil or RESTORED", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.mocked(api.structuredSnapshot)
+    .mockResolvedValueOnce(starting({ bypass: true, start_in_flight: true }))
+    .mockRejectedValueOnce(new TypeError("offline"));
+  for (let i = 0; i < 7; i += 1) vi.mocked(api.structuredSnapshot).mockRejectedValueOnce(new TypeError("offline"));
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(
+    snap({ bypass: true, launch: { gen: "w1", state: "ready", since: 2 } }),
+  );
+  renderPane();
+  expect(await screen.findByTestId("structured-starting")).toBeInTheDocument();
+  // An 8 s gap: past the veil's ordinary 5 s grace (LINK LOST, then RESTORED, before #1647).
+  for (let t = 0; t < 12_000; t += 250) {
+    await elapse(250);
+    expect(screen.queryByTestId("uplink-veil")).toBeNull();
+  }
+  await waitFor(() => expect(screen.queryByTestId("structured-starting")).toBeNull());
+  expect(screen.queryByTestId("uplink-veil")).toBeNull();
+  expect(screen.queryByTestId("structured-reconnecting")).toBeNull();
+  expect(screen.queryByText(/restored/i)).toBeNull();
+  expect(sendButton()).toHaveTextContent("Send");
+});
+
+test("a discarded skip creation says so and its composer is off", async () => {
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(
+    snap({ bypass: true, start_discarded: true, native: { native_id: null, worker: null, background_active: false } }),
+  );
+  renderPane();
+  expect(await screen.findByTestId("structured-start-discarded")).toHaveTextContent(
+    "This session was discarded before it started. Nothing ran.",
+  );
+  const box = screen.getByRole("textbox", { name: /message/i });
+  expect(box).toBeDisabled();
+  expect(box).toHaveAttribute("placeholder", "This session was discarded");
+  expect(sendButton()).toBeDisabled();
+  expect(startButtons()).toHaveLength(0);
+  // Nothing else writes into the box either: templates (and Sent, attach, Talk) are off too.
+  expect(screen.getByRole("button", { name: "Use a template" })).toBeDisabled();
+});
+
+test("with no snapshot yet, a start in flight gets no grace: an unreadable pane is never shown connected", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  handStart(KEY, new Promise(() => {})); // the start request never answers
+  vi.mocked(api.structuredSnapshot).mockRejectedValue(new TypeError("offline"));
+  renderPane();
+  await elapse(4_000); // past CONNECT_GRACE_MS: the ordinary first-connect veil
+  expect(await screen.findByTestId("uplink-veil")).toHaveAttribute("data-phase", "establishing");
+  expect(screen.queryByTestId("structured-starting")).toBeNull();
+});

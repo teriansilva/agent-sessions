@@ -1084,6 +1084,13 @@ async def create(
 #: How long a skip creation waits for its `start` before it is closed, never launched.
 PENDING_START_TTL = 600.0
 
+#: How long a `starting` with no generation yet reads as a start still in progress (#1647). That
+#: record is written before admission; `_start_sync` holds the session lock until it replaces it
+#: with `starting(W)` or `failed`, after at most the 30 s `launch` lock wait plus admission and the
+#: sweep (measured up to ~17 s together on a loaded host). Past this bound the process that wrote
+#: it is presumed gone, and the view offers Start again as before.
+START_ADMISSION_TIMEOUT = 120.0
+
 
 # The skip-start state machine (#1339; operator decision on #1341 after review 5926). ONE field,
 # `record["start"] = {"state", "gen", "expires_at"}`, only on `bypass` creations; every transition
@@ -1126,10 +1133,16 @@ def pending_start_view(record: dict, live_worker: str | None = None) -> dict:
     Starting and failed are separate (#1505): a launched worker that is not ready yet is
     `start_in_flight` (no Start, and never "nothing has run"); a failed start is `start_failed`
     with its reason when the launch view has one. A `starting` whose worker is gone still reads
-    incomplete, so Start reconciles it as before."""
+    incomplete, so Start reconciles it as before.
+
+    A `starting` with no generation yet is a start still inside admission (#1647): `/start` wrote
+    it before waiting on the launch lock, so while it is recent it is in flight, never "didn't
+    finish". A discarded creation says so (#1647): it takes no message and never runs."""
     state = _start_state(record)
-    if state is None or state in {STARTED, DISCARDED}:
+    if state is None or state == STARTED:
         return {"pending_start": False}
+    if state == DISCARDED:
+        return {"pending_start": False, "start_discarded": True}
     if state == EXPIRED:
         return {"pending_start": False, "start_expired": True}
     if state == PENDING:
@@ -1138,6 +1151,10 @@ def pending_start_view(record: dict, live_worker: str | None = None) -> dict:
         gen = record["start"].get("gen")
         if gen is not None and gen == live_worker:
             return {"pending_start": False, "start_in_flight": True}
+        at = record["start"].get("at")
+        admitting = isinstance(at, int | float) and 0 <= time.time() - at < START_ADMISSION_TIMEOUT
+        if gen is None and admitting:
+            return {"pending_start": False, "start_in_flight": True}  # still being admitted
         return {"pending_start": True, "start_incomplete": True}  # a dead starting: Start again
     view = launch_view(record)
     reason = view.get("reason") if view is not None and view["state"] == FAILED else None
