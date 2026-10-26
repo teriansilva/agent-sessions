@@ -300,7 +300,17 @@ def _run(argv: list[str], log) -> None:
 
 _VERIFY = {
     "runtime": "import pipecat, httpx",
-    "server": "import faster_whisper, kokoro_onnx, fastapi, uvicorn, multipart",
+    # Not only importable: the server must DECODE audio the way a transcription does. An API
+    # break between faster-whisper and PyAV (`metadata_errors`, PyAV 19) imported fine and failed
+    # every transcription with a 400; now it fails the setup, which keeps the previous set.
+    "server": (
+        "import faster_whisper, kokoro_onnx, fastapi, uvicorn, multipart, io, wave\n"
+        "from faster_whisper.audio import decode_audio\n"
+        "b = io.BytesIO()\n"
+        "w = wave.open(b, 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)\n"
+        "w.writeframes(bytes(3200)); w.close(); b.seek(0)\n"
+        "assert len(decode_audio(b)) == 1600, 'decode_audio returned the wrong length'\n"
+    ),
 }
 
 

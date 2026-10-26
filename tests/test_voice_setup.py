@@ -91,6 +91,24 @@ def test_every_locked_package_carries_hashes(kind):
         assert "==" in r.splitlines()[0] and "--hash=sha256:" in r, r.splitlines()[0]
 
 
+def test_the_server_lock_pins_one_pyav_that_faster_whisper_can_call():
+    """faster-whisper 1.2.1 decodes with `av.open(..., metadata_errors=...)`, which PyAV 19
+    removed: a PyAV 19 for Python >= 3.12 made every transcription 400. ONE PyAV, below 19, for
+    every Python."""
+    text = (vs.LOCKS / "server.txt").read_text()
+    pins = re.findall(r"^av==(\S+)(.*)$", text, re.M)
+    assert len(pins) == 1, pins
+    version, marker = pins[0]
+    assert int(version.split(".")[0]) < 19 and "python_full_version" not in marker
+
+
+def test_the_server_check_decodes_audio_not_only_imports():
+    """The setup's check runs the decode a transcription runs, so an API break fails the setup
+    (which keeps the previous set) instead of every call."""
+    check = vs._VERIFY["server"]
+    assert "decode_audio" in check and "wave" in check
+
+
 # --- downloads -------------------------------------------------------------------------------
 
 

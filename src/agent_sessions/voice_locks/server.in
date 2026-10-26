@@ -3,3 +3,7 @@ kokoro-onnx==0.6.1
 fastapi==0.139.0
 uvicorn==0.32.1
 python-multipart==0.0.31
+# faster-whisper 1.2.1 decodes with av.open(..., metadata_errors="ignore"); PyAV 19 removed that
+# keyword, so every transcription failed (400 "undecodable") on Python >= 3.12. av 18.1 ships an
+# abi3 wheel, so this one pin covers every supported Python.
+av>=18.1,<19
