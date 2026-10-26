@@ -429,6 +429,29 @@ input.editInput {
 /* A row held by a mission (#948 P5): the mission mark and the mission's own title, truncated. Same
  * bordered mono pill as .engineTag / .handoffBadge, in the brand accent — membership is not a
  * status, so the status colours stay load-bearing (docs/design.md §3). */
+/* Memory warning (#1643): status colour = the level, mono like every meta tag. */
+.memTag {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+.memHigh {
+  color: var(--warn-text);
+  border-color: var(--status-degraded);
+}
+.memCritical {
+  color: var(--danger-text);
+  border-color: var(--status-down);
+}
 .missionTag {
   flex: 0 1 auto;
   min-width: 40px;

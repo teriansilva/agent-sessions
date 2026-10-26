@@ -114,6 +114,7 @@ class Events(Sequence):
             "background",
             "approval_cancelled",
             "turn_completed",
+            "memory_pressure",
         }:
             self._global.append(index)
         else:

@@ -278,6 +278,83 @@
   font-size: calc(13px * var(--api-scale, 1));
   color: var(--text-muted);
 }
+/* A long turn's older loaded messages (#1643): one disclosure, its summary a full touch target. */
+.fold {
+  border: 1px dashed var(--line-strong);
+  background: var(--panel);
+  margin: 0 0 10px;
+}
+.fold > summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  cursor: pointer;
+  font: 700 calc(12px * var(--api-scale, 1)) var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+.fold > summary {
+  list-style: none;
+  gap: 8px;
+}
+.fold > summary::-webkit-details-marker {
+  display: none;
+}
+.fold > summary::before {
+  content: "▸";
+}
+.fold[open] > summary::before {
+  content: "▾";
+}
+.fold > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.fold[open] {
+  padding-bottom: 6px;
+}
+.fold[open] > :not(summary) {
+  margin-left: 12px;
+  margin-right: 12px;
+}
+/* History this view did not load (#1643): plain, never styled as a control. */
+.notLoaded {
+  margin: 0 0 8px;
+  font: calc(12px * var(--api-scale, 1)) var(--font-mono);
+  color: var(--text-muted);
+}
+/* Near the memory limit (#1643): the sentence, then the way to raise the limit. */
+.memBanner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  color: var(--text);
+}
+.memBanner p {
+  margin: 0;
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.memBanner b {
+  font: 700 calc(11px * var(--api-scale, 1)) var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.memHigh {
+  border-left-color: var(--status-degraded);
+}
+.memHigh b {
+  color: var(--warn-text);
+}
+.memCritical {
+  border-left-color: var(--status-down);
+}
+.memCritical b {
+  color: var(--danger-text);
+}
 /* A start that failed (#1505): the active-failure edge, its reason in failure text. */
 .failBanner {
   border-left-color: var(--status-down);

@@ -1,10 +1,11 @@
 import {
   Check,
+  Crosshair,
+  MemoryStick,
   Plus,
   Sparkles,
   Star,
   X,
-  Crosshair,
 } from "lucide-react";
 import { motionMode } from "../../theme/motion";
 import {
@@ -42,6 +43,7 @@ import {
   useAutomationOrigins,
 } from "../../app/automationOrigins";
 import { OriginBadge } from "../automations/OriginBadge";
+import { memoryChip, memoryLabel, memoryTitle } from "../../lib/memoryPressure";
 
 /** Activity since the last successful review makes the summary stale (#356): the AI's
  *  one-liner describes an older state, so the row exposes the review's age instead of
@@ -406,6 +408,25 @@ function Row({
                 <Star size={11} fill="currentColor" />
               </span>
             )}
+            {/* Near its memory limit (#1643): status colour carries the level; the tooltip
+                says what it measures. Only a live API generation's fresh reading. FIRST in the
+                meta line, which clips its tail on a narrow sidebar (Hermes on #1651): the
+                warning is what must never be the part that is cut. */}
+            {s.memory_pressure ? (
+              <span
+                className={`${styles.memTag} ${
+                  s.memory_pressure.level === "critical" ? styles.memCritical : styles.memHigh
+                }`}
+                title={memoryTitle(s.memory_pressure)}
+                data-testid="row-memory-tag"
+                data-level={s.memory_pressure.level}
+                data-scope={s.memory_pressure.scope ?? "session"}
+              >
+                <MemoryStick size={10} aria-hidden="true" />
+                <span aria-hidden="true">{memoryChip(s.memory_pressure)}</span>
+                <span className="sr-only">{memoryLabel(s.memory_pressure)}</span>
+              </span>
+            ) : null}
             <span className={styles.engineTag}>{engineBadge(s.engine)}</span>
             {/* The model this session's launch asked for (#1189) — a request, so the tooltip
                 says so. Absent for `default` and for sessions that recorded none. */}

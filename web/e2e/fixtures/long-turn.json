@@ -1,0 +1,512 @@
+{
+ "agent": {
+  "first_message_partial": false,
+  "kind": "agent",
+  "reply": "Update 000: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 001: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 002: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 003: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 004: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 005: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 006: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 007: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 008: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 009: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 010: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 011: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.",
+  "reply_breaks": [
+   0,
+   1247,
+   2494,
+   3741,
+   4988,
+   6235,
+   7482,
+   8729,
+   9976,
+   11223,
+   12470,
+   13717
+  ],
+  "reply_omitted": null,
+  "reply_truncated": false,
+  "reply_ts": 1792800001.0,
+  "state": "completed",
+  "tools": [
+   {
+    "at": 1245,
+    "id": "call-000",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "none",
+     "reasons": []
+    },
+    "summary": "{\"command\": \"step 0\"}"
+   },
+   {
+    "at": 2492,
+    "id": "call-001",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "none",
+     "reasons": []
+    },
+    "summary": "{\"command\": \"step 1\"}"
+   },
+   {
+    "at": 3739,
+    "id": "call-002",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "none",
+     "reasons": []
+    },
+    "summary": "{\"command\": \"step 2\"}"
+   },
+   {
+    "at": 4986,
+    "id": "call-003",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "none",
+     "reasons": []
+    },
+    "summary": "{\"command\": \"step 3\"}"
+   },
+   {
+    "at": 6233,
+    "id": "call-004",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "none",
+     "reasons": []
+    },
+    "summary": "{\"command\": \"step 4\"}"
+   },
+   {
+    "at": 7480,
+    "id": "call-005",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "none",
+     "reasons": []
+    },
+    "summary": "{\"command\": \"step 5\"}"
+   },
+   {
+    "at": 8727,
+    "id": "call-006",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "none",
+     "reasons": []
+    },
+    "summary": "{\"command\": \"step 6\"}"
+   },
+   {
+    "at": 9974,
+    "id": "call-007",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "none",
+     "reasons": []
+    },
+    "summary": "{\"command\": \"step 7\"}"
+   },
+   {
+    "at": 11221,
+    "id": "call-008",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "none",
+     "reasons": []
+    },
+    "summary": "{\"command\": \"step 8\"}"
+   },
+   {
+    "at": 12468,
+    "id": "call-009",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "none",
+     "reasons": []
+    },
+    "summary": "{\"command\": \"step 9\"}"
+   },
+   {
+    "at": 13715,
+    "id": "call-010",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "none",
+     "reasons": []
+    },
+    "summary": "{\"command\": \"step 10\"}"
+   },
+   {
+    "at": 14962,
+    "id": "call-011",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "none",
+     "reasons": []
+    },
+    "summary": "{\"command\": \"step 11\"}"
+   }
+  ],
+  "tools_truncated": false,
+  "ts": 1792800000.0,
+  "turn_id": "fixture-turn_id"
+ },
+ "clipped": {
+  "attachments": [],
+  "context": {
+   "episode": 3,
+   "flow_revision": "flow-2",
+   "mission_id": "mission-1",
+   "step_id": "inspect"
+  },
+  "first_message_partial": true,
+  "kind": "operator",
+  "operation_id": "fixture-operation_id",
+  "reason": null,
+  "reply": " detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail End of report.",
+  "reply_breaks": [
+   0
+  ],
+  "reply_omitted": {
+   "chars": 2458,
+   "messages": 1
+  },
+  "reply_truncated": false,
+  "reply_ts": 1792800001.0,
+  "requires_authority": false,
+  "state": "running",
+  "text": "Inspect the project",
+  "text_truncated": false,
+  "tools": [],
+  "tools_truncated": false,
+  "ts": 1792800000.0,
+  "turn_id": "fixture-turn_id",
+  "usage": null
+ },
+ "long": {
+  "attachments": [],
+  "context": {
+   "episode": 3,
+   "flow_revision": "flow-2",
+   "mission_id": "mission-1",
+   "step_id": "inspect"
+  },
+  "first_message_partial": false,
+  "kind": "operator",
+  "operation_id": "fixture-operation_id",
+  "reason": null,
+  "reply": "Update 184: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 185: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 186: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 187: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 188: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 189: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 190: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 191: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 192: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 193: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 194: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 195: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 196: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 197: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 198: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.\n\nUpdate 199: progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress progress.",
+  "reply_breaks": [
+   0,
+   1247,
+   2494,
+   3741,
+   4988,
+   6235,
+   7482,
+   8729,
+   9976,
+   11223,
+   12470,
+   13717,
+   14964,
+   16211,
+   17458,
+   18705
+  ],
+  "reply_omitted": {
+   "chars": 229448,
+   "messages": 184
+  },
+  "reply_truncated": false,
+  "reply_ts": 1792800001.0,
+  "requires_authority": false,
+  "state": "running",
+  "text": "Inspect the project",
+  "text_truncated": false,
+  "tools": [
+   {
+    "at": 1245,
+    "id": "call-000",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "unknown",
+     "reasons": []
+    },
+    "summary": "echo t184"
+   },
+   {
+    "at": 2492,
+    "id": "call-001",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "unknown",
+     "reasons": []
+    },
+    "summary": "echo t185"
+   },
+   {
+    "at": 3739,
+    "id": "call-002",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "unknown",
+     "reasons": []
+    },
+    "summary": "echo t186"
+   },
+   {
+    "at": 4986,
+    "id": "call-003",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "unknown",
+     "reasons": []
+    },
+    "summary": "echo t187"
+   },
+   {
+    "at": 6233,
+    "id": "call-004",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "unknown",
+     "reasons": []
+    },
+    "summary": "echo t188"
+   },
+   {
+    "at": 7480,
+    "id": "call-005",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "unknown",
+     "reasons": []
+    },
+    "summary": "echo t189"
+   },
+   {
+    "at": 8727,
+    "id": "call-006",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "unknown",
+     "reasons": []
+    },
+    "summary": "echo t190"
+   },
+   {
+    "at": 9974,
+    "id": "call-007",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "unknown",
+     "reasons": []
+    },
+    "summary": "echo t191"
+   },
+   {
+    "at": 11221,
+    "id": "call-008",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "unknown",
+     "reasons": []
+    },
+    "summary": "echo t192"
+   },
+   {
+    "at": 12468,
+    "id": "call-009",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "unknown",
+     "reasons": []
+    },
+    "summary": "echo t193"
+   },
+   {
+    "at": 13715,
+    "id": "call-010",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "unknown",
+     "reasons": []
+    },
+    "summary": "echo t194"
+   },
+   {
+    "at": 14962,
+    "id": "call-011",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "unknown",
+     "reasons": []
+    },
+    "summary": "echo t195"
+   },
+   {
+    "at": 16209,
+    "id": "call-012",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "unknown",
+     "reasons": []
+    },
+    "summary": "echo t196"
+   },
+   {
+    "at": 17456,
+    "id": "call-013",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "unknown",
+     "reasons": []
+    },
+    "summary": "echo t197"
+   },
+   {
+    "at": 18703,
+    "id": "call-014",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "unknown",
+     "reasons": []
+    },
+    "summary": "echo t198"
+   },
+   {
+    "at": 19950,
+    "id": "call-015",
+    "name": "Bash",
+    "outcome": "completed",
+    "risk": {
+     "level": "unknown",
+     "reasons": []
+    },
+    "summary": "echo t199"
+   }
+  ],
+  "tools_truncated": true,
+  "ts": 1792800000.0,
+  "turn_id": "fixture-turn_id",
+  "usage": null
+ },
+ "starved": {
+  "attachments": [],
+  "context": {
+   "episode": 3,
+   "flow_revision": "flow-2",
+   "mission_id": "mission-1",
+   "step_id": "inspect"
+  },
+  "first_message_partial": false,
+  "kind": "operator",
+  "operation_id": "fixture-operation_id",
+  "reason": null,
+  "reply": "",
+  "reply_breaks": [],
+  "reply_omitted": {
+   "chars": 62,
+   "messages": 2
+  },
+  "reply_truncated": false,
+  "reply_ts": 1792800001.0,
+  "requires_authority": false,
+  "state": "running",
+  "text": "Inspect the project",
+  "text_truncated": false,
+  "tools": [],
+  "tools_truncated": false,
+  "ts": 1792800000.0,
+  "turn_id": "fixture-turn_id",
+  "usage": null
+ },
+ "starved_agent": {
+  "first_message_partial": false,
+  "kind": "agent",
+  "reply": "",
+  "reply_breaks": [],
+  "reply_omitted": {
+   "chars": 62,
+   "messages": 2
+  },
+  "reply_truncated": false,
+  "reply_ts": 1792800001.0,
+  "state": "completed",
+  "tools": [],
+  "tools_truncated": false,
+  "ts": 1792800000.0,
+  "turn_id": "fixture-turn_id"
+ },
+ "starved_single": {
+  "attachments": [],
+  "context": {
+   "episode": 3,
+   "flow_revision": "flow-2",
+   "mission_id": "mission-1",
+   "step_id": "inspect"
+  },
+  "first_message_partial": false,
+  "kind": "operator",
+  "operation_id": "fixture-operation_id",
+  "reason": null,
+  "reply": "",
+  "reply_breaks": [],
+  "reply_omitted": {
+   "chars": 12,
+   "messages": 1
+  },
+  "reply_truncated": false,
+  "reply_ts": 1792800001.0,
+  "requires_authority": false,
+  "state": "running",
+  "text": "Inspect the project",
+  "text_truncated": false,
+  "tools": [],
+  "tools_truncated": false,
+  "ts": 1792800000.0,
+  "turn_id": "fixture-turn_id",
+  "usage": null
+ },
+ "starved_single_agent": {
+  "first_message_partial": false,
+  "kind": "agent",
+  "reply": "",
+  "reply_breaks": [],
+  "reply_omitted": {
+   "chars": 11,
+   "messages": 1
+  },
+  "reply_truncated": false,
+  "reply_ts": 1792800001.0,
+  "state": "completed",
+  "tools": [],
+  "tools_truncated": false,
+  "ts": 1792800000.0,
+  "turn_id": "fixture-turn_id"
+ }
+}

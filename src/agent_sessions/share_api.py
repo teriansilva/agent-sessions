@@ -152,6 +152,11 @@ def _tools(items, r: _Redactor) -> list[dict]:
     return out
 
 
+def _cut_start(t: dict) -> bool:
+    """Does the reply's text begin at a cut (a secret there may be only partly present)?"""
+    return bool(t.get("reply_truncated") or t.get("first_message_partial"))
+
+
 def _agent_turn(t: dict, r: _Redactor) -> dict:
     """A turn the agent ran for itself (#1438): the operator's agent key set, redacted, minus
     `reason` (withheld here as for every turn). Nothing that belongs to a submission."""
@@ -162,7 +167,7 @@ def _agent_turn(t: dict, r: _Redactor) -> dict:
         "ts": t.get("ts"),
         "reply": r(
             t.get("reply"),
-            start=bool(t.get("reply_truncated")),
+            start=_cut_start(t),
             end=bool(t.get("reply_truncated")),
         ),
         "reply_ts": t.get("reply_ts"),
@@ -189,11 +194,13 @@ def _turn(t: dict, authors: dict[str, dict], r: _Redactor, share_id: str) -> dic
             redact=(authors.get(t.get("operation_id")) or {}).get("share_id") != share_id,
         ),
         "text_truncated": bool(t.get("text_truncated")),
-        # The native runtime keeps a reply's last 200k characters, and the facade then bounds it to
-        # its first 20k (setting `reply_truncated`): any start cut implies the end cut and the flag.
+        # The native runtime keeps a reply's last 200k characters; the facade then sends either one
+        # message's first 20k (`reply_truncated`: both ends may be cut) or, for several messages,
+        # the newest whole ones (#1643), whose text may still begin mid-message
+        # (`first_message_partial`): its start is trimmed like any other cut edge.
         "reply": r(
             t.get("reply"),
-            start=bool(t.get("reply_truncated")),
+            start=_cut_start(t),
             end=bool(t.get("reply_truncated")),
         ),
         "reply_ts": t.get("reply_ts"),

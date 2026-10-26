@@ -82,6 +82,23 @@ export interface Session {
   /** The mission holding this session (#948): `null` when none does. ABSENT when the server
    *  could not read the mission store — unknown, so no adopt/open control is offered. */
   mission?: SessionMissionRef | null;
+  /** An API session's live generation near its memory limit (#1643), or null: none, unknown, or
+   *  not an API session. Absent on older servers. */
+  memory_pressure?: MemoryPressure | null;
+}
+
+/** A live API worker's memory warning (#1643): its unit's working set against the operator's API
+ *  memory limit. `high` from 75%, `critical` from 90% or once the kernel throttles; anything
+ *  stale, unpinned or unreadable is never sent. Bytes. */
+export interface MemoryPressure {
+  level: "high" | "critical";
+  working_set: number;
+  max: number;
+  /** "shared": the tightest limit is a parent group's, set outside BattleLab (Hermes on #1651). */
+  scope?: "session" | "shared";
+  /** Whose own limit was seen throttling this sample, or null: the only ground for saying the
+   *  kernel is holding something back (Hermes on #1651). Absent on older servers. */
+  throttled?: "session" | "shared" | null;
 }
 
 /** One pasted/uploaded attachment carried by a compose draft (#477) — the server-issued
@@ -1663,6 +1680,13 @@ export interface StructuredTurn {
   reply_ts?: number | null;
   text_truncated: boolean;
   reply_truncated: boolean;
+  /** Where each agent message starts in `reply` (#1643); absent from older servers and the public
+   *  link, which fold nothing. Always begins at 0 when there is text. */
+  reply_breaks?: number[];
+  /** `reply` begins inside a message whose start was not loaded (#1643). */
+  first_message_partial?: boolean;
+  /** What this view left out before `reply` (#1643): whole messages and characters, or null. */
+  reply_omitted?: { messages: number; chars: number } | null;
   reason: string | null;
   /** A queued message proved never sent, and why (#1538): a closed code, shown as fixed text.
    *  Only on a queued operator message — never a Send now control or an uncertain handoff. */
@@ -1706,6 +1730,13 @@ export interface StructuredAgentTurn {
   reply: string | null;
   reply_ts?: number | null;
   reply_truncated: boolean;
+  /** Where each agent message starts in `reply` (#1643); absent from older servers and the public
+   *  link, which fold nothing. Always begins at 0 when there is text. */
+  reply_breaks?: number[];
+  /** `reply` begins inside a message whose start was not loaded (#1643). */
+  first_message_partial?: boolean;
+  /** What this view left out before `reply` (#1643): whole messages and characters, or null. */
+  reply_omitted?: { messages: number; chars: number } | null;
   /** Why it failed, when it did. */
   reason?: string;
   tools: StructuredTool[];
@@ -1838,6 +1869,8 @@ export interface StructuredSnapshot {
     withdraw?: boolean;
     /** This worker takes Interrupt on a turn the agent runs for itself directly (#1438). */
     interrupt_own?: boolean;
+    /** The live generation's memory warning (#1643), or null. Absent on older servers. */
+    memory_pressure?: MemoryPressure | null;
   };
   /** Why this conversation takes no new work (its client is retiring), or null. */
   read_only?: string | null;

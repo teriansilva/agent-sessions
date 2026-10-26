@@ -369,6 +369,68 @@ def _outcome(turn: dict) -> str:
     return "unavailable"
 
 
+def _reply(turn: dict, text_budget: list[int] | None) -> tuple[str | None, bool, int, dict]:
+    """The part of a turn's kept reply this snapshot sends (#1643), and how it relates to what was
+    left out. Returns (text, head_cut, start, fields).
+
+    * It all fits: all of it.
+    * More than one message (any start after the first character) and over the cap (the
+      per-reply 20,000 or what the shared budget left): the NEWEST WHOLE messages that fit — a
+      long autonomous turn shows its latest progress, not its first. If even the newest message
+      alone does not fit, that message's tail.
+    * One message over the cap: its head, as always (`head_cut`, shown with "…").
+
+    ``fields``: `reply_breaks` (message starts in the sent text; absent when the projection
+    recorded none, so a client folds nothing), `first_message_partial` (the sent text begins
+    mid-message: never presented as a whole one) and `reply_omitted` ({messages, chars} left out
+    before it — by the kept window or by this slice — or None)."""
+    value = turn.get("reply")
+    if not isinstance(value, str):
+        return None, False, 0, {}
+    cap = SNAPSHOT_TEXT if text_budget is None else min(SNAPSHOT_TEXT, max(0, text_budget[0]))
+    known = isinstance(turn.get("reply_breaks"), list)
+    breaks = [
+        b for b in turn.get("reply_breaks") or [] if isinstance(b, int) and 0 <= b <= len(value)
+    ]
+    if len(value) <= cap:
+        start, text, head_cut = 0, value, False
+    elif cap <= 0:
+        # The shared budget is spent: none of it is sent, however many messages it holds — all of
+        # it counts as not loaded (Hermes on #1651), never a reply that silently vanished.
+        start, text, head_cut = len(value), "", False
+    elif any(b > 0 for b in breaks):
+        # More than one message: some message starts after the text does (one retained start is
+        # enough — the kept window may have cut into the message before it).
+        fits = [b for b in breaks if len(value) - b <= cap]
+        start = fits[0] if fits else len(value) - cap
+        text, head_cut = value[start:], False
+    else:
+        start, text, head_cut = 0, value[:cap], True
+    if text_budget is not None:
+        text_budget[0] -= len(text)
+    if not known:
+        return text, head_cut, start, {}
+    # The sent text always starts a part at 0; whether that is a message's own start is the flag.
+    shown = ([0] if text else []) + [b - start for b in breaks if start < b < start + len(text)]
+    partial = bool(text) and start not in breaks
+    dropped = int(turn.get("reply_messages_cut") or 0) + sum(1 for b in breaks if b < start)
+    omitted = {
+        # Messages missing ENTIRELY: one whose tail is shown is not counted as not loaded.
+        "messages": max(0, dropped - (1 if partial else 0)),
+        "chars": int(turn.get("reply_chars_cut") or 0) + start,
+    }
+    return (
+        text,
+        head_cut,
+        start,
+        {
+            "reply_breaks": shown,
+            "first_message_partial": partial,
+            "reply_omitted": omitted if omitted["messages"] or omitted["chars"] else None,
+        },
+    )
+
+
 def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
     def bounded(value):
         if not isinstance(value, str):
@@ -380,9 +442,10 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
         return text, len(value) > len(text)
 
     if turn.get("kind") == "agent":
-        return _agent_turn(turn, bounded)
+        return _agent_turn(turn, text_budget)
     text, text_cut = bounded(turn.get("text"))
-    reply, reply_cut = bounded(turn.get("reply"))
+    reply, reply_cut, start, shape = _reply(turn, text_budget)
+    tools, tools_cut = _tools(turn, reply, start)
     return {
         "kind": "operator",
         "turn_id": turn["turn_id"],
@@ -396,6 +459,7 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
         # Images use read-back thumbnails; files expose only an inert display name (#1396).
         "attachments": [native_attachments.public(a) for a in turn.get("attachments") or ()],
         "reply_truncated": reply_cut or bool(turn.get("truncated")),
+        **shape,
         "reason": turn.get("reason"),
         # A queued message proved never sent, and why (#1538): a closed code the pane turns into
         # fixed text and offers Send again on. Absent on every other turn.
@@ -405,8 +469,8 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
         **({"delivery_reason": turn["delivery_reason"]} if turn.get("delivery_reason") else {}),
         "context": dict(turn.get("context") or {}),
         "requires_authority": bool(turn.get("execution_binding")),
-        "tools": _tools(turn, reply),
-        "tools_truncated": len(turn.get("tools") or []) > native_runtime.TOOLS_SHOWN,
+        "tools": tools,
+        "tools_truncated": tools_cut,
         "usage": turn.get("usage"),
         **(
             {"questions": turn["questions"], "question_id": turn["question_id"]}
@@ -416,19 +480,26 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
     }
 
 
-def _tools(turn: dict, reply: str | None) -> list[dict]:
-    """The newest 64 calls. A call placed past the part of the reply shown sits at its end."""
-    return [
-        {**t, "at": min(t["at"], len(reply or ""))} if isinstance(t.get("at"), int) else t
-        for t in list(turn.get("tools") or [])[-native_runtime.TOOLS_SHOWN :]
+def _tools(turn: dict, reply: str | None, start: int = 0) -> tuple[list[dict], bool]:
+    """The newest TOOLS_SHOWN calls (the ones the projection classified), placed in the sent text.
+    A call made before the sent part began (#1643: the newest-whole-messages slice) belongs to
+    history this view does not hold: left out, never clamped onto the first shown message. A
+    call placed past the part shown sits at its end. Returns (calls, whether any were left out)."""
+    calls = [
+        {**t, "at": min(t["at"] - start, len(reply or ""))} if isinstance(t.get("at"), int) else t
+        for t in list(turn.get("tools") or [])
+        if not (start and isinstance(t.get("at"), int) and t["at"] < start)
     ]
+    shown = native_runtime.TOOLS_SHOWN
+    return calls[-shown:], len(calls) > shown or len(calls) < len(turn.get("tools") or [])
 
 
-def _agent_turn(turn: dict, bounded) -> dict:
+def _agent_turn(turn: dict, text_budget: list[int] | None) -> dict:
     """A turn the agent ran for itself (#1438): its own key set, never an operator submission's.
     No `operation_id`, `text`, `attachments`, `delivery`, `context` or `requires_authority` —
     absent, not null — so nothing can mistake it for a message someone sent."""
-    reply, reply_cut = bounded(turn.get("reply"))
+    reply, reply_cut, start, shape = _reply(turn, text_budget)
+    tools, tools_cut = _tools(turn, reply, start)
     return {
         "kind": "agent",
         "turn_id": turn["turn_id"],
@@ -437,9 +508,10 @@ def _agent_turn(turn: dict, bounded) -> dict:
         "reply": reply,
         "reply_ts": turn.get("reply_ts"),
         "reply_truncated": reply_cut,
+        **shape,
         **({"reason": turn["reason"]} if turn.get("reason") else {}),
-        "tools": _tools(turn, reply),
-        "tools_truncated": len(turn.get("tools") or []) > native_runtime.TOOLS_SHOWN,
+        "tools": tools,
+        "tools_truncated": tools_cut,
         **(
             {"questions": turn["questions"], "question_id": turn["question_id"]}
             if turn.get("questions")

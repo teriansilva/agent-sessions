@@ -37,8 +37,9 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
-from functools import partial
+from functools import cache, partial
 from pathlib import Path
 
 from . import (
@@ -50,6 +51,7 @@ from . import (
     native_grants,
     native_ipc,
     native_journal,
+    native_memory,
     native_ownership,
     native_protocol,
     native_questions,
@@ -628,6 +630,7 @@ def _launch_generation(
         invocation_id=identity.invocation_id,
         control_group=identity.control_group,
         launched_at=time.time(),
+        memory_gib=policy["api_memory_gib"],  # names the limit if it kills this one (#1643)
     )
     launchtiming.mark("pin")
     return worker.worker_id
@@ -741,6 +744,48 @@ async def _call(gen: Generation, action: str, params: dict, *, timeout: float = 
 
 class _Unreachable(Exception):
     pass
+
+
+_PRESSURE_TTL = 5.0
+_pressure_cache: tuple[Path, float, dict[str, dict]] | None = None
+_pressure_lock = threading.Lock()
+
+
+def memory_pressures() -> dict[str, dict]:
+    """Session key → the memory warning of its CURRENT generation (#1643), for the session list.
+
+    One pass over the session records (local files, no subprocess, no `/proc`), cached for a few
+    seconds so a list poll never re-reads them per row. Only open sessions' current workers are
+    asked, through `native_memory.public`: fresh, of the pinned invocation, still running. An
+    unreadable record or sidecar is skipped (no warning), never a healthy reading."""
+    global _pressure_cache
+    now = time.monotonic()
+    try:
+        root = native_state.root()
+        with _pressure_lock:
+            cached = _pressure_cache
+            if cached is not None and cached[0] == root and now - cached[1] < _PRESSURE_TTL:
+                return cached[2]
+        paths = list(root.glob("*.json"))
+    except (OSError, native_state.StateError, ValueError):
+        return {}
+    shown: dict[str, dict] = {}
+    for path in paths:
+        try:
+            record = native_state.read(path)
+            if not isinstance(record, dict) or record.get("closed") is True:
+                continue
+            worker, key = record.get("current_worker"), record.get("session_key")
+            if not isinstance(worker, str) or not isinstance(key, str):
+                continue
+            warning = native_memory.public(native_state.read_lifecycle(worker))
+        except (OSError, ValueError, native_state.StateError):
+            continue
+        if warning is not None:
+            shown[key] = warning
+    with _pressure_lock:
+        _pressure_cache = (root, now, shown)
+    return shown
 
 
 def engine_may_have_workers(engine_id: str) -> bool:
@@ -1921,10 +1966,40 @@ def _paragraph(text: str, block: str) -> str:
 
 def _keep(turn: dict, key: str, text: str) -> None:
     """Store a reply's last SNAPSHOT_TEXT characters, counting what the cut dropped so a tool
-    call's place in the text (`_at`) still lines up after it."""
+    call's place in the text (`_at`) still lines up after it. Message starts (`_starts`, raw
+    offsets, #1643) before the kept window are dropped and counted: the message the cut lands
+    inside loses its start, so the window is known to begin mid-message."""
     cut = max(0, len(text) - SNAPSHOT_TEXT)
     turn[f"{key}_cut"] = turn.get(f"{key}_cut", 0) + cut
     turn[key] = text[cut:]
+    starts = turn.get(f"{key}_starts")
+    if cut and starts:
+        kept = [s for s in starts if s >= turn[f"{key}_cut"]]
+        turn[f"{key}_starts_cut"] = turn.get(f"{key}_starts_cut", 0) + len(starts) - len(kept)
+        turn[f"{key}_starts"] = kept
+
+
+def _append(turn: dict, key: str, block: str, *, continues: bool = False) -> None:
+    """Add agent text to ``key``: a new message a paragraph apart, or (``continues``) more of the
+    streamed message in progress. Records where each message starts (#1643), in raw offsets like
+    a tool's `_at`, so the fold and the newest-whole-messages slice can tell messages apart even
+    when one contains blank lines of its own."""
+    before = turn[key]
+    after = before + block if continues else _paragraph(before, block)
+    starts = turn.setdefault(f"{key}_starts", [])
+    if after != before and (not continues or not (starts or turn.get(f"{key}_starts_cut"))):
+        start = 0 if continues else len(after) - len(block)
+        starts.append(turn.get(f"{key}_cut", 0) + start)
+    _keep(turn, key, after)
+
+
+def _place_breaks(turn: dict, source: str) -> None:
+    """The shown reply's message starts (#1643) in its own coordinates, and what the kept window
+    already dropped: whole and partial messages (`reply_messages_cut`) and characters."""
+    cut = turn.get(f"{source}_cut", 0)
+    turn["reply_breaks"] = [s - cut for s in turn.get(f"{source}_starts", []) if s >= cut]
+    turn["reply_messages_cut"] = turn.get(f"{source}_starts_cut", 0)
+    turn["reply_chars_cut"] = cut
 
 
 def _place_tools(turn: dict, source: str) -> None:
@@ -1982,8 +2057,12 @@ def project(
     max_turns: int | None = None,
     before: str | None = None,
     ended_workers: frozenset[str] | set[str] = frozenset(),
+    ended_reason: Callable[[str], str | None] = lambda worker_id: None,
 ) -> dict:
     """Project only displayed turn payloads; transcript consumers may request every turn.
+
+    ``ended_reason`` (#1643) names why a gone generation ended when systemd said so (its memory
+    limit), replacing the generic "worker ended" text. It explains; it never changes a status.
 
     ``before`` (#1504) projects the ``max_turns`` turns just older than that turn instead of the
     newest window: a page of history, keyed by turn id so turns appended meanwhile never shift
@@ -2138,7 +2217,7 @@ def project(
                     previous = agents.get(open_agent)
                     if previous is not None and previous["worker_id"] != item["worker_id"]:
                         # A new generation speaks: the old one died mid-turn, whatever this says.
-                        _settle_agent(previous, "worker_ended")
+                        _settle_agent(previous, "worker_ended", ended_reason(previous["worker_id"]))
                     else:
                         # Its end, or a start that implies it (one turn runs at a time).
                         _settle_agent(previous, data["state"])
@@ -2178,13 +2257,13 @@ def project(
                 # Streamed pieces of ONE message concatenate; a new message id starts a paragraph.
                 item = data.get("item_id")
                 if item and turn["partial_item"] and item != turn["partial_item"]:
-                    _keep(turn, "partial", _paragraph(turn["partial"], data["text"]))
+                    _append(turn, "partial", data["text"])
                 else:
-                    _keep(turn, "partial", turn["partial"] + data["text"])
+                    _append(turn, "partial", data["text"], continues=True)
                 turn["partial_item"] = item or turn["partial_item"]
             else:
                 # Each settled text block is its own message: without a break, "…done.Next…".
-                _keep(turn, "reply", _paragraph(turn["reply"], data["text"]))
+                _append(turn, "reply", data["text"])
             if data.get("questions") and data.get("item_id"):
                 # The newest question the agent asked in this turn (#1463), and the id an
                 # answer names as its `reply_to`.
@@ -2275,9 +2354,11 @@ def project(
         # A reply that came whole at the end has no settled text before any call: all sit at 0.
         if turn["reply"] or turn.get("kind") == "agent":
             _place_tools(turn, "reply")
+            _place_breaks(turn, "reply")
         else:
             turn["reply"] = turn["partial"]
             _place_tools(turn, "partial")
+            _place_breaks(turn, "partial")
     for turn in turns.values():
         if turn["handoff"] == "not_sent":
             # An operator message proved never sent (#1538), queued OR direct (a Send again is
@@ -2299,7 +2380,10 @@ def project(
         elif not turn["completed"] and turn["status"] == "pending":
             if turn["worker_id"] != live_worker:
                 turn["status"], turn["code"] = "failed", "uncertain"
-                turn["reason"] = "the native worker ended before this turn settled"
+                turn["reason"] = (
+                    ended_reason(turn["worker_id"])
+                    or "the native worker ended before this turn settled"
+                )
             else:
                 if turn.get("delivery") == "steering":
                     turn["status"] = "delivering"
@@ -2367,7 +2451,7 @@ def project(
     for agent in agents.values():
         if agent["worker_id"] != live_worker:
             # Its worker is gone: nothing will end this turn now.
-            _settle_agent(agent, "worker_ended")
+            _settle_agent(agent, "worker_ended", ended_reason(agent["worker_id"]))
     for turn_id, turn in turns.items():
         turn["position"] = journal.operations[turn_id].claimed_revision
     shown_turns = sorted([*turns.values(), *agents.values()], key=lambda t: t["position"])
@@ -2385,6 +2469,10 @@ def project(
             "position",
             "reply_cut",
             "partial_cut",
+            "reply_starts",
+            "partial_starts",
+            "reply_starts_cut",
+            "partial_starts_cut",
             "_tool_index",
         ):
             turn.pop(key, None)
@@ -2468,7 +2556,7 @@ def _not_sent(turn: dict, code: str, journal: native_journal.Journal) -> None:
     }
 
 
-def _settle_agent(agent: dict | None, state: str) -> None:
+def _settle_agent(agent: dict | None, state: str, reason: str | None = None) -> None:
     """End a turn the agent ran for itself, as its end event says (#1438)."""
     if agent is None or agent["completed"]:
         return
@@ -2476,7 +2564,10 @@ def _settle_agent(agent: dict | None, state: str) -> None:
     if state == "interrupted":
         agent["status"], agent["code"] = "failed", "interrupted"
     elif state == "worker_ended":
-        agent["status"], agent["reason"] = "failed", "the native worker ended during this turn"
+        # Its worker died mid-turn: what the turn changed is unknown, exactly as for an operator
+        # turn (#1643), whatever the reason.
+        agent["status"], agent["code"] = "failed", "uncertain"
+        agent["reason"] = reason or "the native worker ended during this turn"
     elif state == "failed":
         agent["status"], agent["reason"] = "failed", "the agent reported an error"
     else:
@@ -2567,6 +2658,61 @@ def _exit_proved(session_id: str, worker_id: str) -> bool:
     return _proved_gone(worker_id)
 
 
+def _ended_reason(worker_id: str) -> str | None:
+    """Why a gone generation ended, when systemd recorded it for the pinned invocation (#1643):
+    only `oom-kill` is named. WHICH limit killed it is never claimed (no counter proves it, Hermes
+    on #1651); the reason states facts instead: the memory reading the worker took just before
+    (fresh: within `native_memory.FRESH` of the end) against the limit it was measured against,
+    else this session's own configured limit. Anything else, missing or mismatched reads as None
+    (generic)."""
+    try:
+        life = native_state.read_lifecycle(worker_id)
+    except (native_state.StateError, OSError):
+        return None
+    ended = life.get("exit")
+    if (
+        not isinstance(ended, dict)
+        or ended.get("result") != "oom-kill"
+        or not life.get("invocation_id")
+        or ended.get("invocation_id") != life.get("invocation_id")
+    ):
+        return None
+    memory, at = life.get("memory"), ended.get("at")
+    if (
+        isinstance(memory, dict)
+        and memory.get("invocation_id") == life["invocation_id"]
+        and isinstance(at, int | float)
+        and isinstance(memory.get("at"), int | float)
+        and 0 <= at - memory["at"] <= native_memory.FRESH
+        and isinstance(memory.get("working_set"), int)
+        and isinstance(memory.get("max"), int)
+        and memory["max"] > 0
+    ):
+        used, cap = _gb(memory["working_set"]), _gb(memory["max"])
+        if memory.get("scope") == "shared":
+            return (
+                f"killed: out of memory — last measured at {used} of {cap} GB in a group this "
+                "session shares, limited outside BattleLab"
+            )
+        return (
+            f"killed: out of memory — last measured at {used} of its {cap} GB limit "
+            "(Settings → Resource limits)"
+        )
+    gib = life.get("memory_gib")
+    if isinstance(gib, int) and gib > 0:
+        return (
+            f"killed: out of memory (this session's limit is {gib} GB — Settings → Resource limits)"
+        )
+    return "killed: out of memory"
+
+
+def _gb(size: int) -> str:
+    """Bytes as GB (binary, like the limit setting): one decimal below 10, never a trailing .0."""
+    value = size / 1024**3
+    shown = round(value, 1) if value < 10 else round(value)
+    return f"{shown:g}"
+
+
 def _stranded_workers(journal: native_journal.Journal, live: str | None) -> set[str]:
     return {
         op.worker_id
@@ -2628,7 +2774,14 @@ def _snapshot_sync(engine_id: str, session_id: str) -> dict:
 
     live = _live_worker(session_id)
     journal, ended = _settle_stranded(prov, session_id, _journal(prov, session_id), live)
-    view = project(journal, record, live, max_turns=SNAPSHOT_TURNS, ended_workers=ended)
+    view = project(
+        journal,
+        record,
+        live,
+        max_turns=SNAPSHOT_TURNS,
+        ended_workers=ended,
+        ended_reason=cache(_ended_reason),
+    )
     # The running worker advertises its own implementation. A web update cannot teach an
     # already-running, release-pinned worker a new effect (#1389).
     life = native_state.read_lifecycle(live) if live else {}
@@ -2650,6 +2803,9 @@ def _snapshot_sync(engine_id: str, session_id: str) -> dict:
     else:
         view["native"]["background_turn"] = None
     view["native"]["files"] = not live or life.get("files") is True
+    # Memory pressure of the live generation's unit (#1643): only a fresh warning of the pinned
+    # invocation; a gone, replaced or unreadable one shows nothing.
+    view["native"]["memory_pressure"] = native_memory.public(life) if live else None
     # Remove a queued message (#1447): only a live worker that says it can.
     if life.get("withdraw") is True:
         view["native"]["withdraw"] = True
@@ -2696,7 +2852,15 @@ def _history_sync(engine_id: str, session_id: str, before: str, limit: int) -> d
     prov, record = _session(engine_id, session_id, retiring_ok=True)
     live = _live_worker(session_id)
     journal, ended = _settle_stranded(prov, session_id, _journal(prov, session_id), live)
-    view = project(journal, record, live, max_turns=limit, before=before, ended_workers=ended)
+    view = project(
+        journal,
+        record,
+        live,
+        max_turns=limit,
+        before=before,
+        ended_workers=ended,
+        ended_reason=cache(_ended_reason),
+    )
     return {"turns": view["turns"], "history_before": view["history_before"]}
 
 
@@ -2820,7 +2984,9 @@ async def submit(
     return receipt
 
 
-_STARTUP_EVENTS = frozenset({"initialized", "session", "background", "response"})
+# `memory_pressure` (#1643): the successor's memory reading, journaled on its first sample — often
+# before the operator's first claim. A reading of its own unit, never conversation activity.
+_STARTUP_EVENTS = frozenset({"initialized", "session", "background", "response", "memory_pressure"})
 
 
 def _successor_startup_only(

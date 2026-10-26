@@ -820,6 +820,10 @@ async def test_a_turn_sent_at_the_seen_revision_survives_its_own_worker_relaunch
     # Not vacuous: the successor really did journal before the turn was claimed.
     page = await runtime.events(key, after=seen["revision"])
     assert page["events"] and not page["events"][0].get("operation_id")
+    # Including its first memory reading (#1643, Hermes on #1651), journaled at readiness: no
+    # activity either, so the explicit-revision send above was not refused for it.
+    kinds = [e.get("kind") for e in page["events"]]
+    assert "memory_pressure" in kinds[: kinds.index("text")]
 
 
 def test_only_a_successors_startup_records_keep_an_explicit_expectation(tmp_path):
@@ -848,6 +852,11 @@ def test_only_a_successors_startup_records_keep_an_explicit_expectation(tmp_path
     # turn finishing) is activity the operator missed, even though nothing was live at the send.
     assert not ok(journal(("old", "background"), ("new", "session")), 10, None, "new")
     assert not ok(startup, 10, None, "other")
+    # The successor's own memory reading (#1643), journaled on its first sample — often before the
+    # claim (Hermes on #1651): no activity the operator missed. Another generation's still is.
+    reading = ("new", "memory_pressure", {"level": "normal", "working_set": 1, "max": 8})
+    assert ok(journal(("new", "initialized"), reading, ("new", "session")), 10, None, "new")
+    assert not ok(journal(("old", "memory_pressure", {"level": "high"})), 10, None, "new")
     # Conversation content is never startup, whoever wrote it.
     assert not ok(journal(("new", "text")), 10, None, "new")
     assert not ok(journal(("new", "approval")), 10, None, "new")

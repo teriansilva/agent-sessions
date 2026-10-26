@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { StructuredTool } from "../../types/api";
-import { interleave } from "./activityOrder";
+import { fold, interleave } from "./activityOrder";
 
 const call = (id: string, at?: number): StructuredTool => ({
   id, name: "Bash", outcome: "completed", summary: id, ...(at === undefined ? {} : { at }),
@@ -50,5 +50,50 @@ describe("a turn's activity reads in the order it ran", () => {
     expect(interleave(reply, [call("a", 0), call("b")])).toBeNull();
     expect(interleave("", [call("a", 0)])).toBeNull();
     expect(interleave(null, [])).toBeNull();
+  });
+});
+
+describe("message boundaries (#1643)", () => {
+  const notes = ["One.", "A list:\n\n- a\n\n- b", "Three."];
+  const reply = notes.join("\n\n");
+  const breaks = [0, reply.indexOf("A list"), reply.indexOf("Three")];
+  const messages = (r: string, tools: StructuredTool[], b?: number[]) =>
+    interleave(r, tools, b)!.parts.map((p) => [p.message, p.text.trim(), p.tools.map((t) => t.id)]);
+
+  test("text-only progress is one part per message, blank lines inside one stay inside", () => {
+    expect(messages(reply, [], breaks)).toEqual([
+      [0, "One.", []], [1, notes[1], []], [2, "Three.", []],
+    ]);
+  });
+
+  test("a call between two messages follows the earlier one", () => {
+    expect(messages(reply, [call("x", breaks[1]), call("y", reply.indexOf("- b"))], breaks)).toEqual([
+      [0, "One.", ["x"]], [1, "A list:\n\n- a", ["y"]], [1, "- b", []], [2, "Three.", []],
+    ]);
+  });
+
+  test("without boundaries nothing changes", () => {
+    expect(messages(reply, [], undefined)).toEqual([[0, reply, []]]);
+  });
+
+  const long = Array.from({ length: 12 }, (_, i) => `Update ${i}.`);
+  const longReply = long.join("\n\n");
+  const longBreaks = long.map((n) => longReply.indexOf(n));
+
+  test("over eight messages, all but the newest three fold, calls with them", () => {
+    const tools = [call("early", longBreaks[2]), call("late", longBreaks[11])];
+    const order = interleave(longReply, tools, longBreaks)!;
+    const f = fold(order.parts)!;
+    expect(f.count).toBe(9);
+    expect(f.folded.map((p) => p.text.trim())).toEqual(long.slice(0, 9));
+    expect(f.folded.flatMap((p) => p.tools.map((t) => t.id))).toEqual(["early"]);
+    expect(f.shown.map((p) => p.text.trim())).toEqual(long.slice(9));
+    expect(f.shown.flatMap((p) => p.tools.map((t) => t.id))).toEqual(["late"]);
+  });
+
+  test("eight messages or fewer never fold", () => {
+    const eight = long.slice(0, 8).join("\n\n");
+    const b = long.slice(0, 8).map((n) => eight.indexOf(n));
+    expect(fold(interleave(eight, [], b)!.parts)).toBeNull();
   });
 });

@@ -45,8 +45,10 @@ from pathlib import Path
 from . import (
     agent_tools,
     native_attachments,
+    native_containment,
     native_ipc,
     native_journal,
+    native_memory,
     native_protocol,
     native_questions,
     native_state,
@@ -637,6 +639,56 @@ class Worker:
             and not getattr(codec, "_steers", None)
             and not codec._approvals
         )
+
+    def memory_sample(self, tracker: native_memory.Tracker) -> dict:
+        """One reading of this worker's own unit (#1643): only the group `/proc/self/cgroup` names
+        when it is this unit AND the group the runtime pinned; anything else reads unavailable."""
+        unit = native_containment.WorkerIdentity(self.worker_id).unit
+        life = native_state.read_lifecycle(self.worker_id)
+        try:
+            proc = Path("/proc/self/cgroup").read_text()
+        except OSError:
+            proc = ""
+        group = native_memory.own_group(proc, unit)
+        pinned = group is not None and group == life.get("control_group")
+        reading = native_memory.sample(group) if pinned else None
+        level = tracker.update(reading)
+        return native_memory.state(
+            level, tracker.shown, life.get("invocation_id"), tracker.throttled
+        )
+
+    async def memory_watch(self) -> None:
+        """Sample memory pressure every INTERVAL; record a warning while it lasts (fresh `at`),
+        and every change of level, so a reader can tell a live warning from a stale one."""
+        tracker, written = native_memory.Tracker(), None
+        while not self.done.is_set():
+            with contextlib.suppress(native_state.StateError, OSError):
+                memory = await asyncio.to_thread(self.memory_sample, tracker)
+                if memory["level"] in native_memory.SHOWN or memory["level"] != written:
+                    await asyncio.to_thread(self.report, memory=memory)
+                    if memory["level"] != written:
+                        # The change itself, on the event stream (#1643): a reader learns of it at
+                        # once, and the journal keeps when each warning began and ended.
+                        self.record(
+                            [
+                                native_protocol.NativeEvent(
+                                    "memory_pressure",
+                                    {
+                                        key: memory.get(key)
+                                        for key in (
+                                            "level",
+                                            "working_set",
+                                            "max",
+                                            "scope",
+                                            "throttled",
+                                        )
+                                    },
+                                )
+                            ]
+                        )
+                    written = memory["level"]
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self.done.wait(), native_memory.INTERVAL)
 
     async def idle_watch(self) -> None:
         """Exit when nothing is running; a later turn resumes the history in a new generation."""
@@ -1713,6 +1765,7 @@ class Worker:
                 handoff_reasons=True,
             )
             tasks.append(asyncio.create_task(self.idle_watch()))
+            tasks.append(asyncio.create_task(self.memory_watch()))
             tasks.append(asyncio.create_task(self.dispatch_queue()))
         await self.done.wait()
         if self.proc is not None:

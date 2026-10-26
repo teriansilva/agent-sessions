@@ -27,6 +27,8 @@ AGENT_KEYS = {
     "tools",
     "tools_truncated",
 }
+# Message boundaries for the long-turn fold (#1643): operator snapshot, never the public link.
+FOLD_KEYS = {"reply_breaks", "first_message_partial", "reply_omitted"}
 SUBMISSION_KEYS = {
     "operation_id",
     "text",
@@ -146,7 +148,8 @@ def test_the_agent_turn_key_set_is_exact_and_carries_nothing_of_a_submission(
     operator(root, sid, binding, monkeypatch, T0, "one")
     agent(root, sid, binding, monkeypatch, T0 + 1, "two", end="failed")
     op_turn, own_turn = snapshot(root, sid, binding)["turns"]
-    assert set(own_turn) == AGENT_KEYS | {"reason"}  # reason: it failed
+    # reason: it failed. The fold's message shape (#1643) rides on the operator snapshot only.
+    assert set(own_turn) == AGENT_KEYS | {"reason"} | FOLD_KEYS
     assert not set(own_turn) & SUBMISSION_KEYS  # absent, not null
     assert op_turn["kind"] == "operator" and "operation_id" in op_turn and "text" in op_turn
     # …and once the attribution overlay ran, still no author, never "sender unknown".
@@ -174,7 +177,8 @@ def test_a_running_own_turn_settles_when_its_worker_is_gone(conversation, monkey
     (running,) = snapshot(root, sid, binding)["turns"]
     assert running["state"] == "running"
     (gone,) = snapshot(root, sid, binding, live=str(uuid.uuid4()))["turns"]
-    assert gone["state"] == "failed" and "worker ended" in gone["reason"]
+    # What it did is unknown once its worker died mid-turn (#1643), as for an operator turn.
+    assert gone["state"] == "uncertain" and "worker ended" in gone["reason"]
 
 
 def test_a_new_own_turn_ends_one_whose_end_never_came(conversation, monkeypatch):

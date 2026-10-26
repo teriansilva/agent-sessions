@@ -516,6 +516,9 @@ _EVENT_FIELDS = {
         {"complete"},
     ),
     "approval_cancelled": ({"request_id"}, set()),
+    # #1643: the worker's memory pressure changed level. Byte counts, a closed level, scope and
+    # throttle evidence only; the snapshot reads the same state from the lifecycle sidecar.
+    "memory_pressure": ({"level"}, {"working_set", "max", "scope", "throttled"}),
     "model": (_COMMON | {"model_effective"}, set()),
     "turn_completed": (
         _COMMON | {"state", "error"},
@@ -534,11 +537,25 @@ _EVENT_FIELDS = {
 }
 
 
+def _memory_pressure(data: dict) -> dict:
+    out = {"level": _choice(data["level"], {"normal", "high", "critical", "unavailable"})}
+    for key in ("working_set", "max"):
+        if key in data:
+            out[key] = None if data[key] is None else _integer(data[key])
+    for key, allowed in (("scope", {"session", "shared"}), ("throttled", {"session", "shared"})):
+        if key in data:
+            out[key] = None if data[key] is None else _choice(data[key], allowed)
+    return out
+
+
 def _event(value):
     _object(value, {"cursor", "kind", "data"})
     kind = _choice(value["kind"], _EVENT_FIELDS)
     required, optional = _EVENT_FIELDS[kind]
     data = _object(value["data"], required, optional)
+    if kind == "memory_pressure":
+        out = _memory_pressure(data)
+        return {"cursor": _integer(value["cursor"], minimum=1), "kind": kind, "data": out}
     out = {}
     for key, item in data.items():
         if item is None and key in {

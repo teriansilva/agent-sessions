@@ -293,6 +293,14 @@ def archive_older_candidates(cutoff: float) -> list:
     return [s for s in engines.scan_all() if not s.archived and (s.last_mtime or 0) < cutoff]
 
 
+def _memory_pressures() -> dict[str, dict]:
+    """API sessions' memory warnings (#1643). Imported here, not at module load: the native
+    runtime imports the upload route, which imports this package."""
+    from .. import native_runtime
+
+    return native_runtime.memory_pressures()
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     def _row(
         s,
@@ -412,6 +420,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # `model_effective`, every row carries the key and only the one-session lookup fills
             # it (`_lookup_row`): the list stays lean, `null` there means "not read here".
             "assessment": None,
+            # An API session's memory warning (#1643): its live generation near its memory limit.
+            # Stamped after scoping (`memory_pressures`, one cached pass); null = none or unknown.
+            "memory_pressure": None,
         }
 
     def _membership_index() -> dict[str, dict] | None:
@@ -665,6 +676,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         running, running_ok = _running_state()
         for r in scoped:
             r["running"] = engines.physical_key(r["id"], aliases) in running
+        pressures = _memory_pressures()
+        for r in scoped:
+            r["memory_pressure"] = pressures.get(r["id"])
         return scoped, memberships, pinned, aliases, running_ok
 
     def _list_sessions_sync(
@@ -971,6 +985,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             _stamp_mission(row, _membership_index(), aliases)
             # Same stamp as the list (#1085), so the lookup stays the list's row shape exactly.
             row["running"] = engines.physical_key(row["id"], aliases) in _running_keys()
+            row["memory_pressure"] = _memory_pressures().get(row["id"])
             # Filled only here (#1189): the key is on every row (`_row`), null = not read/unknown.
             row["model_effective"] = transcript.effective_model(s.engine, s.uuid, Path.home())
             # An API session's model and level come from its journal, not a transcript (#1511).

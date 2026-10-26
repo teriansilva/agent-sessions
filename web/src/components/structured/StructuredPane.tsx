@@ -20,6 +20,8 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } f
 import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
+import { memorySentence, ownLimitHelps } from "../../lib/memoryPressure";
+import { settingsPath } from "../../routes/settingsTabs";
 import { engineInfo, engineLabel, isAgent, useEngineRoster } from "../../app/engineRoster";
 import { isNewSessionPlaceholder } from "../../app/sessionsStore";
 import { useSessionLookup } from "../../app/useSessionRow";
@@ -74,7 +76,7 @@ import type {
 import chat from "../chat/ChatPane.module.css";
 import { Markdown } from "./Markdown";
 import { BackgroundWork } from "./BackgroundWork";
-import { interleave } from "./activityOrder";
+import { fold, interleave, type ReplyPart } from "./activityOrder";
 import { autoSendNowHead, useAlwaysSendNow } from "./alwaysSendNow";
 import { conversationGroups, type ConversationGroup } from "./conversationOrder";
 import { PermissionsDialog } from "./PermissionsDialog";
@@ -789,12 +791,74 @@ function ToolList({ tools, label }: { tools: StructuredTool[]; label: string }) 
 }
 
 /** The tool rows grouped in the order they ran: one block before any text, or none. */
-function activityGroups(reply: string | null, tools: StructuredTool[]) {
-  const order = interleave(reply, tools);
+function activityGroups(reply: string | null, tools: StructuredTool[], breaks?: number[]) {
+  const order = interleave(reply, tools, breaks);
   const groups = order
     ? [order.lead, ...order.parts.map((p) => p.tools)].filter((g) => g.length)
     : tools.length ? [tools] : [];
   return { order, first: groups[0], last: groups[groups.length - 1] };
+}
+
+/** What this view did not load before a long turn's reply (#1643): a truthful count, never shown
+ *  as folded — the fold only ever holds loaded messages. */
+function hasOmission(omitted?: { messages: number; chars: number } | null): boolean {
+  return !!omitted && (omitted.messages > 0 || omitted.chars > 0);
+}
+
+function NotLoaded({ omitted }: { omitted?: { messages: number; chars: number } | null }) {
+  if (!omitted || !hasOmission(omitted)) return null;
+  const what = omitted.messages
+    ? `${omitted.messages.toLocaleString()} earlier ${omitted.messages === 1 ? "update" : "updates"}`
+    : "Earlier text";
+  return (
+    <p className={styles.notLoaded} data-testid="structured-not-loaded">
+      … {what} not loaded — this view holds only the newest part of this turn
+    </p>
+  );
+}
+
+/** A long turn's reply (#1643): above eight loaded messages, the older ones behind one disclosure,
+ *  the newest three (a finished turn's final reply among them) always out. A first message whose
+ *  start was not loaded says so before its text. */
+function FoldedReply({
+  parts,
+  partialStart,
+  renderPart,
+  signals,
+}: {
+  parts: ReplyPart[];
+  partialStart: boolean;
+  renderPart: (part: ReplyPart, end: boolean) => ReactNode;
+  /** What the folded activity says that must never be hidden by the fold (Hermes on #1651): the
+   *  live "Working" of the newest calls, failed and risky activity. Shown on its summary. */
+  signals: (folded: StructuredTool[][]) => ReactNode;
+}) {
+  const folded = fold(parts);
+  const lead = partialStart && (
+    <p className={styles.notLoaded} data-testid="structured-partial-start">
+      … start of this message not loaded
+    </p>
+  );
+  const run = (list: ReplyPart[], last: boolean) =>
+    list.map((part, i) => (
+      <Fragment key={i}>
+        {i === 0 && part.message === 0 && lead}
+        {renderPart(part, last && i === list.length - 1)}
+      </Fragment>
+    ));
+  if (!folded) return <>{run(parts, true)}</>;
+  return (
+    <>
+      <details className={styles.fold} data-testid="structured-fold">
+        <summary>
+          {folded.count.toLocaleString()} earlier {folded.count === 1 ? "update" : "updates"}
+          {signals(folded.folded.map((p) => p.tools))}
+        </summary>
+        {run(folded.folded, false)}
+      </details>
+      {run(folded.shown, true)}
+    </>
+  );
 }
 
 /** A turn the agent ran for itself (#1438): a scheduled wake-up, a task notification. Its activity
@@ -836,7 +900,7 @@ function AgentTurnView({
       <span />
     </span>
   );
-  const { order, first, last } = activityGroups(turn.reply, turn.tools);
+  const { order, first, last } = activityGroups(turn.reply, turn.tools, turn.reply_breaks);
   // The turn's state rides on its newest block; only the oldest can be missing earlier calls.
   const activity = (tools: StructuredTool[]) => (
     <details className={styles.activity} data-testid="structured-agent-activity">
@@ -879,14 +943,33 @@ function AgentTurnView({
         ended && <p className={`${styles.ownNote} ${styles.activityFailed}`}>{ended}</p>
       )}
       {beforeReply}
-      {order
-        ? order.parts.map((part, i) => (
-            <Fragment key={i}>
-              {reply(part.text, i === order.parts.length - 1)}
+      {/* Also with no reply text at all: a turn the shared budget left nothing for (#1643). */}
+      <NotLoaded omitted={turn.reply_omitted} />
+      {order ? (
+        <FoldedReply
+          parts={order.parts}
+          partialStart={!!turn.first_message_partial}
+          renderPart={(part, end) => (
+            <>
+              {reply(part.text, end)}
               {part.tools.length > 0 && activity(part.tools)}
-            </Fragment>
-          ))
-        : turn.reply && reply(turn.reply, true)}
+            </>
+          )}
+          signals={(groups) => (
+            <>
+              {running && groups.includes(last) && <span> · Working on its own</span>}
+              {ended && groups.includes(last) && (
+                <span className={styles.activityFailed}> · {ended}</span>
+              )}
+              {groups.flat().some((t) => t.risk?.level === "risky") && (
+                <span className={styles.activityRisk}> · Risky activity</span>
+              )}
+            </>
+          )}
+        />
+      ) : (
+        turn.reply && reply(turn.reply, true)
+      )}
       {question}
       {turn.state === "failed" && turn.reason && (
         <p className={`${styles.ownNote} ${styles.activityFailed}`} role="alert">{turn.reason}</p>
@@ -1010,7 +1093,7 @@ function TurnView({
   const failed = ["failed", "interrupted", "uncertain", "unavailable"].includes(turn.state);
   const canSendNow =
     queuePosition === 1 && (!turn.delivery || turn.delivery === "interrupt_failed");
-  const { order, first, last } = activityGroups(turn.reply, turn.tools);
+  const { order, first, last } = activityGroups(turn.reply, turn.tools, turn.reply_breaks);
   const activity = (tools: StructuredTool[]) => tools.length > 0 && (
     <details className={styles.activity} data-testid="structured-activity">
       <summary>
@@ -1110,17 +1193,37 @@ function TurnView({
         />
       )} />
       {beforeReply}
-      {turn.reply && (
+      {/* A reply the shared snapshot budget left no text for (#1643) still says it was not
+          loaded, rather than reading as no reply at all (Hermes on #1651). */}
+      {(turn.reply || hasOmission(turn.reply_omitted)) && (
         <div className={`${chat.turn} ${chat.asst} ${styles.reply}`} data-testid="structured-reply">
           <MessageHeader speaker={agent} kind="assistant" ts={turn.reply_ts} />
-          {order
-            ? order.parts.map((part, i) => (
-                <Fragment key={i}>
-                  {replyText(part.text, i === order.parts.length - 1)}
+          <NotLoaded omitted={turn.reply_omitted} />
+          {order ? (
+            <FoldedReply
+              parts={order.parts}
+              partialStart={!!turn.first_message_partial}
+              renderPart={(part, end) => (
+                <>
+                  {replyText(part.text, end)}
                   {activity(part.tools)}
-                </Fragment>
-              ))
-            : replyText(turn.reply, true)}
+                </>
+              )}
+              signals={(groups) => (
+                <>
+                  {active && groups.includes(last) && <span> · Working</span>}
+                  {groups.flat().some((t) => /failed|error/i.test(t.outcome)) && (
+                    <span className={styles.activityFailed}> · Failed activity</span>
+                  )}
+                  {groups.flat().some((t) => t.risk?.level === "risky") && (
+                    <span className={styles.activityRisk}> · Risky activity</span>
+                  )}
+                </>
+              )}
+            />
+          ) : (
+            turn.reply && replyText(turn.reply, true)
+          )}
         </div>
       )}
       {question}
@@ -2318,6 +2421,7 @@ export function StructuredPane({
     if (s && (s.launch || s.start_in_flight || !s.pending_start)) setStartOutcome(null);
   };
   const navigate = useNavigate();
+  const memory = snap?.native?.memory_pressure ?? null;
   // Back to New session with this session's agent, project and model preselected (#1505) —
   // and GUARDED, as this session was: the form's stored skip default must not turn it into one.
   // The folder comes with the project: the form takes no folder of its own (#1458). So the project is
@@ -3174,6 +3278,33 @@ export function StructuredPane({
         >
           <b>Skip permissions</b> — this agent never asks before acting.
         </p>
+      )}
+      {/* Near its memory limit (#1643): the live generation's own reading, fresh and pinned
+          (the server sends nothing stale), with the way to raise the limit. */}
+      {memory && (
+        <div
+          className={`${styles.banner} ${styles.memBanner} ${
+            memory.level === "critical" ? styles.memCritical : styles.memHigh
+          }`}
+          role="status"
+          data-testid="structured-memory"
+          data-level={memory.level}
+          data-scope={memory.scope ?? "session"}
+        >
+          <p>
+            <b>{memory.level === "critical" ? "Memory critical" : "Memory high"}</b>{" "}
+            {memorySentence(memory)}
+          </p>
+          {ownLimitHelps(memory) && (
+            <button
+              type="button"
+              className={`${chat.ghost} ${styles.inline}`}
+              onClick={() => navigate(settingsPath("resources"))}
+            >
+              Resource limits
+            </button>
+          )}
+        </div>
       )}
       {readOnly && (
         <p className={styles.banner} role="status" data-testid="structured-read-only">

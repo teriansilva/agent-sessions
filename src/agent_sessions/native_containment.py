@@ -137,6 +137,19 @@ class CgroupObservation:
             raise ContainmentError("invalid control group observation")
 
 
+def memory_high_mib(memory_gib: int) -> int:
+    """The soft limit (#1643): 90% of the hard one, where the kernel starts to reclaim."""
+    return memory_gib * 1024 * 9 // 10
+
+
+def _exec_word(value: str) -> str:
+    """One word of a systemd command line, double-quoted so a space never splits it. `%` and
+    control characters are already refused (`_path`); `$` is literal under the `:` prefix."""
+    if "%" in value or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ContainmentError("expected a command word without specifiers")
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def launch_argv(
     worker: WorkerIdentity,
     *,
@@ -194,7 +207,27 @@ def launch_argv(
         "--property=RuntimeMaxSec=86400",
         f"--property=TasksMax={tasks_max}",
         f"--property=MemoryMax={memory_gib}G",
+        # Reclaim and throttle before the hard kill (#1643): the worker reads the pressure and
+        # warns the operator while there is still time to act.
+        f"--property=MemoryHigh={memory_high_mib(memory_gib)}M",
         "--property=OOMPolicy=kill",
+        # systemd tells this hook how the unit ended (`$SERVICE_RESULT`, e.g. `oom-kill`), which
+        # `--collect` would otherwise forget (#1643). `-`: its failure never changes that result;
+        # `:`: no environment expansion of its words.
+        "--property=ExecStopPost=-:"
+        + " ".join(
+            _exec_word(word)
+            for word in (
+                _path(python),
+                "-I",
+                "-m",
+                "agent_sessions.native_exit_record",
+                "--worker-id",
+                worker.worker_id,
+                "--state-dir",
+                state_dir,
+            )
+        ),
         "--property=Delegate=no",
         "--property=NoNewPrivileges=yes",
         "--property=StandardInput=null",

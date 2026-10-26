@@ -118,8 +118,11 @@ def test_the_facade_cut_puts_later_calls_at_the_end_of_what_it_shows(conversatio
     source = raw(root, sid, binding)
     view = structured_runtime._snapshot(binding.session_key, source)
     (turn,) = view["turns"]
-    assert turn["reply"] == "abc\n\n" and turn["reply_truncated"]
-    assert placed(turn) == [("a", 3), ("b", 5)]
+    # Two messages over the cap (#1643): the newest one, here only its tail (marked partial), not
+    # the first characters. A call made before what is shown is left out, never clamped onto it.
+    assert turn["reply"] == "fghij" and not turn["reply_truncated"]
+    assert turn["first_message_partial"] and turn["tools_truncated"]
+    assert placed(turn) == [("b", 5)]
     # The facade answers with its own rows; the runtime's projection is left as it was.
     assert [t["at"] for t in source["turns"][0]["tools"]] == [3, len("abc\n\ndefghij")]
 
