@@ -358,6 +358,13 @@ def _skills_server(argv: list[str]) -> dict | None:
     return config["mcpServers"].get(SKILLS_SERVER_NAME)
 
 
+def _gone(path, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while path.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return not path.exists()
+
+
 def _settled(rid: str, want: str = "released", timeout: float = 5.0) -> str:
     deadline = time.monotonic() + timeout
     while (state := store.get_reservation(rid)["state"]) != want and time.monotonic() < deadline:
@@ -377,7 +384,10 @@ def test_a_new_session_from_a_specialist_launches_with_its_skills_and_notes(term
     assert set(memory.SPECIALIST_ENV_KEYS) <= set(term.launched[-1])
     # No master came up (the bridge is faked), so once the lock was handed on the slot is free.
     assert _settled(rid) == "released"
-    assert not skill_bundles.path_of(rid).exists()
+    # `release` frees the slot FIRST and drops the bundle after (a bundle that can't be deleted
+    # never holds a slot; the sweep retries it), so the bundle can outlive the state flip by a
+    # moment: wait for it the same way, never assert it in the same instant.
+    assert _gone(skill_bundles.path_of(rid))
 
 
 def test_a_plain_new_session_takes_no_slot_and_carries_no_skills(term, skilled):
