@@ -29,6 +29,66 @@ export default function Specialists() {
   );
 }
 
+/** The pool's line (#1693 S4): instances running against the limit, and the limit itself, saved
+ *  on its own. Lowering it stops nothing that runs: new launches wait until the pool is under it. */
+function PoolLimit({ live, limit, onSaved }: { live: number; limit: number; onSaved: () => void }) {
+  const [text, setText] = useState(String(limit));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const value = Number(text);
+  const valid = Number.isInteger(value) && value >= 1 && value <= 32;
+  const save = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await api.setPrefs({ pool_max_instances: value });
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn’t save the limit.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className={styles.poolLine} data-testid="pool-capacity">
+      <span className={live > limit ? styles.overCapacity : undefined}>
+        <b>{live}</b> of <b>{limit}</b> instances running across the pool
+        {live > limit && " · over the limit: no new instances until some end"}
+      </span>
+      <label className={styles.poolLimit}>
+        Pool limit
+        <input
+          type="number"
+          min={1}
+          max={32}
+          value={text}
+          aria-invalid={!valid}
+          aria-describedby={valid ? undefined : "pool-limit-hint"}
+          onChange={(e) => setText(e.target.value)}
+        />
+      </label>
+      {!valid && (
+        <span id="pool-limit-hint" className={styles.refused}>
+          A whole number from 1 to 32.
+        </span>
+      )}
+      <button
+        type="button"
+        className={buttons.ghost}
+        disabled={busy || !valid || value === limit}
+        onClick={() => void save()}
+      >
+        Save limit
+      </button>
+      {error && (
+        <span role="alert" className={styles.refused}>
+          {error}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function Pool() {
   const read = useCallback(() => api.specialists(), []);
   const { data, error, loading, reload } = usePlaybookRead(read);
@@ -56,10 +116,12 @@ function Pool() {
         from the model: map your models in Settings → Agents.
       </p>
       {data?.max_instances !== undefined && (
-        <p className={styles.poolLine} data-testid="pool-capacity">
-          <b>{data.live_total ?? 0}</b> of <b>{data.max_instances}</b> instances running across
-          the pool
-        </p>
+        <PoolLimit
+          key={data.max_instances}
+          live={data.live_total ?? 0}
+          limit={data.max_instances}
+          onSaved={() => void reload()}
+        />
       )}
       {error && (
         <div className={pb.error} role="alert">
@@ -92,7 +154,7 @@ function Pool() {
       )}
       <div className={pb.grid}>
         {rows.map((s, i) => (
-          <SpecialistCard key={s.id} specialist={s} ordinal={i + 1} />
+          <SpecialistCard key={s.id} specialist={s} ordinal={i + 1} onChanged={() => void reload()} />
         ))}
         {data && !showArchived && (
           <Link to={SPECIALIST_NEW_PATH} className={pb.newCard}>

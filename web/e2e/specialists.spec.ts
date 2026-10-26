@@ -44,6 +44,12 @@ const SPECIALIST = {
   }),
 };
 const ARCHIVED = { id: "retired", revision: 2, archived: true, grade: null, live: 0, skills_missing: [], skills_outdated: [], current: version({ title: "Retired" }) };
+/** Capacity lowered below what runs (#1693 S4): shown, never evicted. */
+const OVER = {
+  id: "bookkeeper", revision: 2, archived: false, grade: null, live: 3, skills_missing: [], skills_outdated: [],
+  held: [{ reservation_id: "r" + "a".repeat(24), session_key: "claude:held", reason: "the session's state is unknown", since: 1, attempt: 3, rev: 7 }],
+  current: version({ title: "Bookkeeper", capacity: 2 }),
+};
 const UNGRADED = { ...SPECIALIST, id: "intern", grade: null, skills_missing: [], skills_outdated: [], current: version({ title: "Intern", skills: [] }) };
 
 const FIXTURE = JSON.parse(readFileSync(resolve(process.cwd(), "src/test/roster.fixture.json"), "utf8"));
@@ -85,6 +91,8 @@ async function backend(
   // The server's map, per agent, merged across saves.
   const gradesMap: Record<string, Record<string, string | null>> = { [CAPABLE.id]: { [MODEL]: "strong" } };
   let gradePosts = 0;
+  const over = structuredClone(OVER);  // this test's own copy: a release never leaks into the next
+  let poolLimit = 6;
   let gradesRev = 1;
   await page.route("**/api/config", (r) =>
     opts.configFailsAfterFirst && configReads++ > 0
@@ -111,7 +119,14 @@ async function backend(
     }
     if (list === "error")
       return r.fulfill({ status: 503, json: { detail: "The specialist store is unavailable: database is locked." } });
-    return r.fulfill({ json: { specialists: list === "empty" ? [] : [SPECIALIST, UNGRADED, ARCHIVED], templates: TEMPLATES } });
+    return r.fulfill({
+      json: {
+        specialists: list === "empty" ? [] : [SPECIALIST, UNGRADED, ARCHIVED, over],
+        templates: TEMPLATES,
+        max_instances: poolLimit,
+        live_total: list === "empty" ? 0 : 3,
+      },
+    });
   });
   // The server's side of the revision fence: every write bumps the revision, and a write that
   // carries a stale one is a 409, exactly as `specialists_store` answers.
@@ -128,6 +143,11 @@ async function backend(
     }
     return r.fulfill({ json: cur });
   });
+  await page.route(/\/api\/specialists\/reservations\/[^/]+\/release$/, (r) => {
+    opts.posts?.push({ url: "release", id: r.request().url().split("/").slice(-2)[0], ...r.request().postDataJSON() });
+    over.held = [];
+    return r.fulfill({ json: { released: true } });
+  });
   await page.route(/\/api\/specialists\/implementer\/(archive|unarchive)$/, (r) => {
     const body = r.request().postDataJSON();
     opts.posts?.push({ url: r.request().url().split("/").pop(), ...body });
@@ -139,6 +159,10 @@ async function backend(
     if (r.request().method() !== "POST") return r.fulfill({ json: {} });
     const body = r.request().postDataJSON();
     opts.prefs?.push(body);
+    if (body.pool_max_instances !== undefined) {
+      poolLimit = body.pool_max_instances;
+      return r.fulfill({ json: { pool_max_instances: poolLimit } });
+    }
     const first = gradePosts++ === 0;
     if (first && opts.firstGradeCommitGate) await opts.firstGradeCommitGate;
     // The server commits, bumps the revision, and answers with the map it holds at THAT moment
@@ -184,8 +208,9 @@ test("the pool shows grades, ungraded, missing and outdated skills, and fits the
   await expect(card).toContainText("missing from your library");
   await expect(card).toContainText("changed in your library");
   await expect(page.getByTestId("specialist-card-intern").getByTestId("specialist-grade")).toHaveText("Ungraded");
-  // No reservations before S4: no pool capacity line at all, rather than a made-up one.
-  await expect(page.getByTestId("pool-capacity")).toHaveCount(0);
+  await expect(page.getByTestId("pool-capacity")).toContainText("3 of 6 instances running");
+  // Capacity lowered below what runs: shown on the card, nothing evicted.
+  await expect(page.getByTestId("specialist-card-bookkeeper").getByTestId("specialist-capacity")).toContainText("over capacity");
   await noHorizontalOverflow(page.getByTestId("specialists-page"));
   // Archived ones are hidden from the pool, never lost: one toggle shows them.
   await expect(page.getByTestId("specialist-card-retired")).toHaveCount(0);
@@ -479,4 +504,34 @@ test("same row saved twice: an older commit's late answer never replaces a newer
   await expect(row()).toHaveValue("fast");
   await navigate(page, specialistPath("implementer"));
   await expect(page.getByTestId("specialist-grade-line")).toContainText("Intern");
+});
+
+test("the pool limit is saved on its own and the line follows it", async ({ page }) => {
+  const prefs: unknown[] = [];
+  await backend(page, { prefs });
+  await page.goto(SPECIALISTS_PATH);
+  const line = page.getByTestId("pool-capacity");
+  await expect(line).toContainText("3 of 6");
+  const limit = line.getByRole("spinbutton", { name: "Pool limit" });
+  expect((await limit.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  await limit.fill("0");
+  await expect(line.getByRole("button", { name: "Save limit" })).toBeDisabled();
+  await limit.fill("2");
+  await line.getByRole("button", { name: "Save limit" }).click();
+  await expect(line).toContainText("3 of 2");
+  await expect(line).toContainText("over the limit");
+  expect(prefs).toEqual([{ pool_max_instances: 2 }]);
+});
+
+test("a held slot shows why and the operator can release it", async ({ page }) => {
+  const posts: unknown[] = [];
+  await backend(page, { posts });
+  await page.goto(SPECIALISTS_PATH);
+  const held = page.getByTestId("specialist-card-bookkeeper").getByTestId("specialist-held");
+  await expect(held).toContainText("the session's state is unknown");
+  const button = held.getByRole("button", { name: "Release" });
+  expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  await button.click();
+  await expect(page.getByTestId("specialist-card-bookkeeper").getByTestId("specialist-held")).toHaveCount(0);
+  expect(posts).toEqual([{ url: "release", id: "r" + "a".repeat(24), rev: 7 }]);
 });

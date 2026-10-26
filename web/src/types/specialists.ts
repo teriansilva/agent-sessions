@@ -34,6 +34,15 @@ export interface Specialist {
   skills_missing: string[];
   /** Pinned skill ids the library has at a different revision: saving a new version re-pins. */
   skills_outdated: string[];
+  /** Slots reconcile could not prove free (#1693 S4): the operator may release them. */
+  held?: {
+    reservation_id: string;
+    session_key: string;
+    reason: string;
+    since: number;
+    attempt: number;
+    rev: number;
+  }[];
 }
 
 export interface SpecialistTemplate {

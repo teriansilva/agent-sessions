@@ -1,20 +1,40 @@
 /** One specialist in the pool (#1693): its job, grade, what it runs on, its skills and how many
  *  instances are running against its capacity. */
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { engineColor, engineName } from "../../app/engineRoster";
+import { api } from "../../lib/api";
 import { specialistPath } from "../../lib/routes";
 import type { Specialist } from "../../types/specialists";
 import { GRADE_LABEL } from "./grades";
+import buttons from "../ui/actionButton.module.css";
 import pb from "../playbooks/playbooks.module.css";
 import styles from "./specialists.module.css";
 
 export function SpecialistCard({
   specialist,
   ordinal,
+  onChanged,
 }: {
   specialist: Specialist;
   ordinal?: number;
+  /** After a held slot is released, so the pool reloads. */
+  onChanged?: () => void;
 }) {
+  const [releasing, setReleasing] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const releaseSlot = async (rid: string, rev: number) => {
+    setReleasing(rid);
+    setError("");
+    try {
+      await api.releaseSpecialistSlot(rid, rev);
+      onChanged?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn’t release that slot.");
+    } finally {
+      setReleasing(null);
+    }
+  };
   const v = specialist.current;
   const missing = new Set(specialist.skills_missing);
   const outdated = new Set(specialist.skills_outdated);
@@ -68,6 +88,26 @@ export function SpecialistCard({
         <b>{specialist.live}</b> / {v.capacity} running
         {over && " · over capacity: no new instances until one ends"}
       </p>
+      {(specialist.held ?? []).map((h) => (
+        <div key={h.reservation_id} className={styles.held} data-testid="specialist-held">
+          <span>
+            1 slot held: {h.reason}. Its session couldn’t be proven finished.
+          </span>
+          <button
+            type="button"
+            className={buttons.ghost}
+            disabled={releasing !== null}
+            onClick={() => void releaseSlot(h.reservation_id, h.rev)}
+          >
+            Release
+          </button>
+        </div>
+      ))}
+      {error && (
+        <p role="alert" className={styles.refused}>
+          {error}
+        </p>
+      )}
     </article>
   );
 }

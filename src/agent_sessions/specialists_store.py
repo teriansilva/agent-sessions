@@ -28,11 +28,39 @@ from . import model_grades
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 BUSY_TIMEOUT_MS = 5000
 SPECIALISTS_MAX = 100
 VERSIONS_MAX = 500
 ID_RE = re.compile(r"\A[a-z0-9][a-z0-9-]{0,47}\Z")
+
+#: v2 (#1693 S4): the capacity ledger. One row per reservation; ``state`` is ``starting`` (taken
+#: before the session lock and launch), ``live`` (the launch succeeded) or ``released``. At most
+#: one reservation per session key is ever active (a partial unique index), so a retried create or
+#: a re-attach never takes a second slot. ``owner`` is the token of the ONE launch attempt that
+#: may settle it (rotated to nobody's on a re-take); ``attempt`` counts takes; ``rev`` counts EVERY
+#: change to the row, so a settlement names the exact state it observed and a newer answer (or
+#: launch) always wins over an older one about the same attempt; ``process`` is the process that
+#: last took it (pid, start time and pid namespace), so a peer never mistakes its launch for a
+#: dead one.
+_RESERVATIONS = """
+CREATE TABLE specialist_reservations (
+    reservation_id TEXT PRIMARY KEY,
+    specialist_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    session_key TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('starting', 'live', 'released')),
+    owner TEXT NOT NULL,
+    process TEXT NOT NULL,
+    attempt INTEGER NOT NULL,
+    rev INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    held_reason TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX specialist_reservations_one_per_session
+    ON specialist_reservations (session_key) WHERE state != 'released'
+"""
 
 _SCHEMA = """
 CREATE TABLE specialists (
@@ -125,6 +153,8 @@ def _ensure_schema(p: Path) -> None:
             raise StoreUnsupported(v)
         if v == SCHEMA_VERSION:
             return
+        if v > 0:
+            _backup(p, v)  # BEFORE the first migration of an existing file: a complete copy
         created = False
         con.execute("BEGIN IMMEDIATE")
         try:
@@ -132,11 +162,15 @@ def _ensure_schema(p: Path) -> None:
             if v > SCHEMA_VERSION:
                 raise StoreUnsupported(v)
             if v == 0:
-                for stmt in _SCHEMA.split(";"):
+                for stmt in (_SCHEMA + ";" + _RESERVATIONS).split(";"):
                     if stmt.strip():
                         con.execute(stmt)
-                con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 created = True
+            elif v == 1:
+                for stmt in _RESERVATIONS.split(";"):  # v1 → v2: the capacity ledger
+                    if stmt.strip():
+                        con.execute(stmt)
+            con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             con.execute("COMMIT")
         except BaseException:
             con.execute("ROLLBACK")
@@ -145,6 +179,23 @@ def _ensure_schema(p: Path) -> None:
             con.execute("PRAGMA journal_mode=WAL")  # outside the transaction; our own file only
     finally:
         con.close()
+
+
+def _backup(p: Path, version: int) -> Path:
+    # A random suffix: two processes migrating in the same second never collide on the name.
+    dest = p.with_name(f"{p.name}.bak-v{version}-{int(time.time())}-{secrets.token_hex(3)}")
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+    os.close(fd)
+    src = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+    try:
+        out = sqlite3.connect(str(dest))
+        try:
+            src.backup(out)
+        finally:
+            out.close()
+    finally:
+        src.close()
+    return dest
 
 
 def _connect() -> sqlite3.Connection:
@@ -167,7 +218,7 @@ def _db_errors():
     """A locked, corrupt or unreadable file is a retryable 503 with a reason, never a bare 500."""
     try:
         yield
-    except sqlite3.Error as e:
+    except (sqlite3.Error, OSError) as e:
         raise StoreError(f"the specialist store is unavailable: {e}", status=503) from None
 
 
@@ -451,3 +502,298 @@ def public(
             s["id"] for s in pinned if s.get("id") in lib and lib[s["id"]] != s.get("revision")
         ],
     }
+
+
+# ---- capacity reservations (#1693 S4) -----------------------------------------------------------
+
+#: A `starting` reservation touched less than this long ago belongs to a launch still under way:
+#: reconcile leaves it alone (its session lock may not be taken yet). Older, it is probed.
+STARTING_GRACE_S = 300
+_ACTIVE = ("starting", "live")
+
+
+class CapacityRefused(StoreError):
+    """No slot: ``limit`` is ``specialist`` (its capacity) or ``pool`` (the global cap)."""
+
+    def __init__(self, message: str, limit: str) -> None:
+        super().__init__(message, status=409)
+        self.limit = limit
+
+
+def _reservation(r: sqlite3.Row, *, owner: bool = False) -> dict:
+    out = {
+        "attempt": int(r["attempt"]),
+        "rev": int(r["rev"]),
+        "process": r["process"],
+        "reservation_id": r["reservation_id"],
+        "specialist_id": r["specialist_id"],
+        "version": int(r["version"]),
+        "session_key": r["session_key"],
+        "state": r["state"],
+        "created_at": float(r["created_at"]),
+        "updated_at": float(r["updated_at"]),
+        "held_reason": r["held_reason"],
+    }
+    if owner:
+        out["owner"] = r["owner"]
+    return out
+
+
+def canonical_key(raw: object) -> str:
+    """The session key a reservation records: ``engine:native`` as the launch names it (a
+    ``new-<uuid>`` placeholder included — its master runs under it), for a kind whose liveness
+    reconcile can check (a terminal or an API client). Anything else is refused."""
+    from . import engines
+
+    if not isinstance(raw, str) or not raw or len(raw) > 256:
+        raise StoreError("invalid session key", status=422)
+    try:
+        prov, native = engines.parse_key(raw, allow_new_placeholder=True)
+    except Exception:  # noqa: BLE001 — an unparseable key can never be checked, so never reserved
+        raise StoreError("invalid session key", status=422) from None
+    runtime = getattr(getattr(prov, "manifest", None), "runtime", None)
+    if runtime not in ("pty", "api"):
+        raise StoreError(
+            "this kind of session can't hold a specialist slot: its liveness can't be checked",
+            status=422,
+        )
+    return f"{prov.engine_id}:{native}"
+
+
+ALIVE, GONE, UNKNOWN_PROCESS = "alive", "gone", "unknown"
+_PROCESS: tuple[int, str] | None = None
+
+
+def _pid_namespace() -> str:
+    """This process's PID namespace inode, or "" when it can't be read."""
+    try:
+        link = os.readlink("/proc/self/ns/pid")  # "pid:[4026531836]"
+    except OSError:
+        return ""
+    return "".join(c for c in link if c.isdigit())
+
+
+def _proc_start(pid: int) -> str | None:
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    fields = raw.rsplit(")", 1)[-1].split()
+    return fields[19] if len(fields) > 19 else None
+
+
+def _process() -> str:
+    """This process's identity for a reservation: ``pid:start:pidns:instance``."""
+    global _PROCESS
+    pid = os.getpid()
+    if _PROCESS is None or _PROCESS[0] != pid:
+        start, ns = _proc_start(pid) or "?", _pid_namespace() or "?"
+        _PROCESS = (pid, f"{pid}:{start}:{ns}:{secrets.token_hex(4)}")
+    return _PROCESS[1]
+
+
+def process_state(token: str) -> str:
+    """Is the process that last took a reservation still the one running?
+
+    ``gone`` only on PROOF, and only within OUR pid namespace (the token records its own): no
+    such pid (``kill(pid, 0)`` → ESRCH), or the pid now belongs to a process with another start
+    time (reused). A peer in another namespace, a pid this process may not see (``hidepid``), an
+    unreadable start time or an unparseable token is ``unknown`` — never taken as death, since
+    reclaiming a launch under way could double-book its slot."""
+    if token == _process():
+        return ALIVE
+    try:
+        pid_s, start, ns, _inst = token.split(":")
+        pid = int(pid_s)
+    except (AttributeError, ValueError):
+        return UNKNOWN_PROCESS
+    own_ns = _pid_namespace()
+    if pid <= 0 or start == "?" or ns == "?" or not own_ns or ns != own_ns:
+        return UNKNOWN_PROCESS  # another namespace's pid says nothing about ours
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return GONE  # no such process in this namespace
+    except PermissionError:
+        pass  # it exists, owned by someone else
+    except OSError:
+        return UNKNOWN_PROCESS
+    seen = _proc_start(pid)
+    if seen is None:
+        return UNKNOWN_PROCESS  # it exists; its start time is hidden from us
+    return ALIVE if seen == start else GONE  # another start time: the pid was reused
+
+
+def reserve(
+    sid: str, n: int, session_key: str, *, max_instances: int, now: float | None = None
+) -> dict:
+    """A slot for one session of ``sid`` version ``n``, or `CapacityRefused`.
+
+    ONE transaction counts the specialist's active reservations (EVERY version) against its
+    CURRENT capacity and every active reservation against ``max_instances``, and inserts only if
+    both hold. The result carries ``created``: True with an ``owner`` token for the attempt that
+    took the slot — only it may release on failure (`release(..., owner=)`) — and False for a
+    second call on the same session (a double tap, a retry, a resume), which gets the slot that
+    session already holds, re-marked ``starting`` so reconcile gives this launch its grace. A
+    session holding another specialist's slot is refused."""
+    key = canonical_key(session_key)
+    ts = time.time() if now is None else now
+    with _tx() as con:
+        held = con.execute(
+            "SELECT * FROM specialist_reservations WHERE session_key = ? AND state != 'released'",
+            (key,),
+        ).fetchone()
+        if held is not None:
+            if held["specialist_id"] != sid or int(held["version"]) != n:
+                raise Conflict("this session already holds a slot for another specialist")
+            # A re-take (a double tap, a retry, a resume) is a NEW attempt on the same slot: back to
+            # `starting` with its grace, under this process, its old hold cleared, and the owner
+            # token rotated to one nobody holds — so the EARLIER attempt can no longer settle it
+            # (its late failure frees nothing), and neither can this one: reconcile does, on proof.
+            con.execute(
+                "UPDATE specialist_reservations SET state = 'starting', updated_at = ?,"
+                " owner = ?, process = ?, held_reason = '', attempt = attempt + 1, rev = rev + 1"
+                " WHERE reservation_id = ?",
+                (ts, secrets.token_hex(16), _process(), held["reservation_id"]),
+            )
+            row = con.execute(
+                "SELECT * FROM specialist_reservations WHERE reservation_id = ?",
+                (held["reservation_id"],),
+            ).fetchone()
+            return {**_reservation(row), "created": False}
+        spec = _get(con, sid)
+        if spec["archived"]:
+            raise StoreError("this specialist is archived", status=409)
+        if (
+            con.execute(
+                "SELECT 1 FROM specialist_versions WHERE id = ? AND version = ?", (sid, n)
+            ).fetchone()
+            is None
+        ):
+            raise NotFound("specialist version")
+        capacity = spec["current"]["capacity"]
+        (mine,) = con.execute(
+            "SELECT COUNT(*) FROM specialist_reservations"
+            " WHERE specialist_id = ? AND state != 'released'",
+            (sid,),
+        ).fetchone()
+        if mine >= capacity:
+            raise CapacityRefused(
+                f"{spec['current']['title']} is at capacity ({mine} of {capacity} running)",
+                "specialist",
+            )
+        (total,) = con.execute(
+            "SELECT COUNT(*) FROM specialist_reservations WHERE state != 'released'"
+        ).fetchone()
+        if total >= max_instances:
+            raise CapacityRefused(
+                f"the pool is at its limit ({total} of {max_instances} instances running)", "pool"
+            )
+        rid = "r" + secrets.token_hex(12)
+        con.execute(
+            "INSERT INTO specialist_reservations (reservation_id, specialist_id, version, "
+            "session_key, state, owner, process, attempt, rev, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, 'starting', ?, ?, 1, 1, ?, ?)",
+            (rid, sid, n, key, secrets.token_hex(16), _process(), ts, ts),
+        )
+        row = con.execute(
+            "SELECT * FROM specialist_reservations WHERE reservation_id = ?", (rid,)
+        ).fetchone()
+        return {**_reservation(row, owner=True), "created": True}
+
+
+def _cas(reservation_id: str, sets: str, where: str, args: tuple, ts: float) -> bool:
+    """One guarded change; every change bumps the row's ``rev`` (and its timestamp)."""
+    with _tx() as con:
+        cur = con.execute(
+            f"UPDATE specialist_reservations SET {sets}, rev = rev + 1, updated_at = ?"  # noqa: S608
+            f" WHERE reservation_id = ? AND state != 'released' {where}",
+            (ts, reservation_id, *args),
+        )
+        return cur.rowcount == 1
+
+
+def activate(reservation_id: str, *, owner: str, now: float | None = None) -> bool:
+    """The launch that created this slot succeeded: ``starting`` → ``live``. Only with its owner
+    token: an attempt whose slot was re-taken since settles nothing (reconcile will, on proof)."""
+    ts = time.time() if now is None else now
+    sets = "state = 'live', held_reason = ''"
+    return _cas(reservation_id, sets, "AND state = 'starting' AND owner = ?", (owner,), ts)
+
+
+def mark_live(reservation_id: str, *, seen_rev: int, now: float | None = None) -> bool:
+    """Reconcile found its session live: ``live``, any old hold cleared — only if nothing changed
+    since reconcile read it (``seen_rev``)."""
+    ts = time.time() if now is None else now
+    sets = "state = 'live', held_reason = ''"
+    return _cas(reservation_id, sets, "AND rev = ?", (seen_rev,), ts)
+
+
+def release(reservation_id: str, *, owner: str, now: float | None = None) -> bool:
+    """A launch that failed releases the slot IT created — and only that: ``owner`` is the token
+    `reserve` gave the attempt that took the slot, rotated away by any re-take since, so neither a
+    double tap's other attempt nor an earlier attempt's late failure can free it. A compare-and-set
+    on the id; releasing twice is a no-op."""
+    if not isinstance(owner, str) or not owner:
+        raise StoreError("a launch releases only with the token its reservation gave it", 422)
+    ts = time.time() if now is None else now
+    return _cas(reservation_id, "state = 'released'", "AND owner = ?", (owner,), ts)
+
+
+def reclaim(reservation_id: str, *, seen_rev: int, now: float | None = None) -> bool:
+    """Reconcile proved the session dead: release it — only if nothing changed since reconcile
+    read it. A re-take, a launch's `activate`, or a newer reconcile answer (live, held) each move
+    ``rev``, so an older DEAD answer can never release what they settled."""
+    ts = time.time() if now is None else now
+    return _cas(reservation_id, "state = 'released'", "AND rev = ?", (seen_rev,), ts)
+
+
+def release_held(reservation_id: str, *, seen_rev: int, now: float | None = None) -> bool:
+    """The operator frees a slot reconcile could not prove free — only the HELD state they were
+    shown (``seen_rev``): any change since (a re-take, a launch going live, a newer answer) moves
+    ``rev``, so a running session is never the operator's to take."""
+    ts = time.time() if now is None else now
+    where = "AND held_reason != '' AND rev = ?"
+    return _cas(reservation_id, "state = 'released'", where, (seen_rev,), ts)
+
+
+def hold(reservation_id: str, reason: str, *, seen_rev: int) -> bool:
+    """Record why reconcile could not prove this attempt dead (it stays active) — only if nothing
+    changed since reconcile read it. Moves ``rev`` (so an operator release names this hold) but
+    NOT the timestamp: holding grants no grace."""
+    with _tx() as con:
+        cur = con.execute(
+            "UPDATE specialist_reservations SET held_reason = ?, rev = rev + 1"
+            " WHERE reservation_id = ? AND state != 'released' AND rev = ?",
+            (reason[:200], reservation_id, seen_rev),
+        )
+        return cur.rowcount == 1
+
+
+def get_reservation(reservation_id: str) -> dict:
+    with _read() as con:
+        r = con.execute(
+            "SELECT * FROM specialist_reservations WHERE reservation_id = ?", (reservation_id,)
+        ).fetchone()
+        if r is None:
+            raise NotFound("reservation")
+        return _reservation(r)
+
+
+def active() -> list[dict]:
+    """Every reservation that holds a slot (``starting`` or ``live``)."""
+    if not db_path().exists():
+        return []
+    with _read() as con:
+        rows = con.execute(
+            "SELECT * FROM specialist_reservations WHERE state != 'released' ORDER BY created_at"
+        ).fetchall()
+        return [_reservation(r) for r in rows]
+
+
+def active_counts() -> tuple[dict[str, int], int]:
+    """``({specialist_id: active reservations}, total)``."""
+    counts: dict[str, int] = {}
+    for r in active():
+        counts[r["specialist_id"]] = counts.get(r["specialist_id"], 0) + 1
+    return counts, sum(counts.values())

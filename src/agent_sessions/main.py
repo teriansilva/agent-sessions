@@ -60,6 +60,7 @@ from . import (
     security_headers,
     session_stream,
     shares,
+    specialist_capacity,
     update_loop,
     usage_loop,
     voice_calls,
@@ -428,6 +429,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # Shared project memory (#1441): inbox files → each project's store, every 30 s, for
         # projects with memory on. Env kill-switch AGENT_SESSIONS_MEMORY_LOOP=0.
         memory_task = asyncio.create_task(memory_loop.run())
+        # Specialist capacity (#1693): reconcile reservations at boot and every minute, releasing
+        # only those whose session is proven dead. Env kill-switch AGENT_SESSIONS_SPECIALIST_LOOP=0.
+        capacity_task = asyncio.create_task(specialist_capacity.run())
         # API sessions answer at launch (#1505): a launch the previous process left `starting`
         # is settled from its worker's own lifecycle and liveness. A drained task, not an await.
         with contextlib.suppress(Exception):
@@ -491,6 +495,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 needs_you_task,
                 automation_task,
                 memory_task,
+                capacity_task,
                 ask_follow_task,
                 models_task,
             ):

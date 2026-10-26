@@ -2406,6 +2406,14 @@ export const api = {
       revision,
       draft,
     }),
+  /** Free a HELD slot: `rev` is the held state as listed, so a slot that changed since (a new
+   *  launch, its session found live) is never released (#1693 S4). */
+  releaseSpecialistSlot: (reservationId: string, rev: number) =>
+    mutateJson<{ released: boolean }>(
+      "POST",
+      `/api/specialists/reservations/${encodeURIComponent(reservationId)}/release`,
+      { rev },
+    ),
   archiveSpecialist: (id: string, revision: number, archived: boolean) =>
     mutateJson<SpecialistDetail>(
       "POST",

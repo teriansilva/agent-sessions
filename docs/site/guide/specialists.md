@@ -48,7 +48,13 @@ the project's shared notes. They live in the project's memory, follow the projec
 and never travel to another project. Open **Library → Memory**, pick the project, and its
 specialist notebooks are listed beside its own notes.
 
+## Capacity
+
+Each specialist has a capacity: how many of its sessions may run at once. The whole pool has a
+limit too, set on **Library → Specialists** (6 by default). Lowering either never stops what is
+already running: the card shows **over capacity**, and new sessions wait until some end.
+
 ## Coming next
 
-Capacity limits and starting a session from a specialist (which brings its skills and its notes
-into that session) are on their way.
+Starting a session from a specialist (which brings its skills and its notes into that session) is
+on its way.

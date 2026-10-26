@@ -139,6 +139,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Agent operator models (add / remove a model id) | POST /api/prefs `agent_defaults.models` | P2 W |
 | Agent session defaults (model, effort) | POST /api/prefs `agent_defaults.session_defaults` | P2 W |
 | Model grades per agent (#1693): which grade each model is | POST /api/prefs `model_grades` | P2 W |
+| Specialist pool limit (#1693): instances at once | POST /api/prefs `pool_max_instances` | P2 W |
 | Default agent for new sessions | POST /api/prefs `agent_defaults.default_engine` | P2 W |
 | Permission-bypass default **on** | POST /api/prefs `agent_defaults.bypass=true` | **never** (widens permission); off is P2 W |
 | Chat-agent endpoint URL / key / model / tools | PATCH /api/agents/{engine}/endpoint | **never** (credential + where requests go) |
@@ -191,6 +192,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Automations: enable (consent to its scope) | POST …/enable `revision, consent, scope_digest` | have (`propose_library`: the card shows the server's own scope lines; the tap is the consent, #1611) |
 | Specialists (#1693): list, detail, a pinned version | GET /api/specialists, /api/specialists/{sid}, …/versions/{n} | P4 R |
 | Specialists: create, edit (a new version), archive, unarchive | POST /api/specialists, PATCH /api/specialists/{sid}, POST …/archive, …/unarchive | P4 W (revision-checked; the grade is derived, never chosen) |
+| Specialists: release a held slot (#1693 S4) | POST /api/specialists/reservations/{rid}/release | P4 W (only a slot reconcile holds) |
 
 #### Files and git (Files drawer)
 | Capability | Route(s) | HQ |
@@ -520,6 +522,7 @@ GET    /api/specialists/{sid}                                                   
 PATCH  /api/specialists/{sid}                                                     P4
 POST   /api/specialists/{sid}/archive                                             P4
 POST   /api/specialists/{sid}/unarchive                                           P4
+POST   /api/specialists/reservations/{rid}/release                                P4
 GET    /api/specialists/{sid}/versions/{n}                                        P4
 GET    /api/templates                                                             P3
 POST   /api/templates                                                             P3
@@ -631,6 +634,7 @@ orchestrator.prompt             never  # prompt text
 orchestrator.proposal_ttl_minutes P2
 orchestrator.stale_hours        P2
 overview_expanded               n/a  # map cluster layout state
+pool_max_instances              P2  # how many specialist instances may run at once
 project_names                   P2
 project_roots                   P2  # folders on the card
 projects_hidden                 P2

@@ -207,6 +207,7 @@ os.environ.setdefault("AGENT_SESSIONS_AUTOMATION_LOOP", "0")
 os.environ.setdefault("AGENT_SESSIONS_CATALOG_LOOP", "0")
 # Shared project memory (#1441) ingests from the lifespan; its tests call `memory.ingest` directly.
 os.environ.setdefault("AGENT_SESSIONS_MEMORY_LOOP", "0")
+os.environ.setdefault("AGENT_SESSIONS_SPECIALIST_LOOP", "0")  # #1693 capacity reconcile
 # The model-list warm-up (#1503) would spawn every API client's CLI from any lifespan; its tests
 # call `models_loop.warm_once` directly.
 os.environ.setdefault("AGENT_SESSIONS_MODELS_LOOP", "0")

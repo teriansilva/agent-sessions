@@ -3,10 +3,28 @@
    a property of the job, not a state. */
 
 .poolLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
   margin: 0 0 var(--sp-3);
   font-family: var(--font-mono);
   font-size: var(--fs-meta);
   color: var(--text-2);
+}
+.poolLimit {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.poolLimit input {
+  width: 5em;
+  min-height: 44px;
+  font: inherit;
+  color: var(--text-1);
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  padding: 0 var(--sp-2);
 }
 .poolLine b {
   color: var(--text-1);
@@ -282,4 +300,17 @@
   margin: 0;
   padding: 0;
   border: 0;
+}
+
+/* A slot reconcile could not prove free (#1693 S4): attention, with the operator's way out. */
+.held {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  border-left: 3px solid var(--warn-text);
+  font-size: var(--fs-meta);
+  color: var(--warn-text);
 }

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -74,20 +75,61 @@ def _library() -> dict[str, str] | None:
         return None
 
 
-def _public(spec: dict, grades: dict, library: dict[str, str] | None) -> dict:
-    return store.public(spec, grades=grades, library=library)
+def _public(
+    spec: dict,
+    grades: dict,
+    library: dict[str, str] | None,
+    live: int = 0,
+    held: list[dict] | None = None,
+) -> dict:
+    out = store.public(spec, grades=grades, library=library, live=live)
+    # Slots reconcile could not prove free (#1693 S4): shown with their reason, releasable by the
+    # operator — never released on a guess.
+    out["held"] = held or []
+    return out
+
+
+def _held_by_specialist() -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for r in store.active():
+        if r["held_reason"]:
+            out.setdefault(r["specialist_id"], []).append(
+                {
+                    "reservation_id": r["reservation_id"],
+                    "session_key": r["session_key"],
+                    "reason": r["held_reason"],
+                    "since": r["updated_at"],
+                    "attempt": r["attempt"],
+                    # The exact state the operator is shown: a release names it, and any change
+                    # since (a re-take, the session going live) refuses that release.
+                    "rev": r["rev"],
+                }
+            )
+    return out
 
 
 def _list() -> dict:
+    from .. import specialist_capacity
+
     grades, library = model_grades.get(), _library()
+    counts, total = store.active_counts()
+    held = _held_by_specialist()
     return {
-        "specialists": [_public(s, grades, library) for s in store.list_all()],
+        "specialists": [
+            _public(s, grades, library, counts.get(s["id"], 0), held.get(s["id"]))
+            for s in store.list_all()
+        ],
         "templates": list(specialists.TEMPLATES),
+        # The pool's limit and how many instances hold a reservation now (#1693 S4).
+        "max_instances": specialist_capacity.max_instances(),
+        "live_total": total,
     }
 
 
 def _detail(sid: str) -> dict:
-    out = _public(store.get(sid), model_grades.get(), _library())
+    counts, _total = store.active_counts()
+    held = _held_by_specialist().get(sid)
+    out = _public(store.get(sid), model_grades.get(), _library(), counts.get(sid, 0), held)
     out["versions"] = store.versions(sid)
     return out
 
@@ -102,6 +144,31 @@ def _update(sid: str, revision: int, draft: object) -> dict:
     body = specialists.check_draft(draft)
     store.update(sid, body, expect_revision=revision)
     return _detail(sid)
+
+
+_RESERVATION_RE = re.compile(r"\Ar[0-9a-f]{24}\Z")
+
+
+def _rev(raw: object) -> bool:
+    """A reservation's row revision as listed: a whole number in range (JSON integers have no
+    width, so a huge one is refused here)."""
+    return isinstance(raw, int) and not isinstance(raw, bool) and 1 <= raw < 2**31
+
+
+def _release_held(rid: str, rev: int) -> dict:
+    """The operator frees a slot reconcile could not prove free — the HELD attempt they were shown
+    (``rev``, from the list): a slot without a hold, or one that changed since (a re-take, its
+    session found live), is not the operator's to take."""
+    from .. import specialist_capacity
+
+    r = store.get_reservation(rid)
+    if r["state"] == "released":
+        return {"released": False}
+    if not r["held_reason"] or r["rev"] != rev:
+        raise store.StoreError(
+            "only the held slot you were shown can be released here: it is in use now", status=409
+        )
+    return {"released": specialist_capacity.release_held(rid, seen_rev=rev)}
 
 
 def _archive(sid: str, revision: int, archived: bool) -> dict:
@@ -187,6 +254,22 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
     ) -> JSONResponse:
         return await _set_archived(request, False)
+
+    @app.post(PREFIX + "/reservations/{rid}/release")
+    async def release_reservation(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        rid = request.path_params["rid"]
+        if not _RESERVATION_RE.fullmatch(rid):
+            return _json({"detail": "unknown reservation"}, 404)
+        try:
+            body = await _body(request)
+            rev = body.get("rev")
+            if set(body) != {"rev"} or not _rev(rev):
+                raise _BadRequest("send {rev}: the held slot's revision as listed")
+        except _BadRequest as e:
+            return _bad(e)
+        return await _run(_release_held, rid, rev)
 
     @app.get(PREFIX + "/{sid}/versions/{n}")
     async def get_version(request: Request, _user: str = Depends(logged_in)) -> JSONResponse:

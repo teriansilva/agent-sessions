@@ -131,6 +131,12 @@ def _preflight_prefs(payload: dict) -> None:
         raise bad("unknown projects_mode")
     # Grades can be refused LATE (the size caps are re-checked on the merged map under the prefs
     # lock), so they are saved on their own: that refusal then leaves nothing else half-written.
+    if "pool_max_instances" in payload:
+        from .. import specialist_capacity
+
+        err = specialist_capacity.validate_max_instances(payload["pool_max_instances"])
+        if err is not None:
+            raise bad(err)
     if "model_grades" in payload and len(payload) != 1:
         raise bad("save model grades separately from other preferences")
     if "model_grades" in payload:
@@ -961,6 +967,17 @@ def register(
                 raise HTTPException(status_code=422, detail="unknown hq_contact")
             out["hq_contact"], out["hq_contact_rev"] = prefs.set_hq_contact_versioned(
                 payload["hq_contact"]
+            )
+        if "pool_max_instances" in payload:
+            # The pool's limit (#1693 S4): how many specialist instances may run at once. Lowering
+            # it stops nothing that runs; new launches wait until the pool is under it.
+            from .. import specialist_capacity
+
+            err = specialist_capacity.validate_max_instances(payload["pool_max_instances"])
+            if err is not None:
+                raise HTTPException(status_code=422, detail=err)
+            out["pool_max_instances"] = await asyncio.to_thread(
+                specialist_capacity.set_max_instances, payload["pool_max_instances"]
             )
         if "model_grades" in payload:
             # The model → grade map (#1693): a PATCH of rows, merged under the prefs lock, `null`
