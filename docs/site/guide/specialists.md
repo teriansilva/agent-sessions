@@ -54,7 +54,19 @@ Each specialist has a capacity: how many of its sessions may run at once. The wh
 limit too, set on **Library → Specialists** (6 by default). Lowering either never stops what is
 already running: the card shows **over capacity**, and new sessions wait until some end.
 
-## Coming next
+## Start a session from one
 
-Starting a session from a specialist (which brings its skills and its notes into that session) is
-on its way.
+On **New session**, pick a specialist under **Start from a specialist**. Its agent, model and
+effort are chosen for you, and a note says what comes with it: its skills, read-only, and its notes
+for this project. A specialist that is at capacity, whose agent can't start here, or that runs on a
+chat agent is listed but can't be picked. Your choice is kept if you go off to create a project
+first, as long as the specialist hasn't changed in the meantime.
+
+Change the agent or the model afterwards and the session starts as a plain one, without the
+specialist.
+
+The session takes one of the specialist's slots while it runs, and gives it back when it ends.
+Reopening the session later takes a slot again, on the same version and the same model: if the
+specialist is full by then, or you've archived it, it won't reopen until a slot is free (or you
+unarchive it). If you changed one of its skills in your library since that version was saved, the
+start is refused until you save the specialist again.

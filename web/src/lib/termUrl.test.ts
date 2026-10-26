@@ -74,3 +74,19 @@ test("a chosen model rides the fresh launch; default sends nothing (#1189)", () 
   expect(hostile.get("model")).toBe("x&bypass=1 --yolo");
   expect(hostile.getAll("bypass")).toEqual(["1"]);
 });
+
+test("a fresh launch from a specialist names its id and version (#1693)", () => {
+  const url = termWsUrl("claude", "id1", 0, {
+    cwd: "/x",
+    bypass: true,
+    specialist: { id: "implementer", version: 3 },
+  });
+  const q = new URL(url.replace(/^ws/, "http")).searchParams;
+  expect(q.get("specialist")).toBe("implementer");
+  expect(q.get("specialist_version")).toBe("3");
+  const plain = new URL(
+    termWsUrl("claude", "id1", 0, { cwd: "/x", bypass: true }).replace(/^ws/, "http"),
+  ).searchParams;
+  expect(plain.has("specialist")).toBe(false);
+  expect(plain.has("specialist_version")).toBe(false);
+});

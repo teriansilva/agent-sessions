@@ -37,6 +37,15 @@ import { usePrefetchStructuredModels, useStructuredModels } from "../app/useStru
 import { listAgeMinutes, structuredModelsStore } from "../lib/structuredModelsStore";
 import { AgentTiles, ProjectList } from "../components/newSession/NewSessionControls";
 import { handStart } from "../components/structured/startHandoff";
+import {
+  bindingHolds,
+  bindingNote,
+  bindingOf,
+  restoreBinding,
+  specialistOptions,
+  type SpecialistBinding,
+} from "../lib/specialistLaunch";
+import type { SpecialistList } from "../types/specialists";
 import styles from "./NewSessionLanding.module.css";
 
 /** Landing at "/" — no session selected. Pick an engine + project and start a new session: a
@@ -61,7 +70,16 @@ type PendingCreate = {
   effort?: string;
   id: string;
   bypass?: boolean;
+  /** Started from a specialist (#1693): another one, or none, is another create. */
+  specialist?: { id: string; version: number };
 };
+
+function sameSpecialist(
+  a: { id: string; version: number } | undefined,
+  b: { id: string; version: number } | undefined,
+): boolean {
+  return a?.id === b?.id && a?.version === b?.version;
+}
 
 /** "12 min old" — how old a kept model list is (#1503). */
 function ageText(minutes: number): string {
@@ -76,7 +94,9 @@ function readPendingCreate(): PendingCreate | null {
       typeof v.cwd === "string" &&
       typeof v.id === "string" &&
       (v.bypass === undefined || typeof v.bypass === "boolean") &&
-      (v.effort === undefined || typeof v.effort === "string")
+      (v.effort === undefined || typeof v.effort === "string") &&
+      (v.specialist === undefined ||
+        (typeof v.specialist?.id === "string" && typeof v.specialist?.version === "number"))
       ? v
       : null;
   } catch {
@@ -100,7 +120,8 @@ function isStoredAttempt(attempt: PendingCreate): boolean {
     current.engine === attempt.engine &&
     current.cwd === attempt.cwd &&
     (current.model ?? "default") === (attempt.model ?? "default") &&
-    Boolean(current.bypass) === Boolean(attempt.bypass);
+    Boolean(current.bypass) === Boolean(attempt.bypass) &&
+    sameSpecialist(current.specialist, attempt.specialist);
 }
 
 export function NewSessionLanding() {
@@ -331,6 +352,73 @@ export function NewSessionLanding() {
       }));
   const modelSelect = engineInfo(engine)?.model_select;
 
+  // Start from a specialist (#1693 S4b): choosing one preselects its agent, model and effort as
+  // this form's own choices (so they outrank the project's and the global defaults). The binding
+  // holds only while the form still shows exactly those: any change and the launch is a plain
+  // session — each agent, model or effort change drops the choice, and a binding the form no
+  // longer matches is never sent (the server would refuse it).
+  const [specialists, setSpecialists] = useState<SpecialistList | null>(null);
+  const [poolFailed, setPoolFailed] = useState(false);
+  useEffect(() => {
+    let live = true;
+    // Any failure — a refused read, or a client that throws before it even asks — is "no pool":
+    // the form is a plain New session, as before. It never takes the form down with it.
+    Promise.resolve()
+      .then(() => api.specialists())
+      .then((l) => {
+        if (!live) return;
+        // Only a pool that is one: anything else (an older server, a stub) is "no pool".
+        if (Array.isArray(l?.specialists)) setSpecialists(l);
+        else setPoolFailed(true);
+      })
+      .catch(() => {
+        if (live) setPoolFailed(true);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+  const [specialistChoice, setSpecialistChoice] = useState<SpecialistBinding | null>(null);
+  // A choice carried through the New project detour: honoured only as it was (the same version,
+  // still startable) once the pool has answered; until then Start waits for it.
+  const [restoredSpecialist, setRestoredSpecialist] = useState(
+    restore.draft?.specialistChoice ?? null,
+  );
+  // Only an agent whose launch carries the binding can host one: a chat conversation can't.
+  const specialistChoices = specialistOptions(
+    specialists,
+    engines,
+    engines.filter((id) => runtimeOf(id) !== "chat"),
+  );
+  const restoredBinding =
+    restoredSpecialist && specialists ? restoreBinding(specialistChoices, restoredSpecialist) : null;
+  const awaitingRestoredSpecialist = !!restoredSpecialist && !specialists && !poolFailed;
+  const restoredSpecialistLost =
+    !!restoredSpecialist && (poolFailed || (!!specialists && !restoredBinding));
+  const chosenSpecialist = specialistChoice ?? restoredBinding;
+  const specialist =
+    chosenSpecialist && bindingHolds(chosenSpecialist, { engine, model, effort, isApi })
+      ? chosenSpecialist
+      : null;
+  const dropSpecialist = () => {
+    setSpecialistChoice(null);
+    setRestoredSpecialist(null);
+  };
+  const chooseSpecialist = (id: string) => {
+    const option = specialistChoices.find((o) => o.id === id);
+    setRestoredSpecialist(null);
+    if (!option || option.blocked) {
+      setSpecialistChoice(null);
+      return;
+    }
+    const b = bindingOf(option.spec);
+    setEngineChoice(b.engine);
+    setModelChoice({ engine: b.engine, model: b.model });
+    setEffortChoice({ engine: b.engine, model: b.model, effort: b.effort ?? "default" });
+    setApiBypassChoice(null);
+    setSpecialistChoice(b);
+  };
+
 
   // The restore is one-shot: drop it from the history entry (keeping the map return), so a later
   // Back/Forward onto this entry does not re-select the project or re-apply the draft.
@@ -363,6 +451,8 @@ export function NewSessionLanding() {
     ...(effortChoice ? { effortChoice } : {}),
     // A GUARDED API choice survives the detour (#1505); a skip choice never does.
     ...(apiBypassChoice?.value === false ? { apiGuardedEngine: apiBypassChoice.engine } : {}),
+    // The chosen specialist survives the detour, re-checked on the way back (#1693).
+    ...(specialist ? { specialistChoice: { id: specialist.id, version: specialist.version } } : {}),
   };
   const wizardState: WizardEntryState = { from: "new-session", draft };
   // …and the browser's Back too: before pushing the wizard, the draft is written into THIS entry's
@@ -419,7 +509,8 @@ export function NewSessionLanding() {
       !awaitingDefaults &&
       !awaitingProjects &&
       !awaitingConfig &&
-      !unconfirmedChoice,
+      !unconfirmedChoice &&
+      !awaitingRestoredSpecialist,
   );
 
   const [startError, setStartError] = useState<string | null>(null);
@@ -490,6 +581,9 @@ export function NewSessionLanding() {
     // The model (#1313) and the permission mode (#1339) are part of the create's identity:
     // choosing another one is another create, never a retry that retargets the same operation id.
     const skip = apiCanBypass && bypass;
+    const launchSpecialist = specialist
+      ? { id: specialist.id, version: specialist.version }
+      : undefined;
     // A skip create keeps NO client recovery slot (Hermes 5913): with the two-phase start a lost
     // one can never run, and the server lists it — its view offers Start / Discard until it
     // expires. Only a guarded create reuses an unresolved id.
@@ -500,7 +594,8 @@ export function NewSessionLanding() {
       prev.engine === engine &&
       prev.cwd === cwd &&
       (prev.model ?? "default") === model &&
-      (prev.effort ?? "default") === effort
+      (prev.effort ?? "default") === effort &&
+      sameSpecialist(prev.specialist, launchSpecialist)
         ? prev
         : {
             engine,
@@ -510,6 +605,7 @@ export function NewSessionLanding() {
             ...(effort !== "default" ? { effort } : {}),
             id: crypto.randomUUID(),
             bypass: skip,
+            ...(launchSpecialist ? { specialist: launchSpecialist } : {}),
           };
     if (skip) {
       if (prev?.bypass) writePendingCreate(null);
@@ -521,9 +617,11 @@ export function NewSessionLanding() {
     };
     try {
       const args = [engine, cwd, attempt.id, model, Boolean(attempt.bypass)] as const;
-      const { session_key: key } = await (attempt.effort
-        ? api.structuredCreate(...args, attempt.effort)
-        : api.structuredCreate(...args));
+      const { session_key: key } = await (attempt.specialist
+        ? api.structuredCreate(...args, attempt.effort, attempt.specialist)
+        : attempt.effort
+          ? api.structuredCreate(...args, attempt.effort)
+          : api.structuredCreate(...args));
       clearAttempt(); // only THIS attempt's slot — a lost guarded one stays recoverable (5916)
       if (attempt.bypass) {
         // Phase 2 (#1339): only now — the create's response is in hand — does it launch. Fired,
@@ -580,7 +678,12 @@ export function NewSessionLanding() {
     }
     const id = mintNewSessionId(engine);
     if (!id) return;
-    const fresh = model === "default" ? { cwd, bypass } : { cwd, bypass, model };
+    const fresh = {
+      cwd,
+      bypass,
+      ...(model === "default" ? {} : { model }),
+      ...(specialist ? { specialist: { id: specialist.id, version: specialist.version } } : {}),
+    };
     // Back to the map as a window, when that is where this came from AND the workspace has room
     // under the operator's cap. The request is queued on the workspace and drained by the canvas
     // once it has mounted and measured — the anchor and the overlay box are facts only the map
@@ -653,6 +756,40 @@ export function NewSessionLanding() {
             the right. A narrower pane stacks them; Start stays in the pane's footer. */}
         <div className={styles.columns}>
         <div className={styles.column}>
+        {specialistChoices.length > 0 && (
+          <section className={styles.section} aria-labelledby="new-session-specialist-head">
+            <h2 id="new-session-specialist-head" className={styles.sectionHead}>
+              Start from a specialist
+            </h2>
+            <label className={styles.field}>
+              <span>Specialist</span>
+              <select
+                aria-label="Specialist"
+                data-testid="new-session-specialist"
+                value={specialist?.id ?? ""}
+                onChange={(e) => chooseSpecialist(e.target.value)}
+              >
+                <option value="">None — a plain session</option>
+                {specialistChoices.map((o) => (
+                  <option key={o.id} value={o.id} disabled={o.blocked !== null}>
+                    {o.text}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {specialist && (
+              <p className={styles.hint} data-testid="new-session-specialist-note">
+                {bindingNote(specialist)}
+              </p>
+            )}
+          </section>
+        )}
+        {restoredSpecialistLost && (
+          <p className={styles.hint} role="status" data-testid="new-session-specialist-dropped">
+            The specialist you chose can’t start as it was (it changed or is full) — this is a plain
+            session unless you choose one again.
+          </p>
+        )}
         {(engines.length > 1 || unavailable.length > 0) && (
           <section className={styles.section} aria-labelledby="new-session-agent-head">
             <h2 id="new-session-agent-head" className={styles.sectionHead}>
@@ -667,6 +804,7 @@ export function NewSessionLanding() {
               projectEngine={projectEngine ?? ""}
               onChange={(id) => {
                 setEngineChoice(id);
+                dropSpecialist(); // another agent: a plain session
                 setModelChoice(null); // a model belongs to the engine it was chosen for
                 setApiBypassChoice(null); // a skip choice never survives an agent change (Hermes 5913)
               }}
@@ -697,7 +835,10 @@ export function NewSessionLanding() {
               aria-label="Model"
               data-testid="new-session-model"
               value={model}
-              onChange={(e) => setModelChoice({ engine, model: e.target.value })}
+              onChange={(e) => {
+                dropSpecialist(); // another model: a plain session
+                setModelChoice({ engine, model: e.target.value });
+              }}
             >
               <option value="default">default</option>
               {models.map((m) => (
@@ -754,7 +895,10 @@ export function NewSessionLanding() {
               aria-label="Reasoning effort"
               data-testid="new-session-effort"
               value={effort}
-              onChange={(e) => setEffortChoice({ engine, model, effort: e.target.value })}
+              onChange={(e) => {
+                dropSpecialist();
+                setEffortChoice({ engine, model, effort: e.target.value });
+              }}
             >
               <option value="default">model’s default</option>
               {levels.map((l) => (
@@ -788,6 +932,7 @@ export function NewSessionLanding() {
                 type="button"
                 className={styles.linkButton}
                 onClick={() => {
+                  dropSpecialist();
                   setModelChoice(null);
                   setEffortChoice(null);
                 }}

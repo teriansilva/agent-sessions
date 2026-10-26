@@ -50,6 +50,10 @@ export interface NewSessionDraft {
   /** An API client the form had GUARDED (#1505): kept through the wizard and the browser's Back
    *  so a stored skip default never turns it into a skip. Guarded-only: no skip is ever carried. */
   apiGuardedEngine?: string;
+  /** The specialist the form had chosen (#1693): its id and the version the form saw. Restored only
+   *  if that is still the specialist's current version and it can still start; otherwise the form
+   *  says it was dropped. */
+  specialistChoice?: { id: string; version: number };
 }
 
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
@@ -68,7 +72,18 @@ export function readDraft(v: unknown): NewSessionDraft | null {
     ...readModelChoice(d.modelChoice),
     ...readEffortChoice(d.effortChoice),
     ...(str(d.apiGuardedEngine) ? { apiGuardedEngine: str(d.apiGuardedEngine) as string } : {}),
+    ...readSpecialistChoice(d.specialistChoice),
   };
+}
+
+function readSpecialistChoice(v: unknown): Pick<NewSessionDraft, "specialistChoice"> {
+  if (!v || typeof v !== "object") return {};
+  const m = v as Record<string, unknown>;
+  const id = str(m.id);
+  const version = m.version;
+  return id && typeof version === "number" && Number.isInteger(version) && version > 0
+    ? { specialistChoice: { id, version } }
+    : {};
 }
 
 function readEffortChoice(v: unknown): Pick<NewSessionDraft, "effortChoice"> {

@@ -90,6 +90,21 @@ describe("readDraft", () => {
     expect(readDraft(null)).toBeNull();
   });
 
+  test("a chosen specialist survives the detour, and a malformed one is dropped (#1693)", () => {
+    const choice = { id: "implementer", version: 3 };
+    expect(readDraft({ ...DRAFT, specialistChoice: choice })?.specialistChoice).toEqual(choice);
+    for (const bad of [
+      { id: "implementer" },
+      { id: "implementer", version: "3" },
+      { id: "implementer", version: 0 },
+      { id: "implementer", version: 1.5 },
+      { id: 7, version: 3 },
+      "implementer",
+    ]) {
+      expect(readDraft({ ...DRAFT, specialistChoice: bad })).not.toHaveProperty("specialistChoice");
+    }
+  });
+
   test("a pre-#1458 cwdOverride is dropped, never carried into the form", () => {
     const parsed = readDraft({ ...DRAFT, cwdOverride: "/home/u/else" });
     expect(parsed).toEqual(DRAFT);

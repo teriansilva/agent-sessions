@@ -11,6 +11,9 @@ export interface FreshSession {
   /** The model the new-session form chose (#1189). Absent or `default` ⇒ no `model` param, which
    *  is exactly the launch before a model could be chosen. The server validates it. */
   model?: string;
+  /** Started from a specialist (#1693): the version the form saw. The server re-validates it
+   *  against this agent and model, takes a capacity slot, and refuses (4422) with its reason. */
+  specialist?: { id: string; version: number };
 }
 
 export function termWsUrl(
@@ -35,6 +38,10 @@ export function termWsUrl(
     params.set("cwd", fresh.cwd);
     params.set("bypass", fresh.bypass ? "1" : "0");
     if (fresh.model && fresh.model !== "default") params.set("model", fresh.model);
+    if (fresh.specialist) {
+      params.set("specialist", fresh.specialist.id);
+      params.set("specialist_version", String(fresh.specialist.version));
+    }
   }
   // Per-tab claim (#184): fp + tab let the server's SessionRegistry recognise
   // owner vs secondary; force=1 demotes the current owner.

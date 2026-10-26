@@ -259,6 +259,65 @@ test.describe("New project wizard (#1187)", () => {
     expect(page.url()).not.toContain("selectProject");
   });
 
+  for (const back of ["cancel", "browser Back"] as const) {
+    test(`a chosen specialist survives the detour (${back}) and still launches bound (#1693)`, async ({
+      page,
+    }) => {
+      await mockApp(page);
+      await page.route("**/api/specialists", (r) =>
+        r.fulfill({
+          json: {
+            specialists: [
+              {
+                id: "implementer",
+                revision: 1,
+                archived: false,
+                grade: null,
+                live: 0,
+                skills_missing: [],
+                skills_outdated: [],
+                held: [],
+                current: {
+                  version: 3,
+                  title: "Implementer",
+                  summary: "",
+                  skills: [],
+                  engine: "codex",
+                  model: "default",
+                  effort: null,
+                  capacity: 2,
+                  created_at: 0,
+                },
+              },
+            ],
+            templates: [],
+            max_instances: 6,
+            live_total: 0,
+          },
+        }),
+      );
+      const sockets: URL[] = [];
+      await page.routeWebSocket(/\/ws\/term\//, (ws) => {
+        sockets.push(new URL(ws.url()));
+      });
+      await page.goto(SESSIONS_PATH);
+      const specialist = page.getByRole("combobox", { name: "Specialist" });
+      await specialist.selectOption("implementer");
+      await expect(page.getByTestId("new-session-specialist-note")).toBeVisible();
+      await openFromNewSession(page);
+      if (back === "cancel") await page.getByRole("button", { name: "Cancel" }).click();
+      else await page.goBack(); // clean draft → no question
+      await expect(page.getByRole("heading", { name: "Start a new session" })).toBeVisible();
+      await expect(page.getByTestId("new-session-specialist-note")).toBeVisible();
+      await expect(specialist).toHaveValue("implementer");
+      await expect(agentPicker(page).radio("codex")).toBeChecked();
+      await page.getByRole("button", { name: /start session/i }).click();
+      await expect.poll(() => sockets.length).toBeGreaterThan(0);
+      expect(sockets[0].searchParams.get("specialist")).toBe("implementer");
+      expect(sockets[0].searchParams.get("specialist_version")).toBe("3");
+    });
+  }
+
   test("the browser's Back from the wizard restores New session too", async ({ page }) => {
     await mockApp(page);
     await page.goto(SESSIONS_PATH);

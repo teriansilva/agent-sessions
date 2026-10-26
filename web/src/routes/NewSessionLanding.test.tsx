@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -33,6 +33,9 @@ vi.mock("../lib/api", async (orig) => {
       structuredModels: vi.fn(),
       structuredSnapshot: vi.fn(),
       structuredStart: vi.fn(),
+      // No pool (#1693): the form is a plain New session. The picker is pinned by
+      // `e2e/new-session-specialist.spec.ts` and `lib/specialistLaunch.test.ts`.
+      specialists: vi.fn(() => Promise.reject(new Error("no pool"))),
     },
   };
 });
@@ -2022,4 +2025,221 @@ test("New session after a guarded create failed stays guarded with skip-by-defau
   await vi.waitFor(() => expect(api.structuredCreate).toHaveBeenCalledTimes(1));
   expect(vi.mocked(api.structuredCreate).mock.calls[0][4]).toBe(false);
   expect(api.structuredStart).not.toHaveBeenCalled();
+});
+
+// Start from a specialist (#1693): an API create carries the version and counts it in its
+// identity; a later effort change drops it and the create is a plain one.
+const POOL = {
+  specialists: [
+    {
+      id: "implementer",
+      revision: 1,
+      archived: false,
+      grade: null,
+      live: 0,
+      skills_missing: [],
+      skills_outdated: [],
+      current: {
+        version: 2,
+        title: "Implementer",
+        summary: "",
+        skills: [],
+        engine: "codex-api",
+        model: "gpt-6.1-sol",
+        effort: "low",
+        capacity: 2,
+        created_at: 0,
+      },
+    },
+  ],
+  templates: [],
+  max_instances: 6,
+  live_total: 0,
+};
+
+for (const changeEffort of [false, true]) {
+  test(`an API create from a specialist ${changeEffort ? "drops it once the effort changes" : "sends its version and preselects its effort"} (#1693)`, async () => {
+    setRoster(FIXTURE);
+    sessionStorage.clear();
+    vi.mocked(api.structuredModels).mockResolvedValue(LEVELS);
+    vi.mocked(api.specialists).mockImplementation(() => Promise.resolve(POOL as never));
+    try {
+      const user = userEvent.setup();
+      vi.mocked(api.structuredCreate)
+        .mockReset()
+        .mockResolvedValue({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+      renderLanding(["codex-api"], DEFAULTS("gpt-6.1-sol", "high"));
+      await chooseProject(user, "");
+      const picker = await screen.findByRole("combobox", { name: "Specialist" });
+      await user.selectOptions(picker, "implementer");
+      await vi.waitFor(() => expect(screen.getByTestId("new-session-effort")).toHaveValue("low"));
+      expect(screen.getByTestId("new-session-specialist-note")).toHaveTextContent("Implementer v2");
+      if (changeEffort) {
+        await user.selectOptions(screen.getByTestId("new-session-effort"), "high");
+        expect(screen.queryByTestId("new-session-specialist-note")).toBeNull();
+      }
+      await user.click(screen.getByRole("button", { name: /start session/i }));
+      await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+      const [call] = vi.mocked(api.structuredCreate).mock.calls;
+      expect(call).toEqual(
+        changeEffort
+          ? ["codex-api", "/d", call[2], "gpt-6.1-sol", false, "high"]
+          : ["codex-api", "/d", call[2], "gpt-6.1-sol", false, "low", { id: "implementer", version: 2 }],
+      );
+    } finally {
+      vi.mocked(api.specialists).mockImplementation(() => Promise.reject(new Error("no pool")));
+    }
+  });
+}
+
+
+// The New project detour keeps a chosen specialist (review 7113): the draft carries it, and the
+// form honours it on the way back only as it was — else it says it was dropped.
+const TERMINAL_POOL = (version = 3) => ({
+  specialists: [
+    {
+      id: "implementer",
+      revision: 1,
+      archived: false,
+      grade: null,
+      live: 0,
+      skills_missing: [],
+      skills_outdated: [],
+      current: {
+        version,
+        title: "Implementer",
+        summary: "",
+        skills: [],
+        engine: "claude",
+        model: "claude-opus-5",
+        effort: null,
+        capacity: 2,
+        created_at: 0,
+      },
+    },
+  ],
+  templates: [],
+  max_instances: 6,
+  live_total: 0,
+});
+
+function withPool(pool: unknown, run: () => Promise<void>) {
+  vi.mocked(api.specialists).mockImplementation(() => Promise.resolve(pool as never));
+  return run().finally(() =>
+    vi.mocked(api.specialists).mockImplementation(() => Promise.reject(new Error("no pool"))),
+  );
+}
+
+test("the New project detour carries the chosen specialist in the draft (#1693)", () =>
+  withPool(TERMINAL_POOL(), async () => {
+    const user = userEvent.setup();
+    renderLanding(["claude"]);
+    await chooseProject(user, "");
+    await user.selectOptions(await screen.findByRole("combobox", { name: "Specialist" }), "implementer");
+    expect(screen.getByTestId("new-session-specialist-note")).toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: /new project/i }));
+    const [, { state }] = navigateMock.mock.calls.at(-1) as [string, { state: { draft: NewSessionDraft } }];
+    expect(state.draft.specialistChoice).toEqual({ id: "implementer", version: 3 });
+  }));
+
+for (const [current, kept] of [
+  [3, true],
+  [4, false],
+] as const) {
+  test(`back from the wizard, the specialist is ${kept ? "restored and launched" : "dropped, and said so"} (${current === 3 ? "same" : "newer"} version) (#1693)`, () =>
+    withPool(TERMINAL_POOL(current), async () => {
+      const user = userEvent.setup();
+      renderLanding(["claude"], { default_project: "/d" }, {
+        restoreDraft: {
+          engineChoice: "claude",
+          bypassChoice: null,
+          returnTo: null,
+          projectChoice: "",
+          modelChoice: { engine: "claude", model: "claude-opus-5" },
+          specialistChoice: { id: "implementer", version: 3 },
+        },
+      });
+      await screen.findByRole("combobox", { name: "Specialist" });
+      if (kept) {
+        await screen.findByTestId("new-session-specialist-note");
+        expect(screen.queryByTestId("new-session-specialist-dropped")).toBeNull();
+      } else {
+        await screen.findByTestId("new-session-specialist-dropped");
+        expect(screen.queryByTestId("new-session-specialist-note")).toBeNull();
+      }
+      navigateMock.mockClear();
+      await user.click(screen.getByRole("button", { name: /start session/i }));
+      const [, opts] = navigateMock.mock.calls.at(-1) as [
+        string,
+        { state: { fresh: { specialist?: unknown } } },
+      ];
+      expect(opts.state.fresh.specialist).toEqual(kept ? { id: "implementer", version: 3 } : undefined);
+    }));
+}
+
+const RESTORED_DRAFT = {
+  restoreDraft: {
+    engineChoice: "claude",
+    bypassChoice: null,
+    returnTo: null,
+    projectChoice: "",
+    modelChoice: { engine: "claude", model: "claude-opus-5" },
+    specialistChoice: { id: "implementer", version: 3 },
+  },
+};
+
+test("back from the wizard, Start waits for the pool before it honours the specialist (#1693)", async () => {
+  let answer: (v: unknown) => void = () => {};
+  vi.mocked(api.specialists).mockImplementation(
+    () => new Promise((resolve) => (answer = resolve)) as never,
+  );
+  try {
+    const user = userEvent.setup();
+    renderLanding(["claude"], { default_project: "/d" }, RESTORED_DRAFT);
+    const start = await screen.findByRole("button", { name: /start session/i });
+    navigateMock.mockClear();
+    await user.click(start);
+    expect(navigateMock).not.toHaveBeenCalled(); // never a plain launch of a specialist choice
+    answer(TERMINAL_POOL(3));
+    await screen.findByTestId("new-session-specialist-note");
+    await user.click(screen.getByRole("button", { name: /start session/i }));
+    const [, opts] = navigateMock.mock.calls.at(-1) as [
+      string,
+      { state: { fresh: { specialist?: unknown } } },
+    ];
+    expect(opts.state.fresh.specialist).toEqual({ id: "implementer", version: 3 });
+  } finally {
+    vi.mocked(api.specialists).mockImplementation(() => Promise.reject(new Error("no pool")));
+  }
+});
+
+test("back from the wizard with the pool unreadable, the choice is dropped and said so (#1693)", async () => {
+  renderLanding(["claude"], { default_project: "/d" }, RESTORED_DRAFT);
+  await screen.findByTestId("new-session-specialist-dropped");
+  expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
+});
+
+test("a specialist on a chat agent is listed but can't be chosen; the chat starts plain (review 7113)", async () => {
+  setRoster(FIXTURE);
+  const pool = TERMINAL_POOL(3);
+  pool.specialists[0].current.engine = "apichat";
+  pool.specialists[0].current.model = "default";
+  vi.mocked(api.specialists).mockImplementation(() => Promise.resolve(pool as never));
+  try {
+    const user = userEvent.setup();
+    vi.mocked(api.chatNew).mockReset().mockResolvedValue({ id: "apichat:0190a3b2-1c2d-7e3f-8a9b-0c1d2e3f4a5b" });
+    renderLanding(["apichat"], { default_project: "/d" });
+    await chooseProject(user, "");
+    const picker = await screen.findByRole("combobox", { name: "Specialist" });
+    const option = screen.getByRole("option", { name: /Implementer/ }) as HTMLOptionElement;
+    expect(option.disabled).toBe(true);
+    expect(option).toHaveTextContent("a chat agent can’t run a specialist");
+    fireEvent.change(picker, { target: { value: "implementer" } }); // even forced
+    expect(screen.queryByTestId("new-session-specialist-note")).toBeNull();
+    await user.click(screen.getByRole("button", { name: /start session/i }));
+    await vi.waitFor(() => expect(api.chatNew).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.chatNew).mock.calls[0]).toEqual(["apichat", "/d"]);
+  } finally {
+    vi.mocked(api.specialists).mockImplementation(() => Promise.reject(new Error("no pool")));
+  }
 });

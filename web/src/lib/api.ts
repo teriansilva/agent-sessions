@@ -906,6 +906,7 @@ export const api = {
     model?: string,
     bypass = false,
     effort?: string,
+    specialist?: { id: string; version: number },
   ) =>
     mutateJson<StructuredSnapshot>("POST", "/api/structured/sessions", {
       engine,
@@ -916,6 +917,8 @@ export const api = {
       // one it always was.
       ...(model && model !== "default" && effort && effort !== "default" ? { effort } : {}),
       ...(bypass ? { bypass: true } : {}),
+      // Started from a specialist (#1693): re-validated and reserved by the server.
+      ...(specialist ? { specialist: { id: specialist.id, version: specialist.version } } : {}),
     }),
   structuredSnapshot: (key: string) =>
     getJsonWithDetail<StructuredSnapshot>(structuredPath(key)),
