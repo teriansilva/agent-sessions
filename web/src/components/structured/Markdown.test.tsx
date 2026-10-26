@@ -3,6 +3,19 @@ import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import { Markdown } from "./Markdown";
 
+// Counts parses: react-markdown builds its processor, and so calls the plugin's attacher, once
+// per render it actually performs.
+const gfm = vi.hoisted(() => ({ calls: 0 }));
+vi.mock("remark-gfm", async (importOriginal) => {
+  const real = (await importOriginal<typeof import("remark-gfm")>()).default;
+  return {
+    default: function countingGfm(this: unknown, ...args: Parameters<typeof real>) {
+      gfm.calls++;
+      return real.apply(this as never, args);
+    },
+  };
+});
+
 test("a reply renders as elements: emphasis, inline code, lists, headings, tables, fenced code", () => {
   const { container } = render(
     <Markdown
@@ -87,4 +100,23 @@ test("an image is never fetched: it shows as its alt text", () => {
   expect(container.querySelector("img")).toBeNull();
   expect(container).toHaveTextContent("[image: build log]");
   expect(container.innerHTML).not.toContain("evil.example");
+});
+
+test("a re-render with the same text does not parse it again; a new text does (#1688)", () => {
+  // A structured pane re-renders for reasons that never touch a reply (a window drag, a poll);
+  // each of those re-parsed every reply. Memoized on `text`, only a changed reply parses.
+  const Pane = ({ tick, text }: { tick: number; text: string }) => (
+    <div data-tick={tick}>
+      <Markdown text={text} />
+    </div>
+  );
+  const { rerender, container } = render(<Pane tick={0} text="**one**" />);
+  const parsed = gfm.calls;
+  expect(parsed).toBeGreaterThan(0);
+  rerender(<Pane tick={1} text="**one**" />);
+  rerender(<Pane tick={2} text="**one**" />);
+  expect(gfm.calls).toBe(parsed);
+  rerender(<Pane tick={3} text="**two**" />);
+  expect(gfm.calls).toBeGreaterThan(parsed);
+  expect(container.querySelector("strong")).toHaveTextContent("two");
 });

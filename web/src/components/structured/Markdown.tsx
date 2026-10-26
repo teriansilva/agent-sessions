@@ -1,4 +1,4 @@
-import { Children, isValidElement, useState } from "react";
+import { Children, isValidElement, memo, useState } from "react";
 import type { ReactElement, ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import type { Components } from "react-markdown";
@@ -13,15 +13,21 @@ import styles from "./Markdown.module.css";
  *   `rel="noopener noreferrer"`, and any other scheme (`javascript:`, `data:`) becomes inert text;
  * - an image is never loaded: an agent-chosen URL fetched by the operator's browser would leak
  *   that the reply was read (and anything encoded in the URL), so it shows as its alt text. */
-export function Markdown({ text }: { text: string }) {
+export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <div className={styles.md}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={safeUrl} components={COMPONENTS}>
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} urlTransform={safeUrl} components={COMPONENTS}>
         {text}
       </ReactMarkdown>
     </div>
   );
-}
+});
+
+/** Parsing is the expensive part — react-markdown runs the whole remark pipeline on every render
+ *  it gets. Memoized on `text`, a reply is parsed when it changes, not whenever its pane
+ *  re-renders: a structured pane on the map re-rendered every turn's Markdown on every pointer
+ *  move of a window drag (the operator's trace: 4.9 s of 11.5 s in `remark-parse`). */
+const REMARK_PLUGINS = [remarkGfm];
 
 const SAFE_SCHEME = /^(https?:|mailto:)/i;
 

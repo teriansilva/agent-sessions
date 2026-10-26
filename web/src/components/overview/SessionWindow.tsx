@@ -711,4 +711,23 @@ export const SessionWindow = memo(function SessionWindow({
       />
     </section>
   );
-});
+}, sameWindowProps);
+
+/** `memo`'s comparison with ONE difference: the rect compares by value (#1688 follow-up).
+ *
+ *  Every pointer move of a window drag hands the layer a new `windows` array, which rebuilds
+ *  every window's fitted rect — new objects with the same numbers for every window but the one
+ *  being dragged. Compared by identity, that re-rendered every open window on every move, and a
+ *  window showing an API session re-parsed all of its Markdown replies each time: the operator's
+ *  trace put that at ~350–550 ms per move. Every other prop stays an identity comparison. */
+function sameWindowProps<P extends { rect: Rect }>(a: Readonly<P>, b: Readonly<P>): boolean {
+  const keys = Object.keys(a) as (keyof P)[];
+  if (keys.length !== Object.keys(b).length) return false;
+  for (const k of keys) {
+    if (k === "rect") continue;
+    if (!Object.is(a[k], b[k])) return false;
+  }
+  const r = a.rect;
+  const q = b.rect;
+  return r === q || (r.x === q.x && r.y === q.y && r.w === q.w && r.h === q.h);
+}

@@ -147,29 +147,38 @@ async function meterViewportReads(page: Page) {
   });
 }
 
-/** Every window's current props object, read off its root `<section>`'s React fiber. */
-async function windowProps(page: Page): Promise<number> {
+/** New props objects per window since the last call, read off each root `<section>`'s fiber. */
+async function windowPropsByKey(page: Page): Promise<Record<string, number>> {
   return page.evaluate(() => {
-    const w = window as unknown as { __seenProps?: WeakSet<object>; __propsNew?: number };
+    const w = window as unknown as { __seenProps?: WeakSet<object> };
     w.__seenProps ??= new WeakSet();
-    let fresh = 0;
+    const out: Record<string, number> = {};
     for (const el of document.querySelectorAll("[data-session-window]")) {
+      const key = el.getAttribute("data-session-window") ?? "?";
+      out[key] ??= 0;
       const k = Object.keys(el).find((x) => x.startsWith("__reactFiber$"));
       if (!k) throw new Error("no React fiber on a window");
       type Fiber = { tag: number; return: Fiber | null; memoizedProps: object; alternate: Fiber | null };
       // The section is SessionWindow's root element: its nearest function-component owner
-      // (SimpleMemo 15 / Memo 14 / Function 0) is the window.
+      // (SimpleMemo 15 / Memo 14 / Function 0) is the window. With a custom comparator the
+      // memo is a Memo fiber around the inner Function fiber, and the inner one is found first:
+      // a bail-out leaves its props object untouched, a render replaces it.
       let f = (el as unknown as Record<string, Fiber>)[k].return;
       while (f && f.tag !== 15 && f.tag !== 14 && f.tag !== 0) f = f.return;
       if (!f) throw new Error("no window component above the section");
       for (const p of [f.memoizedProps, f.alternate?.memoizedProps]) {
         if (!p || w.__seenProps.has(p)) continue;
         w.__seenProps.add(p);
-        fresh++;
+        out[key]++;
       }
     }
-    return fresh;
+    return out;
   });
+}
+
+/** New props objects across all windows since the last call. */
+async function windowProps(page: Page): Promise<number> {
+  return Object.values(await windowPropsByKey(page)).reduce((a, b) => a + b, 0);
 }
 
 async function openMap(page: Page) {
@@ -252,5 +261,31 @@ test.describe("map window performance budgets (#1688)", () => {
     const last = await page.locator(`[data-session-window="claude:p${WINDOWS - 1}"]`).boundingBox();
     if (!layer || !last) throw new Error("no box");
     expect(last.x + last.width).toBeLessThanOrEqual(layer.x + layer.width + 1);
+  });
+
+  test("dragging one window re-renders that window and no other", async ({ page }) => {
+    await mockApp(page, { stream: false });
+    await seedWindows(page);
+    await openMap(page);
+    await expect.poll(async () => windowProps(page), { intervals: [500] }).toBe(0);
+
+    // Window 0's bar, left of where window 1 overlaps it.
+    const head = page.locator('[data-session-window="claude:p0"] [data-window-head]');
+    const box = await head.boundingBox();
+    if (!box) throw new Error("no window head");
+    await page.mouse.move(box.x + 40, box.y + box.height / 2);
+    await page.mouse.down();
+    // The press raises and focuses window 0, which legitimately re-renders the window that
+    // loses focus. Absorb that, then count only the drag's moves.
+    await page.mouse.move(box.x + 60, box.y + box.height / 2 + 10, { steps: 4 });
+    await windowPropsByKey(page);
+    await page.mouse.move(box.x + 260, box.y + box.height / 2 + 60, { steps: 20 });
+    const during = await windowPropsByKey(page);
+    await page.mouse.up();
+
+    // The dragged window moved, so it rendered — the meter is live...
+    expect(during["claude:p0"]).toBeGreaterThan(0);
+    // ...and every other window kept its props: their rects were rebuilt with the same numbers.
+    for (let i = 1; i < WINDOWS; i++) expect(during[`claude:p${i}`], `window p${i}`).toBe(0);
   });
 });
