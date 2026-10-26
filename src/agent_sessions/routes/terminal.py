@@ -64,6 +64,7 @@ from .. import (
     session_stream,
     sessionlock,
     sessions,
+    specialist_launch,
     transcript_owner,
     webterm,
 )
@@ -132,6 +133,9 @@ _SPAWN_APPEAR_POLL_S = 0.25
 # handoff watch above), and gives up — recording nothing — past the window. Past the spawn
 # timeout so a spawn held in admission still records.
 _MODEL_RECORD_WATCHES: set[asyncio.Task] = set()
+# A specialist launch's slot watches (#1693 S4b): `starting` → `live` once its master is up, and
+# the settlement once its connection ends. Strong refs for the same reason.
+_SPECIALIST_WATCHES: set[asyncio.Task] = set()
 _MODEL_RECORD_WAIT_S = webterm.SPAWN_TIMEOUT_S + 5.0
 _MODEL_RECORD_POLL_S = 0.1
 
@@ -510,6 +514,10 @@ def register(
         # agent argv, so an attach cannot change the model and must not change the record.
         model_record: tuple[str, model_choice.Selection] | None = None
         model_watch: asyncio.Task | None = None
+        # A slot from the specialist ledger (#1693 S4b), taken only on a LAUNCH of a session started
+        # from one — a new one naming it, or a relaunch of one — after every check that needs no
+        # slot and before the argv that carries its skills. Settled after the lock is handed on.
+        specialist_claim: specialist_launch.Claim | None = None
         try:
             if action == sessions.LAUNCH:
                 try:
@@ -642,6 +650,23 @@ def register(
                 except model_choice.ModelRefused as e:
                     return await reject(4422, e.detail)  # the finally hands back the lock
                 launchtiming.mark("model")
+                # Started from a specialist (#1693 S4b): that version, re-validated against THIS
+                # agent and the model just resolved, then a slot and its skill bundle — or a
+                # terminal refusal naming why (at capacity, a skill changed, another model).
+                try:
+                    wanted = specialist_launch.parse(
+                        ws.query_params.get("specialist"), ws.query_params.get("specialist_version")
+                    )
+                    if wanted is not None:
+                        specialist_claim = await asyncio.to_thread(
+                            specialist_launch.for_new,
+                            prov.engine_id,
+                            phys_key,
+                            *wanted,
+                            model=model_sel.model,
+                        )
+                except specialist_launch.Refused as e:
+                    return await reject(4422, e.detail)
                 # Mint-its-own-id engines (opencode, codex) can't pin a new-session id: they
                 # launch under the placeholder and we diff the engine's store to find the real
                 # id (#127/#315). Snapshot the cwd's existing ids BEFORE launch so the diff
@@ -781,14 +806,35 @@ def register(
                 # it (`on_resume`); otherwise only the model the session recorded is accepted — and
                 # a session with nothing recorded matches nothing. Refused before spawn.
                 try:
+                    # A session started from a specialist resumes on its version's model (#1693
+                    # S4b): an override that resolves elsewhere is refused, before any slot.
+                    asked = await asyncio.to_thread(
+                        specialist_launch.relaunch_model,
+                        prov,
+                        [transcript_key, phys_key],
+                        ws.query_params.get("model"),
+                    )
                     model_sel = await asyncio.to_thread(  # a sidecar read: off the loop
                         model_choice.select_resume,
                         prov,
-                        ws.query_params.get("model"),
+                        asked,
                         transcript_key,
                     )
+                except specialist_launch.Refused as e:
+                    return await reject(4422, e.detail)
                 except model_choice.ModelRefused as e:
                     return await reject(4422, e.detail)  # the finally hands back the lock
+                # A session started from a specialist re-reserves that version on every relaunch
+                # (#1693 S4b) — under the key its master runs under — or is refused; it is never
+                # relaunched without its slot and skills.
+                try:
+                    specialist_claim = await asyncio.to_thread(
+                        specialist_launch.for_relaunch,
+                        [transcript_key, phys_key],
+                        launch_key=phys_key,
+                    )
+                except specialist_launch.Refused as e:
+                    return await reject(4422, e.detail)
                 try:
                     launch = await asyncio.to_thread(  # off the loop, as above
                         prov.launch_argv,
@@ -812,13 +858,27 @@ def register(
             memory_env: dict[str, str] = {}
             mcp = agent_tools.NONE
             if action == sessions.LAUNCH and launch is not None:
+                claim = specialist_claim
 
                 def _memory_for_launch():
-                    paths = memory.launch_env(transcript_key, cwd, kind="terminal")
-                    tool = agent_tools.terminal_launch(engines.manifest_of(prov), paths, os.environ)
+                    paths = memory.launch_env(
+                        transcript_key,
+                        cwd,
+                        kind="terminal",
+                        specialist=claim.specialist_id if claim is not None else None,
+                    )
+                    tool = agent_tools.terminal_launch(
+                        engines.manifest_of(prov),
+                        paths,
+                        os.environ,
+                        skills_bundle=claim.bundle if claim is not None else None,
+                    )
                     return paths, tool
 
-                memory_env, mcp = await asyncio.to_thread(_memory_for_launch)
+                try:
+                    memory_env, mcp = await asyncio.to_thread(_memory_for_launch)
+                except agent_tools.SkillsRefused as e:
+                    return await reject(4422, str(e))  # never launched without its skills
                 launch = mcp.argv(launch)
                 launchtiming.mark("memory")
             try:
@@ -869,6 +929,15 @@ def register(
                 )
                 _MODEL_RECORD_WATCHES.add(model_watch)
                 model_watch.add_done_callback(_MODEL_RECORD_WATCHES.discard)
+            if specialist_claim is not None:
+                live_watch = asyncio.create_task(
+                    specialist_launch.activate_once_live(
+                        specialist_claim,
+                        lambda: ptybridge.session_exists(prov.engine_id, phys_native),
+                    )
+                )
+                _SPECIALIST_WATCHES.add(live_watch)
+                live_watch.add_done_callback(_SPECIALIST_WATCHES.discard)
             # Delta-resume: a reconnecting client reports the absolute byte offset it
             # last saw; we stream only the bytes since then (never re-blank). Bad/absent
             # value → 0 → full replay. buf_key is the PHYSICAL key (placeholder for an
@@ -1067,3 +1136,9 @@ def register(
                 # holds no lock.
                 if lock is not None:
                     lock.transfer()
+                # Only now, with the lock handed on (to a master, or to nobody), is the slot's
+                # session asked the way reconcile asks: no master → released, a master → live.
+                if specialist_claim is not None:
+                    settling = asyncio.create_task(specialist_launch.settle(specialist_claim))
+                    _SPECIALIST_WATCHES.add(settling)
+                    settling.add_done_callback(_SPECIALIST_WATCHES.discard)

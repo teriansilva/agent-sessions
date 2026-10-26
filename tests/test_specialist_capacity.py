@@ -729,3 +729,18 @@ def test_a_nan_attempt_is_a_422(api, spec):
     url = f"/api/specialists/reservations/{held['reservation_id']}/release"
     r = c.post(url, content='{"rev": NaN}', headers={**hdr, "Content-Type": "application/json"})
     assert r.status_code == 422
+
+
+def test_an_archived_specialist_s_held_slot_is_never_re_taken(spec):
+    """Review 7100: archiving stops every new attempt — a re-take of a HELD slot as much as a new
+    reservation after its slot was released."""
+    held = _reserve(spec["id"], "held")
+    released = _reserve(spec["id"], "released")
+    assert store.release(released["reservation_id"], owner=released["owner"])
+    store.set_archived(spec["id"], True, expect_revision=spec["revision"])
+    before = store.get_reservation(held["reservation_id"])
+    with pytest.raises(store.StoreError, match="archived"):
+        _reserve(spec["id"], "held")
+    assert store.get_reservation(held["reservation_id"]) == before  # nothing rotated
+    with pytest.raises(store.StoreError, match="archived"):
+        _reserve(spec["id"], "released")

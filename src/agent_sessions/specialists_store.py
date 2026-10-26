@@ -646,6 +646,10 @@ def reserve(
         if held is not None:
             if held["specialist_id"] != sid or int(held["version"]) != n:
                 raise Conflict("this session already holds a slot for another specialist")
+            # Archived since the slot was taken: no new attempt on it (a relaunch, a retry) —
+            # checked here, in the same transaction as the re-take.
+            if _get(con, sid)["archived"]:
+                raise StoreError("this specialist is archived", status=409)
             # A re-take (a double tap, a retry, a resume) is a NEW attempt on the same slot: back to
             # `starting` with its grace, under this process, its old hold cleared, and the owner
             # token rotated to one nobody holds — so the EARLIER attempt can no longer settle it
@@ -789,6 +793,26 @@ def active() -> list[dict]:
             "SELECT * FROM specialist_reservations WHERE state != 'released' ORDER BY created_at"
         ).fetchall()
         return [_reservation(r) for r in rows]
+
+
+def last_reservation(session_keys: list[str]) -> dict | None:
+    """The newest reservation, in any state, recorded under any of ``session_keys`` (one session's
+    keys: the one a relaunch names and the physical one its master runs under), or None. A
+    relaunch of a session started from a specialist re-reserves THAT specialist's version."""
+    keys = []
+    for k in session_keys:
+        with contextlib.suppress(StoreError):
+            keys.append(canonical_key(k))
+    if not keys or not db_path().exists():
+        return None
+    marks = ", ".join("?" for _ in keys)
+    with _read() as con:
+        r = con.execute(
+            "SELECT * FROM specialist_reservations"  # noqa: S608 — placeholders only
+            f" WHERE session_key IN ({marks}) ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            tuple(keys),
+        ).fetchone()
+        return None if r is None else _reservation(r)
 
 
 def active_counts() -> tuple[dict[str, int], int]:

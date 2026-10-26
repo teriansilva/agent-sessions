@@ -577,3 +577,21 @@ def test_without_atomic_no_replace_a_bundle_is_refused_never_check_then_rename(m
     ):
         skill_bundles.build("res-atomic", [tdd])
     assert [p.name for p in skill_bundles.root().iterdir()] == []  # nothing published, no staging
+
+
+def _bundle_names() -> list[str]:
+    root = skill_bundles.root()
+    return sorted(p.name for p in root.glob("*")) if root.exists() else []
+
+
+def test_proving_pins_refuses_a_changed_or_missing_skill_and_copies_nothing():
+    tdd = _skill("tdd")
+    skill_bundles.prove_pins([tdd])  # current: no error
+    before = _bundle_names()
+    _edit_in_place("tdd", SKILL_MD + "something else")
+    with pytest.raises(skill_bundles.BundleRefused, match="changed since"):
+        skill_bundles.prove_pins([tdd])
+    with pytest.raises(skill_bundles.BundleRefused, match="not in your skills library"):
+        skill_bundles.prove_pins([{"id": "nope", "revision": tdd["revision"]}])
+    after = _bundle_names()
+    assert after == before

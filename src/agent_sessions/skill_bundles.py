@@ -232,6 +232,19 @@ def _copy_pinned(staging_fd: int, refs: list[tuple[str, str]]) -> None:
         raise BundleRefused("the skills library is busy or unavailable; try again") from None
 
 
+def prove_pins(skills: list[dict]) -> None:
+    """Prove the library STILL holds every skill at the revision pinned, or `BundleRefused` —
+    the check `build` makes, without copying: a launch that reuses an existing bundle (a re-take
+    of a held slot) is refused exactly when a fresh one would be."""
+    refs = _check(skills)
+    try:
+        with library.locked(exclusive=False) as lib_fd:
+            for sid, pinned in refs:
+                _snapshot(lib_fd, sid, pinned)
+    except (store.StoreError, *_DIR_ERRORS):
+        raise BundleRefused("the skills library is busy or unavailable; try again") from None
+
+
 def build(bundle_id: str, skills: list[dict]) -> Path:
     """The bundle ``bundle_id`` holding exactly ``skills`` (``[{id, revision}]``), or
     `BundleRefused`. Never replaces an existing bundle."""
