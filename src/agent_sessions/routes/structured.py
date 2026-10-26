@@ -7,8 +7,9 @@ mission correlation is ever read from a browser (mission callers use the facade 
 
 * ``GET  /api/structured/clients/{engine}`` — implemented operations and live readiness.
 * ``GET  /api/structured/clients/{engine}/models`` — the models the client's CLI reports (#1313).
-* ``POST /api/structured/sessions {engine, cwd, operation_id, model?, bypass?}`` — create; an
-  exact repeat of ``operation_id`` returns the same session (a ``bypass`` one waits for ``start``).
+* ``POST /api/structured/sessions {engine, cwd, operation_id, model?, bypass?, specialist?}`` —
+  create; an exact repeat of ``operation_id`` returns the same session (a ``bypass`` one waits for
+  ``start``). ``specialist`` is ``{id, version}`` (#1693): every generation re-reserves it.
   It answers once the worker is launched, not ready (#1505): the snapshot's ``launch`` view
   (``{gen, state, reason, since}``) turns ``ready`` or ``failed`` by itself.
 * ``POST /api/structured/sessions/{key}/start`` — launch a skip-permissions creation (#1339);
@@ -69,6 +70,22 @@ def _revision(value: object) -> int | None:
     return value
 
 
+def _specialist(raw: object) -> tuple[str, int] | None:
+    from .. import specialist_launch
+
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) != {"id", "version"}:
+        raise HTTPException(status_code=422, detail="specialist must be {id, version}")
+    try:
+        parsed = specialist_launch.parse(raw["id"], raw["version"])
+    except specialist_launch.Refused as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from None
+    if parsed is None:  # an empty `{id, version}` is not "no specialist"
+        raise HTTPException(status_code=422, detail="specialist must be {id, version}")
+    return parsed
+
+
 async def _run(coroutine):
     try:
         return await coroutine
@@ -103,7 +120,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     ) -> JSONResponse:
         body = await _json(
             request,
-            {"engine", "cwd", "operation_id", "model", "effort", "bypass"},
+            {"engine", "cwd", "operation_id", "model", "effort", "bypass", "specialist"},
             {"engine", "cwd", "operation_id"},
         )
         if not isinstance(body["engine"], str):
@@ -112,6 +129,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             raise HTTPException(status_code=422, detail="bypass must be a boolean")
         if body.get("effort") is not None and not isinstance(body["effort"], str):
             raise HTTPException(status_code=422, detail="effort must be a string")
+        # Started from a specialist (#1693 S4b): `{id, version}`, re-validated where it launches.
+        specialist = _specialist(body.get("specialist"))
         out = await _run(
             structured_runtime.create_session(
                 body["engine"],
@@ -120,6 +139,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                 model=body.get("model"),
                 effort=body.get("effort"),
                 bypass=body.get("bypass", False),
+                **({"specialist": specialist} if specialist is not None else {}),
                 # The page opens on launch, not on ready (#1505): the snapshot's `launch` view
                 # reports readiness. Only this route and `/start` below pass False.
                 wait_ready=False,

@@ -86,8 +86,12 @@ class _ChatAdapter:
             return False, "configure this agent's endpoint in Settings → Agents"
         return True, None
 
-    async def create(self, *args, bypass=False, effort=None, wait_ready=True, **kwargs):
+    async def create(
+        self, *args, bypass=False, effort=None, wait_ready=True, specialist=None, **kwargs
+    ):
         # A chat conversation launches no worker, so it has no readiness to wait for (#1505).
+        if specialist is not None:
+            raise StructuredError(422, "this agent can't be started from a specialist")
         if bypass:
             raise StructuredError(422, "this agent has no permission prompts to skip")
         if effort is not None:
@@ -144,6 +148,7 @@ class _NativeAdapter:
         bypass=False,
         execution_admission=None,
         wait_ready=True,
+        specialist=None,
     ):
         return await _native(
             native_runtime.create,
@@ -155,6 +160,7 @@ class _NativeAdapter:
             bypass=bypass,
             execution_admission=execution_admission,
             wait_ready=wait_ready,
+            specialist=specialist,
         )
 
     async def snapshot(self, engine, native):
@@ -569,6 +575,7 @@ async def create_session(
     bypass: bool = False,
     execution_admission: ExecutionGuard | None = None,
     wait_ready: bool = True,
+    specialist: tuple[str, int] | None = None,
 ) -> dict:
     """``wait_ready`` (#1505): True — every internal caller — returns once the session is ready,
     as it always has. Only the HTTP route passes False: it returns as soon as the session is
@@ -576,6 +583,8 @@ async def create_session(
     adapter = await asyncio.to_thread(_adapter, engine, "create")  # a fresh roster read
     # `effort` (#1407) is sent only when chosen, so a create without one is the call it always was.
     extra = {"effort": effort} if effort is not None else {}
+    if specialist is not None:  # #1693 S4b: sent only when chosen, like `effort`
+        extra["specialist"] = specialist
     sid = await adapter.create(
         engine,
         cwd,

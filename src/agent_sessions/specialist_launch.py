@@ -30,6 +30,8 @@ from . import specialists_store as store
 
 log = logging.getLogger("agent_sessions.specialist_launch")
 
+#: The largest version a request may name (six digits, as the version route takes).
+VERSION_MAX = 999_999
 #: How long a launch's watch waits for its master before leaving the slot to reconcile.
 LIVE_WAIT_S = 60.0
 _LIVE_POLL_S = 0.25
@@ -65,7 +67,12 @@ def parse(raw_id: object, raw_version: object) -> tuple[str, int] | None:
         raise Refused("unknown specialist")
     if isinstance(raw_version, str) and raw_version.isascii() and raw_version.isdigit():
         raw_version = int(raw_version) if len(raw_version) <= 6 else None
-    if isinstance(raw_version, bool) or not isinstance(raw_version, int) or raw_version < 1:
+    if (
+        isinstance(raw_version, bool)
+        or not isinstance(raw_version, int)
+        or not 1 <= raw_version <= VERSION_MAX
+    ):
+        # Bounded before any store read: a JSON integer has no width, and SQLite's does.
         raise Refused("a specialist launch names the version it starts from")
     return raw_id, raw_version
 
@@ -110,6 +117,70 @@ def relaunch_model(prov, session_keys: list[str], requested: object) -> object:
         if asked != pinned:
             raise Refused(f"this session runs as {v['title']}, on the model {pinned}")
     return pinned
+
+
+def check_api(
+    engine: str,
+    sid: str,
+    n: int,
+    *,
+    model: str | None,
+    effort: str | None,
+    carries_skills: bool = True,
+) -> dict:
+    """An API session's create names ``{id, version}``: re-validated against the agent, model and
+    effort the create resolved, and returned as the binding its request records. No slot yet —
+    every generation reserves its own (`for_generation`)."""
+    v = _version(sid, n)
+    if v["engine"] != engine:
+        raise Refused(f"this specialist runs on {v['engine']}, not {engine}")
+    if v["model"] != (model or model_grades.DEFAULT_MODEL):
+        raise Refused(f"this specialist runs on the model {v['model']}; choose it to start one")
+    if v["effort"] != effort:
+        raise Refused(f"this specialist runs at effort {v['effort'] or 'default'}")
+    if v["skills"] and not carries_skills:
+        raise Refused("this agent cannot load skills")
+    with contextlib.suppress(store.StoreError):
+        if store.get(sid)["archived"]:
+            raise Refused("this specialist is archived")
+    return {"id": sid, "version": n}
+
+
+def for_generation(session_key: str, binding: dict, slot: object = None) -> Claim:
+    """A slot for ONE agent process of an API session recorded with ``binding`` (a create's first
+    worker, or any later one), or `Refused`. ``slot``: the one its record names. Still this
+    session's (its owner token), it is RENEWED — kept, with a fresh grace — so a Stop can still
+    release it; otherwise the same version is re-reserved."""
+    v = _version(binding["id"], binding["version"])
+    if isinstance(slot, dict) and isinstance(slot.get("owner"), str):
+        rid = slot.get("reservation_id")
+        try:
+            renewed = isinstance(rid, str) and store.renew(rid, owner=slot["owner"])
+        except store.StoreError as exc:
+            raise Refused(str(exc)) from None
+        if renewed:
+            claim = Claim(rid, session_key, binding["id"], binding["version"], slot["owner"], None)
+            try:
+                bundle = _bundle(rid, v["skills"])
+            except BaseException:
+                abandon(claim)
+                raise
+            return Claim(rid, session_key, binding["id"], binding["version"], slot["owner"], bundle)
+    return _take(binding["id"], binding["version"], session_key, v)
+
+
+def release_slot(slot: object) -> None:
+    """Its session was PROVEN to run nothing (the caller holds that proof): release the slot a
+    record names, if that record's generation created it (``{reservation_id, owner}``)."""
+    if not isinstance(slot, dict) or not slot.get("owner"):
+        return
+    rid = slot.get("reservation_id")
+    if not isinstance(rid, str):
+        return
+    try:
+        specialist_capacity.release(rid, owner=slot["owner"])
+    except Exception:  # noqa: BLE001 — reconcile releases it on its own proof
+        log.warning("specialist slot %s not released", rid, exc_info=True)
 
 
 def for_relaunch(session_keys: list[str], *, launch_key: str) -> Claim | None:

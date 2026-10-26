@@ -744,3 +744,27 @@ def test_an_archived_specialist_s_held_slot_is_never_re_taken(spec):
     assert store.get_reservation(held["reservation_id"]) == before  # nothing rotated
     with pytest.raises(store.StoreError, match="archived"):
         _reserve(spec["id"], "released")
+
+
+def test_a_renewal_keeps_the_owner_and_fences_an_answer_read_before_it(spec):
+    """An API session's next generation renews its own slot (#1693 S4b): back to `starting`, the
+    owner kept (a Stop can still release it), and any reconcile answer read before it refused."""
+    r = _reserve(spec["id"], "s1")
+    assert store.activate(r["reservation_id"], owner=r["owner"])
+    seen = store.get_reservation(r["reservation_id"])
+    assert store.renew(r["reservation_id"], owner="not-the-owner") is False
+    assert store.renew(r["reservation_id"], owner=r["owner"]) is True
+    now = store.get_reservation(r["reservation_id"])
+    assert now["state"] == "starting" and now["rev"] > seen["rev"]
+    assert store.reclaim(r["reservation_id"], seen_rev=seen["rev"]) is False
+    assert store.release(r["reservation_id"], owner=r["owner"]) is True
+    assert store.renew(r["reservation_id"], owner=r["owner"]) is False  # released: not renewable
+
+
+def test_an_archived_specialist_s_slot_is_never_renewed(spec):
+    r = _reserve(spec["id"], "s1")
+    store.set_archived(spec["id"], True, expect_revision=spec["revision"])
+    before = store.get_reservation(r["reservation_id"])
+    with pytest.raises(store.StoreError, match="archived"):
+        store.renew(r["reservation_id"], owner=r["owner"])
+    assert store.get_reservation(r["reservation_id"]) == before

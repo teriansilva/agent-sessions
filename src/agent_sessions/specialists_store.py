@@ -725,6 +725,32 @@ def activate(reservation_id: str, *, owner: str, now: float | None = None) -> bo
     return _cas(reservation_id, sets, "AND state = 'starting' AND owner = ?", (owner,), ts)
 
 
+def renew(reservation_id: str, *, owner: str, now: float | None = None) -> bool:
+    """The session that holds this slot starts ANOTHER agent process for itself (an API session's
+    next generation, serialised by that session's own lock): back to ``starting`` with a fresh
+    grace, under this process, its hold cleared — keeping its owner, unlike a re-take. The ``rev``
+    bump fences any reconcile answer read before it (the gap between two generations reads
+    gone). False when the slot is no longer this owner's; a specialist archived since refuses it,
+    in the same transaction (no new agent process for it)."""
+    ts = time.time() if now is None else now
+    with _tx() as con:
+        row = con.execute(
+            "SELECT specialist_id FROM specialist_reservations"
+            " WHERE reservation_id = ? AND state != 'released' AND owner = ?",
+            (reservation_id, owner),
+        ).fetchone()
+        if row is None:
+            return False
+        if _get(con, row["specialist_id"])["archived"]:
+            raise StoreError("this specialist is archived", status=409)
+        cur = con.execute(
+            "UPDATE specialist_reservations SET state = 'starting', held_reason = '',"
+            " process = ?, rev = rev + 1, updated_at = ? WHERE reservation_id = ?",
+            (_process(), ts, reservation_id),
+        )
+        return cur.rowcount == 1
+
+
 def mark_live(reservation_id: str, *, seen_rev: int, now: float | None = None) -> bool:
     """Reconcile found its session live: ``live``, any old hold cleared — only if nothing changed
     since reconcile read it (``seen_rev``)."""

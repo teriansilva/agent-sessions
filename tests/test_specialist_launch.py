@@ -67,17 +67,38 @@ def test_a_request_names_an_id_and_a_version_or_nothing():
     assert specialist_launch.parse(None, None) is None
     assert specialist_launch.parse("", "") is None
     assert specialist_launch.parse("implementer", "3") == ("implementer", 3)
+    assert specialist_launch.parse("implementer", 999_999) == ("implementer", 999_999)
     for raw_id, raw_version in [
         ("implementer", None),
         ("implementer", "0"),
         ("implementer", "x"),
         ("implementer", "9" * 7),
         ("implementer", True),
+        ("implementer", 10**30),
+        ("implementer", 1_000_000),
         (None, "1"),
         ("../etc", "1"),
     ]:
         with pytest.raises(specialist_launch.Refused):
             specialist_launch.parse(raw_id, raw_version)
+
+
+def test_the_route_takes_only_an_id_and_a_version():
+    from fastapi import HTTPException
+
+    from agent_sessions.routes import structured
+
+    assert structured._specialist(None) is None
+    assert structured._specialist({"id": "implementer", "version": 2}) == ("implementer", 2)
+    for bad in [
+        "implementer",
+        {"id": "implementer"},
+        {"id": "x", "version": 1, "extra": 1},
+        {"id": "", "version": ""},
+        {"id": None, "version": None},
+    ]:
+        with pytest.raises(HTTPException):
+            structured._specialist(bad)
 
 
 # ---- a new session -------------------------------------------------------------------------------
@@ -445,3 +466,44 @@ def test_attaching_to_a_live_session_never_reserves(term, spec):
     url = f"/ws/term/{key}?new=1&cwd={term.cwd}&specialist={spec['id']}&specialist_version=1"
     assert term.connect(url)[0] == 1000
     assert store.last_reservation([key]) is None
+
+
+def test_an_api_create_on_an_agent_that_cannot_carry_skills_is_refused_before_anything(skilled):
+    """Checked at the create, before any slot or ownership exists (the launch refuses again)."""
+    with pytest.raises(specialist_launch.Refused, match="cannot load skills"):
+        specialist_launch.check_api(
+            "claude", skilled["id"], 1, model=None, effort=None, carries_skills=False
+        )
+    assert specialist_launch.check_api(
+        "claude", skilled["id"], 1, model=None, effort=None, carries_skills=True
+    ) == {"id": skilled["id"], "version": 1}
+    assert store.active() == []
+
+
+def test_an_oversized_json_version_on_the_api_create_is_a_422_never_a_500(auth_cfg):
+    """Review 7104: a JSON integer has no width; the route bounds it before any store read."""
+    from test_specialist_capacity import _client
+
+    c = _client(auth_cfg)
+    assert (
+        c.post(
+            "/login",
+            data={"username": "marcus", "password": "hunter2"},
+            follow_redirects=False,
+            headers={"Origin": auth_cfg.origin},
+        ).status_code
+        == 303
+    )
+    hdr = {"X-CSRF-Token": c.get("/api/config").json()["csrf"], "Origin": auth_cfg.origin}
+    for version in (10**30, 1_000_000, 0, -1):
+        r = c.post(
+            "/api/structured/sessions",
+            json={
+                "engine": "claude",
+                "cwd": "/tmp",
+                "operation_id": str(uuid.uuid4()),
+                "specialist": {"id": "implementer", "version": version},
+            },
+            headers=hdr,
+        )
+        assert r.status_code == 422, (version, r.status_code, r.text)

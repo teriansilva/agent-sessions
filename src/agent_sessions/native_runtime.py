@@ -457,8 +457,49 @@ def _server_env() -> dict[str, str]:
     return keep
 
 
-def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -> str:
-    """Mint, persist intent, lease, launch and pin one generation. Caller holds the lock."""
+def _specialist_claim(record: dict, adapter: str):
+    """The specialist slot for one generation of a session started from one (#1693 S4b), or None:
+    the same version, renewed or re-reserved (`specialist_launch.for_generation`). Refused as a
+    `NativeError`; an adapter that can't carry its skills is refused and the slot freed."""
+    specialist = record["request"].get("specialist")
+    if specialist is None:
+        return None
+    from . import specialist_launch
+
+    try:
+        claim = specialist_launch.for_generation(
+            record["session_key"], specialist, record.get("specialist_slot")
+        )
+    except specialist_launch.Refused as exc:
+        raise NativeError(409, exc.detail) from None
+    if claim.bundle is not None and not kinds.API_MCP_KINDS.get(adapter):
+        specialist_launch.abandon(claim)
+        raise NativeError(422, "this agent cannot load skills")
+    return claim
+
+
+def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str, claim=None) -> str:
+    """Mint, persist intent, lease, launch and pin one generation. Caller holds the lock.
+    ``claim``: a specialist slot the caller already took for it; otherwise one is taken here when
+    the session was started from a specialist (#1693 S4b). Whatever refuses or fails BEFORE the
+    spawn — a check, the interpreter, the entrypoint's provenance, a state write — releases it;
+    once a spawn may have happened, only proof does (a stop, a failed generation, reconcile)."""
+    from . import specialist_launch
+
+    held = {"claim": claim, "spawning": False}
+    try:
+        return _launch_generation(session_id, record, prov, binding, mode=mode, held=held)
+    except BaseException:
+        if not held["spawning"]:
+            specialist_launch.abandon(held["claim"])
+        raise
+
+
+def _launch_generation(
+    session_id: str, record: dict, prov, binding, *, mode: str, held: dict
+) -> str:
+    from . import agent_tools, memory, resource_limits
+
     if _permission_change(record).get("state") == "stopping":
         raise NativeError(409, "finish enabling Skip permissions before sending another message")
     if _start_state(record) not in (None, STARTING, STARTED):
@@ -466,7 +507,6 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -
         # creation's generation is born only from `starting` (the `/start` that set it, under this
         # same lock) or `started`. Fail closed here, where every generation is born.
         raise NativeError(409, "this session has not been started; start or discard it")
-    from . import agent_tools, memory, resource_limits
 
     policy = resource_limits.values()
     worker = native_containment.WorkerIdentity.mint()
@@ -506,14 +546,29 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -
         ),
         "idle_timeout": WORKER_IDLE_TIMEOUT,
     }
-    # Shared project memory (#1441), bound per GENERATION: every resume or relaunch is a new agent
-    # process and asks again, so a toggle reaches the next generation, never a live one. Bound
-    # last, once everything above that can refuse the launch has passed.
+    # Started from a specialist (#1693 S4b): each generation is a new agent process, so it takes
+    # its own slot — the same version, re-reserved — and its skill bundle here, once everything
+    # above that can refuse the launch has passed. Released at once if nothing is spawned; after a
+    # spawn, only on proof (a stop, a failed generation, reconcile).
+    specialist = record["request"].get("specialist")
+    if held["claim"] is None:
+        held["claim"] = _specialist_claim(record, adapter)
+    claim = held["claim"]
+    if claim is not None:
+        record["specialist_slot"] = {"reservation_id": claim.reservation_id, "owner": claim.owner}
+        config["skills_bundle"] = claim.bundle
+    # Shared project memory (#1441), bound per GENERATION: every resume or relaunch is a new
+    # agent process and asks again, so a toggle reaches the next generation, never a live one.
+    # Bound last, once everything above that can refuse the launch has passed.
     config["memory_env"] = memory.launch_env(
-        record["session_key"], record["request"]["cwd"], kind="api"
+        record["session_key"],
+        record["request"]["cwd"],
+        kind="api",
+        specialist=specialist["id"] if specialist is not None else None,
     )
-    # The memory tool (#1506), only beside the paths: the manifest's kind, which the worker checks
-    # against its protocol (`agent_tools.api_kind`) and shapes into that protocol's own slot.
+    # The memory tool (#1506), only beside the paths: the manifest's kind, which the worker
+    # checks against its protocol (`agent_tools.api_kind`) and shapes into that protocol's own
+    # slot.
     config["memory_tool"] = agent_tools.mcp_kind(prov.manifest) if config["memory_env"] else None
     if adapter == "opencode-acp":
         # The store the source resolves (`store.path_env` first): the worker's maintenance
@@ -555,6 +610,7 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -
         memory_gib=policy["api_memory_gib"],
     )
     launchtiming.mark("lease")
+    held["spawning"] = True  # from here a worker may exist: its slot is released only on proof
     launched = HOST.launch(argv)
     launchtiming.mark("spawn")
     observation = HOST.show(worker)
@@ -781,6 +837,7 @@ def _create_sync(
     bypass: bool = False,
     effort: str | None = None,
     record_launch: bool = False,
+    specialist: tuple[str, int] | None = None,
 ) -> str | None:
     """The worker id of a new launch (a generation to await), or None when nothing launched.
 
@@ -817,6 +874,10 @@ def _create_sync(
         request["effort"] = effort
     if bypass:
         request["bypass"] = True
+    if specialist is not None:
+        # Started from a specialist (#1693 S4b): part of the immutable request, so a replay with
+        # another (or none) conflicts, and every generation re-reserves THIS version.
+        request["specialist"] = {"id": specialist[0], "version": specialist[1]}
     root = _journal_root(prov)
     with native_state.session_lock(session_id):
         launchtiming.mark("lock")
@@ -835,6 +896,19 @@ def _create_sync(
         else:
             if refused is not None:
                 raise NativeError(422, refused.detail)
+            if specialist is not None:
+                from . import specialist_launch
+
+                try:
+                    specialist_launch.check_api(
+                        engine_id,
+                        *specialist,
+                        model=model,
+                        effort=effort,
+                        carries_skills=bool(kinds.API_MCP_KINDS.get(adapter)),
+                    )
+                except specialist_launch.Refused as exc:
+                    raise NativeError(422, exc.detail) from None
             ready, reason = readiness(prov)
             launchtiming.mark("version")
             if not ready:
@@ -890,33 +964,41 @@ def _reserve_and_launch_locked(
 ) -> str:
     """Commit ownership and launch the FIRST generation of a creation (or a retried skip start's
     successor). Caller holds the lock."""
+    from . import specialist_launch
     from .engines import registry
 
     session_key = record["session_key"]
     source = native_ownership.source_identity(binding.source)
     if source is None:
         raise NativeError(409, "the native source has no recognised history store")
-    with storage.locked("launch", wait=30):
-        launchtiming.mark("launch_lock")
-        if not registry.admits(binding.source) or not api_source.admits(binding):
-            raise NativeError(409, "the agent changed or was removed")
-        native_ownership.reserve(
-            session_key,
-            source,
-            operation_id=session_id,
-            request=dict(record["request"]),
-            owner_token=record["owner_token"],
-        )
-        if record["native_id"] is not None:
-            # Claude: the id is ours, so permanent exclusion commits before any process.
-            native_ownership.bind(
+    # A specialist's slot first (#1693 S4b): a refusal (at capacity, archived) must leave no
+    # pending ownership behind — an unresolved creation refuses the source's console launches.
+    claim = _specialist_claim(record, record["adapter"])
+    try:
+        with storage.locked("launch", wait=30):
+            launchtiming.mark("launch_lock")
+            if not registry.admits(binding.source) or not api_source.admits(binding):
+                raise NativeError(409, "the agent changed or was removed")
+            native_ownership.reserve(
                 session_key,
+                source,
                 operation_id=session_id,
+                request=dict(record["request"]),
                 owner_token=record["owner_token"],
-                native_id=record["native_id"],
             )
+            if record["native_id"] is not None:
+                # Claude: the id is ours, so permanent exclusion commits before any process.
+                native_ownership.bind(
+                    session_key,
+                    operation_id=session_id,
+                    owner_token=record["owner_token"],
+                    native_id=record["native_id"],
+                )
+    except BaseException:
+        specialist_launch.abandon(claim)
+        raise
     launchtiming.mark("admit")
-    return _launch_locked(session_id, record, prov, binding, mode=mode)
+    return _launch_locked(session_id, record, prov, binding, mode=mode, claim=claim)
 
 
 async def create(
@@ -929,6 +1011,7 @@ async def create(
     bypass: bool = False,
     execution_admission=None,
     wait_ready: bool = True,
+    specialist: tuple[str, int] | None = None,
 ) -> str:
     """Create (or replay) one API session. ``wait_ready=True`` (every internal caller) returns
     once the worker reports ready, as it always has. ``wait_ready=False`` (#1505, the HTTP route
@@ -957,6 +1040,7 @@ async def create(
         bypass,
         effort,
         record_launch=not wait_ready,
+        specialist=specialist,
     )
     try:
         try:
@@ -1470,6 +1554,17 @@ def _stop_generation_locked(session_id: str, record: dict, worker_id: str) -> st
     return "live" if classify(session_id, worker_id) == "live" else "unknown"
 
 
+def _release_specialist_slot(record: dict) -> None:
+    """The record's session runs nothing (the caller holds that proof, under its lock): the slot
+    its generation created is released (#1693 S4b). A re-taken slot names no owner and is left to
+    reconcile, which settles it on its own proof."""
+    slot = record.get("specialist_slot")
+    if slot is not None:
+        from . import specialist_launch
+
+        specialist_launch.release_slot(slot)
+
+
 def _fail_owned_generation(
     engine_id: str, session_id: str, worker_id: str, kind: str, reason: str
 ) -> bool:
@@ -1490,6 +1585,9 @@ def _fail_owned_generation(
         contained = _stop_generation_locked(session_id, record, worker_id)
         if contained == "gone" and kind == "create" and not record.get("workers"):
             _discharge_if_unused(engine_id, session_id, record)
+        if contained == "gone" and not record.get("workers"):
+            # Nothing of this session runs (proved under its lock): its specialist slot is free.
+            _release_specialist_slot(record)
         if kind == "start":
             _set_start(record, FAILED, None)
         if contained != "gone":
@@ -3058,6 +3156,10 @@ def _stop_locked(engine_id: str, session_id: str, record: dict, discard: bool) -
         # Still under the lifecycle lock: no replay or relaunch can reserve in between the
         # proof that nothing ran and the discharge (Hermes on #1278).
         _discharge_if_unused(engine_id, session_id, record)
+        if discard:
+            # A Stop is the session's end, proved under its lock. Enabling Skip permissions stops
+            # the worker only to restart it (`discard=False`): the session keeps its slot.
+            _release_specialist_slot(record)
         return "gone"
     live = any(classify(session_id, w) == "live" for w in remaining)
     return "live" if live else "unknown"
