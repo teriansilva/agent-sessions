@@ -157,6 +157,7 @@ export default defineConfig({
           { text: "Terminal", link: "/guide/terminal" },
           { text: "Projects", link: "/guide/projects" },
           { text: "Playbooks", link: "/guide/playbooks" },
+          { text: "Specialists", link: "/guide/specialists" },
           { text: "Files & git", link: "/guide/files-and-git" },
           { text: "Mission control", link: "/guide/missions" },
           { text: "Prompt Templates", link: "/guide/templates" },

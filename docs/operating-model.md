@@ -29,9 +29,9 @@ Every noun has one meaning. UI copy, docs and code comments use these words.
 | **Equipment** | Access: MCP servers, tools, credentials, variable collections | — | Belongs to a specialist | target (P3/P6) |
 | **Project intel** | Project-local knowledge: `CLAUDE.md`, invariants, and **project memory** (the BattleLab memory tool: per project, off by default, notes reviewed through an inbox, hints never instructions) | — | Travels with a specialist, or stores load-bearing state | today |
 | **Agent** | An installed CLI or API client from the agent catalog (Settings → Agents). **Unchanged meaning** | The engines and models a specialist can run on | Is a specialist | today |
-| **Specialist** | A job in the **pool**: a title (*Intern*, *Bookkeeper*, *Implementer*, *Reviewer*), its skills, a **preselected engine and model** plus effort, a **grade**, a **capacity** and a service record. Versioned | Skills, engine and model, grade, capacity | Runs by itself; holds equipment | target (P3) |
-| **Pool** | The Commander's roster of specialists. Global; every mission is planned from it | Specialists | Belongs to one project | target (P3) |
-| **Grade** | A specialist's model tier: **Intern** = fast, **Specialist** = strong, **Senior** = frontier | — | Rank. Rank is earned from outcomes | target (vocabulary P2, mapping P3) |
+| **Specialist** | A job in the **pool**: a title (*Intern*, *Bookkeeper*, *Implementer*, *Reviewer*), its skills, a **preselected engine and model** plus effort, a **grade** derived from its model, and a **capacity**. Versioned; a service record joins in P9 | Skills, engine and model, grade, capacity | Runs by itself; holds equipment | today: the versioned pool and its grades (P3 S1, #1693); skills, notes and capacity: target P3 |
+| **Pool** | The Commander's roster of specialists. Global; every mission is planned from it | Specialists | Belongs to one project | today: Library → Specialists (P3 S1); planning from it: target P5 |
+| **Grade** | A specialist's model tier: **Intern** = fast, **Specialist** = strong, **Senior** = frontier | — | Rank. Rank is earned from outcomes | today: the operator's model → grade map in Settings → Agents, shipped empty (P3 S1) |
 | **Session** | One **instance** of a specialist on **one procedure step**: a separately fenced episode | — | Outlives its step as an identity, or carries context to another step | today as a session (one per step: target P6) |
 | **Mission plan** | A reusable plan: objectives, dependencies, project **slots**, role needs (skills and minimum grade) | — | Contains real projects, specialists or secret values | target (P7a) |
 | **Mission** | A plan bound to real projects and specialists, executing | Objectives, the team, the event log, the conversation | Bypasses a project's playbook | today (one project; objectives per project: target P4) |
@@ -70,7 +70,7 @@ These rules are **target** (P2–P6) unless a rule says otherwise; §10 shows wh
 - **Skills.** Matched by **exact id**, never by similarity. A specialist whose engine cannot load a skill cannot hold a role that needs it.
 - **Grade.** A step's minimum grade is checked against the **effective model**: the per-mission override if there is one, else the specialist's preselected model. It is checked at approval and again at every launch. By default, HQ proposes the **cheapest qualifying** specialist and says why.
 - **Replication and capacity.** A specialist is a template, so many instances can run at once across missions. Its capacity, the concurrency caps and the engine usage budgets bound them. A launch reserves capacity atomically before its session starts, and releases it on every exit: completion, launch failure, cancellation, crash recovery.
-- **Sessions.** One session per step, never one per objective. A specialist's skills and service record persist across sessions; its context never does.
+- **Sessions.** One session per step, never one per objective. A specialist's skills (and, from P9, its service record) persist across sessions; its context never does.
 - **Equipment.** Bound to the project. Issued to a session only after its capacity reservation succeeds, and revoked on every exit of that session.
 
 ## 3. What a specialist knows
@@ -198,7 +198,7 @@ There are three public kinds: **playbooks** and **skills** (the existing feed), 
 | Checklists | Removed (P1, #1653): HQ writes a mission's objectives from the instruction | Objective templates return as playbook procedures (P4) |
 | Playbook steps | **Format 5 (P2, #1654):** an agent step names a role (skills + minimum grade); formats ≤4 keep their recorded engine/model read-only | Several procedures per project; filling roles from the pool (P3/P5) |
 | Project memory | The BattleLab memory tool, per project | Unchanged; plus specialist notes per specialist × project (P3) |
-| Specialists, the pool | Not present; skills are stored but turned on nowhere; client profiles per engine | A versioned pool on client profiles; skills activated per session (P3) |
+| Specialists, the pool | **Library → Specialists (P3 S1, #1693):** a versioned, revision-fenced pool; each specialist is its own saved profile (engine, model, effort); its grade derived from the operator's model → grade map, which ships empty | Skills activated per session (P3 S2), specialist notes (P3 S3), capacity reservations and starting a session from a specialist (P3 S4) |
 | Mission scope | One project per mission | One project per objective; single project first, then cross-project (P4) |
 | Planning | A one-shot planner; the lead agent is planned in #1472 | HQ plans with the Commander (P5, needs mission-ready API clients) |
 | Execution | Terminal-supervised missions | API sessions under plan approval (P6, needs mission-ready API clients and the recorded D3 approval) |

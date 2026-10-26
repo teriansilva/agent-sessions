@@ -95,6 +95,7 @@ the same list.
 | `components/sidebar/RowMenu.module.css` | css | 3 | done | popup:session-row-menu | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
 | `components/sidebar/SessionList.module.css` | css | 6 | done | route:sidebar route:sidebar-empty route:sidebar-error route:sidebar-rename popup:session-row-menu | row arrival (nj-arrive + nj-flash overlay, LED nj-led-flash; Reduced: the single fade), FLIP reorder, review spin (nj-spin, Full only), toast-in, marquee (Full only) |
 | `components/slideshow/Slideshow.module.css` | css | 4 | done | popup:tour popup:whats-new | none (static dots) |
+| `components/specialists/specialists.module.css` | css | 10 | todo |  |  |
 | `components/structured/BackgroundWork.module.css` | css | 6 | todo |  |  |
 | `components/structured/Markdown.module.css` | css | 6 | todo |  |  |
 | `components/structured/NotSent.module.css` | css | 6 | todo |  |  |

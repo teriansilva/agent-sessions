@@ -97,6 +97,7 @@ from .routes import scrollback as scrollback_routes
 from .routes import sessions as sessions_routes
 from .routes import shares as shares_routes
 from .routes import spa as spa_routes
+from .routes import specialists as specialists_routes
 from .routes import structured as structured_routes
 from .routes import system as system_routes
 from .routes import templates as templates_routes
@@ -731,6 +732,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     automations_routes.register(
         app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry
     )
+    # The specialist pool (#1693, #1613 P3): same auth surface; grades derived at read.
+    specialists_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
 
     from .routes import plugins as plugin_routes
 

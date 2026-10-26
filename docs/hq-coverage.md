@@ -138,6 +138,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Agent budgets: token limit, manual used, alert threshold, notify | PATCH /api/agents/budgets | P2 W |
 | Agent operator models (add / remove a model id) | POST /api/prefs `agent_defaults.models` | P2 W |
 | Agent session defaults (model, effort) | POST /api/prefs `agent_defaults.session_defaults` | P2 W |
+| Model grades per agent (#1693): which grade each model is | POST /api/prefs `model_grades` | P2 W |
 | Default agent for new sessions | POST /api/prefs `agent_defaults.default_engine` | P2 W |
 | Permission-bypass default **on** | POST /api/prefs `agent_defaults.bypass=true` | **never** (widens permission); off is P2 W |
 | Chat-agent endpoint URL / key / model / tools | PATCH /api/agents/{engine}/endpoint | **never** (credential + where requests go) |
@@ -188,6 +189,8 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Automations: duplicate, delete | POST/DELETE /api/automations* | P4 W |
 | Automations: pause, resume, turn off, run now | POST …/pause, …/resume, …/disable, …/run | P4 W (run now starts agents) |
 | Automations: enable (consent to its scope) | POST …/enable `revision, consent, scope_digest` | have (`propose_library`: the card shows the server's own scope lines; the tap is the consent, #1611) |
+| Specialists (#1693): list, detail, a pinned version | GET /api/specialists, /api/specialists/{sid}, …/versions/{n} | P4 R |
+| Specialists: create, edit (a new version), archive, unarchive | POST /api/specialists, PATCH /api/specialists/{sid}, POST …/archive, …/unarchive | P4 W (revision-checked; the grade is derived, never chosen) |
 
 #### Files and git (Files drawer)
 | Capability | Route(s) | HQ |
@@ -511,6 +514,13 @@ GET    /api/template-variables                                                  
 POST   /api/template-variables                                                    P3
 DELETE /api/template-variables/{name}                                             P3
 PATCH  /api/template-variables/{name}                                             P3
+GET    /api/specialists                                                           P4
+POST   /api/specialists                                                           P4
+GET    /api/specialists/{sid}                                                     P4
+PATCH  /api/specialists/{sid}                                                     P4
+POST   /api/specialists/{sid}/archive                                             P4
+POST   /api/specialists/{sid}/unarchive                                           P4
+GET    /api/specialists/{sid}/versions/{n}                                        P4
 GET    /api/templates                                                             P3
 POST   /api/templates                                                             P3
 POST   /api/templates/suggest                                                     P3
@@ -603,6 +613,7 @@ forge.kind                      never  # credential surface
 forge.owner                     never  # credential surface
 forge.token                     never  # credential
 hq_contact                      P2
+model_grades                    P2  # which grade a model is; specialists derive theirs from it
 onboarded                       n/a  # onboarding flag
 orchestrator                    nested
 orchestrator.ai_direction_confidence_min P2  # raise only; lowering widens autonomy

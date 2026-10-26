@@ -33,6 +33,7 @@ import {
   Network,
   Workflow,
   FileText,
+  UsersRound,
   type LucideIcon,
 } from "lucide-react";
 
@@ -47,6 +48,7 @@ import {
   GALLERY_PATH,
   GALLERY_SKILLS_PATH,
   SKILLS_PATH,
+  SPECIALISTS_PATH,
   SESSIONS_PATH,
   TEMPLATES_PATH,
   VARIABLES_PATH,
@@ -65,7 +67,8 @@ export type SubsectionId =
   | "memory"
   | "automations"
   | "playbooks"
-  | "skills";
+  | "skills"
+  | "specialists";
 
 export interface Subsection {
   id: SubsectionId;
@@ -116,6 +119,7 @@ export const SECTIONS: Section[] = [
       { id: "memory", label: "Memory", Icon: Brain, to: MEMORY_PATH },
       { id: "automations", label: "Automations", Icon: CalendarClock, to: AUTOMATIONS_PATH },
       { id: "skills", label: "Skills", Icon: FileText, to: SKILLS_PATH },
+      { id: "specialists", label: "Specialists", Icon: UsersRound, to: SPECIALISTS_PATH },
       { id: "playbooks", label: "Playbooks", Icon: Workflow, to: PLAYBOOKS_PATH },
     ],
   },
@@ -155,6 +159,8 @@ export function activeSubsection(pathname: string): SubsectionId | null {
   // The public gallery is a view of Skills / Playbooks (#1440); its old bare and digest links
   // land on Playbooks, so they light that entry while they redirect.
   if (pathname === SKILLS_PATH || pathname.startsWith(`${SKILLS_PATH}/`)) return "skills";
+  if (pathname === SPECIALISTS_PATH || pathname.startsWith(`${SPECIALISTS_PATH}/`))
+    return "specialists";
   if (pathname === GALLERY_SKILLS_PATH || pathname.startsWith(`${GALLERY_SKILLS_PATH}/`))
     return "skills";
   if (pathname === GALLERY_PATH || pathname.startsWith(`${GALLERY_PATH}/`)) return "playbooks";

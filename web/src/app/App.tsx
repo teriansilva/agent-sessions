@@ -91,6 +91,7 @@ import {
   GALLERY_SKILLS_PATH,
   SKILLS_PATH,
   PLAYBOOK_NEW_PATH,
+  SPECIALISTS_PATH,
   TEMPLATES_PATH,
   VARIABLES_PATH,
   MEMORY_PATH,
@@ -155,6 +156,8 @@ const SkillsLibrary = lazyWithReload(() => import("../routes/SkillsLibrary"), "s
 const Variables = lazyWithReload(() => import("../routes/Variables"), "variables");
 const Memory = lazyWithReload(() => import("../routes/Memory"), "memory");
 const Playbooks = lazyWithReload(() => import("../routes/Playbooks"), "playbooks");
+// LIBRARY → SPECIALISTS (#1693): the pool HQ staffs missions from.
+const Specialists = lazyWithReload(() => import("../routes/Specialists"), "specialists");
 // The New project wizard (#1187). Lazy like the others.
 const NewProject = lazyWithReload(
   () => import("../routes/NewProject"),
@@ -375,6 +378,8 @@ function Layout() {
     location.pathname === DASHBOARD_PATH ||
     location.pathname === PLAYBOOKS_PATH ||
     location.pathname.startsWith(`${PLAYBOOKS_PATH}/`) ||
+    location.pathname === SPECIALISTS_PATH ||
+    location.pathname.startsWith(`${SPECIALISTS_PATH}/`) ||
     location.pathname === GALLERY_PLAYBOOKS_PATH ||
     location.pathname.startsWith(`${GALLERY_PLAYBOOKS_PATH}/`) ||
     location.pathname === VARIABLES_PATH ||
@@ -856,6 +861,9 @@ function Layout() {
                   <Route path={PLAYBOOK_NEW_PATH} element={<PlaybookEditor />} />
                   <Route path={`${PLAYBOOKS_PATH}/:playbookId/edit`} element={<PlaybookEditor />} />
                   <Route path={PLAYBOOKS_PATH} element={<Playbooks />} />
+                  <Route path={SPECIALISTS_PATH} element={<Specialists />} />
+                  <Route path={`${SPECIALISTS_PATH}/:specialistId`} element={<Specialists />} />
+                  <Route path={`${SPECIALISTS_PATH}/create/new`} element={<Specialists />} />
                   <Route path={`${PLAYBOOKS_PATH}/:playbookId`} element={<Playbooks />} />
                   <Route path={NEW_PROJECT_PATH} element={<NewProject />} />
                   <Route path={VARIABLES_PATH} element={<Variables />} />

@@ -54,6 +54,7 @@ for _k in ("BATTLELAB_MEMORY", "BATTLELAB_MEMORY_INBOX"):
 STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_MISSIONS_DB": ".config/agent-sessions/missions.db",
     "AGENT_SESSIONS_AUTOMATIONS_DB": ".config/agent-sessions/automations.db",  # #1201
+    "AGENT_SESSIONS_SPECIALISTS_DB": ".config/agent-sessions/specialists.db",  # #1693
     "AGENT_SESSIONS_SHARES_DB": ".config/agent-sessions/shares.db",  # #1404 public links
     "AGENT_SESSIONS_PREFS": ".config/agent-sessions/prefs.json",
     "AGENT_SESSIONS_METADATA": ".config/agent-sessions/metadata.json",
@@ -582,6 +583,20 @@ def _isolate_automations_db(tmp_path, monkeypatch) -> None:
     automations_store.reset_schema_cache_for_test()
     yield
     automations_store.reset_schema_cache_for_test()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_specialists_db(tmp_path, monkeypatch) -> None:
+    """Point the specialist pool (#1693) at a per-test tmp file, like the stores above."""
+    from agent_sessions import specialists_store
+
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_SPECIALISTS_DB",
+        str(tmp_path / ".config" / "agent-sessions" / "specialists.db"),
+    )
+    specialists_store.reset_schema_cache_for_test()
+    yield
+    specialists_store.reset_schema_cache_for_test()
 
 
 @pytest.fixture(autouse=True)

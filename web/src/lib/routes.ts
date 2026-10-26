@@ -60,6 +60,10 @@ export const galleryEntryPath = (kind: "playbook" | "skill", digest: string) =>
 export const galleryUpdatePath = (kind: "playbook" | "skill", digest: string, id: string) =>
   `${galleryEntryPath(kind, digest)}?update=${encodeURIComponent(id)}`;
 export const SKILLS_PATH = "/library/skills";
+/** Library → Specialists (#1693, #1613 P3): the Commander's pool of jobs HQ staffs missions from. */
+export const SPECIALISTS_PATH = "/library/specialists";
+export const SPECIALIST_NEW_PATH = `${SPECIALISTS_PATH}/create/new`;
+export const specialistPath = (id: string) => `${SPECIALISTS_PATH}/${encodeURIComponent(id)}`;
 
 export const PLAYBOOKS_PATH = "/library/playbooks";
 export function playbookPath(id: string): string {

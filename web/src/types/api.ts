@@ -1444,6 +1444,10 @@ export interface AppConfig {
    *  resolves it through `resolveDefault` rather than reading it directly. `bypass` is the new-
    *  session form's starting value; each session can still change it. Absent on an older server. */
   agent_defaults?: AgentDefaults;
+  /** #1693: the operator's model→grade map, `{engine: {model_id: grade}}`. Empty by default. */
+  model_grades?: Record<string, Record<string, "fast" | "strong" | "frontier">>;
+  /** Bumped on every grade commit (#1693): the newest map seen wins. */
+  model_grades_rev?: number;
   /** Whether mission launches run with permission bypass — the strict, fail-closed reading the
    *  launch itself uses (#1215). Absent from an older server. */
   mission_bypass?: boolean;

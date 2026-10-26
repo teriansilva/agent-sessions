@@ -1,3 +1,8 @@
+import type {
+  SpecialistDetail,
+  SpecialistDraft,
+  SpecialistList,
+} from "../types/specialists";
 import type { ApiLook } from "../theme/apiLook";
 import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, GalleryComparison, GalleryFiles, LocalSkill } from "../types/gallery";
 import type { CollectionInput, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
@@ -2390,6 +2395,23 @@ export const api = {
   createPlaybook: (files: Files) => mutateJson<PlaybookDetail & PlaybookWriteResult>("POST", "/api/playbooks", { files }),
   savePlaybook: (id: string, revision: string, files: Files) => mutateJson<PlaybookDetail & PlaybookWriteResult>("PUT", `/api/playbooks/${encodeURIComponent(id)}`, { revision, files }),
   copyPlaybookDraft: (files: Files) => mutateJson<PlaybookDetail & PlaybookWriteResult>("POST", "/api/playbooks/authoring/copy", { files }),
+  /** The specialist pool (#1693). Writes are revision-fenced; an edit creates a new version. */
+  specialists: () => getJsonWithDetail<SpecialistList>("/api/specialists"),
+  specialist: (id: string) =>
+    getJsonWithDetail<SpecialistDetail>(`/api/specialists/${encodeURIComponent(id)}`),
+  createSpecialist: (draft: SpecialistDraft) =>
+    mutateJson<SpecialistDetail>("POST", "/api/specialists", draft),
+  updateSpecialist: (id: string, revision: number, draft: SpecialistDraft) =>
+    mutateJson<SpecialistDetail>("PATCH", `/api/specialists/${encodeURIComponent(id)}`, {
+      revision,
+      draft,
+    }),
+  archiveSpecialist: (id: string, revision: number, archived: boolean) =>
+    mutateJson<SpecialistDetail>(
+      "POST",
+      `/api/specialists/${encodeURIComponent(id)}/${archived ? "archive" : "unarchive"}`,
+      { revision },
+    ),
   playbooks: () => getJsonWithDetail<PlaybookList>("/api/playbooks"),
   playbook: (id: string) => getJsonWithDetail<PlaybookDetail>(`/api/playbooks/${encodeURIComponent(id)}`),
   duplicatePlaybook: (id: string, revision: string) =>

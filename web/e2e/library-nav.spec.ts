@@ -54,6 +54,7 @@ test("Library names Templates, Variables, Memory, Automations, Skills and Playbo
     "Memory",
     "Automations",
     "Skills",
+    "Specialists",
     "Playbooks",
   ]);
   await menu.locator('a[data-subsection="automations"]').click();

@@ -21,6 +21,7 @@ from .. import (
     mission_directions,
     missions,
     model_choice,
+    model_grades,
     perfstats,
     prefs,
     project_dirs,
@@ -128,6 +129,14 @@ def _preflight_prefs(payload: dict) -> None:
         raise bad("unknown session_list_order")
     if "projects_mode" in payload and payload["projects_mode"] not in prefs.PROJECT_MODES:
         raise bad("unknown projects_mode")
+    # Grades can be refused LATE (the size caps are re-checked on the merged map under the prefs
+    # lock), so they are saved on their own: that refusal then leaves nothing else half-written.
+    if "model_grades" in payload and len(payload) != 1:
+        raise bad("save model grades separately from other preferences")
+    if "model_grades" in payload:
+        err = model_grades.validate_patch(payload["model_grades"])
+        if err is not None:
+            raise bad(err)
     if "hq_contact" in payload and not _known_hq_contact(payload["hq_contact"]):
         raise bad("unknown hq_contact")
     if "mission_playbooks" in payload:
@@ -647,6 +656,8 @@ def register(
         # Usage analytics (#1009): an operator fetched the config, so today's report starts if one
         # is due. Returns at once and never raises — the response does not wait on the report.
         analytics.note_active()
+        # The grade map and its commit revision from ONE read (#1693), so they always agree.
+        grades = model_grades.get_versioned()
         return JSONResponse(
             {
                 "csrf": current_csrf(cfg, request) or "",
@@ -680,6 +691,10 @@ def register(
                 # What a NEW session starts with (#853 P4): the default engine (or null) and the
                 # permission-bypass default. Starting values only; the form may still differ.
                 "agent_defaults": prefs.get_agent_defaults(),
+                # The operator's model → grade map (#1693, D18). Ships empty; a specialist's grade
+                # is derived from it at read.
+                "model_grades": grades["map"],
+                "model_grades_rev": grades["rev"],
                 # Whether mission launches run with permission bypass (#1215): the STRICT,
                 # fail-closed reading of the same stored value, which is what a launch uses. The
                 # lenient `agent_defaults.bypass` above can say true over a malformed value that
@@ -947,6 +962,22 @@ def register(
             out["hq_contact"], out["hq_contact_rev"] = prefs.set_hq_contact_versioned(
                 payload["hq_contact"]
             )
+        if "model_grades" in payload:
+            # The model → grade map (#1693): a PATCH of rows, merged under the prefs lock, `null`
+            # clearing one. Specialists' grades are derived from it at read.
+            # Off the loop: the merge waits on the prefs file lock and writes the file.
+            err = await asyncio.to_thread(model_grades.validate_patch, payload["model_grades"])
+            if err is not None:
+                raise HTTPException(status_code=422, detail=err)
+            try:
+                committed = await asyncio.to_thread(
+                    model_grades.apply_patch, payload["model_grades"]
+                )
+                out["model_grades"] = committed["map"]
+                # The commit's revision: a client shows the highest-revision map it has seen.
+                out["model_grades_rev"] = committed["rev"]
+            except model_grades.GradesRefused as e:
+                raise HTTPException(status_code=422, detail=str(e)) from None
         if "projects_mode" in payload:
             # Project-visibility mode (#335): all|included.
             if payload["projects_mode"] not in prefs.PROJECT_MODES:

@@ -20,6 +20,7 @@ import { CatalogOnly, RosterList, StatusWord } from "../components/agents/Roster
 import rr from "../components/agents/Roster.module.css";
 import { AgentEndpointCard } from "../components/settings/AgentEndpointCard";
 import { SessionDefaults } from "../components/agents/SessionDefaults";
+import { ModelGrades } from "../components/specialists/ModelGrades";
 import {
   type CSSProperties,
   type Dispatch,
@@ -914,6 +915,14 @@ export function AgentDetail({ id }: { id: string }) {
               void refreshRoster();
             }}
           />
+        </section>
+      )}
+
+      {/* #1693: which grade each model is — a specialist's grade derives from it. */}
+      {d.kind === "agent" && (
+        <section className={`${styles.section} ${a.wide}`} aria-labelledby="agent-grades-h">
+          <h2 id="agent-grades-h">Model grades</h2>
+          <ModelGrades engine={d} />
         </section>
       )}
 

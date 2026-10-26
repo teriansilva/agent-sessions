@@ -160,6 +160,7 @@ describe("SectionNav", () => {
       ["Memory", "/library/memory"],
       ["Automations", "/mission/automations"],
       ["Skills", "/library/skills"],
+      ["Specialists", "/library/specialists"],
       ["Playbooks", "/library/playbooks"],
     ]);
     expect(items[4]).toHaveAttribute("aria-current", "page");

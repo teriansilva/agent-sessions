@@ -270,6 +270,7 @@ Storage: the three prompts that predate the catalog keep their existing prefs fi
 | `AGENT_SESSIONS_AI_REVIEW_LOOP` | Kill-switch for the periodic AI review loop (#356). `0` ⇒ the background task is never started, overriding the Settings `enabled` toggle; any other value (default) arms the loop, which still only reviews while AI review is enabled + configured in Settings. Manual "Review now" is unaffected. |
 | `AGENT_SESSIONS_AUTOMATION_LOOP` | Kill-switch for automations (#1201). `0` ⇒ the scheduler never starts and Run now is refused, whatever is enabled in the app; any other value (default) arms it, and it still only fires automations the operator enabled with consent. |
 | `AGENT_SESSIONS_AUTOMATIONS_DB` | The automations store (`~/.config/agent-sessions/automations.db`, `0600`): automations, consent receipts, slot claims, runs. Its scheduler lock is `<db>.owner.lock` beside it. |
+| `AGENT_SESSIONS_SPECIALISTS_DB` | The specialist pool (`~/.config/agent-sessions/specialists.db`, `0600`): specialists and their immutable versions (#1693). |
 | `AGENT_SESSIONS_INSTANCE` | Label for running multiple instances on one host. |
 
 > Source of truth is the code — `grep -rhoE 'AGENT_SESSIONS_[A-Z_]+' src/`. The installer seeds the

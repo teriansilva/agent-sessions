@@ -1,0 +1,285 @@
+/* Library → Specialists (#1693). NIGHTJAR tokens only; the page frame, grid and cards are the
+   playbooks module's (one library look). Grades use the accent, never a status colour: a grade is
+   a property of the job, not a state. */
+
+.poolLine {
+  margin: 0 0 var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.poolLine b {
+  color: var(--text-1);
+}
+
+.title {
+  color: inherit;
+  text-decoration: none;
+}
+.title:hover,
+.title:focus-visible {
+  color: var(--accent-text);
+}
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
+}
+.grade,
+.ungraded {
+  display: inline-block;
+  padding: 2px var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid var(--accent);
+  color: var(--accent-text);
+}
+.ungraded {
+  border: 1px dashed var(--line-strong);
+  color: var(--text-3);
+}
+.version {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+}
+
+.runsOn {
+  margin: var(--sp-2) 0;
+  padding-left: var(--sp-2);
+  border-left: 3px solid var(--line-strong);
+  color: var(--text-2);
+}
+
+.skills,
+.skillList {
+  list-style: none;
+  margin: var(--sp-2) 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+}
+.skill,
+.skillMissing,
+.none {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 2px var(--sp-2);
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.skillMissing {
+  border-color: var(--warn-text);
+  color: var(--warn-text);
+}
+.none {
+  border-style: dashed;
+  color: var(--text-3);
+}
+.skillList {
+  flex-direction: column;
+  align-items: stretch;
+}
+.skillList .skill,
+.skillList .skillMissing {
+  justify-content: space-between;
+  min-height: 44px;
+}
+
+.capacity {
+  margin: var(--sp-2) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.capacity b {
+  color: var(--text-1);
+}
+.overCapacity {
+  margin: var(--sp-2) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--warn-text);
+}
+
+/* ---- editor ---- */
+.editor {
+  max-width: 760px;
+  display: grid;
+  gap: var(--sp-4);
+}
+.editor h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-h1);
+}
+.hint {
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.templates {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: var(--sp-2);
+}
+.template,
+.templateOn {
+  display: grid;
+  gap: var(--sp-1);
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--text-1);
+  text-decoration: none;
+}
+.template span,
+.templateOn span {
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.templateOn,
+.template:hover,
+.template:focus-visible {
+  border-color: var(--accent);
+}
+.section {
+  display: grid;
+  gap: var(--sp-3);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+.section h2 {
+  margin: 0;
+  font-size: var(--fs-label);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--sp-3);
+}
+.field {
+  display: grid;
+  gap: var(--sp-1);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.field input,
+.field select,
+.field textarea {
+  min-height: 44px;
+  font: inherit;
+  font-size: var(--fs-row);
+  color: var(--text-1);
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  padding: var(--sp-1) var(--sp-2);
+}
+.gradeLine {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: baseline;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.refused {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 3px solid var(--warn-text);
+  color: var(--warn-text);
+  font-size: var(--fs-meta);
+}
+.problems {
+  margin: 0;
+  padding-left: var(--sp-4);
+  color: var(--warn-text);
+  font-size: var(--fs-meta);
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+@media (max-width: 800px) {
+  .templates {
+    grid-template-columns: 1fr 1fr;
+  }
+  .actions > * {
+    flex: 1 1 auto;
+  }
+}
+
+/* ---- Settings → Agents: model grades ---- */
+.gradesTable {
+  display: grid;
+  gap: var(--sp-3);
+}
+.gradesTable table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.gradesTable th,
+.gradesTable td {
+  padding: var(--sp-2);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  font-weight: normal;
+}
+.gradesTable thead th {
+  font-size: var(--fs-label);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.gradesTable tbody th span {
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+.gradesTable select {
+  min-height: 44px;
+  font: inherit;
+  color: var(--text-1);
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+}
+.template,
+.templateOn {
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.editor :global(.nj-kicker) a {
+  color: inherit;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.editor :global(.nj-kicker) a:hover,
+.editor :global(.nj-kicker) a:focus-visible {
+  color: var(--accent-text);
+}
+.gradeLine a {
+  color: var(--accent-text);
+}
+.fieldset {
+  display: grid;
+  gap: var(--sp-4);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
