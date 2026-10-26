@@ -51,6 +51,7 @@ from . import (
     native_questions,
     native_state,
 )
+from .plugins import kinds
 
 EXIT_REFUSED = 3
 EXIT_FAILED = 4
@@ -280,6 +281,24 @@ def memory_tool(config: dict):
     return agent_tools.server(paths)
 
 
+def tool_servers(config: dict) -> list:
+    """Every BattleLab tool this generation carries: the memory tool (above) and, for a session
+    started from a specialist (#1693), the skills tool over its launch bundle. A bundle on an
+    adapter whose protocol carries no MCP server refuses the spawn: a specialist never runs
+    without the skills it was saved with."""
+    out = [t for t in (memory_tool(config),) if t is not None]
+    bundle = config.get("skills_bundle")
+    if bundle is None:
+        return out
+    if not kinds.API_MCP_KINDS.get(config["adapter"]):
+        raise WorkerError("this agent cannot load skills")
+    try:
+        skills = agent_tools.skills_server(bundle)
+    except ValueError:
+        raise WorkerError("invalid skill bundle") from None
+    return [*out, skills]
+
+
 def battlelab_session(config: dict) -> str:
     """The BattleLab session key the agent records as its own id (#1406), never the native id.
 
@@ -422,7 +441,7 @@ class Worker:
             return native_protocol.CodexCodec.argv(binary)
         if self.adapter == OPENCODE:
             return native_protocol.OpencodeAcpCodec.argv(binary)
-        tool = memory_tool(self.config)
+        tools = tool_servers(self.config)
         return native_protocol.ClaudeCodec.argv(
             binary,
             self.native_id,
@@ -430,7 +449,7 @@ class Worker:
             model=self.config.get("model"),
             bypass=self.config.get("bypass") is True,
             effort=self.config.get("effort"),
-            mcp_config=None if tool is None else agent_tools.claude_mcp_config(tool),
+            mcp_config=agent_tools.claude_mcp_config(tools) if tools else None,
         )
 
     async def spawn(self) -> None:
@@ -875,8 +894,8 @@ class Worker:
         bypass = self.config.get("bypass") is True
         session = battlelab_session(self.config)
         shell_env = memory_environment(self.config)
-        tool = memory_tool(self.config)
-        mcp_config = None if tool is None else agent_tools.codex_thread_config(tool)
+        tools = tool_servers(self.config)
+        mcp_config = agent_tools.codex_thread_config(tools) if tools else None
         if self.native_id is not None:
             await self.request(
                 self.codec.resume(
@@ -904,8 +923,8 @@ class Worker:
         codec = self.codec
         assert isinstance(codec, native_protocol.OpencodeAcpCodec)
         cwd, model = self.config["cwd"], self.config.get("model")
-        tool = memory_tool(self.config)
-        servers = None if tool is None else agent_tools.acp_servers(tool)
+        tools = tool_servers(self.config)
+        servers = agent_tools.acp_servers(tools) if tools else None
         if self.native_id is not None:
             # `session/load` replays history; the codec attributes none of it to a turn and no
             # replayed tool call can become a live approval.

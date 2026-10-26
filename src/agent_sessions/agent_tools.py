@@ -17,6 +17,11 @@ interpreter runs isolated (``-I``): the agent starts it in the WORKSPACE, and wi
 current directory would be first on ``sys.path`` — a planted ``json.py`` in a repository would run
 inside the tool. Its declared environment is the two memory paths plus ``PATH``/``HOME``/``LANG``.
 
+**The skills tool (#1693) rides the same channel.** A launch from a specialist also carries
+`battlelab_skills` (`agent_sessions.skills_mcp`), whose ONE declared path is that launch's
+read-only skill bundle (`skill_bundles`). Every shape below takes one server or several; each is
+keyed by its own name, so the two never collide and the operator's own servers still merge in.
+
 **A CLI that rejects the injection fails the launch visibly** with its own error; the tool is never
 silently dropped and the launch is never retried without it. Each kind below records the CLI
 version its exact payload was proven against (the #1506 smoke evidence).
@@ -28,7 +33,7 @@ import json
 import logging
 import os
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -41,6 +46,11 @@ log = logging.getLogger(__name__)
 #: name is never replaced; the CLIs merge by name and this entry exists for one launch only.
 SERVER_NAME = "battlelab_memory"
 MODULE = "agent_sessions.memory_mcp"
+#: The skills tool (#1693): its own name in every MCP table, beside the memory tool.
+SKILLS_SERVER_NAME = "battlelab_skills"
+SKILLS_MODULE = "agent_sessions.skills_mcp"
+#: Its one environment path: this launch's read-only skill bundle.
+SKILLS_ENV = "BATTLELAB_SKILLS_BUNDLE"
 
 CLAUDE_FLAG = "claude-mcp-config-flag"  # `--mcp-config <json>`, claude 2.1.304
 CODEX_OVERRIDE = "codex-config-override"  # `-c mcp_servers.<name>.*`, codex-cli 0.162.0
@@ -61,11 +71,13 @@ OPENCODE_CONFIG_ENV = "OPENCODE_CONFIG_CONTENT"
 
 @dataclass(frozen=True)
 class Server:
-    """The memory tool's command line and declared environment for one launch."""
+    """One BattleLab tool's command line and declared environment for one launch."""
 
     command: str
     args: tuple[str, ...]
     env: Mapping[str, str]
+    #: Its key in every CLI's MCP table.
+    name: str = SERVER_NAME
 
 
 @dataclass(frozen=True)
@@ -109,24 +121,71 @@ def server(memory_env: Mapping[str, str] | None) -> Server | None:
     ):
         log.warning("memory tool: malformed memory environment; not wired in")
         return None
-    exe = sys.executable
-    if not exe or not exe.startswith("/"):
-        log.warning("memory tool: no absolute interpreter path; not wired in")
+    exe = _interpreter("memory tool")
+    if exe is None:
         return None
     env = {name: memory_env[name] for name in memory.ENV_KEYS}
+    return Server(command=exe, args=("-I", "-m", MODULE), env=_with_base_env(env))
+
+
+def skills_server(bundle: str | None) -> Server | None:
+    """The skills tool for a launch bound to ``bundle`` (an absolute path, `skill_bundles.build`),
+    or None when the launch carries no skills."""
+    if bundle is None:
+        return None
+    if (
+        not isinstance(bundle, str)
+        or not bundle.startswith("/")
+        or "\0" in bundle
+        or "\n" in bundle
+    ):
+        raise ValueError("invalid skill bundle path")
+    from . import skill_bundles
+
+    try:
+        skill_bundles.verify(bundle)  # a bundle BattleLab built, never any other directory
+    except skill_bundles.BundleRefused as exc:
+        raise ValueError(str(exc)) from None
+    exe = _interpreter("skills tool")
+    if exe is None:
+        raise ValueError("no absolute interpreter path for the skills tool")
+    return Server(
+        command=exe,
+        args=("-I", "-m", SKILLS_MODULE),
+        env=_with_base_env({SKILLS_ENV: bundle}),
+        name=SKILLS_SERVER_NAME,
+    )
+
+
+def _interpreter(what: str) -> str | None:
+    exe = sys.executable
+    if not exe or not exe.startswith("/"):
+        log.warning("%s: no absolute interpreter path; not wired in", what)
+        return None
+    return exe
+
+
+def _with_base_env(env: dict[str, str]) -> dict[str, str]:
     env["PATH"] = os.environ.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
     env["HOME"] = os.environ.get("HOME") or str(Path.home())
     env["LANG"] = os.environ.get("LANG") or "C.UTF-8"
-    return Server(command=exe, args=("-I", "-m", MODULE), env=env)
+    return env
+
+
+def _all(s: Server | Sequence[Server]) -> list[Server]:
+    return [s] if isinstance(s, Server) else list(s)
 
 
 # ---- one shape per kind --------------------------------------------------------------------------
 
 
-def claude_mcp_config(s: Server) -> str:
+def claude_mcp_config(servers: Server | Sequence[Server]) -> str:
     """The JSON string claude's `--mcp-config` takes (a config, not a file path)."""
-    entry = {"type": "stdio", "command": s.command, "args": list(s.args), "env": dict(s.env)}
-    return json.dumps({"mcpServers": {SERVER_NAME: entry}}, ensure_ascii=False)
+    entries = {
+        s.name: {"type": "stdio", "command": s.command, "args": list(s.args), "env": dict(s.env)}
+        for s in _all(servers)
+    }
+    return json.dumps({"mcpServers": entries}, ensure_ascii=False)
 
 
 def _toml(value) -> str:
@@ -134,7 +193,8 @@ def _toml(value) -> str:
     JSON string escapes are TOML basic-string escapes; ``ensure_ascii=False`` keeps non-ASCII
     literal, because TOML has no surrogate-pair escapes."""
     if isinstance(value, str):
-        return json.dumps(value, ensure_ascii=False)
+        # JSON leaves DEL (U+007F) raw; TOML forbids it in a basic string.
+        return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
     if isinstance(value, list | tuple):
         return "[" + ", ".join(_toml(v) for v in value) + "]"
     if isinstance(value, Mapping):
@@ -144,28 +204,28 @@ def _toml(value) -> str:
     raise TypeError(type(value).__name__)
 
 
-def codex_overrides(s: Server) -> tuple[str, ...]:
-    """``-c mcp_servers.<name>.command=… -c ….args=… -c ….env=…`` — placed before any subcommand,
-    where codex takes its global config overrides."""
-    base = f"mcp_servers.{SERVER_NAME}"
-    return (
-        "-c",
-        f"{base}.command={_toml(s.command)}",
-        "-c",
-        f"{base}.args={_toml(list(s.args))}",
-        "-c",
-        f"{base}.env={_toml(dict(s.env))}",
-    )
+def codex_overrides(servers: Server | Sequence[Server]) -> tuple[str, ...]:
+    """``-c mcp_servers.<name>.command=… -c ….args=… -c ….env=…`` per server — placed before any
+    subcommand, where codex takes its global config overrides."""
+    out: list[str] = []
+    for s in _all(servers):
+        base = f"mcp_servers.{s.name}"
+        out += [
+            "-c",
+            f"{base}.command={_toml(s.command)}",
+            "-c",
+            f"{base}.args={_toml(list(s.args))}",
+            "-c",
+            f"{base}.env={_toml(dict(s.env))}",
+        ]
+    return tuple(out)
 
 
-def codex_thread_config(s: Server) -> dict:
-    """The same server as a codex app-server per-thread ``config`` entry (dotted key → value)."""
+def codex_thread_config(servers: Server | Sequence[Server]) -> dict:
+    """The same servers as codex app-server per-thread ``config`` entries (dotted key → value)."""
     return {
-        f"mcp_servers.{SERVER_NAME}": {
-            "command": s.command,
-            "args": list(s.args),
-            "env": dict(s.env),
-        }
+        f"mcp_servers.{s.name}": {"command": s.command, "args": list(s.args), "env": dict(s.env)}
+        for s in _all(servers)
     }
 
 
@@ -178,7 +238,7 @@ def opencode_entry(s: Server) -> dict:
     }
 
 
-def opencode_config_content(s: Server, existing: str | None) -> str | None:
+def opencode_config_content(servers: Server | Sequence[Server], existing: str | None) -> str | None:
     """``existing`` `OPENCODE_CONFIG_CONTENT` (the operator's, or a launch's own permission
     policy) with this server added under ``mcp``. None when ``existing`` is not a JSON object —
     it cannot be merged safely, and opencode refuses it on its own."""
@@ -190,41 +250,67 @@ def opencode_config_content(s: Server, existing: str | None) -> str | None:
             return None
         if not isinstance(cfg, dict):
             return None
-    servers = cfg.get("mcp")
-    servers = dict(servers) if isinstance(servers, dict) else {}
-    servers[SERVER_NAME] = opencode_entry(s)
-    return json.dumps({**cfg, "mcp": servers}, ensure_ascii=False)
+    table = cfg.get("mcp")
+    table = dict(table) if isinstance(table, dict) else {}
+    for s in _all(servers):
+        table[s.name] = opencode_entry(s)
+    return json.dumps({**cfg, "mcp": table}, ensure_ascii=False)
 
 
-def acp_servers(s: Server) -> list[dict]:
-    """The server as an ACP ``mcpServers`` item (`session/new`, `session/load`). opencode starts
-    it with its own environment underneath, so the listener password it holds is blanked here,
+def acp_servers(servers: Server | Sequence[Server]) -> list[dict]:
+    """The servers as ACP ``mcpServers`` items (`session/new`, `session/load`). opencode starts
+    them with its own environment underneath, so the listener password it holds is blanked here,
     as for every other local MCP server of an API child (#1336)."""
-    env = [{"name": k, "value": v} for k, v in s.env.items()]
-    env.append({"name": "OPENCODE_SERVER_PASSWORD", "value": ""})
-    return [{"name": SERVER_NAME, "command": s.command, "args": list(s.args), "env": env}]
+    out = []
+    for s in _all(servers):
+        env = [{"name": k, "value": v} for k, v in s.env.items()]
+        env.append({"name": "OPENCODE_SERVER_PASSWORD", "value": ""})
+        out.append({"name": s.name, "command": s.command, "args": list(s.args), "env": env})
+    return out
 
 
 # ---- the seams ----------------------------------------------------------------------------------
 
 
+class SkillsRefused(ValueError):
+    """A launch bound to skills that cannot carry them. Refused, never launched without them."""
+
+
 def terminal_launch(
-    manifest, memory_env: Mapping[str, str] | None, base_env: Mapping[str, str]
+    manifest,
+    memory_env: Mapping[str, str] | None,
+    base_env: Mapping[str, str],
+    *,
+    skills_bundle: str | None = None,
 ) -> McpLaunch:
-    """What a terminal LAUNCH or an unattended dispatch adds for the memory tool, or `NONE`.
+    """What a terminal LAUNCH or an unattended dispatch adds for BattleLab's tools, or `NONE`.
 
     ``base_env`` is the environment the agent will otherwise get (a config variable is merged
-    into it, never replaced)."""
-    kind, s = mcp_kind(manifest), server(memory_env)
-    if kind is None or s is None:
+    into it, never replaced). The memory tool is best-effort (memory still reaches the agent as
+    variables); the skills tool is not: a launch bound to a skill bundle that this agent cannot
+    carry raises `SkillsRefused`, so a specialist never starts without the skills it was saved
+    with."""
+    kind = mcp_kind(manifest)
+    try:
+        skills = skills_server(skills_bundle)
+    except ValueError as exc:
+        raise SkillsRefused(str(exc)) from None
+    if skills is not None and kind is None:
+        raise SkillsRefused("this agent cannot load skills: it has no tool channel")
+    servers = [x for x in (server(memory_env), skills) if x is not None]
+    if kind is None or not servers:
         return NONE
     if kind == CLAUDE_FLAG:
         # At the END: `--mcp-config` takes several values, so nothing positional may follow it.
-        return McpLaunch(suffix=("--mcp-config", claude_mcp_config(s)))
+        return McpLaunch(suffix=("--mcp-config", claude_mcp_config(servers)))
     if kind == CODEX_OVERRIDE:
-        return McpLaunch(prefix=codex_overrides(s))
-    content = opencode_config_content(s, base_env.get(OPENCODE_CONFIG_ENV))
+        return McpLaunch(prefix=codex_overrides(servers))
+    content = opencode_config_content(servers, base_env.get(OPENCODE_CONFIG_ENV))
     if content is None:
+        if skills is not None:
+            raise SkillsRefused(
+                f"{OPENCODE_CONFIG_ENV} is not a JSON object, so the skills tool cannot be added"
+            )
         log.warning("memory tool: %s is not a JSON object; not wired in", OPENCODE_CONFIG_ENV)
         return NONE
     return McpLaunch(env={OPENCODE_CONFIG_ENV: content})
