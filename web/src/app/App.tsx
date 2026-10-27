@@ -56,6 +56,7 @@ import { ConfigProvider } from "./ConfigContext";
 import { ChunkErrorBoundary } from "./ChunkErrorBoundary";
 import { lazyWithReload } from "./lazyWithReload";
 import { useAppVersion } from "./useAppVersion";
+import { useFavicon } from "./useFavicon";
 import { OverviewPrefsProvider } from "./OverviewPrefsContext";
 import { DashboardRetentionProvider } from "./DashboardRetentionContext";
 import { OverviewSessionsProvider } from "./OverviewSessionsContext";
@@ -977,6 +978,8 @@ export default function App() {
   const [router] = useState(() =>
     createBrowserRouter([{ path: "*", element: <Layout /> }]),
   );
+  // The tab's icon: relay + unread (#1736). Once, here, for every route.
+  useFavicon();
   return (
     <ConfigProvider>
       {/* The engine roster (#853 P4): every agent-facing surface reads it; loaded once, above

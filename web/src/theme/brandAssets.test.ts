@@ -8,7 +8,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 
-import { BRAND, RASTERS, REPO, SLOTTED, brandFiles, fillSlots, slotNames } from "../../scripts/brand.mjs";
+import { BRAND, RASTERS, REPO, SLOTTED, brandFiles, favicon, fillSlots, slotNames } from "../../scripts/brand.mjs";
 
 const read = (rel: string) => readFileSync(resolve(REPO, rel), "utf8");
 
@@ -60,6 +60,27 @@ describe("the brand kit is the one source", () => {
     }
   });
 
+  test("the favicon's states are the kit's mark plus their badges, in the mark's and the tokens' colours (#1736)", () => {
+    const mark = readFileSync(resolve(BRAND, "mark-amber.svg"), "utf8").trim();
+    const markInner = mark.replace(/^<svg[^>]*>/, "").replace(/<\/svg>$/, "");
+    const degraded = /--status-degraded:\s*(#[0-9a-f]{6})/i.exec(read("web/src/tokens.css"))![1];
+    const files = brandFiles();
+    const states = {
+      "web/public/favicon-unread.svg": { relay: false, unread: true },
+      "web/public/favicon-relay.svg": { relay: true, unread: false },
+      "web/public/favicon-relay-unread.svg": { relay: true, unread: true },
+    };
+    for (const [rel, state] of Object.entries(states)) {
+      const svg = files[rel];
+      expect(svg, rel).toBe(favicon(state) + "\n");
+      expect(svg.startsWith(mark.slice(0, mark.indexOf(">") + 1)), `${rel}: the mark's own root`).toBe(true);
+      expect(svg, `${rel}: carries the mark, whole`).toContain(markInner);
+      expect(svg.includes('mask="url(#relay-cut)"'), `${rel}: relay corner`).toBe(state.relay);
+      expect(svg.includes(`fill="${degraded}"`), `${rel}: the unread dot is --status-degraded`).toBe(state.unread);
+    }
+    expect(favicon({}), "no badges is the mark itself").toBe(mark);
+  });
+
   test("the platform PNGs have the sizes the manifest and pages declare", () => {
     for (const [, out, w, h] of RASTERS) {
       const png = readFileSync(resolve(REPO, out));
@@ -85,6 +106,9 @@ describe("every page links the generated files, and they exist", () => {
     ["web/index.html", '<meta property="og:image" content="/og-image.png" />', "web/public/og-image.png"],
     ["web/index.html", '<meta name="twitter:image" content="/og-image.png" />', "web/public/og-image.png"],
     ["web/share.html", '<link rel="icon" type="image/svg+xml" href="/favicon.svg" />', "web/public/favicon.svg"],
+    // The relay shell's own icon (#1736): Vite puts public files under the build's base, so the
+    // relay build serves it as /connect/favicon-relay.svg (deploy-connect.yml checks the built shell).
+    ["web/connect.html", '<link rel="icon" type="image/svg+xml" href="/favicon-relay.svg" />', "web/public/favicon-relay.svg"],
     ["landing/index.html", '<link rel="icon" type="image/svg+xml" href="/favicon.svg" />', "landing/favicon.svg"],
     ["landing/legal.html", '<link rel="icon" type="image/svg+xml" href="/favicon.svg" />', "landing/favicon.svg"],
     ["landing/privacy.html", '<link rel="icon" type="image/svg+xml" href="/favicon.svg" />', "landing/favicon.svg"],

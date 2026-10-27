@@ -3,6 +3,7 @@ export const WEB: string;
 export const REPO: string;
 export const BRAND: string;
 export const GROUND: string;
+export function favicon(state?: { relay?: boolean; unread?: boolean }): string;
 export function brandFiles(): Record<string, string>;
 export const RASTERS: [string, string, number, number][];
 export function brandSlots(): Record<string, string>;

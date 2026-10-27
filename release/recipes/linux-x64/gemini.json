@@ -30,16 +30,16 @@
       "id": "gemini",
       "label": "Gemini CLI",
       "publisher": "battlelab",
-      "version": "0.62.0"
+      "version": "0.65.0"
     },
     "install": {
       "authority": "registry.npmjs.org",
-      "digest": "sha256:2276032b1c33d2b828b1cf197e52f48e74b0a395326763ff01a80d97d0fbc0c3",
+      "digest": "sha256:97f1f7f1e7e189054d27edfb9c62c6a45cec15b678840dfdde3c0ccd87fab376",
       "entrypoint": "node_modules/@google/gemini-cli/bundle/gemini.js",
       "kind": "npm-prefix",
       "package": "@google/gemini-cli",
       "platform": "linux-x64",
-      "version": "0.62.0"
+      "version": "0.65.0"
     },
     "instructions": {
       "files": [
@@ -111,8 +111,8 @@
     "artifacts": [
       {
         "destination": "node_modules/@google/gemini-cli",
-        "sha256": "2276032b1c33d2b828b1cf197e52f48e74b0a395326763ff01a80d97d0fbc0c3",
-        "url": "https://registry.npmjs.org/@google/gemini-cli/-/gemini-cli-0.62.0.tgz"
+        "sha256": "97f1f7f1e7e189054d27edfb9c62c6a45cec15b678840dfdde3c0ccd87fab376",
+        "url": "https://registry.npmjs.org/@google/gemini-cli/-/gemini-cli-0.65.0.tgz"
       }
     ]
   }

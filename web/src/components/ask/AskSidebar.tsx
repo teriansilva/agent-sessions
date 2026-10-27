@@ -23,10 +23,9 @@ import { createPortal } from "react-dom";
 import { useConfig } from "../../app/config";
 import { coerceRecentWindowDays } from "../../lib/recentWindow";
 import { useModalDrawer } from "../pulse/useModalDrawer";
-import { api } from "../../lib/api";
 import { AskConsole } from "./AskConsole";
 import { ASK_DRAWER_MQ, useAskPanel } from "./askPanel";
-import { ASK_SEEN_EVENT } from "./askUpdates";
+import { UNREAD_POLL_MS, useAskUnread } from "./askUnreadStore";
 import { NeedsYouDetailsDialog } from "./NeedsYouDetailsDialog";
 import { needsYouIds } from "./needsYouLabels";
 import { useNeedsYou } from "./useNeedsYou";
@@ -36,43 +35,7 @@ import bell from "../pulse/NotificationBell.module.css";
 /** The shell's own mobile line (`useIsMobile`, docs/design.md §5), not the bell's 640px: between
  *  641 and 800px a 440px panel covers most of the page, so there it is a modal drawer too. */
 
-/** How often the icon asks whether a followed session has an unseen update (#1443 Phase 4). */
-export const UNREAD_POLL_MS = 60_000;
-
-/** Whether any conversation has an unseen update: read on mount, on a timer while the tab is
- *  visible, when the tab comes back, and at once when a conversation is marked seen. */
-function useAskUnread(pollMs: number): boolean {
-  const [unread, setUnread] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    // Only the NEWEST read's answer applies: an older "unread" resolving after a newer "seen"
-    // never brings the dot back.
-    let gen = 0;
-    const read = () => {
-      if (document.visibilityState !== "visible") return;
-      const g = ++gen;
-      void api
-        .askUnread()
-        .then((r) => {
-          if (alive && g === gen) setUnread(Boolean(r.unread));
-        })
-        .catch(() => {
-          /* keep what is shown */
-        });
-    };
-    read();
-    const timer = window.setInterval(read, pollMs);
-    document.addEventListener("visibilitychange", read);
-    window.addEventListener(ASK_SEEN_EVENT, read);
-    return () => {
-      alive = false;
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", read);
-      window.removeEventListener(ASK_SEEN_EVENT, read);
-    };
-  }, [pollMs]);
-  return unread;
-}
+export { UNREAD_POLL_MS };
 
 /** The corner icon, beside the bell. Keeps its place on a phone, as the bell does. A dot marks an
  *  unseen update from a session Ask follows — the label says so too, never the dot alone. */

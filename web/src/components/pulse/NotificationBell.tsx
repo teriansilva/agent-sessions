@@ -5,33 +5,13 @@ import { createPortal } from "react-dom";
 import { useModalDrawer } from "./useModalDrawer";
 import { Link } from "react-router-dom";
 import { api } from "../../lib/api";
-import { ACTION_RESOLVED_EVENT } from "../../lib/actionEvents";
 import { engineBadge, relTime } from "../../lib/format";
 import type { PulseNotification } from "../../types/api";
 import styles from "./NotificationBell.module.css";
 import { MISSION_PATH } from "../../lib/missionLink";
 import { automationPath } from "../../lib/routes";
-import { reconcileDeviceNotifications } from "../../swPush";
 import { useEngineRoster } from "../../app/engineRoster";
-
-const POLL_MS = 60_000;
-
-/** The app-open retraction (#1086 Phase 4): with the bell's read in hand, close on this device
- *  every notification the server says is still OWED a retraction (`close_tags` is absent when its
- *  store could not be read). Never fatal — this is chrome, and a browser without service workers or
- *  notifications simply has nothing to close. */
-function reconcileDevice(closeTags: string[] | undefined) {
-  if (
-    !closeTags?.length ||
-    typeof navigator === "undefined" ||
-    !("serviceWorker" in navigator)
-  )
-    return;
-  navigator.serviceWorker
-    .getRegistration()
-    .then((reg) => (reg ? reconcileDeviceNotifications(reg, closeTags) : 0))
-    .catch(() => undefined);
-}
+import { mutateNotifications, refreshNotifications, useNotifications } from "./notificationsStore";
 
 /** An automation's failure episode (`automation:<id>:<run>`, #1201) opens that automation's run
  *  history — the same link the server puts in its push (`notifications._link`). */
@@ -56,7 +36,10 @@ function targetPath(n: PulseNotification): string {
  *
  *  Every row names its project and session and links straight into the terminal — the point of
  *  the whole feature is that the operator can intervene in one tap, not that they read a
- *  summary and go hunting. */
+ *  summary and go hunting.
+ *
+ *  The list itself, its poll and the app-open device reconcile live in `notificationsStore`
+ *  (#1736), so the favicon's unread dot reads the same answer the badge shows. */
 /** The drawer form's media query: the shell's one phone breakpoint (#1531). */
 export const BELL_DRAWER_QUERY = "(max-width: 800px)";
 
@@ -100,16 +83,13 @@ export function NotificationBell() {
   // Re-render when the engine roster lands or changes (#853 P4): this renders agent names,
   // badges or colours, which come from the roster, not from a client-side list.
   useEngineRoster();
-  const [items, setItems] = useState<PulseNotification[]>([]);
-  const [unread, setUnread] = useState(0);
-  /** Recently decided rows, projected back as history with NO controls (#852). Bounded by the
-   *  SERVER (newest 10 / 24h) — this renders the window it is given and never re-derives it. */
-  const [settled, setSettled] = useState<PulseNotification[]>([]);
-  /** Unread escalations whose ledger state could not be established. Deliberately NOT folded
-   *  into `unread`: they project `unknown` and offer no control, so counting them as actionable
-   *  hands the operator a number they cannot clear by acting (#852 rule 5). Shown as its own,
-   *  non-decision signal — the console is degraded, and saying so beats a silent wrong count. */
-  const [uncertain, setUncertain] = useState(0);
+  // `settled`: recently decided rows, projected back as history with NO controls (#852). Bounded
+  // by the SERVER (newest 10 / 24h) — this renders the window it is given and never re-derives it.
+  // `uncertain`: unread escalations whose ledger state could not be established. Deliberately NOT
+  // folded into `unread`: they project `unknown` and offer no control, so counting them as
+  // actionable hands the operator a number they cannot clear by acting (#852 rule 5). Shown as its
+  // own, non-decision signal — the console is degraded, and saying so beats a silent wrong count.
+  const { items, unread, settled, uncertain } = useNotifications();
   const [open, setOpen] = useState(false);
   const arrived = useArrivals(
     items.map((n) => n.id),
@@ -149,49 +129,8 @@ export function NotificationBell() {
     return () => mq.removeEventListener("change", on);
   }, []);
 
-  const load = useCallback(async () => {
-    try {
-      const r = await api.notifications();
-      setItems(r.notifications);
-      setUnread(r.unread);
-      setSettled(r.settled ?? []);
-      setUncertain(r.uncertain ?? 0);
-    } catch {
-      // A failing notifications endpoint must never break the top bar — the bell simply shows
-      // nothing rather than taking the app's chrome down with it.
-    }
-  }, []);
-
-  useEffect(() => {
-    let live = true;
-    const tick = () => {
-      // Defensive by design: this is top-bar chrome. A synchronous throw here (an older
-      // server without the route, a partial test double) would take the entire app shell
-      // down over a notification count. Degrade to an empty bell instead.
-      Promise.resolve()
-        .then(() => api.notifications())
-        .then((r) => {
-          if (!live) return;
-          setItems(r.notifications);
-          setUnread(r.unread);
-          setSettled(r.settled ?? []);
-          setUncertain(r.uncertain ?? 0);
-          reconcileDevice(r.close_tags);
-        })
-        .catch(() => undefined);
-    };
-    tick();
-    const t = setInterval(tick, POLL_MS);
-    // Resolving an action retires its alert server-side, but the badge would keep counting it
-    // until the next poll — up to a minute, on the screen where the operator just decided it.
-    // Same defensive `tick` as the timer, for the same reason.
-    window.addEventListener(ACTION_RESOLVED_EVENT, tick);
-    return () => {
-      live = false;
-      clearInterval(t);
-      window.removeEventListener(ACTION_RESOLVED_EVENT, tick);
-    };
-  }, []);
+  // The poll (every 60 s, plus ACTION_RESOLVED_EVENT) runs in the store while anything reads it.
+  const load = refreshNotifications;
 
   const closeDrawer = useCallback(() => setOpen(false), []);
 
@@ -251,11 +190,7 @@ export function NotificationBell() {
 
   const clearAll = useCallback(async () => {
     try {
-      const r = await api.dismissNotifications({ all: true });
-      setItems(r.notifications);
-      setUnread(r.unread);
-      setSettled(r.settled ?? []);
-      setUncertain(r.uncertain ?? 0);
+      await mutateNotifications(() => api.dismissNotifications({ all: true }), true);
     } catch {
       /* leave the list alone rather than pretending it cleared */
     } finally {
@@ -284,9 +219,7 @@ export function NotificationBell() {
 
   const dismissOne = useCallback(async (id: string) => {
     try {
-      const r = await api.dismissNotifications({ ids: [id] });
-      setItems(r.notifications);
-      setUnread(r.unread);
+      await mutateNotifications(() => api.dismissNotifications({ ids: [id] }), false);
     } catch {
       /* the row stays; a failed delete must never look like a success */
     }
@@ -294,9 +227,7 @@ export function NotificationBell() {
 
   const markAll = useCallback(async () => {
     try {
-      const r = await api.markNotificationsRead();
-      setItems(r.notifications);
-      setUnread(r.unread);
+      await mutateNotifications(() => api.markNotificationsRead(), false);
     } catch {
       /* leave the badge as-is rather than lying about it */
     }

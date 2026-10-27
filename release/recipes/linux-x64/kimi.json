@@ -33,16 +33,16 @@
       "id": "kimi",
       "label": "Kimi Code",
       "publisher": "battlelab",
-      "version": "2.1.1"
+      "version": "2.3.1"
     },
     "install": {
       "authority": "registry.npmjs.org",
-      "digest": "sha256:6690a29d7b5e14812754dd100136b7f4ee2577add8895f00fe27025b4412049f",
+      "digest": "sha256:55ac1db0452e6646ff50e3f83916bcbb7d48a157622d1e5110497d52b26f79e7",
       "entrypoint": "node_modules/@moonshot-ai/kimi-code/dist/main.mjs",
       "kind": "npm-prefix",
       "package": "@moonshot-ai/kimi-code",
       "platform": "linux-x64",
-      "version": "2.1.1"
+      "version": "2.3.1"
     },
     "instructions": {
       "files": [
@@ -105,8 +105,8 @@
     "artifacts": [
       {
         "destination": "node_modules/@moonshot-ai/kimi-code",
-        "sha256": "6690a29d7b5e14812754dd100136b7f4ee2577add8895f00fe27025b4412049f",
-        "url": "https://registry.npmjs.org/@moonshot-ai/kimi-code/-/kimi-code-2.1.1.tgz"
+        "sha256": "55ac1db0452e6646ff50e3f83916bcbb7d48a157622d1e5110497d52b26f79e7",
+        "url": "https://registry.npmjs.org/@moonshot-ai/kimi-code/-/kimi-code-2.3.1.tgz"
       },
       {
         "destination": "node_modules/ansi-regex",
@@ -122,6 +122,11 @@
         "destination": "node_modules/camelcase",
         "sha256": "c609324ab889515f2f7354ddcc319b6080c9b76f2ac1441c03da031c85458696",
         "url": "https://registry.npmjs.org/camelcase/-/camelcase-5.3.1.tgz"
+      },
+      {
+        "destination": "node_modules/chokidar",
+        "sha256": "61a29da9d314c2cd33a7be7327014814c4620673e3d4be41b120aa8544868389",
+        "url": "https://registry.npmjs.org/chokidar/-/chokidar-4.0.3.tgz"
       },
       {
         "destination": "node_modules/cliui",
@@ -202,6 +207,11 @@
         "destination": "node_modules/qrcode",
         "sha256": "0c7274f0c299f39c2fddf54a2e0039b785977b0173c02d0b3f65fad68923e2b0",
         "url": "https://registry.npmjs.org/qrcode/-/qrcode-1.5.4.tgz"
+      },
+      {
+        "destination": "node_modules/readdirp",
+        "sha256": "766ea2ba6314aefe6b939c9bbe3999cc473286578aeb1c3805338c2dbd655f5a",
+        "url": "https://registry.npmjs.org/readdirp/-/readdirp-4.1.2.tgz"
       },
       {
         "destination": "node_modules/require-directory",

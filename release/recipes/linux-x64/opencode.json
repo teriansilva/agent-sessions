@@ -30,16 +30,16 @@
       "id": "opencode",
       "label": "opencode",
       "publisher": "battlelab",
-      "version": "1.18.34"
+      "version": "1.19.4"
     },
     "install": {
       "authority": "registry.npmjs.org",
-      "digest": "sha256:585bc53a8ae7e839b8702752a283ba826e1ca2152e8c14188efc5b6a738d9834",
+      "digest": "sha256:0ad0f6ac9cd7fafee464191c438a5917402025db03e5676e1f81200588c17db7",
       "entrypoint": "node_modules/opencode-linux-x64-baseline/bin/opencode",
       "kind": "npm-prefix",
       "package": "opencode-linux-x64-baseline",
       "platform": "linux-x64",
-      "version": "1.18.34"
+      "version": "1.19.4"
     },
     "instructions": {
       "files": [
@@ -112,8 +112,8 @@
     "artifacts": [
       {
         "destination": "node_modules/opencode-linux-x64-baseline",
-        "sha256": "585bc53a8ae7e839b8702752a283ba826e1ca2152e8c14188efc5b6a738d9834",
-        "url": "https://registry.npmjs.org/opencode-linux-x64-baseline/-/opencode-linux-x64-baseline-1.18.34.tgz"
+        "sha256": "0ad0f6ac9cd7fafee464191c438a5917402025db03e5676e1f81200588c17db7",
+        "url": "https://registry.npmjs.org/opencode-linux-x64-baseline/-/opencode-linux-x64-baseline-1.19.4.tgz"
       }
     ]
   }

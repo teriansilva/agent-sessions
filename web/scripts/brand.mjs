@@ -62,11 +62,53 @@ function ogCard() {
   );
 }
 
+/** A design token's value, read from the app's own token sheet (web/src/tokens.css). */
+function token(name) {
+  const css = readFileSync(resolve(WEB, "src", "tokens.css"), "utf8");
+  const m = new RegExp(`${name}:\\s*(#[0-9a-fA-F]{6})\\b`).exec(css);
+  if (!m) throw new Error(`no colour token ${name} in tokens.css`);
+  return m[1];
+}
+
+/** The favicon's states (#1736), all drawn on the kit's mark, in the mark's own colours.
+ *
+ *  - **relay**: a 34 x 34 corner is cut from the plate's bottom left, and broadcast arcs (a dot and
+ *    two rings, in the plate's amber) sit in it: the tab runs through the Home Free relay.
+ *  - **unread**: a dot in `--status-degraded` (the bell badge's colour; unread is not an incident,
+ *    so never `--status-down`) on a disc of the mark's ink in the top-right corner. The disc keeps
+ *    the dot from melting into the amber plate at 16 px. */
+export function favicon({ relay = false, unread = false } = {}) {
+  const svg = src("mark-amber.svg");
+  const open = /^<svg[^>]*>/.exec(svg)[0];
+  const { inner } = parts(svg);
+  const plate = /<path[^>]*\bfill="(#[0-9A-Fa-f]{6})"/.exec(inner)[1];
+  const ink = /\bstroke="(#[0-9A-Fa-f]{6})"/.exec(inner)[1];
+  let body = inner;
+  if (relay) {
+    const [x, y] = [4, 60]; // the arcs' centre, inside the cut corner
+    const arc = (r) =>
+      `<path d="M${x} ${y - r} A${r} ${r} 0 0 1 ${x + r} ${y}" fill="none" stroke="${plate}" stroke-width="4.5"/>`;
+    body =
+      `<defs><mask id="relay-cut"><rect width="64" height="64" fill="white"/>` +
+      `<path d="M0 30 H34 V64 H0 Z" fill="black"/></mask></defs>` +
+      `<g mask="url(#relay-cut)">${inner}</g>` +
+      `<circle cx="${x}" cy="${y}" r="4.5" fill="${plate}"/>${arc(13)}${arc(24)}`;
+  }
+  if (unread)
+    body +=
+      `<circle cx="51" cy="13" r="13" fill="${ink}"/>` +
+      `<circle cx="51" cy="13" r="8" fill="${token("--status-degraded")}"/>`;
+  return `${open}${body}</svg>`;
+}
+
 /** Whole files derived from the kit, repo-relative. */
 export function brandFiles() {
   const mark = src("mark-amber.svg") + "\n";
   return {
     "web/public/favicon.svg": mark,
+    "web/public/favicon-unread.svg": favicon({ unread: true }) + "\n",
+    "web/public/favicon-relay.svg": favicon({ relay: true }) + "\n",
+    "web/public/favicon-relay-unread.svg": favicon({ relay: true, unread: true }) + "\n",
     "web/public/icon.svg": mark,
     "web/public/icon-maskable.svg": markOnGround(512, 0.55) + "\n",
     "web/public/og-image.svg": ogCard() + "\n",
