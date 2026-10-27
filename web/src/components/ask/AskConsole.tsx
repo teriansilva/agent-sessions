@@ -81,6 +81,7 @@ import { useIsMobile } from "../../lib/useIsMobile";
 import { missionLink } from "../../lib/missionLink";
 import { settingsPath } from "../../routes/settingsTabs";
 import type {
+  AskAttachment,
   AskConversationSummary,
   AskConversationTurn,
   AskFollow,
@@ -103,6 +104,7 @@ import {
   SessionCard,
   UpdateRow,
 } from "./AskCards";
+import { AttachmentList } from "./AskAttachments";
 import { ASK_SEEN_EVENT, placeUpdates } from "./askUpdates";
 import { AskComposer } from "./AskComposer";
 import { ASK_DRAWER_MQ, useAskPanel } from "./askPanel";
@@ -146,6 +148,8 @@ export interface AskTurn {
   /** When it was asked (server time), to place followed sessions' updates around it; `null` for
    *  a turn this page has not had back from the server yet. */
   at: number | null;
+  /** Files shared with the question (#1707). */
+  attachments: AskAttachment[];
 }
 
 /** How often a turn this page is not streaming is read again until it settles. */
@@ -192,11 +196,46 @@ function fromServer(t: AskConversationTurn): AskTurn {
     proposals: t.proposals ?? [],
     at: typeof t.asked_at === "number" ? t.asked_at : null,
     contact: t.contact ?? "off",
+    attachments: t.attachments ?? [],
   };
 }
 
 /** An answer's speaker (#1525): the contact stored on ITS turn, so switching relabels only new
  *  answers. Off, a removed contact and a turn from before HQ read as plain HQ. */
+/** A staged file's DELETE, retried until it lands — never silently given up (#1720 round 5).
+ *
+ *  The server's `discard` correctly declines (409) while a turn holds the conversation, and a
+ *  turn can outlive any fixed attempt window. A capped retry that then returned void left the
+ *  blob staged invisibly (quota stranded until the 24 h reap). So: keep trying while the page
+ *  lives — fast at first, then slow — and count the file as PENDING CLEANUP the whole time so
+ *  the composer can say so and the next upload knows the slot is not actually free.
+ */
+export type DiscardState = { pending: number };
+
+async function discardWithRetry(
+  cid: string,
+  aid: string,
+  onPending: (delta: number) => void,
+): Promise<void> {
+  onPending(1);
+  try {
+    for (let i = 0; i < 1000; i += 1) {
+      try {
+        await api.askDiscardAttachment(cid, aid);
+        return;
+      } catch (e) {
+        // 409 is the server's last word (gone or already sent) — stop. Everything else is
+        // RETRYABLE (#1720 round 11): 503 means the durable marker could not be written and
+        // the file still counts, so the cleanup must stay pending and keep trying.
+        if (e instanceof ApiError && e.status === 409) return;
+        await new Promise((r) => setTimeout(r, i < 8 ? 2500 : 15000));
+      }
+    }
+  } finally {
+    onPending(-1);
+  }
+}
+
 function speakerName(id: string): string {
   return contactById(id)?.name ?? "HQ";
 }
@@ -368,6 +407,16 @@ export function AskConsole({
   const loadedFor = useRef<string | null>(null);
   /** The conversation on screen — read at RESOLUTION time, never captured. */
   const cidRef = useRef<string | null>(null);
+  /** One in-flight conversation creation shared by every staged file AND the first question
+   *  (#1707). #1720 round 3: bound to a conversation GENERATION — a switch/New invalidates the
+   *  flight at once, and a creation that resolves late can no longer install its id into the new
+   *  screen. Round 5: `ask` shares this flight too, so a first Send and a first Attach can never
+   *  create two different conversations. */
+  const ensureCid = useRef<Promise<string> | null>(null);
+  const convGen = useRef(0);
+  /** Files whose DELETE has not landed yet (#1720 round 5): the composer says so, and the
+   *  quota they still hold is never silently promised as free. */
+  const [cleanupPending, setCleanupPending] = useState(0);
   // A call started from HQ's phone drawer (#1640 review 6907): the drawer closes first, so the
   // call panel owns focus instead of the drawer's trap, and the call hands focus back to HQ's
   // corner icon (the drawer's own button is hidden by then).
@@ -418,6 +467,7 @@ export function AskConsole({
       const c = await api.askConversation(id);
       if (!fresh()) return;
       loadedFor.current = id;
+      ensureCid.current = Promise.resolve(id); // uploads go to the conversation on screen
       setTitle(c.title ?? "");
       setTurns((prev) => merge((c.turns ?? []).map(fromServer), prev));
       setUpdates(c.updates ?? []);
@@ -462,6 +512,8 @@ export function AskConsole({
   const openConversation = useCallback(
     (id: string, initial = false) => {
       if (!initial) stopWatching();
+      convGen.current += 1; // in-flight uploads belong to the conversation they started on
+      ensureCid.current = null;
       cidRef.current = id;
       setCid(id);
       setTitle("");
@@ -494,6 +546,10 @@ export function AskConsole({
    *  one. What New conversation does, and where a deleted conversation leaves the operator. */
   const startNew = useCallback(() => {
     stopWatching();
+    // The flight must die with the conversation it belonged to (#1720 round 4): without these
+    // two lines the next upload awaits the OLD conversation's cached promise and uploads there.
+    convGen.current += 1;
+    ensureCid.current = null;
     cidRef.current = null;
     setCid(null);
     setTitle("");
@@ -605,8 +661,49 @@ export function AskConsole({
   }, [cardsLive, streaming, cid, load, every]);
 
   const ask = useCallback(
-    async (q: string, reply?: { answers: string; option?: number }) => {
-      if (!q || busy || !configured) return;
+    async (
+      q: string,
+      atts: AskAttachment[] = [],
+      reply?: { answers: string; option?: number },
+    ): Promise<{
+      outcome: "sent" | "refused" | "canceled" | "uncertain";
+      conv: string | null;
+    }> => {
+      // The aim is CAPTURED (#1720 round 12): the thread this message was aimed at — created
+      // or not — never whatever `cidRef` says at settlement time. A switch/New that aborts the
+      // watch is "canceled", and a canceled draft may never be restored into the new thread.
+      let aimConv: string | null = null;
+      const wrap = (outcome: "sent" | "refused" | "canceled" | "uncertain") => ({
+        outcome,
+        conv: aimConv,
+      });
+      const refuse = () => wrap("refused");
+      const sent = () => wrap("sent");
+      const canceled = () => wrap("canceled");
+      const uncertain = () => wrap("uncertain");
+      // A canceled WATCH does not cancel the server turn (#1720 round 13): reconcile the
+      // original turn id before calling the draft unsent. Found → it sent.
+      //
+      // Round 14: ABSENCE IS ONLY PROOF WHEN NO POST WAS EVER MADE. After the server has
+      // received the streamed POST but before it appends the user turn, a reconcile GET sees
+      // nothing — and the turn then lands anyway. So a missing turn is indeterminate for as
+      // long as the POST may still be in flight: the draft is kept UNCERTAIN (never a blind
+      // resend) unless the message request never started at all.
+      const reconcileOr = async (
+        fallback: () => { outcome: "sent" | "refused" | "canceled" | "uncertain"; conv: string | null },
+      ) => {
+        if (id !== null) {
+          try {
+            const c = await api.askConversation(id);
+            if ((c.turns ?? []).some((t) => t.turn_id === turnId)) return sent();
+          } catch {
+            return uncertain();
+          }
+        }
+        // The POST may still be admitted behind us: absence is not proof it was refused.
+        return messageStarted ? uncertain() : fallback();
+      };
+      if ((!q && !atts.length) || busy || !configured) return refuse();
       const turnId = newTurnId();
       gen.current++; // a read already in flight must not land over this turn
       const ctl = new AbortController();
@@ -625,28 +722,46 @@ export function AskConsole({
         proposals: [],
         at: null,
         contact: contactRef.current,
+        attachments: atts,
       };
       setTurns((prev) => [...prev, optimistic]);
       const update = (fn: (t: AskTurn) => AskTurn) =>
         setTurns((prev) => prev.map((t) => (t.id === turnId ? fn(t) : t)));
       let id: string | null = null;
+      let messageStarted = false; // (#1720 r11) a failure BEFORE the message is a refusal
       try {
         const sel = selectedRef.current;
         if (sel && !sel.settled) {
           await sel.promise;
-          if (!live.current || ctl.signal.aborted) return;
+          if (!live.current || ctl.signal.aborted) return reconcileOr(canceled);
         }
-        id = cidRef.current;
-        if (id === null) {
-          // A new conversation is created by its first question, never by New conversation.
-          const c = await api.askNewConversation();
-          if (!live.current || ctl.signal.aborted) return;
-          if (!c?.id) throw new Error("Could not start a conversation — ask again.");
-          id = c.id;
-          cidRef.current = id;
-          loadedFor.current = id; // created empty: nothing earlier to read
-          setCid(id);
+        // The SAME single-flight creation the file path uses (#1720 round 5): a first Send and
+        // a first Attach racing each other must never create two conversations and split the
+        // message from its files. The generation fence keeps a late settlement off a new screen.
+        const gen = convGen.current;
+        if (!ensureCid.current) {
+          ensureCid.current = (async () => {
+            let id = cidRef.current;
+            if (id === null) {
+              const c = await api.askNewConversation();
+              if (!c?.id) throw new Error("Could not start a conversation — ask again.");
+              id = c.id;
+              if (gen === convGen.current) {
+                cidRef.current = id;
+                loadedFor.current = id; // created empty: nothing earlier to read
+                setCid(id);
+              }
+            }
+            return id;
+          })().catch((e) => {
+            if (gen === convGen.current) ensureCid.current = null;
+            throw e;
+          });
         }
+        id = await ensureCid.current;
+        aimConv = id;
+        if (!live.current || ctl.signal.aborted) return reconcileOr(canceled);
+        messageStarted = true;
         const settled = await api.askMessageStream(
           id,
           {
@@ -656,14 +771,17 @@ export function AskConsole({
             ...(reply ? { answers: reply.answers } : {}),
             ...(reply?.option !== undefined ? { option: reply.option } : {}),
             contact: optimistic.contact,
+            ...(atts.length ? { attachments: atts.map((x) => x.id) } : {}),
           },
           (ev) => {
             if (current(id)) update((t) => applyEvent(t, ev));
           },
           ctl.signal,
         );
-        // A watch this page stopped (New conversation, a switch) applies nothing, however late.
-        if (ctl.signal.aborted) return;
+        // A watch this page stopped (New conversation, a switch) applies nothing, however
+        // late — and the draft it held is reconciled first (#1720 round 13): an admitted turn
+        // must never be offered as "Not sent" and resent.
+        if (ctl.signal.aborted) return reconcileOr(canceled);
         if (current(id)) {
           const done: AskTurn = { ...fromServer(settled), live: true };
           // Upsert: whatever a read did meanwhile, the settled turn is shown. A turn that answers
@@ -684,24 +802,35 @@ export function AskConsole({
           if (loadedFor.current !== id) void load(id);
         }
         void refreshList();
+        return sent();
       } catch (err) {
-        if (!live.current || ctl.signal.aborted) return;
+        if (!live.current || ctl.signal.aborted) return reconcileOr(canceled);
         const msg = err instanceof Error ? err.message : "That didn't work.";
         if (id !== null && current(id)) {
           // The turn may be stored and still running — ask the server what became of it.
           const g = ++gen.current;
           try {
             const c = await api.askConversation(id);
-            if (!current(id) || g !== gen.current) return;
+            if (!current(id) || g !== gen.current) return refuse();
             if ((c.turns ?? []).some((t) => t.turn_id === turnId)) {
               setTurns((prev) => merge(c.turns.map(fromServer), prev));
-              return;
+              return sent(); // it landed after all — uncertain resolved toward the server
             }
           } catch {
             /* fall through: say what failed */
           }
         }
         if (current(id)) update((t) => ({ ...t, error: msg, step: null, pending: false }));
+        // #1720 round 5: only a CONFIRMED server refusal (nothing was written) may restore the
+        // draft. Round 11: a failure BEFORE the message request ever started (a failed
+        // conversation creation, an abort in between) is just as confirmed. Anything uncertain
+        // after the message started — a dropped stream after acceptance — is "sent": the turn
+        // may be the server's, and a restored draft would duplicate it.
+        const confirmed =
+          !messageStarted ||
+          (err instanceof ApiError &&
+            (err.status === 409 || err.status === 422 || err.status === 503));
+        return confirmed ? refuse() : sent();
       } finally {
         if (inflight.current === ctl) {
           inflight.current = null;
@@ -1075,6 +1204,11 @@ export function AskConsole({
                 >
                   <div className={`${styles.eventHead} ${a.label}`}>You</div>
                   <div className={`${styles.eventText} ${a.text}`}>{t.question}</div>
+                  <AttachmentList
+                    cid={cid ?? null}
+                    attachments={t.attachments}
+                    expanded={t.pending || t.live === true}
+                  />
                 </article>
                 <article
                   className={`${styles.event} ${a.answer}`}
@@ -1241,11 +1375,11 @@ export function AskConsole({
                       disabled={busy || !configured}
                       onAnswer={(r) =>
                         "option" in r
-                          ? void ask(t.ask!.options[r.option], {
+                          ? void ask(t.ask!.options[r.option], [], {
                               answers: t.ask!.question_id,
                               option: r.option,
                             })
-                          : void ask(r.text, { answers: t.ask!.question_id })
+                          : void ask(r.text, [], { answers: t.ask!.question_id })
                       }
                     />
                   ) : null}
@@ -1355,7 +1489,49 @@ export function AskConsole({
           <AskComposer
             configured={configured}
             busy={busy}
-            onAsk={(q) => void ask(q)}
+            onAsk={(q, atts) => ask(q, atts)} // the outcome drives the composer's draft restore
+        convKey={cid}
+        uploadFile={async (file) => {
+          // The conversation is created by what the operator does in it — the first question or
+          // the first file (#1707), never by New conversation. SINGLE-FLIGHT: several files
+          // picked at once must not each create one (the last id would win and the rest would be
+          // claimed against the wrong conversation).
+          const gen = convGen.current;
+          if (!ensureCid.current) {
+            ensureCid.current = (async () => {
+              let id = cidRef.current;
+              if (id === null) {
+                const c = await api.askNewConversation();
+                if (!c?.id) throw new Error("Could not start a conversation — try again.");
+                id = c.id;
+                // A creation that settles after a switch/New must not install its id into the
+                // new screen (#1720 round 3): it returns its id to ITS uploader and stays gone.
+                if (gen === convGen.current) {
+                  cidRef.current = id;
+                  loadedFor.current = id;
+                  setCid(id);
+                }
+              }
+              return id;
+            })().catch((e) => {
+              // A failed creation is never cached (#1720 review): the next file retries.
+              if (gen === convGen.current) ensureCid.current = null;
+              throw e;
+            });
+          }
+          const id = await ensureCid.current;
+          const { attachment } = await api.askUploadAttachment(id, file);
+          return { attachment, cid: id };
+        }}
+        discardFile={(cid, attachment) => {
+          // Discarded against the CID the file was UPLOADED to, never whatever is on screen now
+          // (#1720 round 3): after A→B the id means nothing in B, and after New there is no B.
+          // Retried until it lands, with a visible pending count while it has not (#1720 round 5).
+          void discardWithRetry(cid, attachment.id, (d) =>
+            setCleanupPending((n) => Math.max(0, n + d)),
+          );
+        }}
+        cleanupPending={cleanupPending}
             inputRef={inputRef}
           />
         </div>

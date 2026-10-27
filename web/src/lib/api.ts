@@ -96,6 +96,7 @@ import type {
   AskOperationDecision,
   AskConversationSummary,
   AskConversationTurn,
+  AskAttachment,
   AskTurnEvent,
   PulseAskResult,
   PulseDepth,
@@ -521,7 +522,15 @@ async function streamMissionMessage(
  *  stops watching; it never cancels the turn. */
 async function streamAskTurn(
   id: string,
-  body: { turnId: string; text: string; answers?: string; option?: number; contact?: string },
+  body: {
+    turnId: string;
+    text: string;
+    answers?: string;
+    option?: number;
+    contact?: string;
+    /** Staged attachment ids (#1707) — claimed server-side under the turn lock. */
+    attachments?: string[];
+  },
   onEvent: (ev: AskTurnEvent) => void,
   signal?: AbortSignal,
 ): Promise<AskConversationTurn> {
@@ -537,6 +546,7 @@ async function streamAskTurn(
       ...(body.option !== undefined ? { option: body.option } : {}),
       // Who answers (#1525): the client's resolved contact. The server validates it.
       ...(body.contact ? { contact: body.contact } : {}),
+      ...(body.attachments?.length ? { attachments: body.attachments } : {}),
     }),
     ...(signal ? { signal } : {}),
   });
@@ -735,6 +745,19 @@ async function uploadBlob(path: string, signal?: AbortSignal): Promise<Blob> {
   });
   if (r.status === 401 || r.status === 403) await authGate(r);
   if (!r.ok) throw new ApiError(r.status, `upload read-back → ${r.status}`);
+  return await r.blob();
+}
+
+/** Any authenticated GET's bytes as a Blob, through the app's fetch seam (#1707: a shared file's
+ *  bytes). A 404 is an `ApiError` with status 404 — the UI distinguishes *gone* from a preview
+ *  that merely failed to decode by this status, never by guesswork. */
+async function fetchBlob(path: string, signal?: AbortSignal): Promise<Blob> {
+  const r = await apiFetch(path, {
+    credentials: "same-origin",
+    signal,
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) throw new ApiError(r.status, `GET ${path} → ${r.status}`);
   return await r.blob();
 }
 
@@ -1769,6 +1792,34 @@ export const api = {
   askDeleteConversation: (id: string) =>
     mutateJson<{ deleted: boolean; id: string }>("DELETE", `/api/ask/conversations/${enc(id)}`),
   askMessageStream: streamAskTurn,
+  /** Share one file in the conversation (#1707): one file per request, the kind is decided
+   *  server-side from the bytes. Answers the descriptor the message will carry. */
+  askUploadAttachment: (id: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file, file.name || "pasted");
+    return postForm<{ attachment: AskAttachment }>(
+      `/api/ask/conversations/${enc(id)}/attachments`,
+      fd,
+    );
+  },
+  /** A shared file's bytes (#1707), through the app's fetch seam — never a native `/api/…` URL
+   *  (the Home Free tunnel rule, `lib/uploadObjectUrl.ts`). */
+  askAttachmentBlob: (id: string, aid: string, signal?: AbortSignal) =>
+    fetchBlob(`/api/ask/conversations/${enc(id)}/attachments/${enc(aid)}`, signal),
+  /** Take back a staged file no message claimed (#1720 review): Remove on a pill, or an upload
+   *  whose pill went away. Frees the server's staged quota at once. */
+  askDiscardAttachment: (id: string, aid: string) =>
+    mutateJson<{ discarded: boolean }>(
+      "DELETE",
+      `/api/ask/conversations/${enc(id)}/attachments/${enc(aid)}`,
+    ),
+  /** A shared file's tiny absence probe (#1707): the descriptor or 404, no bytes — so every kind
+   *  can reach the *gone* state (and drop its Download) without a large download. */
+  askAttachmentMeta: (id: string, aid: string, signal?: AbortSignal) =>
+    getJson<{ attachment: AskAttachment }>(
+      `/api/ask/conversations/${enc(id)}/attachments/${enc(aid)}?meta=1`,
+      signal ? { signal } : undefined,
+    ),
   /** Whether any conversation has an unseen update from a followed session (#1443 Phase 4). */
   askUnread: () =>
     getJson<{ unread: boolean; conversations: number }>("/api/ask/unread"),

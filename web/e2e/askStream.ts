@@ -33,6 +33,8 @@ export interface FakeTurn {
   answers?: string | null;
   /** Who answered (#1525): the request's contact, echoed as the server stores it. */
   contact?: string;
+  /** Files shared with the question (#1707): id, name, kind, size. */
+  attachments?: Record<string, unknown>[];
 }
 
 export interface FakeConversation {
@@ -198,6 +200,7 @@ export function turnOf(
       why: String(m.why ?? ""),
     })),
     tools: [],
+    attachments: (result.attachments as Record<string, unknown>[] | undefined) ?? [],
   };
 }
 

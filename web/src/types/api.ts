@@ -1150,6 +1150,18 @@ export interface AskConversationTurn {
   /** Who answered (#1525): the HQ contact's id, stored on the turn so an earlier answer keeps its
    *  speaker after the operator switches; "off" (or absent, before HQ) reads as plain HQ. */
   contact?: string;
+  /** Files shared with the question (#1707) — their descriptors, as stored. */
+  attachments?: AskAttachment[];
+}
+
+/** A file shared in the HQ chat (#1707). The bytes live on the server; this is what the
+ *  conversation carries. `kind` is decided server-side from the bytes: `image` renders inline,
+ *  `text` is viewable + downloadable, `other` is a Download card (never rendered). */
+export interface AskAttachment {
+  id: string;
+  name: string;
+  kind: "image" | "text" | "other";
+  size: number;
 }
 
 export interface AskConversation {

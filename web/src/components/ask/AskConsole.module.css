@@ -506,3 +506,186 @@
   font: var(--fs-meta)/1.5 var(--font-mono);
   color: var(--text-muted);
 }
+
+/* ---- shared files (#1707) ------------------------------------------------------------------
+ * Staged pills above the composer and the composer's Attach / Camera plates. The buttons are
+ * the shared `ui/actionButton.module.css` variants (NIGHTJAR §6, docs/design.md): one primitive,
+ * never a look-alike. A component sheet keeps only layout here. */
+.iconBtn {
+  composes: icon from "../ui/actionButton.module.css";
+  flex: 0 0 auto;
+}
+.pillX {
+  composes: icon compact from "../ui/actionButton.module.css";
+  flex: 0 0 auto;
+}
+.pills {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-bottom: var(--sp-2);
+}
+.pill {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 4px var(--sp-2);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  font-size: var(--fs-meta);
+  min-width: 0;
+}
+.pillFailed {
+  border-color: var(--status-down);
+}
+.pillName {
+  font-family: var(--font-mono);
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.pillMeta {
+  margin-left: auto;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pillFailed .pillMeta {
+  color: var(--danger-text);
+}
+
+/* ---- the file cards (#1707) — image inline, text View+Download, anything else Download ---- */
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.card {
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  padding: var(--sp-2) var(--sp-3);
+}
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.cardName {
+  font-family: var(--font-mono);
+  font-size: var(--fs-row);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.cardMeta {
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+}
+.cardActions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--sp-2);
+}
+.cardBtn {
+  composes: ghost compact from "../ui/actionButton.module.css";
+}
+.cardImg {
+  display: block;
+  margin-top: var(--sp-2);
+  max-width: 300px;
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--bg-0);
+}
+.cardFallback {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-meta);
+  color: var(--warn-text);
+}
+.cardPreview {
+  margin-top: var(--sp-2);
+  padding: var(--sp-2);
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 84px;
+  overflow-y: auto;
+}
+.cardPreview::-webkit-scrollbar {
+  width: 8px;
+}
+.cardPreview::-webkit-scrollbar-track {
+  background: var(--bg-1);
+}
+.cardPreview::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+}
+.cardNote {
+  margin-top: 2px;
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+}
+.pillState {
+  margin-left: auto;
+  color: var(--text-2);
+}
+.pillWhy {
+  margin-left: auto;
+  color: var(--danger-text);
+}
+
+/* Pending cleanup (#1720 round 5): a removed file the server has not let go of yet, said out
+ * loud — the quota it holds is never silently promised as free. */
+.cleanup {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: 4px var(--sp-2);
+  margin-bottom: var(--sp-2);
+  border-left: 2px solid var(--status-draft);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.cleanupWhy {
+  color: var(--text-3);
+  font-size: var(--fs-micro);
+}
+
+/* A refused submission kept for the operator (#1720 round 7): never dropped, never merged over
+ * a newer draft — Restore joins it back, Discard releases its files' quota. */
+.recovered {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  padding: 4px var(--sp-2);
+  margin-bottom: var(--sp-2);
+  border-left: 2px solid var(--warn-text, var(--status-degraded));
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.recoveredText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recoveredActions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+}
+.recoveredBtn {
+  composes: ghost compact from "../ui/actionButton.module.css";
+}

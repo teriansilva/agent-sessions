@@ -203,6 +203,7 @@ the same list.
 | `src/agent_sessions/templates/link_approve.html` | page | 12 | done | page:link-confirm page:link-approved page:link-denied page:link-invalid | atmosphere (Full, dark), attention LED blink on the request |
 | `web/share.html → share/ShareViewer.tsx` | page | 12 | done | share:loading share:password share:password-error share:password-wait share:unavailable share:relink share:nocookie share:offline share:terminal share:open | atmosphere (Full, dark), radar while opening, working bars (Full only) |
 | `src/agent_sessions/routes/shares.py PLACEHOLDER_PAGE` | page | 12 | done | page:share-placeholder | atmosphere (Full, dark); script-free |
+| `src/agent_sessions/ask_attachments.py` | page | 12 | n/a: not a served page — the shared-file kind classifier's HTML sniff (the `<!doctype html` literal) trips the page discovery regex | — | — |
 | `web/connect.html (+ homefree/connectState.ts)` | page | 12 | done | connect:signed-out connect:verified connect:dialog connect:connecting connect:error connect:connected | atmosphere (Full, dark; paused hidden/idle), button glitch, gate meter (state, every mode), radar + acquire bar while connecting, step LEDs, session LED breathe / warn blink |
 | `landing/index.html` | page | 12b | n/a: rebuilt in NIGHTJAR by #1544 (PR #1548); 12b checks conformance only | — | — |
 | `landing/legal.html` | page | 12b | done | site:legal | atmosphere sweep (`lp-sweep`) and the title cursor blink (`lp-blink`); none under prefers-reduced-motion (`landing-pages.spec.ts`) |

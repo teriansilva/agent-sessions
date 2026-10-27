@@ -52,6 +52,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from . import (
+    ask_attachments,
     ask_operations,
     ask_settings,
     ask_store,
@@ -179,6 +180,10 @@ class _Turn:
     #: HQ judged that the operator's words mean the call is over (#1668): `end_call` was used on
     #: this CALL turn. Memory only, never stored: the settled view carries it to the call alone.
     end_call: bool = False
+    #: Files shared with this question (#1707): their descriptors (as stored), and the bounded
+    #: TEXT bodies read at begin — the model request boundary sanitizes them (fail-closed).
+    attachments: list[dict] = field(default_factory=list)
+    attachment_bodies: dict[str, bytes] = field(default_factory=dict)
     _catalog: list[dict] | None = None
 
     async def catalog(self) -> list[dict]:
@@ -2000,7 +2005,15 @@ def _history(
         if tid == turn_id:
             break
         if r.get("type") == "user" and isinstance(r.get("text"), str):
-            questions[tid] = r["text"]
+            text = r["text"]
+            # A past question that shared files (#1707) replays their sanitized NOTE so later
+            # turns know the files existed — never the bytes again, and never an unsanitized name
+            # (the note's own sanitizer is fail-closed).
+            if r.get("attachments"):
+                note = ask_attachments.prompt_note(r["attachments"])
+                if note:
+                    text = f"{text}\n\n{note}"
+            questions[tid] = text
             # Stored on each question (#1525); a turn from before HQ contacts is plain HQ.
             speakers[tid] = hq_contacts.resolve(r.get("contact"))
             order.append(tid)
@@ -2044,9 +2057,11 @@ def _sanitize(calls: list) -> list[dict] | None:
 
 
 async def _fallback_find(turn: _Turn, history: list[dict]) -> list[dict]:
-    """The endpoint refused tools: answer as the transient Ask does (two-stage find)."""
+    """The endpoint refused tools: answer as the transient Ask does (two-stage find). The
+    question carries its attachments' sanitized note and excerpts too — a file-only turn must
+    not lose its file on this path (#1720 review)."""
     result = await pulse_chat.ask(
-        turn.question,
+        _user_content(turn),
         history,
         working_keys=turn.working_keys,
         on_event=lambda ev: turn.progress(ev) if ev.get("type") == "progress" else None,
@@ -2094,11 +2109,22 @@ async def _append(cid: str, *records: dict) -> None:
 
 
 def _user_content(turn: _Turn) -> str:
+    base = turn.question
     if turn.answering is not None:
-        return f"Answering your question \"{turn.answering['question']}\": {turn.question}"
-    if turn.replying_to:
-        return f'Answering your question "{turn.replying_to}": {turn.question}'
-    return turn.question
+        base = f"Answering your question \"{turn.answering['question']}\": {turn.question}"
+    elif turn.replying_to:
+        base = f'Answering your question "{turn.replying_to}": {turn.question}'
+    # Files shared with this question (#1707): every name and byte goes through the fail-closed
+    # sanitizer at THIS model-request boundary (`ask_attachments.prompt_block`) — the JSONL
+    # admission step never saw these bytes and is never relied on for them. A text file is inlined
+    # as a bounded fenced excerpt; an image is named but never claimed as seen (no vision).
+    if turn.attachments:
+        parts = [
+            ask_attachments.prompt_block(a, turn.attachment_bodies.get(a.get("id", "")))
+            for a in turn.attachments
+        ]
+        return base + "\n\n" + "\n".join(parts)
+    return base
 
 
 def _asked_records(turn: _Turn) -> list[dict]:
@@ -2406,6 +2432,17 @@ def turn_views(records: list[dict]) -> list[dict]:
                 "contact": hq_contacts.resolve(r.get("contact")),
                 # #1397: how it was asked — absent (typed) or a channel such as "call".
                 "via": r.get("via") if r.get("via") in ask_store.VIAS else None,
+                # #1707: files shared with the question — their descriptors, as stored.
+                "attachments": [
+                    {
+                        "id": a.get("id"),
+                        "name": a.get("name") or "",
+                        "kind": a.get("kind") or "other",
+                        "size": a.get("size") or 0,
+                    }
+                    for a in (r.get("attachments") or [])
+                    if isinstance(a, dict)
+                ],
             }
             order.append(tid)
             continue
@@ -2642,6 +2679,7 @@ async def begin(
     via: str | None = None,
     call_answers: str = "brief",
     replying_to: str | None = None,
+    attachments: list[str] | None = None,
     operator=None,
     app=None,
 ) -> tuple[asyncio.Task | None, dict | None]:
@@ -2706,6 +2744,9 @@ async def begin(
                 raise TurnError(409, "that question was already answered")
             if len(turn_views(records)) >= ask_store.MAX_TURNS:
                 raise TurnError(409, "this conversation is full — start a new one")
+            # Files shared with this question (#1707): each id is claimed HERE, under the turn
+            # lock and in the same append that writes the turn — one turn per id, or staged.
+            descriptors: list[dict] = []
             user: dict = {
                 "type": "user",
                 "turn_id": turn_id,
@@ -2717,7 +2758,23 @@ async def begin(
                 user["via"] = via
             if answering is not None:
                 user["answers"] = answering["question_id"]
-            await _append(cid, user, {"type": "status", "turn_id": turn_id, "status": "pending"})
+            # Claim AND the append under the attachments fence (#1720 rounds 3 + 6): a discard
+            # (which takes only the fence) can then never slip between the claim's check and the
+            # record that makes it durable — while the long model call holds only the turn lock,
+            # so an operator's Remove during an answer still lands at once.
+            with ask_attachments.attachments_fence(cid):
+                if attachments:
+                    try:
+                        descriptors = await asyncio.to_thread(
+                            ask_attachments.claim, cid, list(attachments), records
+                        )
+                    except ask_attachments.AttachmentRefused as e:
+                        raise TurnError(422, e.detail) from None
+                if descriptors:
+                    user["attachments"] = descriptors
+                await _append(
+                    cid, user, {"type": "status", "turn_id": turn_id, "status": "pending"}
+                )
         except BaseException:
             with contextlib.suppress(OSError):
                 os.close(lock_fd)
@@ -2733,6 +2790,10 @@ async def begin(
             via=via,
             call_answers=call_answers if call_answers in ("brief", "detailed") else "brief",
             replying_to=replying_to[:200] if isinstance(replying_to, str) and via else None,
+            attachments=descriptors,
+            attachment_bodies=await asyncio.to_thread(
+                ask_attachments.read_text_bodies, cid, descriptors
+            ),
             progress=lambda ev: _broadcast(cid, ev),
             operator=operator,
             app=app,

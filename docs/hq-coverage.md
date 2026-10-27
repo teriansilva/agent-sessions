@@ -260,6 +260,9 @@ GET    /api/ai/activity                                                         
 GET    /api/ask/conversations                                                     n/a  # HQ itself
 POST   /api/ask/conversations                                                     n/a  # HQ itself
 GET    /api/ask/conversations/{cid}                                               n/a  # HQ itself
+GET    /api/ask/conversations/{cid}/attachments/{aid}                     n/a  # HQ itself (a file shared in the chat, #1707)
+POST   /api/ask/conversations/{cid}/attachments                            n/a  # HQ itself (share a file in the chat, #1707)
+DELETE /api/ask/conversations/{cid}/attachments/{aid}                     n/a  # HQ itself (take back an unsent file, #1707/#1720)
 DELETE /api/ask/conversations/{cid}                                               n/a  # HQ itself (delete a conversation, #1564)
 DELETE /api/ask/conversations/{cid}/follow/{key:path}                             n/a  # HQ itself
 POST   /api/ask/conversations/{cid}/message                                       n/a  # HQ itself

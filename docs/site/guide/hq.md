@@ -182,6 +182,31 @@ keeps the last **50** conversations for **30 days**. What it
 stores is your questions and its answers — never the screens or transcripts it read to answer —
 and any text that looks like a password or a token is stored as *withheld*.
 
+## Sharing files
+
+A question can carry **files** (#1707) — a screenshot of the failing page, a log tail, a photo of
+an error on a rack screen. **Attach** takes any file; **Camera** takes a photo through the phone's
+own camera app (a desktop gets a plain file picker). Cancelling the picker does nothing and says
+nothing.
+
+- **All types are welcome.** Images (png, jpeg, gif, webp) render **inline** in the conversation.
+  Plain text — including SVG, which is only ever shown **as text** — is **viewable** (a bounded,
+  scrollable excerpt) and downloadable. Everything else (PDF, zip, docx, binaries) is shareable as
+  a **Download** card. Up to **4** files of **10 MB** each per message, **32 MB** per conversation.
+- **What HQ sees.** The model is told an image was shared and its name and size — it never sees
+  the pixels (there is no vision). A text file's contents are quoted into the answer as a bounded
+  excerpt, so "what does this log say?" works. Anything that looks like a password or a token is
+  **withheld** from the model whole, names included.
+- **Send waits.** While a file is uploading — or one failed and is still listed — Send and Enter
+  do nothing. A failure keeps its own named row until you remove it; removing it is what lets the
+  rest send. Nothing is ever sent on its own.
+- **Fallbacks.** An image that cannot decode keeps its **Download**. A file that is gone (the
+  conversation was deleted meanwhile) shows its name and *gone*, with no Download to offer.
+- **What is kept.** Shared files live with their conversation on your BattleLab server and are
+  removed with it — the same **30 days** / **50 conversations** retention as the chat itself, and
+  the same Delete. A file staged but never sent is cleaned up after **24 hours**. Nothing is ever
+  uploaded anywhere else.
+
 ## HQ contacts
 
 Your **HQ contact** is the General who answers in HQ: the portrait in the header and on the

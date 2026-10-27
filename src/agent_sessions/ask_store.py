@@ -106,6 +106,14 @@ RECORD_TYPES = frozenset(
     {"conversation", "user", "assistant", "tool", "status", "question", "proposal", "update"}
 )
 
+# A shared file's descriptor on a `user` record (#1707): the blob lives beside the conversation
+# (`ask_attachments`), this is only its metadata and is shape-checked here like every structural
+# field. The name is stored text (guard_text); the id is a server-made UUID hex; the kind mirrors
+# `ask_attachments.KINDS` and is decided from the bytes at publish, never taken on a client's word.
+ATTACHMENT_KINDS = frozenset({"image", "text", "other"})
+ATTACHMENTS_MAX = 4
+_AID_RE = re.compile(r"^[0-9a-f]{32}$")
+
 # Asking back (#1443 Phase 2): a question card's bounds.
 QUESTION_MAX = 300
 OPTION_MAX = 120
@@ -325,6 +333,38 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
             if via not in VIAS:
                 raise ValueError("unknown channel")
             out["via"] = via
+        # Files shared with this question (#1707): descriptors only — the bytes never enter the
+        # JSONL. An id is a server-made UUID hex, the name stored text, the kind one of three.
+        atts = rec.get("attachments")
+        if atts is not None:
+            if not isinstance(atts, list) or len(atts) > ATTACHMENTS_MAX:
+                raise ValueError("malformed attachments")
+            admitted: list[dict] = []
+            for a in atts:
+                if not isinstance(a, dict):
+                    raise ValueError("malformed attachment")
+                aid = a.get("id")
+                if not (isinstance(aid, str) and _AID_RE.match(aid)):
+                    raise ValueError("malformed attachment id")
+                kind = a.get("kind")
+                if kind not in ATTACHMENT_KINDS:
+                    raise ValueError("unknown attachment kind")
+                size = a.get("size")
+                if not (
+                    isinstance(size, int)
+                    and not isinstance(size, bool)
+                    and 0 < size <= 10 * 1024 * 1024
+                ):
+                    raise ValueError("malformed attachment size")
+                admitted.append(
+                    {
+                        "id": aid,
+                        "name": text(a.get("name"), 200),
+                        "kind": kind,
+                        "size": size,
+                    }
+                )
+            out["attachments"] = admitted
     elif kind == "question":
         out["turn_id"] = _turn_id(rec)
         qid = rec.get("question_id")
@@ -1235,6 +1275,13 @@ def delete(cid: str) -> None:
         _follows_lock_path(cid),
     ):
         p.unlink(missing_ok=True)
+    # Shared files (#1707) go with the conversation, under their own fence — the same one an
+    # upload holds across its publish, so this can never race a published orphan.
+    from . import ask_attachments
+
+    with contextlib.suppress(Exception):
+        with ask_attachments.attachments_fence(cid):
+            ask_attachments.delete_for_conversation(cid)
 
 
 def _still_expired(cid: str, cutoff: float) -> bool:
@@ -1303,6 +1350,13 @@ def delete_conversation(cid: str) -> None:
             # delete. One that can't go now is an orphan the next sweep removes.
             with contextlib.suppress(OSError):
                 _delete_drafts(cid)
+            # And its shared files (#1707), under their fence: an upload holding that fence either
+            # published before this (and goes now) or starts after and finds the conversation gone.
+            from . import ask_attachments
+
+            with contextlib.suppress(Exception):
+                with ask_attachments.attachments_fence(cid):
+                    ask_attachments.delete_for_conversation(cid)
 
 
 def sweep(now: float | None = None) -> list[str]:
@@ -1369,4 +1423,10 @@ def sweep(now: float | None = None) -> list[str]:
                     _delete_drafts(cid)
             except OSError as e:
                 log.warning("ask orphan draft not removed yet (%s)", type(e).__name__)
+    # Shared files (#1707): directories whose conversation is gone, and staged blobs past their
+    # TTL that no user record claimed. Its own pass — the blobs are not sidecars.
+    from . import ask_attachments
+
+    with contextlib.suppress(Exception):
+        ask_attachments.reap_staged(now)
     return removed

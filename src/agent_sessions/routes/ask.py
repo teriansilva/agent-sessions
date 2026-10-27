@@ -40,14 +40,21 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 from collections.abc import AsyncIterator
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+
+try:  # the package renamed; the old name still works but emits a PendingDeprecationWarning
+    from python_multipart.multipart import MultipartParser, parse_options_header
+except ImportError:  # pragma: no cover - older pins
+    from multipart.multipart import MultipartParser, parse_options_header
 
 from .. import (
     actuator,
     asgi_call,
+    ask_attachments,
     ask_follow,
     ask_operations,
     ask_orchestrator,
@@ -60,6 +67,137 @@ from .. import (
 
 # The latest `seen` time a client may send (2100-01-01): any later or unbounded value is refused.
 _MAX_TS = 4_102_444_800
+#: Ingress ceiling over the per-file cap: multipart framing, and the bound on a chunked body.
+_INGRESS_HEADROOM = 64 * 1024
+_MAX_REQUEST_BYTES = ask_attachments.MAX_FILE_BYTES + _INGRESS_HEADROOM
+#: A non-file part is tiny; bounding it separately stops a "field" carrying the payload.
+_MAX_FIELD_BYTES = 8 * 1024
+
+
+class _UploadMalformed(Exception):
+    """The multipart request is malformed in a way the operator should see named."""
+
+
+def _ascii_name(name: str) -> str:
+    """The Content-Disposition filename: printable ASCII only, quotes stripped. The UTF-8 name is
+    what the client shows; this is only the download dialog's anchor."""
+    out = "".join(c for c in name if 32 <= ord(c) < 127 and c not in '"\\')
+    return out[:200] or "file"
+
+
+async def _read_one_attachment(request: Request) -> tuple[str, bytes]:
+    """`(name, bytes)` for ONE file part, charged before the bytes are accepted. A second file
+    part is refused (one file per request); fields come first and are ignored apart from size."""
+    ctype, params = parse_options_header(request.headers.get("content-type", ""))
+    if ctype != b"multipart/form-data":
+        raise _UploadMalformed("this route takes a multipart upload")
+    boundary = params.get(b"boundary")
+    if not boundary:
+        raise _UploadMalformed("the multipart request has no boundary")
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > _MAX_REQUEST_BYTES:
+        raise ask_attachments.AttachmentRefused(
+            f"that file is larger than the limit "
+            f"({ask_attachments.MAX_FILE_BYTES // (1024 * 1024)} MB)",
+            status=413,
+        )
+
+    state = {
+        "is_file": False,
+        "name": "",
+        "buf": bytearray(),
+        "total": 0,
+        "saw": False,
+        "field": bytearray(),
+        "ended": False,  # the terminal boundary was seen (#1720 round 9)
+    }
+    header = {"field": bytearray(), "value": bytearray()}
+
+    def on_part_begin() -> None:
+        header["field"] = bytearray()
+        header["value"] = bytearray()
+        state["is_file"] = False
+
+    def on_header_field(data: bytes, start: int, end: int) -> None:
+        header["field"] += data[start:end]
+
+    def on_header_value(data: bytes, start: int, end: int) -> None:
+        header["value"] += data[start:end]
+
+    def on_header_end() -> None:
+        if bytes(header["field"]).lower() == b"content-disposition":
+            _, p = parse_options_header(bytes(header["value"]))
+            state["is_file"] = b"filename" in p
+            if state["is_file"]:
+                state["name"] = p.get(b"filename", b"").decode("utf-8", "replace")
+        header["field"] = bytearray()
+        header["value"] = bytearray()
+
+    def on_headers_finished() -> None:
+        if state["is_file"]:
+            if state["saw"]:
+                # ONE file per request — a second file part must never stream into the first
+                # part's buffer (fileupload.py measured that failure mode).
+                raise _UploadMalformed("only one file per request")
+            state["saw"] = True
+
+    def on_end() -> None:
+        state["ended"] = True
+
+    def on_part_data(data: bytes, start: int, end: int) -> None:
+        chunk = data[start:end]
+        if not chunk:
+            return
+        if state["is_file"]:
+            # The bound: charged BEFORE accepted. An under-declaring client gains nothing.
+            if state["total"] + len(chunk) > ask_attachments.MAX_FILE_BYTES:
+                raise ask_attachments.AttachmentRefused(
+                    f"that file is larger than the limit "
+                    f"({ask_attachments.MAX_FILE_BYTES // (1024 * 1024)} MB)",
+                    status=413,
+                )
+            state["total"] += len(chunk)
+            state["buf"] += chunk
+        else:
+            if len(state["field"]) + len(chunk) > _MAX_FIELD_BYTES:
+                raise _UploadMalformed("an upload field is too large")
+            state["field"] += chunk
+
+    parser = MultipartParser(
+        boundary,
+        {
+            "on_part_begin": on_part_begin,
+            "on_header_field": on_header_field,
+            "on_header_value": on_header_value,
+            "on_header_end": on_header_end,
+            "on_headers_finished": on_headers_finished,
+            "on_part_data": on_part_data,
+            "on_end": on_end,
+        },
+    )
+    total = 0
+    try:
+        async for chunk in request.stream():
+            total += len(chunk)
+            if total > _MAX_REQUEST_BYTES:
+                raise ask_attachments.AttachmentRefused(
+                    "that upload is larger than the limit", status=413
+                )
+            parser.write(chunk)
+    except _UploadMalformed:
+        raise
+    except ask_attachments.AttachmentRefused:
+        raise  # a cap refusal keeps its own status (413 stays 413)
+    except Exception as e:
+        raise _UploadMalformed("the upload could not be read") from e
+    # The terminal boundary is REQUIRED (#1720 round 9): a transfer cut mid-body or missing
+    # its closing boundary used to be accepted as a complete file — silently truncating
+    # whatever was uploaded. Only `on_end` proves the parse reached the closing boundary.
+    if not state["ended"]:
+        raise _UploadMalformed("the upload ended early — the file was not fully sent")
+    if not state["buf"]:
+        raise _UploadMalformed("no file part in the request")
+    return state["name"], bytes(state["buf"])
 
 
 def _ndjson(ev: dict) -> str:
@@ -192,9 +330,28 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return JSONResponse({"detail": "an option needs the question it answers"}, 422)
         if option is not None and (text is None or text == ""):
             text = ""  # the server resolves the option to its stored reply
-        elif not isinstance(text, str) or not text.strip():
-            return JSONResponse({"detail": "text (string) is required"}, status_code=422)
-        text = text.strip()
+        # Files shared with this question (#1707): their staged ids, claimed under the turn lock.
+        # Parsed before the text rule so a file-only message is a message.
+        raw_atts = body.get("attachments")
+        attachments: list[str] | None = None
+        if raw_atts is not None:
+            if not isinstance(raw_atts, list) or not all(isinstance(a, str) for a in raw_atts):
+                return JSONResponse(
+                    {"detail": "attachments must be a list of ids"}, status_code=422
+                )
+            if len(raw_atts) > ask_attachments.MAX_STAGED:
+                return JSONResponse(
+                    {"detail": f"at most {ask_attachments.MAX_STAGED} files per message"},
+                    status_code=422,
+                )
+            attachments = [a for a in raw_atts if ask_attachments.valid_aid(a)]
+            if len(attachments) != len(raw_atts):
+                return JSONResponse({"detail": "malformed attachment id"}, status_code=422)
+        if option is None and (not isinstance(text, str) or not text.strip()):
+            if not attachments:
+                return JSONResponse({"detail": "text (string) is required"}, status_code=422)
+            text = ""  # a file-only message: the shared file is the message
+        text = (text or "").strip()
         if len(text) > ask_orchestrator.QUERY_MAX:
             return JSONResponse(
                 {"detail": f"text too long (max {ask_orchestrator.QUERY_MAX} chars)"},
@@ -202,7 +359,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             )
         # Never free text: anything but a known contact id is plain HQ (#1525).
         contact = hq_contacts.resolve(body.get("contact"))
-        return turn_id, text, answers, option, contact  # type: ignore[return-value]
+        return turn_id, text, answers, option, contact, attachments  # type: ignore[return-value]
 
     async def _begin(cid: str, request: Request):
         """``(task, settled view)`` or the JSONResponse that refuses the turn."""
@@ -211,7 +368,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         parsed = await _message_body(request)
         if isinstance(parsed, JSONResponse):
             return parsed
-        turn_id, text, answers, option, contact = parsed
+        turn_id, text, answers, option, contact, attachments = parsed
         try:
             started = await ask_orchestrator.begin(
                 cid,
@@ -222,6 +379,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 answers=answers,
                 option=option,
                 contact=contact,
+                attachments=attachments,
                 operator=asgi_call.Operator.from_scope(request.scope),
                 app=request.app,
             )
@@ -441,3 +599,122 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         if not was:
             return JSONResponse({"detail": "not followed"}, status_code=404)
         return JSONResponse({"following": False})
+
+    # ---- shared files (#1707) ------------------------------------------------------------------
+
+    @app.post("/api/ask/conversations/{cid}/attachments")
+    async def upload_attachment(
+        cid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """One file per request, parsed from the request stream and charged BEFORE any chunk is
+        accepted (`routes/fileupload.py`'s bound — FastAPI's UploadFile spools first, which is
+        exactly what this avoids). All types are accepted; the kind is decided from the bytes."""
+        if not (ask_store.valid_cid(cid) and await asyncio.to_thread(ask_store.exists, cid)):
+            return _missing(cid)
+        try:
+            name, data = await _read_one_attachment(request)
+        except ask_attachments.AttachmentRefused as e:
+            return JSONResponse({"detail": e.detail}, status_code=e.status)
+        except _UploadMalformed as e:
+            return JSONResponse({"detail": str(e)}, status_code=422)
+        aid = ask_attachments.new_aid()
+        try:
+            desc = await asyncio.to_thread(ask_attachments.publish, cid, aid, name, data)
+        except ask_attachments.AttachmentRefused as e:
+            return JSONResponse({"detail": e.detail}, status_code=e.status)
+        except ask_store.ConversationNotFound:
+            return _missing(cid)
+        except ask_store.StoreRefused as e:
+            return _refused(e)
+        return JSONResponse({"attachment": desc}, status_code=201)
+
+    @app.delete("/api/ask/conversations/{cid}/attachments/{aid}")
+    async def discard_attachment(
+        cid: str, aid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        """Take back a file no message claimed (Remove on a pill, or an upload whose pill went
+        away). Frees the staged quota at once. A file some message already carries is NEVER
+        discarded — sent history keeps its files (#1720 review)."""
+        if not ask_store.valid_cid(cid):
+            return _missing(cid)
+        status = await asyncio.to_thread(ask_attachments.discard, cid, aid)
+        if status == "claimed":
+            return JSONResponse(
+                {"detail": "that file was already sent — history keeps it"}, status_code=409
+            )
+        if status == "retry":
+            # Retryable (#1720 round 11): the durable marker could not be written. The file is
+            # STILL staged and still counts — the client must keep the cleanup pending.
+            return JSONResponse(
+                {"detail": "the removal could not be recorded — try again"}, status_code=503
+            )
+        return JSONResponse({"discarded": True})
+
+    @app.get("/api/ask/conversations/{cid}/attachments/{aid}")
+    async def get_attachment(
+        cid: str, aid: str, request: Request, _user: str = Depends(logged_in)
+    ) -> Response:
+        """The blob. `?download=1` forces a download; `?meta=1` is the tiny absence probe (the
+        descriptor or 404, no bytes) so every kind can reach the *gone* state without a large
+        download. An `other` kind is ALWAYS a download, so a shared HTML or SVG can never render
+        here; the kind is the one PUBLISH persisted (never re-sniffed from a prefix). Images
+        inline, text as `text/plain`. nosniff and no-store throughout."""
+        if not ask_store.valid_cid(cid):
+            return _missing(cid)
+        if request.query_params.get("meta") == "1":
+            # Absence detection for every kind, bytes-free. The existence check inside `open_blob`
+            # is what rejects a blob whose conversation was deleted (a failed cleanup leaves one
+            # on disk; it is still never served).
+            try:
+                fd, size = await asyncio.to_thread(ask_attachments.open_blob, cid, aid)
+            except ask_attachments.AttachmentRefused as e:
+                return JSONResponse({"detail": e.detail}, status_code=e.status)
+            os.close(fd)
+            name, kind = await asyncio.to_thread(ask_attachments.read_meta, cid, aid)
+            return JSONResponse(
+                {"attachment": {"id": aid, "name": name, "kind": kind, "size": size}},
+                headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+            )
+        try:
+            fd, size = await asyncio.to_thread(ask_attachments.open_blob, cid, aid)
+        except ask_attachments.AttachmentRefused as e:
+            return JSONResponse({"detail": e.detail}, status_code=e.status)
+        name, kind = await asyncio.to_thread(ask_attachments.read_meta, cid, aid)
+        download = request.query_params.get("download") == "1" or kind == "other"
+        media = {"image": "image/png", "text": "text/plain"}.get(kind, "application/octet-stream")
+        if kind == "image":
+            # The exact image type only matters for the browser's decoder; read from the first
+            # bytes, never from the client's word.
+            head = await asyncio.to_thread(lambda: os.pread(fd, 16, 0))
+            for sig, _t in (
+                (b"\x89PNG", "image/png"),
+                (b"\xff\xd8\xff", "image/jpeg"),
+                (b"GIF8", "image/gif"),
+                (b"RIFF", "image/webp"),
+            ):
+                if (head or b"").startswith(sig):
+                    media = _t
+                    break
+
+        def stream():
+            try:
+                while True:
+                    chunk = os.read(fd, 64 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                os.close(fd)
+
+        headers = {
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": (
+                f'attachment; filename="{_ascii_name(name)}"' if download else "inline"
+            ),
+        }
+        return StreamingResponse(stream(), media_type=media, headers=headers, status_code=200)
