@@ -277,8 +277,8 @@ async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
  *  /models proxy relays the gateway's own message (#382), and "GET /api/ai-review/models
  *  → 502" in its place tells the operator nothing about why their endpoint was rejected.
  *  Plain `getJson` stays the default: most GETs have no useful `detail` to surface. */
-async function getJsonWithDetail<T>(path: string): Promise<T> {
-  const r = await apiFetch(path, { credentials: "same-origin" });
+async function getJsonWithDetail<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const r = await apiFetch(path, { credentials: "same-origin", ...(signal ? { signal } : {}) });
   if (r.status === 401 || r.status === 403) await authGate(r);
   if (!r.ok) {
     let detail = "";
@@ -927,9 +927,13 @@ export const api = {
     getJsonWithDetail<StructuredHistoryPage>(
       `${structuredPath(key)}/history?before=${encodeURIComponent(before)}&limit=${limit}`,
     ),
-  structuredEvents: (key: string, after: number, limit = 100) =>
+  /** `wait` (#1727): the server holds a read with nothing past `after` until the journal moves,
+   *  at most 3 s whatever is asked; over its waiter caps (or on an older server) it answers at
+   *  once, exactly as without it. */
+  structuredEvents: (key: string, after: number, limit = 100, wait = 0, signal?: AbortSignal) =>
     getJsonWithDetail<StructuredEventPage>(
-      `${structuredPath(key)}/events?after=${after}&limit=${limit}`,
+      `${structuredPath(key)}/events?after=${after}&limit=${limit}${wait > 0 ? `&wait=${wait}` : ""}`,
+      signal,
     ),
   /** Idempotent on `operation_id`: a repeat observes the recorded turn, never a second write. */
   structuredSubmit: (

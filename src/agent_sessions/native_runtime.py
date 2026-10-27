@@ -2362,6 +2362,10 @@ def project(
             turn["reply"] = turn["partial"]
             _place_tools(turn, "partial")
             _place_breaks(turn, "partial")
+            if not turn["completed"]:
+                # Shown from the streamed text of a turn still open (#1727): the pane may extend
+                # it with that turn's next partial text events, from the message it names here.
+                turn["stream"] = {"item": turn["partial_item"]}
     for turn in turns.values():
         if turn["handoff"] == "not_sent":
             # An operator message proved never sent (#1538), queued OR direct (a Send again is
@@ -2878,6 +2882,28 @@ async def events(engine_id: str, session_id: str, after: int, limit: int) -> dic
         return await asyncio.to_thread(journal.page, after, limit)
     except native_journal.JournalError as exc:
         raise NativeError(_ERRORS.get(exc.code, 409), exc.detail) from None
+
+
+def _journal_stamp_sync(engine_id: str, session_id: str) -> Callable[[], tuple | None]:
+    prov, _ = _session(engine_id, session_id, retiring_ok=True)
+    path = chat_store._path(_journal_root(prov), session_id)
+
+    def stamp() -> tuple | None:
+        # Only a wake hint (#1727): the page itself is always read through `events`, under the
+        # journal's shared lock and its privacy checks. Appends come from the worker's own
+        # process, so a file stat — no IPC — is what crosses that boundary (and an app restart).
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+    return stamp
+
+
+async def journal_stamp(engine_id: str, session_id: str) -> Callable[[], tuple | None]:
+    """A cheap probe of this session's journal identity and size, for a waiting events read."""
+    return await asyncio.to_thread(_journal_stamp_sync, engine_id, session_id)
 
 
 def _replay(journal: native_journal.Journal, operation_id: str, request: dict) -> dict | None:

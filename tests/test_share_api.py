@@ -378,6 +378,42 @@ async def test_a_secret_in_the_transcript_is_redacted_for_the_visitor_only(
 
 
 @pytest.mark.anyio
+async def test_public_events_stay_cursor_and_kind_only_and_never_wait_while_text_streams(
+    env,
+    host,  # noqa: F811
+    project,  # noqa: F811
+):
+    """#1727 gave the OPERATOR's events read a bounded wait and lets its pane extend a streaming
+    reply from text events. A share viewer gets neither: no `data` (so no text) on its events,
+    no wait, and no `stream` hint in its projected snapshot."""
+    import time
+
+    key = await _session("codex", project)
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="STREAM")
+    v, _ = await _visitor(env, key, mode="view")
+    async with contextlib.aclosing(v):
+        for _ in range(100):
+            view = (await v.get("/api/public/session")).json()
+            if view["turns"] and view["turns"][-1]["reply"]:
+                break
+            await asyncio.sleep(0.05)
+        page = (await v.get("/api/public/events?after=0&limit=100&wait=3")).json()
+        operator = await runtime.snapshot(key)
+        await runtime.interrupt(key, operation_id=ident(), turn_id=turn)
+        await settle(key, turn, state=("interrupted",))
+        quiet = (await v.get("/api/public/events?after=0&limit=1")).json()["revision"]
+        started = time.monotonic()
+        late = await v.get(f"/api/public/events?after={quiet}&limit=1&wait=3")
+        took = time.monotonic() - started
+    assert page["events"] and all(set(e) == {"cursor", "kind"} for e in page["events"])
+    assert any(e["kind"] == "text" for e in page["events"])
+    assert late.status_code == 200 and took < 1.5, took  # answered at once: no wait here
+    assert all("stream" not in t for t in view["turns"])
+    assert next(t for t in operator["turns"] if t["turn_id"] == turn).get("stream")
+
+
+@pytest.mark.anyio
 async def test_a_mission_held_session_can_be_watched_not_sent_to(env, host, project, monkeypatch):  # noqa: F811
     key = await _session("codex", project)
     v, _ = await _visitor(env, key)

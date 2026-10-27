@@ -15,7 +15,8 @@ mission correlation is ever read from a browser (mission callers use the facade 
 * ``POST /api/structured/sessions/{key}/start`` — launch a skip-permissions creation (#1339);
   its create reserved and launched nothing. Idempotent. Answers at launch too (#1505).
 * ``GET  /api/structured/sessions/{key}`` — bounded snapshot (turns, exact pending requests).
-* ``GET  /api/structured/sessions/{key}/events?after=&limit=`` — durable journal cursor page.
+* ``GET  /api/structured/sessions/{key}/events?after=&limit=&wait=`` — durable journal cursor page;
+  ``wait`` (≤ 3 s) holds a read with nothing new until the journal moves (#1727).
 * ``GET  /api/structured/sessions/{key}/history?before=&limit=`` — the turns just older than one
   turn, for scrolling up past the snapshot's window (#1504); native clients only.
 * ``POST /api/structured/sessions/{key}/turns {operation_id, text, expected_revision?,
@@ -84,6 +85,14 @@ def _specialist(raw: object) -> tuple[str, int] | None:
     if parsed is None:  # an empty `{id, version}` is not "no specialist"
         raise HTTPException(status_code=422, detail="specialist must be {id, version}")
     return parsed
+
+
+async def _until_gone(receive) -> None:
+    """Returns when the client hangs up (#1727). Not `Request.is_disconnected()`: under the app's
+    `@app.middleware("http")` layers its pre-cancelled read loses the disconnect message every
+    time, so a waiting read would hold its slot to the end of its wait. A plain read does not."""
+    while (await receive())["type"] != "http.disconnect":
+        pass
 
 
 async def _run(coroutine):
@@ -197,9 +206,31 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
 
     @app.get("/api/structured/sessions/{key}/events")
     async def structured_events(
-        key: str, after: int = 0, limit: int = 100, _user: str = Depends(logged_in)
+        key: str,
+        request: Request,
+        after: int = 0,
+        limit: int = 100,
+        wait: float = 0,
+        _user: str = Depends(logged_in),
     ) -> JSONResponse:
-        return JSONResponse(await _run(structured_runtime.events(key, after=after, limit=limit)))
+        # `wait` (#1727): hold a read with nothing past `after` until the journal moves, at most
+        # `EVENTS_WAIT_MAX` (3 s) whatever is asked. Operator route only: the public share route
+        # never waits and never carries `data`.
+        watch = asyncio.ensure_future(_until_gone(request.receive)) if wait > 0 else None
+        try:
+            page = await _run(
+                structured_runtime.wait_events(
+                    key,
+                    after=after,
+                    limit=limit,
+                    wait=wait,
+                    disconnected=watch.done if watch is not None else None,
+                )
+            )
+        finally:
+            if watch is not None:
+                watch.cancel()
+        return JSONResponse(page)
 
     @app.get("/api/structured/sessions/{key}/containment")
     async def structured_probe(key: str, _user: str = Depends(logged_in)) -> JSONResponse:

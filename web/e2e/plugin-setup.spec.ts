@@ -230,6 +230,43 @@ test("the sign-in terminal forwards a pasted vendor code as terminal input", asy
   await expect.poll(() => m.sent.join("")).toContain("oauth-code-123");
 });
 
+test("a failed sign-in keeps the vendor's last screen, opens its link and sends a typed code", async ({ page }) => {
+  const m = await fixture(page, true);
+  m.gen.review.entry.manifest.signin = { kind: "auth-login" };
+  // A 400-character OAuth URL, printed as an OSC 8 hyperlink the way Claude Code does: it soft-wraps
+  // across rows, so it must be offered whole, never selected by hand.
+  const url = `https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a&state=${"x".repeat(380)}`;
+  const received: string[] = [];
+  await page.routeWebSocket(/\/ws\/plugins\/signin\//, ws => {
+    const current = m.data.operations.find(o => ws.url().endsWith(o.id))!;
+    current.state = "running";
+    ws.send(Buffer.from(`If the browser didn't open, visit: \x1b]8;;${url}\x07${url}\x1b]8;;\x07\r\nPaste code here if prompted > `));
+    ws.onMessage(msg => {
+      if (typeof msg === "string") return; // a {rows, cols} resize, not terminal input
+      received.push(new TextDecoder().decode(msg as ArrayBuffer));
+      if (received.join("").includes("\r")) {
+        ws.send(Buffer.from("Login failed: Request failed with status code 400\r\n"));
+        current.state = "failed";
+        current.error = "the sign-in command exited without success";
+        void ws.close();
+      }
+    });
+  });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
+  const open = page.getByRole("link", { name: /Open the sign-in link · claude\.com/ });
+  await expect(open).toHaveAttribute("href", url);
+  await expect(open).toHaveAttribute("rel", /noopener/);
+  await page.getByLabel("Code from the sign-in page").fill("abc123#state");
+  await page.getByRole("button", { name: "Send to sign-in" }).click();
+  await expect.poll(() => received.join("")).toBe("abc123#state\r");
+  // The vendor's own reason stays on screen after the command ends.
+  const terminal = page.getByLabel("Temporary vendor sign-in terminal");
+  await expect(page.getByRole("status").filter({ hasText: "The sign-in command ended" })).toBeVisible();
+  await expect(terminal).toContainText("Login failed: Request failed with status code 400");
+  await expect(page.getByRole("button", { name: "Start sign-in", exact: true })).toBeEnabled();
+});
+
 test("remove confirmation preserves data and Escape returns focus", async ({ page }) => {
   const m = await fixture(page, true);
   await gotoAgent(page);

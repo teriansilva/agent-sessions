@@ -1,0 +1,985 @@
+{
+ "gap@1": {
+  "applies": false,
+  "base": {
+   "event_cursor": 4,
+   "revision": 4,
+   "turns": [
+    {
+     "reply": "One",
+     "reply_breaks": [
+      0
+     ],
+     "state": "running",
+     "stream": {
+      "item": "msg-1"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "next": {
+   "event_cursor": 6,
+   "revision": 6,
+   "turns": [
+    {
+     "reply": "One two",
+     "reply_breaks": [
+      0
+     ],
+     "state": "running",
+     "stream": {
+      "item": "msg-1"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    },
+    {
+     "reply": "",
+     "reply_breaks": [],
+     "state": "queued",
+     "turn_id": "77777777-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "page": {
+   "events": [
+    {
+     "cursor": 6,
+     "data": {
+      "item_id": "msg-1",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": " two",
+      "truncated": false
+     },
+     "kind": "text"
+    }
+   ],
+   "next_cursor": 6,
+   "revision": 6
+  }
+ },
+ "messages@0": {
+  "applies": true,
+  "base": {
+   "event_cursor": 3,
+   "revision": 3,
+   "turns": [
+    {
+     "reply": "",
+     "reply_breaks": [],
+     "state": "running",
+     "stream": {
+      "item": null
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "next": {
+   "event_cursor": 11,
+   "revision": 11,
+   "turns": [
+    {
+     "reply": "Looking at the code.\n\nNext stepstill msg-3\n\n\n\nfourth",
+     "reply_breaks": [
+      0,
+      22,
+      44
+     ],
+     "state": "running",
+     "stream": {
+      "item": "msg-4"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "page": {
+   "events": [
+    {
+     "cursor": 4,
+     "data": {
+      "item_id": "msg-1",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "Looking",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 5,
+     "data": {
+      "item_id": "msg-1",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": " at the",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 6,
+     "data": {
+      "item_id": "msg-1",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": " code.",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 7,
+     "data": {
+      "item_id": "msg-2",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "Next",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 8,
+     "data": {
+      "item_id": "msg-2",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": " step",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 9,
+     "data": {
+      "item_id": "msg-3",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "   ",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 10,
+     "data": {
+      "item_id": "msg-3",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "still msg-3",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 11,
+     "data": {
+      "item_id": "msg-4",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "\n\nfourth",
+      "truncated": false
+     },
+     "kind": "text"
+    }
+   ],
+   "next_cursor": 11,
+   "revision": 11
+  }
+ },
+ "messages@1": {
+  "applies": true,
+  "base": {
+   "event_cursor": 5,
+   "revision": 5,
+   "turns": [
+    {
+     "reply": "Looking at the",
+     "reply_breaks": [
+      0
+     ],
+     "state": "running",
+     "stream": {
+      "item": "msg-1"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "next": {
+   "event_cursor": 11,
+   "revision": 11,
+   "turns": [
+    {
+     "reply": "Looking at the code.\n\nNext stepstill msg-3\n\n\n\nfourth",
+     "reply_breaks": [
+      0,
+      22,
+      44
+     ],
+     "state": "running",
+     "stream": {
+      "item": "msg-4"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "page": {
+   "events": [
+    {
+     "cursor": 6,
+     "data": {
+      "item_id": "msg-1",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": " code.",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 7,
+     "data": {
+      "item_id": "msg-2",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "Next",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 8,
+     "data": {
+      "item_id": "msg-2",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": " step",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 9,
+     "data": {
+      "item_id": "msg-3",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "   ",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 10,
+     "data": {
+      "item_id": "msg-3",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "still msg-3",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 11,
+     "data": {
+      "item_id": "msg-4",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "\n\nfourth",
+      "truncated": false
+     },
+     "kind": "text"
+    }
+   ],
+   "next_cursor": 11,
+   "revision": 11
+  }
+ },
+ "messages@2": {
+  "applies": true,
+  "base": {
+   "event_cursor": 6,
+   "revision": 6,
+   "turns": [
+    {
+     "reply": "Looking at the code.",
+     "reply_breaks": [
+      0
+     ],
+     "state": "running",
+     "stream": {
+      "item": "msg-1"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "next": {
+   "event_cursor": 11,
+   "revision": 11,
+   "turns": [
+    {
+     "reply": "Looking at the code.\n\nNext stepstill msg-3\n\n\n\nfourth",
+     "reply_breaks": [
+      0,
+      22,
+      44
+     ],
+     "state": "running",
+     "stream": {
+      "item": "msg-4"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "page": {
+   "events": [
+    {
+     "cursor": 7,
+     "data": {
+      "item_id": "msg-2",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "Next",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 8,
+     "data": {
+      "item_id": "msg-2",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": " step",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 9,
+     "data": {
+      "item_id": "msg-3",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "   ",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 10,
+     "data": {
+      "item_id": "msg-3",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "still msg-3",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 11,
+     "data": {
+      "item_id": "msg-4",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "\n\nfourth",
+      "truncated": false
+     },
+     "kind": "text"
+    }
+   ],
+   "next_cursor": 11,
+   "revision": 11
+  }
+ },
+ "messages@3": {
+  "applies": true,
+  "base": {
+   "event_cursor": 8,
+   "revision": 8,
+   "turns": [
+    {
+     "reply": "Looking at the code.\n\nNext step",
+     "reply_breaks": [
+      0,
+      22
+     ],
+     "state": "running",
+     "stream": {
+      "item": "msg-2"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "next": {
+   "event_cursor": 11,
+   "revision": 11,
+   "turns": [
+    {
+     "reply": "Looking at the code.\n\nNext stepstill msg-3\n\n\n\nfourth",
+     "reply_breaks": [
+      0,
+      22,
+      44
+     ],
+     "state": "running",
+     "stream": {
+      "item": "msg-4"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "page": {
+   "events": [
+    {
+     "cursor": 9,
+     "data": {
+      "item_id": "msg-3",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "   ",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 10,
+     "data": {
+      "item_id": "msg-3",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "still msg-3",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 11,
+     "data": {
+      "item_id": "msg-4",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "\n\nfourth",
+      "truncated": false
+     },
+     "kind": "text"
+    }
+   ],
+   "next_cursor": 11,
+   "revision": 11
+  }
+ },
+ "messages@4": {
+  "applies": true,
+  "base": {
+   "event_cursor": 9,
+   "revision": 9,
+   "turns": [
+    {
+     "reply": "Looking at the code.\n\nNext step",
+     "reply_breaks": [
+      0,
+      22
+     ],
+     "state": "running",
+     "stream": {
+      "item": "msg-3"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "next": {
+   "event_cursor": 11,
+   "revision": 11,
+   "turns": [
+    {
+     "reply": "Looking at the code.\n\nNext stepstill msg-3\n\n\n\nfourth",
+     "reply_breaks": [
+      0,
+      22,
+      44
+     ],
+     "state": "running",
+     "stream": {
+      "item": "msg-4"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "page": {
+   "events": [
+    {
+     "cursor": 10,
+     "data": {
+      "item_id": "msg-3",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "still msg-3",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 11,
+     "data": {
+      "item_id": "msg-4",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "\n\nfourth",
+      "truncated": false
+     },
+     "kind": "text"
+    }
+   ],
+   "next_cursor": 11,
+   "revision": 11
+  }
+ },
+ "retry@2": {
+  "applies": false,
+  "base": {
+   "event_cursor": 6,
+   "revision": 6,
+   "turns": [
+    {
+     "reply": "First",
+     "reply_breaks": [
+      0
+     ],
+     "state": "running",
+     "stream": {
+      "item": "msg-1"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    },
+    {
+     "reply": "",
+     "reply_breaks": [],
+     "state": "running",
+     "stream": {
+      "item": null
+     },
+     "turn_id": "66666666-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "next": {
+   "event_cursor": 7,
+   "revision": 7,
+   "turns": [
+    {
+     "reply": "First",
+     "reply_breaks": [
+      0
+     ],
+     "state": "running",
+     "stream": {
+      "item": "msg-1"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    },
+    {
+     "reply": "Again",
+     "reply_breaks": [
+      0
+     ],
+     "state": "running",
+     "stream": {
+      "item": "msg-9"
+     },
+     "turn_id": "66666666-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "page": {
+   "events": [
+    {
+     "cursor": 7,
+     "data": {
+      "item_id": "msg-9",
+      "native_turn_id": "n",
+      "operation_id": "66666666-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "Again",
+      "truncated": false
+     },
+     "kind": "text"
+    }
+   ],
+   "next_cursor": 7,
+   "revision": 7
+  }
+ },
+ "settled@1": {
+  "applies": false,
+  "base": {
+   "event_cursor": 4,
+   "revision": 4,
+   "turns": [
+    {
+     "reply": "Part",
+     "reply_breaks": [
+      0
+     ],
+     "state": "running",
+     "stream": {
+      "item": "msg-1"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "next": {
+   "event_cursor": 5,
+   "revision": 5,
+   "turns": [
+    {
+     "reply": "Part one.",
+     "reply_breaks": [
+      0
+     ],
+     "state": "running",
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "page": {
+   "events": [
+    {
+     "cursor": 5,
+     "data": {
+      "item_id": "msg-1",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": false,
+      "text": "Part one.",
+      "truncated": false
+     },
+     "kind": "text"
+    }
+   ],
+   "next_cursor": 5,
+   "revision": 5
+  }
+ },
+ "tool@1": {
+  "applies": false,
+  "base": {
+   "event_cursor": 4,
+   "revision": 4,
+   "turns": [
+    {
+     "reply": "Running",
+     "reply_breaks": [
+      0
+     ],
+     "state": "running",
+     "stream": {
+      "item": "msg-1"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "next": {
+   "event_cursor": 6,
+   "revision": 6,
+   "turns": [
+    {
+     "reply": "Running it",
+     "reply_breaks": [
+      0
+     ],
+     "state": "running",
+     "stream": {
+      "item": "msg-1"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "page": {
+   "events": [
+    {
+     "cursor": 5,
+     "data": {
+      "item_id": "t1",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "state": "inProgress",
+      "summary": "ls",
+      "tool": "command"
+     },
+     "kind": "tool"
+    },
+    {
+     "cursor": 6,
+     "data": {
+      "item_id": "msg-1",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": " it",
+      "truncated": false
+     },
+     "kind": "text"
+    }
+   ],
+   "next_cursor": 6,
+   "revision": 6
+  }
+ },
+ "unnamed@0": {
+  "applies": true,
+  "base": {
+   "event_cursor": 3,
+   "revision": 3,
+   "turns": [
+    {
+     "reply": "",
+     "reply_breaks": [],
+     "state": "running",
+     "stream": {
+      "item": null
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "next": {
+   "event_cursor": 7,
+   "revision": 7,
+   "turns": [
+    {
+     "reply": "Sure, here it is:\n\n- one\n- two",
+     "reply_breaks": [
+      0
+     ],
+     "state": "running",
+     "stream": {
+      "item": null
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "page": {
+   "events": [
+    {
+     "cursor": 4,
+     "data": {
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "Sure",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 5,
+     "data": {
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": ", here",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 6,
+     "data": {
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": " it is:\n\n- one",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 7,
+     "data": {
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "\n- two",
+      "truncated": false
+     },
+     "kind": "text"
+    }
+   ],
+   "next_cursor": 7,
+   "revision": 7
+  }
+ },
+ "unnamed@1": {
+  "applies": true,
+  "base": {
+   "event_cursor": 4,
+   "revision": 4,
+   "turns": [
+    {
+     "reply": "Sure",
+     "reply_breaks": [
+      0
+     ],
+     "state": "running",
+     "stream": {
+      "item": null
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "next": {
+   "event_cursor": 7,
+   "revision": 7,
+   "turns": [
+    {
+     "reply": "Sure, here it is:\n\n- one\n- two",
+     "reply_breaks": [
+      0
+     ],
+     "state": "running",
+     "stream": {
+      "item": null
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "page": {
+   "events": [
+    {
+     "cursor": 5,
+     "data": {
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": ", here",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 6,
+     "data": {
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": " it is:\n\n- one",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 7,
+     "data": {
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "\n- two",
+      "truncated": false
+     },
+     "kind": "text"
+    }
+   ],
+   "next_cursor": 7,
+   "revision": 7
+  }
+ },
+ "unnamed@2": {
+  "applies": true,
+  "base": {
+   "event_cursor": 6,
+   "revision": 6,
+   "turns": [
+    {
+     "reply": "Sure, here it is:\n\n- one",
+     "reply_breaks": [
+      0
+     ],
+     "state": "running",
+     "stream": {
+      "item": null
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "next": {
+   "event_cursor": 7,
+   "revision": 7,
+   "turns": [
+    {
+     "reply": "Sure, here it is:\n\n- one\n- two",
+     "reply_breaks": [
+      0
+     ],
+     "state": "running",
+     "stream": {
+      "item": null
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "page": {
+   "events": [
+    {
+     "cursor": 7,
+     "data": {
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "\n- two",
+      "truncated": false
+     },
+     "kind": "text"
+    }
+   ],
+   "next_cursor": 7,
+   "revision": 7
+  }
+ }
+}

@@ -261,6 +261,16 @@ for (const theme of ["dark", "light"] as const) {
     expect(s.reads).toEqual([tid(70), tid(20)]);
     // Every turn once.
     for (const i of [0, 19, 20, 69, 70, 119]) await expect(message(page, i)).toHaveCount(1);
+    // History is not an arrival (#1727): no prepended page, nor the first paint, animated…
+    await expect(log(page).locator(".nj-arrive")).toHaveCount(0);
+    // …while a turn the conversation gains now does.
+    s.total += 1;
+    s.revision += 1;
+    await expect(message(page, 120)).toBeAttached();
+    await expect(log(page).locator(".nj-arrive")).toHaveCount(1);
+    await expect(
+      log(page).getByTestId("structured-turn").filter({ has: page.getByText("Message 120", { exact: true }) }),
+    ).toHaveClass(/nj-arrive/);
     await noSidewaysScroll(page);
   });
 

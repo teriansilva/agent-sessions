@@ -10,7 +10,9 @@ Snapshots preserve adapter-recorded reply times; absent evidence remains unknown
 from __future__ import annotations
 
 import asyncio
+import math
 import subprocess
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from functools import partial
 from types import MappingProxyType
@@ -176,6 +178,9 @@ class _NativeAdapter:
 
     async def events(self, engine, native, after, limit):
         return await _native(native_runtime.events, engine, native, after, limit)
+
+    async def events_stamp(self, engine, native):
+        return await _native(native_runtime.journal_stamp, engine, native)
 
     async def history(self, engine, native, before, limit):
         return await _native(native_runtime.history, engine, native, before, limit)
@@ -472,6 +477,8 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
         "requires_authority": bool(turn.get("execution_binding")),
         "tools": tools,
         "tools_truncated": tools_cut,
+        # Live turns only, which never spend the shared text budget (a spent one sends "").
+        **(_stream(turn, reply_cut) if text_budget is None else {}),
         "usage": turn.get("usage"),
         **(
             {"questions": turn["questions"], "question_id": turn["question_id"]}
@@ -479,6 +486,18 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
             else {}
         ),
     }
+
+
+def _stream(turn: dict, head_cut: bool) -> dict:
+    """``stream`` (#1727): this running turn's reply is its streamed text so far, sent whole or as
+    its newest part, so the pane may append the turn's next partial text events after the
+    snapshot's cursor to it. ``item`` is the message that text continues (null when the client
+    names none). Absent otherwise: a settled reply, a reply cut at its END, any other state."""
+    stream = turn.get("stream")
+    if not isinstance(stream, dict) or _outcome(turn) != "running" or head_cut:
+        return {}
+    item = stream.get("item")
+    return {"stream": {"item": item if isinstance(item, str) else None}}
 
 
 def _tools(turn: dict, reply: str | None, start: int = 0) -> tuple[list[dict], bool]:
@@ -769,6 +788,97 @@ async def events(session_key: str, *, after: int, limit: int = 100) -> dict:
     engine, native, adapter, _ = _observation_target(session_key, "events")
     page = await adapter.events(engine, native, after, limit)
     return {"session_key": f"{engine}:{native}", **page}
+
+
+#: The longest an operator's events read waits for the journal to move (#1727). Home Free's app
+#: proxy buffers each response through a default HTTP client (≈5 s read timeout), so a quiet wait
+#: must answer well inside that. A larger request is capped here, never trusted.
+EVENTS_WAIT_MAX = 3.0
+#: How often a waiting read re-checks the journal's size and times (a `stat`, no IPC).
+EVENTS_WAIT_TICK = 0.1
+#: Live waiters, per session and in all. Over either cap a read answers at once, exactly as a read
+#: without `wait` does; the client simply keeps its ordinary poll.
+EVENTS_WAITERS_PER_SESSION = 4
+EVENTS_WAITERS_TOTAL = 64
+_EVENTS_WAITERS: dict[str, int] = {}
+# One page read at a time per session among waiters: those woken by the same append then fold it
+# once, and the rest reuse that fold through the journal's unchanged-file shortcut.
+_EVENTS_READS: dict[str, asyncio.Lock] = {}
+
+
+def events_waiters(session_key: str | None = None) -> int:
+    """Live waiting events reads: of one session, or in all."""
+    if session_key is None:
+        return sum(_EVENTS_WAITERS.values())
+    return _EVENTS_WAITERS.get(session_key, 0)
+
+
+def _moved(page: dict, after: int) -> bool:
+    # An empty page can still advance its cursor (private audit records are skipped).
+    return bool(page["events"]) or page["next_cursor"] != after
+
+
+async def wait_events(
+    session_key: str,
+    *,
+    after: int,
+    limit: int = 100,
+    wait: float = 0,
+    disconnected: Callable[[], bool] | None = None,
+) -> dict:
+    """``events``, held up to ``wait`` seconds (capped at ``EVENTS_WAIT_MAX``) while nothing lies
+    past ``after`` (#1727). Any journal append past it wakes the read, which answers with that
+    page; the same validation, cursor and reset (``409``) answers as ``events``. A read over the
+    waiter caps, or one whose client went away, answers with the page it holds."""
+    if type(wait) not in (int, float) or not math.isfinite(wait) or wait < 0:
+        raise StructuredError(422, "wait must be a number of seconds")
+    wait = min(float(wait), EVENTS_WAIT_MAX)
+    if wait <= 0:
+        return await events(session_key, after=after, limit=limit)
+    # The wait counts from the request, not from after the stamp and the first read (review of
+    # #1747): a slow first read (a cold fold) or a queued one must not stretch a held read past
+    # its cap and into Home Free's ≈5 s margin. At most one read can finish past it.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + wait
+    engine, native, adapter, _ = _observation_target(session_key, "events")
+    key = f"{engine}:{native}"
+    stamp_of = getattr(adapter, "events_stamp", None)
+    if (
+        stamp_of is None
+        or _EVENTS_WAITERS.get(key, 0) >= EVENTS_WAITERS_PER_SESSION
+        or events_waiters() >= EVENTS_WAITERS_TOTAL
+    ):
+        return await events(session_key, after=after, limit=limit)
+    _EVENTS_WAITERS[key] = _EVENTS_WAITERS.get(key, 0) + 1
+    reads = _EVENTS_READS.setdefault(key, asyncio.Lock())
+
+    async def read() -> dict:
+        async with reads:
+            return await events(session_key, after=after, limit=limit)
+
+    try:
+        stamp = await stamp_of(engine, native)
+        # Stamped BEFORE the first read: an append between the two is a change, never missed.
+        seen = stamp()
+        page = await read()
+        while not _moved(page, after):
+            left = deadline - loop.time()
+            if left <= 0:
+                break
+            await asyncio.sleep(min(EVENTS_WAIT_TICK, left))
+            if disconnected is not None and disconnected():
+                break
+            now = stamp()
+            if now != seen:
+                seen = now
+                page = await read()
+        return page
+    finally:
+        # Cancelled (the client went away mid-wait) or answered: the slot is free either way.
+        _EVENTS_WAITERS[key] -= 1
+        if not _EVENTS_WAITERS[key]:
+            del _EVENTS_WAITERS[key]
+            _EVENTS_READS.pop(key, None)
 
 
 # One history page render per session at a time (#1504): a page projects the whole journal.

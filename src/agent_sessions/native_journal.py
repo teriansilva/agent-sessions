@@ -232,25 +232,43 @@ def _trim():
         _CACHE.popitem(last=False)
 
 
-def _prefix_digest(raw: bytes, length: int) -> bytes:
+def _prefix_hasher(raw: bytes, length: int):
     # The whole prefix, not a tail sample (Hermes on #1278): a same-length rewrite of an
     # earlier claim must miss. Hashing is far cheaper than re-parsing the JSON it guards.
-    return hashlib.blake2b(memoryview(raw)[:length], digest_size=32).digest()
+    return hashlib.blake2b(memoryview(raw)[:length], digest_size=32)
 
 
-def _cached(raw: bytes, session_id: str) -> tuple[Journal, int] | None:
+def _prefix_digest(raw: bytes, length: int) -> bytes:
+    return _prefix_hasher(raw, length).digest()
+
+
+def _cached(raw: bytes, session_id: str) -> tuple[Journal, int, object] | None:
+    """The cached fold of a verified prefix of ``raw``, its length, and the hash state after
+    exactly that prefix (so the new length's digest extends it rather than hashing it again)."""
     with _CACHE_LOCK:
         _trim()
         hit = _CACHE.get(session_id)
-        if hit is None or hit.length > len(raw) or _prefix_digest(raw, hit.length) != hit.digest:
+        if hit is None or hit.length > len(raw):
+            return None
+        hasher = _prefix_hasher(raw, hit.length)
+        if hasher.digest() != hit.digest:
             return None
         _CACHE.move_to_end(session_id)
-        return hit.journal.copy(), hit.length
+        return hit.journal.copy(), hit.length, hasher
 
 
-def _remember(raw: bytes, session_id: str, header: bytes, journal: Journal) -> None:
+def _remember(raw: bytes, session_id: str, header: bytes, journal: Journal, prefix=None) -> None:
+    """``prefix``: ``(length, hash state)`` of a prefix of ``raw`` this call verified. Its state
+    extended by the rest of ``raw`` is exactly the full digest: blake2b is a stream hash (#1727:
+    a second pass over a 31 MiB journal cost ~60 ms of every observation after an append)."""
     weight = _size(journal.operations) + _size(journal.header) + journal.events.memory_bytes + 1024
-    entry = _Entry(len(raw), _prefix_digest(raw, len(raw)), journal, weight)
+    if prefix is None:
+        hasher = _prefix_hasher(raw, len(raw))
+    else:
+        length, verified = prefix
+        hasher = verified.copy()
+        hasher.update(memoryview(raw)[length:])
+    entry = _Entry(len(raw), hasher.digest(), journal, weight)
     with _CACHE_LOCK:
         _CACHE[session_id] = entry
         _CACHE.move_to_end(session_id)
@@ -276,12 +294,12 @@ def _fold(raw: bytes, session_id: str, *, directory: Path | None) -> Journal:
     first = raw.index(b"\n") + 1
     hit = _cached(raw, session_id)
     if hit is not None:
-        journal, offset = hit
+        journal, offset, hasher = hit
         lines = raw[offset:].split(b"\n")[:-1]
         if journal.revision + len(lines) > MAX_RECORDS:
             raise JournalError("unavailable", "native journal record bound exceeded")
         _fold_lines(journal, lines, journal.revision + 1)
-        _remember(raw, session_id, raw[:first], journal)
+        _remember(raw, session_id, raw[:first], journal, (offset, hasher))
         return journal
     lines = raw.split(b"\n")[:-1]
     if not lines or len(lines) > MAX_RECORDS:

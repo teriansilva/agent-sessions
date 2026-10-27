@@ -1716,6 +1716,10 @@ export interface StructuredTurn {
   questions?: StructuredQuestion[];
   /** That question's id, which an answer names as its `reply_to`; present with `questions`. */
   question_id?: string;
+  /** This RUNNING turn's reply is its streamed text so far (#1727): the pane may append the turn's
+   *  next partial text events (after the snapshot's `event_cursor`) to it. `item` is the message
+   *  that text continues, or null. Absent on every other turn and from the public link. */
+  stream?: { item: string | null };
 }
 
 /** A turn the agent ran for itself — a scheduled wake-up, a task notification (#1438). Nobody
@@ -1893,7 +1897,9 @@ export interface StructuredEventPage {
   session_key: string;
   revision: number;
   next_cursor: number;
-  events: { cursor: number; kind: string }[];
+  /** The operator's pages carry each normalized event's `data` (#1727 reads text events from
+   *  it); the public link's carry cursors and kinds only. */
+  events: { cursor: number; kind: string; data?: Record<string, unknown>; ts?: number }[];
 }
 
 export type Containment = "live" | "gone" | "unknown";

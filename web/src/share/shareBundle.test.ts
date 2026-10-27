@@ -48,6 +48,9 @@ const ALLOWED_OUTSIDE = new Set([
   "lib/shareFormat.ts",
   "components/structured/Markdown.tsx",
   "components/structured/Markdown.module.css",
+  // Markdown's own rules and its code block, split out so a live reply shares them (#1727).
+  "components/structured/markdownTree.tsx",
+  "components/structured/CodeBlock.tsx",
 ]);
 
 const SPEC = /(?:import|export)\s[^'"]*?from\s*["']([^"']+)["']|import\s*["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)/g;

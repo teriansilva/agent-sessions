@@ -1,5 +1,6 @@
 import { useApiLogProps } from "../../theme/apiLookStore";
 import {
+  ArrowDown,
   ArrowLeftRight,
   BookMarked,
   Globe,
@@ -75,6 +76,10 @@ import type {
 } from "../../types/api";
 import chat from "../chat/ChatPane.module.css";
 import { Markdown } from "./Markdown";
+import { LiveReply } from "./LiveReply";
+import { applyTextDeltas } from "./streamDeltas";
+import { useFollow } from "./useFollow";
+import { ArrivalContext, useArrivals, useArriveClass, usePrimed } from "./arrivals";
 import { BackgroundWork } from "./BackgroundWork";
 import { fold, interleave, type ReplyPart } from "./activityOrder";
 import { autoSendNowHead, useAlwaysSendNow } from "./alwaysSendNow";
@@ -143,6 +148,16 @@ import { useUplinkVeil } from "../terminal/useUplinkVeil";
 
 /** While a turn runs, the event cursor is read this often; a change re-reads the snapshot. */
 export const STRUCTURED_ACTIVE_POLL_MS = 1_000;
+/** While a turn runs the events read also WAITS (#1727): the server holds it, at most 3 s, until
+ *  the journal moves, so a streaming reply's text arrives at the worker's 200 ms flush cadence. A
+ *  read that comes back sooner with nothing new was not held (the server's waiter cap, or an
+ *  older server): the plain poll above takes over. */
+export const STRUCTURED_EVENTS_WAIT_S = 3;
+/** A held read that returned empty after at least this long really waited: read again at once. */
+const HELD_MS = 2_000;
+/** While a turn runs and text arrives as events, the whole snapshot is still re-read this often:
+ *  lifecycle facts that write no journal record (an idle exit, read only) show within it. */
+const FULL_READ_MS = 5_000;
 /** Idle: background activity (or another tab) can still change the conversation. */
 export const STRUCTURED_IDLE_POLL_MS = 10_000;
 /** Always send now (#1447): automatic Send now attempts per queued message before it waits for
@@ -713,6 +728,7 @@ function RequestQueue({ requests, render }: {
 }) {
   const queue = useRef<HTMLDivElement>(null);
   const focused = useRef<string | null>(null);
+  const arrive = useArriveClass();
   const [retaining, setRetaining] = useState(false);
   const [order, setOrder] = useState<string[]>(requests.map(requestKey));
   const pending = requests.map(requestKey);
@@ -755,7 +771,8 @@ function RequestQueue({ requests, render }: {
     </p>
     {keys.map((key) => {
       const req = requests.find((r) => requestKey(r) === key);
-      return <div key={key} onFocusCapture={() => { focused.current = key; }}>
+      return <div key={key} className={arrive(`req:${key}`).trim() || undefined}
+        onFocusCapture={() => { focused.current = key; }}>
         <RequestSlot active={!!req}>{req && render(req)}</RequestSlot>
       </div>;
     })}
@@ -775,11 +792,12 @@ function toolCount(tools: StructuredTool[], truncated: boolean): string {
   return `${truncated ? "Latest " : ""}${tools.length} commands & tools`;
 }
 
-function ToolList({ tools, label }: { tools: StructuredTool[]; label: string }) {
+function ToolList({ tools, label, turnId }: { tools: StructuredTool[]; label: string; turnId: string }) {
+  const arrive = useArriveClass();
   return (
     <ul className={chat.tools} aria-label={label}>
       {tools.map((t) => (
-        <li key={t.id} className={chat.tool} data-testid="structured-tool">
+        <li key={t.id} className={`${chat.tool}${arrive(`tool:${turnId}:${t.id}`)}`} data-testid="structured-tool">
           <span className={chat.toolVerb}>{t.name}</span>
           {t.summary && <code className={chat.toolPath}>{t.summary}</code>}
           {t.outcome && <span className={chat.toolDetail}>{t.outcome}</span>}
@@ -891,6 +909,8 @@ function AgentTurnView({
 }) {
   const running = turn.state === "running";
   const latest = turn.tools[turn.tools.length - 1];
+  const arrive = useArriveClass();
+  const primed = usePrimed();
   const ended =
     turn.state === "interrupted" ? "Interrupted" : turn.state === "failed" ? "Failed" : null;
   const bars = (
@@ -916,17 +936,22 @@ function AgentTurnView({
           </span>
         )}
       </summary>
-      <ToolList tools={tools} label="What the agent is doing on its own" />
+      <ToolList tools={tools} label="What the agent is doing on its own" turnId={turn.turn_id} />
     </details>
   );
   const reply = (text: string, end: boolean) => (
     <div className={`${chat.txt} ${styles.ownReply}`} data-testid="structured-agent-reply">
-      <Markdown text={end && turn.reply_truncated ? `${text}…` : text} />
+      {/* Its own turns show settled messages only, so no caret: each new one fades in (#1727). */}
+      {running ? (
+        <LiveReply text={end && turn.reply_truncated ? `${text}…` : text} caret={false} appear={primed} />
+      ) : (
+        <Markdown text={end && turn.reply_truncated ? `${text}…` : text} />
+      )}
     </div>
   );
   return (
     <section
-      className={styles.ownTurn}
+      className={`${styles.ownTurn}${arrive(`turn:${turn.turn_id}`)}`}
       data-testid="structured-agent-turn"
       data-state={turn.state}
       aria-label={`${agent}, on its own`}
@@ -1091,6 +1116,8 @@ function TurnView({
 }) {
   const active = turn.state === "running" || turn.state === "awaiting_approval";
   const failed = ["failed", "interrupted", "uncertain", "unavailable"].includes(turn.state);
+  const arrive = useArriveClass();
+  const primed = usePrimed();
   const canSendNow =
     queuePosition === 1 && (!turn.delivery || turn.delivery === "interrupt_failed");
   const { order, first, last } = activityGroups(turn.reply, turn.tools, turn.reply_breaks);
@@ -1102,16 +1129,27 @@ function TurnView({
         {tools.some((t) => /failed|error/i.test(t.outcome)) && <span className={styles.activityFailed}> · Failed activity</span>}
         {tools.some((t) => t.risk?.level === "risky") && <span className={styles.activityRisk}> · Risky activity</span>}
       </summary>
-      <ToolList tools={tools} label="What the agent did" />
+      <ToolList tools={tools} label="What the agent did" turnId={turn.turn_id} />
     </details>
   );
+  // A running reply shows each new word as it lands (#1727): faded in, the caret riding the end of
+  // the newest message while the turn streams. Finished replies are plain Markdown.
   const replyText = (text: string, end: boolean) => (
     <div className={`${chat.txt} ${styles.replyText}`}>
-      <Markdown text={end && turn.reply_truncated ? `${text}…` : text} />
+      {turn.state === "running" ? (
+        <LiveReply
+          text={end && turn.reply_truncated ? `${text}…` : text}
+          caret={end && !!turn.stream}
+          appear={primed}
+        />
+      ) : (
+        <Markdown text={end && turn.reply_truncated ? `${text}…` : text} />
+      )}
     </div>
   );
   return (
-    <div className={chat.exchange} data-testid="structured-turn" data-state={turn.state}>
+    <div className={`${chat.exchange}${arrive(`turn:${turn.turn_id}`)}`} data-testid="structured-turn"
+      data-state={turn.state}>
       <div className={`${chat.turn} ${chat.user}`}>
         {/* A visitor's turn (#1404 P2) names them; the name is their own choice, not proof. When
             attribution can't be read, no turn claims to be the operator's. */}
@@ -1547,6 +1585,9 @@ export function StructuredPane({
   // journal revision and `staleLaunch` stay as secondary guards for the server's own order.
   const sentSeq = useRef(0);
   const floorSeq = useRef(-1);
+  // The snapshot this pane holds, decided synchronously (React state lags a render): a streamed
+  // text page (#1727) is applied only to exactly the snapshot it was read after.
+  const held = useRef<StructuredSnapshot | null>(null);
   const apply = useCallback((s: StructuredSnapshot, sent: number): boolean => {
     if (sent <= floorSeq.current) return false;
     // Reads race (the poll, and a re-read after every action): an older answer arriving last
@@ -1557,17 +1598,19 @@ export function StructuredPane({
     // A recorded turn replaces its pending entry, whatever that entry's POST says or will say.
     setOutbox((list) => reconcile(list, operatorTurns(s).map((t) => t.turn_id), s.revision));
     if (s.bypass) setPermissionsOpen(null);
-    setSnap((previous) => {
+    {
       // Lifecycle changes need not advance the journal. Reject the entire older snapshot:
       // preserving just its mode would still resurrect closed approvals and the old worker.
+      const previous = held.current;
       const prior = previous?.permission_change?.state;
       const incoming = s.permission_change?.state;
-      return previous && ((prior === "enabled" && incoming !== "enabled") ||
+      held.current = previous && ((prior === "enabled" && incoming !== "enabled") ||
         (prior === "stopping" && !incoming) ||
         staleLaunch(previous, s))
         ? previous
         : s;
-    });
+      setSnap(held.current);
+    }
     // A decision is over once its exact request is no longer pending — forget it, so a later
     // request that reuses the native id never inherits it.
     setDeciding((all) => Object.fromEntries(Object.entries(all).filter(([, d]) =>
@@ -1706,9 +1749,12 @@ export function StructuredPane({
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
     let backoff = 0;
-    let ticks = 0;
+    let lastFull = performance.now();
+    // A held read still open when the pane goes (a session switch) is cancelled, freeing its
+    // connection and the server's waiter slot at once.
+    const abort = new AbortController();
     const tick = async () => {
-      ticks += 1;
+      let delay = pollingActive ? STRUCTURED_ACTIVE_POLL_MS : STRUCTURED_IDLE_POLL_MS;
       try {
         if (readSnapshotEachTick) {
           // Starting (#1505): readiness changes the lifecycle, not the journal, so the cursor
@@ -1717,21 +1763,39 @@ export function StructuredPane({
           await load();
           if (!alive) return;
         } else {
-          const page = await api.structuredEvents(key, cursor.current, 1);
+          const after = cursor.current;
+          // Held only while a turn runs and the view is current: after an outage the snapshot
+          // is re-read first (needFresh), never waited for.
+          const wait = pollingActive && !needFreshRef.current ? STRUCTURED_EVENTS_WAIT_S : 0;
+          const asked = performance.now();
+          const page = await api.structuredEvents(key, after, 100, wait, abort.signal);
           if (!alive) return;
+          const now = performance.now();
           backoff = 0;
           setReconnecting(false);
           setFailures(0);
-          // A changed journal re-reads at once. Lifecycle facts that write no journal record — a
-          // worker's idle exit, the client turning read only — are picked up by a full re-read
-          // every idle tick and every 5th active tick (Hermes on #1315).
-          if (
-            page.revision !== cursor.current ||
-            !pollingActive ||
-            ticks % 5 === 0 ||
-            needFreshRef.current
-          )
+          const moved = page.next_cursor !== after || page.events.length > 0;
+          // Lifecycle facts that write no journal record — a worker's idle exit, the client
+          // turning read only — are picked up by a full re-read every idle tick and every few
+          // seconds while active (Hermes on #1315).
+          const due = !pollingActive || needFreshRef.current || now - lastFull >= FULL_READ_MS;
+          // A streaming turn's text (#1727): applied to exactly the snapshot it follows, with the
+          // projection's own rules. Anything else on the page is the snapshot's to show.
+          const streamed = moved && !due && cursor.current === after && held.current
+            ? applyTextDeltas(held.current, page)
+            : null;
+          if (streamed) {
+            held.current = streamed;
+            cursor.current = streamed.event_cursor;
+            setSnap(streamed);
+            delay = 0; // the next read waits on the server for the next flush
+          } else if (moved || due) {
             await load();
+            if (!alive) return;
+            lastFull = performance.now();
+          } else if (wait && now - asked >= HELD_MS) {
+            delay = 0; // a quiet held read: hold the next one at once
+          }
         }
       } catch (e) {
         if (!alive) return;
@@ -1743,60 +1807,39 @@ export function StructuredPane({
           backoff = Math.min(MAX_BACKOFF_MS, (backoff || 1_000) * 2);
         }
       }
-      if (alive)
-        timer = setTimeout(
-          tick,
-          backoff || (pollingActive ? STRUCTURED_ACTIVE_POLL_MS : STRUCTURED_IDLE_POLL_MS),
-        );
+      if (alive) timer = setTimeout(tick, backoff || delay);
     };
     timer = setTimeout(tick, pollingActive ? STRUCTURED_ACTIVE_POLL_MS : STRUCTURED_IDLE_POLL_MS);
     return () => {
       alive = false;
       clearTimeout(timer);
+      abort.abort();
     };
   }, [key, pollingActive, readSnapshotEachTick, load]);
 
-  useLayoutEffect(() => {
-    const el = logRef.current;
-    if (!el) return;
-    let following = true;
-    let lastTop = el.scrollTop;
-    const follow = () => {
-      if (following) {
-        el.scrollTop = el.scrollHeight;
-        lastTop = el.scrollTop;
-      }
-    };
-    const onScroll = () => {
-      if (el.scrollHeight - el.clientHeight - el.scrollTop <= 4) following = true;
-      else if (el.scrollTop < lastTop) following = false;
-      // A delayed event from our own scroll can arrive after content grows again. An unchanged
-      // position is not the operator scrolling up, so it must not turn following off.
-      lastTop = el.scrollTop;
-    };
-    // Observe the transcript's children too: the scroll box keeps its height while a streamed
-    // reply or a delayed image grows. Browser anchoring preserves reading above the bottom.
-    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(follow);
-    const observe = () => {
-      resize?.disconnect();
-      resize?.observe(el, { box: "border-box" });
-      for (const child of el.children) resize?.observe(child, { box: "border-box" });
-      follow();
-    };
-    const changes = new MutationObserver(observe);
-    changes.observe(el, {
-      childList: true,
-      characterData: true,
-      subtree: true,
-    });
-    el.addEventListener("scroll", onScroll, { passive: true });
-    observe();
-    return () => {
-      el.removeEventListener("scroll", onScroll);
-      changes.disconnect();
-      resize?.disconnect();
-    };
-  }, [key, loadError]);
+  // Follow-scroll (#1379), eased in Full, with Jump to latest while reading above (#1727).
+  const follow = useFollow(logRef, key, loadError, !!snap);
+  // Rows that arrived since the first paint (#1727): they enter with the arrival motion, and while
+  // the reader is away they are what Jump to latest counts. Text growth is never a row.
+  const arrived = useArrivals(snap, requestKey, outbox.map((e) => e.request.id));
+  const { noteRows } = follow;
+  const { at: arrivedAt, added: arrivedRows } = arrived;
+  useEffect(() => {
+    if (arrivedRows) noteRows(arrivedRows);
+  }, [arrivedAt, arrivedRows, noteRows]);
+  // Set after the first snapshot has rendered: a live reply mounting from then on is new text.
+  const painted = useRef(false);
+  useEffect(() => {
+    if (snap) painted.current = true;
+  }, [snap]);
+  const jumpRef = useRef<HTMLButtonElement>(null);
+  const jumpToLatest = () => {
+    // The plate goes once following resumes: a keyboard press hands focus to the composer, never
+    // to the page body.
+    const hadFocus = document.activeElement === jumpRef.current;
+    follow.jump();
+    if (hadFocus) taRef.current?.focus({ preventScroll: true });
+  };
 
   const readOnly = !!snap?.read_only;
   // An unstarted (or expired) skip creation takes no message: nothing runs until Start (#1339).
@@ -3314,6 +3357,7 @@ export function StructuredPane({
       )}
       {/* The conversation area: the log, and the uplink veil over it (a sibling, so the veil's
           heading is never inside the log's own live region or its busy state). */}
+      <ArrivalContext.Provider value={{ has: arrived.has, primed: painted.current }}>
       <div className={styles.logArea}>
         <div
           className={chat.log}
@@ -3411,6 +3455,7 @@ export function StructuredPane({
             );
           })}
           <OutboxBlock
+            arrive
             entries={outbox}
             agent={agent}
             headHold={
@@ -3444,8 +3489,25 @@ export function StructuredPane({
             </p>
           )}
         </div>
+        {/* Reading above while new content arrives (#1727): one plate over the log's foot (no
+            layout shift), a 44 px target, the count in rows — never text flushes. */}
+        {follow.away && (follow.rows > 0 || follow.grew) && !veil && (
+          <button
+            ref={jumpRef}
+            type="button"
+            className={styles.jump}
+            onClick={jumpToLatest}
+            data-testid="structured-jump"
+            aria-label={follow.rows ? `Jump to latest, ${follow.rows} new` : "Jump to latest"}
+          >
+            <ArrowDown size={14} aria-hidden />
+            <span>Jump to latest</span>
+            {follow.rows > 0 && <span className={styles.jumpCount}>· {follow.rows} new</span>}
+          </button>
+        )}
         {veil && <TermUplinkVeil veil={veil} title={row?.title} input="outbox" />}
       </div>
+      </ArrivalContext.Provider>
       {stopChoiceView}
       {sendNowHint}
       {(sendError || actionError) && (

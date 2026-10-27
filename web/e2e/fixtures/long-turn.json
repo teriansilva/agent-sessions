@@ -183,6 +183,9 @@
   "reply_ts": 1792800001.0,
   "requires_authority": false,
   "state": "running",
+  "stream": {
+   "item": "b"
+  },
   "text": "Inspect the project",
   "text_truncated": false,
   "tools": [],

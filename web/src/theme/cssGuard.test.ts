@@ -327,7 +327,7 @@ const PREEXISTING_HOOKS = new Set([
   "routes/AppearanceApi.tsx:chat.turn",
   "components/playbooks/ProjectPlaybook.tsx:styles.invalid",
   "components/pulse/ActionRow.tsx:styles.age",
-  "components/structured/Markdown.tsx:styles.lang",
+  "components/structured/CodeBlock.tsx:styles.lang", // moved out of Markdown.tsx (#1727)
   "components/structured/NotSent.tsx:styles.reason",
   "components/wizard/WizardShell.tsx:styles.stepLabel",
   "routes/Settings.tsx:styles.navGroup",

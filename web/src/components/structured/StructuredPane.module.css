@@ -929,3 +929,17 @@
 /* A queued message's wait, from its persisted submit time (#1644). */
 .queuedSince { margin: 4px 0 0; color: var(--text-muted); }
 .stopChoice .stopChoiceFor { color: var(--text-muted); overflow-wrap: anywhere; }
+/* Jump to latest (#1727): over the log's foot while the reader is above it and new content has
+ * arrived. Positioned over the log, never in its flow, so it shifts no text. The one ghost button
+ * (§6, its 44 px floor and focus ring); only its placement is local. */
+.jump {
+  composes: ghost from "../ui/actionButton.module.css";
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  z-index: 2;
+  white-space: nowrap;
+  animation: global(nj-fade-in) var(--t-base) var(--ease-out) both;
+}
+.jumpCount { color: var(--text-muted); }

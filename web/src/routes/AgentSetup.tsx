@@ -45,6 +45,10 @@ export default function AgentSetup() {
   useEffect(() => () => { routeEpoch.current += 1; }, []);
   const [error, setError] = useState("");
   const [connected, setConnected] = useState<string | null>(null);
+  // The sign-in terminal outlives its command (its last screen is the only diagnosis), so "a
+  // terminal is shown" and "a sign-in is running" are separate facts, keyed by the operation.
+  const [signinEnded, setSigninEnded] = useState<string | null>(null);
+  const signinLive = !!connected && signinEnded !== connected;
   const [enabled, setEnabled] = useState(false);
   const review = (operation && operation.kind !== "install" ? catalog?.plugins
     .find(p => p.id === operation.plugin_id)?.generations?.find(g => g.id === operation.generation_id)?.review : null) ?? reviewDraft;
@@ -227,8 +231,8 @@ export default function AgentSetup() {
     nextLabel={step === 0 ? "Review installation" : "Install"}
     nextDisabled={step === 0 ? busy || unresolved || !catalog || (mode === "catalog" ? !selected || catalog.catalog.find(c => c.manifest.identity.id === selected)?.installable === false : !local.trim()) : !canInstall}
     secondary={<Link className={button.ghost} to={AGENTS_PATH}>{isEnabled ? "Back to agents" : "Cancel"}</Link>}
-    leaveGuard={dirty} leaveTitle={connected ? "Leave sign-in?" : unresolved ? "Leave this operation?" : "Leave setup?"}
-    leaveMessage={connected ? "Leaving closes this temporary terminal and interrupts sign-in. You can start another attempt from the gallery."
+    leaveGuard={dirty} leaveTitle={signinLive ? "Leave sign-in?" : unresolved ? "Leave this operation?" : "Leave setup?"}
+    leaveMessage={signinLive ? "Leaving closes this temporary terminal and interrupts sign-in. You can start another attempt from the gallery."
       : unresolved ? "The server operation continues. Return through the gallery to read its status; nothing is enabled automatically."
       : "The installation and vendor data already saved stay on this host. Unsaved fields and confirmations will be lost."}
     leaveConfirmLabel="Leave setup">
@@ -296,16 +300,16 @@ export default function AgentSetup() {
           <p>Sign in with the vendor in this temporary terminal. BattleLab does not save its input or output. The vendor can store credentials in its own account files.</p>
           <p>If the vendor asks you to trust this folder, make that choice here. Verification uses the same private workspace.</p>
           {hasSignin ? <div className={s.row}>
-            <button className={button.primary} disabled={busy || !!connected || unresolved && operation?.state !== "ready"} onClick={() => {
+            <button className={button.primary} disabled={busy || signinLive || unresolved && operation?.state !== "ready"} onClick={() => {
               if (operation?.kind === "signin" && operation.state === "ready") setConnected(operation.id);
               else void start("signin");
             }}>{operation?.state === "ready" ? "Connect sign-in terminal" : "Start sign-in"}</button>
             {connected && <button className={button.ghost} onClick={() => { setConnected(null); }}>Close sign-in terminal</button>}
             {operation?.state === "ready" && !connected && <button className={button.ghost} disabled={busy} onClick={() => void run(async current => accept(await current(api.pluginCancel(operation.id))))}>Cancel sign-in attempt</button>}
           </div> : <p>This manifest has no separate sign-in command. Verification checks the vendor account already configured on this host.</p>}
-          {connected && <SignInTerminal operation={connected} onClose={() => { setConnected(null); void readOperation(); }} />}
+          {connected && <SignInTerminal key={connected} operation={connected} onEnded={() => { setSigninEnded(connected); void readOperation(); }} />}
         </>}
-        <button className={button.primary} disabled={busy || unresolved || !!connected} onClick={() => setStep(3)}>Continue to verification</button>
+        <button className={button.primary} disabled={busy || unresolved || signinLive} onClick={() => setStep(3)}>Continue to verification</button>
       </>}
       {(step === 3 || step === 4) && review && generation && <>
         <section className={s.panel}><h2>Required checks</h2>

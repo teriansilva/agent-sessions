@@ -2,6 +2,7 @@ import { Paperclip } from "lucide-react";
 import chat from "../chat/ChatPane.module.css";
 import compose from "../terminal/Compose.module.css";
 import styles from "./Outbox.module.css";
+import { ARRIVE_CLASS } from "./arrivals";
 import { leavingNote, type OutboxEntry } from "./outbox";
 import { ordinal } from "./structuredView";
 
@@ -18,6 +19,7 @@ export function OutboxBlock({
   onRetry,
   onEdit,
   onDrop,
+  arrive = false,
 }: {
   entries: readonly OutboxEntry[];
   agent: string;
@@ -28,6 +30,9 @@ export function OutboxBlock({
   onRetry: (id: string) => void;
   onEdit: (id: string) => void;
   onDrop: (id: string) => void;
+  /** Each entry enters with the arrival motion (#1727): the operator's own message arrives here,
+   *  at Send, and the turn that later replaces it does not arrive a second time. */
+  arrive?: boolean;
 }) {
   if (entries.length === 0) return null;
   const note = leavingNote(entries);
@@ -44,7 +49,8 @@ export function OutboxBlock({
                 ? "not sent"
                 : "unknown";
         return (
-          <div key={id} className={styles.pending} data-testid="structured-pending" data-phase={e.phase}
+          <div key={id} className={arrive ? `${styles.pending} ${ARRIVE_CLASS}` : styles.pending}
+            data-testid="structured-pending" data-phase={e.phase}
             data-operation={id}>
             <div className={`${chat.turn} ${chat.user}`}>
               <div className={chat.who}>you · {label}</div>

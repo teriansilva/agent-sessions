@@ -1,9 +1,7 @@
-import { Children, isValidElement, memo, useState } from "react";
-import type { ReactElement, ReactNode } from "react";
-import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
-import type { Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { memo } from "react";
+import ReactMarkdown from "react-markdown";
 import styles from "./Markdown.module.css";
+import { MARKDOWN_OPTIONS } from "./markdownTree";
 
 /** Agent text as Markdown (#1332): headings, emphasis, lists, tables, links and fenced code.
  *
@@ -12,81 +10,17 @@ import styles from "./Markdown.module.css";
  * - a link keeps only an `http(s):` or `mailto:` target, opens in a new tab with
  *   `rel="noopener noreferrer"`, and any other scheme (`javascript:`, `data:`) becomes inert text;
  * - an image is never loaded: an agent-chosen URL fetched by the operator's browser would leak
- *   that the reply was read (and anything encoded in the URL), so it shows as its alt text. */
+ *   that the reply was read (and anything encoded in the URL), so it shows as its alt text.
+ *
+ * Parsing is the expensive part — react-markdown runs the whole remark pipeline on every render
+ * it gets. Memoized on `text`, a reply is parsed when it changes, not whenever its pane
+ * re-renders: a structured pane on the map re-rendered every turn's Markdown on every pointer
+ * move of a window drag (the operator's trace: 4.9 s of 11.5 s in `remark-parse`). The rules
+ * live in `markdownTree.tsx`, shared with a live reply's word fade (#1727). */
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <div className={styles.md}>
-      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} urlTransform={safeUrl} components={COMPONENTS}>
-        {text}
-      </ReactMarkdown>
+      <ReactMarkdown {...MARKDOWN_OPTIONS}>{text}</ReactMarkdown>
     </div>
   );
 });
-
-/** Parsing is the expensive part — react-markdown runs the whole remark pipeline on every render
- *  it gets. Memoized on `text`, a reply is parsed when it changes, not whenever its pane
- *  re-renders: a structured pane on the map re-rendered every turn's Markdown on every pointer
- *  move of a window drag (the operator's trace: 4.9 s of 11.5 s in `remark-parse`). */
-const REMARK_PLUGINS = [remarkGfm];
-
-const SAFE_SCHEME = /^(https?:|mailto:)/i;
-
-function safeUrl(url: string): string {
-  const cleaned = defaultUrlTransform(url);
-  return SAFE_SCHEME.test(cleaned) ? cleaned : "";
-}
-
-const COMPONENTS: Components = {
-  a: ({ href, children }) =>
-    href ? (
-      <a href={href} target="_blank" rel="noopener noreferrer">
-        {children}
-      </a>
-    ) : (
-      <span className={styles.deadLink}>{children}</span>
-    ),
-  img: ({ alt }) => <span className={styles.image}>[image{alt ? `: ${alt}` : ""}]</span>,
-  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-  table: ({ children }) => (
-    <div className={styles.tableWrap}>
-      <table>{children}</table>
-    </div>
-  ),
-};
-
-function codeOf(children: ReactNode): { lang: string | null; text: string } {
-  const child = Children.toArray(children).find(isValidElement) as
-    | ReactElement<{ className?: string; children?: ReactNode }>
-    | undefined;
-  const lang = child?.props.className?.match(/language-([\w+#.-]+)/)?.[1] ?? null;
-  const raw = child ? child.props.children : children;
-  const text = (Array.isArray(raw) ? raw.join("") : String(raw ?? "")).replace(/\n$/, "");
-  return { lang, text };
-}
-
-function CodeBlock({ children }: { children: ReactNode }) {
-  const { lang, text } = codeOf(children);
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    void navigator.clipboard?.writeText(text).then(
-      () => {
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1500);
-      },
-      () => {},
-    );
-  };
-  return (
-    <figure className={styles.block} data-testid="md-code">
-      <figcaption className={styles.blockHead}>
-        <span className={styles.lang}>{lang ?? "text"}</span>
-        <button type="button" className={styles.copy} onClick={copy} aria-label="Copy code">
-          {copied ? "copied" : "copy"}
-        </button>
-      </figcaption>
-      <pre>
-        <code>{text}</code>
-      </pre>
-    </figure>
-  );
-}

@@ -1529,8 +1529,15 @@ test("API transcript follows streaming growth only while at the bottom (#1379)",
   extra = [turn({ turn_id: "22222222-2222-4333-8444-555555555555", state: "queued", text: "Follow-up", reply: "", tools: [] })];
   await expect(page.getByText("Follow-up", { exact: true })).toBeAttached();
   await expect.poll(() => log.evaluate((el) => el.scrollTop)).toBe(reading);
+  // Reading above while content arrived (#1727): Jump to latest offers the way back, counting the
+  // new row (the queued turn), never the text that grew.
+  const jump = page.getByTestId("structured-jump");
+  await expect(jump).toHaveText(/jump to latest\s*· 1 new/i);
+  expect((await jump.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await log.evaluate((el) => { el.scrollTop = el.scrollHeight; });
   await expect.poll(gap).toBeLessThanOrEqual(3);
+  // Back at the bottom by the reader's own scroll: following again, so nothing to jump to.
+  await expect(jump).toHaveCount(0);
   reply = paragraphs(135); revision++;
   await expect(page.getByText("Progress paragraph 135.", { exact: true })).toBeAttached();
   await expect.poll(gap).toBeLessThanOrEqual(3);

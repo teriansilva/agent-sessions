@@ -32,6 +32,7 @@ export function RevealText({
   testId,
   instant = false,
   streaming = false,
+  appear = true,
   markup = (t) => t,
 }: {
   text: string;
@@ -41,6 +42,10 @@ export function RevealText({
   instant?: boolean;
   /** The turn is still working (a Stage 1 answer awaiting Stage 2): the caret rides the end. */
   streaming?: boolean;
+  /** The text it MOUNTS with fades in too (an answer arriving). False: that text is shown plain
+   *  and only words added later fade — a reply already on screen when the view first paints, or
+   *  inside a row that arrives with its own motion (#1727). */
+  appear?: boolean;
   markup?: (text: string) => ReactNode;
 }) {
   const { mode } = useMotion();
@@ -50,7 +55,7 @@ export function RevealText({
   // new text is painted, whole, on the very render it arrives in.
   const [seen, setSeen] = useState(() => ({
     text,
-    from: fade ? 0 : Number.POSITIVE_INFINITY,
+    from: fade && appear ? 0 : Number.POSITIVE_INFINITY,
   }));
   let from = seen.from;
   if (seen.text !== text) {

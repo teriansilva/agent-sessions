@@ -11,6 +11,16 @@ import { expect, test, type Page } from "@playwright/test";
 import { DASHBOARD_PATH, NIGHTJAR_GALLERY_PATH } from "../src/lib/routes";
 import { MISSION, missionList, missionRow, mockMissions, openMissionRail } from "./mission-console";
 import { expectIdleBudget, mockNightjarShell, storeMotionChoice } from "./nightjarShell";
+import {
+  URL_PATH as API_SESSION_PATH,
+  addTurn,
+  complete,
+  flush,
+  gap as apiGap,
+  mockStreamingSession,
+  operatorTurn,
+  paragraphs,
+} from "./structuredStream";
 
 declare global {
   interface Window {
@@ -319,4 +329,83 @@ test("the mission console in Reduced and Off: no loop, no rAF, nothing moving in
     expect(infinite, `no infinite animation in ${mode}`).toBe(0);
     if (mode === "off") expect(await page.evaluate(() => document.getAnimations().length)).toBe(0);
   }
+});
+
+// ---- An API session (#1727): streaming, arrival and the follow-scroll in each mode ----------
+
+const streamingTurns = () => [
+  operatorTurn({
+    turn_id: "22222222-2222-4333-8444-555555555555",
+    operation_id: "22222222-2222-4333-8444-555555555555",
+    state: "completed",
+    text: "First question",
+    reply: paragraphs(40),
+    stream: undefined,
+  }),
+  operatorTurn({ reply: "Starting" }),
+];
+
+test("an API session in Off: a streamed reply and an arriving row move nothing; the follow lands at once (#1727)", async ({ page }) => {
+  await storeMotionChoice(page, "off");
+  const s = await mockStreamingSession(page, streamingTurns());
+  await page.goto(API_SESSION_PATH);
+  await expect(page.getByText("Starting", { exact: false })).toBeAttached();
+  await expect.poll(() => apiGap(page)).toBeLessThanOrEqual(3);
+  flush(s, `\n\n${paragraphs(8, 41)}`);
+  addTurn(s, operatorTurn({ turn_id: "44444444-2222-4333-8444-555555555555", operation_id: "44444444-2222-4333-8444-555555555555", state: "queued", text: "Arrives now", reply: "", stream: undefined }));
+  await expect(page.getByText("Arrives now", { exact: true })).toBeAttached();
+  await expect(page.getByText("Progress paragraph 48.", { exact: true })).toBeAttached();
+  // Off: no word fades, the row has no animation, and the scroll is already at the bottom.
+  expect(await apiGap(page)).toBeLessThanOrEqual(3);
+  await expect(page.getByTestId("api-log").locator(".nj-word")).toHaveCount(0);
+  expect(await page.evaluate(() => document.getAnimations().length)).toBe(0);
+  expect(await rafOver(page, 1200), "no rAF loop in Off").toBe(0);
+});
+
+test("an API session in Reduced: an arriving row is a 120 ms fade; words do not fade; the caret is steady (#1727)", async ({ page }) => {
+  await storeMotionChoice(page, "reduced");
+  const s = await mockStreamingSession(page, streamingTurns());
+  await page.goto(API_SESSION_PATH);
+  await expect(page.getByText("Starting", { exact: false })).toBeAttached();
+  flush(s, " the first step");
+  await expect(page.getByText("Starting the first step", { exact: false })).toBeAttached();
+  addTurn(s, operatorTurn({ turn_id: "44444444-2222-4333-8444-555555555555", operation_id: "44444444-2222-4333-8444-555555555555", state: "queued", text: "Arrives now", reply: "", stream: undefined }));
+  const row = page.getByTestId("structured-turn").filter({ hasText: "Arrives now" });
+  await expect(row).toHaveClass(/nj-arrive/);
+  const anims = await row.evaluate((el) =>
+    el.getAnimations().map((a) => ({
+      name: (a as CSSAnimation).animationName,
+      ms: Number(a.effect?.getComputedTiming().duration),
+    })),
+  );
+  expect(anims).toEqual([{ name: "nj-fade-in", ms: 120 }]);
+  await expect(page.getByTestId("api-log").locator(".nj-word")).toHaveCount(0);
+  const caret = page.getByTestId("api-log").locator(".nj-caret");
+  await expect(caret).toHaveCount(1);
+  expect(await caret.evaluate((el) => el.getAnimations().length)).toBe(0);
+  expect(await rafOver(page, 1200), "no rAF loop in Reduced").toBe(0);
+});
+
+test("an idle API session idles cheaply in Full; a finished stream leaves no caret and no loop (#1727)", async ({ page, browserName }, info) => {
+  test.skip(browserName !== "chromium", "CDP metrics");
+  test.skip(info.project.name !== "desktop", "one measurement is enough");
+  await storeMotionChoice(page, "full");
+  const s = await mockStreamingSession(page, streamingTurns());
+  await page.goto(API_SESSION_PATH);
+  await expect(page.getByText("Starting", { exact: false })).toBeAttached();
+  flush(s, " and done.");
+  await expect(page.getByText("Starting and done.", { exact: false })).toBeAttached();
+  complete(s);
+  await expect(page.getByTestId("structured-turn").last()).toHaveAttribute("data-state", "completed");
+  await expect(page.getByTestId("api-log").locator(".nj-caret")).toHaveCount(0);
+  const loops = await page.evaluate(
+    () =>
+      document
+        .getAnimations()
+        .filter((x) => x.effect?.getComputedTiming().iterations === Infinity)
+        .filter((x) => (x.effect as KeyframeEffect).target?.closest?.('[data-testid="api-log"]')).length,
+  );
+  expect(loops, "no infinite animation inside the API log").toBe(0);
+  await page.waitForTimeout(1500);
+  await expectIdleBudget(page, "API session", info);
 });
