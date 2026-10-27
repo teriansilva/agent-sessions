@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 import test_plugins
-from agent_sessions.plugins import feed, manifest, runner, storage
+from agent_sessions.plugins import feed, freshness, manifest, runner, storage
 
 NOW = 1_790_000_000
 
@@ -129,7 +129,9 @@ def test_high_water_mark_rejects_rollback_and_same_sequence_equivocation(signer)
     [
         ("issued_at", NOW + 301),
         ("expires_at", NOW),
-        ("expires_at", NOW + feed.MAX_AGE),
+        # #1730: a cut may be approved for up to 90 days (a long one needs a freshness statement
+        # to be used); beyond that it is malformed.
+        ("expires_at", NOW + freshness.MAX_CONTENT_AGE),
         ("contract", True),
         ("sequence", 0),
         ("sequence", 1.0),

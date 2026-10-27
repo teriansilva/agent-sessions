@@ -25,6 +25,9 @@ MAX_FILES = 64
 MAX_FILE_BYTES = 128 * 1024
 MAX_CONTENT_BYTES = 256 * 1024
 MAX_AGE = 7 * 86400
+#: A cut may be release-approved for up to 90 days; one longer than MAX_AGE is usable only with a
+#: current freshness statement naming it (agent-sessions#1730, battlelab-cloud#84).
+MAX_CONTENT_AGE = 90 * 86400
 CLOCK_SKEW = 300
 NAMESPACE = "battlelab-gallery"
 _SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
@@ -249,7 +252,7 @@ def parse(data: bytes, *, now: int | None = None, _historical=False) -> Gallery:
         raise GalleryError("Invalid sequence or timestamp.")
     now = int(time.time()) if now is None else now
     issued, expires = doc["issued_at"], doc["expires_at"]
-    if not issued < expires <= issued + MAX_AGE or (
+    if not issued < expires <= issued + MAX_CONTENT_AGE or (
         not _historical and (issued > now + CLOCK_SKEW or expires <= now)
     ):
         raise GalleryError("Gallery is expired or its validity interval is invalid.")

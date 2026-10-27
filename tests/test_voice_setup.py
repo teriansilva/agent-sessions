@@ -363,7 +363,42 @@ def test_the_server_has_no_tcp_listener_and_wants_an_owner_only_socket_dir(monke
 def test_kokoro_language_mapping():
     assert speech_server.kokoro_lang("bf_emma", "en") == "en-gb"
     assert speech_server.kokoro_lang("af_heart", "es") == "es"
-    assert speech_server.kokoro_lang("af_heart", "de") == "en-us"  # unknown: the voice's own
+    assert speech_server.kokoro_lang("af_heart", None) == "en-us"  # none asked: the voice's own
+    assert speech_server.kokoro_lang("bf_emma", None) == "en-gb"
+    # #1716: a language Kokoro can't speak is refused, never read with English sounds
+    assert speech_server.kokoro_lang("af_heart", "de") is None
+    assert speech_server.kokoro_lang("af_heart", "ro") is None
+
+
+@pytest.mark.parametrize("language", ["de", "ro", "xx"])
+def test_the_server_refuses_a_language_it_cannot_speak(language):
+    c = TestClient(_server(), headers={"Authorization": f"Bearer {TOKEN}"})
+    r = c.post("/v1/audio/speech",
+               json={"input": "Guten Tag.", "voice": "af_heart", "language": language})  # fmt: skip
+    assert r.status_code == 400 and r.json() == {"error": {"code": "unsupported_language"}}
+
+
+@pytest.mark.parametrize("language", [123, False, ["de"], {"de": 1}])
+def test_a_malformed_language_is_refused_not_taken_as_none(language):
+    """Hermes 7200: `{"language": 123}` must not speak as if no language had been asked for."""
+    c = TestClient(_server(), headers={"Authorization": f"Bearer {TOKEN}"})
+    r = c.post("/v1/audio/speech",
+               json={"input": "Guten Tag.", "voice": "af_heart", "language": language})  # fmt: skip
+    assert r.status_code == 400 and r.json() == {"error": {"code": "bad_language"}}
+
+
+def test_json_null_is_no_language_like_an_absent_field():
+    c = TestClient(_server(), headers={"Authorization": f"Bearer {TOKEN}"})
+    r = c.post("/v1/audio/speech", json={"input": "Hello.", "voice": "af_heart", "language": None})
+    assert r.status_code == 200 and len(r.content) > 0
+
+
+@pytest.mark.parametrize("language", [None, "en", "es"])
+def test_the_server_still_speaks_its_own_languages(language):
+    c = TestClient(_server(), headers={"Authorization": f"Bearer {TOKEN}"})
+    body = {"input": "Hello.", "voice": "af_heart", **({"language": language} if language else {})}
+    r = c.post("/v1/audio/speech", json=body)
+    assert r.status_code == 200 and len(r.content) > 0
 
 
 @pytest.fixture

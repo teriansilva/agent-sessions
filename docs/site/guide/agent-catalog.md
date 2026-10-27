@@ -55,10 +55,15 @@ when definitions change without rebuilding it.
 ## Publish an update independently of installation
 
 Maintainers build a canonical remote cut from reviewed recipes using `scripts/build-plugin-feed`,
-with a strictly higher sequence and a validity interval of at most seven days. The signing key
-stays outside the app, catalog server and CI. An operator unlocks the primary key for the reviewed
-cut, signs it and verifies it against the installed trust root; a web server cannot introduce
-its own signing key.
+with a strictly higher sequence. The signing key stays outside the app, catalog server and CI. An
+operator unlocks the primary key for the reviewed cut, signs it and verifies it against the
+installed trust root; a web server cannot introduce its own signing key.
+
+A cut is valid for up to seven days on its own. It can instead be approved for up to 90 days
+(`--valid-for`): BattleLab then uses it only while the publisher's daily **freshness statement**
+says it is still current. That statement comes from a separate, low-authority key that can't
+approve or change anything, so the release key is needed only when the catalog changes, or at
+the latest once per approval window.
 
 Publish the signed pair on the current public BattleLab GitHub release. Keep a versioned copy
 of each pair (sequence and digest in the asset name), record its source commit, digest and expiry

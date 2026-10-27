@@ -1,0 +1,10 @@
+# Freshness signing trust root for the two public feeds (#1730).
+#
+# OpenSSH allowed_signers format. Principal `freshness@battlelab`, namespace `battlelab-freshness`.
+# This key vouches ONLY that a release-signed content cut (verified against `feed-signers`) is
+# still current. It can't approve, change or withdraw content, and it never signs releases.
+# Held by the publisher host's daily renewal unit (battlelab-cloud#84); rotated by shipping a
+# release that changes this file. Public key material only.
+#
+# Until a key is listed here, no freshness statement verifies: only cuts whose own window is at
+# most 7 days are usable, exactly as before #1730.

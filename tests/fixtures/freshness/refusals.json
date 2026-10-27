@@ -1,0 +1,46 @@
+[
+  {
+    "name": "unknown format",
+    "raw": "{\"content_digest\":\"a3f49455ff00aeca5fe4b545a0601e212d8656ff12d8792735f1212c0f081c5a\",\"content_sequence\":7,\"expires_at\":1791172800,\"feed\":\"gallery\",\"format\":2,\"issued_at\":1791000000,\"statement_sequence\":42}"
+  },
+  {
+    "name": "unknown feed",
+    "raw": "{\"content_digest\":\"a3f49455ff00aeca5fe4b545a0601e212d8656ff12d8792735f1212c0f081c5a\",\"content_sequence\":7,\"expires_at\":1791172800,\"feed\":\"plugins\",\"format\":1,\"issued_at\":1791000000,\"statement_sequence\":42}"
+  },
+  {
+    "name": "zero statement sequence",
+    "raw": "{\"content_digest\":\"a3f49455ff00aeca5fe4b545a0601e212d8656ff12d8792735f1212c0f081c5a\",\"content_sequence\":7,\"expires_at\":1791172800,\"feed\":\"gallery\",\"format\":1,\"issued_at\":1791000000,\"statement_sequence\":0}"
+  },
+  {
+    "name": "boolean sequence",
+    "raw": "{\"content_digest\":\"a3f49455ff00aeca5fe4b545a0601e212d8656ff12d8792735f1212c0f081c5a\",\"content_sequence\":7,\"expires_at\":1791172800,\"feed\":\"gallery\",\"format\":1,\"issued_at\":1791000000,\"statement_sequence\":true}"
+  },
+  {
+    "name": "uppercase digest",
+    "raw": "{\"content_digest\":\"A3F49455FF00AECA5FE4B545A0601E212D8656FF12D8792735F1212C0F081C5A\",\"content_sequence\":7,\"expires_at\":1791172800,\"feed\":\"gallery\",\"format\":1,\"issued_at\":1791000000,\"statement_sequence\":42}"
+  },
+  {
+    "name": "window longer than seven days",
+    "raw": "{\"content_digest\":\"a3f49455ff00aeca5fe4b545a0601e212d8656ff12d8792735f1212c0f081c5a\",\"content_sequence\":7,\"expires_at\":1791604801,\"feed\":\"gallery\",\"format\":1,\"issued_at\":1791000000,\"statement_sequence\":42}"
+  },
+  {
+    "name": "expires before issued",
+    "raw": "{\"content_digest\":\"a3f49455ff00aeca5fe4b545a0601e212d8656ff12d8792735f1212c0f081c5a\",\"content_sequence\":7,\"expires_at\":1791000000,\"feed\":\"gallery\",\"format\":1,\"issued_at\":1791000000,\"statement_sequence\":42}"
+  },
+  {
+    "name": "extra field",
+    "raw": "{\"content_digest\":\"a3f49455ff00aeca5fe4b545a0601e212d8656ff12d8792735f1212c0f081c5a\",\"content_sequence\":7,\"expires_at\":1791172800,\"extra\":1,\"feed\":\"gallery\",\"format\":1,\"issued_at\":1791000000,\"statement_sequence\":42}"
+  },
+  {
+    "name": "missing field",
+    "raw": "{\"content_digest\":\"a3f49455ff00aeca5fe4b545a0601e212d8656ff12d8792735f1212c0f081c5a\",\"content_sequence\":7,\"expires_at\":1791172800,\"format\":1,\"issued_at\":1791000000,\"statement_sequence\":42}"
+  },
+  {
+    "name": "non-canonical spacing",
+    "raw": "{\"content_digest\": \"a3f49455ff00aeca5fe4b545a0601e212d8656ff12d8792735f1212c0f081c5a\", \"content_sequence\": 7, \"expires_at\": 1791172800, \"feed\": \"gallery\", \"format\": 1, \"issued_at\": 1791000000, \"statement_sequence\": 42}"
+  },
+  {
+    "name": "float number",
+    "raw": "{\"content_digest\":\"a3f49455ff00aeca5fe4b545a0601e212d8656ff12d8792735f1212c0f081c5a\",\"content_sequence\":7,\"expires_at\":1791172800,\"feed\":\"gallery\",\"format\":1.0,\"issued_at\":1791000000,\"statement_sequence\":42}"
+  }
+]

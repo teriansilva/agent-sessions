@@ -244,6 +244,10 @@ async function accessRows(card: ReturnType<Page["getByRole"]>) {
 
 for (const theme of ["dark", "light"] as const) {
   test(`${theme} theme: Agent access lists every agent's way to memory from the roster; the paragraph opens and copies`, async ({ page, context, isMobile }, testInfo) => {
+    // A card screenshot plus a whole-page contrast scan per theme: ~2 s here, but on a loaded CI
+    // runner the default 30 s TEST budget ran out just before the last step (#1737/#1744 e2e (1),
+    // twice each, both retries) while every assertion was passing. Its own budget, like #1159.
+    test.setTimeout(90_000);
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     await page.addInitScript(t => localStorage.setItem("tr-theme", t), theme);
     await mockMemory(page);

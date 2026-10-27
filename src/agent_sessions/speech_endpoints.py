@@ -240,6 +240,25 @@ def _headers(ep: Endpoint) -> dict[str, str]:
     return {"Authorization": f"Bearer {ep.api_key}"} if ep.api_key else {}
 
 
+#: How much of a refused request's body is read for its error code (#1716).
+ERROR_BODY_MAX = 4096
+
+
+async def _refusal_code(resp: httpx.Response) -> str | None:
+    """`unsupported_language` from a 400/422's bounded JSON body ``{"error": {"code": …}}`` —
+    the one code the caller acts on (#1716: never retried without the language). Anything
+    else, or a body that can't be read, is None: the refusal stays the generic one."""
+    import json as _json
+
+    try:
+        raw = await _read_bounded(resp, ERROR_BODY_MAX)
+        err = _json.loads(raw).get("error")
+        code = err.get("code") if isinstance(err, dict) else None
+    except Exception:  # noqa: BLE001 — unreadable: the generic refusal
+        return None
+    return code if code == "unsupported_language" else None
+
+
 def _status_error(status: int, where: str) -> SpeechError:
     if status in (401, 403):
         return SpeechError("rejected", f"{where} rejected the token ({status})", status=status)
@@ -305,6 +324,16 @@ async def _request(
             )
             resp = await client.send(req, stream=True)
             try:
+                if (
+                    path == "/audio/speech"  # only synthesis speaks a language (review of #1751)
+                    and resp.status_code in (400, 422)
+                    and await _refusal_code(resp)
+                ):
+                    raise SpeechError(
+                        "unsupported_language",
+                        f"{urlsplit(url).netloc} cannot speak that language",
+                        status=resp.status_code,
+                    )
                 if not 200 <= resp.status_code < 300:
                     raise _status_error(resp.status_code, urlsplit(url).netloc)
                 if resp.headers.get("content-encoding", "identity").strip().lower() not in (
@@ -609,7 +638,15 @@ async def synthesize(
                 got = True
                 yield chunk
     except SpeechError as e:
-        if got or not optional or plain_fallback is None or e.status not in (400, 422):
+        if (
+            got
+            or not optional
+            or plain_fallback is None
+            or e.status not in (400, 422)
+            # #1716: a language the server cannot speak is not an optional field to drop —
+            # asking again without it would read the text with another language's sounds.
+            or e.code == "unsupported_language"
+        ):
             raise
         plain_fallback()
         async with contextlib.aclosing(
@@ -640,8 +677,10 @@ async def _synthesize_any(ep: Endpoint, text: str, **kw) -> AsyncIterator[bytes]
                     played = True
                     yield chunk
             return
-        except SpeechError:
-            if played:
+        except SpeechError as e:
+            if played or e.code == "unsupported_language":
+                # #1716: a language it cannot speak is final in EVERY format — asking for PCM
+                # instead could get the text read with another language's sounds.
                 raise
             _WAV_ENDPOINTS.discard(key)  # it stopped taking WAV: ask it for PCM below
     try:
@@ -661,9 +700,9 @@ async def _synthesize_any(ep: Endpoint, text: str, **kw) -> AsyncIterator[bytes]
                     played = True
                     _remember_wav(ep, kw["voice"])
                 yield chunk
-    except SpeechError:
-        if played:
-            raise
+    except SpeechError as e:
+        if played or e.code == "unsupported_language":
+            raise  # #1716: the precise, final refusal, not the compressed-label one
         raise label from None
 
 

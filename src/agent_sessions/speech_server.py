@@ -56,15 +56,19 @@ VOICE_PREFIX_LANG = {
 }  # fmt: skip
 
 
-def kokoro_lang(voice: str, language: str | None) -> str:
-    """The language Kokoro speaks: the requested one when it knows it, else the voice's own.
-    English stays British for a British voice."""
+def kokoro_lang(voice: str, language: str | None) -> str | None:
+    """The language Kokoro speaks: the requested one, or the voice's own when none was asked
+    for. English stays British for a British voice. ``None``: a language Kokoro cannot speak —
+    refused, never read with another language's sounds (#1716: German came out as English
+    phonemes)."""
     native = VOICE_PREFIX_LANG.get(voice[:1], "en-us")
+    if language is None:
+        return native
     if language in KOKORO_LANGS:
         if language == "en" and native.startswith("en"):
             return native
         return KOKORO_LANGS[language]
-    return native
+    return None
 
 
 def wav_header(n_bytes: int, rate: int = TTS_RATE) -> bytes:
@@ -202,7 +206,14 @@ def create_app(token: str, stt, tts) -> FastAPI:
         if fmt not in ("pcm", "wav"):
             return _err(400, "unsupported_format")
         language = body.get("language")
-        lang = kokoro_lang(voice, language if isinstance(language, str) else None)
+        if language is not None and not isinstance(language, str):
+            # A malformed language is refused, never taken as "none asked for" (Hermes 7200):
+            # that would speak the text in the voice's own language. JSON `null` IS "none asked
+            # for", as an absent field is.
+            return _err(400, "bad_language")
+        lang = kokoro_lang(voice, language)
+        if lang is None:
+            return _err(400, "unsupported_language")  # the caller must not retry without it
 
         stream = bounded_stream(
             tts_lock, lambda: tts.stream(text.strip(), voice, float(speed), lang)

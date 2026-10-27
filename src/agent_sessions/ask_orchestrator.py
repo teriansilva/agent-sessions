@@ -2141,6 +2141,13 @@ def _persona(turn: _Turn) -> list[dict]:
     return [{"role": "system", "content": prompts.effective(hq_contacts.prompt_id(turn.contact))}]
 
 
+#: A model's tool-call special tokens written out as plain text — DeepSeek's `<｜DSML｜…>` and
+#: `<｜tool▁calls▁begin｜>` families, malformed openers included. Seen when the endpoint's
+#: tool parser misses a call the model meant to make: the text is then the CALL, not an answer.
+#: The full-width bar never occurs in prose, so this matches the token shape, not a guess at it.
+_TOOL_MARKUP_RE = re.compile(r"</?｜[^｜<>\n]{1,40}｜")
+
+
 async def run_turn(turn: _Turn) -> list[dict]:
     """The turn itself. Writes tool records as it goes; RETURNS the records that settle it."""
 
@@ -2164,6 +2171,7 @@ async def run_turn(turn: _Turn) -> list[dict]:
         *pulse_chat.bound_history(history),
         {"role": "user", "content": _user_content(turn)},
     ]
+    asked_again = False
     for round_no in range(MAX_TOOL_ROUNDS + 1):
         last = round_no == MAX_TOOL_ROUNDS
         turn.progress({"type": "progress", "step": "thinking", "round": round_no})
@@ -2213,13 +2221,12 @@ async def run_turn(turn: _Turn) -> list[dict]:
             clean = _sanitize(calls[:MAX_CALLS_PER_ROUND])
             if clean is None:
                 return fail("the endpoint returned an unexpected response shape")
-            convo.append(
-                {
-                    "role": "assistant",
-                    "content": content if isinstance(content, str) else None,
-                    "tool_calls": clean,
-                }
-            )
+            # Text beside the parsed calls is replayed only when it is clean: leaked call markup
+            # is never sent back to the model, whichever branch the reply takes.
+            replay = content if isinstance(content, str) else None
+            if replay is not None and _TOOL_MARKUP_RE.search(replay):
+                replay = None
+            convo.append({"role": "assistant", "content": replay, "tool_calls": clean})
             for n, call in enumerate(clean):
                 name, args, cid = (
                     call["function"]["name"],
@@ -2247,6 +2254,15 @@ async def run_turn(turn: _Turn) -> list[dict]:
                 # `ask_operator` ends the turn: the operator holds the next move.
                 return _asked_records(turn)
             continue
+        if isinstance(content, str) and _TOOL_MARKUP_RE.search(content):
+            # Tool calls the endpoint returned as text it could not parse: not an answer, and
+            # never stored as one. Asked again once (the round still counts), then the turn fails.
+            if not asked_again and not last:
+                asked_again = True
+                continue
+            return fail(
+                "the model wrote its tool calls as text instead of making them", "tool_markup"
+            )
         if not isinstance(content, str) or not content.strip():
             if calls:
                 return fail("the endpoint kept calling tools after it was told to answer")

@@ -3,6 +3,10 @@
 Signatures use the INSTALLED package's trust root, never keys supplied by the downloaded feed.
 Parsing and signature verification are separate from acceptance: acceptance also serializes the
 durable high-water mark, so racing refreshes cannot roll the feed backwards. No artifact runs here.
+
+A release-signed cut may be long-lived (#1730, up to `freshness.MAX_CONTENT_AGE`); a long cut is
+usable only with a current freshness statement that names it (`freshness.py`). A cut whose own
+window is at most `MAX_AGE` needs none, exactly as before. `fresh` is the one usability rule.
 """
 
 from __future__ import annotations
@@ -228,7 +232,9 @@ def parse(data: bytes, *, now: int | None = None, _historical: bool = False) -> 
     if any(type(doc[k]) is not int or doc[k] <= 0 for k in ("sequence", "issued_at", "expires_at")):
         raise FeedError("invalid feed sequence or timestamp")
     issued, expires = doc["issued_at"], doc["expires_at"]
-    if not issued < expires <= issued + MAX_AGE or (
+    from . import freshness
+
+    if not freshness.content_window_ok(issued, expires) or (
         not _historical and (issued > now + CLOCK_SKEW or expires <= now)
     ):
         raise FeedError("the feed is expired or its validity interval is invalid")
@@ -270,11 +276,42 @@ def verify(data: bytes, signature: bytes) -> None:
         raise FeedError("the feed signature is not from a trusted plugin-feed signer")
 
 
-def accept(data: bytes, signature: bytes, *, now: int | None = None) -> Feed:
-    from . import storage
+def accept(
+    data: bytes,
+    signature: bytes,
+    *,
+    statement: tuple[bytes, bytes, dict] | None = None,
+    now: int | None = None,
+) -> Feed:
+    """Accept a release-signed cut, and with it (#1730) the freshness statement that keeps a long
+    cut usable: `(statement bytes, signature, the pointer that selected it)`. A long cut is
+    refused without a statement naming exactly it; a statement naming another cut (the pointer
+    moved before the cut did) refuses a long cut and is ignored for a short one. Nothing accepted
+    earlier is replaced on any refusal."""
+    from . import freshness, storage
 
     verify(data, signature)
     snapshot = parse(data, now=now)
+    vouched = None
+    if statement is not None:
+        stmt_data, stmt_sig, selected = statement
+        try:
+            candidate = freshness.checked(
+                stmt_data, stmt_sig, feed_name="agents", selected=selected, now=now
+            )
+            freshness.covers(
+                candidate,
+                content_sequence=snapshot.sequence,
+                content_digest=snapshot.digest,
+                content_issued_at=snapshot.issued_at,
+                content_expires_at=snapshot.expires_at,
+            )
+            vouched = (candidate, stmt_data, stmt_sig)
+        except freshness.FreshnessError as exc:
+            if freshness.is_long(snapshot.issued_at, snapshot.expires_at):
+                raise FeedError(f"the long-lived catalog is not current: {exc}") from None
+    if vouched is None and freshness.is_long(snapshot.issued_at, snapshot.expires_at):
+        raise FeedError("the long-lived catalog has no current freshness statement")
     with storage.locked("feed.json") as path:
         old = storage.read(path)
         floor = _floor(path)
@@ -290,6 +327,20 @@ def accept(data: bytes, signature: bytes, *, now: int | None = None) -> Feed:
                 raise FeedError("this sequence already identifies different feed bytes")
         if floor is not None:
             _above(snapshot, floor)
+        evidence = _evidence(path)
+        if vouched is not None:
+            # Rollback, equivocation and damaged records refuse the WHOLE admission of a long
+            # cut, before anything is written; a short cut needs no statement and ignores one it
+            # can't use. Then the statement is stored FIRST, under the cut it names: a later
+            # failed write can't leave the previously usable cut without its own.
+            try:
+                evidence.admit(vouched[0])
+            except (freshness.FreshnessError, FeedError):
+                if freshness.is_long(snapshot.issued_at, snapshot.expires_at):
+                    raise
+                vouched = None
+        if vouched is not None:
+            evidence.stage(*vouched)
         # Persist the independent floor first. An interrupted second write cannot make an older
         # catalog authoritative again; retrying this cut (or a newer one) completes acceptance.
         storage.write(path.with_name("feed-floor.json"), _mark(snapshot))
@@ -302,7 +353,49 @@ def accept(data: bytes, signature: bytes, *, now: int | None = None) -> Feed:
                 "signature": signature.decode("ascii"),
             },
         )
+        if vouched is not None:
+            # The statement floor is written last: until then the staged record sits above it.
+            evidence.commit(vouched[0], keep=snapshot.digest)
     return snapshot
+
+
+#: Records are `feed-freshness-{content digest}.json`; the floor is `feed-freshness-floor.json`.
+STATEMENT = "feed-freshness"
+
+
+def _evidence(path: Path):
+    from . import freshness_store, storage
+
+    return freshness_store.Evidence(
+        path.parent,
+        prefix=STATEMENT,
+        feed_name="agents",
+        # A record holds the statement (<= 1 KiB) and a signature `verify` admits (<= 16 KiB).
+        read=lambda p: storage.read(p, max_bytes=32768),
+        write=storage.write,
+        error=FeedError,
+    )
+
+
+def fresh(snapshot: Feed, *, now: int | None = None) -> bool:
+    """The one usability rule (#1730). A short cut is fresh inside its own window. A long cut is
+    fresh only while a stored, verified freshness statement names exactly it, is unexpired, and
+    sits at the durable statement floor."""
+    from . import freshness, storage
+
+    now = int(time.time()) if now is None else now
+    if snapshot.issued_at > now + CLOCK_SKEW or snapshot.expires_at <= now:
+        return False
+    if not freshness.is_long(snapshot.issued_at, snapshot.expires_at):
+        return True
+    with storage.locked("feed.json") as path:
+        return _evidence(path).fresh(
+            content_sequence=snapshot.sequence,
+            content_digest=snapshot.digest,
+            content_issued_at=snapshot.issued_at,
+            content_expires_at=snapshot.expires_at,
+            now=now,
+        )
 
 
 def _stored(record: dict, *, now: int | None = None, historical: bool = False) -> Feed:
@@ -324,10 +417,8 @@ def _stored(record: dict, *, now: int | None = None, historical: bool = False) -
 
 def current(*, now: int | None = None) -> Feed | None:
     snapshot = historical()
-    if snapshot is not None:
-        now = int(time.time()) if now is None else now
-        if snapshot.issued_at > now + CLOCK_SKEW or snapshot.expires_at <= now:
-            raise FeedError("the feed is expired or its validity interval is invalid")
+    if snapshot is not None and not fresh(snapshot, now=now):
+        raise FeedError("the feed is expired or its validity interval is invalid")
     return snapshot
 
 

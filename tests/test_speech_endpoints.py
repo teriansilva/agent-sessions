@@ -895,6 +895,135 @@ def test_a_refused_optional_field_is_retried_plain_once(monkeypatch):
         run(go(None))
 
 
+def _refusing(monkeypatch, status=400, body=None, raw=None):
+    """A TTS that refuses any request carrying `language` with `status` and `body`, and speaks
+    otherwise. Returns the request bodies it saw."""
+    seen: list[dict] = []
+
+    def handler(r: httpx.Request):
+        b = json.loads(r.content)
+        seen.append(b)
+        if "language" in b:
+            if raw is not None:
+                return httpx.Response(status, content=raw)
+            return httpx.Response(status, json=body)
+        return httpx.Response(
+            200, content=b"\x00\x00" * 2400, headers={"content-type": "audio/pcm"}
+        )
+
+    _mount(monkeypatch, handler)
+    return seen
+
+
+def _speak_de(fallback):
+    async def go():
+        out = b""
+        ep = se.Endpoint(BASE)
+        kw = {"voice": "aria", "out_rate": 24000, "language": "de", "plain_fallback": fallback}
+        async for c in se.synthesize(ep, "Guten Tag.", **kw):
+            out += c
+        return out
+
+    return run(go())
+
+
+@pytest.mark.parametrize("status", [400, 422])
+def test_an_unsupported_language_is_never_retried_without_it(monkeypatch, status):
+    """#1716: the local server can't speak German. Asking again without `language` would read the
+    German text with an English voice's sounds — and switch the whole call to plain."""
+    seen = _refusing(monkeypatch, status, {"error": {"code": "unsupported_language"}})
+    told: list[int] = []
+    with pytest.raises(se.SpeechError) as e:
+        _speak_de(lambda: told.append(1))
+    assert e.value.code == "unsupported_language" and e.value.status == status
+    assert told == [] and len(seen) == 1  # no second, language-less request; no go_plain
+
+
+@pytest.mark.parametrize(
+    "body, raw",
+    [
+        ({"error": {"code": "unknown_voice"}}, None),
+        ({"detail": "extra fields not permitted"}, None),
+        ({"error": "unsupported_language"}, None),  # not the `{"error": {"code": …}}` shape
+        (None, b"not json"),
+        (None, b"x" * (se.ERROR_BODY_MAX + 10)),  # beyond the bounded read
+    ],
+    ids=["other-code", "detail", "flat-error", "not-json", "too-large"],
+)
+def test_any_other_refusal_keeps_the_optional_field_fallback(monkeypatch, body, raw):
+    seen = _refusing(monkeypatch, 422, body, raw)
+    told: list[int] = []
+    assert _speak_de(lambda: told.append(1))
+    assert told == [1] and len(seen) == 2 and "language" not in seen[1]
+
+
+@pytest.mark.parametrize("pcm_reply", ["speaks", "refuses"])
+def test_an_unsupported_language_is_final_for_a_target_remembered_as_wav(monkeypatch, pcm_reply):
+    """Hermes 7200: a target remembered as WAV (#1709) that refuses the language must not be
+    asked again as PCM — a gateway ignoring `language` on PCM would read the text wrongly."""
+    se._WAV_ENDPOINTS.clear()
+    se._remember_wav(se.Endpoint(BASE), "aria")
+    seen: list[str] = []
+
+    def handler(r: httpx.Request):
+        fmt = json.loads(r.content)["response_format"]
+        seen.append(fmt)
+        if fmt == "wav" or pcm_reply == "refuses":
+            return httpx.Response(400, json={"error": {"code": "unsupported_language"}})
+        return httpx.Response(
+            200, content=b"\x00\x00" * 2400, headers={"content-type": "audio/pcm"}
+        )
+
+    _mount(monkeypatch, handler)
+    try:
+        with pytest.raises(se.SpeechError) as e:
+            _speak_de(lambda: None)
+        assert e.value.code == "unsupported_language" and seen == ["wav"]
+    finally:
+        se._WAV_ENDPOINTS.clear()
+
+
+def test_an_unsupported_language_on_the_wav_retry_is_reported_as_such(monkeypatch):
+    """After a compressed-labelled PCM reply, the WAV retry's language refusal is the error raised
+    — precise and final — not the compressed-label one."""
+    se._WAV_ENDPOINTS.clear()
+
+    def handler(r: httpx.Request):
+        if json.loads(r.content)["response_format"] == "wav":
+            return httpx.Response(400, json={"error": {"code": "unsupported_language"}})
+        return httpx.Response(
+            200, content=b"\x00\x00" * 2400, headers={"content-type": "audio/mpeg"}
+        )
+
+    _mount(monkeypatch, handler)
+    told: list[int] = []
+    with pytest.raises(se.SpeechError) as e:
+        _speak_de(lambda: told.append(1))
+    assert e.value.code == "unsupported_language" and told == [] and not se._WAV_ENDPOINTS
+
+
+def test_only_synthesis_reads_the_language_refusal(monkeypatch):
+    """Review of #1751: the code is a synthesis refusal. Any other request refused with the same
+    body stays the generic refusal (`failed`), as before."""
+    _mount(
+        monkeypatch, lambda r: httpx.Response(400, json={"error": {"code": "unsupported_language"}})
+    )
+    with pytest.raises(se.SpeechError) as e:
+        run(se.transcribe(se.Endpoint(BASE), b"\x00\x00" * 1600, 16000, language="de"))
+    assert e.value.code == "failed"
+
+
+def test_a_refused_sentence_never_makes_the_next_one_plain(monkeypatch):
+    """`go_plain` is only for a refused optional field: after an unsupported-language refusal, the
+    next sentence still asks with its language."""
+    seen = _refusing(monkeypatch, 400, {"error": {"code": "unsupported_language"}})
+    plain: list[bool] = []
+    for _ in range(2):
+        with pytest.raises(se.SpeechError):
+            _speak_de(lambda: plain.append(True))
+    assert plain == [] and all(b.get("language") == "de" for b in seen)
+
+
 def test_discovery_keeps_what_it_found_when_health_is_unreachable(monkeypatch):
     """Review 6887: `/audio/voices` answered; the optional `/health` lookup failing must not
     throw the voices away."""

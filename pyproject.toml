@@ -65,7 +65,7 @@ where = ["src"]
 # built from them, so a wheel without them starts with no engines at all.
 [tool.setuptools.package-data]
 agent_sessions = [
-    "agent_catalog.json", "templates/*.html", "plugins/first_party/*/plugin.toml", "plugins/feed-signers",
+    "agent_catalog.json", "templates/*.html", "plugins/first_party/*/plugin.toml", "plugins/feed-signers", "plugins/freshness-signers",
     "playbooks/bundled/*/*.toml", "playbooks/bundled/*/*.md", "playbooks/bundled/*/flows/*.toml",
     # The pages outside the SPA (#1596): the app's palette and primitives, emitted by
     # web/scripts/emit-page-tokens.mjs, plus their layout sheet and the self-hosted fonts.

@@ -465,6 +465,58 @@ def test_a_truncated_completion_is_never_stored_as_an_answer(app, ai):
     assert not [r for r in ask_store.read(cid) if r["type"] == "assistant"]
 
 
+#: Tool calls the model wrote out as text its endpoint's parser missed — the shape a live HQ turn
+#: stored as its answer (a malformed `calls` opener, so the parser never saw a call).
+LEAKED_CALLS = (
+    '<｜DSML｜ calls>\n<｜DSML｜ invoke name="session_brief">\n'
+    f'<｜DSML｜ parameter name="key" string="true">{S1}</｜DSML｜ parameter>\n'
+    "</｜DSML｜ invoke>\n</｜DSML｜ calls>"
+)
+
+
+def test_tool_calls_written_as_text_are_asked_again_never_stored(app, ai):
+    script = ai(answer(LEAKED_CALLS), answer("Two sessions ran out of tokens."))
+    cid = app.new()
+    turn = app.ask(cid, "which sessions ran out of tokens?").json()["turn"]
+    assert turn["status"] == "done" and turn["answer"] == "Two sessions ran out of tokens."
+    assert len(script.bodies) == 2
+    # The leaked text was never replayed to the model either.
+    assert not any("DSML" in json.dumps(m) for m in script.bodies[1]["messages"])
+    assert "DSML" not in json.dumps(ask_store.read(cid))
+
+
+def test_tool_calls_written_as_text_twice_fail_the_turn(app, ai):
+    script = ai(answer("Checking.\n" + LEAKED_CALLS))
+    cid = app.new()
+    turn = app.ask(cid, "which sessions ran out of tokens?").json()["turn"]
+    assert turn["status"] == "failed" and turn["code"] == "tool_markup"
+    assert turn["answer"] is None
+    assert len(script.bodies) == 2
+    assert not [r for r in ask_store.read(cid) if r["type"] == "assistant"]
+    assert "DSML" not in json.dumps(ask_store.read(cid))
+
+
+def test_markup_beside_parsed_calls_is_never_replayed(app, ai):
+    """A reply with BOTH parsed `tool_calls` and leaked call markup in its text: the calls run,
+    and the markup never reaches the next request (Hermes on #1754)."""
+    mixed = {**call("list_projects"), "content": LEAKED_CALLS}
+    script = ai(mixed, answer("No projects."))
+    cid = app.new()
+    turn = app.ask(cid, "projects?").json()["turn"]
+    assert turn["status"] == "done" and turn["answer"] == "No projects."
+    assert len(script.bodies) == 2
+    assert script.tool_results(1)
+    assert not any("DSML" in json.dumps(m) for m in script.bodies[1]["messages"])
+    assert "DSML" not in json.dumps(ask_store.read(cid))
+
+
+def test_prose_with_ordinary_bars_and_tags_is_an_answer(app, ai):
+    text = "Use `a | b` and <tool_call> literally; the table is | key | state |."
+    ai(answer(text))
+    turn = app.ask(app.new(), "how?").json()["turn"]
+    assert turn["status"] == "done" and turn["answer"] == text
+
+
 # ---- the store boundary ----------------------------------------------------------------------
 
 

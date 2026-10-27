@@ -105,6 +105,7 @@ HTTP_MODULES = frozenset(
         "agent_usage",
         "artifacts",
         "feed_client",
+        "freshness_client",
         "gallery_client",
         "speech_endpoints",
         "voice_setup",
@@ -123,6 +124,8 @@ HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "request", "str
 POST_SITES = {
     ("gallery_client", "_get"): 1,  # public signed content; fixed origin, anonymous bounded GET
     ("feed_client", "_get"): 1,  # #1259 fixed public GitHub feed, anonymous bounded GET
+    # #1730 the feeds' freshness statements: fixed pinned origin, anonymous bounded GET.
+    ("freshness_client", "_get"): 1,
     # #1604 the latest tag from github.com's never-followed `releases/latest` redirect: anonymous,
     # fixed URL, no body read; replaces the REST API lookup whose hourly budget is shared.
     ("feed_client", "_latest"): 1,

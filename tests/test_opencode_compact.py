@@ -685,8 +685,9 @@ def test_launch_site_inventory_requires_review_when_another_route_can_spawn():
     assert "subprocess" not in imports
     # Since #853 P2 the live opencode provider is a manifest-built `PluginProvider` wrapping that
     # kind: the provider, provenance and manifest code are argv/path-only too. P5 adds a bounded
-    # runner whose ONLY current plugin caller verifies a feed using ssh-keygen. Any agent probe
-    # caller added later must enter this inventory and prove its maintenance admission ordering.
+    # runner whose ONLY plugin callers verify a feed (and, #1730, a feed's freshness statement)
+    # with ssh-keygen. Any agent probe caller added later must enter this inventory and prove
+    # its maintenance admission ordering.
     runner_consumers = Counter()
     for path in Path(plugins.__file__).parent.glob("*.py"):
         tree = ast.parse(path.read_text())
@@ -703,7 +704,7 @@ def test_launch_site_inventory_requires_review_when_another_route_can_spawn():
                 and call.func.value.id == "runner"
             ):
                 runner_consumers[path.name, call.func.attr] += 1
-    assert runner_consumers == {("feed.py", "run"): 1}
+    assert runner_consumers == {("feed.py", "run"): 1, ("freshness.py", "run"): 1}
     # The separate temporary PTY owns one spawn and fixed systemctl teardown; admission is
     # tested at the actual spawn in test_plugin_process, including cancellation while acquiring.
     tree = ast.parse((Path(plugins.__file__).parent / "process.py").read_text())

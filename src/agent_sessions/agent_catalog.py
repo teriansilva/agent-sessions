@@ -10,7 +10,6 @@ The legacy ``plugins`` package/state names remain installation compatibility det
 from __future__ import annotations
 
 import hashlib
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,6 +60,9 @@ def current() -> Catalog:
     included = {e.manifest.id for e in entries if e.manifest.runtime == "api"}
     try:
         remote = feed.historical()
+        # One usability rule (#1730): a long cut is fresh only with its current freshness
+        # statement. Damaged freshness evidence is unavailable trust evidence, like the cut's.
+        stale = remote is not None and not feed.fresh(remote)
     except (ValueError, OSError):
         reason = "Saved catalog trust evidence is unavailable. Restore it before installing."
         return Catalog(
@@ -91,8 +93,6 @@ def current() -> Catalog:
             bundle_digest,
             "bundled",
         )
-    now = int(time.time())
-    stale = remote.expires_at <= now or remote.issued_at > now + feed.CLOCK_SKEW
     choices = []
     seen = set()
     for entry in remote.entries:

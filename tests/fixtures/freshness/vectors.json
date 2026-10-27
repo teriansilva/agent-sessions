@@ -1,0 +1,9 @@
+{
+  "max_content_age": 7776000,
+  "max_statement_age": 604800,
+  "namespace": "battlelab-freshness",
+  "pointer_sha256": "a5e0a24c8573d9c419d1b7e7faaf3cb9f39a0dbe07508e9a1134d41f413a1f60",
+  "principal": "freshness@battlelab",
+  "refusals_sha256": "d30266768caa2389198a74237d2fb8bceea1bc9df6e092c5c161a96728c4a2e4",
+  "statement_sha256": "ce466a8cacdc62717842dba219a285c7c6ca34d498727ad35ea6a1a327ba58b3"
+}

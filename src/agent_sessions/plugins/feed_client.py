@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import feed, process
+from . import feed, freshness, freshness_client, process
 
 REPOSITORY = "teriansilva/agent-sessions"
 LATEST = f"https://github.com/{REPOSITORY}/releases/latest"
@@ -94,8 +94,19 @@ async def refresh() -> feed.Feed:
                 base = f"https://github.com/{REPOSITORY}/releases/download/{tag}/plugin-feed.json"
                 data = await _get(client, base, feed.MAX_BYTES, step="feed")
                 signature = await _get(client, base + ".sig", 16 * 1024, step="feed signature")
+                # A long cut's freshness statement (#1730), from the pinned publisher origin. A
+                # short cut needs none, so none is fetched: the legacy path is unchanged.
+                statement = None
+                try:
+                    long = freshness.needs_statement(feed.decode(data))
+                except feed.FeedError:
+                    long = False  # acceptance refuses it on its own terms
+                if long:
+                    statement = await freshness_client.fetch(client, "agents")
         # Acceptance owns its lock and finite SSH verifier; no background writes outlive it.
-        accepting = asyncio.create_task(asyncio.to_thread(feed.accept, data, signature))
+        accepting = asyncio.create_task(
+            asyncio.to_thread(feed.accept, data, signature, statement=statement)
+        )
         try:
             return await asyncio.shield(accepting)
         except asyncio.CancelledError:

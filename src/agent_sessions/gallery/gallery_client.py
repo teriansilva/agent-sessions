@@ -7,7 +7,7 @@ import re
 
 import httpx
 
-from ..plugins import process
+from ..plugins import freshness, freshness_client, process
 from . import contract, trust
 
 BASE = "https://relay.battlelab.superstatus.io/catalogs/gallery/v1"
@@ -68,6 +68,15 @@ async def refresh():
                 )
                 data = await _get(client, url, contract.MAX_BYTES)
                 signature = await _get(client, url + ".sig", 16384)
-        return await _finish(trust.accept, data, signature, selected)
+                # A long cut's freshness statement (#1730). A short cut needs none, so none
+                # is fetched: the legacy path is unchanged.
+                statement = None
+                try:
+                    long = freshness.needs_statement(contract.decode(data))
+                except ValueError:
+                    long = False  # acceptance refuses it on its own terms
+                if long:
+                    statement = await freshness_client.fetch(client, "gallery")
+        return await _finish(trust.accept, data, signature, selected, statement)
     except (httpx.HTTPError, TimeoutError):
         raise Unreachable(UNREACHABLE) from None
