@@ -495,15 +495,22 @@ test.describe("desktop workspace", () => {
     }
     await expect(page.locator("[data-session-window]")).toHaveCount(8);
     await expect(page.locator("[data-window-readout]")).toContainText("8");
-    await expect.poll(() => log.conns.length).toBe(8);
+    // Count SESSIONS and LIVE sockets, never raw connections (#1721): under CI load a window's
+    // socket can legitimately drop and reconnect (TermSocket's own recovery), which adds a
+    // connection for the SAME session — 9 or 13 connections with exactly 8 sessions open.
+    const sessions = () => new Set(opened(log));
+    await expect.poll(() => sessions().size).toBe(8);
+    await expect.poll(() => live(log)).toBe(8);
 
     await chip(page, 9).click();
     await expect(page.locator("[data-window-notice]")).toBeVisible();
     await expect(page.locator("[data-session-window]")).toHaveCount(8);
     await expect(page.locator("[data-window-readout]")).toContainText("8");
-    // The refusal is real: no ninth socket was opened.
+    // The refusal is real: the ninth session never got a socket, and still 8 are live.
     await page.waitForTimeout(400);
-    expect(log.conns.length).toBe(8);
+    expect(opened(log)).not.toContain("claude:s9");
+    expect(sessions().size).toBe(8);
+    await expect.poll(() => live(log)).toBe(8);
   });
 
   test("input lands only in the focused window", async ({ page }) => {
