@@ -1,0 +1,707 @@
+#!/usr/bin/env python3
+"""Propose newer upstream versions for the pinned linux-x64 agent recipes (#1741).
+
+Each recipe's upstream rule lives HERE, never in the signed manifest. A version is proposed only
+once it has been public for the cool-down (72 h by default), and only after:
+
+- every downloaded npm tarball matched the registry's own `dist.integrity` (sha512);
+- the npm dependency closure was re-resolved (exact pins, optional dependencies skipped, no
+  install script ever run) and accepted by the installer's own `npm_closure.validate`;
+- every archive was extracted by the installer's own bounded, inert `artifacts.extract`;
+- `<entrypoint> --version` reported the new version, run from that prefix inside a throwaway,
+  network-less, read-only container (`sandbox_argv`), never on the host.
+
+Only `version`, `digest`, `url`, `sha256` (and the identity's display version) change; a
+manifest's launch contract never does. GitHub releases are found through the `Location` of the
+`releases/latest` redirect only; the anonymous REST API is never used (its hourly budget is shared
+by everything behind the runner's address). The script downloads, verifies and rewrites files; it
+never signs, commits, pushes or opens anything.
+
+Exit status: 0 = done (changed or not), 2 = usage/configuration error, 3 = at least one agent
+was refused (the others are still written; the refusal is in the report).
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import contextlib
+import copy
+import datetime as dt
+import email.utils
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass, field
+from pathlib import Path
+from urllib.parse import urljoin, urlsplit
+
+import httpx
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from agent_sessions.plugins import artifacts, feed, npm_closure  # noqa: E402
+
+RECIPES = ROOT / "release/recipes/linux-x64"
+REGISTRY = "https://registry.npmjs.org"
+COOLDOWN_HOURS = 72
+MAX_PACKUMENT = 64 * 1024 * 1024  # @openai/codex's full document is ~18 MB
+MAX_CLOSURE = 64
+_STABLE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+_REDIRECTS = (301, 302, 303, 307, 308)
+
+
+@dataclass(frozen=True)
+class Npm:
+    """The `latest` dist-tag of one npm package; `suffix` selects a per-platform build."""
+
+    package: str
+    notes: str
+    suffix: str = ""
+
+
+@dataclass(frozen=True)
+class GitHubRelease:
+    """The `releases/latest` redirect of one public repository and one fixed asset name."""
+
+    repository: str
+    asset: str
+
+
+RULES: dict[str, Npm | GitHubRelease] = {
+    "claude": Npm(
+        "@anthropic-ai/claude-code-linux-x64",
+        "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md",
+    ),
+    # Codex publishes its platform builds as versions `<v>-linux-x64` of the same package.
+    "codex": Npm(
+        "@openai/codex",
+        "https://github.com/openai/codex/releases/tag/rust-v{version}",
+        suffix="-linux-x64",
+    ),
+    "copilot": Npm(
+        "@github/copilot-linux-x64", "https://github.com/github/copilot-cli/releases/tag/v{version}"
+    ),
+    "gemini": Npm(
+        "@google/gemini-cli", "https://github.com/google-gemini/gemini-cli/releases/tag/v{version}"
+    ),
+    "kimi": Npm(
+        "@moonshot-ai/kimi-code", "https://www.npmjs.com/package/@moonshot-ai/kimi-code/v/{version}"
+    ),
+    "opencode": Npm(
+        "opencode-linux-x64-baseline", "https://github.com/sst/opencode/releases/tag/v{version}"
+    ),
+    "antigravity": GitHubRelease("google-antigravity/antigravity-cli", "agy_cli_linux_x64.tar.gz"),
+}
+
+
+class BumpError(ValueError):
+    pass
+
+
+def _key(version: str) -> tuple[int, int, int]:
+    match = _STABLE.fullmatch(version)
+    if match is None:
+        raise BumpError(f"{version!r} is not a stable X.Y.Z version")
+    return tuple(int(part) for part in match.groups())
+
+
+def _instant(value: object) -> dt.datetime:
+    if not isinstance(value, str):
+        raise BumpError("the registry has no publication time for this version")
+    try:
+        when = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise BumpError("the registry publication time is malformed") from None
+    if when.tzinfo is None:
+        raise BumpError("the registry publication time has no timezone")
+    return when
+
+
+def _sri(data: bytes, integrity: object) -> None:
+    """The registry's own sha512 Subresource-Integrity value must describe these bytes."""
+    if not isinstance(integrity, str):
+        raise BumpError("the registry publishes no integrity for this tarball")
+    digests = [p for p in integrity.split() if p.startswith("sha512-")]
+    if not digests:
+        raise BumpError("the registry publishes no sha512 integrity for this tarball")
+    actual = base64.b64encode(hashlib.sha512(data).digest()).decode()
+    if not any(d.removeprefix("sha512-") == actual for d in digests):
+        raise BumpError("downloaded bytes do not match the registry's dist.integrity")
+
+
+class Http:
+    """Anonymous, proxy-free, cookie-free HTTPS reads with size bounds. A test seam."""
+
+    def __init__(self, transport: httpx.BaseTransport | None = None):
+        self._client = httpx.Client(
+            timeout=60, follow_redirects=False, trust_env=False, transport=transport
+        )
+
+    def close(self) -> None:
+        self._client.close()
+
+    def _read(self, response: httpx.Response, limit: int) -> bytes:
+        body = bytearray()
+        for chunk in response.iter_raw():
+            body.extend(chunk)
+            if len(body) > limit:
+                raise BumpError("the response exceeded its size limit")
+        return bytes(body)
+
+    def json(self, url: str, limit: int = MAX_PACKUMENT) -> dict:
+        self._client.cookies.clear()
+        with self._client.stream("GET", url, headers={"Accept-Encoding": "identity"}) as resp:
+            if resp.status_code != 200:
+                raise BumpError(f"{urlsplit(url).hostname} answered HTTP {resp.status_code}")
+            data = self._read(resp, limit)
+        try:
+            doc = json.loads(data)
+        except ValueError:
+            raise BumpError("the registry answered with invalid JSON") from None
+        if not isinstance(doc, dict):
+            raise BumpError("the registry answered with an unexpected document")
+        return doc
+
+    def location(self, url: str) -> str:
+        """The `Location` of ONE never-followed redirect; no body is read."""
+        self._client.cookies.clear()
+        with self._client.stream("GET", url) as resp:
+            if resp.status_code not in _REDIRECTS:
+                raise BumpError(f"github.com answered HTTP {resp.status_code}, not a redirect")
+            return resp.headers.get("location", "")
+
+    def download(self, url: str, kind: str) -> tuple[bytes, httpx.Headers]:
+        """A pinned-shape artifact URL; each redirect must satisfy the installer's own rule."""
+        feed.artifact_url(url, kind)
+        for _ in range(5):
+            self._client.cookies.clear()
+            with self._client.stream("GET", url, headers={"Accept-Encoding": "identity"}) as resp:
+                if resp.status_code in _REDIRECTS:
+                    url = feed.artifact_url(
+                        urljoin(url, resp.headers.get("location", "")), kind, redirect=True
+                    )
+                    continue
+                if resp.status_code != 200:
+                    raise BumpError(f"the artifact download answered HTTP {resp.status_code}")
+                if resp.headers.get("content-encoding", "identity") != "identity":
+                    raise BumpError("the artifact has an unsupported content encoding")
+                data = self._read(resp, artifacts.MAX_DOWNLOAD)
+                length = resp.headers.get("content-length")
+                if length is not None and length != str(len(data)):
+                    raise BumpError("the artifact is truncated")
+                return data, resp.headers
+        raise BumpError("too many artifact redirects")
+
+
+# `--version` runs third-party code, so it never runs on the CI host itself: a detached child
+# could outlive the step and wait for a later, credentialed one, or plant files it later runs.
+# It runs in a throwaway container instead: no network, read-only root, the prefix mounted
+# read-only, no capabilities, not root, nothing from the host environment. When the entrypoint
+# exits, the container's PID namespace ends and the kernel kills every process it started.
+# The image is pinned by digest (multi-arch index of node:22-bookworm-slim): Node for the
+# script entrypoints, glibc for the native ones.
+SANDBOX_IMAGE = (
+    "docker.io/library/node:22-bookworm-slim"
+    "@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d"
+)
+DOCKER = "docker"
+VERSION_SECONDS = 180
+
+
+def sandbox_argv(name: str, prefix: Path, entrypoint: str, flag: str) -> list[str]:
+    return [
+        DOCKER,
+        "run",
+        "--rm",
+        "--name",
+        name,
+        "--pull",
+        "missing",
+        "--network",
+        "none",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        "256",
+        "--memory",
+        "2g",
+        "--user",
+        f"{os.getuid()}:{os.getgid()}",
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,size=256m",  # noqa: S108 — the container's own tmpfs
+        "--env",
+        "HOME=/tmp",  # noqa: S108 — inside the container
+        "--env",
+        "NO_COLOR=1",
+        "--env",
+        "CI=1",
+        "--env",
+        "DISABLE_AUTOUPDATER=1",
+        "--mount",
+        f"type=bind,source={prefix},target=/opt/agent,readonly",
+        "--workdir",
+        "/tmp",  # noqa: S108 — inside the container
+        "--entrypoint",
+        f"/opt/agent/{entrypoint}",
+        SANDBOX_IMAGE,
+        flag,
+    ]
+
+
+def run_version(prefix: Path, entrypoint: str, flag: str, expected: str) -> str:
+    """`<entrypoint> --version` inside the sandbox; returns only the matched version.
+
+    The output itself is never echoed (no free text from the candidate reaches a log or the PR).
+    """
+    parts = entrypoint.split("/")
+    if not re.fullmatch(r"[A-Za-z0-9@._/-]+", entrypoint) or {"", ".", ".."} & set(parts):
+        raise BumpError("the entrypoint is not a plain relative path")
+    name = "agent-catalog-bump-" + os.urandom(8).hex()
+    try:
+        proc = subprocess.run(  # noqa: S603 — literal argv, no shell; the image is pinned
+            sandbox_argv(name, prefix, entrypoint, flag),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=VERSION_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise BumpError(
+            f"the sandboxed version check did not finish: {type(exc).__name__}"
+        ) from None
+    finally:
+        # A killed `docker run` client does not stop its container; remove it by name, always.
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            subprocess.run(  # noqa: S603 — literal argv, no shell
+                [DOCKER, "rm", "--force", name],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
+    output = (proc.stdout[:65536] + proc.stderr[:65536]).decode("utf-8", "replace")
+    pattern = rf"(?<![0-9A-Za-z.]){re.escape(expected)}(?![0-9]|\.[0-9])"
+    if proc.returncode != 0 or not re.search(pattern, output):
+        raise BumpError(f"`{flag}` did not report {expected} (exit {proc.returncode})")
+    return expected
+
+
+@dataclass
+class Outcome:
+    id: str
+    label: str
+    old: str
+    new: str | None = None
+    notes: str = ""
+    held: str | None = None  # newest version still inside the cool-down
+    refused: str | None = None
+    reported: str = ""
+
+
+@dataclass
+class Report:
+    outcomes: list[Outcome] = field(default_factory=list)
+
+    @property
+    def changed(self) -> list[Outcome]:
+        return [o for o in self.outcomes if o.new is not None and o.refused is None]
+
+    @property
+    def refused(self) -> list[Outcome]:
+        return [o for o in self.outcomes if o.refused is not None]
+
+
+class Bumper:
+    def __init__(self, http, *, now: dt.datetime, cooldown_hours: float, runner=run_version):
+        self.http = http
+        self.now = now
+        self.cutoff = now - dt.timedelta(hours=cooldown_hours)
+        self.runner = runner
+        self._docs: dict[str, dict] = {}
+
+    # -- npm ---------------------------------------------------------------------------------
+
+    def packument(self, name: str) -> dict:
+        if name not in self._docs:
+            doc = self.http.json(f"{REGISTRY}/{name.replace('/', '%2F')}")
+            if doc.get("name") != name or not isinstance(doc.get("versions"), dict):
+                raise BumpError(f"the registry document for {name} is malformed")
+            if not isinstance(doc.get("time"), dict):
+                raise BumpError(f"the registry document for {name} has no time map")
+            self._docs[name] = doc
+        return self._docs[name]
+
+    def _old_enough(self, doc: dict, version: str) -> bool:
+        return _instant(doc["time"].get(version)) <= self.cutoff
+
+    def pick_npm(self, rule: Npm, current: str) -> tuple[str | None, str | None]:
+        """(newest eligible version, newest newer version still inside the cool-down)."""
+        doc = self.packument(rule.package)
+        latest = (doc.get("dist-tags") or {}).get("latest")
+        if not isinstance(latest, str):
+            raise BumpError(f"{rule.package} has no latest dist-tag")
+        ceiling = _key(latest)
+        floor = _key(current.removesuffix(rule.suffix))
+        best: tuple | None = None
+        held: tuple | None = None
+        for version, meta in doc["versions"].items():
+            if rule.suffix and not version.endswith(rule.suffix):
+                continue
+            base = version.removesuffix(rule.suffix)
+            if not _STABLE.fullmatch(base):
+                continue  # prereleases, nightlies and other platforms' builds
+            key = _key(base)
+            if not floor < key <= ceiling or not isinstance(meta, dict) or meta.get("deprecated"):
+                continue
+            if self._old_enough(doc, version):
+                best = max(best or (key, version), (key, version))
+            else:
+                held = max(held or (key, version), (key, version))
+        if held is not None and best is not None and held[0] < best[0]:
+            held = None
+        return (best[1] if best else None), (held[1] if held else None)
+
+    def _tarball(self, name: str, version: str) -> str:
+        return f"{REGISTRY}/{name}/-/{name.rsplit('/', 1)[-1]}-{version}.tgz"
+
+    def _choose(self, name: str, spec: str, pinned: dict[str, str]) -> tuple[str, dict]:
+        """A dependency version: keep the existing pin when it still satisfies; otherwise the
+        highest satisfying, non-deprecated version that is past the cool-down."""
+        doc = self.packument(name)
+        if name in pinned and npm_closure.satisfies(pinned[name], spec):
+            meta = doc["versions"].get(pinned[name])
+            if isinstance(meta, dict):
+                return pinned[name], meta
+        options = []
+        for version, meta in doc["versions"].items():
+            try:
+                fits = npm_closure.satisfies(version, spec)
+            except feed.FeedError:
+                continue
+            if fits and isinstance(meta, dict) and not meta.get("deprecated"):
+                if self._old_enough(doc, version):
+                    options.append((npm_closure._version(version), version, meta))
+        if not options:
+            raise BumpError(f"no version of {name} satisfies {spec!r} outside the cool-down")
+        _, version, meta = max(options, key=lambda o: o[0])
+        return version, meta
+
+    def resolve(self, package: str, version: str, meta: dict, pinned: dict[str, str]) -> dict:
+        """Destination -> (registry name, version, metadata); hoisted like npm, nested on a
+        conflict. Optional dependencies are skipped, exactly as the existing closures do."""
+        placed: dict[str, tuple[str, str, dict]] = {
+            f"node_modules/{package}": (package, version, meta)
+        }
+        queue = [f"node_modules/{package}"]
+        while queue:
+            location = queue.pop(0)
+            info = placed[location][2]
+            required = info.get("dependencies") or {}
+            optional = info.get("optionalDependencies") or {}
+            peers = info.get("peerDependencies") or {}
+            peer_meta = info.get("peerDependenciesMeta") or {}
+            if not all(isinstance(d, dict) for d in (required, optional, peers, peer_meta)):
+                raise BumpError("invalid npm dependency metadata")
+            wanted = [(n, s) for n, s in required.items() if n not in optional]
+            wanted += [
+                (n, s)
+                for n, s in peers.items()
+                if not (isinstance(peer_meta.get(n), dict) and peer_meta[n].get("optional"))
+            ]
+            for name, spec in sorted(wanted):
+                if not isinstance(spec, str):
+                    raise BumpError(f"invalid npm dependency {name}")
+                real = name
+                if spec.startswith("npm:"):
+                    real, _, spec = spec[4:].rpartition("@")
+                found, parent = None, Path(location)
+                while True:
+                    if (
+                        parent.name != "node_modules"
+                        and str(parent / "node_modules" / name) in placed
+                    ):
+                        found = str(parent / "node_modules" / name)
+                        break
+                    if parent == Path("."):
+                        break
+                    parent = parent.parent
+                if found is not None:
+                    fname, fversion, _ = placed[found]
+                    if fname == real and npm_closure.satisfies(fversion, spec):
+                        continue
+                    target = f"{location}/node_modules/{name}"
+                else:
+                    target = f"node_modules/{name}"
+                chosen, chosen_meta = self._choose(real, spec, pinned)
+                placed[target] = (real, chosen, chosen_meta)
+                queue.append(target)
+                if len(placed) > MAX_CLOSURE:
+                    raise BumpError("the dependency closure grew beyond its limit")
+        return placed
+
+    def prepare_npm(self, rule: Npm, recipe: dict, version: str, prefix: Path) -> dict:
+        doc = self.packument(rule.package)
+        meta = doc["versions"][version]
+        old = {a["destination"]: a for a in recipe["recipe"]["artifacts"]}
+        pinned = {}
+        for destination, artifact in old.items():
+            match = re.fullmatch(r".*/-/[^/]+-([^/]+)\.tgz", urlsplit(artifact["url"]).path)
+            if match and destination.count("node_modules/") == 1:
+                pinned[destination.removeprefix("node_modules/")] = match[1]
+        placed = self.resolve(rule.package, version, meta, pinned)
+        primary = f"node_modules/{rule.package}"
+        out, payloads = [], {}
+        for destination in [primary] + sorted(d for d in placed if d != primary):
+            name, pinned_version, info = placed[destination]
+            url = self._tarball(name, pinned_version)
+            dist = info.get("dist") or {}
+            if dist.get("tarball") != url:
+                raise BumpError(f"the registry's tarball URL for {name} is not the canonical one")
+            data, _ = self.http.download(url, "npm-prefix")
+            _sri(data, dist.get("integrity"))
+            sha = hashlib.sha256(data).hexdigest()
+            previous = old.get(destination)
+            if previous and previous["url"] == url and previous["sha256"] != sha:
+                raise BumpError(f"{name} {pinned_version} changed bytes since it was pinned")
+            out.append({"destination": destination, "sha256": sha, "url": url})
+            payloads[destination] = data
+        new = copy.deepcopy(recipe)
+        install = new["manifest"]["install"]
+        install["version"] = version
+        install["digest"] = "sha256:" + out[0]["sha256"]
+        new["manifest"]["identity"]["version"] = version.removesuffix(rule.suffix)
+        new["recipe"]["artifacts"] = out
+        entry = feed.entry(new, signed=True)
+        for artifact in entry.artifacts:
+            artifacts.extract(
+                payloads[artifact.destination],
+                artifact,
+                "npm-prefix",
+                prefix / artifact.destination,
+            )
+        npm_closure.validate(prefix, entry)
+        return new
+
+    # -- GitHub release ----------------------------------------------------------------------
+
+    def prepare_github(
+        self, rule: GitHubRelease, recipe: dict, prefix: Path
+    ) -> tuple[dict | None, str | None]:
+        latest = f"https://github.com/{rule.repository}/releases/latest"
+        target = self.http.location(latest)
+        tag_re = rf"https://github\.com/{re.escape(rule.repository)}/releases/tag/(v?[0-9]+\.[0-9]+\.[0-9]+)"
+        match = re.fullmatch(tag_re, target)
+        if match is None:
+            raise BumpError("the latest-release redirect does not name an exact X.Y.Z tag")
+        tag = match[1]
+        current = recipe["manifest"]["install"]["version"]
+        if _key(tag.removeprefix("v")) <= _key(current.removeprefix("v")):
+            return None, None
+        url = f"https://github.com/{rule.repository}/releases/download/{tag}/{rule.asset}"
+        data, headers = self.http.download(url, "tarball")
+        stamp = headers.get("last-modified")
+        try:
+            published = email.utils.parsedate_to_datetime(stamp) if stamp else None
+        except (TypeError, ValueError):
+            published = None
+        if published is None or published.tzinfo is None:
+            raise BumpError("the release asset carries no publication time")
+        if published > self.cutoff:
+            return None, tag
+        sha = hashlib.sha256(data).hexdigest()
+        new = copy.deepcopy(recipe)
+        install = new["manifest"]["install"]
+        install["version"] = tag
+        install["digest"] = "sha256:" + sha
+        new["manifest"]["identity"]["version"] = tag.removeprefix("v")
+        new["recipe"]["artifacts"] = [{"destination": ".", "sha256": sha, "url": url}]
+        entry = feed.entry(new, signed=True)
+        artifacts.extract(data, entry.artifacts[0], "tarball", prefix)
+        return new, None
+
+    # -- one recipe --------------------------------------------------------------------------
+
+    def bump(self, recipe: dict) -> tuple[Outcome, dict | None]:
+        manifest = recipe["manifest"]
+        ident = manifest["identity"]["id"]
+        install = manifest["install"]
+        outcome = Outcome(ident, manifest["identity"]["label"], install["version"])
+        rule = RULES.get(ident)
+        if rule is None:
+            raise BumpError(f"no upstream rule for the {ident!r} recipe")
+        package = rule.package if isinstance(rule, Npm) else f"@{rule.repository}"
+        if install["package"] != package:
+            raise BumpError(f"the {ident!r} recipe no longer installs {package}")
+        workdir = Path(tempfile.mkdtemp(prefix=f"bump-{ident}-"))
+        try:
+            prefix = workdir / "prefix"
+            if isinstance(rule, Npm):
+                version, outcome.held = self.pick_npm(rule, install["version"])
+                if version is None:
+                    return outcome, None
+                new = self.prepare_npm(rule, recipe, version, prefix)
+                outcome.notes = rule.notes.format(version=version.removesuffix(rule.suffix))
+            else:
+                new, outcome.held = self.prepare_github(rule, recipe, prefix)
+                if new is None:
+                    return outcome, None
+                outcome.notes = (
+                    f"https://github.com/{rule.repository}/releases/tag/"
+                    f"{new['manifest']['install']['version']}"
+                )
+            m = new["manifest"]
+            outcome.reported = self.runner(
+                prefix,
+                m["install"]["entrypoint"],
+                m["binary"]["version_flag"],
+                m["identity"]["version"],
+            )
+            outcome.new = m["install"]["version"]
+            return outcome, new
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _dump(doc: dict, original: str) -> str:
+    match = re.search(r"\n( +)\"", original)
+    return json.dumps(doc, indent=len(match[1]) if match else 2, ensure_ascii=False) + "\n"
+
+
+def rebuild_catalog() -> None:
+    subprocess.run(  # noqa: S603 — literal argv, no shell
+        [sys.executable, str(ROOT / "scripts/build-agent-catalog")], check=True
+    )
+
+
+def run(
+    bumper: Bumper,
+    recipes: Path = RECIPES,
+    *,
+    only: set[str] | None = None,
+    rebuild=rebuild_catalog,
+) -> Report:
+    report = Report()
+    for path in sorted(recipes.glob("*.json")):
+        text = path.read_text()
+        recipe = json.loads(text)
+        ident = recipe["manifest"]["identity"]["id"]
+        if only and ident not in only:
+            continue
+        try:
+            outcome, new = bumper.bump(recipe)
+        except (
+            BumpError,
+            feed.FeedError,
+            artifacts.ArtifactError,
+            httpx.HTTPError,
+            OSError,
+            KeyError,
+            TypeError,
+        ) as e:
+            manifest = recipe["manifest"]
+            outcome = Outcome(
+                ident, manifest["identity"]["label"], manifest["install"]["version"], refused=str(e)
+            )
+            new = None
+        report.outcomes.append(outcome)
+        if new is not None and (data := _dump(new, text)) != text:
+            path.write_text(data)
+    if report.changed:
+        rebuild()
+    return report
+
+
+def title(report: Report) -> str:
+    parts = [f"{o.id} {o.new.removesuffix('-linux-x64')}" for o in report.changed]
+    return "chore(agents): catalog — " + ", ".join(parts)
+
+
+def body(report: Report, cooldown_hours: float) -> str:
+    lines = [
+        "## Summary",
+        "",
+        "The scheduled `agent-catalog-bump` job found newer upstream agent versions that have been "
+        f"public for at least {cooldown_hours:g} h. Recipes and the bundled catalog are rewritten; "
+        "no launch contract changed.",
+        "",
+        "| Agent | Pinned | Proposed | Sandboxed `--version` | Release notes |",
+        "|---|---|---|---|---|",
+    ]
+    for o in report.changed:
+        lines.append(f"| {o.label} | {o.old} | **{o.new}** | `{o.reported}` | {o.notes} |")
+    held = [o for o in report.outcomes if o.held and o.refused is None]
+    if held:
+        lines += ["", f"Inside the {cooldown_hours:g} h cool-down, proposed on a later run:", ""]
+        lines += [f"- {o.label}: {o.held}" for o in held]
+    if report.refused:
+        lines += ["", "**Refused** (left unchanged):", ""]
+        lines += [f"- {o.label}: {o.refused}" for o in report.refused]
+    lines += [
+        "",
+        "## Security impact",
+        "",
+        "New third-party agent binaries enter the catalog. Every npm tarball matched the "
+        "registry's `dist.integrity`; every artifact is pinned by sha256; the npm closure was "
+        "re-resolved with exact pins and no install script ran; each version passed the "
+        "cool-down. Installs still verify the new generation on the box before enabling it, and "
+        "the previous generation stays installed. Review the release notes above for changed "
+        "flags or permissions.",
+        "",
+        "## Test plan",
+        "",
+        "- [x] `scripts/bump-agent-recipes`: integrity, closure and sandboxed `--version` passed",
+        "- [x] `scripts/build-agent-catalog` regenerated the bundled catalog",
+        "- [ ] `pr-validate` (catalog drift and recipe tests) green",
+        "- [ ] On-box verification of the new generation on an operator host",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--cooldown-hours", type=float, default=COOLDOWN_HOURS)
+    parser.add_argument("--only", action="append", help="limit to one agent id (repeatable)")
+    parser.add_argument("--report-dir", type=Path, help="write title.txt, body.md, report.json")
+    args = parser.parse_args(argv)
+    if args.cooldown_hours < 0:
+        parser.error("--cooldown-hours cannot be negative")
+    unknown = set(args.only or ()) - set(RULES)
+    if unknown:
+        parser.error(f"unknown agent id(s): {', '.join(sorted(unknown))}")
+    http = Http()
+    try:
+        bumper = Bumper(http, now=dt.datetime.now(dt.UTC), cooldown_hours=args.cooldown_hours)
+        report = run(bumper, only=set(args.only) if args.only else None)
+    finally:
+        http.close()
+    for o in report.outcomes:
+        if o.refused:
+            print(f"{o.id}: REFUSED — {o.refused}")
+        elif o.new:
+            print(f"{o.id}: {o.old} -> {o.new} ({o.reported})")
+        else:
+            print(f"{o.id}: {o.old} is current" + (f" ({o.held} in cool-down)" if o.held else ""))
+    if args.report_dir is not None:
+        args.report_dir.mkdir(parents=True, exist_ok=True)
+        if report.changed:
+            (args.report_dir / "title.txt").write_text(title(report) + "\n")
+            (args.report_dir / "body.md").write_text(body(report, args.cooldown_hours))
+        (args.report_dir / "report.json").write_text(
+            json.dumps([o.__dict__ for o in report.outcomes], indent=2) + "\n"
+        )
+    return 3 if report.refused else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
