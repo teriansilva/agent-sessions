@@ -85,6 +85,7 @@ _URGENT = frozenset(
 
 
 OPENCODE = "opencode-acp"
+COPILOT = "copilot-acp"
 PROBE_TIMEOUT = 30.0
 PROBE_LIMIT = 4 * 1024 * 1024
 
@@ -332,6 +333,8 @@ def child_environment(
     generation, the same construction as the unattended launch's) that the session is pinned to.
     The operator's own config and console opencode are untouched, and the app's own
     `OPENCODE_CONFIG_CONTENT` is not passed on (the environment is sanitized).
+    A copilot child gets `COPILOT_AUTO_UPDATE=false` beside its argv's `--no-auto-update` (#1565):
+    the CLI otherwise self-downloads and re-execs outside the provenance-bound entrypoint.
     Every adapter's child also gets `BATTLELAB_SESSION` (`battlelab_session`), and the shared
     project memory paths when its generation was given them (`memory_environment`).
     """
@@ -350,6 +353,8 @@ def child_environment(
             )
         except ValueError as exc:
             raise WorkerError(str(exc)) from None
+    if config["adapter"] == COPILOT:
+        env["COPILOT_AUTO_UPDATE"] = "false"
     return env
 
 
@@ -371,6 +376,7 @@ class Worker:
             native_protocol.CodexCodec
             | native_protocol.ClaudeCodec
             | native_protocol.OpencodeAcpCodec
+            | native_protocol.CopilotAcpCodec
         )
         self.agent: str | None = None
         if self.adapter == "codex-app-server":
@@ -382,6 +388,8 @@ class Worker:
                 opencode.mint_api_agent()
             )  # this generation's own immutable permission mode
             self.codec = native_protocol.OpencodeAcpCodec(self.native_id, agent=self.agent)
+        elif self.adapter == COPILOT:
+            self.codec = native_protocol.CopilotAcpCodec(self.native_id)
         else:
             self.codec = native_protocol.ClaudeCodec(self.native_id)
         # Minted by this process for this generation only; see `child_environment`.
@@ -443,6 +451,11 @@ class Worker:
             return native_protocol.CodexCodec.argv(binary)
         if self.adapter == OPENCODE:
             return native_protocol.OpencodeAcpCodec.argv(binary)
+        if self.adapter == COPILOT:
+            tools = tool_servers(self.config)
+            return native_protocol.CopilotAcpCodec.argv(
+                binary, mcp_config=agent_tools.copilot_mcp_config(tools) if tools else None
+            )
         tools = tool_servers(self.config)
         return native_protocol.ClaudeCodec.argv(
             binary,
@@ -941,6 +954,9 @@ class Worker:
         if isinstance(self.codec, native_protocol.OpencodeAcpCodec):
             await self.initialize_opencode()
             return
+        if isinstance(self.codec, native_protocol.CopilotAcpCodec):
+            await self.initialize_copilot()
+            return
         await self.write(self.codec.initialized())
         cwd, model = self.config["cwd"], self.config.get("model")
         bypass = self.config.get("bypass") is True
@@ -997,6 +1013,35 @@ class Worker:
             if effort is not None:
                 await self.request(codec.set_effort(effort))
 
+    async def initialize_copilot(self) -> None:
+        """new → bind (or load), then the pinned agent mode and `allow_all` — before any turn
+        (#1565). No `mcpServers` anywhere: copilot's ACP rejects stdio servers, so the memory
+        tool rode in on this child's argv instead. A model/effort selection is REFUSED, never
+        silently dropped: 1.0.68 enumerates no `model` option and echoes no set, so a request
+        this worker cannot confirm would run the vendor default while the record says
+        otherwise; `CopilotAcpCodec.set_model/set_effort` pin the seam for a future CLI whose
+        listing and echo can be trusted."""
+        codec = self.codec
+        assert isinstance(codec, native_protocol.CopilotAcpCodec)
+        if self.config.get("model") is not None or self.config.get("effort") is not None:
+            raise WorkerError(
+                "copilot cannot honour a model or effort selection — its ACP sets are never "
+                "echoed, so the vendor default would run under a chosen model's name"
+            )
+        cwd = self.config["cwd"]
+        if self.native_id is not None:
+            # `session/load` replays history before its reply; the codec attributes none of it
+            # to a turn and no replayed tool call can become a live approval.
+            await self.request(codec.load(self.native_id, cwd))
+        else:
+            request = codec.create(cwd)
+            event = await self.request(request)
+            native_id = event.data["native_id"]
+            await asyncio.to_thread(self.bind_created, request["id"], event)
+            self.native_id = native_id
+        await self.request(codec.pin_mode())
+        await self.request(codec.set_allow_all(self.config.get("bypass") is True))
+
     def bind_created(self, request_id: str, event: native_protocol.NativeEvent) -> None:
         """Bind only this connection's fresh-create reply, before the writer lock and any turn.
 
@@ -1007,7 +1052,11 @@ class Worker:
         from . import native_ownership
         from .plugins import storage
 
-        action = {"codex-app-server": "thread/start", OPENCODE: "session/new"}.get(self.adapter)
+        action = {
+            "codex-app-server": "thread/start",
+            OPENCODE: "session/new",
+            COPILOT: "session/new",
+        }.get(self.adapter)
         native_id = event.data.get("native_id")
         if (
             action is None
@@ -1638,7 +1687,9 @@ class Worker:
                     params["operation_id"],
                     params["turn_id"],
                 )
-            if isinstance(self.codec, native_protocol.OpencodeAcpCodec):
+            if isinstance(
+                self.codec, native_protocol.OpencodeAcpCodec | native_protocol.CopilotAcpCodec
+            ):
                 # ACP: a cancelled turn's pending permission requests are answered `cancelled`.
                 # Taken in the same step as the cancel, before the turn's end can clear them.
                 self.after_write = self.codec.cancel_pending()

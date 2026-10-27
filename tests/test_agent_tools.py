@@ -91,6 +91,25 @@ def test_claude_gets_one_mcp_config_flag_at_the_end():
     assert mcp.argv(launch) == [*launch, "--mcp-config", payload]
 
 
+def test_copilot_server_tools_are_exactly_the_first_party_tool_names():
+    """The narrowing behind `copilot_mcp_config` (#1565 review): the per-server tool lists are
+    the SAME names the memory/skills servers answer `tools/list` with — a server that grows a
+    tool fails this test until the grant is deliberately widened here, never silently."""
+    from agent_sessions import memory_mcp, skills_mcp
+
+    assert agent_tools._COPILOT_SERVER_TOOLS == {
+        agent_tools.SERVER_NAME: sorted(t["name"] for t in memory_mcp.TOOLS),
+        agent_tools.SKILLS_SERVER_NAME: sorted(t["name"] for t in skills_mcp.TOOLS),
+    }
+
+
+def test_copilot_mcp_config_refuses_a_server_without_named_tools():
+    """An unknown server name gets no blanket `tools: ["*"]` — the launch fails closed."""
+    stranger = agent_tools.Server(name="stranger", command="/bin/x", args=(), env={})
+    with pytest.raises(ValueError, match="stranger"):
+        agent_tools.copilot_mcp_config([stranger])
+
+
 def test_codex_gets_three_config_overrides_before_any_subcommand():
     mcp = agent_tools.terminal_launch(manifest("codex-config-override"), PATHS, {})
     assert mcp.suffix == () and dict(mcp.env) == {}
@@ -210,7 +229,7 @@ def test_every_kind_records_the_cli_version_it_was_proven_against():
 # ---- manifests ---------------------------------------------------------------------------------
 
 
-def test_the_six_first_party_cli_manifests_declare_their_kind_and_no_other_does():
+def test_the_first_party_cli_manifests_declare_their_kind_and_no_other_does():
     declared = {
         e: engines.manifest_of(e).tools_mcp
         for e in engines.engine_ids()
@@ -223,6 +242,8 @@ def test_the_six_first_party_cli_manifests_declare_their_kind_and_no_other_does(
         "codex-api": "codex-config-override",
         "opencode": "opencode-config-content",
         "opencode-api": "opencode-config-content",
+        "copilot": "copilot-additional-mcp-config",
+        "copilot-api": "copilot-additional-mcp-config",
     }
 
 

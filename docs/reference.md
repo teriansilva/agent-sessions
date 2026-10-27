@@ -13,7 +13,7 @@ The console script installed into the release venv (`…/current/venv/bin/agent-
 | Subcommand | What it does |
 |---|---|
 | `serve [--host H] [--port P]` | Run the FastAPI app (the systemd unit calls this). Defaults from `AGENT_SESSIONS_HOST`/`_PORT`, else `127.0.0.1:8765`. |
-| `doctor` (alias `discover-engines`) `[--env FILE] [--dry-run]` | Discover installed agent CLIs (claude/codex/opencode/gemini/antigravity/kimi) and record their resolved paths in the env file. Run automatically on every install. |
+| `doctor` (alias `discover-engines`) `[--env FILE] [--dry-run]` | Discover installed agent CLIs (claude/codex/opencode/gemini/antigravity/kimi/copilot) and record their resolved paths in the env file. Run automatically on every install. |
 | `reset-password [--prompt | --stdin]` | Set a new admin password hash in the env. `--prompt` reads interactively (no echo), `--stdin` reads one line; with neither, generates a random password and prints it once. Never pass the password as an argument. |
 | `clear-2fa [--file PATH]` | Remove the TOTP secrets file → disables 2FA. The lockout escape hatch (host-only). |
 | `autoupdate` | Check the configured channel and apply an update only if newer (the timer entrypoint). |
@@ -147,6 +147,7 @@ Each engine implements a small provider (`src/agent_sessions/engines/<engine>.py
 | **opencode** | `~/.local/share/opencode/opencode.db` (read-only) | ✅ launch-then-reconcile | ✅ SQLite `message`/`part` |
 | **gemini** | `~/.gemini/tmp/<hash>/chats/session-*.jsonl` | ✅ pins a caller id (`--session-id`) | ✅ chat JSONL (text; gemini logs no tool calls) |
 | **kimi** | `~/.kimi-code/` — `session_index.jsonl` + nested `sessions/wd_*/session_<uuid>/state.json` (read-only) | ✅ launch-then-reconcile | ✅ `agents/main/wire.jsonl` loop-event stream (#720) |
+| **copilot** | `~/.copilot/session-state/<uuid>/` + `session-state-archive/` (archive is a directory move, #1565) | ✅ pins a caller id (`--session-id`) | ✅ `events.jsonl` event log |
 
 All store locations are env-overridable (`AGENT_SESSIONS_CODEX_SESSIONS_DIR`, `_OPENCODE_DB`,
 `_GEMINI_TMP_DIR`, `_KIMI_DIR`) and the same path drives both the sidebar **and** the scroll-up transcript.
@@ -243,7 +244,7 @@ Storage: the three prompts that predate the catalog keep their existing prefs fi
 ### Engine discovery & stores
 | Var | Notes |
 |---|---|
-| `AGENT_SESSIONS_{CLAUDE,CODEX,OPENCODE,GEMINI,KIMI}_BIN` | Pin an engine CLI path (else PATH/known dirs). |
+| `AGENT_SESSIONS_{CLAUDE,CODEX,OPENCODE,GEMINI,KIMI,COPILOT}_BIN` | Pin an engine CLI path (else PATH/known dirs). |
 | `AGENT_SESSIONS_CODEX_SESSIONS_DIR` / `_OPENCODE_DB` / `_GEMINI_TMP_DIR` / `_KIMI_DIR` | Override each engine's store location. |
 | `AGENT_SESSIONS_DTACH_BIN` | Pin the `dtach` binary. |
 

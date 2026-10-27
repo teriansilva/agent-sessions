@@ -12,6 +12,7 @@ runtime closures are in [`release/recipes/linux-x64`](../release/recipes/linux-x
 | gemini | [@google/gemini-cli@0.62.0](https://registry.npmjs.org/@google/gemini-cli/-/gemini-cli-0.62.0.tgz) | 1 | 20787241 | 16697694 | `interactive` | `prompt-pinned` | Install/version/trust flow pass; vendor account rejects this client |
 | kimi | [@moonshot-ai/kimi-code@2.1.1](https://registry.npmjs.org/@moonshot-ai/kimi-code/-/kimi-code-2.1.1.tgz) | 31 | 18927599 | 21988585 | `cli-subcommand` | `prompt-session` | All required checks passed |
 | antigravity | [@google-antigravity/antigravity-cli@1.2.14](https://github.com/google-antigravity/antigravity-cli/releases/download/1.2.14/agy_cli_linux_x64.tar.gz) | 1 | 60882033 | 220655824 | `interactive` | `print-conversation` | All required checks passed |
+| copilot | [@github/copilot-linux-x64@1.0.70](https://registry.npmjs.org/@github/copilot-linux-x64/-/copilot-linux-x64-1.0.70.tgz) | 1 | 132968278 | 152243008 | `cli-subcommand` | `copilot-prompt-pinned` | Recipe artifact verified (digest, `--version` 1.0.70) and the store/ACP handshake/probe shapes measured on the adopted install; this account's policy refuses conversation turns |
 
 npm distributions were also checked against publisher SHA-512 metadata. Kimi has 31 required
 runtime packages; optional native terminal/clipboard packages are omitted. Its real new/resume,
@@ -37,6 +38,7 @@ are closed kinds, not arbitrary argv supplied by a manifest or request.
 | `prompt-pinned` | `--approval-mode default --session-id ID --prompt MESSAGE` | Replace `--session-id` with `--resume` |
 | `prompt-session` | `--prompt MESSAGE` | Add `--session ID` |
 | `print-conversation` | `--print MESSAGE --disable-slash-commands --print-timeout 60s` | Add `--conversation ID` |
+| `copilot-prompt-pinned` | `--no-auto-update --no-custom-instructions --no-ask-user --disable-builtin-mcps --available-tools=none --session-id ID --prompt MESSAGE` | Replace `--session-id` with `--resume` |
 
 Sign-in selects `auth login`, `login`, or an interactive entrypoint. Sign-in and verification use
 the same candidate workspace, so a vendor's explicit trust choice applies to the later check.

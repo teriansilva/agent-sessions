@@ -133,9 +133,14 @@ def test_old_reader_refuses_the_additive_api_runtime(monkeypatch):
 def test_every_existing_manifest_still_parses():
     for path in FIRST_PARTY_DIR.glob("*/plugin.toml"):
         m = manifest.load_file(path)
-        # Only the native API clients (#1311) declare `[api]`; everything else is unchanged.
+        # Only the native API clients (#1311, #1565) declare `[api]`; everything else is unchanged.
         assert (m.api is not None) is (m.runtime == "api")
-        assert m.runtime in {"pty", "chat"} or m.id in {"codex-api", "claude-api", "opencode-api"}
+        assert m.runtime in {"pty", "chat"} or m.id in {
+            "codex-api",
+            "claude-api",
+            "opencode-api",
+            "copilot-api",
+        }
 
 
 @pytest.mark.parametrize(

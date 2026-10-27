@@ -42,6 +42,8 @@ directory), shown with the binary's name instead of its resolved path.
 | **Codex** (`codex`) | `codex` · `AGENT_SESSIONS_CODEX_BIN` | `~/.codex/sessions` · `AGENT_SESSIONS_CODEX_SESSIONS_DIR` | `codex resume <id>` | `codex --cd <dir>`, then adopt the id it mints | `--dangerously-bypass-approvals-and-sandbox` (new sessions only) |
 | **Codex — API** (`codex-api`) | Codex's | `~/.local/share/agent-sessions/native/codex-api` · `AGENT_SESSIONS_CODEX_API_DIR` | contained worker — runtime `api`, protocol `codex-app-server` | new conversation | — |
 | **Gemini CLI** (`gemini`) | `gemini` · `AGENT_SESSIONS_GEMINI_BIN` | `~/.gemini/tmp` · `AGENT_SESSIONS_GEMINI_TMP_DIR` | `gemini --resume <id>` | `gemini --session-id <id>` — pinned id | `--yolo` `--skip-trust` |
+| **GitHub Copilot CLI** (`copilot`) | `copilot` · `AGENT_SESSIONS_COPILOT_BIN` | `~/.copilot` | `copilot --no-auto-update --resume <id>` | `copilot --no-auto-update --session-id <id>` — pinned id | `--yolo` |
+| **Copilot — API** (`copilot-api`) | GitHub Copilot CLI's | `~/.local/share/agent-sessions/native/copilot-api` · `AGENT_SESSIONS_COPILOT_API_DIR` | contained worker — runtime `api`, protocol `copilot-acp` | new conversation | — |
 | **Antigravity** (`antigravity`) | `agy` · `AGENT_SESSIONS_AGY_BIN` | `~/.gemini/antigravity-cli` · `AGENT_SESSIONS_ANTIGRAVITY_DIR` | `agy --conversation <id>` | `agy`, then adopt the id it mints | `--dangerously-skip-permissions` |
 | **Kimi Code** (`kimi`) | `kimi` · `AGENT_SESSIONS_KIMI_BIN` | `~/.kimi-code` · `AGENT_SESSIONS_KIMI_DIR` | `kimi -S <id>` | `kimi`, then adopt the id it mints | `-y` |
 | **API agent** (`apichat`) | — | `~/.local/share/agent-sessions/chat` · `AGENT_SESSIONS_CHAT_DIR` | no process — runtime `chat`, endpoint `openai-chat` | new conversation | — |
@@ -65,6 +67,8 @@ and the scroll-up transcript, so pointing one at a different location moves both
 | `AGENT_SESSIONS_CODEX_API_DIR` | Codex — API | the store root (`~/.local/share/agent-sessions/native/codex-api`) |
 | `AGENT_SESSIONS_GEMINI_BIN` | Gemini CLI | the binary |
 | `AGENT_SESSIONS_GEMINI_TMP_DIR` | Gemini CLI | the store root (`~/.gemini/tmp`) |
+| `AGENT_SESSIONS_COPILOT_BIN` | GitHub Copilot CLI | the binary |
+| `AGENT_SESSIONS_COPILOT_API_DIR` | Copilot — API | the store root (`~/.local/share/agent-sessions/native/copilot-api`) |
 | `AGENT_SESSIONS_AGY_BIN` | Antigravity | the binary |
 | `AGENT_SESSIONS_ANTIGRAVITY_DIR` | Antigravity | the store root (`~/.gemini/antigravity-cli`) |
 | `AGENT_SESSIONS_KIMI_BIN` | Kimi Code | the binary |
@@ -117,6 +121,8 @@ added under **Settings → Agents → *engine***, for a model released after thi
 | **Codex** (`codex`) | `--model <id>` on new sessions (a resume keeps its model) | `gpt-5-codex`, `gpt-5` | `AGENTS.md` |
 | **Codex — API** (`codex-api`) | — | — | — |
 | **Gemini CLI** (`gemini`) | `--model <id>` on new sessions (a resume keeps its model) | `gemini-2.5-pro`, `gemini-2.5-flash` | `GEMINI.md` |
+| **GitHub Copilot CLI** (`copilot`) | `--model <id>` on new sessions and on resume | `gpt-5.5` | `AGENTS.md`, `CLAUDE.md` |
+| **Copilot — API** (`copilot-api`) | — | — | — |
 | **Antigravity** (`antigravity`) | set in the agent's own configuration | `default` only | `GEMINI.md` |
 | **Kimi Code** (`kimi`) | set in the agent's own configuration | `default` only | `AGENTS.md` |
 | **API agent** (`apichat`) | set in the agent's own configuration | `default` only | — |

@@ -2580,3 +2580,564 @@ class OpencodeAcpCodec(_Codec):
         if not isinstance(update, dict):
             raise ProtocolError("native session update must be an object")
         return self._update(update)
+
+
+# --- GitHub Copilot CLI: the Agent Client Protocol over stdio (#1565) ---------------------------
+#
+# Checked against copilot 1.0.68/1.0.70 (`copilot --acp --no-auto-update`, ACP protocol version 1).
+# The wire is opencode's; the differences are copilot's own: session ids are plain v4 UUIDs, the
+# session is pinned to the protocol's agent mode URI with `allow_all` as the bypass switch, and
+# this build enumerates no `model` config option — a model set is accepted and never echoed.
+COPILOT_MIN_VERSION = (1, 0, 68)
+#: The only session mode an API client runs (#1565). Anything else observed after the pin —
+#: `#autopilot` included — ends the connection.
+COPILOT_MODE = "https://agentclientprotocol.com/protocol/session-modes#agent"
+
+
+#: Tool kinds whose copilot request can be approved one-shot, each with the consequential input
+#: it must name (#1565). Everything else — `edit`, `delete`, `move`, a kind a later copilot adds,
+#: none at all — is decline-only, as is any of these without its input.
+_COPILOT_APPROVABLE = {
+    "execute": (
+        lambda call: isinstance(call.get("rawInput"), dict)
+        and _nonempty(call["rawInput"].get("command")),
+        "the request does not say which command would run",
+    ),
+    "read": (
+        lambda call: isinstance(call.get("rawInput"), dict)
+        and _nonempty(call["rawInput"].get("path")),
+        "the request does not say which file would be read",
+    ),
+    "fetch": (
+        lambda call: isinstance(call.get("rawInput"), dict)
+        and _nonempty(call["rawInput"].get("url")),
+        "the request does not say which URL would be fetched",
+    ),
+    "other": (
+        lambda call: isinstance(call.get("rawInput"), dict) and bool(call["rawInput"]),
+        "Copilot did not include this tool’s arguments, so BattleLab cannot show what "
+        "would be approved. Deny the request or stop the turn.",
+    ),
+}
+
+
+def _copilot_unpresentable(tool_call: dict) -> str | None:
+    """Why a permission request cannot be approved as presented, or None when it can."""
+    rule = _COPILOT_APPROVABLE.get(tool_call.get("kind"))
+    if rule is None:
+        return "this kind of tool call cannot be approved from BattleLab"
+    check, reason = rule
+    return None if check(tool_call) else reason
+
+
+class CopilotAcpCodec(_Codec):
+    """One `copilot --acp` connection: one session, one prompt turn at a time (#1565).
+
+    ACP has no server-side turn id: like Claude, the submitted operation id is the turn. The
+    session runs pinned to the protocol's agent mode (`COPILOT_MODE`) with `allow_all` as the
+    skip-permissions switch, both echo-confirmed; a mode change observed after the pin ends the
+    connection. Permission requests live only on the asking connection, and `session/load` replays
+    history (arriving before its reply) without ever re-asking one. `allow_always` is never
+    offered and never selectable: one-shot decisions only.
+    """
+
+    ADAPTER = "copilot-acp"
+
+    def __init__(self, session_id: str | None = None) -> None:
+        super().__init__()
+        self.native_id = None if session_id is None else _uuid(session_id)
+        self.version: tuple[int, int, int] | None = None
+        self._pinned = False  # the mode pin was confirmed; later mode changes are violations
+        # Per `session/set_config_option` request: (option, value, echo_required). `model` and
+        # `reasoning_effort` are confirmed only when the replied configOptions carry that option
+        # at all — 1.0.68 never enumerates `model`, and older/newer builds may lack the level.
+        self._config_requests: dict[str, tuple[str, str, bool]] = {}
+        # Bounded same-turn tool observations, merged across a call's updates (display only:
+        # nothing fills a permission request's empty input from them).
+        self._tool_calls: dict[str, dict] = {}
+
+    @staticmethod
+    def argv(binary: str, mcp_config: str | None = None) -> list[str]:
+        # `--no-auto-update` on every launch (#1565): the CLI otherwise self-downloads into
+        # ~/.cache/copilot and re-execs from there, outside the provenance-bound entrypoint. The
+        # memory tool rides `--additional-mcp-config` (#1506): copilot's ACP session/new rejects
+        # stdio `mcpServers` ("Only HTTP and SSE MCP servers are supported"), so none are passed.
+        out = [_path(binary), "--acp", "--no-auto-update"]
+        if mcp_config is not None:
+            out += ["--additional-mcp-config", mcp_config]
+        return out
+
+    def _request(self, method: str, params: dict[str, Any], op: str | None = None) -> dict:
+        return {"jsonrpc": "2.0", "id": self._next(method, op), "method": method, "params": params}
+
+    def initialize(self) -> dict:
+        return self._request(
+            "initialize",
+            {
+                "protocolVersion": ACP_PROTOCOL_VERSION,
+                # BattleLab serves no files and no terminals to the agent.
+                "clientCapabilities": {
+                    "fs": {"readTextFile": False, "writeTextFile": False},
+                    "terminal": False,
+                },
+            },
+        )
+
+    def create(self, cwd: str, mcp_servers: list[dict] | None = None) -> dict:
+        if self.native_id is not None:
+            raise ProtocolError("native session is already bound")
+        if mcp_servers:
+            # Refused rather than silently dropped: the memory tool reaches the child on argv.
+            raise ProtocolError("copilot's ACP session/new carries no stdio MCP servers")
+        return self._request("session/new", {"cwd": _path(cwd), "mcpServers": []})
+
+    def load(self, session_id: str, cwd: str, mcp_servers: list[dict] | None = None) -> dict:
+        session_id = _uuid(session_id)
+        if self.native_id not in (None, session_id):
+            raise ProtocolError("native session identity changed")
+        if mcp_servers:
+            raise ProtocolError("copilot's ACP session/load carries no stdio MCP servers")
+        self.native_id = session_id
+        frame = self._request(
+            "session/load", {"sessionId": session_id, "cwd": _path(cwd), "mcpServers": []}
+        )
+        self._expected_sessions[frame["id"]] = session_id
+        return frame
+
+    def _set(self, option: str, value: str, *, confirm: bool = True) -> dict:
+        if self.native_id is None:
+            raise ProtocolError("native session is not bound")
+        frame = self._request(
+            "session/set_config_option",
+            {"sessionId": self.native_id, "configId": option, "value": value},
+        )
+        self._config_requests[frame["id"]] = (option, value, confirm)
+        return frame
+
+    def pin_mode(self) -> dict:
+        return self._set("mode", COPILOT_MODE)
+
+    def set_allow_all(self, bypass: bool) -> dict:
+        """Skip-permissions (#1339) on copilot's own switch, echo-confirmed like the mode pin."""
+        return self._set("allow_all", "on" if bypass is True else "off")
+
+    def set_model(self, model: str) -> dict:
+        """The session's model. 1.0.68 enumerates no `model` config option and a set is accepted
+        without ever being echoed: a non-error reply is the acceptance — best-effort, observed
+        only, never claimed as confirmed. The worker does NOT call this yet (#1565 review): with
+        no enumeration and no echo there is no trustworthy selection, the runtime refuses
+        non-default models while discovery is unavailable, and the session runs the vendor
+        default. This pins the protocol seam for a future CLI that lists and confirms."""
+        if _model(model) is None:
+            raise ProtocolError("no model to select")
+        return self._set("model", model, confirm=False)
+
+    def set_effort(self, effort: str) -> dict:
+        """The model's reasoning level (#1407): copilot's `reasoning_effort` option, offered only
+        once a model is set. Confirmed from the echo when the build offers the option; a reply
+        without it (another build) is tolerated, never an error. The worker does NOT call this
+        yet (#1565 review): it belongs to a model, and no model is selected while the CLI
+        neither enumerates nor echoes one."""
+        if _effort(effort) is None:
+            raise ProtocolError("no effort to select")
+        return self._set("reasoning_effort", effort, confirm=False)
+
+    def submit(self, text: str, operation_id: str, images=()) -> dict:
+        """Text only: this kind declares no image input (`kinds.API_IMAGE_INPUT`), so the runtime
+        refuses pictures before a claim. ACP's `{"type":"image"}` prompt blocks, gated by the
+        agent's `promptCapabilities.image`, are the follow-up (#1332)."""
+        if self.native_id is None or not self._pinned:
+            raise ProtocolError("native session is not bound in its pinned mode")
+        if images:
+            raise ProtocolError("this client takes no images")
+        self._submit(text, operation_id)
+        self._tool_calls.clear()
+        self.native_turn_id = self.operation_id
+        return self._request(
+            "session/prompt",
+            {"sessionId": self.native_id, "prompt": [{"type": "text", "text": text}]},
+            self.operation_id,
+        )
+
+    def interrupt(self) -> dict:
+        if self.native_id is None or self.operation_id is None:
+            raise ProtocolError("no correlated native turn to interrupt")
+        return {
+            "jsonrpc": "2.0",
+            "method": "session/cancel",
+            "params": {"sessionId": self.native_id},
+        }
+
+    def cancel_pending(self) -> list[NativeEvent]:
+        """After `session/cancel`, ACP requires every pending permission request to be answered
+        `cancelled`. Each is consumed: nothing can approve it afterwards."""
+        out = []
+        for key in list(self._approvals):
+            pending = self._approvals.pop(key)
+            self._consumed.add(key)
+            out.append(
+                _event(
+                    "send",
+                    frame={
+                        "jsonrpc": "2.0",
+                        "id": pending["id"],
+                        "result": {"outcome": {"outcome": "cancelled"}},
+                    },
+                )
+            )
+            out.append(_event("approval_cancelled", request_id=key))
+        return out
+
+    def decide(
+        self,
+        request_id: str,
+        decision: str,
+        *,
+        grant: str | None = None,
+        cwd: str | None = None,
+        answers: Any = None,
+    ) -> dict:
+        if answers is not None:
+            raise ProtocolError("this agent's requests take no answer")
+        if decision == "always":
+            # `allow_always` is filtered out of every presented request (#1565): never grantable.
+            raise ProtocolError("this client grants no standing permission")
+        if decision not in {*_ONCE, "cancel"}:
+            raise ProtocolError("unsupported permission decision")
+        item = self._approvals.get(request_id)
+        if item is not None and decision == "approve" and item.get("complete") is not True:
+            raise ProtocolError("this request could not be presented completely")
+        pending = self._decision(request_id, decision)
+        option = pending["options"].get(_ONCE.get(decision)) if decision != "cancel" else None
+        if option is None and decision == "approve":
+            raise ProtocolError("the agent offered no one-shot approval")  # pragma: no cover
+        outcome = (
+            {"outcome": "selected", "optionId": option}
+            if option is not None
+            else {"outcome": "cancelled"}  # cancel, or a reject no reject_once was offered for
+        )
+        return {"jsonrpc": "2.0", "id": pending["id"], "result": {"outcome": outcome}}
+
+    # --- observations -----------------------------------------------------------------------
+
+    def _mode_check(self, config: dict[str, str]) -> None:
+        mode = config.get("mode")
+        if self._pinned and mode is not None and mode != COPILOT_MODE:
+            raise ProtocolError("the agent left its pinned mode")
+
+    def _turn_done(self, state: str, error: str = "") -> list[NativeEvent]:
+        data = {"native_turn_id": self.native_turn_id, "operation_id": self.operation_id}
+        self.operation_id = None
+        self.native_turn_id = None
+        self._approvals.clear()
+        self._tool_calls.clear()
+        return [_event("turn_completed", **data, state=state, error=error)]
+
+    def _reply(self, frame: dict) -> list[NativeEvent]:
+        request_id = frame.get("id")
+        pending = self._requests.pop(request_id, None) if isinstance(request_id, str) else None
+        if pending is None:
+            return []
+        action, op = pending
+        expected_session = self._expected_sessions.pop(request_id, None)
+        config_request = self._config_requests.pop(request_id, None)
+        prompt = action == "session/prompt" and op is not None and op == self.operation_id
+        if "error" in frame:
+            error = frame["error"]
+            message = (
+                _text(error.get("message")) if isinstance(error, dict) else "Native request failed"
+            )
+            if prompt:
+                # A prompt can fail after tools ran: the turn ended, it did not "never start".
+                return self._turn_done("failed", message or "the agent failed this turn")
+            return [
+                _event(
+                    "error", request_id=request_id, action=action, operation_id=op, message=message
+                )
+            ]
+        result = frame.get("result")
+        if not isinstance(result, dict):
+            raise ProtocolError("native response has no result object")
+        if action == "initialize":
+            info = result.get("agentInfo")
+            found = (
+                _ACP_VERSION.match(info.get("version", ""))
+                if isinstance(info, dict) and isinstance(info.get("version"), str)
+                else None
+            )
+            version = tuple(int(x) for x in found.groups()) if found else None
+            capabilities = result.get("agentCapabilities")
+            refusal = None
+            if result.get("protocolVersion") != ACP_PROTOCOL_VERSION:
+                refusal = "the agent speaks another ACP protocol version"
+            elif version is None or version < COPILOT_MIN_VERSION:
+                refusal = f"copilot {'.'.join(map(str, COPILOT_MIN_VERSION))} or later is required"
+            elif not isinstance(capabilities, dict) or capabilities.get("loadSession") is not True:
+                refusal = "the agent cannot load an existing session"
+            if refusal is not None:
+                return [_event("error", request_id=request_id, action=action, message=refusal)]
+            self.version = version
+            return [_event("initialized", request_id=request_id, action=action)]
+        if action in {"session/new", "session/load"}:
+            # `session/load`'s result is an empty object on 1.0.68: the id asked for is the id.
+            native_id = (
+                _uuid(result.get("sessionId")) if action == "session/new" else expected_session
+            )
+            if native_id is None or (self.native_id is not None and self.native_id != native_id):
+                raise ProtocolError("native session identity changed")
+            self.native_id = native_id
+            config = _acp_config(result.get("configOptions", []))
+            return [
+                _event(
+                    "session",
+                    request_id=request_id,
+                    action=action,
+                    native_id=native_id,
+                    model_configured=_observed_model(config.get("model")),
+                    effort_configured=_observed_effort(config.get("reasoning_effort")),
+                    model_effective=None,
+                )
+            ]
+        if action == "session/set_config_option" and config_request is not None:
+            option, value, confirm = config_request
+            config = _acp_config(result.get("configOptions"))
+            echoed = config.get(option)
+            if echoed != value and (confirm or echoed is not None):
+                # A required pin's wrong or missing echo is an error; an option the build does
+                # not enumerate (model on 1.0.68) echoes nothing and is accepted best-effort —
+                # but an option that IS echoed must name the value asked for.
+                return [
+                    _event(
+                        "error",
+                        request_id=request_id,
+                        action=action,
+                        message=f"the agent did not select the requested {option}",
+                    )
+                ]
+            if option == "mode":
+                self._pinned = True
+            self._mode_check(config)
+            return [
+                _event(
+                    "session",
+                    request_id=request_id,
+                    action=action,
+                    native_id=self.native_id,
+                    model_configured=_observed_model(config.get("model")),
+                    effort_configured=_observed_effort(config.get("reasoning_effort")),
+                    model_effective=None,
+                )
+            ]
+        if prompt:
+            reason = result.get("stopReason")
+            if reason == "end_turn":
+                return self._turn_done("completed")
+            if reason == "cancelled":
+                return self._turn_done("interrupted")
+            return self._turn_done("failed", f"the agent stopped: {_text(reason, limit=64)}")
+        return [_event("response", request_id=request_id, action=action)]
+
+    def _refuse(self, frame: dict) -> list[NativeEvent]:
+        return [
+            _event(
+                "send",
+                frame={
+                    "jsonrpc": "2.0",
+                    "id": _rpc_id(frame.get("id")),
+                    "error": {"code": -32601, "message": "Unsupported client method"},
+                },
+            )
+        ]
+
+    def _approval(self, frame: dict, params: dict) -> list[NativeEvent]:
+        _rpc_id(frame.get("id"))
+        if (
+            self.operation_id is None
+            or self.native_id is None
+            or params.get("sessionId") != self.native_id
+        ):
+            # Not this connection's live turn (an idle or replayed callback): refuse the tool.
+            return [
+                _event(
+                    "send",
+                    frame={
+                        "jsonrpc": "2.0",
+                        "id": frame["id"],
+                        "result": {"outcome": {"outcome": "cancelled"}},
+                    },
+                )
+            ]
+        tool_call = params.get("toolCall")
+        options = params.get("options")
+        if not isinstance(tool_call, dict) or not isinstance(options, list):
+            raise ProtocolError("native permission request is malformed")
+        offered: dict[str, list[str]] = {}
+        for option in options[:16]:
+            # `allow_always` is NEVER retained (#1565): not presented, not selectable. A request
+            # offering only it has no one-shot approval below and is decline-only.
+            if (
+                isinstance(option, dict)
+                and option.get("kind") in set(_ONCE.values())
+                and isinstance(option.get("optionId"), str)
+                and 0 < len(option["optionId"]) <= 256
+            ):
+                offered.setdefault(option["kind"], []).append(option["optionId"])
+        # Exactly one of each native kind, or that choice is not answerable at all.
+        once = {kind: ids[0] for kind, ids in offered.items() if len(ids) == 1}
+        item_id = _safe_id(tool_call.get("toolCallId"), "tool")
+        if item_id is None:
+            raise ProtocolError("native permission request names no tool call")
+        # Everything the decision answers: the tool call as asked (title, kind, locations and
+        # the complete rawInput), plus the native once options a decision can pick.
+        presented: dict[str, Any] = {
+            "toolCall": tool_call,
+            "options": [
+                {"optionId": option_id, "kind": kind} for kind, option_id in sorted(once.items())
+            ],
+        }
+        # Approve needs the consequential action itself in what is presented: an allow_once
+        # option alone would approve a blind request. No borrowed context fills an empty one.
+        reason = _copilot_unpresentable(tool_call)
+        if reason is None and "allow_once" not in once:
+            reason = "the agent offered no single one-shot approval"
+        if reason is not None:
+            presented["declineOnly"] = reason
+        complete = reason is None
+        if len(_summary(presented)) >= MAX_TEXT:
+            # Too large to present whole: shown in outline, and it can only be refused.
+            presented = {
+                "toolCall": {
+                    k: tool_call[k]
+                    for k in ("toolCallId", "title", "kind", "locations")
+                    if k in tool_call
+                },
+                "omitted": "the request is too large to present in full; it can only be declined",
+            }
+            if len(_summary(presented)) >= MAX_TEXT:
+                presented = {"omitted": "the request is too large to present"}
+            complete = False
+        digest = _digest({"frame": frame, "presented": presented})
+        key = self._remember(
+            frame["id"],
+            {
+                "id": frame["id"],
+                "operation_id": self.operation_id,
+                "native_turn_id": self.native_turn_id,
+                "item_id": item_id,
+                "options": once,
+                "frame": frame,
+                "digest": digest,
+                "complete": complete,
+                "presented": presented,
+                "kind": tool_call.get("kind"),
+            },
+        )
+        return [
+            _event(
+                "approval",
+                request_id=key,
+                payload_digest=digest,
+                native_turn_id=self.native_turn_id,
+                operation_id=self.operation_id,
+                item_id=item_id,
+                tool=_safe_id(tool_call.get("kind"), "kind") or "tool",
+                summary=_summary(presented),
+                complete=complete,
+                choices=["approve", "reject"] if complete else ["reject"],
+            )
+        ]
+
+    def _update(self, update: dict) -> list[NativeEvent]:
+        kind = update.get("sessionUpdate")
+        if kind == "current_mode_update":
+            self._mode_check({"mode": update.get("currentModeId")})
+            return []
+        if kind == "config_option_update":
+            self._mode_check(_acp_config(update.get("configOptions", [])))
+            return []
+        if self.operation_id is None:
+            # Replayed history (`session/load`) and idle chatter: BattleLab's own journal already
+            # holds what it observed; a replay is never attributed to a turn.
+            return []
+        common = {"native_turn_id": self.native_turn_id, "operation_id": self.operation_id}
+        if kind == "agent_message_chunk":
+            content = update.get("content")
+            if not isinstance(content, dict) or content.get("type") != "text":
+                return []
+            item = _safe_id(update.get("messageId"), "msg")
+            return [
+                _event(
+                    "text",
+                    **common,
+                    **({"item_id": item} if item is not None else {}),
+                    text=_text(content.get("text")),
+                    partial=True,
+                    truncated=isinstance(content.get("text"), str)
+                    and len(content["text"]) > MAX_TEXT,
+                )
+            ]
+        if kind in {"tool_call", "tool_call_update"}:
+            item_id = _safe_id(update.get("toolCallId"), "tool")
+            if item_id is None:
+                raise ProtocolError("native tool update names no tool call")
+            status = _text(update.get("status"), limit=64)
+            previous = self._tool_calls.get(item_id, {})
+            context = {**previous, **{k: v for k, v in update.items() if k != "sessionUpdate"}}
+            if len(_summary(context)) < MAX_TEXT and (
+                item_id in self._tool_calls or len(self._tool_calls) < MAX_PENDING
+            ):
+                self._tool_calls[item_id] = context
+            else:
+                self._tool_calls.pop(item_id, None)
+            data: dict[str, Any] = {"item_id": item_id, "state": status}
+            tool = _safe_id(update.get("kind"), "kind")
+            if tool is not None:
+                data["tool"] = tool
+            if isinstance(update.get("title"), str):
+                data["summary"] = _text(update["title"])
+            if context.get("kind") == "execute":
+                raw = context.get("rawInput")
+                # Original command input, never the display title. Oversize is unclassified.
+                summary = _summary(raw) if isinstance(raw, dict) else "{}"
+                data["summary"] = summary if len(summary) < MAX_TEXT else "{}"
+            if isinstance(update.get("content"), list):
+                texts = [
+                    block["content"].get("text")
+                    for block in update["content"][:32]
+                    if isinstance(block, dict)
+                    and block.get("type") == "content"
+                    and isinstance(block.get("content"), dict)
+                    and isinstance(block["content"].get("text"), str)
+                ]
+                if texts:
+                    data["output"] = _text("\n".join(texts))
+            data["completed"] = status in {"completed", "failed"}
+            return [_event("tool", **common, **data)]
+        return []
+
+    def feed(self, message: dict[str, Any]) -> list[NativeEvent]:
+        if self._closed:
+            raise ProtocolError("native connection is closed")
+        frame = _copy_frame(message)
+        if frame.get("jsonrpc") != "2.0":
+            raise ProtocolError("native frame is not JSON-RPC 2.0")
+        method = frame.get("method")
+        if method is not None and not isinstance(method, str):
+            raise ProtocolError("native method must be a string")
+        if method is None:
+            return self._reply(frame)
+        params = frame.get("params", {})
+        if not isinstance(params, dict):
+            raise ProtocolError("native notification params must be an object")
+        if "id" in frame:
+            if method == "session/request_permission":
+                return self._approval(frame, params)
+            return self._refuse(frame)  # fs/*, terminal/* and anything else: never served
+        if method != "session/update" or self.native_id is None:
+            return []
+        if params.get("sessionId") != self.native_id:
+            return []
+        update = params.get("update")
+        if not isinstance(update, dict):
+            raise ProtocolError("native session update must be an object")
+        return self._update(update)

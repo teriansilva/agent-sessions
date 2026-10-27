@@ -263,6 +263,12 @@ def _skills_entry_env(launch: agent_tools.McpLaunch, kind: str) -> dict:
             table[key] = tomllib.loads(f"v = {value}")["v"]  # every value is valid TOML
         assert f"mcp_servers.{agent_tools.SERVER_NAME}.command" in table
         return table[f"mcp_servers.{agent_tools.SKILLS_SERVER_NAME}.env"]
+    if kind == agent_tools.COPILOT_FLAG:
+        flag, payload = launch.suffix
+        assert flag == "--additional-mcp-config"
+        servers = json.loads(payload)["mcpServers"]
+        assert set(servers) == {agent_tools.SERVER_NAME, agent_tools.SKILLS_SERVER_NAME}
+        return servers[agent_tools.SKILLS_SERVER_NAME]["env"]
     content = json.loads(launch.env[agent_tools.OPENCODE_CONFIG_ENV])
     assert set(content["mcp"]) >= {agent_tools.SERVER_NAME, agent_tools.SKILLS_SERVER_NAME}
     assert content["keep"] == 1  # the existing config is merged, never replaced
@@ -376,7 +382,8 @@ def test_every_worker_spawn_path_carries_the_skills_server(adapter, real_bundle,
     import asyncio
 
     worker = _worker(adapter, real_bundle, tmp_path)
-    if adapter == "claude-stream-json":
+    if adapter in ("claude-stream-json", "copilot-acp"):
+        # The slot is the argv's MCP flag (#1506; copilot's ACP rejects stdio mcpServers, #1565).
         sent = json.dumps(worker.argv())
     else:
         frames: list = []

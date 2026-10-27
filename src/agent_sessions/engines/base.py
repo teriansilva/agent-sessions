@@ -40,6 +40,9 @@ _NEW_PLACEHOLDER_RE = re.compile(
 _CODEX_UUID_RE = _CLAUDE_UUID_RE
 _GEMINI_UUID_RE = _CLAUDE_UUID_RE
 _ANTIGRAVITY_UUID_RE = _CLAUDE_UUID_RE
+# GitHub Copilot CLI (#1565) session ids are v4 UUIDs — the directory names under
+# `~/.copilot/session-state/`.
+_COPILOT_UUID_RE = _CLAUDE_UUID_RE
 # shell (terminal-as-agent, #636): a plain login shell has no engine store and no native id of its
 # own, so we mint our own UUID (same shape as Claude's) as the permanent bookkeeping key.
 _SHELL_UUID_RE = _CLAUDE_UUID_RE
@@ -103,6 +106,23 @@ def _kimi_dir(home: Path | None = None) -> Path:
     """Kimi Code's state root (#714). Everything the kind reads hangs off it: the
     ``session_index.jsonl`` fast path, and ``sessions/wd_<slug>_<hash>/session_<uuid>/``."""
     return _store("kimi-code", home=home)
+
+
+def _copilot_dir(home: Path | None = None) -> Path:
+    """GitHub Copilot CLI's state root (#1565): ``~/.copilot``. Sessions are per-id directories
+    under the manifest's ``sessions`` path (``session-state/<uuid>/``), the archive tree beside
+    them (``session-state-archive/<uuid>/``)."""
+    return _store("copilot-sessions", home=home)
+
+
+def _copilot_sessions_dir(home: Path | None = None) -> Path:
+    """The live session tree: ``<root>/session-state/`` (the manifest's ``sessions`` path)."""
+    return _store("copilot-sessions", "sessions", home)
+
+
+def _copilot_archive_dir(home: Path | None = None) -> Path:
+    """The archive tree: ``<root>/session-state-archive/`` (the manifest's ``archive`` path)."""
+    return _store("copilot-sessions", "archive", home)
 
 
 def _codex_sessions_dir(home: Path | None = None) -> Path:

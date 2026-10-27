@@ -43,8 +43,18 @@ from agent_sessions.engines import registry
 from agent_sessions.plugins import kinds as plugin_kinds
 
 FAKE = Path(__file__).with_name("fake_native.py")
-ENGINES = {"codex": "codex-api", "claude": "claude-api", "opencode": "opencode-api"}
-KINDS = {"codex": "codex-app-server", "claude": "claude-stream-json", "opencode": "opencode-acp"}
+ENGINES = {
+    "codex": "codex-api",
+    "claude": "claude-api",
+    "opencode": "opencode-api",
+    "copilot": "copilot-api",
+}
+KINDS = {
+    "codex": "codex-app-server",
+    "claude": "claude-stream-json",
+    "opencode": "opencode-acp",
+    "copilot": "copilot-acp",
+}
 
 
 @pytest.fixture
@@ -146,6 +156,7 @@ def host(tmp_home, tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_CODEX_BIN", str(bindir / "codex"))
     monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", str(bindir / "claude"))
     monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_BIN", str(bindir / "opencode"))
+    monkeypatch.setenv("AGENT_SESSIONS_COPILOT_BIN", str(bindir / "copilot"))
     monkeypatch.delenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", raising=False)
     monkeypatch.delenv("AGENT_SESSIONS_CLAUDE_PROJECTS_DIR", raising=False)
     monkeypatch.setenv("AGENT_SESSIONS_PLUGIN_STATE_DIR", str(tmp_path / "plugin-state"))
@@ -204,7 +215,7 @@ async def pending(key: str):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode", "copilot"])
 async def test_create_submit_replay_and_reconnect_observe_one_native_write(host, project, source):
     engine = ENGINES[source]
     described = runtime.describe(engine)
@@ -333,7 +344,7 @@ async def test_a_queued_answer_is_not_sent_once_a_newer_question_was_asked(host,
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode", "copilot"])
 async def test_native_crash_is_uncertain_never_resent_and_the_next_turn_resumes(
     host, project, source
 ):
@@ -364,7 +375,7 @@ async def test_native_crash_is_uncertain_never_resent_and_the_next_turn_resumes(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode", "copilot"])
 async def test_interrupt_is_requested_and_stop_proves_containment_gone(host, project, source):
     engine = ENGINES[source]
     key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
@@ -791,7 +802,7 @@ async def test_an_idle_worker_exits_and_the_next_turn_resumes_the_same_history(
     assert snap["native"]["worker"] != worker and len(host.launches) == launched + 1
 
 
-@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode", "copilot"])
 @pytest.mark.anyio
 async def test_a_turn_sent_at_the_seen_revision_survives_its_own_worker_relaunch(
     host, project, monkeypatch, source
@@ -898,7 +909,7 @@ async def test_a_turn_sent_at_a_revision_before_unseen_activity_is_still_refused
     assert stale.value.status == 409 and "revision changed" in stale.value.detail
 
 
-@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode", "copilot"])
 def test_the_child_environment_names_the_battlelab_session_and_nothing_else(host, source):
     """#1406: the agent's own id is the app session key, on every adapter, beside the sanitized
     base and nothing else new. A key that is not the exact canonical shape refuses the spawn."""
@@ -915,6 +926,8 @@ def test_the_child_environment_names_the_battlelab_session_and_nothing_else(host
     base = {"HOME", "PATH", "LANG", "TERM", "NO_COLOR", "BATTLELAB_SESSION"}
     if source == "opencode":
         base |= {"OPENCODE_SERVER_PASSWORD", "OPENCODE_CONFIG_CONTENT"}
+    if source == "copilot":
+        base |= {"COPILOT_AUTO_UPDATE"}  # belt beside the argv's --no-auto-update (#1565)
     assert set(env) == base
     assert env["BATTLELAB_SESSION"] == key
     # A later generation of the same session (another worker, a resumed native id) is told the
@@ -937,7 +950,7 @@ def test_the_child_environment_names_the_battlelab_session_and_nothing_else(host
             native_worker.child_environment({**config, "session_key": bad}, **extra)
 
 
-@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode", "copilot"])
 def test_the_child_environment_carries_only_validated_memory_paths(source):
     """#1441: a generation given memory paths passes exactly those two to its agent; anything
     else in the config refuses the spawn rather than reaching the child."""
@@ -968,7 +981,7 @@ def test_the_child_environment_carries_only_validated_memory_paths(source):
             native_worker.child_environment({**config, "memory_env": bad}, **extra)
 
 
-@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode", "copilot"])
 def test_the_worker_carries_only_its_protocols_memory_tool_and_only_beside_the_paths(source):
     """#1506: `memory_tool` in a worker config is honoured only as the kind the adapter's protocol
     carries, and only with the generation's memory paths; anything else refuses the spawn."""
@@ -993,7 +1006,7 @@ def test_the_worker_carries_only_its_protocols_memory_tool_and_only_beside_the_p
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode", "copilot"])
 async def test_every_generation_tells_its_agent_the_battlelab_session(
     host, project, monkeypatch, source
 ):
@@ -1035,7 +1048,7 @@ async def test_every_generation_tells_its_agent_the_battlelab_session(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode", "copilot"])
 async def test_every_generation_with_memory_on_carries_the_memory_tool(
     host, project, monkeypatch, source
 ):
@@ -1072,6 +1085,7 @@ async def test_every_generation_with_memory_on_carries_the_memory_tool(
         "codex": "codex-config-override",
         "claude": "claude-mcp-config-flag",
         "opencode": "opencode-config-content",
+        "copilot": "copilot-additional-mcp-config",
     }[source]
     assert engines.manifest_of(engine).tools_mcp == expected_kind
     assert [g["memory_tool"] for g in generations] == [expected_kind] * 2
@@ -1106,6 +1120,25 @@ async def test_every_generation_with_memory_on_carries_the_memory_tool(
             assert server["name"] == "battlelab_memory"
             env = {e["name"]: e["value"] for e in server["env"]}
             assert told(env) == expected and env["OPENCODE_SERVER_PASSWORD"] == ""
+    elif source == "copilot":
+        # copilot's ACP rejects stdio `mcpServers` (#1565): the tool rides argv instead, and
+        # session/new and session/load carry none.
+        sessions = [
+            f["frame"]
+            for f in children
+            if f["frame"].get("method") in {"session/new", "session/load"}
+        ]
+        assert [x["method"] for x in sessions] == ["session/new", "session/load"]
+        assert all(x["params"]["mcpServers"] == [] for x in sessions)
+        argvs = []
+        for f in children:
+            if f["argv"] not in argvs:
+                argvs.append(f["argv"])
+        assert len(argvs) == 2
+        for argv, expected in zip(argvs, paths, strict=True):
+            assert argv[-2] == "--additional-mcp-config"
+            server = json.loads(argv[-1])["mcpServers"]["battlelab_memory"]
+            assert told(server["env"]) == expected
     else:
         argvs = []
         for f in children:
@@ -1120,7 +1153,7 @@ async def test_every_generation_with_memory_on_carries_the_memory_tool(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode", "copilot"])
 async def test_a_generation_with_memory_off_carries_no_memory_tool(host, project, source):
     """#1506: memory off — no paths, no tool kind in the config, nothing in any slot."""
     key = (await runtime.create_session(ENGINES[source], str(project), operation_id=ident()))[
@@ -1135,6 +1168,7 @@ async def test_a_generation_with_memory_off_carries_no_memory_tool(host, project
     assert cfg["memory_env"] == {} and cfg["memory_tool"] is None
     for f in frames(project):
         assert "--mcp-config" not in f["argv"]
+        assert "--additional-mcp-config" not in f["argv"]
         params = f["frame"].get("params") or {}
         assert params.get("mcpServers", []) == []
         assert not any(k.startswith("mcp_servers") for k in (params.get("config") or {}))
@@ -1675,7 +1709,7 @@ _PNG = b"\x89PNG\r\n\x1a\n" + bytes(range(64))
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode", "copilot"])
 async def test_documents_reach_all_native_agents_and_bind_replay_identity(
     host, project, source, tmp_path
 ):
@@ -1707,7 +1741,7 @@ async def test_documents_reach_all_native_agents_and_bind_replay_identity(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode", "copilot"])
 @pytest.mark.parametrize("mixed", [False, True])
 async def test_document_text_budget_refuses_before_claim_and_accepts_exact_boundary(
     host, project, source, tmp_path, mixed
@@ -1964,7 +1998,7 @@ async def _reviewable_api_session(monkeypatch, tmp_home, project, source, calls,
     return key
 
 
-@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode", "copilot"])
 @pytest.mark.anyio
 async def test_the_ai_review_loop_reviews_an_api_session_once_per_change(
     host, project, monkeypatch, tmp_home, source

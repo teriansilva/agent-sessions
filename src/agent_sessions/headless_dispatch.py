@@ -258,7 +258,10 @@ def _has_store_record(prov, native: str, cwd: str) -> bool:
 #: "what sessions exist" for the sidebar, the lookup route and every other consumer; redefining
 #: transcript existence to mean "a process started" would change that answer everywhere for the
 #: benefit of one caller. Two sources, two questions, one boundary.
-_START_EVIDENCE = {"claude-sessions": start_evidence.claude_start_state}
+_START_EVIDENCE = {
+    "claude-sessions": start_evidence.claude_start_state,
+    "copilot-sessions": start_evidence.copilot_start_state,
+}
 
 
 def _start_evidence_adapter(prov):

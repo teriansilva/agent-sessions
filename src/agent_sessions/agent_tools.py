@@ -55,6 +55,9 @@ SKILLS_ENV = "BATTLELAB_SKILLS_BUNDLE"
 CLAUDE_FLAG = "claude-mcp-config-flag"  # `--mcp-config <json>`, claude 2.1.304
 CODEX_OVERRIDE = "codex-config-override"  # `-c mcp_servers.<name>.*`, codex-cli 0.162.0
 OPENCODE_CONTENT = "opencode-config-content"  # `OPENCODE_CONFIG_CONTENT.mcp`, opencode 1.18.35
+# `--additional-mcp-config <json>`, copilot 1.0.68 — loads stdio MCP servers into TUI AND
+# `--acp` sessions (the ACP `session/new` mcpServers parameter rejects stdio servers, #1565).
+COPILOT_FLAG = "copilot-additional-mcp-config"
 
 #: The CLI version each kind's exact payload was proven against (#1506 smoke). A later version that
 #: rejects the payload fails its launch with the CLI's own error, never silently.
@@ -62,6 +65,7 @@ PROVEN = {
     CLAUDE_FLAG: "claude 2.1.304",
     CODEX_OVERRIDE: "codex-cli 0.162.0",
     OPENCODE_CONTENT: "opencode 1.18.35",
+    COPILOT_FLAG: "copilot 1.0.68",
 }
 assert frozenset(PROVEN) == kinds.MCP_KINDS  # every kind has a shape here, and only those
 
@@ -259,6 +263,35 @@ def opencode_config_content(servers: Server | Sequence[Server], existing: str | 
     return json.dumps({**cfg, "mcp": table}, ensure_ascii=False)
 
 
+# The exact tool names each first-party server exposes — memory_mcp.TOOLS / skills_mcp.TOOLS,
+# pinned against those modules by tests/test_agent_tools.py. Never a wildcard: copilot's own
+# default for a server is already "all tools", so only a named list is a real boundary, and a
+# new server fails closed here until its tools are named.
+_COPILOT_SERVER_TOOLS: dict[str, list[str]] = {
+    SERVER_NAME: ["memory_index", "memory_read", "memory_search", "memory_write"],
+    SKILLS_SERVER_NAME: ["skill_read", "skills_list"],
+}
+
+
+def copilot_mcp_config(servers: Server | Sequence[Server]) -> str:
+    """The JSON string copilot's `--additional-mcp-config` takes (#1565): the same stdio
+    ``mcpServers`` table as claude's flag, with each server's tools NAMED (never ``["*"]``).
+    A server without a named list raises — the grant stays exactly as wide as intended."""
+    entries = {}
+    for s in _all(servers):
+        tools = _COPILOT_SERVER_TOOLS.get(s.name)
+        if tools is None:
+            raise ValueError(f"copilot MCP config: no named tool list for server {s.name!r}")
+        entries[s.name] = {
+            "type": "stdio",
+            "command": s.command,
+            "args": list(s.args),
+            "env": dict(s.env),
+            "tools": list(tools),
+        }
+    return json.dumps({"mcpServers": entries}, ensure_ascii=False)
+
+
 def acp_servers(servers: Server | Sequence[Server]) -> list[dict]:
     """The servers as ACP ``mcpServers`` items (`session/new`, `session/load`). opencode starts
     them with its own environment underneath, so the listener password it holds is blanked here,
@@ -307,6 +340,9 @@ def terminal_launch(
         return McpLaunch(suffix=("--mcp-config", claude_mcp_config(servers)))
     if kind == CODEX_OVERRIDE:
         return McpLaunch(prefix=codex_overrides(servers))
+    if kind == COPILOT_FLAG:
+        # A flag with ONE value, safe at the end: copilot's launch argv carries no positional.
+        return McpLaunch(suffix=("--additional-mcp-config", copilot_mcp_config(servers)))
     content = opencode_config_content(servers, base_env.get(OPENCODE_CONFIG_ENV))
     if content is None:
         if skills is not None:

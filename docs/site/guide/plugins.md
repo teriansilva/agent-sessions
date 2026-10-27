@@ -188,10 +188,10 @@ Every value a manifest may choose, generated from the kinds this build ships:
 | `identity.kind` | `agent`, `terminal` |
 | `runtime.kind` | `api`, `chat`, `pty` |
 | `endpoint.kind` (runtime `chat` only) | `openai-chat` |
-| `api.kind` (runtime `api` only) | `claude-stream-json`, `codex-app-server`, `opencode-acp` |
+| `api.kind` (runtime `api` only) | `claude-stream-json`, `codex-app-server`, `copilot-acp`, `opencode-acp` |
 | `binary.version_flag` | `--version`, `-V`, `-v`, `version` |
 | `session_id.mint` | `adopt`, `pinned` |
-| `store.layout` | `antigravity-cli`, `battlelab-chat`, `claude-projects`, `codex-rollouts`, `gemini-tmp`, `kimi-code`, `opencode-sqlite`, `shell-records` |
+| `store.layout` | `antigravity-cli`, `battlelab-chat`, `claude-projects`, `codex-rollouts`, `copilot-sessions`, `gemini-tmp`, `kimi-code`, `opencode-sqlite`, `shell-records` |
 | `store.paths` names | `archive`, `db`, `index`, `log`, `sessions` |
 | `memory.kind` (reads that store layout) | `claude-auto-memory` |
 | `launch.resume.kind` | `flag`, `fresh`, `positional-dir`, `subcommand` |
@@ -200,31 +200,31 @@ Every value a manifest may choose, generated from the kinds this build ships:
 | resume `subcommand` | `resume` |
 | new `pin-flag` flag | `--session-id` |
 | new `cwd-flag` flag | `--cd` |
-| `launch.base_args` | `-l` |
+| `launch.base_args` | `--no-auto-update`, `-l` |
 | `launch.bypass` | `--dangerously-bypass-approvals-and-sandbox`, `--dangerously-skip-permissions`, `--skip-trust`, `--yolo`, `-y` |
 | `launch.bypass_on` | `both`, `new` |
 | `launch.admission` | `none`, `sqlite-store-shared` |
 | `launch.model.kind` | `flag` |
 | `launch.model.flag` | `--model`, `-m` |
 | `instructions.files` | `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` |
-| `tools.mcp` (how the CLI takes the memory tool per launch) | `claude-mcp-config-flag`, `codex-config-override`, `opencode-config-content` |
+| `tools.mcp` (how the CLI takes the memory tool per launch) | `claude-mcp-config-flag`, `codex-config-override`, `copilot-additional-mcp-config`, `opencode-config-content` |
 | `capabilities` | `archive`, `handoff_target`, `new`, `orchestrator_input`, `owns_transcript`, `raw_tty`, `resume`, `seed_start` |
-| `transcript.kind` | `antigravity-brain`, `battlelab-chat`, `claude-jsonl`, `codex-rollout`, `gemini-chat`, `kimi-wire`, `none`, `opencode-sqlite` |
+| `transcript.kind` | `antigravity-brain`, `battlelab-chat`, `claude-jsonl`, `codex-rollout`, `copilot-events`, `gemini-chat`, `kimi-wire`, `none`, `opencode-sqlite` |
 | `usage.source` | `manual`, `none`, `plan`, `tokens` |
 | `usage.kind` | `agy-cli-probe`, `chat-response-tokens`, `claude-cli-probe`, `codex-app-server-probe`, `codex-rollout-field`, `kimi-web-usage-probe`, `opencode-store-query` |
 | `usage.probe_token` | `/usage` |
-| `usage.access` | `gemini-acp-auth`, `kimi-wire-auth-error` |
+| `usage.access` | `copilot-acp-auth`, `gemini-acp-auth`, `kimi-wire-auth-error` |
 | `terminal.repaint` | `none`, `winch`, `wipe` |
 | `terminal.ready` | `bytes`, `claude-first-paint` |
 | `terminal.menu` | `claude-numbered`, `none` |
 | `terminal.permission` | `claude-permission`, `none`, `opencode-permission` |
-| `unattended.start_evidence` | `claude-sessions`, `none`, `opencode-log` |
+| `unattended.start_evidence` | `claude-sessions`, `copilot-sessions`, `none`, `opencode-log` |
 | `maintenance` | `sqlite-vacuum` |
 | `display.accent` | `amber`, `blue`, `green`, `lime`, `magenta`, `slate`, `teal` |
 | `install.kind` → `authority` | `npm-prefix` → `registry.npmjs.org`; `tarball` → `github.com` |
 | `signin.kind` → `subcommand` | `auth-login` → none; `cli-subcommand` → `auth`, `login`; `interactive` → none; `none` → none |
 | `install.platform` | `linux-x64` |
-| `probe.kind` | `exec-readonly`, `print-conversation`, `print-pinned`, `prompt-pinned`, `prompt-session`, `run-session`, `terminal` |
+| `probe.kind` | `copilot-prompt-pinned`, `exec-readonly`, `print-conversation`, `print-pinned`, `prompt-pinned`, `prompt-session`, `run-session`, `terminal` |
 | `verify` | `binary`, `new`, `resume`, `store`, `transcript`, `usage`, `version` |
 <!-- END generated:manifest-vocab -->
 

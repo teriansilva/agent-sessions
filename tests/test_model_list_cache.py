@@ -395,12 +395,18 @@ async def test_the_warm_up_probes_each_available_client_once_off_the_event_loop(
     for kind, fake in fakes.items():
         monkeypatch.setitem(native_models._DISCOVER, kind, fake)
     opencode = FakeCLI()
+    copilot = FakeCLI()
 
     def opencode_discover(binary, *, source):
         return opencode(binary)
 
+    def copilot_discover(binary, *, source):
+        return copilot(binary)
+
     opencode_discover.needs_source = True  # type: ignore[attr-defined]
+    copilot_discover.needs_source = True  # type: ignore[attr-defined]
     monkeypatch.setitem(native_models._DISCOVER, "opencode-acp", opencode_discover)
+    monkeypatch.setitem(native_models._DISCOVER, "copilot-acp", copilot_discover)
     # opencode's source CLI is unavailable: it is skipped, never probed.
     monkeypatch.setattr(
         registry,
@@ -421,15 +427,16 @@ async def test_the_warm_up_probes_each_available_client_once_off_the_event_loop(
         with pytest.raises(asyncio.CancelledError):
             await task
     assert [f.calls for f in fakes.values()] == [1, 1] and opencode.calls == 0
+    assert copilot.calls == 1
     assert all(t != loop_thread for f in fakes.values() for t in f.threads)
     # A second pass finds both fresh and queues nothing…
     assert await asyncio.to_thread(models_loop.warm_once) == []
     # …and one that runs as a list nears TTL_S renews it before it expires.
     clock.advance(native_models.TTL_S - models_loop.INTERVAL_S)
     queued = await asyncio.to_thread(models_loop.warm_once)
-    assert sorted(queued) == sorted([ENGINES["codex"], ENGINES["claude"]])
+    assert sorted(queued) == sorted([ENGINES["codex"], ENGINES["claude"], ENGINES["copilot"]])
     await asyncio.to_thread(_idle)
-    assert [f.calls for f in fakes.values()] == [2, 2]
+    assert [f.calls for f in fakes.values()] == [2, 2] and copilot.calls == 2
 
 
 def test_the_warm_up_is_off_under_its_kill_switch(monkeypatch):

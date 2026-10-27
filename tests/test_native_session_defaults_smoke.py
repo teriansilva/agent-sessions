@@ -75,7 +75,12 @@ async def _turn(key: str, label: str) -> dict:
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     "source,kind",
-    [("codex", "codex-app-server"), ("claude", "claude-stream-json"), ("opencode", "opencode-acp")],
+    [
+        ("codex", "codex-app-server"),
+        ("claude", "claude-stream-json"),
+        ("opencode", "opencode-acp"),
+        ("copilot", "copilot-acp"),
+    ],
 )
 async def test_a_chosen_model_and_effort_reach_the_real_client_on_create_and_resume(
     tmp_home, tmp_path, monkeypatch, source, kind

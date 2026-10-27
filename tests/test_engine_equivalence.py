@@ -24,6 +24,7 @@ NATIVE = {
     "opencode": "ses_AbC123",
     "codex": UUID,
     "gemini": UUID,
+    "copilot": UUID,
     "antigravity": UUID,
     "kimi": f"session_{UUID}",
     "shell": UUID,
@@ -92,6 +93,33 @@ GOLDEN = {
     ("kimi", "new", True): ["{bin}", "-y"],
     ("kimi", "resume", False): ["{bin}", "-S", "session_0190a3b2-1c2d-7e3f-8a9b-0c1d2e3f4a5b"],
     ("kimi", "resume", True): ["{bin}", "-S", "session_0190a3b2-1c2d-7e3f-8a9b-0c1d2e3f4a5b", "-y"],
+    ("copilot", "caps"): (True, True, True, True, False),
+    ("copilot", "new", False): [
+        "{bin}",
+        "--no-auto-update",
+        "--session-id",
+        "0190a3b2-1c2d-7e3f-8a9b-0c1d2e3f4a5b",
+    ],
+    ("copilot", "new", True): [
+        "{bin}",
+        "--no-auto-update",
+        "--session-id",
+        "0190a3b2-1c2d-7e3f-8a9b-0c1d2e3f4a5b",
+        "--yolo",
+    ],
+    ("copilot", "resume", False): [
+        "{bin}",
+        "--no-auto-update",
+        "--resume",
+        "0190a3b2-1c2d-7e3f-8a9b-0c1d2e3f4a5b",
+    ],
+    ("copilot", "resume", True): [
+        "{bin}",
+        "--no-auto-update",
+        "--resume",
+        "0190a3b2-1c2d-7e3f-8a9b-0c1d2e3f4a5b",
+        "--yolo",
+    ],
     ("opencode", "caps"): (True, True, True, True, True),
     ("opencode", "new", False): ["{bin}", "{cwd}"],
     ("opencode", "new", True): ["{bin}", "{cwd}"],
@@ -104,7 +132,8 @@ GOLDEN = {
     ("shell", "resume", True): ["{bin}", "-l"],
 }
 
-# The seven P2 engines in their historic order, plus the API agent (#1209, display order 80).
+# The seven P2 engines in their historic order, plus the API agent (#1209, display order 80),
+# the native API clients (#1311) and copilot + copilot-api (#1565, display order 45/46).
 ORDER = [
     "claude",
     "claude-api",
@@ -113,14 +142,21 @@ ORDER = [
     "codex",
     "codex-api",
     "gemini",
+    "copilot",
+    "copilot-api",
     "antigravity",
     "kimi",
     "apichat",
     "shell",
 ]
-#: The seven terminal engines P2 converted — what "shipped" means in the equivalence tables below.
-#: The API agent (#1209) and the native API clients (#1311) run no terminal argv of their own.
-SEVEN = [e for e in ORDER if e not in ("apichat", "codex-api", "claude-api", "opencode-api")]
+#: The seven terminal engines P2 converted, plus copilot (#1565) — what "shipped" means in the
+#: equivalence tables below. The API agent (#1209) and the native API clients (#1311) run no
+#: terminal argv of their own.
+SEVEN = [
+    e
+    for e in ORDER
+    if e not in ("apichat", "codex-api", "claude-api", "opencode-api", "copilot-api")
+]
 
 
 def test_roster_is_the_seven_in_their_historic_order():

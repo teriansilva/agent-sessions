@@ -302,3 +302,47 @@ def claude_start_state(native: str, cwd: str, *, home: Path | None = None) -> tu
         )
     # Every name was read, every read succeeded, none matched. The only shape that earns ABSENT.
     return ABSENT, f"no registry entry binds session {native} to a live process in {cwd}"
+
+
+def copilot_start_state(native: str, cwd: str, *, home: Path | None = None) -> tuple[str, str]:
+    """``(state, detail)`` for one dispatched copilot session (#1565). Never raises.
+
+    Copilot writes ``session-state/<uuid>/workspace.yaml`` at session CREATION — before any turn
+    runs — so for a pinned id its presence is the start evidence; a first-run or trust screen does
+    not produce it. `absent` is genuinely "not there yet"; an unreadable store is `unreadable`,
+    never `absent` — the same three-answer discipline as :func:`claude_start_state`.
+    """
+    from .engines import base, copilot  # deferred: the engines package must not load at import
+
+    if not copilot.CopilotProvider.id_pattern.match(native or ""):
+        return ABSENT, f"{native!r} is not a copilot session id"
+    try:
+        if not base._copilot_dir(home).is_dir():
+            # Same rule as claude's registry: a store that is not there does not say the agent
+            # did not start; it says we could not look. Fail closed, time out honestly.
+            store = base._copilot_dir(home)
+            return UNREADABLE, f"{store} does not exist, so there is nothing to read"
+        root = base._copilot_sessions_dir(home)
+        if not root.is_dir():
+            # The store exists but its session tree does not: the CLI has never written one
+            # here — a genuine "not yet", and the launch itself creates it on start.
+            return ABSENT, f"no session tree under {base._copilot_dir(home)} yet"
+        target = root / native
+        if not target.is_dir():
+            return ABSENT, f"no session directory for {native} yet"
+        meta = copilot._workspace_meta(target / "workspace.yaml", checked=True)
+    except OSError as e:
+        return UNREADABLE, f"the session store could not be read ({type(e).__name__})"
+    if not meta:
+        # The directory exists but its workspace.yaml has not landed yet — creation is not
+        # atomic. That is "not yet", not "failed".
+        return ABSENT, f"the session directory for {native} has no workspace.yaml yet"
+    if meta.get("id") != native:
+        return UNREADABLE, f"the workspace record in {target} names a different session id"
+    recorded = meta.get("cwd")
+    if not recorded:
+        # A matching id without the cwd binding is a torn write, not evidence of OUR start.
+        return ABSENT, f"the workspace record for {native} has no working directory yet"
+    if _resolved(recorded) != _resolved(cwd):
+        return ABSENT, f"the session records a different working directory ({recorded})"
+    return FOUND, f"workspace.yaml records {native} in {recorded}"

@@ -9,12 +9,17 @@ the one that CLI reports through its own protocol:
   response (the list Claude Code's own model picker shows).
 * ``opencode-acp`` — ``opencode models`` (``provider/model`` per line), the ids its ACP
   ``session/new`` offers as the ``model`` config option; run under the store's shared admission.
+* ``copilot-acp`` — the ACP server's ``configOptions`` of a probe ``session/new`` (#1565): the
+  ``model`` select's options, with ``reasoning_effort``'s as the levels. 1.0.68 offers no
+  ``model`` option at all, so the honest answer there is "no list". The probe session the CLI
+  mints is deleted again.
 
 Every adapter kind in `kinds.API_KINDS` has an entry in `_DISCOVER` (a test pins it), so a new
 adapter cannot ship without deciding where its list comes from.
 
 The probe spawns the admitted source binary with a literal argv and a minimal environment — no
-shell, no prompt, no session: neither CLI writes history before a first turn. It is bounded by a
+shell, no prompt, and (copilot's probe excepted, cleaned up after) no session: neither other CLI
+writes history before a first turn. It is bounded by a
 deadline and a byte cap, and the answer is cached per binary identity (path + inode + size +
 mtime) for `TTL_S`; a failure is cached briefly so a broken CLI is not re-spawned per request.
 
@@ -42,9 +47,12 @@ import os
 import re
 import secrets
 import selectors
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -125,17 +133,18 @@ def _model(mid: Any, *, label: Any, description: Any, efforts: Any, is_default: 
 class _Proc:
     """A short-lived JSON-lines conversation with a CLI under one deadline."""
 
-    def __init__(self, argv: list[str]):
+    def __init__(self, argv: list[str], *, cwd: str | None = None, extra_env: dict | None = None):
         self.proc = subprocess.Popen(  # noqa: S603 — admitted binary, literal argv, no shell
             argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            cwd=str(Path.home()),
+            cwd=cwd or str(Path.home()),
             env={
                 "HOME": str(Path.home()),
                 "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                 "LANG": "C.UTF-8",
+                **(extra_env or {}),
             },
         )
         self.deadline = time.monotonic() + TIMEOUT_S
@@ -382,10 +391,117 @@ def _opencode_models(text: str) -> list[dict]:
 
 _opencode.needs_source = True  # type: ignore[attr-defined]
 
+
+def _copilot_session_id(value: Any) -> str | None:
+    """A copilot ACP session id exactly as the CLI mints it (a canonical UUID), or None — the
+    guard that keeps the probe's cleanup from ever deleting anything but that one directory."""
+    if not isinstance(value, str):
+        return None
+    try:
+        canonical = str(uuid.UUID(value))
+    except ValueError:
+        return None
+    return canonical if canonical == value else None
+
+
+def _discover_copilot(binary: str, *, source) -> list[dict]:
+    """copilot's ACP server (#1565): `initialize` → `session/new` in a throwaway directory, then
+    the new session's `configOptions` — a `model` select's options are the models, and a
+    `reasoning_effort` select's options are the levels (offered once a model is set, so they
+    belong to the model the probe session selected). 1.0.68 offers NO `model` option: a set is
+    silently accepted and never echoed, so the honest answer is that there is no list. Unlike
+    the other probes this one must create a session to ask; the directory the CLI mints for it
+    under the store's `session-state` is deleted again before returning."""
+    cwd = tempfile.mkdtemp(prefix="copilot-models-")
+    session: str | None = None
+    conv = _Proc(
+        [binary, "--acp", "--no-auto-update"],
+        cwd=cwd,
+        extra_env={"COPILOT_AUTO_UPDATE": "false"},
+    )
+    try:
+        conv.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": 1,
+                    "clientCapabilities": {
+                        "fs": {"readTextFile": False, "writeTextFile": False},
+                        "terminal": False,
+                    },
+                },
+            }
+        )
+        reply = conv.answer(lambda f: f.get("id") == 1 and "method" not in f)
+        if "error" in reply:
+            raise ProbeError("the agent refused to list its models")
+        conv.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/new",
+                "params": {"cwd": cwd, "mcpServers": []},
+            }
+        )
+        reply = conv.answer(lambda f: f.get("id") == 2 and "method" not in f)
+        if "error" in reply:
+            raise ProbeError("the agent refused to open a probe session")
+        result = reply.get("result") if isinstance(reply.get("result"), dict) else {}
+        session = _copilot_session_id(result.get("sessionId"))
+        models: list[dict] = []
+        levels: list[str] = []
+        current: str | None = None
+        offered = False
+        for option in _list(result.get("configOptions")):
+            if not isinstance(option, dict) or option.get("type") != "select":
+                continue
+            values = [v for v in _list(option.get("options")) if isinstance(v, dict)]
+            if option.get("id") == "model":
+                offered = True
+                seen = option.get("currentValue")
+                current = seen if isinstance(seen, str) else None
+                for value in values:
+                    m = _model(
+                        value.get("value"),
+                        label=value.get("name"),
+                        description=None,
+                        efforts=[],
+                        is_default=False,
+                    )
+                    if m is not None:
+                        models.append(m)
+            elif option.get("id") == "reasoning_effort":
+                levels = [
+                    v["value"]
+                    for v in values
+                    if isinstance(v.get("value"), str) and _EFFORT.fullmatch(v["value"])
+                ]
+        if not offered:
+            raise ProbeError("this agent does not enumerate its models")
+        # The level set is offered once a model is set (#1565): it belongs to that model.
+        for m in models:
+            if m["id"] == current:
+                m["efforts"] = levels
+        return models
+    finally:
+        conv.close()
+        shutil.rmtree(cwd, ignore_errors=True)
+        if session is not None:
+            root = source.store_root()
+            target = Path(root) / "session-state" / session if root is not None else None
+            if target is not None and target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target, ignore_errors=True)
+
+
+_discover_copilot.needs_source = True  # type: ignore[attr-defined]
+
 _DISCOVER = {
     "opencode-acp": _opencode,
     "codex-app-server": _codex,
     "claude-stream-json": _claude,
+    "copilot-acp": _discover_copilot,
 }
 
 

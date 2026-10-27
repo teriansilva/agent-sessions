@@ -27,6 +27,8 @@ does not remove, so the two cannot drift apart.
 - **Codex** — `~/.codex/sessions`
 - **Codex — API** — `~/.local/share/agent-sessions/native/codex-api`
 - **Gemini CLI** — `~/.gemini/tmp`
+- **GitHub Copilot CLI** — `~/.copilot`
+- **Copilot — API** — `~/.local/share/agent-sessions/native/copilot-api`
 - **Antigravity** — `~/.gemini/antigravity-cli`
 - **Kimi Code** — `~/.kimi-code`
 - **API agent** — `~/.local/share/agent-sessions/chat`

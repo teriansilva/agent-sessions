@@ -10,7 +10,7 @@ from agent_sessions import native_runtime, structured_runtime
 from test_native_journal import event, request
 
 conversation = journal_tests.conversation
-ADAPTERS = ["codex-app-server", "claude-stream-json", "opencode-acp"]
+ADAPTERS = ["codex-app-server", "claude-stream-json", "opencode-acp", "copilot-acp"]
 FIRST_TEXT = 1_791_790_242.125
 
 

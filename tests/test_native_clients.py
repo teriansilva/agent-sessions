@@ -18,6 +18,7 @@ CLIENTS = {
     "codex-api": ("codex", "codex-app-server"),
     "claude-api": ("claude", "claude-stream-json"),
     "opencode-api": ("opencode", "opencode-acp"),  # #1312
+    "copilot-api": ("copilot", "copilot-acp"),  # #1565
 }
 
 

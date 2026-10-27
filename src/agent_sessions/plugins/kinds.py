@@ -49,11 +49,17 @@ API_SOURCE_KINDS = {
     # opencode's Agent Client Protocol over stdio (`opencode acp`, #1312). Its histories live in
     # the operator's shared SQLite store, which stays read-only to BattleLab itself.
     "opencode-acp": ("opencode-sqlite", "opencode-sqlite"),
+    # GitHub Copilot CLI's ACP server (`copilot --acp --no-auto-update`, #1565). Its histories
+    # are per-session directories under `~/.copilot/session-state/`, shared with the console CLI.
+    "copilot-acp": ("copilot-sessions", "copilot-events"),
 }
 API_KINDS = frozenset(API_SOURCE_KINDS)
 #: API kinds whose adapter maps "Skip permission prompts" onto its own protocol (#1339). Any
 #: other kind refuses the field at create rather than launching under a mode it cannot honour.
-API_BYPASS_KINDS = frozenset({"codex-app-server", "claude-stream-json", "opencode-acp"})
+#: copilot-acp: the session's `allow_all` config option (#1565).
+API_BYPASS_KINDS = frozenset(
+    {"codex-app-server", "claude-stream-json", "opencode-acp", "copilot-acp"}
+)
 #: Whether a native protocol takes pictures in a turn (#1332 Phase 3). Every kind decides —
 #: a test pins the keys to `API_KINDS`, so a new adapter cannot ship without saying.
 API_IMAGE_INPUT = {
@@ -61,6 +67,7 @@ API_IMAGE_INPUT = {
     "claude-stream-json": True,  # user message content: base64 image blocks
     # Not yet: ACP image blocks must be gated by the agent's `promptCapabilities.image` (#1332).
     "opencode-acp": False,
+    "copilot-acp": False,  # same ACP image gate as opencode-acp (#1565)
 }
 #: The BattleLab conversation store owns UUIDs independently of a native agent's session id.
 API_SESSION_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -96,16 +103,17 @@ MINT_KINDS = frozenset({"pinned", "adopt"})
 # --- launch -------------------------------------------------------------------------------------
 
 #: Flags that take the session id as their value on RESUME.
-#: claude/gemini `--resume`, antigravity `--conversation`, kimi `-S`, opencode `--session`.
+#: claude/gemini/copilot `--resume`, antigravity `--conversation`, kimi `-S`, opencode `--session`.
 RESUME_FLAGS = frozenset({"--resume", "--conversation", "-S", "--session"})
 #: Subcommands that take the session id as their positional argument on resume. codex `resume`.
 RESUME_SUBCOMMANDS = frozenset({"resume"})
-#: Flags that pin a caller-minted id on a NEW session. claude/gemini `--session-id`.
+#: Flags that pin a caller-minted id on a NEW session. claude/gemini/copilot `--session-id`.
 NEW_PIN_FLAGS = frozenset({"--session-id"})
 #: Flags that take the working directory as their value on a new session. codex `--cd`.
 CWD_FLAGS = frozenset({"--cd"})
-#: Permission-bypass flags. claude/antigravity `--dangerously-skip-permissions`, gemini `--yolo` +
-#: `--skip-trust`, kimi `-y`, codex `--dangerously-bypass-approvals-and-sandbox`.
+#: Permission-bypass flags. claude/antigravity `--dangerously-skip-permissions`, gemini/copilot
+#: `--yolo` (+ gemini `--skip-trust`), kimi `-y`, codex
+#: `--dangerously-bypass-approvals-and-sandbox`.
 BYPASS_FLAGS = frozenset(
     {
         "--dangerously-skip-permissions",
@@ -116,7 +124,10 @@ BYPASS_FLAGS = frozenset(
     }
 )
 #: Arguments placed straight after argv[0] on every launch. shell `-l` (a login shell).
-BASE_ARGS = frozenset({"-l"})
+#: copilot `--no-auto-update` (#1565): the CLI otherwise self-downloads into `~/.cache/copilot`
+#: and re-execs from there, outside the provenance-bound entrypoint — it rides on EVERY console
+#: launch so no spawn seam can forget it.
+BASE_ARGS = frozenset({"-l", "--no-auto-update"})
 #: Where bypass flags apply. codex has no per-launch bypass on resume, only on new.
 BYPASS_ON = frozenset({"both", "new"})
 
@@ -159,6 +170,7 @@ STORE_LAYOUTS = frozenset(
         "gemini-tmp",
         "antigravity-cli",
         "kimi-code",
+        "copilot-sessions",  # copilot: `~/.copilot/session-state/<uuid>/` per session (#1565)
         "shell-records",
         "battlelab-chat",  # chat runtime: BattleLab's own per-session JSONL (#1209)
     }
@@ -183,6 +195,7 @@ TRANSCRIPT_KINDS = frozenset(
         "opencode-sqlite",
         "gemini-chat",
         "antigravity-brain",
+        "copilot-events",  # copilot's `session-state/<uuid>/events.jsonl` (#1565)
         "battlelab-chat",  # chat runtime (#1209)
         "none",
     }
@@ -205,7 +218,7 @@ USAGE_KINDS = frozenset(
 )
 #: `usage.access` — how an engine's ACCOUNT ACCESS is observed (#1167), independent of `source`:
 #: whether the vendor refuses this login at all. Each names a built-in check in `agent_usage`.
-USAGE_ACCESS_KINDS = frozenset({"gemini-acp-auth", "kimi-wire-auth-error"})
+USAGE_ACCESS_KINDS = frozenset({"gemini-acp-auth", "kimi-wire-auth-error", "copilot-acp-auth"})
 #: The only token a `*-cli-probe` may send the vendor CLI (`agent_usage`: "the literal string
 #: `/usage` and nothing else").
 USAGE_PROBE_TOKENS = frozenset({"/usage"})
@@ -225,7 +238,9 @@ MENU_KINDS = frozenset({"none", "claude-numbered"})
 #: (`permission_prompts._KINDS`, #1213). Operator-only: no autonomous path reads it.
 PERMISSION_KINDS = frozenset({"none", "claude-permission", "opencode-permission"})
 #: `unattended.start_evidence` — the artifact that answers "did an agent start" (#989/#1050).
-START_EVIDENCE_KINDS = frozenset({"none", "claude-sessions", "opencode-log"})
+#: `copilot-sessions`: the pinned `<uuid>` directory + `workspace.yaml` under
+#: `~/.copilot/session-state/` (#1565).
+START_EVIDENCE_KINDS = frozenset({"none", "claude-sessions", "opencode-log", "copilot-sessions"})
 #: `maintenance` — store maintenance a plugin admits (#993).
 MAINTENANCE_KINDS = frozenset({"sqlite-vacuum"})
 
@@ -245,16 +260,24 @@ INSTRUCTION_FILES = frozenset({"CLAUDE.md", "AGENTS.md", "GEMINI.md"})
 #: `agent_tools`, proven against the CLI versions recorded beside it there. Absent = the agent gets
 #: the memory environment variables only.
 #: claude `--mcp-config <json>`; codex `-c mcp_servers.<name>.*`; opencode
-#: `OPENCODE_CONFIG_CONTENT`.
+#: `OPENCODE_CONFIG_CONTENT`; copilot `--additional-mcp-config <json>` (#1565).
 MCP_KINDS = frozenset(
-    {"claude-mcp-config-flag", "codex-config-override", "opencode-config-content"}
+    {
+        "claude-mcp-config-flag",
+        "codex-config-override",
+        "opencode-config-content",
+        "copilot-additional-mcp-config",
+    }
 )
 #: The `tools.mcp` kind each native API protocol carries in its own slot (claude's argv, codex's
 #: per-thread `config`, ACP `mcpServers`). An `api` manifest may declare only its protocol's.
+#: copilot's ACP rejects stdio `mcpServers`, so its API worker passes the same
+#: `--additional-mcp-config` flag the console takes (#1565).
 API_MCP_KINDS = {
     "claude-stream-json": ("claude-mcp-config-flag",),
     "codex-app-server": ("codex-config-override",),
     "opencode-acp": ("opencode-config-content",),
+    "copilot-acp": ("copilot-additional-mcp-config",),
 }
 
 # --- display -------------------------------------------------------------------------------------
@@ -292,6 +315,7 @@ PROBE_KINDS = frozenset(
         "prompt-pinned",  # gemini
         "prompt-session",  # kimi
         "print-conversation",  # antigravity
+        "copilot-prompt-pinned",  # copilot (#1565): tools disabled, pinned or resumed id
     }
 )
 #: `verify` — the fixed check list (#853 §3). A manifest selects a subset; it never writes a check.
@@ -424,6 +448,8 @@ RESERVED_IDS = frozenset(
         "codex-api",
         "claude-api",
         "opencode-api",
+        "copilot",
+        "copilot-api",
     }
 )
 

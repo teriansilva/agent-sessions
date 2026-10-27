@@ -127,6 +127,22 @@ def _probe_argv(prov, purpose: str, native_id: str, operation_id: str) -> list[s
                 "60s",
                 *(["--conversation", native_id] if resume else []),
             ]
+        case "copilot-prompt-pinned":
+            # copilot (#1565): a non-interactive prompt with NO tools, no custom instructions,
+            # no questions and no self-update — the probe must prove the pipeline answers, never
+            # exercise a permission path.
+            return [
+                ep,
+                "--no-auto-update",
+                "--no-custom-instructions",
+                "--no-ask-user",
+                "--disable-builtin-mcps",
+                "--available-tools=none",
+                "--resume" if resume else "--session-id",
+                native_id,
+                "--prompt",
+                message,
+            ]
     raise ProcessError("this verification mode is unavailable")
 
 

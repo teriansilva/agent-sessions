@@ -949,6 +949,15 @@ def _control(name, default=None):
         return default
 
 
+def _control_copilot(name, default=None):
+    """Test switches for the copilot fake (#1565), under its HOME like the opencode one's."""
+    try:
+        with open(os.path.join(os.environ["HOME"], ".fake-copilot", name)) as fh:
+            return fh.read().strip()
+    except OSError:
+        return default
+
+
 def _merge(base, over):
     """opencode merges config key by key: an existing key keeps its position, new keys append."""
     out = dict(base)
@@ -1334,6 +1343,307 @@ def opencode():
             prompt = None
 
 
+#: copilot's session modes are URIs (#1565); BattleLab pins the agent one, and the fake can be
+#: made to escape to the autopilot one mid-turn (`MODE_ESCAPE`).
+COPILOT_MODE_AGENT = "https://agentclientprotocol.com/protocol/session-modes#agent"
+COPILOT_MODE_AUTOPILOT = "https://agentclientprotocol.com/protocol/session-modes#autopilot"
+COPILOT_LEVELS = ("none", "low", "medium", "high")
+
+
+def _copilot_config(model, effort, allow_all="off", mode=COPILOT_MODE_AGENT):
+    """copilot's configOptions as 1.0.68 reports them: `mode` (mode URIs) and `allow_all` always;
+    `reasoning_effort` once a model is set; a `model` option only with the `models` switch — the
+    real build enumerates none and accepts a set without echoing it."""
+    options = [
+        {
+            "id": "mode",
+            "name": "Mode",
+            "type": "select",
+            "currentValue": mode,
+            "options": [
+                {"value": m, "name": m.rsplit("#", 1)[-1]}
+                for m in (COPILOT_MODE_AGENT, COPILOT_MODE_AUTOPILOT)
+            ],
+        },
+        {
+            "id": "allow_all",
+            "name": "Allow all",
+            "type": "select",
+            "currentValue": allow_all,
+            "options": [{"value": "off", "name": "Off"}, {"value": "on", "name": "On"}],
+        },
+    ]
+    if _control_copilot("models"):
+        options.insert(
+            0,
+            {
+                "id": "model",
+                "name": "Model",
+                "type": "select",
+                "currentValue": model or "fake-copilot-a",
+                "options": [
+                    {"value": "fake-copilot-a", "name": "Fake Copilot A"},
+                    {"value": "fake-copilot-b", "name": "Fake Copilot B"},
+                ],
+            },
+        )
+    if model is not None or _control_copilot("models"):
+        options.append(
+            {
+                "id": "reasoning_effort",
+                "name": "Reasoning effort",
+                "type": "select",
+                "currentValue": effort or "medium",
+                "options": [{"value": v, "name": v} for v in COPILOT_LEVELS],
+            }
+        )
+    return options
+
+
+def copilot():
+    """`copilot --acp --no-auto-update` (ACP 1, as measured on 1.0.68/1.0.70, #1565). Session ids
+    are plain v4 UUIDs; `session/new` also mints the session's store directory the way the real
+    CLI does, so the model-list probe's cleanup can be proven against it."""
+    session, model, effort, mode, allow_all = None, None, None, COPILOT_MODE_AGENT, "off"
+    prompt = None  # the id of the open session/prompt request
+    serial = [100]
+
+    def update(update_kind, **fields):
+        send(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": session,
+                    "update": {"sessionUpdate": update_kind, **fields},
+                },
+            }
+        )
+
+    def reply(rid, result):
+        send({"jsonrpc": "2.0", "id": rid, "result": result})
+
+    def ask(tool_call, options):
+        serial[0] += 1
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": serial[0],
+                "method": "session/request_permission",
+                "params": {"sessionId": session, "toolCall": tool_call, "options": options},
+            }
+        )
+        return serial[0]
+
+    def answer_to(rid):
+        for frame in stream:
+            if frame.get("id") == rid and "method" not in frame:
+                outcome = frame["result"]["outcome"]
+                return outcome.get("optionId") or outcome["outcome"]
+        sys.exit(0)
+
+    def finish(rid, text, reason="end_turn"):
+        if text:
+            update(
+                "agent_message_chunk", messageId="prt_1", content={"type": "text", "text": text[:3]}
+            )
+            update(
+                "agent_message_chunk", messageId="prt_1", content={"type": "text", "text": text[3:]}
+            )
+        reply(rid, {"stopReason": reason, "usage": {"totalTokens": 1}})
+
+    # What the child was given (auto-update off, the sanitized keys) rides on every log entry.
+    EXTRA["env"] = {
+        "auto_update": os.environ.get("COPILOT_AUTO_UPDATE"),
+        "keys": sorted(os.environ),
+    }
+    stream = frames()
+    for frame in stream:
+        method, rid, params = frame.get("method"), frame.get("id"), frame.get("params", {})
+        if method is None:
+            continue  # a late answer (e.g. a cancelled permission, a refused fs request)
+        if method == "initialize":
+            reply(
+                rid,
+                {
+                    "protocolVersion": 1,
+                    "agentCapabilities": {
+                        "loadSession": True,
+                        "mcpCapabilities": {"http": True, "sse": True},
+                        "promptCapabilities": {"image": True},
+                    },
+                    "agentInfo": {
+                        "name": "Copilot",
+                        "version": _control_copilot("version", "1.0.68"),
+                    },
+                    "authMethods": [{"id": "copilot-login"}],
+                },
+            )
+        elif method == "session/new":
+            if params.get("mcpServers"):
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": rid,
+                        "error": {
+                            "code": -32602,
+                            "message": "Only HTTP and SSE MCP servers are supported",
+                        },
+                    }
+                )
+                continue
+            session = str(uuid.uuid4())
+            mode = COPILOT_MODE_AUTOPILOT if _control_copilot("stuck") else mode
+            # The CLI records the session it minted, even for a bare probe (#1565).
+            store = os.path.join(os.environ["HOME"], ".copilot", "session-state", session)
+            os.makedirs(store, exist_ok=True)
+            with open(os.path.join(store, "events.jsonl"), "a"):
+                pass
+            reply(
+                rid,
+                {
+                    "sessionId": session,
+                    "modes": {"currentModeId": mode},
+                    "configOptions": _copilot_config(model, effort, allow_all, mode),
+                },
+            )
+            update("available_commands_update", availableCommands=[])
+        elif method == "session/load":
+            session, mode = params["sessionId"], COPILOT_MODE_AUTOPILOT  # left in another mode
+            # History replays BEFORE the reply, including (hostile) a permission request no live
+            # turn asked: it must be answered cancelled and never presented.
+            update("user_message_chunk", messageId="msg_old", content={"type": "text", "text": "x"})
+            update(
+                "tool_call",
+                toolCallId="call-old",
+                title="rm -rf old",
+                kind="execute",
+                status="pending",
+                rawInput={"command": "rm -rf old"},
+            )
+            ask({"toolCallId": "call-old", "kind": "execute", "title": "rm -rf old"}, [ONCE])
+            reply(rid, {})  # the load result is an EMPTY object on 1.0.68
+        elif method == "session/set_config_option":
+            config_id, value = params["configId"], params["value"]
+            if config_id == "mode":
+                if value not in (COPILOT_MODE_AGENT, COPILOT_MODE_AUTOPILOT):
+                    send(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": rid,
+                            "error": {"code": -32602, "message": "Invalid params: no such mode"},
+                        }
+                    )
+                    continue
+                mode = mode if _control_copilot("stuck") else value
+            elif config_id == "allow_all":
+                if value not in ("on", "off"):
+                    send(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": rid,
+                            "error": {"code": -32602, "message": "Invalid params: bad allow_all"},
+                        }
+                    )
+                    continue
+                allow_all = value
+            elif config_id == "model":
+                # 1.0.68: silently accepted, never echoed — the reply carries no model option.
+                model = value
+                effort = None  # a model switch starts on that model's own level
+            elif config_id == "reasoning_effort":
+                if model is None or value not in COPILOT_LEVELS:
+                    send(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": rid,
+                            "error": {
+                                "code": -32602,
+                                "message": f"Invalid params: effort not found: {value}",
+                            },
+                        }
+                    )
+                    continue
+                if not _control_copilot("effort-ignored"):
+                    effort = value
+            else:
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": rid,
+                        "error": {"code": -32602, "message": "Invalid params: no such option"},
+                    }
+                )
+                continue
+            reply(rid, {"configOptions": _copilot_config(model, effort, allow_all, mode)})
+        elif method == "session/cancel":
+            wait_cancel()
+            if prompt is not None:
+                reply(prompt, {"stopReason": "cancelled", "usage": {"totalTokens": 0}})
+                prompt = None
+        elif method == "session/prompt":
+            text = params["prompt"][0]["text"]
+            prompt = rid
+            if text == "DIE":
+                sys.exit(9)
+            if text in {"HANG", "HANG_APPROVE"}:
+                if text == "HANG_APPROVE":
+                    ask(
+                        {
+                            "toolCallId": "call-h",
+                            "kind": "execute",
+                            "title": "sleep",
+                            "rawInput": {"command": "sleep 60"},
+                        },
+                        [ONCE, REJECT],
+                    )
+                continue
+            wait_release(text)
+            if text == "FAIL":
+                send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32603, "message": "boom"}})
+                prompt = None
+                continue
+            if text == "MODE_ESCAPE":
+                update("current_mode_update", currentModeId=COPILOT_MODE_AUTOPILOT)
+                continue
+            if text in {"APPROVE", "EDIT", "ONLY_ALWAYS", "DUP_ONCE"}:
+                if text == "EDIT":
+                    # An edit is DECLINE-ONLY for copilot (#1565): asked, never approvable.
+                    tool = {
+                        "toolCallId": "call-e",
+                        "title": "/w/README.md",
+                        "kind": "edit",
+                        "status": "pending",
+                        "locations": [{"path": "/w/README.md"}],
+                        "rawInput": {"path": "/w/README.md", "newText": "new\n"},
+                    }
+                else:
+                    tool = {
+                        "toolCallId": "call-1",
+                        "title": "ls -la",
+                        "kind": "execute",
+                        "status": "pending",
+                        "locations": [],
+                        "rawInput": {"command": "ls -la"},
+                    }
+                options = {
+                    "ONLY_ALWAYS": [ALWAYS, REJECT],
+                    "DUP_ONCE": [ONCE, {**ONCE, "optionId": "once-2"}, REJECT],
+                }.get(text, [ALWAYS, ONCE, REJECT])
+                chosen = answer_to(ask(tool, options))
+                update(
+                    "tool_call_update",
+                    toolCallId=tool["toolCallId"],
+                    status="completed" if chosen == "once" else "failed",
+                    content=[{"type": "content", "content": {"type": "text", "text": "done"}}],
+                )
+                finish(rid, "approved:" + chosen)
+                prompt = None
+                continue
+            finish(rid, "echo:" + text)
+            prompt = None
+
+
 if __name__ == "__main__":
     name = os.path.basename(sys.argv[0])
     if "--version" in sys.argv:
@@ -1342,6 +1652,8 @@ if __name__ == "__main__":
             if name.startswith("codex")
             else _control("version", "1.18.35")
             if name.startswith("opencode")
+            else _control_copilot("version", "1.0.68")
+            if name.startswith("copilot")
             else "2.1.292 (Claude Code)"
         )
     elif "app-server" in sys.argv:
@@ -1350,6 +1662,8 @@ if __name__ == "__main__":
         _debug_config()
     elif sys.argv[1:2] == ["acp"]:
         opencode()
+    elif sys.argv[1:2] == ["--acp"]:
+        copilot()
     elif sys.argv[1:] == ["models", "--verbose"]:
         # opencode's model list (#1312/#1313/#1407), as 1.18.35 prints it: an id line, then that
         # model's JSON; `variants` keys are its reasoning levels. Junk lines and a malformed

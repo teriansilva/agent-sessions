@@ -26,6 +26,7 @@ from . import base
 from .antigravity import AntigravityProvider
 from .claude import ClaudeProvider
 from .codex import CodexProvider
+from .copilot import CopilotProvider
 from .gemini import GeminiProvider
 from .kimi import KimiProvider
 from .opencode import OpenCodeProvider
@@ -207,6 +208,7 @@ STORE_KINDS: dict[str, type] = {
     "gemini-tmp": GeminiProvider,
     "antigravity-cli": AntigravityProvider,
     "kimi-code": KimiProvider,
+    "copilot-sessions": CopilotProvider,
     "shell-records": ShellProvider,
     "battlelab-chat": ChatStoreKind,
 }

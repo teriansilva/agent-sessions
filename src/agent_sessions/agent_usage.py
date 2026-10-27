@@ -1179,6 +1179,87 @@ def check_gemini_access(
     return got
 
 
+#: copilot's `authenticate` refusals that mean THE ACCOUNT is refused (#1565) — the ACP
+#: "authentication required" code, or a closed set of refusal texts. Any other error (network,
+#: internal, protocol drift) is unknown, never denied.
+_COPILOT_AUTH_DENIED_CODE = -32000
+_COPILOT_REFUSALS = re.compile(
+    r"not logged in|not authenticated|authentication required|unauthorized|sign in", re.IGNORECASE
+)
+_COPILOT_AUTH_ID = 2
+_COPILOT_ACP_REQUEST = (
+    "\n".join(
+        json.dumps(msg, separators=(",", ":"))
+        for msg in (
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": 1, "clientCapabilities": {}},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": _COPILOT_AUTH_ID,
+                "method": "authenticate",
+                # copilot's one advertised auth method (`initialize.authMethods`, 1.0.68).
+                "params": {"methodId": "copilot-login"},
+            },
+        )
+    )
+    + "\n"
+).encode()
+
+
+def parse_copilot_acp_auth(text: str, now: float | None = None) -> Access:
+    """Classify copilot's ACP ``initialize`` + ``authenticate`` replies: denied / ok / unknown."""
+    now = time.time() if now is None else now
+    init = _jsonrpc_reply(text, 1)
+    if init is None or "error" in init:
+        return Access(None, error="copilot ACP initialize failed")
+    auth = _jsonrpc_reply(text, _COPILOT_AUTH_ID)
+    if auth is None:
+        return Access(None, error="no authenticate reply")
+    if "result" in auth and "error" not in auth:
+        return Access(ACCESS_OK, observed_at=now)
+    err = auth.get("error")
+    code = err.get("code") if isinstance(err, dict) else None
+    msg = err.get("message") if isinstance(err, dict) else None
+    refused = code == _COPILOT_AUTH_DENIED_CODE or (
+        isinstance(msg, str) and _COPILOT_REFUSALS.search(msg)
+    )
+    if refused:
+        return Access(
+            ACCESS_DENIED,
+            message=_excerpt(msg) if isinstance(msg, str) else None,
+            observed_at=now,
+        )
+    return Access(None, error=(msg if isinstance(msg, str) else "authenticate failed")[:200])
+
+
+def check_copilot_access(
+    binary: str | None = None, *, engine: str | None = None, now: float | None = None, **_kw
+) -> Access:
+    """Ask copilot whether it will log this account in — `initialize` + `authenticate` over ACP,
+    and NOTHING else: no `session/new`, no prompt (#1565). `--no-auto-update` rides along so the
+    check never kicks off the CLI's self-updater."""
+    engine = engine or _engine_for_access("copilot-acp-auth")
+    exe = binary or _probe_binary(engine)
+    if not exe:
+        return Access(None, error=f"{_binary_name(engine)} not found")
+    code, out = _run(
+        [exe, "--acp", "--no-auto-update"],
+        send=_COPILOT_ACP_REQUEST,
+        done=lambda b: all(
+            _jsonrpc_reply(b.decode("utf-8", "replace"), i) is not None
+            for i in (1, _COPILOT_AUTH_ID)
+        ),
+    )
+    got = parse_copilot_acp_auth(out, now)
+    if got.state is None and code not in (0, None) and got.error == "copilot ACP initialize failed":
+        got.error = _first_line(out) or f"{_binary_name(engine)} --acp exited {code}"
+    return got
+
+
 #: How much of kimi's record is read to find its latest turn: the newest N wire files, each tail.
 KIMI_WIRE_FILES = 5
 KIMI_TAIL_BYTES = 512 * 1024
@@ -1263,6 +1344,7 @@ def check_kimi_access(
 ACCESS_KINDS: dict[str, object] = {
     "gemini-acp-auth": check_gemini_access,
     "kimi-wire-auth-error": check_kimi_access,
+    "copilot-acp-auth": check_copilot_access,
 }
 
 

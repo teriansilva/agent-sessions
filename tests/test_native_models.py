@@ -219,6 +219,31 @@ def test_opencode_lists_its_models_under_shared_store_admission(host, tmp_home, 
     assert busy.status == "unavailable" and "maintenance" in busy.reason
 
 
+def test_copilot_without_a_model_option_is_honestly_unavailable(host, tmp_home):
+    """1.0.68 enumerates no `model` config option (#1565): no list is fabricated, and the probe
+    session the CLI minted to answer the question is deleted again afterwards."""
+    listing = native_models.models(registry.get(ENGINES["copilot"]))
+    assert listing.status == "unavailable" and "does not enumerate" in listing.reason
+    state = tmp_home / ".copilot" / "session-state"
+    assert not list(state.iterdir()) if state.exists() else True
+
+
+def test_copilot_models_come_from_the_probe_sessions_config_options(host, tmp_home):
+    """A build that DOES enumerate: the `model` select's options, with the `reasoning_effort`
+    select's values as the selected model's levels (#1565)."""
+    control = tmp_home / ".fake-copilot"
+    control.mkdir(exist_ok=True)
+    (control / "models").write_text("1")
+    listing = native_models.models(registry.get(ENGINES["copilot"]))
+    assert listing.status == "ok", listing.reason
+    assert [(m["id"], m["label"], m["efforts"]) for m in listing.models] == [
+        ("fake-copilot-a", "Fake Copilot A", ["none", "low", "medium", "high"]),
+        ("fake-copilot-b", "Fake Copilot B", []),
+    ]
+    state = tmp_home / ".copilot" / "session-state"
+    assert not list(state.iterdir()) if state.exists() else True
+
+
 def test_opencode_verbose_parsing_is_bounded_and_fail_soft():
     """`opencode models --verbose` as 1.18.35 prints it (#1407): `default` is never a level, a
     plain id-per-line answer still parses, and an oversized or unterminated block costs only its

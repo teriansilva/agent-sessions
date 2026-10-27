@@ -1,0 +1,77 @@
+contract = 1
+verify = ["binary", "version", "store", "new", "resume", "transcript", "usage"]
+
+[identity]
+id = "copilot"
+label = "GitHub Copilot CLI"
+publisher = "battlelab"
+version = "1"
+
+[binary]
+name = "copilot"
+# An adopted `npm i -g @github/copilot` install: bin/copilot is a symlink to the package's
+# npm-loader.js, which forwards argv + env to the bundled @github/copilot-linux-x64 binary (#1565).
+aliases = ["npm-loader.js"]
+env_var = "AGENT_SESSIONS_COPILOT_BIN"
+search_paths = ["~/.local/bin"]
+search_npm_global = true  # vendor installs it with `npm i -g`; `doctor` also looks in npm's global bin
+version_flag = "--version"
+
+[session_id]
+pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+mint = "pinned"  # `--session-id <uuid>` pins a new session's id; `--resume <uuid>` takes one back
+
+[store]
+root = "~/.copilot"
+layout = "copilot-sessions"
+[store.paths]
+sessions = "session-state"
+archive = "session-state-archive"
+
+[launch]
+# `--no-auto-update` on EVERY launch: without it the CLI downloads into `~/.cache/copilot/pkg/`
+# and re-execs from there, outside the provenance-bound entrypoint (#1565).
+base_args = ["--no-auto-update"]
+resume = { kind = "flag", flag = "--resume" }
+new = { kind = "pin-flag", flag = "--session-id" }
+bypass = ["--yolo"]
+model = { kind = "flag", flag = "--model", on_resume = true }
+
+[capabilities]
+resume = true
+new = true
+archive = true
+handoff_target = true
+seed_start = true
+orchestrator_input = true
+raw_tty = true
+
+[transcript]
+kind = "copilot-events"
+
+[usage]
+source = "manual"  # no reviewed quota probe; the experimental headless RPC is out of scope (#1565)
+access = "copilot-acp-auth"
+
+[unattended]
+start_evidence = "copilot-sessions"
+
+[instructions]
+files = ["AGENTS.md", "CLAUDE.md"]
+
+# The one id evidenced on this host's store (#1565); others: Settings → Agents.
+[[models.list]]
+id = "gpt-5.5"
+
+# BattleLab's memory tool (#1506), wired in per launch; versions proven in `agent_tools`.
+[tools]
+mcp = "copilot-additional-mcp-config"
+
+[probe]
+kind = "copilot-prompt-pinned"
+
+[display]
+order = 45
+name = "copilot"
+badge = "cp"
+accent = "teal"

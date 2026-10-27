@@ -1286,6 +1286,76 @@ register_locator("antigravity-brain", _antigravity_locator)
 register_growth("antigravity-brain", _antigravity_growth)
 
 
+# --- copilot (#1565) ------------------------------------------------------------------------
+# Copilot CLI's per-session event log: `~/.copilot/session-state/<uuid>/events.jsonl`
+# (`session-state-archive/` once archived — the transcript must still render then). Records are
+# `session.start`, `user.message`, `assistant.message`, `tool.execution_*`, …. The human/synthetic
+# split (skills, slash commands, autopilot continuations, subagent turns) is the provider's own
+# rule (`engines.copilot`), reused here so titles and transcripts never drift.
+
+
+def copilot_events_path(native_id: str, home: Path) -> Path | None:
+    """Resolve a copilot session uuid to its ``events.jsonl`` in the live or archive tree —
+    an EXACT directory-name match only (the id pattern gates it), never a prefix neighbour."""
+    from .engines import base, copilot
+
+    if not copilot.CopilotProvider.id_pattern.match(native_id or ""):
+        return None
+    for root in (base._copilot_sessions_dir(home), base._copilot_archive_dir(home)):
+        path = root / native_id / "events.jsonl"
+        try:
+            if path.is_file():
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def _copilot_turns_from_events(
+    path: Path, *, max_messages: int = DEFAULT_MAX_MESSAGES
+) -> list[Turn]:
+    """Parse a copilot ``events.jsonl`` into Turns. A human ``user.message`` is a user turn; a
+    skill/command/autopilot one (``data.source`` / ``isAutopilotContinuation``) is ``context``
+    (#1020: rendered, never taken as something the user said); a subagent's turn (top-level
+    ``agentId``) renders nothing. ``assistant.message`` records are the assistant turns."""
+    from .engines import copilot
+
+    recs = _jsonl_dicts(_read_tail(path))
+    turns: list[Turn] = []
+    for o in recs:
+        if not isinstance(o, dict) or o.get("agentId"):
+            continue
+        t = o.get("type")
+        if t == "user.message":
+            text = copilot.human_user_text(o)
+            if text:
+                turns.append(Turn("user", text, "text", _when(o.get("timestamp"))))
+                continue
+            data = o.get("data")
+            content = data.get("content") if isinstance(data, dict) else None
+            if isinstance(content, str) and content.strip():
+                turns.append(Turn("user", content.strip(), "context", _when(o.get("timestamp"))))
+        elif t == "assistant.message":
+            data = o.get("data")
+            content = data.get("content") if isinstance(data, dict) else None
+            if isinstance(content, str) and content.strip():
+                turns.append(Turn("assistant", content.strip(), "text", _when(o.get("timestamp"))))
+    # Cap RENDERABLE turns, not raw records: a tool-heavy exchange is mostly records that
+    # render nothing, so capping first could drop the prompt and keep only its answer.
+    cut = _over_tail(path) or len(turns) > max_messages
+    return tagged_turns(turns[-max_messages:], cut)
+
+
+def _copilot_adapter(native_id: str, home: Path) -> list[Turn]:
+    path = copilot_events_path(native_id, home)
+    return _copilot_turns_from_events(path) if path is not None else []
+
+
+register_adapter("copilot-events", _copilot_adapter)
+register_locator("copilot-events", _path_locator(copilot_events_path))
+register_growth("copilot-events", _path_growth(copilot_events_path))
+
+
 # --- battlelab-chat (#1209): the API agent's own store ----------------------------------------
 
 
@@ -1436,6 +1506,37 @@ register_model_reader(
 register_model_reader(
     "codex-rollout",
     lambda native, home: codex_model_from_records(_tail_records(codex_rollout_path(native, home))),
+)
+
+
+def copilot_model_from_records(recs: list[dict]) -> str | None:
+    """The newest model a copilot ``events.jsonl`` names (#1565): an assistant message's
+    ``data.model``, a ``session.model_change``'s ``data.newModel``, or the ``session.start``
+    ``data.selectedModel`` — in that precedence, scanning newest-first."""
+    for o in reversed(recs):
+        if not isinstance(o, dict) or o.get("agentId"):
+            continue
+        data = o.get("data")
+        if not isinstance(data, dict):
+            continue
+        t = o.get("type")
+        found = None
+        if t == "assistant.message":
+            found = _model_shaped(data.get("model"))
+        elif t == "session.model_change":
+            found = _model_shaped(data.get("newModel"))
+        elif t == "session.start":
+            found = _model_shaped(data.get("selectedModel"))
+        if found:
+            return found
+    return None
+
+
+register_model_reader(
+    "copilot-events",
+    lambda native, home: copilot_model_from_records(
+        _tail_records(copilot_events_path(native, home))
+    ),
 )
 
 

@@ -56,6 +56,7 @@ ALLOWED = {
     "engines/gemini.py",
     "engines/antigravity.py",
     "engines/kimi.py",
+    "engines/copilot.py",
     "engines/shell.py",
     "scanner.py",  # the `claude-projects` store kind's reader
     "archive.py",  # the `claude-projects` store kind's archive move
@@ -371,23 +372,24 @@ def test_every_moved_table_answers_what_the_old_one_did():
     """The pre-P3 tables, recorded verbatim, against what the manifests now answer."""
     roster = engines.engine_ids()
     assert set(roster) == set(kinds.RESERVED_IDS)
-    # The pre-P3 tables describe the seven terminal engines; the API agent (#1209) is newer than
-    # all of them and has no "old" answer to agree with.
+    # The pre-P3 tables describe the terminal engines; the API agent (#1209) is newer than
+    # all of them and has no "old" answer to agree with. copilot (#1565) joined with its old
+    # answers recorded here, the same as the seven before it.
     seven = [e for e in roster if engines.manifest_of(e).runtime == "pty"]
-    assert len(seven) == 7
+    assert len(seven) == 8
     old_wipe = {"codex", "kimi"}
     old_winch = {"antigravity"}
     # kimi moved from the manual counter to a plan reporter on purpose (#1239: kimi 2.1's
     # `kimi web` answers its quota) — the one recorded delta from the pre-P3 usage tables.
-    old_manual = {"gemini"}
+    old_manual = {"gemini", "copilot"}
     old_reporters = {"claude", "antigravity", "codex", "opencode", "kimi"}
-    old_start_evidence = {"claude"}
+    old_start_evidence = {"claude", "copilot"}
     old_painted = {"claude"}
     old_menu = {"claude"}
     old_digit = {"claude"}
     old_admission = {"opencode"}
     old_owns = {"claude"}
-    old_npm_global = {"codex", "gemini"}
+    old_npm_global = {"codex", "gemini", "copilot"}
     old_bin_name = {"antigravity": "agy", "shell": "bash"}
     old_dirs = {
         "claude": ["~/.local/bin"],
@@ -396,6 +398,7 @@ def test_every_moved_table_answers_what_the_old_one_did():
         "gemini": ["~/.local/bin"],
         "antigravity": ["~/.local/bin"],
         "kimi": ["~/.kimi-code/bin", "~/.local/bin"],
+        "copilot": ["~/.local/bin"],
         "shell": ["/bin", "/usr/bin"],
     }
     for e in seven:
@@ -443,6 +446,9 @@ def test_store_locations_come_from_the_manifest_with_every_old_default_and_overr
     assert base._gemini_tmp_dir(home) == home / ".gemini" / "tmp"
     assert base._antigravity_dir(home) == home / ".gemini" / "antigravity-cli"
     assert base._kimi_dir(home) == home / ".kimi-code"
+    assert base._copilot_dir(home) == home / ".copilot"
+    assert base._copilot_sessions_dir(home) == home / ".copilot" / "session-state"
+    assert base._copilot_archive_dir(home) == home / ".copilot" / "session-state-archive"
     assert base._codex_sessions_dir(home) == home / ".codex" / "sessions"
     assert base._opencode_db(home) == str(home / ".local" / "share" / "opencode" / "opencode.db")
     assert base._opencode_log(home) == home / ".local/share/opencode/log/opencode.log"

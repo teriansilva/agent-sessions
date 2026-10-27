@@ -269,6 +269,10 @@ def derive(adapter: str, kind: str | None, payload, cwd: str | None) -> dict:
             risk, choices = _claude(payload, cwd)
         elif adapter == "opencode-acp":
             risk, choices = _opencode(payload, cwd)
+        elif adapter == "copilot-acp":
+            # copilot never offers `allow_always` to BattleLab (#1565): no grant to derive, by
+            # decision — not by omission from the unknown-adapter fallthrough.
+            return {"risk": None, "always": []}
         else:
             return {"risk": None, "always": []}  # any other adapter maps no standing grant
     except Exception:  # noqa: BLE001 — client-supplied shapes: fail closed, never break the read

@@ -524,6 +524,133 @@
       "status_reason": null
     },
     {
+      "id": "copilot",
+      "present": true,
+      "supports_new": true,
+      "supports_seed_start": true,
+      "seed_reason": null,
+      "bin": "/fixture/bin/copilot",
+      "label": "GitHub Copilot CLI",
+      "kind": "agent",
+      "runtime": "pty",
+      "api": null,
+      "display": {
+        "name": "copilot",
+        "badge": "cp",
+        "accent": "teal",
+        "id_prefix": null,
+        "order": 45
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": true,
+        "seed_start": true,
+        "orchestrator_input": true,
+        "raw_tty": true,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [
+        {
+          "id": "gpt-5.5",
+          "context_window": null,
+          "aliases": []
+        }
+      ],
+      "model_select": {
+        "supported": true,
+        "on_resume": true,
+        "configured_elsewhere": false,
+        "offered": [
+          {
+            "id": "gpt-5.5",
+            "aliases": [],
+            "context_window": null,
+            "source": "manifest"
+          }
+        ]
+      },
+      "instructions": {
+        "files": [
+          "AGENTS.md",
+          "CLAUDE.md"
+        ]
+      },
+      "tools": {
+        "mcp": "copilot-additional-mcp-config"
+      },
+      "usage": {
+        "source": "manual"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "copilot-api",
+      "present": false,
+      "supports_new": false,
+      "supports_seed_start": false,
+      "seed_reason": "no seed-capable start yet",
+      "bin": null,
+      "label": "Copilot — API",
+      "kind": "agent",
+      "runtime": "api",
+      "api": {
+        "kind": "copilot-acp",
+        "source": "copilot",
+        "can_bypass": true,
+        "unavailable_reason": "copilot 1.0.68 or later is required for native mode"
+      },
+      "display": {
+        "name": "copilot-api",
+        "badge": "cpa",
+        "accent": "teal",
+        "id_prefix": null,
+        "order": 46
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": false,
+        "seed_start": false,
+        "orchestrator_input": false,
+        "raw_tty": false,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": false,
+        "offered": []
+      },
+      "instructions": {
+        "files": []
+      },
+      "tools": {
+        "mcp": "copilot-additional-mcp-config"
+      },
+      "usage": {
+        "source": "none"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
       "id": "antigravity",
       "present": true,
       "supports_new": true,

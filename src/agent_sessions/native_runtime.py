@@ -74,6 +74,7 @@ _FLOORS = {
     "codex-app-server": native_protocol.CODEX_MIN_VERSION,
     "claude-stream-json": native_protocol.CLAUDE_MIN_VERSION,
     "opencode-acp": native_protocol.OPENCODE_MIN_VERSION,
+    "copilot-acp": native_protocol.COPILOT_MIN_VERSION,
 }
 # The vendor CLI writes where ITS defaults point. A BattleLab store override that the vendor
 # would not also use cannot be honoured without silently reading one history and writing another.
@@ -83,10 +84,12 @@ _VENDOR_STORES = {
     "codex-app-server": (None, ".codex/sessions"),
     "claude-stream-json": (None, ".claude"),
     "opencode-acp": ("db", ".local/share/opencode/opencode.db"),
+    # The console copilot manifest names no store path_env, so both always address ~/.copilot.
+    "copilot-acp": (None, ".copilot"),
 }
 #: Adapters whose native history id is minted by the agent and bound by the worker from its
-#: creation response (Codex `thread/start`, opencode `session/new`); Claude's is ours.
-_ADOPTED = frozenset({"codex-app-server", "opencode-acp"})
+#: creation response (Codex `thread/start`, ACP `session/new`); Claude's is ours.
+_ADOPTED = frozenset({"codex-app-server", "opencode-acp", "copilot-acp"})
 _LEASES = "native-leases"
 _LEASE_TOKEN = "native-leases"  # noqa: S105 — a marker the installer must contain, not a secret
 _ERRORS = {

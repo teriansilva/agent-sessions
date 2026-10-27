@@ -180,7 +180,12 @@ async def _turn(key: str, label: str) -> dict:
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     "source,kind",
-    [("codex", "codex-app-server"), ("claude", "claude-stream-json"), ("opencode", "opencode-acp")],
+    [
+        ("codex", "codex-app-server"),
+        ("claude", "claude-stream-json"),
+        ("opencode", "opencode-acp"),
+        ("copilot", "copilot-acp"),
+    ],
 )
 async def test_real_agent_tool_shell_sees_its_battlelab_session(
     tmp_home, tmp_path, monkeypatch, source, kind

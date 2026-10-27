@@ -179,15 +179,17 @@ async def test_failed_skip_start_can_retry_alongside_a_console(host, project, mo
         await runtime.stop(key)
 
 
-@pytest.mark.parametrize("source", ["codex", "opencode"])
+@pytest.mark.parametrize("source", ["codex", "opencode", "copilot"])
 @pytest.mark.parametrize(
     "bad", ["load", "request", "guessed", "different-id", "existing", "resume", "claude", "error"]
 )
 def test_fresh_binding_requires_this_connections_create_response(
     tmp_path, monkeypatch, source, bad
 ):
-    adapter = "codex-app-server" if source == "codex" else "opencode-acp"
-    native = ident() if source == "codex" else "ses_NewNativeHistory"
+    adapter = {"codex": "codex-app-server", "opencode": "opencode-acp", "copilot": "copilot-acp"}[
+        source
+    ]
+    native = "ses_NewNativeHistory" if source == "opencode" else ident()
     request = ident()
     config = {
         "worker_id": ident(),

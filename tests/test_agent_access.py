@@ -26,13 +26,17 @@ BUDGETS = {"threshold_pct": 90, "notify": True, "engines": {}}
 # --- manifests ----------------------------------------------------------------------------------
 
 
-def test_gemini_and_kimi_declare_their_access_check():
+def test_gemini_kimi_and_copilot_declare_their_access_check():
     assert engines.manifest_of("gemini").usage.access == "gemini-acp-auth"
     assert engines.manifest_of("kimi").usage.access == "kimi-wire-auth-error"
-    assert set(au.ACCESS_CHECKS) == {"gemini", "kimi"}
+    assert engines.manifest_of("copilot").usage.access == "copilot-acp-auth"
+    assert set(au.ACCESS_CHECKS) == {"gemini", "kimi", "copilot"}
     # Access is independent of the source: gemini is manual-only for quota, while kimi's quota is
     # asked through `kimi web` (#1239) and its access verdict is still the separate wire read.
+    # copilot is manual-only for quota (#1565: no reviewed quota probe; the experimental headless
+    # RPC stays out).
     assert "gemini" not in au.REPORTERS and "kimi" in au.REPORTERS
+    assert "copilot" not in au.REPORTERS
     assert engines.manifest_of("kimi").usage.kind == "kimi-web-usage-probe"
 
 

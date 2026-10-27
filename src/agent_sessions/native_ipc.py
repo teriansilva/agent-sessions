@@ -36,7 +36,7 @@ MAX_TEXT = 200_000
 MAX_EVENT_TEXT = 20_000
 MAX_EVENTS = 100
 MAX_INTEGER = 2**53 - 1
-ADAPTERS = frozenset({"codex-app-server", "claude-stream-json", "opencode-acp"})
+ADAPTERS = frozenset({"codex-app-server", "claude-stream-json", "opencode-acp", "copilot-acp"})
 ACTIONS = frozenset(
     {
         "submit",
