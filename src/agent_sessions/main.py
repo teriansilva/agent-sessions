@@ -773,6 +773,11 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
 
     gallery_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
 
+    # Share bundles (#1714): export a selection to one file; import through a bound preview.
+    from .routes import share_bundles as share_bundle_routes
+
+    share_bundle_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+
     # File panel (#783/#784): bounded directory listing, file read, git status/diff/branches — and
     # since #807 the upload routes and since #806 the git WRITE routes, all POST and therefore
     # CSRF-guarded. Containment lives in files.py, filewrite.py and gitpanel.discover_repo; all

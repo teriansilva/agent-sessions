@@ -184,6 +184,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Gallery: browse, look inside, refresh | GET /api/gallery*, POST /api/gallery/refresh | P4 R/W (external: relay fetch) |
 | Gallery: add to my playbooks / skills; compare and add an updated copy | POST /api/gallery/import, …/compare, …/update | P4 W |
 | Skills: list, read; save an edited copy; create a new one | GET /api/library/skills*, POST …/copies, POST /api/library/skills | have (`list_skills`, `skill_detail`, `propose_library`, #1611) |
+| Share bundles: export skills / playbooks to a file; import a file through a preview (#1714) | GET /api/share/catalog, …/imports, POST /api/share/export, …/import/preview, …/import | n/a (a file downloaded to and uploaded from this browser; HQ never moves files) |
 | Automations: list, detail | GET /api/automations, /api/automations/{aid} | have (`list_automations`, `automation_detail`, #1611) |
 | Automations: runs, run detail, origins | GET /api/automations/{aid}/runs, …/runs/{run_id}, …/origins | P4 R |
 | Automations: create, edit | POST /api/automations, PATCH /api/automations/{aid} | have (`propose_library`: saved off; an enabled one's widening edit is a consent card; never bypass on or auto-choose, #1611) |
@@ -332,6 +333,11 @@ GET    /api/library/skills                                                      
 POST   /api/library/skills                                                        have  # propose_library skill create (#1611)
 GET    /api/library/skills/{id}                                                   have  # skill_detail
 POST   /api/library/skills/{id}/copies                                            have  # propose_library skill edit (#1611)
+GET    /api/share/catalog                                                         n/a  # share bundles (#1714): the export picker
+GET    /api/share/imports                                                         n/a  # share bundles: which copies came from a file
+POST   /api/share/export                                                          n/a  # share bundles: a file download
+POST   /api/share/import/preview                                                  n/a  # share bundles: a file upload
+POST   /api/share/import                                                          n/a  # share bundles: confirms an uploaded file's preview
 GET    /api/maintenance/compact                                                   P6
 POST   /api/maintenance/compact                                                   P6
 GET    /api/maintenance/prune                                                     P6
