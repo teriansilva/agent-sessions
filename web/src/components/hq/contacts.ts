@@ -12,13 +12,19 @@ export interface HqContact {
   mp4: string;
 }
 
+/** Under the build's base, never the root: the relay's connect build serves the SPA from
+ *  `/connect/`, where a root `/hq/…` is the landing site's 301, not the portrait. The e2e specs
+ *  import this module under plain Node, which has no `import.meta.env`: there it is the root. */
+const BASE: string = import.meta.env?.BASE_URL ?? "/";
+const hqAsset = (file: string): string => `${BASE}hq/${file}`;
+
 const contact = (id: string, name: string, region: string): HqContact => ({
   id,
   name,
   region,
-  poster: `/hq/${id}.jpg`,
-  webm: `/hq/${id}.webm`,
-  mp4: `/hq/${id}.mp4`,
+  poster: hqAsset(`${id}.jpg`),
+  webm: hqAsset(`${id}.webm`),
+  mp4: hqAsset(`${id}.mp4`),
 });
 
 export const CONTACTS: readonly HqContact[] = [

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import {
   CONTACTS,
@@ -86,6 +86,22 @@ describe("the assets", () => {
         expect(existsSync(file), file).toBe(true);
         expect(statSync(file).size, file).toBeLessThanOrEqual(400 * 1024);
       }
+    }
+  });
+
+  test("the URLs sit under the build's base: the relay serves the SPA from /connect/", async () => {
+    vi.stubEnv("BASE_URL", "/connect/");
+    vi.resetModules();
+    try {
+      const { CONTACTS: under } = await import("./contacts");
+      for (const c of under) {
+        expect(c.poster).toBe(`/connect/hq/${c.id}.jpg`);
+        expect(c.webm).toBe(`/connect/hq/${c.id}.webm`);
+        expect(c.mp4).toBe(`/connect/hq/${c.id}.mp4`);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
     }
   });
 
