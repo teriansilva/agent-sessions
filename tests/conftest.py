@@ -72,6 +72,7 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_TEMPLATES": ".config/agent-sessions/templates.json",
     "AGENT_SESSIONS_TEMPLATE_VARS": ".config/agent-sessions/template-variables.json",
     "AGENT_SESSIONS_TEMPLATE_SECRETS_KEY": ".config/agent-sessions/template-secrets.key",
+    "AGENT_SESSIONS_CONNECTORS_STORE": ".config/agent-sessions/connectors.json",  # #1750
     "AGENT_SESSIONS_PLAYBOOKS_DIR": ".config/agent-sessions/playbooks",  # #1191 local playbooks
     "AGENT_SESSIONS_PLAYBOOK_SECRETS": ".config/agent-sessions/playbook-secrets",  # #1191
     "AGENT_SESSIONS_MEMORY_DIR": ".config/agent-sessions/memory",  # #1441
@@ -394,6 +395,8 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
         ("AGENT_SESSIONS_PROJECTS", "projects.json"),
         ("AGENT_SESSIONS_PULSE_CACHE", "pulse-cache.json"),
         ("AGENT_SESSIONS_VAPID_KEYS", "vapid.json"),
+        # #1750: connector tokens join the redaction set, so EVERY AI call reads this store.
+        ("AGENT_SESSIONS_CONNECTORS_STORE", "connectors.json"),
     ):
         monkeypatch.setenv(var, str(tmp_path / ".config" / "agent-sessions" / name))
     from agent_sessions import template_secrets

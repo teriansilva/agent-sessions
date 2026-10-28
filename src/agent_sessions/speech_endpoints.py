@@ -50,6 +50,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from . import net_vetting
+
 #: OpenAI's `pcm` format: 16-bit little-endian mono at this rate.
 OPENAI_PCM_RATE = 24_000
 #: Bounds on what a server may send back, so a misbehaving endpoint cannot exhaust memory.
@@ -128,40 +130,11 @@ def classify_host(url: str) -> str:
     return "remote"
 
 
-# Cloud metadata endpoints outside the link-local ranges (AWS IPv6, Alibaba's CGNAT address).
-_METADATA = frozenset(
-    ipaddress.ip_address(a)
-    for a in (
-        "169.254.169.254", "fd00:ec2::254",  # AWS (IPv4, IPv6)
-        "100.100.100.200",  # Alibaba Cloud
-        "fd20:ce::254",  # Google Cloud IPv6
-        "fd00:c1::a9fe:a9fe",  # Oracle Cloud IPv6
-    )
-)  # fmt: skip
-_NAT64 = ipaddress.ip_network("64:ff9b::/96")
-
-
-def _unsafe_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """Refused destinations: link-local (metadata), named metadata addresses, multicast,
-    unspecified, reserved. Loopback is allowed on purpose (a local speech server), including
-    `::1`, which `ipaddress` files under reserved `::/8`. An IPv4 address embedded in IPv6
-    (mapped, 6to4, NAT64) is judged as itself."""
-    if isinstance(ip, ipaddress.IPv6Address):
-        embedded = ip.ipv4_mapped or ip.sixtofour
-        if embedded is None and ip in _NAT64:
-            embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
-        if embedded is not None:
-            # Loopback reached through a translator (NAT64, 6to4) is the GATEWAY's loopback, not
-            # ours: only the plain mapped form (::ffff:127.x) counts as this host.
-            if embedded.is_loopback and ip.ipv4_mapped is None:
-                return True
-            return _unsafe_ip(embedded)
-    if ip.is_loopback:
-        return False
-    return (
-        ip in _METADATA or ip.is_link_local or ip.is_multicast or ip.is_unspecified
-        or ip.is_reserved
-    )  # fmt: skip
+# The vetted-address rule is shared with the connectors (#1750): `net_vetting`. The names below
+# stay so this module's callers and tests are unchanged.
+_METADATA = net_vetting.METADATA
+_unsafe_ip = net_vetting.unsafe_ip
+_Pinned = net_vetting.Pinned
 
 
 async def _resolve(host: str, port: int) -> list[str]:
@@ -171,54 +144,14 @@ async def _resolve(host: str, port: int) -> list[str]:
     return [str(info[4][0]) for info in infos]
 
 
-@dataclass(frozen=True)
-class _Pinned:
-    """A vetted destination: the URL to CONNECT to (the vetted address), the Host header and the
-    TLS server name (the configured hostname, so the certificate is still checked against it)."""
-
-    url: str
-    host_header: str
-    sni: str | None
-
-
 async def _vet_destination(url: str) -> _Pinned:
     """Resolve the URL's host ONCE, refuse it when any address is link-local (169.254/16,
     fe80::/10 — where cloud metadata services answer), multicast, unspecified or reserved, and
-    pin the connection to a vetted address. Connecting by name again would resolve again, and a
-    rebinding name could answer differently the second time (Hermes on #1621)."""
-    try:
-        parts = urlsplit(url)
-        port = parts.port or (443 if parts.scheme == "https" else 80)
-    except ValueError as e:
-        raise SpeechError("invalid_url", "the endpoint URL is not valid") from e
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        raise SpeechError("invalid_url", "the endpoint URL must be http(s) with a host")
-    if parts.username or parts.password:
-        raise SpeechError("invalid_url", "the endpoint URL must not carry credentials")
-    host = parts.hostname
-    try:
-        addrs = await _resolve(host, port)
-    except OSError as e:
-        raise SpeechError("unreachable", f"{host} could not be resolved") from e
-    vetted: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
-    for addr in addrs:
-        try:
-            ip = ipaddress.ip_address(addr.split("%")[0])
-        except ValueError:
-            raise SpeechError(
-                "refused_destination", f"{host} resolves to an unreadable address"
-            ) from None
-        if _unsafe_ip(ip):
-            raise SpeechError("refused_destination", f"{host} resolves to a refused address")
-        vetted.append(ip)
-    if not vetted:
-        raise SpeechError("unreachable", f"{host} could not be resolved")
-    ip = vetted[0]
-    literal = f"[{ip}]" if ip.version == 6 else str(ip)
-    netloc = f"{literal}:{port}"
-    pinned = parts._replace(netloc=netloc).geturl()
-    host_header = parts.netloc.rsplit("@", 1)[-1]
-    return _Pinned(pinned, host_header, host if parts.scheme == "https" else None)
+    pin the connection to a vetted address (`net_vetting.vet`, speech's scheme policy: http or
+    https). Connecting by name again would resolve again, and a rebinding name could answer
+    differently the second time (Hermes on #1621)."""
+    # `_resolve` is looked up at call time, so a test that patches it is honoured.
+    return await net_vetting.vet(url, resolve=_resolve, error=SpeechError)
 
 
 # --- the one outbound site ---------------------------------------------------------------------

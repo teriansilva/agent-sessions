@@ -1,0 +1,23 @@
+# refuse: identity.label must be printable
+contract = 1
+
+[identity]
+id = "forgejo"
+label = "Forgejo\u001b[31m"
+publisher = "battlelab"
+version = "1"
+category = "versioning"
+
+[adapter]
+kind = "forgejo-api"
+
+[origin]
+mode = "operator"
+
+[auth]
+kind = "token-header"
+scheme = "token"
+scopes = ["read:issue", "read:repository"]
+
+[capabilities]
+read = ["repos", "issues", "pulls", "ci", "files"]

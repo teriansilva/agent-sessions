@@ -1,0 +1,27 @@
+# The bundled Forgejo connector (#1750). Every value is a member of a set in connectors/kinds.py;
+# an unknown field anywhere refuses the manifest.
+contract = 1
+
+[identity]
+id = "forgejo"
+label = "Forgejo"
+publisher = "battlelab"
+version = "1"
+category = "versioning"
+
+[adapter]
+kind = "forgejo-api"
+
+[origin]
+mode = "operator"
+
+[auth]
+kind = "token-header"
+scheme = "token"
+scopes = ["read:issue", "read:repository"]
+
+[capabilities]
+read = ["repos", "issues", "pulls", "ci", "files"]
+
+[docs]
+setup = "Create a token in Forgejo under Settings → Applications with read:issue and read:repository."

@@ -1,0 +1,24 @@
+# refuse: origin.fixed is only allowed
+contract = 1
+
+[identity]
+id = "forgejo"
+label = "Forgejo"
+publisher = "battlelab"
+version = "1"
+category = "versioning"
+
+[adapter]
+kind = "forgejo-api"
+
+[origin]
+mode = "operator"
+fixed = "https://api.example"
+
+[auth]
+kind = "token-header"
+scheme = "token"
+scopes = ["read:issue", "read:repository"]
+
+[capabilities]
+read = ["repos", "issues", "pulls", "ci", "files"]

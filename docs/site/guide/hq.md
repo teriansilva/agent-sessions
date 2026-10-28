@@ -251,6 +251,39 @@ follows you to every device.
 - Only the chosen contact's loop is downloaded, and the installed app doesn't keep the loops for
   offline use.
 
+## Connectors
+
+HQ can also read from your other services. The first connector is **Forgejo** (and Gitea or
+Codeberg, which speak the same API): HQ can search your repositories, issues and pull requests,
+read an issue or PR with its recent comments, check a commit's CI status, and read text files at a
+commit. It **only reads**: there is no sending, commenting or merging through a connector.
+
+For now a connector is set up through the API only; a settings page follows. You use your own
+account: create a personal access token in Forgejo under *Settings → Applications* with
+`read:issue` and `read:repository`, then:
+
+1. `POST /api/connectors/instances` with `{"manifest_id": "forgejo"}` adds a connector, switched
+   off.
+2. `PATCH /api/connectors/instances/<id>` with `{"origin": "https://git.example.com", "token":
+   "…"}` saves where it is and the token.
+3. `POST /api/connectors/instances/<id>/test` checks the token and names the account it belongs
+   to.
+4. `POST /api/connectors/instances/<id>/capabilities` with `{"read": true}` lets HQ read through
+   it. `{"read": false}` stops it at once, even in the middle of an answer.
+
+`GET /api/connectors` lists your connectors and their state. `DELETE` removes one. These are
+ordinary signed-in requests and need the CSRF token, like every other change.
+
+**What happens to the token.** It is stored encrypted, never shown again, and sent only to the
+address you saved it for, over HTTPS (plain HTTP only to this machine itself). Changing the
+address needs the token again. A changed address or token needs a new test before HQ reads
+through it.
+
+**What happens to what HQ reads.** Issue text, comments and files are written by other people.
+HQ treats them as data, never as instructions. Anything that looks like a password or key is
+withheld, and your stored secrets are redacted. What HQ reads is sent to **your AI endpoint** as
+part of the conversation, which is why reading is off until you switch it on.
+
 ## HQ token use
 
 The bar along the bottom of every page shows how much HQ is using your AI endpoint

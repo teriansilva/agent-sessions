@@ -291,6 +291,11 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "list_automations": "read",
         "automation_detail": "read",
         "propose_library": "proposal",
+        # #1750: the Commander's connected services — reads only; P1a has no send or proposal.
+        "list_connectors": "read",
+        "connector_search": "read",
+        "connector_read": "read",
+        "connector_list": "read",
     }
     # A call turn is offered every tool; a typed turn all but the call-only ones (#1668).
     on_call = [s["function"]["name"] for s in ask_orchestrator.tool_specs("call")]

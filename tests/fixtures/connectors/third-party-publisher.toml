@@ -1,0 +1,23 @@
+# refuse: identity.publisher must be one of
+contract = 1
+
+[identity]
+id = "forgejo"
+label = "Forgejo"
+publisher = "someone"
+version = "1"
+category = "versioning"
+
+[adapter]
+kind = "forgejo-api"
+
+[origin]
+mode = "operator"
+
+[auth]
+kind = "token-header"
+scheme = "token"
+scopes = ["read:issue", "read:repository"]
+
+[capabilities]
+read = ["repos", "issues", "pulls", "ci", "files"]

@@ -125,6 +125,8 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Motion, link-open mode | localStorage | device |
 | HQ contact | POST /api/prefs `hq_contact` | P2 W |
 | AI endpoint provider, URL and key; the egress acknowledgement; remove key; test | POST /api/prefs `ai_review`, POST /api/ai-review/endpoint/test | **never** (decides where HQ's own requests go, and who receives session content; `ai-key-origin.md`, `ai-providers.md`) |
+| Connectors (#1750): list them and their state | GET /api/connectors | have (`list_connectors` reads the enabled ones; the store, not this route) |
+| Connectors: add, set origin and token, test, enable or disable read, remove | POST/PATCH/DELETE /api/connectors/instances* | **never** (a connector token is a credential, and its origin decides where HQ's requests go; #1746 out of scope) |
 | AI model (Auto or specific), thinking level, request timeout; list models; the provider table | POST /api/prefs `ai_review.model`, `ai_review.model_mode`, `ai_review.thinking`, GET /api/ai-review/models, GET /api/ai-review/providers | P2 W/R (model from the server's own list only) |
 | Session review: enable, interval, depth, notify, rename sessions | POST /api/prefs `ai_review.enabled`, `session_review` | P2 W |
 | Auto-sort settings | POST /api/prefs `auto_sort` | P2 W |
@@ -227,7 +229,7 @@ Each row is a credential, a grant of more permission or autonomy, or a tap that 
 
 | Group | Rows | Why |
 |---|---|---|
-| Credentials and identity | password, 2FA, sign out, device link, AI endpoint URL/key, chat-agent endpoint URL/key, forge token | credentials; and the endpoints decide where HQ's own requests go |
+| Credentials and identity | password, 2FA, sign out, device link, AI endpoint URL/key, chat-agent endpoint URL/key, forge token, connector setup (origin, token, test, enable, remove) | credentials; and the endpoints decide where HQ's own requests go |
 | HQ's own fence | prompt edits | the guarded `ask_orchestrator` prompt is HQ's fence |
 | Widening permission or autonomy | bypass defaults on (global or per project), skip permissions, approve-always grants, orchestrator on, autonomy up, AI directions auto-send on, allowed verbs widened, mission auto-choose on | HQ would grant itself or agents more power |
 | Approving taps | approve or choose a staged decision, approve a tool request, answer a permission prompt | a proposal to approve a proposal removes the operator's tap |
@@ -292,6 +294,12 @@ POST   /api/chat/{sid}/messages                                                 
 POST   /api/chat/{sid}/turns/{turn_id}/proposals/{proposal_id}/decide             P7
 POST   /api/chat/{sid}/turns/{turn_id}/retry                                      P7
 GET    /api/config                                                                n/a  # app shell read
+GET    /api/connectors                                                            have
+POST   /api/connectors/instances                                                  never
+DELETE /api/connectors/instances/{iid}                                            never
+PATCH  /api/connectors/instances/{iid}                                            never
+POST   /api/connectors/instances/{iid}/capabilities                               never
+POST   /api/connectors/instances/{iid}/test                                       never
 GET    /api/dashboard/sessions                                                    P2  # read
 GET    /api/engines                                                               have  # list_agents (+#1554)
 GET    /api/engines/{engine_id}                                                   P6  # read

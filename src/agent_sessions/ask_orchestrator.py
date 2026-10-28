@@ -66,6 +66,7 @@ from . import (
     review,
     template_secrets,
 )
+from .connectors import hq as connector_hq
 
 log = logging.getLogger(__name__)
 
@@ -184,6 +185,9 @@ class _Turn:
     #: TEXT bodies read at begin — the model request boundary sanitizes them (fail-closed).
     attachments: list[dict] = field(default_factory=list)
     attachment_bodies: dict[str, bytes] = field(default_factory=dict)
+    #: The connectors THIS turn listed and the refs their reads minted (#1750): what a
+    #: `connector_index` and an `item_ref` may name. Memory only, never stored.
+    connectors: connector_hq.TurnConnectors = field(default_factory=connector_hq.TurnConnectors)
     _catalog: list[dict] | None = None
 
     async def catalog(self) -> list[dict]:
@@ -1516,6 +1520,37 @@ async def _propose_library(turn: _Turn, args: dict) -> tuple[dict, dict]:
     )
 
 
+# ---- connectors (#1750) -------------------------------------------------------------------------
+
+
+async def _connector(fn, turn: _Turn, *args) -> tuple[dict, dict]:
+    try:
+        return await fn(turn.connectors, *args)
+    except connector_hq.Refused as e:
+        raise _ToolRefused(str(e), e.code) from None
+
+
+async def _list_connectors(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    return await _connector(connector_hq.list_connectors, turn)
+
+
+async def _connector_search(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    return await _connector(connector_hq.search, turn, args)
+
+
+async def _connector_read(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    return await _connector(connector_hq.read, turn, args)
+
+
+async def _connector_list(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    return await _connector(connector_hq.list_dir, turn, args)
+
+
+_CONNECTOR_PROP = {
+    "connector_index": {"type": "integer", "description": "an index list_connectors returned"}
+}
+_REF_PROP = {"item_ref": {"type": "string", "description": "a ref a connector tool returned"}}
+
 _KEY_PROP = {"key": {"type": "string", "description": "a session key a tool returned"}}
 
 TOOLS: dict[str, Tool] = {
@@ -1929,6 +1964,61 @@ TOOLS: dict[str, Tool] = {
                 ["section"],
             ),
             _read_settings,
+        ),
+        Tool(
+            "list_connectors",
+            "read",
+            _spec(
+                "list_connectors",
+                "The services the Commander connected for you to read (e.g. their Forgejo), by "
+                "index: each one's name and host. Call it first; the other connector tools take "
+                "its connector_index.",
+                {},
+                [],
+            ),
+            _list_connectors,
+        ),
+        Tool(
+            "connector_search",
+            "read",
+            _spec(
+                "connector_search",
+                "Search one connector: kind repos, issues or pulls. Returns titles and item refs "
+                "for connector_read.",
+                {
+                    **_CONNECTOR_PROP,
+                    "query": {"type": "string", "description": "what to look for, in words"},
+                    "kind": {"type": "string", "enum": list(connector_hq.KINDS)},
+                },
+                ["connector_index", "query", "kind"],
+            ),
+            _connector_search,
+        ),
+        Tool(
+            "connector_read",
+            "read",
+            _spec(
+                "connector_read",
+                "Read one item a connector tool returned: a repo (the head of its default "
+                "branch, with refs to its CI and its files), an issue or PR (body and recent "
+                "comments; a PR also gives refs to its head's CI and files), a CI status, or a "
+                "text file.",
+                {**_CONNECTOR_PROP, **_REF_PROP},
+                ["connector_index", "item_ref"],
+            ),
+            _connector_read,
+        ),
+        Tool(
+            "connector_list",
+            "read",
+            _spec(
+                "connector_list",
+                "List a directory ref (dir:…) a connector tool returned: its entries, with refs "
+                "to read each file or list each subdirectory.",
+                {**_CONNECTOR_PROP, **_REF_PROP},
+                ["connector_index", "item_ref"],
+            ),
+            _connector_list,
         ),
     )
 }

@@ -1,0 +1,18 @@
+# refuse: missing 'auth'
+contract = 1
+
+[identity]
+id = "forgejo"
+label = "Forgejo"
+publisher = "battlelab"
+version = "1"
+category = "versioning"
+
+[adapter]
+kind = "forgejo-api"
+
+[origin]
+mode = "operator"
+
+[capabilities]
+read = ["repos"]

@@ -110,6 +110,7 @@ HTTP_MODULES = frozenset(
         "gallery_client",
         "speech_endpoints",
         "voice_setup",
+        "connector_http",  # #1750 HQ connectors: the one connector transport
     }
 )
 
@@ -184,6 +185,13 @@ POST_SITES = {
     ("speech_endpoints", "_request"): 1,
     # #1397 P4: `voice setup` fetches its pinned models (sha256-verified before use); fixed URLs.
     ("voice_setup", "_fetch"): 1,
+    # HQ CONNECTORS (#1750): one streamed GET to the origin the Commander saved a connector
+    # with, carrying that connector's token, which only this function reads and attaches. The
+    # destination is vetted once and the connection pinned to the vetted address (no
+    # link-local/metadata, DNS rebinding cannot move it), https unless the origin is loopback, no
+    # redirects, no ambient proxy, a bounded body. It carries no prompt: the adapter supplies a
+    # fixed `/api/v1/` path built from validated parts, never model text.
+    ("connector_http", "_request"): 1,
 }
 
 # Layer 3 — a module that never imports a client can still be handed one. `.post(` / `.request(`

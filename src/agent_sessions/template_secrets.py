@@ -418,6 +418,7 @@ def _stored_values() -> frozenset[str]:
     """
     global _stored_cache
     from . import template_vars
+    from .connectors import store as connector_store
 
     path = template_vars.store_path()
     try:
@@ -426,17 +427,18 @@ def _stored_values() -> frozenset[str]:
             sig: object = (st.st_mtime_ns, st.st_size, st.st_ino, current_kid())
         except FileNotFoundError:
             sig = ("absent", current_kid())
+        # The connector tokens (#1750) are stored secrets too: their store is part of the key.
+        sig = (sig, connector_store.signature())
         with _lock:
             if _stored_cache is not None and _stored_cache[0] == sig:
                 return _stored_cache[1]
-        values = frozenset(v for v in template_vars.secret_values_checked() if len(v) >= SECRET_MIN)
+        stored = [*template_vars.secret_values_checked(), *connector_store.token_values_checked()]
+        values = frozenset(v for v in stored if len(v) >= SECRET_MIN)
     except Exception as e:  # noqa: BLE001 — any failure to establish the set
         # REFUSE, warm cache or cold (Hermes on #1105, round 2). The known set cannot vouch for a
         # secret stored since it was computed, so "redact what we knew" is still fail-open. The
         # cache is left exactly as it was: nothing from the failed read is kept.
-        log.warning(
-            "template secrets: the variables store could not be read (%s)", type(e).__name__
-        )
+        log.warning("template secrets: a secret store could not be read (%s)", type(e).__name__)
         raise RedactionUnavailable(
             f"the secret store could not be read ({type(e).__name__})"
         ) from None
