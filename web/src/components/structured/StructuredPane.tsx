@@ -77,7 +77,7 @@ import type {
 import chat from "../chat/ChatPane.module.css";
 import { Markdown } from "./Markdown";
 import { LiveReply } from "./LiveReply";
-import { applyTextDeltas } from "./streamDeltas";
+import { applyTextDeltas, streaming } from "./streamDeltas";
 import { useFollow } from "./useFollow";
 import { ArrivalContext, useArrivals, useArriveClass, usePrimed } from "./arrivals";
 import { BackgroundWork } from "./BackgroundWork";
@@ -1813,6 +1813,10 @@ export function StructuredPane({
             await load();
             if (!alive) return;
             lastFull = performance.now();
+            // The snapshot rebased onto a turn that streams (a new message just opened, #1727):
+            // hold the next read at once so its words keep the flush cadence. Only when the
+            // snapshot moved the cursor on, so a refused or stale one never loops reads.
+            if (wait && cursor.current > after && held.current && streaming(held.current)) delay = 0;
           } else if (wait && now - asked >= HELD_MS) {
             delay = 0; // a quiet held read: hold the next one at once
           }

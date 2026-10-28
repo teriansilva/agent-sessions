@@ -414,6 +414,39 @@ async def test_public_events_stay_cursor_and_kind_only_and_never_wait_while_text
 
 
 @pytest.mark.anyio
+async def test_the_public_link_never_shows_a_turns_unsettled_message(
+    env,
+    host,  # noqa: F811
+    project,  # noqa: F811
+):
+    """#1727: the operator's own snapshot and history pages show the message a turn is streaming
+    after its settled ones, and keep it once the turn stops. The public link stays on the default
+    projection: settled text only, live or stopped, and no `stream`."""
+    key = await _session("codex", project)
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="STREAM2")
+    for _ in range(200):
+        live = await runtime.snapshot(key, live_text=True)
+        mine = next((t for t in live["turns"] if t["turn_id"] == turn), None)
+        if mine and "w2 " in mine["reply"]:
+            break
+        await asyncio.sleep(0.05)
+    v, _ = await _visitor(env, key, mode="view")
+    async with contextlib.aclosing(v):
+        streaming = (await v.get("/api/public/session")).json()
+        await runtime.interrupt(key, operation_id=ident(), turn_id=turn)
+        await settle(key, turn, state=("interrupted",))
+        stopped = (await v.get("/api/public/session")).json()
+    for view in (streaming, stopped):
+        (shown,) = [t for t in view["turns"] if t["turn_id"] == turn]
+        assert shown["reply"] == "First message." and "stream" not in shown
+    kept = next(
+        t for t in (await runtime.snapshot(key, live_text=True))["turns"] if t["turn_id"] == turn
+    )
+    assert kept["reply"].startswith("First message.\n\nw0 ")  # the operator still has them
+
+
+@pytest.mark.anyio
 async def test_a_mission_held_session_can_be_watched_not_sent_to(env, host, project, monkeypatch):  # noqa: F811
     key = await _session("codex", project)
     v, _ = await _visitor(env, key)

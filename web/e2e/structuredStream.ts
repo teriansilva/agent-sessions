@@ -29,6 +29,9 @@ export interface StreamServer {
   failReads: number;
   /** Answer this many events reads with the journal's reset answer: a cursor it cannot serve. */
   resetReads: number;
+  /** Hold a read that asks `wait` and has nothing new until the journal moves (≤ 3 s), as the
+   *  server does. Off by default: most specs want every read answered at once. */
+  holdReads: boolean;
 }
 
 export function operatorTurn(over: Json = {}): Json {
@@ -89,6 +92,7 @@ export async function mockStreamingSession(
     frozen: null,
     failReads: 0,
     resetReads: 0,
+    holdReads: false,
   };
   await page.addInitScript((t) => localStorage.setItem("tr-theme", t), theme);
   await page.route("**/api/**", (r) => r.fulfill({ status: 404, json: { detail: "not mocked" } }));
@@ -133,6 +137,10 @@ export async function mockStreamingSession(
       if (s.resetReads > 0 || after > s.revision) {
         s.resetReads = Math.max(0, s.resetReads - 1);
         return r.fulfill({ status: 409, json: { detail: "native event cursor is ahead of this journal" } });
+      }
+      if (s.holdReads && url.searchParams.get("wait") && after === s.revision) {
+        const until = Date.now() + 3_000;
+        while (Date.now() < until && s.revision === after) await new Promise((r) => setTimeout(r, 20));
       }
       const events = s.events.filter((e) => e.cursor > after).slice(0, limit);
       const next = events.length === limit ? events[events.length - 1].cursor : s.revision;
@@ -219,4 +227,22 @@ export async function watchWords(page: Page): Promise<() => Promise<number>> {
 
 export function paragraphs(count: number, from = 1): string {
   return Array.from({ length: count }, (_, i) => `Progress paragraph ${i + from}.`).join("\n\n");
+}
+
+/** A new message opens in a turn whose reply has settled messages (#1727 part 2): the server's
+ *  operator snapshot now shows it after them, a paragraph apart, marked `stream` with its item;
+ *  its first words are a text event the held snapshot (with no stream yet) cannot extend. */
+export function openMessage(s: StreamServer, text: string, item: string, turn = TURN): void {
+  const t = turnOf(s, turn);
+  const base = String(t.reply ?? "");
+  const joined = base && !base.endsWith("\n\n") ? `${base}\n\n` : base;
+  t.reply_breaks = [...((t.reply_breaks as number[]) ?? [0]), joined.length];
+  t.reply = joined + text;
+  t.stream = { item };
+  s.revision += 1;
+  s.events.push({
+    cursor: s.revision,
+    kind: "text",
+    data: { operation_id: turn, native_turn_id: "n", item_id: item, text, partial: true, truncated: false },
+  });
 }

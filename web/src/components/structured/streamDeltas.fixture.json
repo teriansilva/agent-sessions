@@ -1,4 +1,367 @@
 {
+ "after-a-cut-message@3": {
+  "applies": true,
+  "base": {
+   "event_cursor": 6,
+   "revision": 6,
+   "turns": [
+    {
+     "reply": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u2026\n\nTwo",
+     "reply_breaks": [
+      0,
+      43
+     ],
+     "state": "running",
+     "stream": {
+      "item": "m2"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "next": {
+   "event_cursor": 7,
+   "revision": 7,
+   "turns": [
+    {
+     "reply": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u2026\n\nTwo more",
+     "reply_breaks": [
+      0,
+      43
+     ],
+     "state": "running",
+     "stream": {
+      "item": "m2"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "page": {
+   "events": [
+    {
+     "cursor": 7,
+     "data": {
+      "item_id": "m2",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": " more",
+      "truncated": false
+     },
+     "kind": "text"
+    }
+   ],
+   "next_cursor": 7,
+   "revision": 7
+  }
+ },
+ "after-settled-settles@2": {
+  "applies": false,
+  "base": {
+   "event_cursor": 5,
+   "revision": 5,
+   "turns": [
+    {
+     "reply": "One.\n\nTwo",
+     "reply_breaks": [
+      0,
+      6
+     ],
+     "state": "running",
+     "stream": {
+      "item": "m2"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "next": {
+   "event_cursor": 7,
+   "revision": 7,
+   "turns": [
+    {
+     "reply": "One.\n\nTwo.\n\nThree",
+     "reply_breaks": [
+      0,
+      6,
+      12
+     ],
+     "state": "running",
+     "stream": {
+      "item": "m3"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "page": {
+   "events": [
+    {
+     "cursor": 6,
+     "data": {
+      "item_id": "m2",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": false,
+      "text": "Two.",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 7,
+     "data": {
+      "item_id": "m3",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "Three",
+      "truncated": false
+     },
+     "kind": "text"
+    }
+   ],
+   "next_cursor": 7,
+   "revision": 7
+  }
+ },
+ "after-settled-switch@2": {
+  "applies": true,
+  "base": {
+   "event_cursor": 5,
+   "revision": 5,
+   "turns": [
+    {
+     "reply": "One.\n\nTwo",
+     "reply_breaks": [
+      0,
+      6
+     ],
+     "state": "running",
+     "stream": {
+      "item": "m2"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "next": {
+   "event_cursor": 6,
+   "revision": 6,
+   "turns": [
+    {
+     "reply": "One.\n\nTwo\n\nThree",
+     "reply_breaks": [
+      0,
+      6,
+      11
+     ],
+     "state": "running",
+     "stream": {
+      "item": "m3"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "page": {
+   "events": [
+    {
+     "cursor": 6,
+     "data": {
+      "item_id": "m3",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "Three",
+      "truncated": false
+     },
+     "kind": "text"
+    }
+   ],
+   "next_cursor": 6,
+   "revision": 6
+  }
+ },
+ "after-settled-unnamed@3": {
+  "applies": true,
+  "base": {
+   "event_cursor": 6,
+   "revision": 6,
+   "turns": [
+    {
+     "reply": "A.\n\nB",
+     "reply_breaks": [
+      0,
+      4
+     ],
+     "state": "running",
+     "stream": {
+      "item": null
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "next": {
+   "event_cursor": 7,
+   "revision": 7,
+   "turns": [
+    {
+     "reply": "A.\n\nB c",
+     "reply_breaks": [
+      0,
+      4
+     ],
+     "state": "running",
+     "stream": {
+      "item": null
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "page": {
+   "events": [
+    {
+     "cursor": 7,
+     "data": {
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": " c",
+      "truncated": false
+     },
+     "kind": "text"
+    }
+   ],
+   "next_cursor": 7,
+   "revision": 7
+  }
+ },
+ "after-settled-unopened@2": {
+  "applies": false,
+  "base": {
+   "event_cursor": 5,
+   "revision": 5,
+   "turns": [
+    {
+     "reply": "One.",
+     "reply_breaks": [
+      0
+     ],
+     "state": "running",
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "next": {
+   "event_cursor": 6,
+   "revision": 6,
+   "turns": [
+    {
+     "reply": "One.\n\nTwo",
+     "reply_breaks": [
+      0,
+      6
+     ],
+     "state": "running",
+     "stream": {
+      "item": "m2"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "page": {
+   "events": [
+    {
+     "cursor": 6,
+     "data": {
+      "item_id": "m2",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": "Two",
+      "truncated": false
+     },
+     "kind": "text"
+    }
+   ],
+   "next_cursor": 6,
+   "revision": 6
+  }
+ },
+ "after-settled@3": {
+  "applies": true,
+  "base": {
+   "event_cursor": 6,
+   "revision": 6,
+   "turns": [
+    {
+     "reply": "One.\n\nTwo",
+     "reply_breaks": [
+      0,
+      6
+     ],
+     "state": "running",
+     "stream": {
+      "item": "m2"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "next": {
+   "event_cursor": 8,
+   "revision": 8,
+   "turns": [
+    {
+     "reply": "One.\n\nTwo so far",
+     "reply_breaks": [
+      0,
+      6
+     ],
+     "state": "running",
+     "stream": {
+      "item": "m2"
+     },
+     "turn_id": "11111111-2222-4333-8444-555555555555"
+    }
+   ]
+  },
+  "page": {
+   "events": [
+    {
+     "cursor": 7,
+     "data": {
+      "item_id": "m2",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": " so",
+      "truncated": false
+     },
+     "kind": "text"
+    },
+    {
+     "cursor": 8,
+     "data": {
+      "item_id": "m2",
+      "native_turn_id": "n",
+      "operation_id": "11111111-2222-4333-8444-555555555555",
+      "partial": true,
+      "text": " far",
+      "truncated": false
+     },
+     "kind": "text"
+    }
+   ],
+   "next_cursor": 8,
+   "revision": 8
+  }
+ },
  "gap@1": {
   "applies": false,
   "base": {

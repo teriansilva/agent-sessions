@@ -12,6 +12,7 @@ import {
   gap,
   log,
   mockStreamingSession,
+  openMessage,
   operatorTurn,
   paragraphs,
   snapshotOf,
@@ -260,4 +261,50 @@ test("a reply streaming inside a fenced code block fades its newest words and ca
   const faded = await page.evaluate(() => (window as unknown as { __codeWords: string[] }).__codeWords);
   expect(faded.join("")).toContain("npm test");
   await expect(code.locator(".nj-caret")).toHaveCount(1);
+});
+
+test("a Codex-shaped turn: message one settled, a command, then message two streams word by word (#1727)", async ({
+  page,
+}) => {
+  const first = "First message.";
+  const s = await mockStreamingSession(page, [
+    operatorTurn({
+      reply: first,
+      reply_breaks: [0],
+      stream: undefined, // settled text only: nothing streams yet
+      tools: [{ id: "c1", name: "commandExecution", outcome: "completed", summary: "npm test", at: first.length }],
+    }),
+  ]);
+  s.holdReads = true; // reads are held until the journal moves, as the server's are
+  await page.goto(URL_PATH);
+  const reply = liveReply(page);
+  await expect(reply).toContainText(first);
+  // Message two opens: its first words are a text event the held snapshot cannot extend, so the
+  // pane reads the snapshot that now shows the message after the first one.
+  const before = s.snapshots;
+  openMessage(s, "w0", "m2");
+  await expect(reply).toContainText("w0");
+  expect(s.snapshots).toBeGreaterThan(before);
+  const rebased = s.snapshots;
+  // From there every word reaches the pane at the flush cadence, through the events alone.
+  const lags: number[] = [];
+  for (const i of [1, 2, 3, 4, 5]) {
+    const at = Date.now();
+    flush(s, ` w${i}`, undefined, "m2");
+    await expect(reply).toContainText(`w${i}`);
+    lags.push(Date.now() - at);
+    await page.waitForTimeout(150);
+  }
+  // Main read the next page a whole poll (1 s) after the rebase: the words arrived in a lump.
+  expect(Math.max(...lags), `per-word lag ${lags.join(", ")} ms`).toBeLessThan(600);
+  expect(s.snapshots).toBe(rebased);
+  await expect(reply).toContainText("w0 w1 w2 w3 w4 w5");
+  // Once each, and the command's row sits between the two messages.
+  const text = await reply.innerText();
+  expect(text.split("First message.").length).toBe(2);
+  expect(text.split("w3").length).toBe(2);
+  const tools = text.search(/commands & tools/i);
+  expect(text.indexOf(first)).toBeLessThan(tools);
+  expect(tools).toBeLessThan(text.indexOf("w0"));
+  await expect(reply.locator(".nj-caret")).toHaveCount(1);
 });

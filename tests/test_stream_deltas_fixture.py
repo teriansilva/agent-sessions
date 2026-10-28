@@ -87,6 +87,7 @@ def _snapshot(root, sid, binding) -> dict:
         {"request": {"model": None}, "adapter": binding.adapter},
         binding.worker_id,
         max_turns=50,
+        live_text=True,  # the operator's own snapshot, the one the pane extends (#1727)
     )
     snap = structured_runtime._snapshot(binding.session_key, raw)
     # What `applyTextDeltas` reads; the ids and times it does not read stay out of the file.
@@ -161,6 +162,60 @@ CASES = {
         "bases": [2],
         "applies": False,
     },
+    # #1727 part 2 — Codex: message one settled, a command, message two streaming: the snapshot
+    # shows both and the events extend the second.
+    "after-settled": {
+        "batches": [
+            [settled("One.", "m1")],
+            [tool()],
+            [delta("Two", "m2")],
+            [delta(" so", "m2"), delta(" far", "m2")],
+        ],
+        "bases": [3],
+        "applies": True,
+    },
+    # …taken before the second message's first words: nothing streams yet, so a snapshot shows it.
+    "after-settled-unopened": {
+        "batches": [[settled("One.", "m1")], [tool()], [delta("Two", "m2")]],
+        "bases": [2],
+        "applies": False,
+    },
+    # A new message in the stream without a settled block between: a paragraph, as the server.
+    "after-settled-switch": {
+        "batches": [[settled("One.", "m1")], [delta("Two", "m2")], [delta("Three", "m3")]],
+        "bases": [2],
+        "applies": True,
+    },
+    # The streaming message settles on the page: the snapshot's, never the deltas'.
+    "after-settled-settles": {
+        "batches": [
+            [settled("One.", "m1")],
+            [delta("Two", "m2")],
+            [settled("Two.", "m2"), delta("Three", "m3")],
+        ],
+        "bases": [2],
+        "applies": False,
+    },
+    # Claude: deltas name no message; each settled block names the message id.
+    "after-settled-unnamed": {
+        "batches": [[delta("A")], [settled("A.", "msg_1")], [delta("B")], [delta(" c")]],
+        "bases": [3],
+        "applies": True,
+    },
+    # Hermes on #1760: message one is cut at its end (one message over the snapshot cap, here
+    # lowered to 40 so the fixture stays small: the same cut code), and message two streams after
+    # it as its own part, the cut's marker in the text. The pane extends message two at the end.
+    "after-a-cut-message": {
+        "batches": [
+            [settled("a" * 41, "m1")],
+            [tool()],
+            [delta("Two", "m2")],
+            [delta(" more", "m2")],
+        ],
+        "bases": [3],
+        "applies": True,
+        "cap": 40,
+    },
     # A private record (a queued claim) between the snapshot and the text: a gap in the cursors.
     "gap": {
         "batches": [[delta("One", "msg-1")], "claim-queued", [delta(" two", "msg-1")]],
@@ -173,42 +228,55 @@ CASES = {
 def build(tmp_path_factory) -> dict:
     out = {}
     for name, case in CASES.items():
-        for base in case["bases"]:
-            root, sid, binding = _conversation(tmp_path_factory.mktemp(f"{name}-{base}"))
-            _claim(root, sid, binding, TURN)
-            snaps = []
-            for i, batch in enumerate([*case["batches"], None]):
-                if i == base:
-                    snaps.append(_snapshot(root, sid, binding))
-                if batch is None:
-                    break
-                if batch == "claim-retry":
-                    _claim(root, sid, binding, RETRY)
-                elif batch == "claim-queued":
-                    journal.claim(
-                        root,
-                        {
-                            **binding.envelope("request"),
-                            "request_id": str(uuid.uuid4()),
-                            "action": "submit",
-                            "params": {
-                                "operation_id": QUEUED,
-                                "expected_revision": journal.read(root, sid).revision,
-                                "text": "later",
-                                "context": {},
-                            },
+        cap, structured_runtime.SNAPSHOT_TEXT = (
+            structured_runtime.SNAPSHOT_TEXT,
+            case.get("cap", structured_runtime.SNAPSHOT_TEXT),
+        )
+        try:
+            out.update(_build_case(tmp_path_factory, name, case))
+        finally:
+            structured_runtime.SNAPSHOT_TEXT = cap
+    return out
+
+
+def _build_case(tmp_path_factory, name, case) -> dict:
+    out = {}
+    for base in case["bases"]:
+        root, sid, binding = _conversation(tmp_path_factory.mktemp(f"{name}-{base}"))
+        _claim(root, sid, binding, TURN)
+        snaps = []
+        for i, batch in enumerate([*case["batches"], None]):
+            if i == base:
+                snaps.append(_snapshot(root, sid, binding))
+            if batch is None:
+                break
+            if batch == "claim-retry":
+                _claim(root, sid, binding, RETRY)
+            elif batch == "claim-queued":
+                journal.claim(
+                    root,
+                    {
+                        **binding.envelope("request"),
+                        "request_id": str(uuid.uuid4()),
+                        "action": "submit",
+                        "params": {
+                            "operation_id": QUEUED,
+                            "expected_revision": journal.read(root, sid).revision,
+                            "text": "later",
+                            "context": {},
                         },
-                        queued=True,
-                    )
-                else:
-                    journal.append_events(root, binding, batch)
-            first = snaps[0]
-            out[f"{name}@{base}"] = {
-                "applies": case["applies"],
-                "base": first,
-                "page": _page(root, sid, first["event_cursor"]),
-                "next": _snapshot(root, sid, binding),
-            }
+                    },
+                    queued=True,
+                )
+            else:
+                journal.append_events(root, binding, batch)
+        first = snaps[0]
+        out[f"{name}@{base}"] = {
+            "applies": case["applies"],
+            "base": first,
+            "page": _page(root, sid, first["event_cursor"]),
+            "next": _snapshot(root, sid, binding),
+        }
     return out
 
 

@@ -324,6 +324,32 @@ def codex():
                 sys.stdout.write(json.dumps({"method": "turn/completed", "params": done}))
                 sys.stdout.flush()  # no trailing newline: the frame was never finished
                 sys.exit(9)
+            if text == "STREAM2":
+                # #1727 part 2: a finished first message, a command, then a second message that
+                # streams word by word and stays open until interrupt.
+                at = {"threadId": thread, "turnId": turn}
+                first = "First message."
+                send(
+                    {
+                        "method": "item/agentMessage/delta",
+                        "params": {**at, "itemId": "msg-a", "delta": first},
+                    }
+                )
+                done = {"id": "msg-a", "type": "agentMessage", "text": first}
+                send({"method": "item/completed", "params": {**at, "item": done}})
+                run = {
+                    "id": "cmd-a",
+                    "type": "commandExecution",
+                    "status": "completed",
+                    "command": "npm test",
+                    "aggregatedOutput": "",
+                }
+                send({"method": "item/completed", "params": {**at, "item": run}})
+                for i in range(40):
+                    word = {**at, "itemId": "msg-b", "delta": f"w{i} "}
+                    send({"method": "item/agentMessage/delta", "params": word})
+                    time.sleep(0.05)
+                continue
             if text == "STREAM":
                 # Output keeps moving the journal revision; the turn stays open until interrupt.
                 for _ in range(300):

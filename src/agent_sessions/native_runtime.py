@@ -2052,6 +2052,32 @@ def _observe_task(tasks: dict, ended: set[str], data: dict, ts: float) -> None:
             task[field] = data[field]
 
 
+def _show_open(turn: dict, streaming: bool) -> None:
+    """The message an operator turn was streaming after its settled ones (#1727), handed to the
+    snapshot SEPARATELY (``reply_open``, its message starts in ``reply_open_breaks``): the snapshot
+    picks its window over the settled reply alone, exactly as before, and appends this after it,
+    so text still streaming never moves that window or the tool rows in it. Kept for a turn that
+    ended without settling it too (interrupted, failed, uncertain) or waits on an approval: the
+    words the operator watched arrive never vanish. ``stream`` only while it ``streaming``.
+
+    Not for a reply shown from the streamed text already (no settled block: the partial IS the
+    reply), nor for a turn that completed normally (its text settled)."""
+    text = turn["open"]
+    if (
+        turn["status"] == "done"
+        or "stream" in turn
+        or not text.strip()
+        or not (turn.get("reply_starts") or turn.get("reply_starts_cut"))
+    ):
+        return
+    cut = turn.get("open_cut", 0)
+    turn["reply_open"] = text
+    # In its own kept text's coordinates; a start the 200k window dropped is simply absent.
+    turn["reply_open_breaks"] = [s - cut for s in turn.get("open_starts", []) if s >= cut]
+    if streaming:
+        turn["stream"] = {"item": turn["open_item"]}
+
+
 def project(
     journal: native_journal.Journal,
     record: dict,
@@ -2061,6 +2087,7 @@ def project(
     before: str | None = None,
     ended_workers: frozenset[str] | set[str] = frozenset(),
     ended_reason: Callable[[str], str | None] = lambda worker_id: None,
+    live_text: bool = False,
 ) -> dict:
     """Project only displayed turn payloads; transcript consumers may request every turn.
 
@@ -2069,7 +2096,12 @@ def project(
 
     ``before`` (#1504) projects the ``max_turns`` turns just older than that turn instead of the
     newest window: a page of history, keyed by turn id so turns appended meanwhile never shift
-    it. ``history_before`` is where the next older page starts, or None at the first turn."""
+    it. ``history_before`` is where the next older page starts, or None at the first turn.
+
+    ``live_text`` (#1727, the operator's own snapshot only): the running operator turn whose reply
+    already has settled messages also shows the message it is streaming now — the partial text
+    after its last settled block — marked ``stream`` so the pane can extend it. Every other
+    reader (history, the public link, missions) keeps the settled reply alone."""
     turns: dict[str, dict] = {}
     pending: dict[str, dict] = {}
     decided: set[str] = set()
@@ -2170,6 +2202,9 @@ def project(
                 "reply_ts": None,
                 "partial": "",
                 "partial_item": None,
+                # The message streaming now (#1727): partial text since the last settled block.
+                "open": "",
+                "open_item": None,
                 "context": params.get("context") or {},
                 "tools": [],
                 "handoff": op.handoff,
@@ -2277,9 +2312,21 @@ def project(
                 else:
                     _append(turn, "partial", data["text"], continues=True)
                 turn["partial_item"] = item or turn["partial_item"]
+                if "open" in turn:
+                    # The same rules for the message in progress alone, from its own start.
+                    if item and turn["open_item"] and item != turn["open_item"]:
+                        _append(turn, "open", data["text"])
+                    else:
+                        _append(turn, "open", data["text"], continues=True)
+                    turn["open_item"] = item or turn["open_item"]
             else:
                 # Each settled text block is its own message: without a break, "…done.Next…".
                 _append(turn, "reply", data["text"])
+                if "open" in turn:
+                    # It settles what was streaming: nothing is in progress until the next delta.
+                    for key in ("open_starts", "open_cut", "open_starts_cut"):
+                        turn.pop(key, None)
+                    turn["open"], turn["open_item"] = "", None
             if data.get("questions") and data.get("item_id"):
                 # The newest question the agent asked in this turn (#1463), and the id an
                 # answer names as its `reply_to`.
@@ -2475,6 +2522,9 @@ def project(
                 "context": dict(turn["context"]),
             }
         )
+    if live_text:
+        for turn in turns.values():
+            _show_open(turn, turn["turn_id"] == in_flight and turn["status"] == "pending")
     for agent in agents.values():
         if agent["worker_id"] != live_worker:
             # Its worker is gone: nothing will end this turn now.
@@ -2502,6 +2552,11 @@ def project(
             "reply_starts_cut",
             "partial_starts_cut",
             "_tool_index",
+            "open",
+            "open_item",
+            "open_cut",
+            "open_starts",
+            "open_starts_cut",
         ):
             turn.pop(key, None)
     return {
@@ -2845,7 +2900,7 @@ def _settle_stranded(
     return (_journal(prov, session_id) if wrote else journal), ended
 
 
-def _snapshot_sync(engine_id: str, session_id: str) -> dict:
+def _snapshot_sync(engine_id: str, session_id: str, live_text: bool = False) -> dict:
     # A read: it reaches a retiring client's history too (#1311). New work never does.
     prov, record = _session(engine_id, session_id, retiring_ok=True)
     from .structured_runtime import SNAPSHOT_TURNS
@@ -2859,6 +2914,7 @@ def _snapshot_sync(engine_id: str, session_id: str) -> dict:
         max_turns=SNAPSHOT_TURNS,
         ended_workers=ended,
         ended_reason=cache(_ended_reason),
+        live_text=live_text,
     )
     # The running worker advertises its own implementation. A web update cannot teach an
     # already-running, release-pinned worker a new effect (#1389).
@@ -2921,11 +2977,13 @@ def model_facts(engine_id: str, session_id: str) -> dict:
 # --- adapter operations ------------------------------------------------------------------------
 
 
-async def snapshot(engine_id: str, session_id: str) -> dict:
-    return await asyncio.to_thread(_snapshot_sync, engine_id, session_id)
+async def snapshot(engine_id: str, session_id: str, *, live_text: bool = False) -> dict:
+    return await asyncio.to_thread(_snapshot_sync, engine_id, session_id, live_text)
 
 
-def _history_sync(engine_id: str, session_id: str, before: str, limit: int) -> dict:
+def _history_sync(
+    engine_id: str, session_id: str, before: str, limit: int, live_text: bool = False
+) -> dict:
     # The snapshot's read (#1311): a retiring client's history is still readable.
     prov, record = _session(engine_id, session_id, retiring_ok=True)
     live = _live_worker(session_id)
@@ -2938,12 +2996,15 @@ def _history_sync(engine_id: str, session_id: str, before: str, limit: int) -> d
         before=before,
         ended_workers=ended,
         ended_reason=cache(_ended_reason),
+        live_text=live_text,
     )
     return {"turns": view["turns"], "history_before": view["history_before"]}
 
 
-async def history(engine_id: str, session_id: str, before: str, limit: int) -> dict:
-    return await asyncio.to_thread(_history_sync, engine_id, session_id, before, limit)
+async def history(
+    engine_id: str, session_id: str, before: str, limit: int, *, live_text: bool = False
+) -> dict:
+    return await asyncio.to_thread(_history_sync, engine_id, session_id, before, limit, live_text)
 
 
 async def events(engine_id: str, session_id: str, after: int, limit: int) -> dict:

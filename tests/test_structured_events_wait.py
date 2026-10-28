@@ -239,7 +239,14 @@ async def test_an_append_by_the_worker_process_wakes_the_waiting_read(host, proj
     await runtime.submit_turn(key, operation_id=turn, text="STREAM")
     page = await asyncio.wait_for(waiting, 5)
     assert time.monotonic() - started < 1.5
-    assert page["events"] and page["events"][0]["cursor"] > revision
+    # Woken by the first record past `after`. That can be the worker's private claim of the turn
+    # (no event, but the cursor moves on), so read on until its observations arrive.
+    assert page["next_cursor"] > revision
+    cursor, seen = page["next_cursor"], list(page["events"])
+    while not seen:
+        page = await asyncio.wait_for(runtime.wait_events(key, after=cursor, wait=3), 5)
+        cursor, seen = page["next_cursor"], seen + page["events"]
+    assert seen[0]["cursor"] > revision
     await runtime.interrupt(key, operation_id=ident(), turn_id=turn)
     await settle(key, turn, state=("interrupted",))
 
@@ -479,3 +486,129 @@ def test_a_quiet_wait_answers_through_the_home_free_proxy(host, project, live_ap
     page = json.loads(body)
     assert page["events"] == [] and page["next_cursor"] == revision
     assert 2.5 <= took < 5, took
+
+
+@pytest.mark.anyio
+async def test_a_second_message_streams_after_a_settled_one_and_rebuilds_from_events(host, project):
+    """#1727 part 2, on the real worker: message one settled, a command, message two streaming.
+    The operator's snapshot (`live_text`) shows message two as it streams, marked `stream`, and
+    its text rebuilt from the events after that snapshot equals the next one's. Every other
+    reader (the default snapshot: the public link, missions) still sees the settled reply."""
+    key = await _session(project)
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="STREAM2")
+    for _ in range(200):
+        base = await runtime.snapshot(key, live_text=True)
+        shown = next((t for t in base["turns"] if t["turn_id"] == turn), None)
+        if shown and shown.get("stream") and "w1 " in shown["reply"]:
+            break
+        await asyncio.sleep(0.05)
+    assert shown["stream"] == {"item": "msg-b"}
+    assert shown["reply"].startswith("First message.\n\nw0 w1 ")
+    assert shown["reply_breaks"] == [0, len("First message.\n\n")]
+    (call,) = shown["tools"]
+    assert call["at"] == len("First message.")  # the command sits between the messages
+    other = next(t for t in (await runtime.snapshot(key))["turns"] if t["turn_id"] == turn)
+    assert other["reply"] == "First message." and "stream" not in other
+    text, cursor = shown["reply"], base["event_cursor"]
+    for _ in range(4):
+        page = await runtime.wait_events(key, after=cursor, wait=3)
+        for event in page["events"]:
+            data = event["data"]
+            assert event["kind"] == "text" and data["partial"] and data["item_id"] == "msg-b"
+            text += data["text"]
+        cursor = page["next_cursor"]
+    later = await runtime.snapshot(key, live_text=True)
+    while cursor < later["event_cursor"]:
+        page = await runtime.events(key, after=cursor, limit=100)
+        text += "".join(e["data"]["text"] for e in page["events"])
+        cursor = page["next_cursor"]
+    again = next(t for t in later["turns"] if t["turn_id"] == turn)
+    assert again["reply"] == text and text.count("First message.") == 1
+    await runtime.interrupt(key, operation_id=ident(), turn_id=turn)
+    _, ended = await settle(key, turn, state=("interrupted",))
+    assert "stream" not in ended
+    # Stopped mid-message (review of #1760): the words the operator watched stream are kept.
+    stopped = await runtime.snapshot(key, live_text=True)
+    kept = next(t for t in stopped["turns"] if t["turn_id"] == turn)
+    assert kept["state"] == "interrupted" and "stream" not in kept
+    assert kept["reply"].startswith(text) and kept["reply"].count("First message.") == 1
+
+
+def test_the_operator_route_shows_the_message_in_progress_and_needs_login(host, project, live_app):
+    port, cfg = live_app
+    cookie, csrf = _login(port, cfg)
+    key = _create(port, cfg, cookie, csrf, project)
+    _revision(port, cookie, key)
+    with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=30) as c:
+        turn = ident()
+        sent = c.post(
+            f"/api/structured/sessions/{key}/turns",
+            json={"operation_id": turn, "text": "STREAM2"},
+            headers={"Cookie": cookie, "X-CSRF-Token": csrf, "Origin": cfg.origin},
+        )
+        assert sent.status_code in (200, 202), sent.text
+        assert c.get(f"/api/structured/sessions/{key}").status_code == 401
+        for _ in range(200):
+            snap = c.get(f"/api/structured/sessions/{key}", headers={"Cookie": cookie}).json()
+            shown = next((t for t in snap["turns"] if t["turn_id"] == turn), None)
+            # Not just any `stream`: a turn that has only started streams its empty first message.
+            if shown and (shown.get("stream") or {}).get("item") == "msg-b":
+                break
+            time.sleep(0.05)
+        assert shown["reply"].startswith("First message.\n\nw")
+        assert shown["stream"]["item"] == "msg-b"
+        c.post(
+            f"/api/structured/sessions/{key}/interrupt",
+            json={"operation_id": ident(), "turn_id": turn},
+            headers={"Cookie": cookie, "X-CSRF-Token": csrf, "Origin": cfg.origin},
+        )
+
+
+def test_a_stopped_turns_streamed_words_come_back_on_the_operators_history_pages(
+    host, project, live_app
+):
+    """Hermes on #1760: once a stopped turn scrolls into history, its page must keep the words it
+    was streaming, as the operator's snapshot does. Through the real routes: the operator's
+    history page has them; the default projection (the public link's) does not."""
+    port, cfg = live_app
+    cookie, csrf = _login(port, cfg)
+    key = _create(port, cfg, cookie, csrf, project)
+    _revision(port, cookie, key)
+    write = {"Cookie": cookie, "X-CSRF-Token": csrf, "Origin": cfg.origin}
+    base = f"/api/structured/sessions/{key}"
+    with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=30) as c:
+
+        def turn_of(tid):
+            snap = c.get(base, headers={"Cookie": cookie}).json()
+            return next((t for t in snap["turns"] if t["turn_id"] == tid), None)
+
+        def until(tid, ok):
+            for _ in range(400):
+                shown = turn_of(tid)
+                if shown and ok(shown):
+                    return shown
+                time.sleep(0.05)
+            raise AssertionError(f"never: {turn_of(tid)}")
+
+        stopped = ident()
+        assert c.post(
+            f"{base}/turns", json={"operation_id": stopped, "text": "STREAM2"}, headers=write
+        ).status_code in (200, 202)
+        until(stopped, lambda t: "w2 " in t["reply"])
+        c.post(
+            f"{base}/interrupt", json={"operation_id": ident(), "turn_id": stopped}, headers=write
+        )
+        kept = until(stopped, lambda t: t["state"] == "interrupted")["reply"]
+        assert kept.startswith("First message.\n\nw0 w1 w2 ")
+        later = ident()
+        assert c.post(
+            f"{base}/turns", json={"operation_id": later, "text": "hi"}, headers=write
+        ).status_code in (200, 202)
+        until(later, lambda t: t["state"] == "completed")
+        page = c.get(f"{base}/history", params={"before": later}, headers={"Cookie": cookie}).json()
+    (old,) = [t for t in page["turns"] if t["turn_id"] == stopped]
+    assert old["reply"] == kept and "stream" not in old
+    default = asyncio.run(runtime.snapshot(key))
+    (public,) = [t for t in default["turns"] if t["turn_id"] == stopped]
+    assert public["reply"] == "First message."

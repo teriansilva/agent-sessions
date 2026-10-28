@@ -12,7 +12,9 @@
  *    snapshot's `event_cursor`, with no record between them (cursors count EVERY journal record;
  *    a gap is a private record, e.g. a handoff, that changes what the snapshot would show);
  *  - only partial text events of the turn the snapshot marks `stream`, still running, whose
- *    operation id is that turn's own — a retry is a new operation, so it never splices in;
+ *    operation id is that turn's own — a retry is a new operation, so it never splices in. The
+ *    marked text may be the turn's settled messages plus the one streaming now (#1727 part 2):
+ *    the events extend that message (`item`); one that settles is read from the next snapshot;
  *  - the page must reach the journal's head, so what is shown is never a partial page;
  *  - the result carries the page's cursor as its `event_cursor` (its `revision` stays the
  *    snapshot's), so an older snapshot read in flight cannot replace it, and the next snapshot
@@ -25,8 +27,13 @@ type Event = StructuredEventPage["events"][number];
 /** Python's `str.strip()` emptiness, close enough for "a block with no visible text". */
 const blank = (s: string) => s.trim() === "";
 
-function streaming(t: StructuredSnapshot["turns"][number]): t is StructuredTurn {
+function streamingTurn(t: StructuredSnapshot["turns"][number]): t is StructuredTurn {
   return t.kind !== "agent" && t.state === "running" && !!(t as StructuredTurn).stream;
+}
+
+/** The snapshot holds a turn whose reply its text events may extend. */
+export function streaming(snap: StructuredSnapshot): boolean {
+  return snap.turns.some(streamingTurn);
 }
 
 /** One partial text delta for `turnId`, or null if this event is anything else. */
@@ -48,7 +55,7 @@ export function applyTextDeltas(
   // Contiguous from the snapshot's cursor: no record (event or private) between them.
   if (events.some((e, i) => e.cursor !== snap.event_cursor + 1 + i)) return null;
   if (events[events.length - 1].cursor !== page.next_cursor) return null;
-  const at = snap.turns.findIndex(streaming);
+  const at = snap.turns.findIndex(streamingTurn);
   if (at < 0) return null;
   const turn = snap.turns[at] as StructuredTurn;
   let reply = turn.reply ?? "";

@@ -188,7 +188,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
 
     @app.get("/api/structured/sessions/{key}")
     async def structured_snapshot(key: str, _user: str = Depends(logged_in)) -> JSONResponse:
-        snap = await _run(structured_runtime.snapshot(key))
+        # The operator's own view: a running turn's message in progress shows too (#1727).
+        snap = await _run(structured_runtime.snapshot(key, live_text=True))
         return JSONResponse(await _attributed(snap, key))
 
     @app.get("/api/structured/sessions/{key}/history")
@@ -196,7 +197,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         key: str, before: str, limit: int = 50, _user: str = Depends(logged_in)
     ) -> JSONResponse:
         # Older turns get the snapshot's attribution, failing closed the same way (#1504).
-        page = await _run(structured_runtime.history(key, before=before, limit=limit))
+        # The operator's own pages keep a stopped turn's streamed words, as its snapshot (#1727).
+        page = await _run(
+            structured_runtime.history(key, before=before, limit=limit, live_text=True)
+        )
         return JSONResponse(await _attributed(page, key))
 
     @app.post("/api/structured/sessions/{key}/skip-permissions")

@@ -165,8 +165,8 @@ class _NativeAdapter:
             specialist=specialist,
         )
 
-    async def snapshot(self, engine, native):
-        return await _native(native_runtime.snapshot, engine, native)
+    async def snapshot(self, engine, native, *, live_text=False):
+        return await _native(native_runtime.snapshot, engine, native, live_text=live_text)
 
     async def submit(self, engine, native, tid, text, **kwargs):
         return await _native(native_runtime.submit, engine, native, tid, text, **kwargs)
@@ -182,8 +182,10 @@ class _NativeAdapter:
     async def events_stamp(self, engine, native):
         return await _native(native_runtime.journal_stamp, engine, native)
 
-    async def history(self, engine, native, before, limit):
-        return await _native(native_runtime.history, engine, native, before, limit)
+    async def history(self, engine, native, before, limit, *, live_text=False):
+        return await _native(
+            native_runtime.history, engine, native, before, limit, live_text=live_text
+        )
 
     async def start(self, engine, native, *, wait_ready=True):
         return await _native(native_runtime.start, engine, native, wait_ready=wait_ready)
@@ -437,6 +439,36 @@ def _reply(turn: dict, text_budget: list[int] | None) -> tuple[str | None, bool,
     )
 
 
+def _with_open(
+    turn: dict, text: str | None, head_cut: bool, fields: dict, text_budget: list[int] | None
+) -> tuple[str | None, dict, bool]:
+    """The message an operator turn is (or was) streaming after its settled ones (#1727),
+    appended AFTER the window `_reply` chose over the settled reply alone: text still streaming
+    never moves that window, the messages in it or their tool rows. A paragraph apart, its start
+    a break. Its own slot, OUTSIDE the shared text budget (Hermes on #1760: with the budget spent
+    a stopped message's words vanished silently): up to SNAPSHOT_TEXT, its newest tail when
+    longer, which still ends where the stream goes on, and shown even when the budget left the
+    settled reply nothing (that reply then reads as not loaded, as before).
+
+    After a settled message cut at its END (`head_cut`: one message over the cap, its head shown)
+    the cut keeps its marker, now IN the text right after that head — the pane's own "…" goes
+    after the reply's last part, which is this message now (Hermes on #1760) — and the message
+    in progress follows as its own part. Returns (text, fields, shown)."""
+    tail = turn.get("reply_open")
+    if not isinstance(tail, str) or not tail or text is None:
+        return text, fields, False
+    shown = tail[-SNAPSHOT_TEXT:]  # never charged to `text_budget`: the shared budget is history's
+    offset = len(tail) - len(shown)
+    if head_cut:
+        text += "…"
+    joined = text if not text or text.endswith("\n\n") else text + "\n\n"
+    at = len(joined)
+    if "reply_breaks" in fields:
+        starts = [at + b - offset for b in turn.get("reply_open_breaks") or [] if b > offset]
+        fields = {**fields, "reply_breaks": [*fields["reply_breaks"], at, *starts]}
+    return joined + shown, fields, True
+
+
 def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
     def bounded(value):
         if not isinstance(value, str):
@@ -451,7 +483,13 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
         return _agent_turn(turn, text_budget)
     text, text_cut = bounded(turn.get("text"))
     reply, reply_cut, start, shape = _reply(turn, text_budget)
-    tools, tools_cut = _tools(turn, reply, start)
+    settled = reply
+    reply, shape, opened = _with_open(turn, reply, reply_cut, shape, text_budget)
+    # A message in progress after a cut settled one carries that cut's marker in its text.
+    if opened and reply_cut:
+        settled, reply_cut = f"{settled}…", False
+    # Tool rows are placed in the settled text, never into the message in progress.
+    tools, tools_cut = _tools(turn, settled, start)
     return {
         "kind": "operator",
         "turn_id": turn["turn_id"],
@@ -477,8 +515,13 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
         "requires_authority": bool(turn.get("execution_binding")),
         "tools": tools,
         "tools_truncated": tools_cut,
-        # Live turns only, which never spend the shared text budget (a spent one sends "").
-        **(_stream(turn, reply_cut) if text_budget is None else {}),
+        # Live turns only, which never spend the shared text budget (a spent one sends ""), and
+        # only when the message it names was sent.
+        **(
+            _stream(turn, reply_cut)
+            if text_budget is None and (opened or "reply_open" not in turn)
+            else {}
+        ),
         "usage": turn.get("usage"),
         **(
             {"questions": turn["questions"], "question_id": turn["question_id"]}
@@ -657,16 +700,24 @@ def _snapshot(session_key: str, raw: dict) -> dict:
     }
 
 
-async def snapshot(session_key: str) -> dict:
+async def snapshot(session_key: str, *, live_text: bool = False) -> dict:
     """The bounded view. ``read_only`` is None while the client can take new work, else why not:
     a retiring native client (its source disabled or removed) still shows its history (#1311).
 
     The client lookups take a fresh roster snapshot (state files, the roster lock): off the event
-    loop (#1505), like every other blocking read on the create/start path."""
+    loop (#1505), like every other blocking read on the create/start path.
+
+    ``live_text`` (#1727): the operator's own view also shows the message a running turn is
+    streaming after its settled ones (`native_runtime.project`). Only the operator's snapshot route
+    asks for it; the public link and every server-side reader keep the settled reply."""
     engine, native, adapter, read_only = await asyncio.to_thread(
         _observation_target, session_key, "snapshot"
     )
-    raw = await adapter.snapshot(engine, native)
+    raw = (
+        await adapter.snapshot(engine, native, live_text=True)
+        if live_text and isinstance(adapter, _NativeAdapter)
+        else await adapter.snapshot(engine, native)
+    )
     images = (await asyncio.to_thread(partial(describe, engine, check_ready=False))).images
     return {
         **_snapshot(f"{engine}:{native}", raw),
@@ -903,10 +954,16 @@ async def wait_events(
 _HISTORY_IN_FLIGHT: set[str] = set()
 
 
-async def history(session_key: str, *, before: object, limit: object = SNAPSHOT_TURNS) -> dict:
+async def history(
+    session_key: str, *, before: object, limit: object = SNAPSHOT_TURNS, live_text: bool = False
+) -> dict:
     """The turns just older than ``before`` (#1504), chronological and shaped as the snapshot's
     turns are, under one text budget spent newest first. ``before`` is where the next older page
-    starts, None at the conversation's first turn."""
+    starts, None at the conversation's first turn.
+
+    ``live_text`` (#1727): the operator's own pages, like its snapshot, keep the words a turn was
+    streaming when it stopped (`native_runtime.project`), so they are still there once that turn
+    scrolls into history. Only the operator's history route asks for it."""
     if not chat_store.valid_turn_id(before):
         raise StructuredError(422, "before must be a turn id")
     if type(limit) is not int or not 1 <= limit <= SNAPSHOT_TURNS:
@@ -917,7 +974,11 @@ async def history(session_key: str, *, before: object, limit: object = SNAPSHOT_
         raise StructuredError(429, "a history page for this session is already being read")
     _HISTORY_IN_FLIGHT.add(key)
     try:
-        raw = await adapter.history(engine, native, before, limit)
+        raw = (
+            await adapter.history(engine, native, before, limit, live_text=True)
+            if live_text
+            else await adapter.history(engine, native, before, limit)
+        )
     finally:
         _HISTORY_IN_FLIGHT.discard(key)
     budget = [SNAPSHOT_TEXT_BUDGET]
