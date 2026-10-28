@@ -54,7 +54,8 @@ const NEAR = 0.9;
  *    shared group's throttling is never presented as this session's own, whichever ratio shows. */
 export function memorySentence(p: MemoryPressure): string {
   const amount = `${gb(p.working_set)} of ${gb(p.max)} GB`;
-  const stops = ` At ${gb(p.max)} GB it stops, with whatever it was doing unfinished.`;
+  // At the cap the kernel kills ONE process it selects (#1732): usually the largest tool.
+  const stops = ` At ${gb(p.max)} GB the kernel kills one of its processes, usually the largest.`;
   const near = p.working_set / p.max >= NEAR;
   const closeness = isShared(p)
     ? near
@@ -74,4 +75,11 @@ export function memorySentence(p: MemoryPressure): string {
           ? " Raising this session’s own limit won’t help."
           : "";
   return closeness + throttle;
+}
+
+/** An OOM notice (#1732): processes the kernel killed in this session, counted, never named. */
+export function oomKillSentence(count: number): string {
+  return count === 1
+    ? "A process in this session ran out of memory and was killed."
+    : `${count} processes in this session ran out of memory and were killed.`;
 }

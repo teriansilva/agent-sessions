@@ -388,7 +388,9 @@ def test_a_real_memory_kill_reaches_the_lifecycle_through_the_hook(tmp_path):
         worker, python=sys.executable, state_dir=state_dir, home=str(tmp_path), memory_gib=1
     )
     hook = _property(argv, "ExecStopPost")
-    # The launch's own containment, a 64 MB cap and a child that outgrows it once pinned.
+    # The launch's containment as it was before #1732 (`OOMPolicy=kill`: a whole-unit `oom-kill`,
+    # which a generation launched then can still end with), a 64 MB cap and a child that outgrows
+    # it once pinned. Since #1732 the policy is `continue`: see test_native_oom_systemd.py.
     hog = "import time,sys;time.sleep(2);b=[]\nwhile True: b.append(bytearray(10**7))"
     subprocess.run(
         [

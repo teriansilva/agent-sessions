@@ -20,6 +20,10 @@ generation without warning. This module lets the worker watch its own cgroup and
 * **Unknown is not healthy.** An unreadable group, an unpinned or foreign path or an unlimited
   cap is `unavailable`: no warning, and any warning already shown clears.
 
+* **Kills, counted (#1732).** Under `OOMPolicy=continue` an overrun kills one process, not the
+  generation. The worker counts them from its own unit's hierarchical `memory.events:oom_kill`
+  (`oom_kills`) and journals each rise as a bounded `memory_oom_kill` event; no process is named.
+
 The worker records the state in its own lifecycle sidecar. `public()` is the one reader both the
 pane and the session list use: a warning is shown only while it is fresh (its worker keeps
 sampling) and belongs to the pinned invocation, so a dead or replaced generation's warning expires
@@ -141,6 +145,14 @@ def _throttled(directory: Path, *, own: bool) -> int | None:
     if local is not None or not own:
         return local
     return _field(_read(directory / "memory.events"), "high")
+
+
+def oom_kills(group: str, root: Path | None = None) -> int | None:
+    """How many processes the kernel has OOM-killed in the worker's own unit (#1732): `oom_kill`
+    of its HIERARCHICAL `memory.events`, so a kill in a nested child group counts too (`.local`
+    would miss it). Cumulative over the unit's life; None when unreadable."""
+    base = CGROUP_ROOT if root is None else root
+    return _field(_read(base / group.lstrip("/") / "memory.events"), "oom_kill")
 
 
 def sample(group: str, root: Path | None = None) -> Sample | None:

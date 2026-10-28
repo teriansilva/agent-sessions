@@ -189,7 +189,8 @@ export function ResourceLimits() {
                 .map(renderField)}
             </div>
             <p className={styles.hint}>
-              Reaching this limit stops the session and its tools. Choose an
+              Reaching this limit kills one of the session’s processes, usually
+              the largest tool; the agent usually keeps running. Choose an
               allowance that fits your workload and server. A lower host limit
               still takes precedence.
             </p>

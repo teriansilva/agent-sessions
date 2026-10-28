@@ -265,7 +265,8 @@ The host's OS, platform, CPU and load, memory, disk, uptime and Python version.
 ### Resources · `resources`
 
 **API session memory limit** sets the combined memory allowance for an agent and its tools,
-in GiB (default **8**, range **1–1024**). Reaching the limit stops that session and its tools.
+in GiB (default **8**, range **1–1024**). Reaching the limit kills one of that session's
+processes, usually the largest tool; the agent usually keeps running and sees a failed command.
 Choose an allowance that fits your workload and server. A lower host limit still takes precedence.
 
 **Advanced process and thread limits** contains the console/API task budgets and background

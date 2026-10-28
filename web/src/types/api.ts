@@ -1735,6 +1735,11 @@ export interface StructuredTurn {
    *  next partial text events (after the snapshot's `event_cursor`) to it. `item` is the message
    *  that text continues, or null. Absent on every other turn and from the public link. */
   stream?: { item: string | null };
+  /** Processes the kernel OOM-killed in this session while this turn ran (#1732): a count, never
+   *  a name. Absent when none. */
+  oom_kills?: number;
+  /** Session-level OOM kills between this turn and the next (#1732): not this turn's. */
+  oom_kills_after?: number;
 }
 
 /** A turn the agent ran for itself — a scheduled wake-up, a task notification (#1438). Nobody
@@ -1758,6 +1763,11 @@ export interface StructuredAgentTurn {
   reply_omitted?: { messages: number; chars: number } | null;
   /** Why it failed, when it did. */
   reason?: string;
+  /** Processes the kernel OOM-killed in this session while this turn ran (#1732): a count, never
+   *  a name. Absent when none. */
+  oom_kills?: number;
+  /** Session-level OOM kills between this turn and the next (#1732): not this turn's. */
+  oom_kills_after?: number;
   tools: StructuredTool[];
   tools_truncated: boolean;
   /** The newest question the agent asked in this turn, with its options (#1463). */
@@ -1868,6 +1878,8 @@ export interface StructuredSnapshot {
   /** Where scrolling up continues (#1504): the oldest turn of the window, null at the first turn.
    *  Absent on older servers and on clients without history. */
   history_before?: string | null;
+  /** Session-level OOM kills before the first turn (#1732); only while that turn is shown. */
+  oom_kills_start?: number;
   pending_requests: StructuredRequest[];
   native?: {
     native_id: string | null;

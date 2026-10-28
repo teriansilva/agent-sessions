@@ -115,6 +115,9 @@ class Events(Sequence):
             "approval_cancelled",
             "turn_completed",
             "memory_pressure",
+            # #1732: rare, bounded, and a session-level one belongs to no turn; the projection
+            # attributes a turn-level one by its field, whatever window it reads.
+            "memory_oom_kill",
         }:
             self._global.append(index)
         else:

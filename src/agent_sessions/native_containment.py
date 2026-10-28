@@ -210,7 +210,10 @@ def launch_argv(
         # Reclaim and throttle before the hard kill (#1643): the worker reads the pressure and
         # warns the operator while there is still time to act.
         f"--property=MemoryHigh={memory_high_mib(memory_gib)}M",
-        "--property=OOMPolicy=kill",
+        # An overrun kills ONE process the kernel selects (#1732), not the whole group: a tool
+        # that runs out of memory fails alone and the agent sees a failed command. Stop, Restart
+        # and idle teardown still kill the whole group (`KillMode=control-group`).
+        "--property=OOMPolicy=continue",
         # systemd tells this hook how the unit ended (`$SERVICE_RESULT`, e.g. `oom-kill`), which
         # `--collect` would otherwise forget (#1643). `-`: its failure never changes that result;
         # `:`: no environment expansion of its words.

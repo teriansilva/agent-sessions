@@ -601,7 +601,12 @@ async def test_spawn_holds_shared_store_admission_through_process_creation(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
     await worker.spawn()
     assert seen["exclusive"] is None and seen["probe_exclusive"] is None
-    assert seen["argv"] == tuple(OpencodeAcpCodec.argv("/opt/opencode"))
+    # Behind the exec trampoline (#1732), which keeps the binary in its own command line: the
+    # compactor's process scan still sees the child from its creation on.
+    assert seen["argv"] == tuple(worker.spawn_argv())
+    assert seen["argv"][-len(OpencodeAcpCodec.argv("/opt/opencode")) :] == tuple(
+        OpencodeAcpCodec.argv("/opt/opencode")
+    )
     # The probe gets a password of its own, never the child's.
     probe_password = seen["probe_env"]["OPENCODE_SERVER_PASSWORD"]
     assert len(probe_password) >= 32 and probe_password != worker._server_password

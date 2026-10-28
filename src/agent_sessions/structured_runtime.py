@@ -485,6 +485,17 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
             if turn.get("questions")
             else {}
         ),
+        **_oom(turn),
+    }
+
+
+def _oom(turn: dict) -> dict:
+    """OOM notices (#1732): processes killed during this turn (`oom_kills`), and session-level
+    ones between this turn and the next (`oom_kills_after`). Counts only; absent when none."""
+    return {
+        key: turn[key]
+        for key in ("oom_kills", "oom_kills_after")
+        if isinstance(turn.get(key), int) and turn[key] > 0
     }
 
 
@@ -537,6 +548,7 @@ def _agent_turn(turn: dict, text_budget: list[int] | None) -> dict:
             if turn.get("questions")
             else {}
         ),
+        **_oom(turn),
     }
 
 
@@ -631,6 +643,12 @@ def _snapshot(session_key: str, raw: dict) -> dict:
         "model_configured": raw.get("model_configured"),
         "effort_configured": raw.get("effort_configured"),
         "turns": turns,
+        # Session-level OOM notices before the first turn (#1732): only while that turn is shown.
+        **(
+            {"oom_kills_start": raw["oom_kills_start"]}
+            if raw.get("oom_kills_start") and len(turns) == len(all_turns)
+            else {}
+        ),
         "omitted_turns": max(0, raw.get("omitted_turns", 0)) + max(0, len(all_turns) - len(turns)),
         # Where scrolling up continues (#1504): the oldest turn of the window, None at the first.
         "history_before": raw.get("history_before"),

@@ -24,6 +24,16 @@ Behaviour is selected by the turn text, so a test drives it purely through the p
   notification (output ``notified``, a ``task-notification`` result). It is held open until
   ``release-notification`` while ``hold-notification`` (after its output) or
   ``hold-notification-start`` (before any output) exists (#1427).
+* OOM fixtures (#1732, `memory_turn`), every protocol; under a tiny `MemoryMax`:
+  ``OOMCHILD:<n>`` runs n children one after another that each allocate until killed, and
+  replies ``echo:children:<their return codes>``; ``OOMSELF`` allocates in the agent itself;
+  ``OOM_THEN_KILLSELF`` runs one such child, then SIGKILLs the agent; ``KILLSELF`` only SIGKILLs
+  the agent; ``OOMLATER`` replies at once and runs one such child once ``release-hog`` exists;
+  ``CLOSE_THEN_EXIT`` / ``CLOSE_THEN_KILLSELF`` close stdout, then exit 7 / SIGKILL themselves
+  0.5 s later; ``BADFRAME`` writes a line no protocol accepts and stays alive.
+  Each child's return code is appended to ``hog-codes.txt``. A ``report-oom-adj`` file in the
+  working directory makes the agent fork a child first thing, which records its own and its
+  parent's ``oom_score_adj`` (and the parent's environment) in ``oom-adj.jsonl``.
 * anything else — stream a reply ``echo:<text>`` and complete.
 
 Every frame received is appended to ``$PWD/native-frames.jsonl`` so tests can prove a frame
@@ -87,6 +97,87 @@ def wait_release(text):
         deadline = time.monotonic() + 10
         while not os.path.exists("release-queued-turn") and time.monotonic() < deadline:
             time.sleep(0.01)
+
+
+HOG = "b = []\nwhile True:\n    b.append(bytearray(4 << 20))\n"
+
+
+def hog() -> int:
+    """One child that allocates until the kernel kills it (#1732); its return code."""
+    import subprocess
+
+    code = subprocess.run(  # noqa: S603 — literal argv
+        [sys.executable, "-c", HOG],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode
+    with open("hog-codes.txt", "a") as fh:
+        fh.write(f"{code}\n")
+    return code
+
+
+def memory_turn(text):
+    """The OOM fixtures (#1732, module docstring): the word to reply with, or None."""
+    import signal
+
+    if text.startswith("OOMCHILD:"):
+        return "children:" + ",".join(str(hog()) for _ in range(int(text.split(":")[1])))
+    if text == "OOMSELF":
+        hoard = []
+        while True:
+            hoard.append(bytearray(4 << 20))
+    if text in {"OOM_THEN_KILLSELF", "KILLSELF"}:
+        if text == "OOM_THEN_KILLSELF":
+            hog()
+        os.kill(os.getpid(), signal.SIGKILL)
+    if text == "OOMLATER":
+        threading.Thread(target=lambda: _wait_file("release-hog", 60) or hog(), daemon=True).start()
+        return "later"
+    if text in {"CLOSE_THEN_EXIT", "CLOSE_THEN_KILLSELF"}:
+        sys.stdout.flush()
+        os.close(1)
+        time.sleep(0.5)
+        if text == "CLOSE_THEN_KILLSELF":
+            os.kill(os.getpid(), signal.SIGKILL)
+        os._exit(7)
+    if text == "BADFRAME":
+        sys.stdout.write("{not a frame\n")
+        sys.stdout.flush()
+        time.sleep(60)
+        os._exit(0)
+    return None
+
+
+def report_oom_adj():
+    """`report-oom-adj` (#1732): fork first thing; the child records what it inherited."""
+    if not os.path.exists("report-oom-adj"):
+        return
+    parent = os.getpid()
+    pid = os.fork()
+    if pid == 0:
+        try:
+            with open("/proc/self/oom_score_adj") as fh:
+                child = int(fh.read())
+            with open(f"/proc/{parent}/oom_score_adj") as fh:
+                agent = int(fh.read())
+            with open(f"/proc/{parent}/status") as fh:
+                ignored = next(line for line in fh if line.startswith("SigIgn:")).split()[1]
+            entry = {
+                "pid": parent,
+                "argv": sys.argv[1:],
+                "agent": agent,
+                "child": child,
+                "sig_ignored": ignored,
+                "env": dict(os.environ),
+                "cwd": os.getcwd(),
+            }
+            with open("oom-adj.jsonl", "a") as fh:
+                fh.write(json.dumps(entry) + "\n")
+        finally:
+            os._exit(0)
+    os.waitpid(pid, 0)
 
 
 def wait_cancel():
@@ -224,6 +315,7 @@ def codex():
             )
             if text == "DIE":
                 sys.exit(9)
+            text = memory_turn(text) or text
             if text == "HANG":
                 continue
             wait_release(text)
@@ -834,6 +926,7 @@ def claude_turn(frame, stream, session, notification_turn):
     send(claude_init(session))
     if text == "DIE":
         sys.exit(9)
+    text = memory_turn(text) or text
     if text == "HANG":
         return False  # the turn never ends: no `completed` either
     wait_release(text)
@@ -1230,6 +1323,7 @@ def opencode():
             prompt = rid
             if text == "DIE":
                 sys.exit(9)
+            text = memory_turn(text) or text
             if text in {"HANG", "HANG_APPROVE"}:
                 if text == "HANG_APPROVE":
                     ask({"toolCallId": "call-h", "kind": "execute", "title": "sleep"}, [ONCE])
@@ -1586,6 +1680,7 @@ def copilot():
             prompt = rid
             if text == "DIE":
                 sys.exit(9)
+            text = memory_turn(text) or text
             if text in {"HANG", "HANG_APPROVE"}:
                 if text == "HANG_APPROVE":
                     ask(
@@ -1657,12 +1752,15 @@ if __name__ == "__main__":
             else "2.1.292 (Claude Code)"
         )
     elif "app-server" in sys.argv:
+        report_oom_adj()
         codex()
     elif sys.argv[1:] == ["debug", "config"]:
         _debug_config()
     elif sys.argv[1:2] == ["acp"]:
+        report_oom_adj()
         opencode()
     elif sys.argv[1:2] == ["--acp"]:
+        report_oom_adj()
         copilot()
     elif sys.argv[1:] == ["models", "--verbose"]:
         # opencode's model list (#1312/#1313/#1407), as 1.18.35 prints it: an id line, then that
@@ -1675,4 +1773,5 @@ if __name__ == "__main__":
         print("openai/fake-gpt\n" + json.dumps(gpt, indent=2))
         print('-not-a-model\nlocal/fake-broken\n{\n  "variants": {oops\n}')
     else:
+        report_oom_adj()
         claude()

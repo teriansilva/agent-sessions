@@ -245,6 +245,10 @@ class _Stub:
         self.recorded: list = []
         self.waiters: dict = {}
         self.done = asyncio.Event()
+        self.terminated = self.closing = False
+
+    async def reap_window(self):  # the agent's own end (#1732): pinned in test_native_oom.py
+        pass
 
     def dropped_frame(self):
         self.recorded.append("dropped")

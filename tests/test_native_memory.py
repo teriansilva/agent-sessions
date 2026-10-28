@@ -402,6 +402,15 @@ def test_the_watch_writes_while_warning_and_on_every_change(worker, monkeypatch)
         def record(self, batch):
             events.extend((e.kind, e.data["level"]) for e in batch)
 
+        # The OOM counter's periodic read (#1732) is pinned in test_native_oom.py.
+        _turn_key = None
+
+        def turn_transition(self):
+            return False
+
+        def oom_read(self, before, after):
+            return False
+
     monkeypatch.setattr(native_memory, "INTERVAL", 0.001)
     asyncio.run(Worker.memory_watch(Fake()))
     # The first reading, both warning samples (a fresh `at`), the fall; not the repeats.

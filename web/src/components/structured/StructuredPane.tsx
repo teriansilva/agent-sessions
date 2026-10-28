@@ -21,7 +21,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } f
 import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { memorySentence, ownLimitHelps } from "../../lib/memoryPressure";
+import { memorySentence, oomKillSentence, ownLimitHelps } from "../../lib/memoryPressure";
 import { settingsPath } from "../../routes/settingsTabs";
 import { engineInfo, engineLabel, isAgent, useEngineRoster } from "../../app/engineRoster";
 import { isNewSessionPlaceholder } from "../../app/sessionsStore";
@@ -996,6 +996,7 @@ function AgentTurnView({
         turn.reply && reply(turn.reply, true)
       )}
       {question}
+      {!!turn.oom_kills && <OomNotice count={turn.oom_kills} />}
       {turn.state === "failed" && turn.reason && (
         <p className={`${styles.ownNote} ${styles.activityFailed}`} role="alert">{turn.reason}</p>
       )}
@@ -1317,6 +1318,7 @@ function TurnView({
       )}
       {turn.state === "delivering" && <div className={chat.wait} role="status">Awaiting agent acknowledgement</div>}
       {turn.state === "delivered" && <div className={chat.wait} role="status">Added to the active turn</div>}
+      {!!turn.oom_kills && <OomNotice count={turn.oom_kills} />}
       {active && waiting && (
         <div className={chat.wait} role="status" data-testid="structured-waiting-own-turn">
           Waiting · {agent} is finishing a turn of its own first
@@ -1359,6 +1361,24 @@ function TurnView({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** The kernel OOM-killed processes in this session (#1732): #1651's memory banner treatment, a
+ *  count and never a name. In a turn (`oom_kills`, killed while it ran) or between turns
+ *  (`between`: a session-level notice that belongs to no turn). */
+function OomNotice({ count, between = false }: { count: number; between?: boolean }) {
+  return (
+    <div
+      className={`${styles.banner} ${styles.memBanner} ${styles.memCritical}`}
+      role="status"
+      data-testid={between ? "structured-oom-between" : "structured-oom"}
+      data-count={count}
+    >
+      <p>
+        <b>Out of memory</b> {oomKillSentence(count)}
+      </p>
     </div>
   );
 }
@@ -3425,11 +3445,14 @@ export function StructuredPane({
             </div>
           )}
           <HistoryTop status={earlier.status} onRetry={earlier.retry} />
+          {!!snap?.oom_kills_start && <OomNotice count={snap.oom_kills_start} between />}
           {conversation.map((group) => {
             if (group === null) return (
               <BackgroundWork key="background" native={snap?.native} />
             );
             const { turn: t, additions } = group;
+            // Session-level OOM kills after this group, before the next turn (#1732).
+            const oomAfter = [t, ...additions].reduce((n, x) => n + (x.oom_kills_after ?? 0), 0);
             return (
               <Fragment key={t.turn_id}>
                 {t.turn_id === seam && (
@@ -3451,6 +3474,7 @@ export function StructuredPane({
                     question={questionFor(t)}
                   />
                 ) : renderTurn(t, additions.map((added) => renderTurn(added)))}
+                {oomAfter > 0 && <OomNotice count={oomAfter} between />}
               </Fragment>
             );
           })}

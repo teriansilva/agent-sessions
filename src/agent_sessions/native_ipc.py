@@ -519,6 +519,10 @@ _EVENT_FIELDS = {
     # #1643: the worker's memory pressure changed level. Byte counts, a closed level, scope and
     # throttle evidence only; the snapshot reads the same state from the lifecycle sidecar.
     "memory_pressure": ({"level"}, {"working_set", "max", "scope", "throttled"}),
+    # #1732: the kernel OOM-killed a process in the worker's unit. The CUMULATIVE count since the
+    # worker started, pinned to its invocation; never a process name, argv or env. A turn's id
+    # only when that same turn was in flight at both counter reads (else a session-level notice).
+    "memory_oom_kill": ({"count", "invocation_id"}, {"operation_id", "agent_turn"}),
     "model": (_COMMON | {"model_effective"}, set()),
     "turn_completed": (
         _COMMON | {"state", "error"},
@@ -548,13 +552,35 @@ def _memory_pressure(data: dict) -> dict:
     return out
 
 
+MAX_OOM_KILLS = 1_000_000
+_INVOCATION = re.compile(r"[0-9a-f]{32}")
+
+
+def _memory_oom_kill(data: dict) -> dict:
+    if "operation_id" in data and "agent_turn" in data:
+        raise IPCError("an OOM notice names at most one turn")
+    if (
+        not isinstance(data["invocation_id"], str)
+        or _INVOCATION.fullmatch(data["invocation_id"]) is None
+    ):
+        raise IPCError("invalid private IPC invocation id")
+    out = {
+        "count": _integer(data["count"], minimum=1, maximum=MAX_OOM_KILLS),
+        "invocation_id": data["invocation_id"],
+    }
+    for key in ("operation_id", "agent_turn"):
+        if key in data:
+            out[key] = _uuid(data[key])
+    return out
+
+
 def _event(value):
     _object(value, {"cursor", "kind", "data"})
     kind = _choice(value["kind"], _EVENT_FIELDS)
     required, optional = _EVENT_FIELDS[kind]
     data = _object(value["data"], required, optional)
-    if kind == "memory_pressure":
-        out = _memory_pressure(data)
+    if kind in {"memory_pressure", "memory_oom_kill"}:
+        out = _memory_pressure(data) if kind == "memory_pressure" else _memory_oom_kill(data)
         return {"cursor": _integer(value["cursor"], minimum=1), "kind": kind, "data": out}
     out = {}
     for key, item in data.items():

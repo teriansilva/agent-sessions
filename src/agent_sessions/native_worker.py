@@ -46,6 +46,7 @@ from . import (
     agent_tools,
     native_attachments,
     native_containment,
+    native_exec,
     native_ipc,
     native_journal,
     native_memory,
@@ -88,6 +89,15 @@ OPENCODE = "opencode-acp"
 COPILOT = "copilot-acp"
 PROBE_TIMEOUT = 30.0
 PROBE_LIMIT = 4 * 1024 * 1024
+#: How long the worker waits, once the agent's output ends, for the agent to exit by itself before
+#: it stops it (#1732): an agent that died is reaped with its OWN return code, never one a stop
+#: gave it.
+REAP_WINDOW = 2.0
+#: The turn of an OOM-counter read that failed: it matches no turn, so the next rise is
+#: session-level (#1732).
+_UNREAD = ("unread", "")
+#: Why the agent ended, as the worker can state it (#1732): only facts, never a cause.
+SIGKILL_DURING_OOM = "sigkill_during_oom"
 
 
 class WorkerError(RuntimeError):
@@ -417,6 +427,16 @@ class Worker:
         self.last_activity = time.monotonic()
         self.idle_timeout = float(config.get("idle_timeout") or IDLE_TIMEOUT)
         self.reported_send_now: str | None = None
+        # OOM kills in this worker's unit (#1732). `_oom_base`: the hierarchical counter when the
+        # worker started; `_oom_seen`: the last count journaled (kills since the base);
+        # `_oom_turn`: the turn in flight at the last read; `_turn_key`: the turn the worker last
+        # saw the codec in. `_oom_pin`: the pinned (group, invocation) once the runtime wrote it.
+        self._oom_base: int | None = None
+        self._oom_seen = 0
+        self._oom_turn: tuple[str, str] | None = None
+        self._turn_key: tuple[str, str] | None = None
+        self._oom_pin: tuple[str, str] | None = None
+        self._oom_invocation: str | None = None  # of the last successful read
 
     # --- lifecycle -------------------------------------------------------------------------
 
@@ -477,7 +497,7 @@ class Worker:
             # journal record, lifecycle state, the worker config or a log.
             mcp = await self.mcp_overrides() if self.adapter == OPENCODE else None
             self.proc = await asyncio.create_subprocess_exec(
-                *self.argv(),
+                *self.spawn_argv(),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -491,6 +511,17 @@ class Worker:
             if guard is not None:
                 guard.release()
         self.report(phase="native_started", native_pid=self.proc.pid)
+
+    def spawn_argv(self) -> list[str]:
+        """The agent's argv behind the exec trampoline (#1732, `native_exec`): the agent and
+        everything it starts rank above this worker as an OOM victim. The worker's own value is
+        never changed. Unreadable (or no absolute interpreter): the agent starts directly, as
+        before #1732."""
+        argv = self.argv()
+        own = native_exec.own_value()
+        if own is None or not sys.executable.startswith("/"):
+            return argv
+        return native_exec.argv(sys.executable, native_exec.raised(own), argv)
 
     async def mcp_overrides(self) -> dict:
         """`opencode debug config` in the session's directory, with the sanitized environment and
@@ -700,8 +731,114 @@ class Worker:
                             ]
                         )
                     written = memory["level"]
+            # The periodic OOM-counter read (#1732); turn transitions read it too.
+            if not self.turn_transition():
+                self.oom_read(self._turn_key, self._turn_key)
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self.done.wait(), native_memory.INTERVAL)
+
+    # --- OOM kills in the unit (#1732) -----------------------------------------------------
+
+    def _own_group(self) -> str | None:
+        try:
+            proc = Path("/proc/self/cgroup").read_text()
+        except OSError:
+            return None
+        unit = native_containment.WorkerIdentity(self.worker_id).unit
+        return native_memory.own_group(proc, unit)
+
+    def oom_baseline(self) -> None:
+        """The counter at the worker's start, before the agent exists: kills before it are not
+        this generation's. Unreadable: the first successful read becomes the base (a kill before
+        it is never claimed)."""
+        group = self._own_group()
+        self._oom_base = None if group is None else native_memory.oom_kills(group)
+
+    def oom_count(self) -> tuple[int, str] | None:
+        """(kills since the base, the pinned invocation), read from the worker's own unit only
+        once the runtime pinned it (the same rule as `memory_sample`); None when unreadable."""
+        if self._oom_pin is None:
+            group = self._own_group()
+            if group is None:
+                return None
+            life = native_state.read_lifecycle(self.worker_id)
+            if group != life.get("control_group") or not isinstance(life.get("invocation_id"), str):
+                return None
+            self._oom_pin = (group, life["invocation_id"])
+        total = native_memory.oom_kills(self._oom_pin[0])
+        if total is None:
+            return None
+        if self._oom_base is None or total < self._oom_base:
+            self._oom_base = total
+        return total - self._oom_base, self._oom_pin[1]
+
+    def _turn_now(self) -> tuple[str, str] | None:
+        codec = self.codec
+        if codec.operation_id is not None:
+            return ("operation_id", codec.operation_id)
+        if codec.background_turn is not None:
+            return ("agent_turn", codec.background_turn)
+        return None
+
+    def turn_transition(self) -> bool:
+        """Did the codec's turn change since the worker last looked? Then read the counter now,
+        before the change is journaled. True when that read journaled a kill."""
+        now = self._turn_now()
+        if now == self._turn_key:
+            return False
+        before, self._turn_key = self._turn_key, now
+        return self.oom_read(before, now)
+
+    def oom_read(self, before, after) -> bool:
+        """Read the counter; journal a rise since the last journaled count as ONE
+        `memory_oom_kill` (cumulative count, invocation). It names a turn only when that turn
+        was in flight at the previous read AND up to this one (``before``); otherwise it is a
+        session-level notice. ``after`` is the turn in flight from this read on. True when a
+        kill was journaled."""
+        try:
+            read = self.oom_count()
+        except (native_state.StateError, OSError):
+            read = None
+        if read is None:
+            self._oom_turn = _UNREAD  # where the next rise began is unknown: never a turn's
+            return False
+        count, self._oom_invocation = read
+        rose = count > self._oom_seen
+        if rose:
+            data = {"count": count, "invocation_id": self._oom_invocation}
+            if before is not None and before == self._oom_turn:
+                data[before[0]] = before[1]
+            self.record([native_protocol.NativeEvent("memory_oom_kill", data)])
+            self._oom_seen = count
+        self._oom_turn = after
+        return rose
+
+    async def reap_window(self) -> None:
+        """The agent's output ended (#1732). Give it REAP_WINDOW to exit by itself: then its
+        own return code stands, the counter is read once more, and if the agent was SIGKILLed
+        while the count rose since the last journaled read, that is recorded (the facts, not a
+        cause: a tool's OOM and an unrelated SIGKILL in one window read the same). Still alive,
+        or stopped by BattleLab meanwhile: nothing is derived; the stop path runs as before."""
+        proc = self.proc
+        deadline = time.monotonic() + REAP_WINDOW
+        while proc.returncode is None and not self.terminated and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        if proc.returncode is None or self.terminated:
+            return
+        seen = self._oom_seen
+        if not self.oom_read(self._turn_key, None):
+            return
+        if proc.returncode == -signal.SIGKILL:
+            await asyncio.to_thread(
+                self.report,
+                agent_exit={
+                    "reason": SIGKILL_DURING_OOM,
+                    "returncode": proc.returncode,
+                    "oom_kills": self._oom_seen - seen,
+                    "invocation_id": self._oom_invocation,
+                    "at": time.time(),
+                },
+            )
 
     async def idle_watch(self) -> None:
         """Exit when nothing is running; a later turn resumes the history in a new generation."""
@@ -729,6 +866,9 @@ class Worker:
 
     async def handle_events(self, events) -> None:
         self.last_activity = time.monotonic()
+        # Before this batch is journaled: a turn that starts or settles here closes the OOM
+        # counter's window first (#1732).
+        self.turn_transition()
         delivery_events = []
         for event in events:
             if event.kind in {"response", "error"}:
@@ -902,6 +1042,7 @@ class Worker:
 
     async def reader(self) -> None:
         assert self.proc is not None and self.proc.stdout is not None
+        ended = False  # the agent's output ended (EOF), not a protocol violation
         try:
             async for line in self.lines():
                 if not line:
@@ -918,7 +1059,15 @@ class Worker:
                     self.reason = f"native protocol violation: {exc}"
                     break
                 await self.handle_events(events)
+            else:
+                ended = True
         finally:
+            if ended and not self.terminated:
+                # Reap before stop (#1732): nothing new is admitted meanwhile (`closing` refuses
+                # effects and the queue as an idle exit does), and the disconnect is journaled
+                # after the counter's last read.
+                self.closing = True
+                await self.reap_window()
             with contextlib.suppress(native_protocol.ProtocolError):
                 self.record([self.codec.eof()])
             for waiter in self.waiters.values():
@@ -1223,6 +1372,10 @@ class Worker:
                     )
                 return self.error(request, "stale", "that turn is not active")
             queued = action == "submit" and (bool(self.queued) or self.dispatch_busy())
+            if action == "submit" and not queued:
+                # A direct turn's claim is its start: the OOM counter is read before it (#1732).
+                if self.oom_read(self._turn_key, ("operation_id", params["operation_id"])):
+                    self.flush()
             try:
                 fresh, receipt = await asyncio.to_thread(
                     native_journal.claim, self.journal_root, request, queued=queued
@@ -1584,6 +1737,8 @@ class Worker:
             frame = self.frame(action, params, now=now)
         except native_protocol.ProtocolError as exc:
             frame, refusal = None, exc
+        if frame is not None and self.turn_transition():
+            self.flush()  # the counter's read lands before the turn's handoff (#1732)
         if frame is None:
             reason = {}
             if queued or action == "submit":
@@ -1780,6 +1935,7 @@ class Worker:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, self.stop_child)
         await asyncio.to_thread(self.admit)
+        self.oom_baseline()
         await self.spawn()
         tasks = [
             asyncio.create_task(self.reader()),

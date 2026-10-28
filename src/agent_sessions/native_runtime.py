@@ -2151,6 +2151,8 @@ def project(
     selected_agents = {entry[2] for entry in shown if entry[1] == 1}
     agents: dict[str, dict] = {}
     open_agent: str | None = None
+    oom_counts: dict[str, int] = {}  # invocation → the newest cumulative count shown (#1732)
+    oom_between: list[tuple[int, int]] = []  # session-level OOM notices: (cursor, kills)
     for op in journal.operations.values():
         params = op.request["params"]
         if op.request["action"] == "submit":
@@ -2240,6 +2242,17 @@ def project(
                         "worker_id": item["worker_id"],
                         "completed": False,
                     }
+        elif kind == "memory_oom_kill":
+            # #1732: one notice per (invocation, cumulative count), so a re-read, a reload or a
+            # replayed record never doubles it; two kills between reads are one notice of 2.
+            killed = data["count"] - oom_counts.get(data["invocation_id"], 0)
+            if killed > 0:
+                oom_counts[data["invocation_id"]] = data["count"]
+                if "operation_id" in data or "agent_turn" in data:
+                    if turn is not None:  # a turn outside this window keeps its own notice
+                        turn["oom_kills"] = turn.get("oom_kills", 0) + killed
+                else:
+                    oom_between.append((item["cursor"], killed))
         elif kind == "approval" and turn is not None:
             exact = (item["worker_id"], data["operation_id"], data["request_id"])
             pending[exact] = {**data, "worker_id": item["worker_id"]}
@@ -2349,7 +2362,14 @@ def project(
                 continue
             if not turn["completed"]:
                 turn["status"], turn["code"] = "failed", "uncertain"
-                turn["reason"] = data.get("message") or "the native connection closed"
+                # #1732: the worker outlives its agent now; once it is gone, what it recorded of
+                # the agent's end (or systemd's of the unit's) explains the disconnect.
+                gone = item["worker_id"] != live_worker
+                turn["reason"] = (
+                    data.get("message")
+                    or (ended_reason(item["worker_id"]) if gone else None)
+                    or "the native connection closed"
+                )
     _classify_tools([*turns.values(), *agents.values()], cwd)
     in_flight = None
     requests = []
@@ -2462,6 +2482,7 @@ def project(
     for turn_id, turn in turns.items():
         turn["position"] = journal.operations[turn_id].claimed_revision
     shown_turns = sorted([*turns.values(), *agents.values()], key=lambda t: t["position"])
+    oom_start = _place_oom_between(oom_between, journal, timeline, turns, agents)
     for turn in shown_turns:
         for key in (
             "partial",
@@ -2485,6 +2506,8 @@ def project(
             turn.pop(key, None)
     return {
         "turns": shown_turns,
+        # Session-level OOM notices before the first turn (#1732), shown only with that turn.
+        **({"oom_kills_start": oom_start} if oom_start else {}),
         "omitted_turns": len(timeline) - len(shown_turns),
         "history_before": history_before,
         "revision": journal.revision,
@@ -2561,6 +2584,38 @@ def _not_sent(turn: dict, code: str, journal: native_journal.Journal) -> None:
         "retry_recorded": attempt is not None,
         "retried": attempt is not None and attempt.handoff != "not_sent",
     }
+
+
+def _place_oom_between(
+    notices: list[tuple[int, int]],
+    journal: native_journal.Journal,
+    timeline: list[tuple[int, int, str]],
+    turns: dict[str, dict],
+    agents: dict[str, dict],
+) -> int:
+    """Put each session-level OOM notice (#1732) after the turn that STARTED last before it: an
+    operator turn when it was handed to the agent (a queued one starts at its dispatch, not its
+    claim), an agent's own turn at its first event. It is shown between that turn and the next
+    as `oom_kills_after`, never as the turn's own. A notice before any turn is returned (shown
+    only while the first turn is); one after a turn outside the window is that page's to show."""
+    starts = sorted(
+        (
+            (journal.operations[ident].dispatched_revision or 10**18, ident)
+            if kind == 0
+            else (position, ident)
+            for position, kind, ident in timeline
+        )
+    )
+    before = 0
+    for cursor, killed in notices:
+        index = bisect.bisect_left(starts, (cursor, "")) - 1
+        if index < 0:
+            before += killed if not timeline or timeline[0][2] in {*turns, *agents} else 0
+            continue
+        turn = turns.get(starts[index][1]) or agents.get(starts[index][1])
+        if turn is not None:
+            turn["oom_kills_after"] = turn.get("oom_kills_after", 0) + killed
+    return before
 
 
 def _settle_agent(agent: dict | None, state: str, reason: str | None = None) -> None:
@@ -2665,13 +2720,21 @@ def _exit_proved(session_id: str, worker_id: str) -> bool:
     return _proved_gone(worker_id)
 
 
+#: The agent died by SIGKILL while the OOM counter of its unit rose (#1732). Facts, not a cause:
+#: no record ties a kill to a victim, so it never says the agent ran out of memory.
+AGENT_KILLED_DURING_OOM = (
+    "the agent was killed (SIGKILL) while a process in this session ran out of memory"
+)
+
+
 def _ended_reason(worker_id: str) -> str | None:
     """Why a gone generation ended, when systemd recorded it for the pinned invocation (#1643):
     only `oom-kill` is named. WHICH limit killed it is never claimed (no counter proves it, Hermes
     on #1651); the reason states facts instead: the memory reading the worker took just before
     (fresh: within `native_memory.FRESH` of the end) against the limit it was measured against,
-    else this session's own configured limit. Anything else, missing or mismatched reads as None
-    (generic)."""
+    else this session's own configured limit. Otherwise the worker's own record of how its agent
+    ended (#1732, `agent_exit`), for the same pinned invocation: only `sigkill_during_oom`, in
+    factual words. Anything else, missing or mismatched reads as None (generic)."""
     try:
         life = native_state.read_lifecycle(worker_id)
     except (native_state.StateError, OSError):
@@ -2683,6 +2746,14 @@ def _ended_reason(worker_id: str) -> str | None:
         or not life.get("invocation_id")
         or ended.get("invocation_id") != life.get("invocation_id")
     ):
+        agent = life.get("agent_exit")
+        if (
+            isinstance(agent, dict)
+            and agent.get("reason") == "sigkill_during_oom"
+            and life.get("invocation_id")
+            and agent.get("invocation_id") == life.get("invocation_id")
+        ):
+            return AGENT_KILLED_DURING_OOM
         return None
     memory, at = life.get("memory"), ended.get("at")
     if (

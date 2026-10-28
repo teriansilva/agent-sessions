@@ -64,7 +64,8 @@ def test_saved_memory_limit_becomes_one_fixed_launch_property(value):
         memory_gib=resource_limits.values()["api_memory_gib"],
     )
     assert [a for a in command if "MemoryMax=" in a] == [f"--property=MemoryMax={value}G"]
-    assert "--property=OOMPolicy=kill" in command
+    # One kernel-selected victim on overrun, never the whole group (#1732).
+    assert "--property=OOMPolicy=continue" in command
 
 
 def test_memory_launch_boundary_validates_independently():
