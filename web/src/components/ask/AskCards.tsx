@@ -31,6 +31,8 @@ import { FolderPickerModal } from "../FolderPickerModal";
 import { LibraryContent, OpenInLibrary } from "./LibraryContent";
 import { Led, type LedTone, Stamp } from "../hud/Meters";
 import c from "./AskCards.module.css";
+import type { FollowRow } from "./askUpdates";
+import { relTime } from "../../lib/format";
 
 export function QuestionCard({
   ask,
@@ -428,100 +430,108 @@ export function SessionCard({
   );
 }
 
-/** A followed session changed (#1443 Phase 4): a compact row between turns — an LED plus a WORD,
- *  the session's title, a way in, and Unfollow while it is still followed. The words are authored
- *  here from the update's kind. */
+/** A followed session's latest state (#1443 Phase 4, #1755): an LED plus a WORD and a short
+ *  detail, authored here from the update's kind, never model text. */
 const UPDATE_WORDS: Record<AskUpdate["kind"], { word: string; tone: Tone; detail: string }> = {
-  finished: { word: "Finished its turn", tone: "neutral", detail: "It stopped working." },
-  needs_you: { word: "Needs you", tone: "warn", detail: "It is waiting for your decision." },
-  ended: {
-    word: "No longer followed",
-    tone: "neutral",
-    detail: "It was archived or is gone.",
-  },
+  finished: { word: "Finished its turn", tone: "neutral", detail: "Stopped working" },
+  needs_you: { word: "Needs you", tone: "warn", detail: "Waiting for your decision" },
+  ended: { word: "No longer followed", tone: "neutral", detail: "Archived or gone" },
   // #1517: a nudge reached it, but this conversation already follows its limit.
   not_followed: {
     word: "Not following",
     tone: "neutral",
-    detail: "already following 10 sessions",
+    detail: "Already following 10 sessions",
   },
 };
 
-/** One session the conversation follows (#1443 Phase 4). Listed whether or not it has an update
- *  yet, so Unfollow never waits for the first change (Hermes on #1500). Not a state, so no LED:
- *  the flat accent square is the non-status bullet (design.md §3). */
-export function FollowingRow({
-  title,
-  onUnfollow,
+/** Every session the conversation follows, as ONE block at the thread's end (#1755): a row per
+ *  session that changes in place, never a row per change between turns. A row is its title, then
+ *  its newest state — a WORD, the detail, when it changed and how many changes there were — with
+ *  Open and Unfollow. A follow with no change yet is no state, so no LED: the flat accent square
+ *  is the non-status bullet (design.md §3); Unfollow never waits for the first change (Hermes on
+ *  #1500). Rows re-sort, so the block is no live region: one hidden status line says the newest
+ *  change by arrival, with its session's change count, so every update — even a repeat of the
+ *  same word at the same time — changes the text once, and a re-sort changes nothing. */
+export function FollowingBlock({
+  rows,
   busy,
+  onUnfollow,
   open,
 }: {
-  title: string;
-  onUnfollow: () => void;
-  busy: boolean;
-  open?: ReactNode;
+  rows: FollowRow[];
+  busy: (key: string) => boolean;
+  onUnfollow: (key: string) => void;
+  /** The session's way in (Open). */
+  open: (row: FollowRow) => ReactNode;
 }) {
-  return (
-    <div className={c.update} data-testid="ask-following-row" data-kind="following">
-      <span className={c.bullet} aria-hidden="true" />
-      <span className={c.updateBody}>
-        <span className={c.ow}>Following</span>
-        <span className={c.updateTitle}>{title || "A session this conversation started"}</span>
-      </span>
-      <span className={c.ways}>
-        {open}
-        <button
-          type="button"
-          className={c.ghost}
-          disabled={busy}
-          onClick={onUnfollow}
-          aria-label={`Unfollow ${title || "this session"}`}
-          data-testid="ask-following-unfollow"
-        >
-          Unfollow
-        </button>
-      </span>
-    </div>
+  if (!rows.length) return null;
+  const n = rows.filter((r) => r.followed).length;
+  const newest = rows.reduce<FollowRow | null>(
+    (m, r) => (r.latest && r.order > (m?.order ?? -1) ? r : m),
+    null,
   );
-}
-
-export function UpdateRow({
-  u,
-  onUnfollow,
-  busy,
-  open,
-}: {
-  u: AskUpdate;
-  onUnfollow: () => void;
-  busy: boolean;
-  /** The session's way in (Open), when it can still be opened. */
-  open?: ReactNode;
-}) {
-  const w = UPDATE_WORDS[u.kind];
   return (
-    <div className={c.update} data-testid="ask-update" data-kind={u.kind} role="status">
-      <Led tone={LED[w.tone]} />
-      <span className={c.updateBody}>
-        <span className={`${c.ow} ${c[`ow_${w.tone}`]}`}>{w.word}</span>
-        <span className={c.updateTitle}>{u.title || "A session you follow"}</span>
-        <span className={c.od}>{w.detail}</span>
-      </span>
-      <span className={c.ways}>
-        {u.kind !== "ended" ? open : null}
-        {u.following && u.kind !== "not_followed" ? (
-          <button
-            type="button"
-            className={c.ghost}
-            disabled={busy}
-            onClick={onUnfollow}
-            aria-label={`Unfollow ${u.title || "this session"}`}
-            data-testid="ask-update-unfollow"
+    <section
+      className={`${c.card} ${c.follows}`}
+      aria-label="Sessions this conversation follows"
+      data-testid="ask-following"
+    >
+      <div className={c.head}>
+        <span className={c.k}>Following</span>
+        {n} {n === 1 ? "session" : "sessions"}
+      </div>
+      {rows.map((r) => {
+        const w = r.latest ? UPDATE_WORDS[r.latest.kind] : null;
+        return (
+          <div
+            key={r.key}
+            className={c.follow}
+            data-testid="ask-follow-row"
+            data-kind={r.latest?.kind ?? "following"}
           >
-            Unfollow
-          </button>
-        ) : null}
+            {w ? <Led tone={LED[w.tone]} /> : <span className={c.bullet} aria-hidden="true" />}
+            <span className={c.followBody}>
+              <span className={c.followTitle}>{r.title || "A session you follow"}</span>
+              <span className={c.followMeta}>
+                {w && r.latest ? (
+                  <>
+                    <span className={`${c.ow} ${c[`ow_${w.tone}`]}`}>{w.word}</span>
+                    {` · ${w.detail} · ${relTime(r.latest.ts)}`}
+                    {r.changes > 1 ? ` · ${r.changes} changes` : ""}
+                  </>
+                ) : (
+                  <>
+                    <span className={`${c.ow} ${c.ow_hud}`}>Following</span>
+                    {" · No change yet"}
+                  </>
+                )}
+              </span>
+            </span>
+            <span className={c.ways}>
+              {r.latest?.kind !== "ended" ? open(r) : null}
+              {r.followed ? (
+                <button
+                  type="button"
+                  className={c.ghost}
+                  disabled={busy(r.key)}
+                  onClick={() => onUnfollow(r.key)}
+                  aria-label={`Unfollow ${r.title || "this session"}`}
+                  data-testid="ask-follow-unfollow"
+                >
+                  Unfollow
+                </button>
+              ) : null}
+            </span>
+          </div>
+        );
+      })}
+      <span className="sr-only" role="status" data-testid="ask-follow-status">
+        {newest?.latest
+          ? `${newest.title || "A session you follow"}: ${UPDATE_WORDS[newest.latest.kind].word}` +
+            (newest.changes > 1 ? `, ${newest.changes} changes` : "")
+          : ""}
       </span>
-    </div>
+    </section>
   );
 }
 

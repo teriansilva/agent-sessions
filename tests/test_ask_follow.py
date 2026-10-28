@@ -403,6 +403,23 @@ def test_a_follow_with_no_update_yet_is_listed_with_its_title(app):
     assert app.get(cid)["follows"] == []
 
 
+def test_every_remembered_follow_says_when_it_last_began_so_old_notices_stay_old(app):
+    """#1755: an inactive follow keeps its `since`, and following again moves it forward, so the
+    client can tell a superseded `ended` notice from the current follow's."""
+    cid = app.new()
+    ask_follow.follow(
+        cid, S1, title="api rebase", via="start", reason=uuid.uuid4().hex, since=100.0
+    )
+    assert app.get(cid)["follow_since"] == {S1: 100.0}
+    app.c.delete(f"/api/ask/conversations/{cid}/follow/{S1}", headers=app.hdr)
+    body = app.get(cid)
+    assert body["follows"] == [] and body["follow_since"] == {S1: 100.0}
+    ask_follow.follow(
+        cid, S1, title="api rebase", via="start", reason=uuid.uuid4().hex, since=200.0
+    )
+    assert app.get(cid)["follow_since"] == {S1: 200.0}
+
+
 def test_the_conversation_says_when_follows_are_unknown_or_an_update_is_pending(app, monkeypatch):
     cid = app.new()
     ask_follow.follow(cid, S1, title="api", via="start", reason=uuid.uuid4().hex)

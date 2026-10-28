@@ -49,7 +49,7 @@ import type {
 import { ConfigCtx } from "../../app/config";
 import { OperationCard } from "./AskCards";
 import { AskConsole } from "./AskConsole";
-import { ASK_SEEN_EVENT, placeUpdates } from "./askUpdates";
+import { ASK_SEEN_EVENT, followRows } from "./askUpdates";
 import { mapBatch } from "./askMatches";
 
 vi.mock("../../lib/api", async () => {
@@ -1625,36 +1625,53 @@ function withUpdates(over: Partial<AskConversation>) {
   });
 }
 
-test("an update sits between the turns asked before and after it, in authored words", async () => {
+test("updates never sit between turns: one row per session, its newest state (#1755)", async () => {
+  const ENDED = "claude:abc-2";
   withUpdates({
     updates: [
       update({ ts: 5, kind: "needs_you" }),
       update({ ts: 15, kind: "finished" }),
-      update({ ts: 25, kind: "ended", following: false }),
+      update({ ts: 17, kind: "finished" }),
+      update({ key: ENDED, ts: 25, kind: "ended", title: "docs pass", following: false }),
     ],
   });
   await mountAt(<AskConsole configured />);
-  await screen.findAllByTestId("ask-update");
-  const turns = screen.getAllByTestId("ask-turn");
-  const rows = screen.getAllByTestId("ask-update");
-  expect(rows.map((r) => r.getAttribute("data-kind"))).toEqual(["needs_you", "finished", "ended"]);
-  // needs_you is before the first turn; finished is inside the first; ended after the second.
-  expect(turns[0].contains(rows[1])).toBe(true);
-  expect(turns[1].contains(rows[2])).toBe(true);
-  expect(turns.some((t) => t.contains(rows[0]))).toBe(false);
-  expect(rows[0]).toHaveTextContent("Needs you");
+  const rows = await screen.findAllByTestId("ask-follow-row");
+  // Two sessions, two rows; none inside a turn.
+  expect(rows.map((r) => r.getAttribute("data-kind"))).toEqual(["ended", "finished"]);
+  for (const t of screen.getAllByTestId("ask-turn")) {
+    expect(within(t).queryByTestId("ask-follow-row")).toBeNull();
+  }
+  expect(rows[1]).toHaveTextContent("api rebase");
   expect(rows[1]).toHaveTextContent("Finished its turn");
-  expect(rows[2]).toHaveTextContent("No longer followed");
+  expect(rows[1]).toHaveTextContent("3 changes");
+  expect(rows[1]).not.toHaveTextContent("Needs you");
+  expect(rows[0]).toHaveTextContent("No longer followed");
   // A way in while it can still be opened; none once the follow has ended.
-  expect(within(rows[1]).getByTestId("ask-update-open")).toHaveAttribute("href", "/s/claude/abc-1");
-  expect(within(rows[2]).queryByTestId("ask-update-open")).toBeNull();
-  expect(within(rows[2]).queryByTestId("ask-update-unfollow")).toBeNull();
+  expect(within(rows[1]).getByTestId("ask-follow-open")).toHaveAttribute("href", "/s/claude/abc-1");
+  expect(within(rows[0]).queryByTestId("ask-follow-open")).toBeNull();
+  expect(within(rows[0]).queryByTestId("ask-follow-unfollow")).toBeNull();
 });
 
-test("Unfollow stops following and the row stops offering it", async () => {
+test("a new update changes its session's row in place, never adds one (#1755)", async () => {
+  withUpdates({ updates: [update({ ts: 15 })] });
+  await mountAt(<AskConsole configured cardPollMs={20} />);
+  expect(await screen.findByTestId("ask-follow-row")).toHaveTextContent("Finished its turn");
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [update({ ts: 15 }), update({ ts: 16, kind: "needs_you" })],
+    following: [FOLLOWED],
+    unread: false,
+  });
+  await waitFor(() => expect(screen.getByTestId("ask-follow-row")).toHaveTextContent("Needs you"));
+  expect(screen.getAllByTestId("ask-follow-row")).toHaveLength(1);
+  expect(screen.getByTestId("ask-follow-row")).toHaveTextContent("2 changes");
+});
+
+test("Unfollow stops following and the session leaves the block", async () => {
   withUpdates({ updates: [update()] });
   await mountAt(<AskConsole configured />);
-  const row = await screen.findByTestId("ask-update");
+  const row = await screen.findByTestId("ask-follow-row");
   vi.mocked(api.askConversation).mockResolvedValue({
     ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
     updates: [update({ following: false })],
@@ -1663,14 +1680,47 @@ test("Unfollow stops following and the row stops offering it", async () => {
   });
   await userEvent.click(within(row).getByRole("button", { name: "Unfollow api rebase" }));
   expect(api.askUnfollow).toHaveBeenCalledWith(CID, FOLLOWED);
-  await waitFor(() => expect(screen.queryByTestId("ask-update-unfollow")).toBeNull());
+  await waitFor(() => expect(screen.queryByTestId("ask-follow-row")).toBeNull());
+});
+
+test("a poll in flight when Unfollow lands never brings the row back (#1755)", async () => {
+  withUpdates({ updates: [update()] });
+  await mountAt(<AskConsole configured cardPollMs={20} />);
+  const row = await screen.findByTestId("ask-follow-row");
+  const fresh = {
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [update({ following: false })],
+    following: [],
+    unread: false,
+  };
+  let release!: () => void;
+  const stale = new Promise<AskConversation>((resolve) => {
+    release = () =>
+      resolve({
+        ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+        updates: [update()],
+        following: [FOLLOWED],
+        unread: false,
+      });
+  });
+  vi.mocked(api.askConversation).mockResolvedValue(fresh);
+  vi.mocked(api.askConversation).mockImplementationOnce(() => stale);
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  await waitFor(() =>
+    expect(vi.mocked(api.askConversation).mock.calls.length).toBeGreaterThan(reads),
+  );
+  await userEvent.click(within(row).getByRole("button", { name: "Unfollow api rebase" }));
+  await waitFor(() => expect(screen.queryByTestId("ask-follow-row")).toBeNull());
+  release();
+  await new Promise((r) => setTimeout(r, 100));
+  expect(screen.queryByTestId("ask-follow-row")).toBeNull();
 });
 
 test("an unreadable follow state keeps the last verified follows and keeps reading until it recovers", async () => {
   // Hermes on #1500: unknown is not "following nothing".
   withUpdates({ updates: [], follows: [{ key: FOLLOWED, title: "api rebase" }] });
   await mountAt(<AskConsole configured cardPollMs={20} />);
-  await screen.findByTestId("ask-following-row");
+  await screen.findByTestId("ask-follow-row");
   vi.mocked(api.askConversation).mockResolvedValue({
     ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
     updates: [],
@@ -1683,7 +1733,7 @@ test("an unreadable follow state keeps the last verified follows and keeps readi
   await waitFor(() =>
     expect(vi.mocked(api.askConversation).mock.calls.length).toBeGreaterThan(reads + 2),
   );
-  expect(screen.getByTestId("ask-following-row")).toHaveTextContent("api rebase");
+  expect(screen.getByTestId("ask-follow-row")).toHaveTextContent("api rebase");
   // The read recovers and carries the update that landed meanwhile.
   vi.mocked(api.askConversation).mockResolvedValue({
     ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
@@ -1692,8 +1742,9 @@ test("an unreadable follow state keeps the last verified follows and keeps readi
     follows: [{ key: FOLLOWED, title: "api rebase" }],
     unread: true,
   });
-  expect(await screen.findByTestId("ask-update", {}, { timeout: 5000 })).toHaveTextContent(
-    "Finished its turn",
+  await waitFor(
+    () => expect(screen.getByTestId("ask-follow-row")).toHaveTextContent("Finished its turn"),
+    { timeout: 5000 },
   );
 });
 
@@ -1710,23 +1761,27 @@ test("an update still being delivered keeps the open screen reading until it lan
     unread: true,
     updates_pending: false,
   });
-  expect(await screen.findByTestId("ask-update", {}, { timeout: 5000 })).toHaveTextContent(
-    "No longer followed",
+  await waitFor(
+    () => expect(screen.getByTestId("ask-follow-row")).toHaveTextContent("No longer followed"),
+    { timeout: 5000 },
   );
 });
 
 test("a nudge Ask could not follow reads as Not following, with Open and no Unfollow (#1517)", async () => {
   withUpdates({
-    updates: [update({ ts: 15, kind: "not_followed", title: "docs pass", following: true })],
+    updates: [
+      update({ key: "claude:abc-3", ts: 15, kind: "not_followed", title: "docs pass", following: false }),
+    ],
+    following: [],
   });
   await mountAt(<AskConsole configured />);
-  const row = await screen.findByTestId("ask-update");
+  const row = await screen.findByTestId("ask-follow-row");
   expect(row).toHaveAttribute("data-kind", "not_followed");
   expect(row).toHaveTextContent("Not following");
   expect(row).toHaveTextContent("docs pass");
-  expect(row).toHaveTextContent("already following 10 sessions");
+  expect(row).toHaveTextContent("Already following 10 sessions");
   expect(within(row).queryByRole("button", { name: /Unfollow/ })).toBeNull();
-  expect(within(row).getByTestId("ask-update-open")).toBeInTheDocument();
+  expect(within(row).getByTestId("ask-follow-open")).toBeInTheDocument();
 });
 
 test("a conversation whose update budget is spent says it no longer follows sessions (#1517)", async () => {
@@ -1740,10 +1795,12 @@ test("a conversation whose update budget is spent says it no longer follows sess
 test("a followed session with no update yet can be unfollowed (Hermes on #1500)", async () => {
   withUpdates({ updates: [], follows: [{ key: FOLLOWED, title: "api rebase" }] });
   await mountAt(<AskConsole configured />);
-  const row = await screen.findByTestId("ask-following-row");
+  const row = await screen.findByTestId("ask-follow-row");
+  expect(row).toHaveAttribute("data-kind", "following");
   expect(row).toHaveTextContent("Following");
+  expect(row).toHaveTextContent("No change yet");
   expect(row).toHaveTextContent("api rebase");
-  expect(screen.queryByTestId("ask-update")).toBeNull();
+  expect(within(row).getByTestId("ask-follow-open")).toHaveAttribute("href", "/s/claude/abc-1");
   vi.mocked(api.askConversation).mockResolvedValue({
     ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
     updates: [],
@@ -1770,10 +1827,24 @@ test("an unseen update is marked seen while the console is on screen, and says s
   }
 });
 
+test("an unfollowed session's update the block drops is acknowledged, so the dot can clear (#1755)", async () => {
+  // The one update seen without being shown: the operator chose to stop hearing about it.
+  withUpdates({
+    updates: [
+      update({ ts: 15 }),
+      update({ key: "claude:abc-9", ts: 40, title: "old", following: false }),
+    ],
+    unread: true,
+  });
+  await mountAt(<AskConsole configured />);
+  expect(await screen.findAllByTestId("ask-follow-row")).toHaveLength(1);
+  await waitFor(() => expect(api.askSeen).toHaveBeenCalledWith(CID, 40));
+});
+
 test("…but not while the sidebar is closed", async () => {
   withUpdates({ updates: [update()], unread: true });
   await mountAt(<AskConsole configured visible={false} />);
-  await screen.findByTestId("ask-update");
+  await screen.findByTestId("ask-follow-row");
   await new Promise((r) => setTimeout(r, 100));
   expect(api.askSeen).not.toHaveBeenCalled();
 });
@@ -1788,8 +1859,9 @@ test("a conversation that follows sessions keeps reading, so new updates arrive"
     following: [FOLLOWED],
     unread: false,
   });
-  expect(await screen.findByTestId("ask-update", {}, { timeout: 5000 })).toHaveTextContent(
-    "Needs you",
+  await waitFor(
+    () => expect(screen.getByTestId("ask-follow-row")).toHaveTextContent("Needs you"),
+    { timeout: 5000 },
   );
 });
 
@@ -1802,22 +1874,152 @@ test("a conversation that follows nothing and has nothing live stops reading", a
   expect(vi.mocked(api.askConversation).mock.calls.length).toBe(reads);
 });
 
-test("placeUpdates: before the first turn, between turns, and a turn still being sent sorts last", () => {
-  const u = (ts: number) => update({ ts });
-  const out = placeUpdates(
+test("followRows: latest wins, needs-you then newest, notices kept, unfollowed dropped (#1755)", () => {
+  const k = (n: number) => `claude:k-${n}`;
+  const rows = followRows(
     [
-      { id: "a", at: 10 },
-      { id: "b", at: 20 },
-      { id: "c", at: null },
+      { key: k(1), title: "one" },
+      { key: k(2), title: "" },
+      { key: k(3), title: "three" },
     ],
-    [u(25), u(5), u(10), u(19)],
+    [
+      update({ key: k(1), ts: 10, kind: "needs_you" }),
+      update({ key: k(1), ts: 30, kind: "finished" }),
+      update({ key: k(2), ts: 20, kind: "needs_you", title: "two" }),
+      // Unfollowed by the operator: gone. Ended: kept as a notice, without Unfollow.
+      update({ key: k(4), ts: 40, kind: "finished", following: false }),
+      update({ key: k(5), ts: 35, kind: "ended", following: false }),
+    ],
   );
-  expect(out.before.map((x) => x.ts)).toEqual([5]);
-  expect(out.after.get("a")?.map((x) => x.ts)).toEqual([10, 19]);
-  expect(out.after.get("b")?.map((x) => x.ts)).toEqual([25]);
-  expect(out.after.get("c")).toBeUndefined();
+  expect(rows.map((r) => [r.key, r.latest?.kind ?? null, r.changes, r.followed])).toEqual([
+    [k(2), "needs_you", 1, true],
+    [k(5), "ended", 1, false],
+    [k(1), "finished", 2, true],
+    [k(3), null, 0, true],
+  ]);
+  // A follow without a title takes the update's.
+  expect(rows[0].title).toBe("two");
+  // A tie on time: the later record wins.
+  const tie = followRows(
+    [{ key: k(1), title: "one" }],
+    [update({ key: k(1), ts: 50, kind: "finished" }), update({ key: k(1), ts: 50, kind: "needs_you" })],
+  );
+  expect(tie[0].latest?.kind).toBe("needs_you");
+  expect(tie[0].order).toBe(1);
 });
 
+test("followRows: a session followed AGAIN after a notice starts a new generation (#1755 review)", () => {
+  const k = "claude:k-1";
+  // Ended, then followed again by a new start: no change yet in this follow, never "ended".
+  const again = followRows(
+    [{ key: k, title: "one" }],
+    [update({ key: k, ts: 10, kind: "finished" }), update({ key: k, ts: 20, kind: "ended", following: false })],
+  );
+  expect(again.map((r) => [r.latest?.kind ?? null, r.changes, r.followed])).toEqual([[null, 0, true]]);
+  // Refused at the cap, then followed later and finished: this generation's one change.
+  const later = followRows(
+    [{ key: k, title: "one" }],
+    [
+      update({ key: k, ts: 10, kind: "not_followed", following: false }),
+      update({ key: k, ts: 30, kind: "finished" }),
+    ],
+  );
+  expect(later.map((r) => [r.latest?.kind ?? null, r.changes, r.followed])).toEqual([
+    ["finished", 1, true],
+  ]);
+  // Not followed again: the notice stays the row.
+  const gone = followRows([], [update({ key: k, ts: 20, kind: "ended", following: false })]);
+  expect(gone.map((r) => [r.latest?.kind, r.followed])).toEqual([["ended", false]]);
+});
+
+test("followRows: follow → ended → follow again → Unfollow never brings the old notice back (#1755 review)", () => {
+  const k = "claude:k-1";
+  const history = [
+    update({ key: k, ts: 10, kind: "finished" }),
+    update({ key: k, ts: 20, kind: "ended", following: false }),
+  ];
+  // Followed again at 30: the ended notice is the earlier follow's.
+  const again = followRows([{ key: k, title: "one" }], history, { [k]: 30 });
+  expect(again.map((r) => [r.latest?.kind ?? null, r.changes, r.followed])).toEqual([[null, 0, true]]);
+  // Unfollowed by the operator, then reloaded: the server still remembers since=30. Dropped.
+  expect(followRows([], history, { [k]: 30 })).toEqual([]);
+  // The same after a cap refusal, a later follow, and a manual Unfollow.
+  const refused = [update({ key: k, ts: 10, kind: "not_followed", following: false })];
+  expect(followRows([], refused, { [k]: 30 })).toEqual([]);
+  // A notice from the CURRENT follow (newer than since) stays.
+  const ended = followRows([], [update({ key: k, ts: 40, kind: "ended", following: false })], { [k]: 30 });
+  expect(ended.map((r) => r.latest?.kind)).toEqual(["ended"]);
+});
+
+test("a re-followed session unfollowed and reloaded leaves no row behind (#1755 review)", async () => {
+  withUpdates({
+    updates: [update({ ts: 15, kind: "ended", following: false })],
+    following: [],
+    follows: [],
+    follow_since: { [FOLLOWED]: 30 },
+  });
+  await mountAt(<AskConsole configured />);
+  await screen.findAllByTestId("ask-turn");
+  expect(screen.queryByTestId("ask-follow-row")).toBeNull();
+  expect(screen.queryByText("No longer followed")).toBeNull();
+});
+
+test("a session followed again after it ended reads as Following, with Open and Unfollow (#1755 review)", async () => {
+  withUpdates({
+    updates: [update({ ts: 15, kind: "ended", following: false })],
+    follows: [{ key: FOLLOWED, title: "api rebase" }],
+  });
+  await mountAt(<AskConsole configured />);
+  const row = await screen.findByTestId("ask-follow-row");
+  expect(row).toHaveAttribute("data-kind", "following");
+  expect(row).not.toHaveTextContent("No longer followed");
+  expect(within(row).getByTestId("ask-follow-open")).toBeInTheDocument();
+  expect(within(row).getByRole("button", { name: "Unfollow api rebase" })).toBeInTheDocument();
+});
+
+test("the block announces only the newest change, once, never the whole re-sorted list (#1755)", async () => {
+  withUpdates({ updates: [update({ ts: 15 })] });
+  await mountAt(<AskConsole configured cardPollMs={20} />);
+  const status = await screen.findByTestId("ask-follow-status");
+  expect(status).toHaveAttribute("role", "status");
+  expect(screen.getByTestId("ask-following")).not.toHaveAttribute("aria-live");
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [update({ ts: 15 }), update({ ts: 16, kind: "needs_you" })],
+    following: [FOLLOWED],
+    unread: false,
+  });
+  await waitFor(() => expect(status).toHaveTextContent("api rebase: Needs you, 2 changes"));
+  // A repeat of the same word at the same time is still a change: the line moves once more.
+  vi.mocked(api.askConversation).mockResolvedValue({
+    ...conversation(CID, [at(turnOf("first", "t-1", { answer: "one" }), 10)]),
+    updates: [
+      update({ ts: 15 }),
+      update({ ts: 16, kind: "needs_you" }),
+      update({ ts: 16, kind: "needs_you" }),
+    ],
+    following: [FOLLOWED],
+    unread: false,
+  });
+  await waitFor(() => expect(status).toHaveTextContent("api rebase: Needs you, 3 changes"));
+  expect(screen.getAllByTestId("ask-follow-row")).toHaveLength(1);
+});
+
+test("the status line names the newest ARRIVAL, not the largest time, across sessions (#1755)", async () => {
+  // Two sessions finished at the same second: the one that arrived last is announced, though the
+  // other sorts first.
+  withUpdates({
+    updates: [
+      update({ key: "claude:abc-2", ts: 20, kind: "finished", title: "docs pass" }),
+      update({ ts: 20, kind: "finished" }),
+    ],
+    following: ["claude:abc-2", FOLLOWED],
+  });
+  await mountAt(<AskConsole configured />);
+  const rows = await screen.findAllByTestId("ask-follow-row");
+  expect(rows[0]).toHaveTextContent("docs pass");
+  expect(screen.getByTestId("ask-follow-status")).toHaveTextContent("api rebase: Finished its turn");
+});
 
 test("the switcher marks a conversation with an unseen update, in words as well as the dot", async () => {
   withUpdates({});
@@ -1861,8 +2063,9 @@ test("a session started elsewhere is read until the follow it earns arrives", as
     updates: [update({ ts: 50, kind: "finished" })],
     following: [FOLLOWED],
   });
-  expect(await screen.findByTestId("ask-update", {}, { timeout: 5000 })).toHaveTextContent(
-    "Finished its turn",
+  await waitFor(
+    () => expect(screen.getByTestId("ask-follow-row")).toHaveTextContent("Finished its turn"),
+    { timeout: 5000 },
   );
 });
 
@@ -1905,8 +2108,9 @@ test.each(["delivered", "indeterminate"])(
       updates: [update({ ts: 50, kind: "finished" })],
       following: [FOLLOWED],
     });
-    expect(await screen.findByTestId("ask-update", {}, { timeout: 5000 })).toHaveTextContent(
-      "Finished its turn",
+    await waitFor(
+      () => expect(screen.getByTestId("ask-follow-row")).toHaveTextContent("Finished its turn"),
+      { timeout: 5000 },
     );
   },
 );

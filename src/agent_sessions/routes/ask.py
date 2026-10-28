@@ -228,11 +228,15 @@ def _conversation_body(cid: str, records: list[dict]) -> dict:
         "title": title,
         "turns": ask_orchestrator.with_live(ask_orchestrator.turn_views(records), cid),
         "running": ask_orchestrator.running(cid),
-        # #1443 Phase 4: what the follower wrote, in order; the client places each by its time.
+        # #1443 Phase 4: what the follower wrote, in order; the client shows each session's newest
+        # one in a single block (#1755).
         "updates": updates,
         "following": sorted(following),
         # Every active follow with its title: Unfollow is offered before any update exists.
         "follows": sorted(follows["follows"], key=lambda f: f["key"]),
+        # When each remembered follow (active or not) last began: older updates are an earlier
+        # follow's, superseded (#1755).
+        "follow_since": follows["since"],
         "unread": follows["unread"],
         # The follow state could not be read this time: not "nothing followed".
         "follows_incomplete": follows["incomplete"],

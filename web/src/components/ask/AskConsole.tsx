@@ -96,16 +96,9 @@ import type {
 } from "../../types/api";
 
 import styles from "../pulse/mission.module.css";
-import {
-  FollowingRow,
-  NudgeCard,
-  OperationCard,
-  QuestionCard,
-  SessionCard,
-  UpdateRow,
-} from "./AskCards";
+import { FollowingBlock, NudgeCard, OperationCard, QuestionCard, SessionCard } from "./AskCards";
 import { AttachmentList } from "./AskAttachments";
-import { ASK_SEEN_EVENT, placeUpdates } from "./askUpdates";
+import { ASK_SEEN_EVENT, followRows } from "./askUpdates";
 import { AskComposer } from "./AskComposer";
 import { ASK_DRAWER_MQ, useAskPanel } from "./askPanel";
 import { mapBatch, matchRoute, matchSeed } from "./askMatches";
@@ -335,6 +328,7 @@ export function AskConsole({
   const [updates, setUpdates] = useState<AskUpdate[]>([]);
   const [following, setFollowing] = useState<string[]>([]);
   const [follows, setFollows] = useState<AskFollow[]>([]);
+  const [followSince, setFollowSince] = useState<Record<string, number>>({});
   const [followsUnknown, setFollowsUnknown] = useState(false);
   // The ONE resolver the header, the dashboard card and a turn's `contact` share (#1525).
   const { contact, wire: contactWire } = useHqContact();
@@ -479,6 +473,7 @@ export function AskConsole({
       if (!c.follows_incomplete) {
         setFollowing(c.following ?? []);
         setFollows(c.follows ?? (c.following ?? []).map((key) => ({ key, title: "" })));
+        setFollowSince(c.follow_since ?? {});
         setUnread(Boolean(c.unread));
       }
       // A session STARTED, or a nudge DELIVERED (#1517) — from this card or another surface's —
@@ -521,6 +516,7 @@ export function AskConsole({
       setUpdates([]);
       setFollowing([]);
       setFollows([]);
+      setFollowSince({});
       setFollowsUnknown(false);
       setUpdatesPending(false);
       setFollowsExhausted(false);
@@ -557,6 +553,7 @@ export function AskConsole({
     setUpdates([]);
     setFollowing([]);
     setFollows([]);
+    setFollowSince({});
     setFollowsUnknown(false);
     setUpdatesPending(false);
     setFollowsExhausted(false);
@@ -1029,24 +1026,10 @@ export function AskConsole({
     [load],
   );
 
-  const placed = useMemo(() => placeUpdates(turns, updates), [turns, updates]);
-  const updateRow = (u: AskUpdate) => (
-    <UpdateRow
-      key={`${u.key}:${u.ts}:${u.kind}`}
-      u={u}
-      busy={unfollowing.has(u.key)}
-      onUnfollow={() => void unfollow(u.key)}
-      open={
-        <Link
-          className={styles.openSession}
-          to={matchRoute(u.key)}
-          aria-label={`Open ${u.title || "the session"}`}
-          data-testid="ask-update-open"
-        >
-          Open
-        </Link>
-      }
-    />
+  // #1755: one row per followed session, its newest update in place — never a row per change.
+  const rows = useMemo(
+    () => followRows(follows, updates, followSince),
+    [follows, updates, followSince],
   );
 
   /** The newest turn is where the operator is looking: keep the thread scrolled to it, as a chat
@@ -1195,7 +1178,6 @@ export function AskConsole({
             className={`${a.measure} ${styles.paneAtBottom}`}
             data-testid="ask-turns"
           >
-            {placed.before.map(updateRow)}
             {turns.map((t) => (
               <div key={t.id} data-testid="ask-turn">
                 <article
@@ -1444,35 +1426,23 @@ export function AskConsole({
                     ),
                   )}
                 </article>
-                {(placed.after.get(t.id) ?? []).map(updateRow)}
               </div>
             ))}
-            {follows.length > 0 ? (
-              <section
-                className={a.following}
-                aria-label="Sessions this conversation follows"
-                data-testid="ask-following"
-              >
-                {follows.map((f) => (
-                  <FollowingRow
-                    key={f.key}
-                    title={f.title}
-                    busy={unfollowing.has(f.key)}
-                    onUnfollow={() => void unfollow(f.key)}
-                    open={
-                      <Link
-                        className={styles.openSession}
-                        to={matchRoute(f.key)}
-                        aria-label={`Open ${f.title || "the session"}`}
-                        data-testid="ask-following-open"
-                      >
-                        Open
-                      </Link>
-                    }
-                  />
-                ))}
-              </section>
-            ) : null}
+            <FollowingBlock
+              rows={rows}
+              busy={(key) => unfollowing.has(key)}
+              onUnfollow={(key) => void unfollow(key)}
+              open={(r) => (
+                <Link
+                  className={styles.openSession}
+                  to={matchRoute(r.key)}
+                  aria-label={`Open ${r.title || "the session"}`}
+                  data-testid="ask-follow-open"
+                >
+                  Open
+                </Link>
+              )}
+            />
             {followsExhausted ? (
               <p className={a.followNotice} role="note" data-testid="ask-follow-exhausted">
                 This conversation no longer follows sessions. Start a new conversation to follow

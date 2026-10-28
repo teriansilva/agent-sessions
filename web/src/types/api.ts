@@ -1181,6 +1181,9 @@ export interface AskConversation {
   updates_pending?: boolean;
   /** The update budget is spent: this conversation no longer follows sessions (#1517). */
   follows_exhausted?: boolean;
+  /** When each remembered follow (active or not) last began (#1755): an older update belongs to
+   *  an earlier follow of that session. */
+  follow_since?: Record<string, number>;
 }
 
 /** A session the conversation follows (#1443 Phase 4). */

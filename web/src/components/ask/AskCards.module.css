@@ -1,6 +1,6 @@
 /* HQ's cards (#1443 Phase 2, NIGHTJAR #1531): the question, proposal and session cards inside a
- * turn, and the follow / update rows between turns. A card is a chamfered plate (`nj-frame-sm` on
- * --bg-2, the rail along its top) that deploys in (fade + rise, never a scale); its head is a
+ * turn, and the one block of followed sessions at the thread's end (#1755). A card is a chamfered
+ * plate (`nj-frame-sm` on --bg-2, the rail along its top) that deploys in (fade + rise, never a scale); its head is a
  * callsign (notch + display caps); its one filled control is the effect (the shared primary); state
  * is an LED plus a word, never colour alone, and an LED flashes once when its state changes
  * (`Led`). Tokens only. Overrides of the frame's own custom properties use doubled selectors so
@@ -292,32 +292,44 @@
   margin-left: auto;
 }
 
-/* A followed session's update (#1443 Phase 4): a compact row between turns, no card around it —
- * hairlines and a HUD tick on its left edge. */
-.update {
+/* The sessions a conversation follows, as one block at the thread's end (#1755): a card with a
+ * row per session, hairlines between rows. Title first; the state word, detail, time and change
+ * count on the mono meta line; Open and Unfollow on the right (below the text at ≤800px). */
+.follows.follows {
+  margin-top: var(--sp-3);
+}
+.follow {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px var(--sp-3);
-  margin: var(--sp-3) 0;
   padding: var(--sp-2) var(--sp-3);
   border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-  box-shadow: inset 2px 0 0 var(--hud-dim);
 }
-.updateBody {
+.head + .follow {
+  border-top: 0;
+}
+.followBody {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 2px var(--sp-3);
+  flex-direction: column;
+  gap: 2px;
   flex: 1 1 200px;
   min-width: 0;
 }
-.updateTitle {
+.followTitle {
   min-width: 0;
   overflow-wrap: anywhere;
   font-size: var(--fs-meta);
   color: var(--text-1);
+}
+.followMeta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+.ow_hud {
+  color: var(--hud-text);
 }
 
 /* ≤800px: actions stack full width at the 44px floor; cards take the column. */

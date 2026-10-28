@@ -1,8 +1,9 @@
 /** Ask follows the sessions it started (#1443 Phase 4a), in a real browser, desktop and
  *  mobile.
  *
- *  What a DOM emulator cannot show: the update rows sit between the turns by time and read as an
- *  LED plus a word; Unfollow is reached by keyboard with a visible ring, at the 44px floor, and
+ *  What a DOM emulator cannot show: followed sessions are ONE block at the thread's end, a row per
+ *  session holding its newest update, never a row per change between the turns (#1755); a row
+ *  reads as an LED plus a word; Unfollow is reached by keyboard with a visible ring, at the 44px floor, and
  *  posts the route; the Ask icon's dot appears with its label and clears once the conversation is
  *  on screen; nothing scrolls sideways.
  */
@@ -76,7 +77,7 @@ async function noSidewaysScroll(page: Page) {
   expect(scroll).toBeLessThanOrEqual(inner);
 }
 
-test("updates sit between the turns, read as a word, and Unfollow works by keyboard", async ({
+test("one row per followed session, at the thread's end, never between turns; Unfollow by keyboard (#1755)", async ({
   page,
 }) => {
   await mockShell(page, [followed(false)]);
@@ -88,26 +89,37 @@ test("updates sit between the turns, read as a word, and Unfollow works by keybo
   const panel = await openAsk(page);
   await pickConversation(panel);
   const turns = panel.getByTestId("ask-turn");
-  const rows = panel.getByTestId("ask-update");
-  await expect(rows).toHaveCount(2);
-  // The first update belongs after the first turn, the second after the second.
-  await expect(turns.nth(0).getByTestId("ask-update")).toHaveCount(1);
-  await expect(turns.nth(0).getByTestId("ask-update")).toContainText("Finished its turn");
-  await expect(turns.nth(1).getByTestId("ask-update")).toContainText("Needs you");
-  await expect(rows.nth(0).getByTestId("ask-update-open")).toHaveAttribute(
+  await expect(turns).toHaveCount(2);
+  // Two updates for one session: one row, its newest state, after the last turn.
+  const rows = panel.getByTestId("ask-follow-row");
+  await expect(rows).toHaveCount(1);
+  await expect(turns.getByTestId("ask-follow-row")).toHaveCount(0);
+  // Whatever the row is called: no state word sits inside a turn.
+  await expect(turns.getByText(/Finished its turn|Needs you/)).toHaveCount(0);
+  const row = rows.first();
+  await expect(row).toHaveAttribute("data-kind", "needs_you");
+  await expect(row).toContainText("Needs you");
+  await expect(row).toContainText("api rebase");
+  await expect(row).toContainText("2 changes");
+  await expect(row).not.toContainText("Finished its turn");
+  const block = (await panel.getByTestId("ask-following").boundingBox())!;
+  const lastTurn = (await turns.nth(1).boundingBox())!;
+  expect(block.y).toBeGreaterThanOrEqual(lastTurn.y + lastTurn.height - 1);
+  await expect(row.getByTestId("ask-follow-open")).toHaveAttribute(
     "href",
     "/s/claude/11111111-2222-4333-8444-555555555555",
   );
 
-  const unfollow = rows.nth(1).getByRole("button", { name: "Unfollow api rebase" });
+  const unfollow = row.getByRole("button", { name: "Unfollow api rebase" });
   expect((await unfollow.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   // Keyboard: Tab reaches it from the row's way in, with a visible ring; Enter unfollows.
-  await rows.nth(1).getByTestId("ask-update-open").focus();
+  await row.getByTestId("ask-follow-open").focus();
   await page.keyboard.press("Tab");
   await expect(unfollow).toBeFocused();
   expect(await unfollow.evaluate((el) => getComputedStyle(el).outlineStyle)).not.toBe("none");
   await page.keyboard.press("Enter");
-  await expect(panel.getByTestId("ask-update-unfollow")).toHaveCount(0);
+  // Unfollowed by the operator: the session leaves the block.
+  await expect(panel.getByTestId("ask-following")).toHaveCount(0);
   expect(unfollowed).toHaveLength(1);
   expect(decodeURIComponent(unfollowed[0])).toContain(`/follow/${KEY}`);
   await noSidewaysScroll(page);
@@ -122,7 +134,7 @@ test("the Ask icon's dot says there is an unseen update, and clears once it is o
   await expect(page.getByTestId("ask-unread-dot")).toBeVisible();
   await expect(toggle).toHaveAccessibleName("HQ — new updates from sessions you follow");
   await pickConversation(await openAsk(page));
-  await expect(page.getByTestId("ask-update").first()).toBeVisible();
+  await expect(page.getByTestId("ask-follow-row").first()).toBeVisible();
   await expect(page.getByTestId("ask-unread-dot")).toHaveCount(0);
   await expect(toggle).toHaveAccessibleName("HQ");
   await noSidewaysScroll(page);
@@ -144,14 +156,15 @@ test("a session followed before its first update is listed with Unfollow, by key
   await page.goto("/dashboard");
   const panel = await openAsk(page);
   await pickConversation(panel);
-  await expect(panel.getByTestId("ask-update")).toHaveCount(0);
-  const row = panel.getByTestId("ask-following-row");
+  const row = panel.getByTestId("ask-follow-row");
   await expect(row).toHaveCount(1);
+  await expect(row).toHaveAttribute("data-kind", "following");
   await expect(row).toContainText("Following");
+  await expect(row).toContainText("No change yet");
   await expect(row).toContainText("api rebase");
   const unfollow = row.getByRole("button", { name: "Unfollow api rebase" });
   expect((await unfollow.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
-  await row.getByTestId("ask-following-open").focus();
+  await row.getByTestId("ask-follow-open").focus();
   await page.keyboard.press("Tab");
   await expect(unfollow).toBeFocused();
   expect(await unfollow.evaluate((el) => getComputedStyle(el).outlineStyle)).not.toBe("none");
@@ -162,12 +175,19 @@ test("a session followed before its first update is listed with Unfollow, by key
   await noSidewaysScroll(page);
 });
 
-test("a nudge that could not be followed, and a spent budget, read as words (#1517)", async ({
+test("a nudge that could not be followed, an ended follow, and a spent budget, read as words (#1517, #1755)", async ({
   page,
 }) => {
   const conv = followed(false);
   conv.updates = [
     { key: KEY, kind: "finished", title: "api rebase", ts: conv.turns[0].asked_at + 0.5, following: true },
+    {
+      key: "claude:00000000-0000-4000-8000-0000000000cc",
+      kind: "ended",
+      title: "landing copy pass",
+      ts: conv.turns[1].asked_at + 0.25,
+      following: false,
+    },
     {
       key: "claude:00000000-0000-4000-8000-0000000000dd",
       kind: "not_followed",
@@ -181,13 +201,13 @@ test("a nudge that could not be followed, and a spent budget, read as words (#15
   await page.goto("/dashboard");
   const panel = await openAsk(page);
   await pickConversation(panel);
-  const row = panel.locator('[data-testid="ask-update"][data-kind="not_followed"]');
+  const row = panel.locator('[data-testid="ask-follow-row"][data-kind="not_followed"]');
   await expect(row).toHaveCount(1);
   await expect(row).toContainText("Not following");
   await expect(row).toContainText("docs pass");
-  await expect(row).toContainText("already following 10 sessions");
+  await expect(row).toContainText("Already following 10 sessions");
   await expect(row.getByRole("button", { name: /Unfollow/ })).toHaveCount(0);
-  const open = row.getByTestId("ask-update-open");
+  const open = row.getByTestId("ask-follow-open");
   expect((await open.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   // Its LED is the unknown status beside the word, never colour alone.
   const led = row.locator('[aria-hidden="true"]').first();
@@ -198,6 +218,16 @@ test("a nudge that could not be followed, and a spent budget, read as words (#15
   const hex = (c: string) =>
     "#" + c.match(/\d+/g)!.slice(0, 3).map((n) => Number(n).toString(16).padStart(2, "0")).join("");
   expect(hex(bg)).toBe(unknown.toLowerCase());
+  // An ended follow is a notice: its word and detail, and neither Open nor Unfollow.
+  const ended = panel.locator('[data-testid="ask-follow-row"][data-kind="ended"]');
+  await expect(ended).toHaveCount(1);
+  await expect(ended).toContainText("No longer followed");
+  await expect(ended).toContainText("landing copy pass");
+  await expect(ended).toContainText("Archived or gone");
+  await expect(ended.getByTestId("ask-follow-open")).toHaveCount(0);
+  await expect(ended.getByRole("button", { name: /Unfollow/ })).toHaveCount(0);
+  // Every row sits in the one block, none between turns.
+  await expect(panel.getByTestId("ask-turn").getByTestId("ask-follow-row")).toHaveCount(0);
   const notice = panel.getByTestId("ask-follow-exhausted");
   await expect(notice).toHaveText(
     "This conversation no longer follows sessions. Start a new conversation to follow more.",
@@ -250,14 +280,14 @@ test("a nudge sent from the card is followed by THAT conversation once the follo
   await panel.getByTestId("ask-nudge-send").click();
   await expect(panel.getByTestId("ask-nudge")).toHaveAttribute("data-state", "delivered");
   await page.clock.runFor(20_000); // reads before the follower's pass find nothing followed yet
-  await expect(panel.getByTestId("ask-update")).toHaveCount(0);
+  await expect(panel.getByTestId("ask-follow-row")).toHaveCount(0);
 
   // The follower's pass admits it: the conversation follows the session, which then finishes.
   conv.following = [NUDGED];
   conv.unread = true;
   conv.updates = [{ key: NUDGED, kind: "finished", title: "docs pass", ts: ask.asked_at + 5, following: true }];
   await page.clock.runFor(16_000);
-  const row = panel.getByTestId("ask-update");
+  const row = panel.getByTestId("ask-follow-row");
   await expect(row).toHaveCount(1);
   await expect(row).toContainText("Finished its turn");
   await expect(row).toContainText("docs pass");
@@ -277,7 +307,7 @@ test("a nudge sent from the card is followed by THAT conversation once the follo
   await page.clock.runFor(61_000);
   await expect(page.getByTestId("ask-unread-dot")).toBeVisible();
   await openAsk(page);
-  await expect(panel.locator('[data-testid="ask-update"][data-kind="not_followed"]')).toContainText("lint pass");
+  await expect(panel.locator('[data-testid="ask-follow-row"][data-kind="not_followed"]')).toContainText("lint pass");
   await expect(page.getByTestId("ask-unread-dot")).toHaveCount(0);
   await noSidewaysScroll(page);
 });

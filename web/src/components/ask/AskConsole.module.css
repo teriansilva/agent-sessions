@@ -494,10 +494,6 @@
   text-transform: uppercase;
   color: var(--text-3);
 }
-/* Every session the conversation follows, at the thread's end: Unfollow never waits for an update. */
-.following {
-  margin-top: var(--sp-2);
-}
 /* The update budget is spent (#1517): a notice in the notice voice, never a status colour. */
 .followNotice {
   margin: var(--sp-3) 0;

@@ -267,8 +267,11 @@ def mark_seen(cid: str, through: float) -> bool:
 def state(cid: str) -> dict:
     """``{"following": [keys], "follows": [{key, title}], "unread": bool}`` for one conversation;
     ``follows`` names every ACTIVE follow, so the client can offer Unfollow before any update
-    exists (Hermes on #1500). ``unread`` is False when the sidecar cannot be read. Blocking."""
-    empty = {"following": [], "follows": [], "unread": False, "last_update_at": 0.0}
+    exists (Hermes on #1500). ``since`` maps EVERY remembered follow, active or ended, to when its
+    latest follow began: an update older than that belongs to an earlier follow of the session
+    (#1755), so a notice it superseded never comes back after Unfollow. ``unread`` is False when
+    the sidecar cannot be read. Blocking."""
+    empty = {"following": [], "follows": [], "since": {}, "unread": False, "last_update_at": 0.0}
     try:
         doc = ask_store.read_follows(cid)
     except ask_store.ConversationNotFound:
@@ -287,6 +290,11 @@ def state(cid: str) -> dict:
         "pending": bool(doc.get("outbox")),
         "following": [f["key"] for f in active],
         "follows": [{"key": f["key"], "title": f.get("title") or ""} for f in active],
+        "since": {
+            f["key"]: float(f["since"])
+            for f in doc["follows"]
+            if f.get("key") and isinstance(f.get("since"), int | float)
+        },
         "unread": doc["last_update_at"] > doc["seen_at"],
         "last_update_at": doc["last_update_at"],
     }
