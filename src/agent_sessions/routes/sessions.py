@@ -1125,6 +1125,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     folders=folders,
                     default_folder=payload.get("default_folder"),  # #448: auto-adopted default
                     launch_defaults=payload.get("launch_defaults"),  # #1508: a preselection only
+                    # #1692: a folder confirmed as EXISTING must still be one, under the lock.
+                    expect_dir=payload.get("if_dir"),
                 )
             )
         except projects.ProjectError as e:
@@ -1170,6 +1172,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             "default_folder",
             "launch_defaults",
             "if_folders",
+            "if_dir",
         }
         if unknown:
             raise HTTPException(status_code=422, detail=f"unknown fields: {sorted(unknown)}")
@@ -1186,6 +1189,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     # #1559: a precondition, checked under the store's lock — a caller that read
                     # the folders and builds a whole new list gets 409, never a lost update.
                     expect_folders=payload.get("if_folders"),
+                    # #1692: a folder confirmed as EXISTING must still be one, under that lock.
+                    expect_dir=payload.get("if_dir"),
                 )
             )
         except projects.ProjectError as e:

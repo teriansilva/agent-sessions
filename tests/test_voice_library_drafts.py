@@ -1,5 +1,6 @@
-"""#1681 P3 — a NEW Library draft (a playbook or a skill) can be confirmed by voice, with a spoken
-summary of the draft the card is BOUND to; nothing else from the Library ever is (#1685).
+"""#1681 P3 — a NEW Library draft (a playbook, a skill, an automation saved switched off) can be
+confirmed by voice, with a spoken summary of the draft the card is BOUND to; nothing else from the
+Library ever is (#1685).
 
 Pinned:
 
@@ -8,7 +9,7 @@ Pinned:
 * anything it promises that can't be said in full withholds it, and the card stays on screen;
 * it is read from the bound draft (`ask_operations.content`), so what is heard is what a confirm
   saves — a draft changed on disk after staging gives no summary;
-* edits, copies and every automation operation are never voice-confirmable;
+* edits, copies, enabling and widening are never voice-confirmable;
 * a confirm settles through the card's own decide route and saves the draft.
 """
 
@@ -107,8 +108,8 @@ def test_a_new_draft_is_offered_only_with_its_summary():
 
 @pytest.mark.parametrize(
     "op_id",
-    ["playbook.edit", "playbook.duplicate", "skill.edit", "automation.create", "automation.edit",
-     "automation.widen", "automation.enable"],
+    ["playbook.edit", "playbook.duplicate", "skill.edit", "automation.edit", "automation.widen",
+     "automation.enable"],
 )  # fmt: skip
 def test_no_other_library_operation_is_offered_even_with_a_summary(op_id):
     cards = voice_calls.confirmable_cards(_view(op_id), summaries={"op-1": "Save it."})
@@ -251,3 +252,180 @@ def test_a_flow_title_that_cannot_be_said_withholds_the_summary():
         'title = "Question to reviewed brief"', 'title = "Run `make` first"', 1
     )
     assert voice_calls.draft_summary("playbook.create", files) is None
+
+
+# --- new automations (#1681 P3c) ---------------------------------------------------------------
+
+
+def _mission_config(**over) -> dict:
+    return {
+        "name": "nightly audit",
+        "trigger": {"kind": "manual"},
+        "action": {"kind": "start_mission", "project_id": "p1",
+                   "instruction": {"text": "Audit the dependencies."}, "autonomy": "propose"},
+        **over,
+    }  # fmt: skip
+
+
+@pytest.fixture
+def named(monkeypatch):
+    from types import SimpleNamespace
+
+    from agent_sessions import ask_settings, projects
+
+    monkeypatch.setattr(projects, "load", lambda *a, **k: {"p1": SimpleNamespace(name="web")})
+    monkeypatch.setattr(ask_settings, "agent_labels", lambda: {"claude": "Claude Code"})
+
+
+HEAD = "Save a new automation, “nightly audit”, switched off: nothing runs until you enable it."
+
+
+@pytest.mark.parametrize(
+    "trigger, when",
+    [
+        ({"kind": "manual"}, "It runs only when you start it."),
+        ({"kind": "schedule", "cadence": {"kind": "daily", "time": "09:00"}, "tz": "Europe/Berlin"},
+         "Every day at 09:00 (Europe/Berlin)."),
+        ({"kind": "schedule", "tz": "Europe/Berlin",
+          "cadence": {"kind": "weekly", "days": ["mon", "thu"], "time": "18:30"}}, None),
+        ({"kind": "schedule", "cadence": {"kind": "interval", "every": 2, "unit": "hours"}},
+         "Every 2 hours."),
+        ({"kind": "once", "at": "2026-11-02T07:15", "tz": "Europe/Berlin"},
+         "Once, on 2026-11-02 at 07:15 (Europe/Berlin)."),
+    ],
+)  # fmt: skip
+def test_a_new_mission_automation_is_summarised_with_what_and_when(named, trigger, when):
+    said = voice_calls.automation_summary(_mission_config(trigger=trigger))
+    assert said is not None
+    assert said.startswith(
+        f"{HEAD} Then it starts a mission in the web project with the instruction: Audit the"
+        " dependencies."
+    )
+    if when is not None:
+        assert said.endswith(when)
+    else:  # the store's own words for the schedule, whatever their exact form
+        assert "Every week on" in said and "18:30" in said
+
+
+def test_how_far_a_mission_goes_on_its_own_is_said(named):
+    cfg = _mission_config()
+    cfg["action"]["autonomy"] = "dispatch"
+    assert voice_calls.automation_summary(cfg) == (
+        f"{HEAD} Then it starts a mission in the web project with the instruction: Audit the"
+        " dependencies. It dispatches the plan without asking you. It runs only when you start it."
+    )
+    cfg["action"]["autonomy"] = "dispatch_auto_choose"  # answering menus on its own: on screen
+    assert voice_calls.automation_summary(cfg) is None
+
+
+@pytest.mark.parametrize(
+    "policy, said",
+    [
+        (None, True),
+        ({}, True),
+        ({"max_runs_per_day": 3}, False),  # a limit the summary doesn't say: on screen
+        ({"concurrency": "allow", "max_concurrent": 2}, False),
+        ({"bogus": 1}, False),
+    ],
+)
+def test_a_policy_other_than_the_default_withholds_the_summary(named, policy, said):
+    cfg = _mission_config(**({} if policy is None else {"policy": policy}))
+    assert (voice_calls.automation_summary(cfg) is not None) is said
+
+
+def test_a_new_session_automation_names_its_agent_and_folder(named):
+    cfg = _mission_config(action={"kind": "start_session", "engine": "claude", "model": None,
+                                  "folder": "/home/op/code/web", "bypass": False,
+                                  "message": {"text": "Run the nightly checks."}})  # fmt: skip
+    assert voice_calls.automation_summary(cfg) == (
+        f"{HEAD} Then it starts a Claude Code session in /home/op/code/web with the message: Run"
+        " the nightly checks. It runs only when you start it."
+    )
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        # a template is filled in at run time: its text can't be heard now
+        {"action": {"kind": "start_mission", "project_id": "p1",
+                    "instruction": {"template_id": "t1", "values": {}}, "autonomy": "propose"}},
+        {"action": {"kind": "start_mission", "project_id": "nope",
+                    "instruction": {"text": "Audit."}, "autonomy": "propose"}},  # no such project
+        {"action": {"kind": "start_mission", "project_id": "p1",
+                    "instruction": {"text": "Run `npm audit`."}, "autonomy": "propose"}},
+        {"action": {"kind": "send_to_session", "session_key": "claude:x",
+                    "message": {"text": "Hi."}}},  # typing into a live session: on screen
+        {"action": {"kind": "start_session", "engine": "claude", "model": None,
+                    "folder": "/home/op/web", "bypass": True, "message": {"text": "Go."}}},
+        {"action": {"kind": "start_session", "engine": "gemini", "model": None,
+                    "folder": "/home/op/web", "bypass": False, "message": {"text": "Go."}}},
+        {"action": {"kind": "start_session", "engine": "claude", "model": None,
+                    "folder": "/home/op/my_repo", "bypass": False, "message": {"text": "Go."}}},
+        {"trigger": {"kind": "schedule", "cadence": {"kind": "daily", "time": "09:00"},
+                     "tz": "America/New_York"}},  # a zone it can't read as written
+        {"trigger": {"kind": "webhook"}},
+        {"name": 'say "hi"'},
+        {"name": "x" * 700},
+    ],
+)  # fmt: skip
+def test_an_automation_summary_that_cannot_be_said_in_full_is_withheld(named, over):
+    assert voice_calls.automation_summary(_mission_config(**over)) is None
+
+
+def test_a_voice_confirm_saves_the_new_automation_switched_off(live, ai, monkeypatch, tmp_path):  # noqa: F811
+    from agent_sessions import automations_store
+    from agent_sessions.routes import missions as mroutes
+    from test_ask_library import _mission
+    from test_ask_operations import _project
+    from test_ask_orchestrator import calls
+
+    monkeypatch.setattr(mroutes, "_resolve_cwd", lambda pid, **kw: (pid, str(tmp_path)))
+    _project(live, "web")
+    cid, _script = _ask(live, ai, calls(("list_projects", {})),
+                        call("propose_library", _mission(), cid="p"))  # fmt: skip
+    (card,) = _cards(live, cid)
+    summaries = asyncio.run(voice_calls.draft_summaries(_turn(live, cid)))
+    assert summaries[card["action_id"]] == (
+        "Save a new automation, “nightly audit”, switched off: nothing runs until you enable it."
+        " Then it starts a mission in the web project with the instruction: Audit the"
+        " dependencies and open one issue. It plans the mission and waits for you to dispatch it."
+        " It runs only when you start it."
+    )
+    (vcard,) = voice_calls.confirmable_cards(_turn(live, cid), summaries=summaries)
+    c = voice_calls.Call(
+        id="c", cid=cid, contact="asia-woman", voice="aria", operator=_operator(live),
+        app=live.app, registry=None, state="listening",
+    )  # fmt: skip
+
+    async def quiet(m):
+        return None
+
+    c._to_worker = c._to_client = quiet
+    asyncio.run(c.settle(vcard))
+    (saved,) = [a for a in automations_store.list_all() if a.get("name") == "nightly audit"]
+    assert saved["enabled"] is False
+
+
+def test_an_automation_draft_changed_after_staging_gives_no_summary(
+    live,  # noqa: F811
+    ai,  # noqa: F811
+    monkeypatch,
+    tmp_path,
+):
+    from agent_sessions.routes import missions as mroutes
+    from test_ask_library import _mission
+    from test_ask_operations import _project
+    from test_ask_orchestrator import calls
+
+    monkeypatch.setattr(mroutes, "_resolve_cwd", lambda pid, **kw: (pid, str(tmp_path)))
+    _project(live, "web")
+    cid, _script = _ask(live, ai, calls(("list_projects", {})),
+                        call("propose_library", _mission(), cid="p"))  # fmt: skip
+    (card,) = _cards(live, cid)
+    pid = card["action_id"]
+    assert asyncio.run(voice_calls.draft_summaries(_turn(live, cid)))  # read while it holds
+    draft, _sha = ask_store.read_draft(cid, pid)
+    draft["config"]["action"]["instruction"] = {"text": "Delete every branch."}
+    path = next(p for p in ask_store.root().rglob("*") if p.is_file() and pid in p.name)
+    path.write_text(__import__("json").dumps(draft))
+    assert asyncio.run(voice_calls.draft_summaries(_turn(live, cid))) == {}

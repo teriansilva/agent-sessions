@@ -135,8 +135,25 @@ def _folder_input(v: object) -> str:
     return os.path.normpath(v)
 
 
+def _existing_input(v: object) -> bool:
+    """With a folder: ``true`` = the folder must still EXIST (a real directory, not a symlink) when
+    it is saved — what a call's spoken suggestion promised (#1692). It only narrows."""
+    if v is not True:
+        raise Refused("existing must be true")
+    return True
+
+
 #: Inputs only the operator supplies, on the card, with the confirm.
 INPUT_GATES: dict[str, Callable[[object], object]] = {"folder": _folder_input}
+#: Optional with an input (``existing`` with ``folder``): never required, never alone — and only
+#: on the operations whose route acts on it (`_if_dir`): anywhere else it would be accepted and
+#: silently ignored (review of #1692).
+OPTIONAL_INPUTS: dict[str, tuple[str, Callable[[object], object]]] = {
+    "existing": ("folder", _existing_input)
+}
+_OPTIONAL_INPUT_OPS: dict[str, frozenset[str]] = {
+    "existing": frozenset({"project.create", "project.add_folder"})
+}
 
 
 GATES: dict[str, Callable[[object], object]] = {
@@ -330,6 +347,12 @@ def _folder_patch(pid: str, facts: dict, *, add: str = "", remove: str = "", def
     if default:
         body["default_folder"] = default
     return body
+
+
+def _if_dir(body: dict, fields: dict) -> dict:
+    """A folder confirmed as EXISTING (a call's suggestion, #1692) must still be a real directory
+    when the store saves it — checked under the store's lock (``projects._expect_dir``)."""
+    return {**body, "if_dir": fields["folder"]} if fields.get("existing") else body
 
 
 def _may_have_stopped(status: int, detail: str, facts: dict) -> str:
@@ -670,7 +693,9 @@ def _ops() -> tuple[Operation, ...]:
             lambda k, f, x: (
                 "POST",
                 "/api/projects",
-                {"name": f["name"], "folders": [f["folder"]], "default_folder": f["folder"]},
+                _if_dir(
+                    {"name": f["name"], "folders": [f["folder"]], "default_folder": f["folder"]}, f
+                ),
             ),
             lambda f, x: f"Creates the project “{f['name']}” in the folder you choose below.",
             lambda st, b, x: _plain(st, b, "Project created."),
@@ -688,7 +713,7 @@ def _ops() -> tuple[Operation, ...]:
             lambda k, f, x: (
                 "PATCH",
                 f"/api/projects/{k}",
-                _folder_patch(k, x, add=f["folder"]),
+                _if_dir(_folder_patch(k, x, add=f["folder"]), f),
             ),
             lambda f, x: f"Adds the folder you choose below to {x.get('name', 'the project')}; its "
             "sessions group under the project.",
@@ -872,6 +897,80 @@ def _folder_choices(row: dict) -> list[str]:
     return []
 
 
+#: Operations whose browsed-for folder a call may SUGGEST from the project's name (#1681, the
+#: operator's decision): an EXISTING folder named after the project under the configured project
+#: root. A new folder is never made by voice (the operator's option A); it is picked on screen.
+_SUGGEST_FROM_NAME = frozenset({"project.create", "project.add_folder"})
+
+
+def folder_slug(name: object) -> str:
+    """A project name as one folder name: lowercase, runs of anything but letters, digits, dots
+    and dashes become one dash ("Web App" → "web-app"). ``""`` when nothing is left."""
+    import re
+
+    if not isinstance(name, str):
+        return ""
+    return re.sub(r"[^a-z0-9.-]+", "-", name.strip().lower()).strip("-.")
+
+
+def suggested_folder(pid: str) -> dict | None:
+    """The folder a call suggests for a PENDING create-project or add-folder card: the first
+    configured project root (`project_dirs`) plus the project's name as one folder name — only if
+    that folder EXISTS already (a real directory, not a symlink). ``None`` with no root
+    configured, a name that makes no folder name, no such folder, or (adding a folder) one the
+    project already has. Server-side only: the model never writes the path. Blocking."""
+    import os
+
+    from . import ask_proposals, prefs, project_dirs, projects
+
+    cid = ask_proposals.locate(pid)
+    row = ask_proposals._row(cid, pid) if cid else None
+    if row is None or row.get("state") != PENDING or row.get("op") not in _SUGGEST_FROM_NAME:
+        return None
+    roots = project_dirs.project_roots()
+    if not roots:
+        return None
+    current: list[str] = []
+    if row["op"] == "project.create":
+        name = (row.get("fields") or {}).get("name")
+    else:
+        project = projects.load().get(str(row.get("target") or ""))
+        if project is None:
+            return None
+        name, current = project.name, list(project.folders)
+    slug = folder_slug(name)
+    if not slug or not project_dirs._valid_name(slug):
+        return None
+    folder = os.path.join(roots[0], slug)
+    try:
+        folder = _folder_input(folder)
+    except Refused:
+        return None
+    if folder in current or os.path.islink(folder) or not os.path.isdir(folder):
+        return None  # already its own; a link; or not there — a new folder is picked on screen
+    # A folder another project owns — exactly, nested or above — the store refuses (#361), so it
+    # is never suggested; nor one under an excluded prefix (#1692 review).
+    target = str(row.get("target") or "")
+    for oid, other in projects.load().items():
+        if oid != target and any(projects._nested(folder, f) for f in other.folders):
+            return None
+    if any(project_dirs.path_within(folder, e) for e in prefs.get_folder_exclusions()):
+        return None
+    return {"root": roots[0], "name": slug, "folder": folder}
+
+
+def folder_choices(pid: str) -> list[str]:
+    """The folders a PENDING pick-from-project card offers (its own picker's list), for the
+    operator's eyes and ears only — the card, a call's read-back — never the model. Blocking."""
+    from . import ask_proposals
+
+    cid = ask_proposals.locate(pid)
+    row = ask_proposals._row(cid, pid) if cid else None
+    if row is None or row.get("state") != PENDING or row.get("op") not in _PICK_FROM_PROJECT:
+        return []
+    return _folder_choices(row)
+
+
 def view(row: dict) -> dict:
     """What the card may show and offer — nothing the decide route would refuse."""
     state = row.get("state")
@@ -1026,25 +1125,37 @@ async def stage(
 # ---- the card's content (#1611) -----------------------------------------------------------------
 
 
-def content(pid: str) -> tuple[int, dict]:
-    """What a library card shows of its draft, for the operator's browser — never the model.
-    Served only while the draft still hashes to what the card is bound to: a draft changed on
-    disk is a 409, never shown altered. Blocking."""
-    from . import ask_library, ask_proposals
+def bound_draft(pid: str) -> tuple[int, dict, str]:
+    """A library card's draft, ONLY while it still hashes to what the card is bound to: the
+    status, the draft (or the refusal's ``detail``), and the operation's id. Blocking. For the
+    operator's eyes and ears (the card, a call's read-back) — never the model."""
+    from . import ask_proposals
 
     cid = ask_proposals.locate(pid)
     row = ask_proposals._row(cid, pid) if cid else None
     op = CATALOG.get((row or {}).get("op") or "")
     if row is None or op is None or not op.draft:
-        return 404, {"detail": "no such card content"}
+        return 404, {"detail": "no such card content"}, ""
     try:
         draft, sha = ask_store.read_draft(cid, pid)
     except (OSError, ValueError):
-        return 404, {"detail": "this card's content is no longer kept"}
+        return 404, {"detail": "this card's content is no longer kept"}, op.id
     expected = binding(op.id, row["target"], row["fields"], row["facts"], sha)
     if not (_card_binding(cid, pid) == row.get("binding") == expected):
-        return 409, {"detail": "this card's content changed after it was proposed"}
-    return 200, ask_library.content_view(op.id, draft)
+        return 409, {"detail": "this card's content changed after it was proposed"}, op.id
+    return 200, draft, op.id
+
+
+def content(pid: str) -> tuple[int, dict]:
+    """What a library card shows of its draft, for the operator's browser — never the model.
+    Served only while the draft still hashes to what the card is bound to: a draft changed on
+    disk is a 409, never shown altered. Blocking."""
+    from . import ask_library
+
+    status, draft, op_id = bound_draft(pid)
+    if status != 200:
+        return status, draft
+    return 200, ask_library.content_view(op_id, draft)
 
 
 # ---- the tap ------------------------------------------------------------------------------------
@@ -1063,7 +1174,12 @@ def gate_inputs(op: Operation, raw: object) -> dict:
     from . import ask_proposals
 
     raw = raw or {}
-    if not isinstance(raw, dict) or set(raw) - set(op.inputs):
+    optional = {
+        n
+        for n, (with_, _) in OPTIONAL_INPUTS.items()
+        if with_ in op.inputs and op.id in _OPTIONAL_INPUT_OPS[n]
+    }
+    if not isinstance(raw, dict) or set(raw) - set(op.inputs) - optional:
         raise ask_proposals.ProposalError(422, "this card takes no such input")
     out = {}
     for name in op.inputs:
@@ -1071,6 +1187,11 @@ def gate_inputs(op: Operation, raw: object) -> dict:
             raise ask_proposals.ProposalError(422, f"choose a {name} on the card first")
         try:
             out[name] = INPUT_GATES[name](raw[name])
+        except Refused as e:
+            raise ask_proposals.ProposalError(422, str(e)) from None
+    for name in optional & set(raw):
+        try:
+            out[name] = OPTIONAL_INPUTS[name][1](raw[name])
         except Refused as e:
             raise ask_proposals.ProposalError(422, str(e)) from None
     return out

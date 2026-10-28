@@ -599,3 +599,35 @@ def test_projects_counts_0_skips_the_session_walk(auth_cfg, fake_jsonl, monkeypa
     assert fast == [{k: v for k, v in e.items() if k != "session_count"} for e in counted]
     with_archived = c.get("/api/projects?counts=0&include_archived=1").json()["projects"]
     assert [e["id"] for e in with_archived] == [pid, other]
+
+
+def test_if_dir_holds_only_for_a_real_directory_at_the_write(tmp_home, tmp_path):
+    """#1692: `expect_dir` (the routes' `if_dir`) is checked under the store's lock — a folder
+    confirmed as EXISTING that is gone, or is now a symlink, is never saved."""
+    import os
+
+    real, gone, link = tmp_path / "real", tmp_path / "gone", tmp_path / "link"
+    real.mkdir()
+    os.symlink(real, link)
+    p = projects.create("ok", folders=[str(real)], default_folder=str(real), expect_dir=str(real))
+    assert list(p.folders) == [str(real)]
+    for f in (gone, link):
+        with pytest.raises(projects.ProjectError) as e:
+            projects.create("x", folders=[str(f)], default_folder=str(f), expect_dir=str(f))
+        assert e.value.status == 409
+    with pytest.raises(projects.ProjectError) as e:  # not one this write adopts
+        projects.create("x", folders=["/srv/a"], expect_dir=str(real))
+    assert e.value.status == 422
+    q = projects.create("other", folders=["/srv/b"])
+    for f in (gone, link):
+        with pytest.raises(projects.ProjectError) as e:
+            projects.update(q.id, folders=["/srv/b", str(f)], expect_dir=str(f))
+        assert e.value.status == 409
+    with pytest.raises(projects.ProjectError) as e:  # a rename adopts nothing
+        projects.update(q.id, name="renamed", expect_dir="/srv/b")
+    assert e.value.status == 422
+    with pytest.raises(projects.ProjectError) as e:  # a folder it already has is not "adopted"
+        projects.update(q.id, folders=["/srv/b", "/nonexistent/x"], expect_dir="/srv/b")
+    assert e.value.status == 422
+    assert sorted(pr.name for pr in projects.load().values()) == ["ok", "other"]
+    assert list(projects.load()[q.id].folders) == ["/srv/b"]

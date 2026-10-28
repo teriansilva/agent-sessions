@@ -445,6 +445,22 @@ def _new_id(existing: dict) -> str:
             return pid
 
 
+def _expect_dir(expect_dir: object, folder_list: list[str], owned: object = ()) -> None:
+    """``if_dir`` (#1692): a precondition, checked under the store's lock — the folder is one this
+    write NEWLY adopts (in `folder_list`, not among the folders the project already `owned`) and
+    is, at this moment, a real directory (not a symlink). A spoken confirmation named an EXISTING
+    folder; one removed or replaced since is never saved as the project's."""
+    if expect_dir is None:
+        return
+    if not isinstance(expect_dir, str):
+        raise ProjectError("if_dir must be a folder", status=422)
+    f = _normalize_folder(expect_dir)
+    if f not in folder_list or f in owned:
+        raise ProjectError("if_dir must be a folder this change adopts", status=422)
+    if os.path.islink(f) or not os.path.isdir(f):
+        raise ProjectError("that folder is no longer there", status=409)
+
+
 def create(
     name: str,
     *,
@@ -452,6 +468,7 @@ def create(
     folders: object = None,
     default_folder: object = None,
     launch_defaults: object = None,
+    expect_dir: object = None,
     path: Path | None = None,
 ) -> Project:
     """Create an entity. Creating "from a folder" is just ``folders=[cwd]``.
@@ -475,6 +492,7 @@ def create(
     with _exclusive(path) as fh:
         data = _read_locked(fh)
         _check_folder_conflicts(folder_list, data["projects"], None)
+        _expect_dir(expect_dir, folder_list)
         pid = _new_id(data["projects"])
         entity = {
             "name": name,
@@ -501,6 +519,7 @@ def update(
     archived: object = None,
     launch_defaults: object = None,
     expect_folders: object = None,
+    expect_dir: object = None,
     path: Path | None = None,
 ) -> Project:
     """Patch an entity: rename / recolor / adopt+release folders / set the default launch folder /
@@ -576,9 +595,17 @@ def update(
             if len(set(folder_list)) != len(folder_list):
                 raise ProjectError("duplicate folder in request", status=422)
             _check_folder_conflicts(folder_list, data["projects"], pid)
+            owned = {
+                f
+                for f in (_safe_folder(x) for x in raw.get("folders") or [] if isinstance(x, str))
+                if f
+            }
+            _expect_dir(expect_dir, folder_list, owned)
             raw["folders"] = sorted(folder_list)
         if new_default is not None:
             raw["default_folder"] = eff_default
+        if expect_dir is not None and folders is None and new_default is None:
+            raise ProjectError("if_dir must be a folder this change adopts", status=422)
 
         if archived is not None:
             if not isinstance(archived, bool):

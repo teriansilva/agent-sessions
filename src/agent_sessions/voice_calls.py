@@ -715,11 +715,10 @@ class Call:
         await self.client({"t": "turn", "turn": view})
         # New Library drafts are offered with a spoken summary of their BOUND draft (#1681): read
         # before the generation check below, so a question asked meanwhile still wins.
-        summaries = (
-            await draft_summaries(view)
-            if gen == self.generation and view.get("status") == "done"
-            else {}
-        )
+        ready = gen == self.generation and view.get("status") == "done"
+        summaries = await draft_summaries(view) if ready else {}
+        picks = await folder_picks(view) if ready else {}
+        suggestions = await folder_suggestions(view) if ready else {}
         if gen != self.generation or self.state == "ended":
             pass  # a newer question superseded this one: its answer is on screen, not spoken
         elif view.get("status") == "done":
@@ -731,7 +730,9 @@ class Call:
                 self.ask = None
             words = speakable(view.get("answer") or "")
             # offered by voice; any more are screen-only
-            cards = confirmable_cards(view, summaries=summaries)[:4]
+            cards = confirmable_cards(
+                view, summaries=summaries, picks=picks, suggestions=suggestions
+            )[:4]
             lines = list(card_sentences(view, skip={c["id"] for c in cards}))
             sid = uuid.uuid4().hex[:12]
             # HQ judged the call over (#1668): it ends once THIS farewell has played — never over
@@ -758,7 +759,16 @@ class Call:
                 self.ending = None
             for line in lines:
                 await self.say(line, turn_id=view.get("turn_id"))
-            if cards:
+            picks = [c for c in cards if c["kind"] == "pick"]
+            others = [c for c in cards if c["kind"] != "pick"]
+            if picks and self.language in (None, "en"):
+                # A pick is answered by ITS OWN numbers, so it is offered alone, after the turn's
+                # other cards — those together, as always (#1681).
+                first = others or picks[:1]
+                rest = picks if others else picks[1:]
+                await self.offer(first, turn_id=view.get("turn_id"), gen=gen, queue=rest)
+            elif cards:
+                # On a call in another language every card is read for the screen (`offer`).
                 await self.offer(cards, turn_id=view.get("turn_id"), gen=gen)
         else:
             await self.say(
@@ -839,7 +849,7 @@ class Call:
             # English-only), whatever its words were transcribed as. The caller voids it.
             return False
         first = ch["cards"][0]
-        if len(ch["cards"]) == 1 and first["kind"] in ("permission", "menu"):
+        if len(ch["cards"]) == 1 and first["kind"] in ("permission", "menu", "pick"):
             # A Needs-you decision (#1681 P2): the reply names WHICH answer, of this row only.
             verdict, choice = classify_decision(text, first)
             idx = 0 if verdict == "choose" else None
@@ -872,7 +882,12 @@ class Call:
         await self.client({"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text})
         if verdict == "cancel":
             await self.void_challenge()
-            await self.say("Okay. It stays on your screen.", kind="outcome")
+            line = (
+                "Okay. They stay on your screen."
+                if ch["queue"] or len(ch["cards"]) > 1
+                else "Okay. It stays on your screen."
+            )
+            await self.say(line, kind="outcome")
             return True
         # "all" / "ambiguous" / "broader" / "no_allow": HQ answers, and the challenge waits for
         # THAT line to have played before it arms again — so its own echo can never be taken
@@ -936,6 +951,32 @@ class Call:
         kind = card["kind"]
         if kind in ("nudge", "needs_you"):
             method, path, body = "POST", f"/api/pulse/actions/{card['id']}/approve", None
+        elif kind == "suggest":
+            # Still the same EXISTING folder for a card still waiting, at THIS moment: what was
+            # read back must still hold. Nothing is ever made on disk by voice (option A).
+            s = card["suggest"]
+            from . import ask_operations
+
+            try:
+                now = await asyncio.to_thread(ask_operations.suggested_folder, card["id"])
+            except Exception:  # noqa: BLE001
+                now = None
+            if not now or now.get("folder") != s["folder"]:
+                await self.client({"t": "settled", "card": card["id"], "ok": False, "status": 0})
+                await self.say("That card changed, so I did nothing. It's on your screen.",
+                               kind="outcome")  # fmt: skip
+                return
+            method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
+            # `existing`: the store re-checks it is still that real directory as it saves.
+            body = {"decision": "confirm", "inputs": {"folder": s["folder"], "existing": True}}
+        elif kind == "pick" and not isinstance(card.get("choice"), dict):
+            return  # never settled without the folder the Commander picked
+        elif kind == "pick":
+            # The card's own decide route, with the folder the Commander picked by number from
+            # the card's OWN choices (`ask_operations.folder_choices`) as its input — the payload
+            # a tap on the picker sends. The model never saw or chose it.
+            method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
+            body = {"decision": "confirm", "inputs": {"folder": card["choice"]["label"]}}
         elif kind in ("permission", "menu"):
             # The screen's own route and payload: the RECORDED option's number and label. The
             # route re-checks the live screen against what the escalation recorded (#1213).
@@ -957,7 +998,7 @@ class Call:
         await self.client({"t": "settled", "card": card["id"], "ok": ok,
                            "status": resp.status if resp else 0})  # fmt: skip
         await self.say(outcome_sentence(card, resp), kind="outcome")
-        if resp is not None and resp.status == 202 and card["kind"] in ("session", "operation"):
+        if resp is not None and resp.status == 202 and card["kind"] in _PROPOSAL_KINDS:
             # Accepted is not finished: follow the card to its end state and say THAT.
             final = await self._follow(card["id"])
             await self.client({"t": "settled", "card": card["id"], "final": final})
@@ -1230,7 +1271,7 @@ def _voice_operation(op_id: object) -> bool:
 #: The Library operations a voice may confirm (#1681): NEW drafts that run nothing, each only
 #: with a spoken summary of its bound draft (`draft_summary`). Edits, copies, enabling and
 #: widening stay screen decisions.
-VOICE_DRAFTS = frozenset({"playbook.create", "skill.create"})
+VOICE_DRAFTS = frozenset({"playbook.create", "skill.create", "automation.create"})
 #: The longest Library summary a call reads out (characters).
 DRAFT_TOLD_MAX = 700
 
@@ -1296,6 +1337,80 @@ def draft_summary(op_id: str, files: dict) -> str | None:
     return line if len(line) <= DRAFT_TOLD_MAX else None
 
 
+def automation_summary(config: object) -> str | None:
+    """A NEW automation as a FIXED spoken summary (#1681) — or ``None`` when anything it promises
+    can't be said in full. It is saved switched off (the create route takes no ``enabled``; turning
+    it on is its own consent card), so the summary says what it would do once enabled:
+
+    "Save a new automation, “{name}”, switched off: nothing runs until you enable it. Then it
+    {starts a mission in the {project} project | starts a {agent} session in {folder}} with the
+    {instruction | message}: {text}. {When, in the store's own schedule words}."
+
+    Only plain text is read: a template's text is filled in at run time, so it can't be heard
+    now. Typing into an existing session, and a session launched with permission bypass, stay on
+    screen."""
+    from . import ask_settings, automations, projects
+
+    if not isinstance(config, dict):
+        return None
+    name = _said_name(config.get("name"))
+    action = config.get("action") if isinstance(config.get("action"), dict) else {}
+    trigger = config.get("trigger") if isinstance(config.get("trigger"), dict) else {}
+    kind = action.get("kind")
+    try:
+        policy = automations.validate_policy(config.get("policy"))
+    except automations.AutomationError:
+        return None
+    if policy != automations.validate_policy(None):
+        return None  # limits it would run under that the summary doesn't say: on screen
+    if kind == "start_mission":
+        project = projects.load().get(str(action.get("project_id") or ""))
+        where = verbatim(project.name) if project is not None else None
+        said = _plain_message(action.get("instruction"))
+        # How far it goes on its own, in the consent lines' own words (`automations.describe`);
+        # answering menus on its own is never a voice decision.
+        how = {
+            "propose": "It plans the mission and waits for you to dispatch it.",
+            "dispatch": "It dispatches the plan without asking you.",
+        }.get(str(action.get("autonomy") or "propose"))
+        what = f"starts a mission in the {where} project with the instruction: {said}"
+        if where is None or said is None or how is None:
+            return None
+        what = f"{_sentence(what)} {how}"[:-1]
+    elif kind == "start_session" and action.get("bypass") is False:
+        agent = verbatim(ask_settings.agent_labels().get(str(action.get("engine") or ""), ""))
+        folder = verbatim(str(action.get("folder") or ""))
+        said = _plain_message(action.get("message"))
+        what = f"starts a {agent} session in {folder} with the message: {said}"
+        if not agent or folder is None or said is None:
+            return None
+    else:
+        return None
+    t = trigger.get("kind")
+    if t == "manual":
+        when = "It runs only when you start it."
+    elif t == "once":
+        when = automations._cadence_words(trigger.get("at"), trigger.get("tz")) + "."
+    elif t == "schedule":
+        when = automations._cadence_words(trigger.get("cadence"), trigger.get("tz")) + "."
+    else:
+        return None
+    if name is None or verbatim(when) is None:
+        return None
+    line = (
+        f"Save a new automation, “{name}”, switched off: nothing runs until you enable it. Then it"
+        f" {_sentence(what)} {when}"
+    )
+    return line if len(line) <= DRAFT_TOLD_MAX else None
+
+
+def _plain_message(raw: object) -> str | None:
+    """A stored message's text as read out — only plain text, verbatim."""
+    if not isinstance(raw, dict) or set(raw) != {"text"} or not isinstance(raw["text"], str):
+        return None
+    return verbatim(raw["text"])
+
+
 def _said_name(raw: object) -> str | None:
     """A draft's name as said inside the summary's quotes: verbatim, and with no quote marks of
     its own — a name can't close the quotes and read on as the summary's words."""
@@ -1342,6 +1457,20 @@ async def draft_summaries(view: dict) -> dict[str, str]:
             or not isinstance(pid, str)
         ):
             continue
+        if p["op"] == "automation.create":
+            try:
+                status, draft, op_id = await asyncio.to_thread(ask_operations.bound_draft, pid)
+            except Exception:  # noqa: BLE001 — unreadable: the card stays on screen
+                log.warning("a draft card's content could not be read", exc_info=True)
+                continue
+            said = (
+                automation_summary(draft.get("config"))
+                if status == 200 and op_id == "automation.create"
+                else None
+            )
+            if said is not None:
+                out[pid] = said
+            continue
         try:
             status, shown = await asyncio.to_thread(ask_operations.content, pid)
         except Exception:  # noqa: BLE001 — unreadable: the card stays on screen
@@ -1358,7 +1487,123 @@ async def draft_summaries(view: dict) -> dict[str, str]:
     return out
 
 
-def confirmable_cards(view: dict, *, summaries: dict[str, str] | None = None) -> list[dict]:
+#: A folder pick read out has at most this many folders; a longer list stays on screen.
+PICK_OPTIONS_TOLD = 5
+
+
+async def folder_picks(view: dict) -> dict[str, list[str]]:
+    """The folders each pick-from-project card of a turn offers, read from the card's OWN
+    choices on the server (#1681) — what its picker would list, never anything the model said."""
+    from . import ask_operations
+
+    out: dict[str, list[str]] = {}
+    for p in view.get("proposals") or []:
+        pid = p.get("action_id")
+        if p.get("kind") != "operation" or p.get("needs") != ["folder"] or not isinstance(pid, str):
+            continue
+        try:
+            folders = await asyncio.to_thread(ask_operations.folder_choices, pid)
+        except Exception:  # noqa: BLE001 — unreadable: the card stays on screen
+            log.warning("a card's folder choices could not be read", exc_info=True)
+            continue
+        if folders:
+            out[pid] = list(folders)
+    return out
+
+
+async def folder_suggestions(view: dict) -> dict[str, dict]:
+    """The folder the call suggests for each create-project or add-folder card of a turn, derived
+    on the server from the project's name (`ask_operations.suggested_folder`) — never a path the
+    model wrote (#1681)."""
+    from . import ask_operations
+
+    out: dict[str, dict] = {}
+    for p in view.get("proposals") or []:
+        pid = p.get("action_id")
+        if p.get("kind") != "operation" or p.get("needs") != ["folder"] or not isinstance(pid, str):
+            continue
+        if p.get("op") not in ask_operations._SUGGEST_FROM_NAME:
+            continue
+        try:
+            got = await asyncio.to_thread(ask_operations.suggested_folder, pid)
+        except Exception:  # noqa: BLE001 — unreadable: the card stays on screen
+            log.warning("a card's folder suggestion could not be made", exc_info=True)
+            continue
+        if got:
+            out[pid] = got
+    return out
+
+
+def _suggest_card(p: dict, suggestion: dict) -> dict | None:
+    """A browsed-for folder by voice: the card's effect, then the EXISTING folder suggested from
+    the project's name, read verbatim; "confirm" uses it — nothing is ever made on disk."""
+    folder = suggestion.get("folder") if isinstance(suggestion, dict) else None
+    if not isinstance(folder, str) or any(c in folder for c in ";,"):
+        return None
+    said = verbatim(folder)
+    raw_title = str(p.get("title") or "")  # a new project has none: its name is in the effect
+    title = verbatim(raw_title) if raw_title else ""
+    label = verbatim(str(p.get("label") or ""))
+    effect = verbatim(str(p.get("text") or ""))
+    if said is None or title is None or label is None or effect is None:
+        return None
+    head = f"{label}, for {title}" if title else label
+    line = f"{head}: {_sentence(effect)} I suggest the existing folder {said}."
+    if len(line) > PERMISSION_TOLD_MAX:
+        return None
+    return {"id": p["action_id"], "kind": "suggest", "verb": "use it", "line": line,
+            "suggest": dict(suggestion)}  # fmt: skip
+
+
+def _suggests_from_name(op_id: object) -> bool:
+    from . import ask_operations
+
+    return op_id in ask_operations._SUGGEST_FROM_NAME and _voice_operation(op_id)
+
+
+def _picks_from_card(op_id: object) -> bool:
+    """An operation whose folder the card's OWN picker lists (the project's folders) — never one
+    that must be browsed for (creating a project, adding a folder)."""
+    from . import ask_operations
+
+    return op_id in ask_operations._PICK_FROM_PROJECT and _voice_operation(op_id)
+
+
+def _pick_card(p: dict, folders: list[str]) -> dict | None:
+    """A folder pick by voice: the card's own choices, each read verbatim, picked by number."""
+    if not (1 <= len(folders) <= PICK_OPTIONS_TOLD):
+        return None
+    # A folder whose name carries a list's own punctuation could read as more options than there
+    # are ("…/web; two, …/important"): such a list stays on screen.
+    said = [verbatim(f) if not any(c in f for c in ";,") else None for f in folders]
+    title = verbatim(str(p.get("title") or ""))
+    label = verbatim(str(p.get("label") or ""))
+    # What the operation DOES, in the card's own words — read before it arms, like every other
+    # operation's effect (Hermes 7047), or the pick stays on screen.
+    effect = verbatim(str(p.get("text") or ""))
+    if title is None or label is None or effect is None or any(f is None for f in said):
+        return None
+    listed = "; ".join(f"{_NUMBER_WORDS[i]}, {f}" for i, f in enumerate(said))
+    line = f"{label}, for {title}: {_sentence(effect)} Which folder? The options are: {listed}."
+    if len(line) > PERMISSION_TOLD_MAX:
+        return None
+    return {
+        "id": p["action_id"],
+        "kind": "pick",
+        "verb": "decide",
+        "line": line,
+        "options": [{"option": i + 1, "label": f, "as": "pick"} for i, f in enumerate(folders)],
+        "ask": "Say the folder's number, or cancel.",
+    }
+
+
+def confirmable_cards(
+    view: dict,
+    *,
+    summaries: dict[str, str] | None = None,
+    picks: dict[str, list[str]] | None = None,
+    suggestions: dict[str, dict] | None = None,
+) -> list[dict]:
     """The cards of a settled HQ turn that a voice may confirm: nudges, new sessions, and HQ
     operations that need no on-screen input. What will be SENT is read back in full, word for
     word (`voice_text.verbatim`); a card whose text can't be is left to the screen (#1631)."""
@@ -1388,6 +1633,22 @@ def confirmable_cards(view: dict, *, summaries: dict[str, str] | None = None) ->
             if summary is None:
                 continue
             out.append({"id": pid, "kind": "operation", "verb": "save it", "line": summary})
+        elif (
+            kind == "operation"
+            and p.get("needs") == ["folder"]
+            and _suggests_from_name(p.get("op"))
+        ):
+            # A browsed-for folder, suggested from the project's name (#1681, the operator's
+            # decision); without a suggestion the card stays on screen.
+            card = _suggest_card(p, (suggestions or {}).get(pid) or {})
+            if card is not None:
+                out.append(card)
+        elif kind == "operation" and p.get("needs") == ["folder"] and _picks_from_card(p.get("op")):
+            # A folder the card's own picker offers, chosen by number (#1681); anything else
+            # that needs input stays on screen.
+            card = _pick_card(p, (picks or {}).get(pid) or [])
+            if card is not None:
+                out.append(card)
         elif kind == "operation" and not p.get("needs") and _voice_operation(p.get("op")):
             # The EFFECT is what is authorized (deleting a project loses its memory; archiving
             # stops its agents): it is read out in full, or the operation stays on screen.
@@ -1635,10 +1896,14 @@ def needs_you_cards(rows: list[dict]) -> list[dict]:
     return needs_you_readout(rows, len(rows))[1]
 
 
+#: Voice cards that settle through a proposal's decide route (`{"proposal": view}` back).
+_PROPOSAL_KINDS = ("session", "operation", "pick", "suggest")
+
+
 def _result_state(card: dict, body: dict):
     """The settled state in a route's answer: a delivery record's `state`, or — for proposal
     cards — the `{"proposal": view}` the decide route returns."""
-    if card["kind"] in ("session", "operation"):
+    if card["kind"] in _PROPOSAL_KINDS:
         prop = body.get("proposal")
         return prop.get("state") if isinstance(prop, dict) else None
     if card["kind"] in ("permission", "menu"):

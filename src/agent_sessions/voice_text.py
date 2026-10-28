@@ -345,7 +345,7 @@ def classify_decision(said: str, card: dict) -> tuple[str, dict | None]:
         if rest in _REFUSE_PHRASES and isinstance(card.get("deny"), dict):
             return "choose", card["deny"]
         return "other", None
-    if card.get("kind") == "menu":
+    if card.get("kind") in ("menu", "pick"):
         options = card.get("options") if isinstance(card.get("options"), list) else []
         pick = [w for w in words if w not in _PICK_WORDS]
         if len(pick) == 2 and pick[0] in _MENU_ORDINALS and pick[1] == "one":
