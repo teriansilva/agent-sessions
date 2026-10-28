@@ -1432,10 +1432,24 @@ def chat_log_path(native_id: str, home: Path) -> Path | None:
     return base._store("battlelab-chat", home=home) / f"{native_id}.jsonl"
 
 
+def _chat_growth(native_id: str, home: Path) -> int | None:
+    """Append-only: the conversation's size is the monotonic, uncapped growth signal stall
+    detection needs. An API session's journal is a chain of segments (#1733): every segment
+    counts, or a rolled-over session would read as stalled forever."""
+    from . import native_segments
+
+    path = chat_log_path(native_id, home)
+    if path is None:
+        return None
+    try:
+        return native_segments.total_size(path.parent, native_id)
+    except (OSError, ValueError):
+        return None
+
+
 register_adapter("battlelab-chat", _chat_adapter)
 register_locator("battlelab-chat", _path_locator(chat_log_path))
-# Append-only: the file's size is the monotonic, uncapped growth signal stall detection needs.
-register_growth("battlelab-chat", _path_growth(chat_log_path))
+register_growth("battlelab-chat", _chat_growth)
 
 
 # --- the model a session ran on, as its OWN transcript reports it (#1189) ------------------------

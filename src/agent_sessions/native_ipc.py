@@ -61,6 +61,8 @@ REASON_CODES = frozenset(
         "generation_closed",
         "question_replaced",
         "worker_ended",
+        # #1733: its worker stopped because BattleLab could not write the session's record.
+        "journal_unwritable",
         "unexpected",
     }
 )
@@ -68,6 +70,9 @@ REASON_CODES = frozenset(
 #: the agent's background tasks, could cut the turn now; `inventory_changed` — what the operator
 #: confirmed for Stop all and send (worker, turn, queued head or tasks) is no longer what runs.
 SEND_NOW_REFUSALS = frozenset({"would_stop_background", "inventory_changed"})
+#: A refusal before any claim because the session's record could not be written (#1733): nothing
+#: was claimed or sent, so the pane keeps the draft and offers a NEW send, never a Retry.
+JOURNAL_UNWRITABLE = "journal_unwritable"
 
 
 def tasks_digest(task_ids) -> str:
@@ -766,7 +771,7 @@ def validate_response(value, *, expected: Binding | None = None):
         error = _object(value["error"], {"code", "message"}, {"reason"})
         if "reason" in error:
             # A closed refusal reason (#1644) the pane acts on; never free text.
-            out["error_reason"] = _choice(error["reason"], SEND_NOW_REFUSALS)
+            out["error_reason"] = _choice(error["reason"], SEND_NOW_REFUSALS | {JOURNAL_UNWRITABLE})
         out["error"] = {
             "code": _choice(
                 error["code"],

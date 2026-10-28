@@ -15,6 +15,8 @@ export const NOT_SENT_TEXT: Readonly<Record<string, string>> = Object.freeze({
   generation_closed: "the session was stopped before this message could go out — nothing was delivered.",
   question_replaced: "the question it answered was answered or replaced first — nothing was delivered.",
   worker_ended: "the session ended while this message waited — nothing was delivered.",
+  journal_unwritable:
+    "BattleLab couldn’t write this session’s record while the message waited — nothing was delivered.",
   unexpected: "BattleLab could not hand this message to the agent — nothing was delivered.",
 });
 

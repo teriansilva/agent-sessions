@@ -37,6 +37,7 @@ import {
   confirmOperation,
   confirmSent,
   readSent,
+  rebindSent,
   SENT_HISTORY_EVENT,
   SENT_HISTORY_KEY,
   type SentMessage,
@@ -127,6 +128,7 @@ import {
   nextToPost,
   outboxEntry,
   reconcile,
+  renewed,
   retried,
   revisionFor,
   unrecorded,
@@ -212,6 +214,16 @@ function taskLabel(task: StructuredBackgroundTask): string {
 /** A server answer (4xx) means the request was NOT taken; anything else may have been. */
 function definite(e: unknown): boolean {
   return e instanceof ApiError && e.status < 500;
+}
+
+/** The server refused a send because BattleLab could not write the session's record (#1733):
+ *  409 with the closed reason `journal_unwritable`. Nothing was claimed. */
+function journalUnwritable(e: unknown): boolean {
+  return (
+    e instanceof ApiError &&
+    e.status === 409 &&
+    (e.record as { reason?: unknown } | undefined)?.reason === "journal_unwritable"
+  );
 }
 
 interface Deciding {
@@ -1990,6 +2002,9 @@ export function StructuredPane({
                 ...x,
                 phase: "refused",
                 reason: detail(e, e instanceof ApiError && e.status === 409 ? "the conversation changed" : "refused"),
+                // #1733: a KNOWN refusal before any claim — the session's record could not be
+                // written. Only the server's closed reason says so, never a status alone.
+                unwritable: journalUnwritable(e),
               }
             : { ...x, phase: "unknown" },
         ),
@@ -2016,6 +2031,20 @@ export function StructuredPane({
   useLeaveGuard(unrecorded(outbox));
 
   const retryEntry = (id: string) => setOutbox((list) => retried(list, id));
+  /** Send again after the record could not be written (#1733): nothing was claimed, so the same
+   *  words go out as a NEW operation (a new id), in place, once the pump admits it. */
+  const sendAgainEntry = (id: string) => {
+    const entry = outboxRef.current.find((e) => e.request.id === id);
+    if (!entry || entry.phase !== "refused") return;
+    // Before it can post, this device's sent history must name the id that goes out, or a
+    // reload's Restore could send the words under the other one too (Hermes on #1771). If the
+    // history cannot be rebound (storage refused), the words go again under the REFUSED id: it
+    // was never claimed — the refusal proved that — so it is still a first, single send.
+    const fresh = uuid();
+    const next = !entry.request.history || rebindSent(entry.request.history, fresh) ? fresh : id;
+    if (entry.request.history) setHistory(readSent());
+    setOutbox((list) => renewed(list, id, next));
+  };
   const dropEntry = (id: string) => {
     setOutbox((list) => withoutEntry(list, id));
     requestAnimationFrame(() => taRef.current?.focus());
@@ -3497,6 +3526,10 @@ export function StructuredPane({
             onRetry={retryEntry}
             onEdit={editEntry}
             onDrop={dropEntry}
+            onSendAgain={sendAgainEntry}
+            onHandOff={isAgent(engine) && !placeholder
+              ? (trigger) => setHandoff({ open: true, trigger })
+              : undefined}
           />
           {recoveringSendNow && (
             <div className={styles.queued} data-testid="structured-send-now-recovery">

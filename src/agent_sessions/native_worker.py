@@ -52,6 +52,7 @@ from . import (
     native_memory,
     native_protocol,
     native_questions,
+    native_segments,
     native_state,
 )
 from .plugins import kinds
@@ -627,6 +628,7 @@ class Worker:
             except native_journal.JournalError as exc:
                 # A journal that cannot record observations must not keep accepting effects.
                 self.reason = f"journal unavailable: {exc}"
+                self.journal_failed(exc)
                 self.stop_child()
                 return
 
@@ -1272,6 +1274,36 @@ class Worker:
             "result": result,
         }
 
+    def journal_failed(self, exc: native_journal.JournalError) -> None:
+        """Name WHY the record could not be written (#1733), best effort: on a full disk this
+        write can fail too, and the turn then reads uncertain with the generic reason."""
+        if exc.cause in native_segments.CAUSES:
+            self.report(journal_failure=exc.cause)
+
+    def journal_error(
+        self, request: dict, exc: native_journal.JournalError, *, before_effect: bool = True
+    ) -> dict:
+        """A journal failure as a response. ``unwritable`` appended nothing, so for a claim made
+        BEFORE any effect it is a known refusal (#1733) the pane shows as such — the draft kept, a
+        NEW send offered. Where an effect may already have reached the agent (Send now writes the
+        queued message before journaling its control), it stays unavailable: uncertain."""
+        if exc.code == "unwritable" and not before_effect:
+            self.journal_failed(exc)
+            return self.error(request, "unavailable", exc.detail)
+        if exc.code == "unwritable":
+            self.journal_failed(exc)
+            return self.error(
+                request,
+                "conflict",
+                f"{exc.detail}; nothing was sent",
+                native_ipc.JOURNAL_UNWRITABLE,
+            )
+        return self.error(
+            request,
+            exc.code if exc.code in {"conflict", "invalid", "busy"} else "unavailable",
+            exc.detail,
+        )
+
     def error(self, request: dict, code: str, message: str, reason: str | None = None) -> dict:
         return {
             **self.binding.envelope("response"),
@@ -1381,11 +1413,7 @@ class Worker:
                     native_journal.claim, self.journal_root, request, queued=queued
                 )
             except native_journal.JournalError as exc:
-                return self.error(
-                    request,
-                    exc.code if exc.code in {"conflict", "invalid", "busy"} else "unavailable",
-                    exc.detail,
-                )
+                return self.journal_error(request, exc)
             if not fresh:
                 return self.receipt(request, receipt)
             if queued:
@@ -1531,11 +1559,7 @@ class Worker:
         except native_journal.JournalError as exc:
             if exc.code not in {"conflict", "invalid", "busy"}:
                 self.stop_child()  # no further write without durable evidence
-            return self.error(
-                request,
-                exc.code if exc.code in {"conflict", "invalid", "busy"} else "unavailable",
-                exc.detail,
-            )
+            return self.journal_error(request, exc, before_effect=False)
         except (WorkerError, api_source.SourceError) as exc:
             return self.error(request, "unavailable", str(exc))
 
@@ -1713,11 +1737,7 @@ class Worker:
         except native_journal.JournalError as exc:
             if exc.code not in {"conflict", "invalid", "busy"}:
                 self.stop_child()  # no further write without durable evidence
-            return self.error(
-                request,
-                exc.code if exc.code in {"conflict", "invalid", "busy"} else "unavailable",
-                exc.detail,
-            )
+            return self.journal_error(request, exc, before_effect=False)
 
     def _background_target(self, turn_id: str) -> bool:
         """Is ``turn_id`` the turn the agent is running for itself right now (#1427)?"""
@@ -1970,6 +1990,8 @@ class Worker:
                 # writes `worker_ended` for an earlier generation only while the live worker
                 # says so, since an older reader refuses the field.
                 handoff_reasons=True,
+                # Reads a segmented journal and the `journal_unwritable` reason code (#1733).
+                journal_segments=True,
             )
             tasks.append(asyncio.create_task(self.idle_watch()))
             tasks.append(asyncio.create_task(self.memory_watch()))

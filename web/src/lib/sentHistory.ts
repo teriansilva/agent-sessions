@@ -141,6 +141,18 @@ export function confirmOperation(operation: string): void {
   write(entries);
 }
 
+/** Rebind an unconfirmed entry to a NEW operation id (#1733): Send again after a known refusal
+ *  posts the same words under a new id, and Restore after a reload must re-send THAT id (the
+ *  server replays it), never the refused one, which was never claimed and would run again. Returns
+ *  whether the entry now names ``operation`` (false when it is gone, or storage refused). */
+export function rebindSent(id: string, operation: string): boolean {
+  const entries = readSent();
+  const hit = entries.find((e) => e.id === id);
+  if (!hit || hit.confirmed) return false;
+  hit.operation = operation;
+  return write(entries);
+}
+
 /** Drop the whole ring — sent prompt text must not outlive the session on a shared device. */
 export function clearSent(): void {
   const s = store();

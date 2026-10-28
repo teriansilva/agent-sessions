@@ -1,0 +1,99 @@
+<!doctype html>
+<html data-theme="dark"><meta charset="utf-8"><title>#1733 · an API session's record nears and reaches its bound</title>
+<style>
+@import url('../../../web/src/tokens.css');
+*{box-sizing:border-box}
+body{margin:0;padding:24px;background:var(--bg);color:var(--text);font:14px/1.55 "Liberation Sans",sans-serif}
+button,input,select{font-family:inherit;font-size:inherit;line-height:inherit;color:inherit}
+h1,h2,h3,button,header,.tag,.mono{font-family:"Liberation Mono",monospace}
+h1{font-size:20px;margin:0 0 6px}.sub{margin:0 0 20px;color:var(--text-muted)}
+p{margin:10px 0}
+.board{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
+.frame{border:1px solid var(--line-strong);background:var(--panel);min-width:0}
+header{padding:12px 16px;border-bottom:1px solid var(--line-strong);display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px}
+main{padding:18px}
+.label{margin:0 0 10px;color:var(--text-muted);font:11px "Liberation Mono",monospace;letter-spacing:.06em}
+.chip{padding:4px 8px;color:var(--warn-text);border:1px solid var(--status-degraded);font-size:11px;white-space:nowrap;font-family:"Liberation Mono",monospace}
+.who{font:11px "Liberation Mono",monospace;color:var(--accent);letter-spacing:.06em}
+.you{border-left:3px solid var(--accent);padding:2px 10px;margin:6px 0 14px}
+.reply{border:1px solid var(--line-strong);border-left:3px solid var(--line-strong);padding:12px 14px;margin:8px 0}
+.reply ul{margin:6px 0;padding-left:20px}
+.q{border:1px solid var(--line-strong);border-left:3px solid var(--accent);padding:14px;margin:12px 0;background:var(--bg)}
+.qhead{display:flex;align-items:center;gap:8px;font:11px "Liberation Mono",monospace;letter-spacing:.06em;color:var(--text-muted)}
+.sq{width:6px;height:6px;background:var(--accent);display:inline-block}
+.hdr{border:1px solid var(--line-strong);padding:2px 6px;color:var(--text)}
+.qtext{font-weight:700;margin:10px 0;color:var(--text)}
+.opts{display:flex;flex-direction:column;gap:6px}
+.opt{display:flex;gap:10px;align-items:flex-start;min-height:44px;padding:10px 12px;border:1px solid var(--line-strong);background:var(--surface-2);text-align:left;cursor:pointer;width:100%}
+.opt .mark{flex:0 0 14px;height:14px;margin-top:2px;border:1px solid var(--text-muted)}
+.opt .mark.radio{border-radius:50%}
+.opt.on{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,var(--surface-2))}
+.opt.on .mark{background:var(--accent);border-color:var(--accent)}
+.opt b{display:block;font-family:"Liberation Sans",sans-serif;font-weight:700}
+.opt small{display:block;color:var(--text-muted);font-family:"Liberation Sans",sans-serif;font-size:12px}
+.other{min-height:44px;width:100%;padding:10px 12px;border:1px solid var(--line-strong);background:var(--bg);color:var(--text-muted)}
+.hint{font-size:12px;color:var(--text-muted);margin:10px 0 0}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.btn{min-height:44px;padding:10px 14px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-size:12px;cursor:pointer}
+.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:700}
+.btn[disabled]{opacity:.55}
+.status{padding:10px 12px;border-left:3px solid var(--status-degraded);background:var(--bg);font-size:13px;margin-top:10px}
+.answered{font-size:13px;color:var(--text-muted);border:1px dashed var(--line-strong);padding:8px 12px;margin:10px 0}
+.answered b{color:var(--text)}
+.composer{border:1px solid var(--accent);padding:12px;margin-top:16px;color:var(--text-muted);font-size:13px}
+.split{height:1px;background:var(--line-strong);margin:14px 0}
+.mobile .board{grid-template-columns:390px 390px}.mobile{padding:16px}.mobile main{padding:12px}.mobile .actions .btn{flex:1 1 140px}
+
+.tools{border:1px solid var(--line-strong);margin:8px 0;background:var(--bg)}
+.tools summary{padding:10px 12px;font-size:13px;color:var(--text-muted);list-style:none}
+.trow{border-top:1px solid var(--line-strong);padding:10px 12px;font-size:13px}
+.trow .cmd{display:block;padding-right:96px;font:12px "Liberation Mono",monospace;color:var(--text);overflow-wrap:anywhere}
+.trow .ok{color:var(--text-muted);font:11px "Liberation Mono",monospace;float:right}
+.out{margin:8px 0 0;padding:8px 10px;background:var(--panel);border:1px solid var(--line-strong);font:12px/1.5 "Liberation Mono",monospace;color:var(--text-muted);white-space:pre-wrap}
+.omit{margin-top:6px;padding:6px 10px;border-left:3px solid var(--status-degraded);font-size:12px;color:var(--warn-text)}
+.full{border:1px solid var(--status-down);border-left:3px solid var(--status-down);padding:12px 14px;margin:12px 0;color:var(--danger-text);font-size:13px}
+.full b{color:var(--text)}
+.youfail{border-left:3px solid var(--status-down);padding:2px 10px;margin:6px 0 4px}
+.refused{font:11px "Liberation Mono",monospace;color:var(--danger-text);letter-spacing:.04em;margin:0 0 14px 13px}
+.handoff{border:1px solid var(--accent);padding:14px;margin-top:16px;background:var(--bg)}
+.handoff .title{font:12px "Liberation Mono",monospace;letter-spacing:.06em;color:var(--accent-text);margin-bottom:6px}
+.handoff p{margin:4px 0 12px;font-size:13px;color:var(--text-muted)}
+.btn{min-height:44px;padding:0 16px;border:1px solid var(--line-strong);background:var(--surface-2);cursor:pointer;font:12px "Liberation Mono",monospace;letter-spacing:.06em}
+.btn.primary{background:var(--accent);color:#111;border-color:var(--accent)}
+.meter{font:11px "Liberation Mono",monospace;color:var(--text-muted);margin-top:8px}
+</style>
+<h1>API session · its BattleLab record nears and reaches its bound (#1733)</h1>
+<p class="sub">BattleLab's record of a session rolls over to a new file before it fills, inside the same session window. The fallback below appears only if that rollover cannot be written.</p>
+<div class="board">
+
+<div><div class="label">A · RECORD ROLLS OVER — SAME WINDOW, SAME CODEX THREAD, NOTHING TO DO</div>
+<section class="frame"><header><span class="mono">CODEX-API-9471D32E · storefront</span><span class="chip">SKIP PERMISSIONS</span></header><main>
+<div class="who">CODEX</div>
+<div class="reply">Wheel's full browser matrix passed. I'm updating the Memory Match tests to check the cards' accessible names.
+<div class="tools"><summary>▸ 14 commands &amp; tools</summary></div></div>
+<div class="who">YOU</div><div class="you">Merge #1718 (Recommended)</div>
+<div class="who">CODEX</div>
+<div class="reply">I'll merge #1718 after verifying its current approval and required checks, then validate staging and continue the remaining language work.
+<div class="tools"><summary>▸ 6 commands &amp; tools</summary></div></div>
+<div class="composer">Message Codex — Enter sends, Shift+Enter = newline.</div>
+<div class="meter">No new visual state. BattleLab started a new record file between these turns; the turn kept running, scrolling up still loads every earlier turn, and Codex keeps its own context (it compacts it itself, as in a terminal).</div>
+</main></section></div>
+
+<div><div class="label">B · FALLBACK ONLY — THE ROLLOVER ITSELF FAILED (E.G. DISK FULL)</div>
+<section class="frame"><header><span class="mono">CODEX-API-9471D32E · storefront</span><span class="chip">SKIP PERMISSIONS</span></header><main>
+<div class="who">CODEX</div>
+<div class="reply">I'll merge #1718 after verifying its current approval and required checks, then validate staging…</div>
+<div class="full"><b>Outcome uncertain — BattleLab couldn't write this session's record</b> (disk full). Codex may have done more than shown here before the session stopped; its own history is intact — check the folder and #1718 before you repeat this work.</div>
+<div class="who">YOU</div><div class="youfail">continue</div>
+<div class="refused">NOT SENT — DISK FULL, NOTHING WAS CLAIMED</div>
+<div class="handoff" role="region" aria-label="Session record can't be written">
+ <div class="title">■ BATTLELAB CAN'T WRITE THIS SESSION RIGHT NOW</div>
+ <p>The disk is full (ENOSPC). Free space, then send again — your text stays below until it's sent. Hand off also needs to write a new session, so it may fail until there's space.</p>
+ <div class="composer" style="margin:0 0 12px">continue</div>
+ <button class="btn primary">SEND AGAIN</button> <button class="btn">HAND OFF TO A NEW SESSION</button>
+</div>
+<div class="meter">The draft is kept, never moved or dropped. "Send again" is a new send after space returns, not a Retry of an uncertain one; a genuinely uncertain send elsewhere still shows Retry. A failed Hand off shows its error and leaves the draft here.</div>
+</main></section></div>
+
+</div>
+<script>const q=new URLSearchParams(location.search);document.documentElement.dataset.theme=q.get('theme')||'dark';if(q.has('mobile'))document.body.classList.add('mobile');</script></html>

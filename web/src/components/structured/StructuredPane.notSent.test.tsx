@@ -276,7 +276,7 @@ test("the code table is closed: an unknown code reads as unexpected", () => {
   expect(notSentText("toString")).toBe(NOT_SENT_TEXT.unexpected);
   expect(notSentText("<b>raw</b>")).toBe(NOT_SENT_TEXT.unexpected);
   expect(Object.keys(NOT_SENT_TEXT).sort()).toEqual(
-    ["agent_changed", "agent_removed", "generation_closed", "question_replaced", "source_store_changed", "unexpected", "worker_ended"],
+    ["agent_changed", "agent_removed", "generation_closed", "journal_unwritable", "question_replaced", "source_store_changed", "unexpected", "worker_ended"],
   );
 });
 

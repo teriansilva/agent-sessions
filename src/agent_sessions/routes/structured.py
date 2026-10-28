@@ -42,7 +42,7 @@ import logging
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .. import share_api, shares, structured_runtime
+from .. import native_ipc, share_api, shares, structured_runtime
 
 log = logging.getLogger("agent_sessions.routes.structured")
 
@@ -261,8 +261,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             {"operation_id", "text", "expected_revision", "attachments", "reply_to"},
             {"operation_id", "text"},
         )
-        out = await _run(
-            structured_runtime.submit_turn(
+        try:
+            out = await structured_runtime.submit_turn(
                 key,
                 operation_id=body["operation_id"],
                 text=body["text"],
@@ -271,7 +271,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                 attachments=body.get("attachments"),
                 reply_to=body.get("reply_to"),
             )
-        )
+        except structured_runtime.StructuredError as exc:
+            if exc.reason != native_ipc.JOURNAL_UNWRITABLE:
+                raise HTTPException(status_code=exc.status, detail=exc.detail) from None
+            # A known refusal before any claim (#1733): the pane keeps the draft and offers a NEW
+            # send, never a Retry of an uncertain one. A closed reason, never free text.
+            return JSONResponse(
+                {"detail": exc.detail, "reason": exc.reason}, status_code=exc.status
+            )
         return JSONResponse(out, status_code=202 if out.get("state") == "running" else 200)
 
     @app.post("/api/structured/sessions/{key}/decisions")

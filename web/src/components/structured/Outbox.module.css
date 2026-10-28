@@ -68,7 +68,46 @@
   font: calc(11px * var(--api-scale, 1)) / 1.5 var(--font-mono);
   color: var(--text-muted);
 }
+/* #1733: BattleLab could not write the session's record. A known refusal, in danger: the operator's
+ * message keeps a SOLID failure rule (nothing is pending any more), and the panel holds the draft
+ * and the way on. Text plus status colour, never colour alone (design §3). */
+.pending div.failedText { border-left-style: solid; border-left-color: var(--status-down); }
+.unwritable {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--accent);
+  background: var(--bg);
+}
+.unwritableTitle {
+  font: calc(12px * var(--api-scale, 1)) / 1.4 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}
+.unwritableText {
+  margin: 0;
+  font-size: calc(13px * var(--api-scale, 1));
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.draft {
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.unwritableActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 @media (max-width: 480px) {
   .actions { display: grid; grid-template-columns: minmax(0, 1fr); padding-left: 0; }
   .actions > button { width: 100%; min-width: 0; white-space: normal; }
+  .unwritableActions { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .unwritableActions > button { width: 100%; min-width: 0; white-space: normal; }
 }

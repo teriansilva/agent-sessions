@@ -34,6 +34,10 @@ export type OutboxEntry = Readonly<{
   receipt?: number;
   /** A refusal's reason, from the server. */
   reason?: string;
+  /** #1733: refused because BattleLab could not write the session's record (409
+   *  `journal_unwritable`). Known: nothing was claimed. The draft stays here; Send again is a NEW
+   *  send (a new operation id), never a Retry. */
+  unwritable?: boolean;
 }>;
 
 export function outboxEntry(request: Omit<OutboxRequest, "attachments"> & {
@@ -78,6 +82,18 @@ export function updateEntry(
  *  replays it if it has it; the pump posts it under the client's admission rule. */
 export function retried(list: readonly OutboxEntry[], id: string): OutboxEntry[] {
   return updateEntry(list, id, (e) => (e.phase === "unknown" ? { ...e, phase: "waiting" } : e));
+}
+
+/** Send again after a KNOWN refusal (#1733: the session's record could not be written, and nothing
+ *  was claimed): the same words and pictures as a NEW operation, `nextId`, back to waiting in the
+ *  same place (`nextId === id` re-sends under the never-claimed refused id, when this device's
+ *  sent history cannot be pointed at a new one). Only a refused entry — an unknown one may have
+ *  been recorded, so it is only ever retried under its own id. */
+export function renewed(list: readonly OutboxEntry[], id: string, nextId: string): OutboxEntry[] {
+  if (!list.some((e) => e.request.id === id && e.phase === "refused")) return list as OutboxEntry[];
+  return list.map((e) =>
+    e.request.id === id && e.phase === "refused" ? outboxEntry({ ...e.request, id: nextId }) : e,
+  );
 }
 
 /** Discard (refused/unknown) or Remove (waiting): out of the queue, which continues in order. A

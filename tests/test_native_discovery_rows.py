@@ -199,7 +199,8 @@ def test_cache_hit_still_takes_the_shared_lock_and_syncs(tmp_path, monkeypatch):
     monkeypatch.setattr(chat_store.os, "fsync", synced)
     monkeypatch.setattr(native_journal, "fold", no_fold)
     assert store.lookup(sid) is not None
-    assert locks == [chat_store.fcntl.LOCK_SH]
+    # The session's stable lock and, while it is the active segment, segment 0's own (#1733).
+    assert locks == [chat_store.fcntl.LOCK_SH, chat_store.fcntl.LOCK_SH]
     assert len(syncs) == 1
 
 

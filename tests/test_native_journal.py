@@ -332,10 +332,13 @@ def test_complete_bytes_after_failed_fsync_do_not_allow_another_handoff(conversa
     assert len(records(path)) == 2
 
 
-def test_partial_write_never_gets_repaired_into_permission_to_retry(conversation, monkeypatch):
+def test_a_failed_append_is_rolled_back_and_refused_without_a_claim(conversation, monkeypatch):
+    """#1733: a write that fails part-way (a full disk) is truncated back under the exclusive
+    lock, so the journal stays readable and the refusal is a known one: nothing was claimed."""
     root, session_id, binding = conversation
     claim = request(binding)
     path = path_of(conversation)
+    before = path.read_bytes()
     original_write = os.write
     inode = path.stat().st_ino
     partial = False
@@ -344,17 +347,32 @@ def test_partial_write_never_gets_repaired_into_permission_to_retry(conversation
         nonlocal partial
         if os.fstat(fd).st_ino == inode:
             if partial:
-                raise OSError("synthetic interrupted append")
+                raise OSError(28, "No space left on device")
             partial = True
             return original_write(fd, data[: len(data) // 2])
         return original_write(fd, data)
 
     monkeypatch.setattr(chat_store.os, "write", write)
-    with pytest.raises(journal.JournalError):
+    with pytest.raises(journal.JournalError) as refused:
         journal.claim(root, claim)
+    assert (refused.value.code, refused.value.cause) == ("unwritable", "disk_full")
+    assert path.read_bytes() == before
+    monkeypatch.setattr(chat_store.os, "write", original_write)
+    assert claim["params"]["operation_id"] not in journal.read(root, session_id).operations
+    assert journal.claim(root, claim)[0] is True  # nothing was claimed: this is the first claim
+
+
+def test_a_torn_tail_left_by_a_crash_is_never_repaired_into_permission_to_retry(conversation):
+    root, session_id, binding = conversation
+    claim = request(binding)
+    path = path_of(conversation)
+    record = chat_store._records_bytes(
+        [{"type": "native_operation", "operation_id": claim["params"]["operation_id"]}]
+    )
+    with path.open("ab") as fh:
+        fh.write(record[: len(record) // 2])  # a crash mid-write: no lock holder survived it
     torn = path.read_bytes()
     assert not torn.endswith(b"\n")
-    monkeypatch.setattr(chat_store.os, "write", original_write)
     for operation in [
         lambda: journal.read(root, session_id),
         lambda: journal.claim(root, claim),
@@ -695,7 +713,7 @@ def test_no_progress_append_never_returns_a_claim_receipt(conversation, monkeypa
     monkeypatch.setattr(chat_store.os, "write", write)
     with pytest.raises(journal.JournalError) as refused:
         journal.claim(root, request(binding))
-    assert refused.value.code == "unavailable"
+    assert refused.value.code == "unwritable"  # rolled back: nothing was claimed (#1733)
     assert path.read_bytes() == before
 
 

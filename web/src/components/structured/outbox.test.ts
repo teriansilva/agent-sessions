@@ -5,6 +5,7 @@ import {
   nextToPost,
   outboxEntry,
   reconcile,
+  renewed,
   retried,
   revisionFor,
   unrecorded,
@@ -109,4 +110,25 @@ test("unrecorded and the leaving note follow the head's state", () => {
   expect(leavingNote([entry(A)])).toBe(notSent);
   expect(leavingNote([entry(A, "refused"), entry(B)])).toBe(notSent);
   expect(leavingNote([entry(A, "sending", true), entry(B)])).toBe(notSent);
+});
+
+test("Send again after a known refusal is a NEW operation with the same words, in place (#1733)", () => {
+  const C = "cccccccc-1111-4111-8111-111111111111";
+  const refused: OutboxEntry = {
+    ...outboxEntry({ id: A, text: "continue", draft: "continue ", attachments: [{ name: "a.png", stored: "s" }], history: "h" }),
+    phase: "refused",
+    unwritable: true,
+    reason: "BattleLab couldn't write this session's record (disk full); nothing was sent",
+  };
+  const waiting = outboxEntry({ id: B, text: "next", draft: "next", attachments: [], history: null });
+  const list = renewed([refused, waiting], A, C);
+  expect(list.map((e) => e.request.id)).toEqual([C, B]);
+  expect(list[0].phase).toBe("waiting");
+  expect(list[0].unwritable).toBeUndefined();
+  expect(list[0].request.text).toBe("continue");
+  expect(list[0].request.draft).toBe("continue ");
+  expect(list[0].request.attachments).toEqual([{ name: "a.png", stored: "s" }]);
+  // Never for an unknown entry: it may have been recorded, so only its own id may go again.
+  const unknown: OutboxEntry = { ...refused, phase: "unknown" };
+  expect(renewed([unknown], A, C)).toEqual([unknown]);
 });

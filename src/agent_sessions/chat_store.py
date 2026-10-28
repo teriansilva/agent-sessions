@@ -517,45 +517,43 @@ class ChatStoreKind:
 
         Memoize only the discovery row, never its event spool: a roster larger than the journal
         cache otherwise evicts and rebuilds every conversation on every walk (#1539). The memo
-        stays INSIDE observe_shared so a warm hit cannot bypass private-file checks or fsync.
-        ctime also binds the memo, matching journal.read's restored-mtime rewrite protection.
+        stays INSIDE the journal's shared observation so a warm hit cannot bypass private-file
+        checks or fsync. ctime also binds the memo, matching journal.read's restored-mtime
+        rewrite protection. A journal is a chain of segments (#1733): the row reads segment 0
+        only (header, first message), its activity time is the ACTIVE segment's, and every
+        segment's identity binds it.
         """
-        from . import native_journal, scancache
+        from . import native_journal, native_segments, scancache
 
-        def observe(fd, st):
+        def observe(view, load):
+            st = view.st
+
             def build():
-                raw = os.pread(fd, native_journal.MAX_BYTES + 1, 0)
-                if len(raw) != st.st_size:
-                    raise ValueError("conversation changed while reading")
-                journal = native_journal.fold(raw, sid, directory=root)
-                first = next(
-                    (
-                        op.request["params"].get("text") or ""
-                        for op in journal.operations.values()
-                        if op.request.get("action") == "submit"
-                    ),
-                    "",
-                )
+                # Segment 0 only (#1733): the header and first message, never the history.
+                header, first = native_journal.first_facts(view, load)
                 return Session(
                     engine=self.owner.engine_id,
                     uuid=sid,
-                    cwd=journal.header["cwd"],
+                    cwd=header["cwd"],
                     last_mtime=st.st_mtime,
                     first_user_message=first,
                     archived=False,
-                    created_at=journal.header["created_at"] or fs_created_at(st),
+                    created_at=header["created_at"] or fs_created_at(st),
                 )
 
-            # Bind the CHECKED descriptor as well as scancache's path stat. If the pathname is
+            # Bind the CHECKED descriptors as well as scancache's path stat. If a pathname is
             # replaced while our shared snapshot is open, its identity cannot lend a cached
             # row from the replacement to this descriptor (or vice versa).
-            stamp = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+            stamp = (
+                *(segment.stamp for segment in view.chain[:-1]),
+                native_segments.stamp_of(st),
+            )
             return scancache.memoized(
-                f"native-row:{self.owner.engine_id}:{stamp}", root / f"{sid}.jsonl", build
+                f"native-row:{self.owner.engine_id}:{stamp}", view.active.path, build
             )
 
         try:
-            return observe_shared(root, sid, observe, max_bytes=native_journal.MAX_BYTES)
+            return native_journal.observe(root, sid, observe)
         except (ValueError, OSError):
             return None
 

@@ -7,6 +7,7 @@ import {
   clearSent,
   confirmSent,
   readSent,
+  rebindSent,
 } from "./sentHistory";
 
 beforeEach(() => localStorage.clear());
@@ -114,4 +115,15 @@ test("an absent localStorage (sandboxed) degrades to a no-op safety net", () => 
   });
   expect(readSent()).toEqual([]);
   expect(appendSent({ text: "t", attachments: [], session: null })).toBeNull();
+});
+
+test("rebindSent points an unconfirmed entry at its renewed operation id (#1733)", () => {
+  const id = appendSent({ text: "continue", attachments: [], session: "codex-api:s", operation: "old-op" });
+  expect(id).not.toBeNull();
+  expect(rebindSent(id!, "new-op")).toBe(true);
+  expect(readSent()[0].operation).toBe("new-op");
+  confirmSent(id!);
+  expect(rebindSent(id!, "third-op")).toBe(false); // a confirmed entry is history, never rebound
+  expect(readSent()[0].operation).toBe("new-op");
+  expect(rebindSent("missing", "x")).toBe(false);
 });

@@ -7,6 +7,7 @@ ranges, while keeping separate indexes, so a failed preview cannot change anothe
 
 from __future__ import annotations
 
+import errno
 import heapq
 import json
 import os
@@ -22,32 +23,77 @@ class SpoolFull(Exception):
     """Discard the derived cache and rebuild from authoritative bytes."""
 
 
+#: One segment's spool bound: a fresh fold fits, because a segment is capped at 64 MiB. A fold of
+#: a whole chain of segments (#1733) gets this much per segment.
+SPOOL_BYTES = 128 * 1024 * 1024
+
+
+_FULL = (errno.ENOSPC, errno.EDQUOT)
+
+
 class _Spool:
-    def __init__(self, directory: Path | None):
-        self.file = tempfile.TemporaryFile(dir=directory)
+    """The payload store: an anonymous file on the journal's filesystem, or — when that
+    filesystem is FULL — memory (#1733). A full disk must not make the session unreadable: its
+    snapshot still has to show what happened, and a send must still reach the refusal that
+    says the record could not be written, not a generic failure of a derived cache."""
+
+    def __init__(self, directory: Path | None, limit: int = SPOOL_BYTES):
         self.size = 0
+        self.limit = limit
         self.lock = threading.Lock()
+        self.memory: bytearray | None = None
+        try:
+            self.file = tempfile.TemporaryFile(dir=directory)
+        except OSError as exc:
+            if exc.errno not in _FULL:
+                raise
+            self.file = None
+            self.memory = bytearray()
+
+    def _to_memory(self) -> None:
+        held = bytearray(os.pread(self.file.fileno(), self.size, 0)) if self.size else bytearray()
+        if len(held) != self.size:
+            raise OSError("event spool is incomplete")
+        self.file.close()
+        self.file, self.memory = None, held
 
     def append(self, data: bytes) -> int:
         with self.lock:
             # Failed previews can leave unreachable bytes. Bound them too; a fresh fold
-            # fits because the source journal itself is capped at 64 MiB.
-            if self.size + len(data) > 128 * 1024 * 1024:
+            # fits because the source journal itself is capped at 64 MiB per segment.
+            if self.size + len(data) > self.limit:
                 raise SpoolFull
             offset = self.size
-            view = memoryview(data)
-            while view:
-                written = os.pwrite(self.file.fileno(), view, self.size)
-                if written <= 0:
-                    raise OSError("event spool write made no progress")
-                self.size += written
-                view = view[written:]
+            if self.memory is None:
+                try:
+                    view = memoryview(data)
+                    while view:
+                        written = os.pwrite(
+                            self.file.fileno(), view, self.size + (len(data) - len(view))
+                        )
+                        if written <= 0:
+                            raise OSError("event spool write made no progress")
+                        view = view[written:]
+                except OSError as exc:
+                    if exc.errno not in _FULL:
+                        raise
+                    self._to_memory()  # only the complete records before this one are kept
+            if self.memory is not None:
+                del self.memory[offset:]
+                self.memory += data
+            self.size = offset + len(data)
             return offset
+
+    def read(self, length: int, offset: int) -> bytes:
+        with self.lock:  # never across a switch to memory, which closes the file
+            if self.memory is not None:
+                return bytes(self.memory[offset : offset + length])
+            return os.pread(self.file.fileno(), length, offset)
 
 
 class Events(Sequence):
-    def __init__(self, directory: Path | None = None):
-        self._spool = _Spool(directory)
+    def __init__(self, directory: Path | None = None, *, limit: int = SPOOL_BYTES):
+        self._spool = _Spool(directory, limit)
         self.cursors = array("Q")
         self._offsets = array("Q")
         self._lengths = array("I")
@@ -64,7 +110,7 @@ class Events(Sequence):
     def __getitem__(self, index):
         if isinstance(index, slice):
             return [self[i] for i in range(*index.indices(len(self)))]
-        raw = os.pread(self._spool.file.fileno(), self._lengths[index], self._offsets[index])
+        raw = self._spool.read(self._lengths[index], self._offsets[index])
         if len(raw) != self._lengths[index]:
             raise OSError("event spool is incomplete")
         return json.loads(raw)
@@ -137,6 +183,11 @@ class Events(Sequence):
             ):
                 self._agent_turns.add(data["agent_turn"])
 
+    def allow(self, limit: int) -> None:
+        """Raise the shared spool's bound (a chain fold extended by more segments, #1733)."""
+        with self._spool.lock:
+            self._spool.limit = max(self._spool.limit, limit)
+
     def recorded(self, agent_turn: str) -> bool:
         """Did own turn ``agent_turn`` (#1438) record attributable, displayable output (a tool or
         non-blank settled text)? Scoped to ``agent_turn`` so a colliding ``operation_id`` or an
@@ -156,7 +207,7 @@ class Events(Sequence):
             + sys.getsizeof(self._spool)
             + sys.getsizeof(self._spool.__dict__)
             + sys.getsizeof(self._spool.file)
-            + sys.getsizeof(self._spool.file.raw)
+            + (sys.getsizeof(self._spool.file.raw) if self._spool.file is not None else 0)
             + sys.getsizeof(self._spool.lock)
             + sum(
                 sys.getsizeof(a) for a in (self.cursors, self._offsets, self._lengths, self._global)

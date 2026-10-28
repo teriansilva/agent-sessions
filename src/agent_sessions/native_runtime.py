@@ -55,6 +55,7 @@ from . import (
     native_ownership,
     native_protocol,
     native_questions,
+    native_segments,
     native_state,
     risk_marks,
 )
@@ -2087,12 +2088,16 @@ def project(
     before: str | None = None,
     ended_workers: frozenset[str] | set[str] = frozenset(),
     ended_reason: Callable[[str], str | None] = lambda worker_id: None,
+    ended_code: Callable[[str], str] = lambda worker_id: "worker_ended",
     live_text: bool = False,
 ) -> dict:
     """Project only displayed turn payloads; transcript consumers may request every turn.
 
     ``ended_reason`` (#1643) names why a gone generation ended when systemd said so (its memory
     limit), replacing the generic "worker ended" text. It explains; it never changes a status.
+    ``ended_code`` (#1733): the `not_sent` reason a message still queued by a generation PROVED
+    ended derives — `journal_unwritable` when that generation stopped because the session's
+    record could not be written.
 
     ``before`` (#1504) projects the ``max_turns`` turns just older than that turn instead of the
     newest window: a page of history, keyed by turn id so turns appended meanwhile never shift
@@ -2446,7 +2451,7 @@ def project(
                 # Its worker ended, on AUTHORITATIVE evidence (`_exit_proved`), with the message
                 # still queued: the same proved non-send. The durable record is written by
                 # `_settle_stranded`; this derivation is the fallback when it could not be.
-                _not_sent(turn, "worker_ended", journal)
+                _not_sent(turn, ended_code(turn["worker_id"]), journal)
             else:
                 # Live, or not seen live by an observation that proves nothing (a `/proc` read
                 # can fail): still pending. Neither `not_sent` nor Send again (#1538).
@@ -2617,6 +2622,9 @@ NOT_SENT_REASONS = {
     "generation_closed": "the session was stopped before this message could go out",
     "question_replaced": "the question it answered was answered or replaced first",
     "worker_ended": "the session ended while this message waited",
+    "journal_unwritable": (
+        "BattleLab couldn't write this session's record while the message waited"
+    ),
     "unexpected": "BattleLab could not hand this message to the agent",
 }
 
@@ -2775,6 +2783,22 @@ def _exit_proved(session_id: str, worker_id: str) -> bool:
     return _proved_gone(worker_id)
 
 
+#: The I/O error classes of an unwritable record (#1733, `native_segments.CAUSES`), as the
+#: operator reads them: fixed text, never an exception message.
+JOURNAL_CAUSES = {"disk_full": "disk full", "io_error": "I/O error", "write_failed": "write failed"}
+
+
+def _journal_failed(worker_id: str) -> bool:
+    try:
+        return native_state.read_lifecycle(worker_id).get("journal_failure") in JOURNAL_CAUSES
+    except (native_state.StateError, OSError):
+        return False
+
+
+def _ended_code(worker_id: str) -> str:
+    return "journal_unwritable" if _journal_failed(worker_id) else "worker_ended"
+
+
 #: The agent died by SIGKILL while the OOM counter of its unit rose (#1732). Facts, not a cause:
 #: no record ties a kill to a victim, so it never says the agent ran out of memory.
 AGENT_KILLED_DURING_OOM = (
@@ -2794,6 +2818,11 @@ def _ended_reason(worker_id: str) -> str | None:
         life = native_state.read_lifecycle(worker_id)
     except (native_state.StateError, OSError):
         return None
+    failure = life.get("journal_failure")
+    if failure in JOURNAL_CAUSES:
+        # #1733: it stopped because its record could not be written. Still UNCERTAIN: the agent
+        # may have done more than the record shows, and nothing is resent because of it.
+        return f"BattleLab couldn't write this session's record ({JOURNAL_CAUSES[failure]})"
     ended = life.get("exit")
     if (
         not isinstance(ended, dict)
@@ -2886,6 +2915,11 @@ def _settle_stranded(
                 return journal, ended
             root, key = _journal_root(prov), journal.header["request"]["session_key"]
             proved = {w for w in _stranded_workers(journal, live) if _exit_proved(session_id, w)}
+            # `journal_unwritable` (#1733) only where no live reader predates it.
+            specific = (
+                live is None or native_state.read_lifecycle(live).get("journal_segments") is True
+            )
+            rollable = _segments_safe(session_id)
             for op in list(journal.operations.values()):
                 if (
                     op.request["action"] == "submit"
@@ -2893,7 +2927,13 @@ def _settle_stranded(
                     and op.worker_id in proved
                 ):
                     wrote |= native_journal.settle_worker_ended(
-                        root, key, op.operation_id, op.worker_id
+                        root,
+                        key,
+                        op.operation_id,
+                        op.worker_id,
+                        _ended_code(op.worker_id) if specific else "worker_ended",
+                        # Never roll over under a generation that reads segment 0 alone.
+                        may_roll=rollable,
                     )
     except (native_state.StateError, native_journal.JournalError, NativeError, OSError):
         return journal, ended
@@ -2914,6 +2954,7 @@ def _snapshot_sync(engine_id: str, session_id: str, live_text: bool = False) -> 
         max_turns=SNAPSHOT_TURNS,
         ended_workers=ended,
         ended_reason=cache(_ended_reason),
+        ended_code=cache(_ended_code),
         live_text=live_text,
     )
     # The running worker advertises its own implementation. A web update cannot teach an
@@ -2996,6 +3037,7 @@ def _history_sync(
         before=before,
         ended_workers=ended,
         ended_reason=cache(_ended_reason),
+        ended_code=cache(_ended_code),
         live_text=live_text,
     )
     return {"turns": view["turns"], "history_before": view["history_before"]}
@@ -3018,17 +3060,17 @@ async def events(engine_id: str, session_id: str, after: int, limit: int) -> dic
 
 def _journal_stamp_sync(engine_id: str, session_id: str) -> Callable[[], tuple | None]:
     prov, _ = _session(engine_id, session_id, retiring_ok=True)
-    path = chat_store._path(_journal_root(prov), session_id)
+    root = _journal_root(prov)
 
     def stamp() -> tuple | None:
         # Only a wake hint (#1727): the page itself is always read through `events`, under the
         # journal's shared lock and its privacy checks. Appends come from the worker's own
         # process, so a file stat — no IPC — is what crosses that boundary (and an app restart).
+        # The ACTIVE segment's (#1733): after a rollover the original file never changes again.
         try:
-            st = os.stat(path)
-        except OSError:
+            return native_segments.active_stamp(root, session_id)
+        except (OSError, ValueError):
             return None
-        return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 
     return stamp
 
@@ -3036,6 +3078,61 @@ def _journal_stamp_sync(engine_id: str, session_id: str) -> Callable[[], tuple |
 async def journal_stamp(engine_id: str, session_id: str) -> Callable[[], tuple | None]:
     """A cheap probe of this session's journal identity and size, for a waiting events read."""
     return await asyncio.to_thread(_journal_stamp_sync, engine_id, session_id)
+
+
+def _segments_safe(session_id: str) -> bool:
+    """May THIS process roll the session's journal over (#1733)? Only when no generation that
+    could still append reads segment 0 alone: every recorded generation either reads segments
+    (`journal_segments`) or is PROVED gone. A cheap liveness observation proves nothing (Hermes
+    on #1771): a worker of an older release missed by it may hold a writable descriptor of
+    segment 0 and append behind the successor's pin. Unreadable or MISSING state is not proof of
+    absence (a record can be lost while its worker still runs): not safe. The caller holds the
+    session lifecycle lock, so no generation can be registered between this proof and its use.
+    """
+    try:
+        record = native_state.read_session(session_id)
+        workers_field = record.get("workers") if isinstance(record, dict) else None
+        if not isinstance(record, dict) or not isinstance(workers_field or [], list):
+            return False
+        workers = set(workers_field or [])
+        if record.get("current_worker"):
+            workers.add(record["current_worker"])
+        for worker_id in workers:
+            life = native_state.read_lifecycle(worker_id)
+            if life.get("journal_segments") is True or life.get("phase") == "gone":
+                continue
+            if not _proved_gone(worker_id):
+                return False
+    except (native_state.StateError, NativeError, OSError):
+        return False
+    return True
+
+
+def _prepare_journal(prov, session_id: str) -> None:
+    """Pre-claim admission under the journal's stable lock (#1733): roll the record over now if
+    the claim could reach its soft bound, so concurrent sends never strand a claim behind a
+    rollover that fails. 409 ``journal_unwritable`` when it cannot be written.
+
+    Never while a generation that reads segment 0 alone may still run (`_segments_safe`, under
+    the session lifecycle lock): such a worker keeps the old single-file bound until it is proved
+    gone; its successor runs this release and rolls over itself."""
+    try:
+        # The proof and the rollover under the lifecycle lock that every launch holds while it
+        # registers a generation (Hermes on #1771): none can start between the two.
+        with native_state.session_lock(session_id):
+            if _segments_safe(session_id):
+                native_journal.prepare(_journal_root(prov), session_id)
+    except (native_state.LockBusy, native_state.StateError):
+        return  # unproved: leave it; the worker that claims rolls over itself
+    except native_journal.JournalError as exc:
+        if exc.code == "unwritable":
+            cause = JOURNAL_CAUSES.get(exc.cause or "", "write failed")
+            raise NativeError(
+                409,
+                f"BattleLab couldn't write this session's record ({cause}); nothing was sent",
+                reason=native_ipc.JOURNAL_UNWRITABLE,
+            ) from None
+        raise NativeError(404 if exc.code == "unavailable" else 503, exc.detail) from None
 
 
 def _replay(journal: native_journal.Journal, operation_id: str, request: dict) -> dict | None:
@@ -3111,6 +3208,9 @@ async def submit(
         if receipt is not None:
             break
         revision = journal.revision if expected_revision is None else expected_revision
+        # Before anything is launched or claimed (#1733): make room for this claim. A rollover
+        # that cannot be written is a KNOWN refusal — nothing was claimed or sent.
+        await asyncio.to_thread(_prepare_journal, prov, session_id)
         try:
             receipt = await _effect(
                 engine_id,
