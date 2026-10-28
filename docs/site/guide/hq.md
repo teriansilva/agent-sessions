@@ -255,8 +255,8 @@ follows you to every device.
 
 HQ can also read from your other services. The first connector is **Forgejo** (and Gitea or
 Codeberg, which speak the same API): HQ can search your repositories, issues and pull requests,
-read an issue or PR with its recent comments, check a commit's CI status, and read text files at a
-commit. It **only reads**: there is no sending, commenting or merging through a connector.
+read an issue or PR with its recent comments (a very long thread is read without its comments,
+and HQ says so), check a commit's CI status, and read text files at a commit. It **only reads**: there is no sending, commenting or merging through a connector.
 
 For now a connector is set up through the API only; a settings page follows. You use your own
 account: create a personal access token in Forgejo under *Settings → Applications* with

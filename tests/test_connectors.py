@@ -1068,14 +1068,28 @@ def test_a_login_echoing_the_token_is_never_returned_or_stored(forge, monkeypatc
     assert TOKEN not in store.store_path().read_text()
 
 
+def _paged_status(rows: list[dict], state: str = "success", cap: int = 50):
+    """Forgejo's commit-status route: PAGED, 30 rows a page by default, at most ``cap`` (the
+    instance's ``MAX_RESPONSE_ITEMS``, 50 by default)."""
+
+    def page_of(request):
+        q = request.url.params
+        limit = min(int(q.get("limit", 30)), cap)
+        page = max(int(q.get("page", 1)), 1)
+        chunk = rows[(page - 1) * limit : page * limit]
+        return httpx.Response(200, json={"state": state, "statuses": chunk})
+
+    return page_of
+
+
 def test_many_ci_checks_are_shrunk_to_fit_not_refused(forge, monkeypatch):
     real = forge.handler
 
     def handler(request):
         if request.url.path.endswith("/status"):
             forge.requests.append(request)
-            rows = [{"context": "c" * 200, "status": "success"} for _ in range(50)]
-            return httpx.Response(200, json={"state": "success", "statuses": rows})
+            rows = [{"context": f"{i:02d}" + "c" * 198, "status": "success"} for i in range(50)]
+            return _paged_status(rows)(request)
         return real(request)
 
     _ready()
@@ -1139,3 +1153,151 @@ def test_a_disable_after_the_token_fetch_drops_the_result(forge, monkeypatch):
     assert e.value.code == "connector_disabled"
     assert len(forge.requests) - before <= 1  # at most the one already in flight
     assert t.refs.get(0, set()) == set()
+
+
+def test_more_checks_than_the_adapter_keeps_report_their_true_total(forge, monkeypatch):
+    """Hermes on #1782 (review 7369): a commit with more than 50 contexts says how many it has."""
+    real = forge.handler
+
+    def handler(request):
+        if request.url.path.endswith("/status"):
+            forge.requests.append(request)
+            rows = [{"context": f"c{i}", "status": "success"} for i in range(70)]
+            return _paged_status(rows)(request)
+        return real(request)
+
+    _ready()
+    monkeypatch.setattr(connector_http, "_TRANSPORT", httpx.MockTransport(handler))
+    t = _turn()
+    run(hq.list_connectors(t))
+    run(hq.search(t, {"connector_index": 0, "query": "app", "kind": "repos"}))
+    repo, _ = run(hq.read(t, {"connector_index": 0, "item_ref": "repo:ops/app"}))
+    ref = repo["untrusted_connector_content"]["refs"][0]
+    out, _ = run(hq.read(t, {"connector_index": 0, "item_ref": ref}))
+    body = out["untrusted_connector_content"]
+    assert body["checks_total"] == 70 and len(body["checks"]) == 50
+    assert body["checks_note"] == "showing 50 of 70 checks"
+
+
+def test_a_status_list_past_the_page_bound_reports_a_lower_bound(forge, monkeypatch):
+    """More contexts than `STATUS_PAGES_MAX` pages hold: the total is said to be a lower bound."""
+    real = forge.handler
+    rows = [{"context": f"c{i}", "status": "success"} for i in range(400)]
+
+    def handler(request):
+        if request.url.path.endswith("/status"):
+            forge.requests.append(request)
+            return _paged_status(rows)(request)
+        return real(request)
+
+    _ready()
+    monkeypatch.setattr(connector_http, "_TRANSPORT", httpx.MockTransport(handler))
+    t = _turn()
+    run(hq.list_connectors(t))
+    run(hq.search(t, {"connector_index": 0, "query": "app", "kind": "repos"}))
+    repo, _ = run(hq.read(t, {"connector_index": 0, "item_ref": "repo:ops/app"}))
+    out, _ = run(
+        hq.read(
+            t, {"connector_index": 0, "item_ref": repo["untrusted_connector_content"]["refs"][0]}
+        )
+    )
+    body = out["untrusted_connector_content"]
+    assert body["checks_total"] == 300 and body["checks_total_is_lower_bound"] is True
+    assert body["checks_note"] == "showing 50 of 300+ checks"
+    pages = [r for r in forge.requests if r.url.path.endswith("/status")]
+    assert len(pages) == 6 and all(r.url.params["limit"] == "50" for r in pages)
+
+
+def _ci_read(forge, monkeypatch, status_handler) -> tuple[dict, list]:
+    real = forge.handler
+
+    def handler(request):
+        if request.url.path.endswith("/status"):
+            forge.requests.append(request)
+            return status_handler(request)
+        return real(request)
+
+    _ready()
+    monkeypatch.setattr(connector_http, "_TRANSPORT", httpx.MockTransport(handler))
+    t = _turn()
+    run(hq.list_connectors(t))
+    run(hq.search(t, {"connector_index": 0, "query": "app", "kind": "repos"}))
+    repo, _ = run(hq.read(t, {"connector_index": 0, "item_ref": "repo:ops/app"}))
+    ref = repo["untrusted_connector_content"]["refs"][0]
+    out, _ = run(hq.read(t, {"connector_index": 0, "item_ref": ref}))
+    pages = [r for r in forge.requests if r.url.path.endswith("/status")]
+    return out["untrusted_connector_content"], pages
+
+
+@pytest.mark.parametrize("cap", [20, 30])
+def test_a_forge_with_a_smaller_page_cap_still_reports_the_true_total(forge, monkeypatch, cap):
+    """Hermes review 7374: an instance whose `MAX_RESPONSE_ITEMS` is below the `limit` asked for
+    answers short pages that are not the last page."""
+    rows = [{"context": f"c{i}", "status": "success"} for i in range(70)]
+    body, _pages = _ci_read(forge, monkeypatch, _paged_status(rows, cap=cap))
+    assert body["checks_total"] == 70 and "checks_total_is_lower_bound" not in body
+    assert body["checks_note"] == "showing 50 of 70 checks"
+
+
+def test_a_short_final_page_ends_the_walk_without_a_note(forge, monkeypatch):
+    rows = [{"context": f"c{i}", "status": "success"} for i in range(20)]
+    body, pages = _ci_read(forge, monkeypatch, _paged_status(rows, cap=20))
+    assert body["checks_total"] == 20 and "checks_note" not in body
+    assert len(pages) == 2  # page 2 came back empty: the end
+
+
+def test_a_forge_that_ignores_the_page_parameter_does_not_inflate_the_count(forge, monkeypatch):
+    rows = [{"context": f"c{i}", "status": "success"} for i in range(30)]
+    body, pages = _ci_read(
+        forge,
+        monkeypatch,
+        lambda request: httpx.Response(200, json={"state": "success", "statuses": rows}),
+    )
+    assert body["checks_total"] == 30 and "checks_note" not in body
+    assert len(pages) == 2
+
+
+def test_distinct_contexts_sharing_a_long_prefix_are_counted_apart(forge, monkeypatch):
+    """Hermes review 7378: a context's identity is its FULL text, not the 200 characters shown."""
+    prefix = "p" * 200
+    rows = [{"context": f"{prefix}{i:02d}", "status": "success"} for i in range(70)]
+    body, pages = _ci_read(forge, monkeypatch, _paged_status(rows))
+    assert body["checks_total"] == 70 and len(pages) == 2
+    assert body["checks_note"].endswith(" of 70 checks")  # long names: fewer fit, same total
+
+
+def test_a_failure_on_a_later_page_makes_the_commit_red_and_shows_first(forge, monkeypatch):
+    """Hermes review 7378: Forgejo's `state` is per PAGE; the combined state is computed here,
+    over every context, and the failing checks are the ones kept."""
+    rows = [{"context": f"ok{i}", "status": "success"} for i in range(50)] + [
+        {"context": f"bad{i}", "status": "failure"} for i in range(20)
+    ]
+    body, _ = _ci_read(forge, monkeypatch, _paged_status(rows, state="success"))
+    assert body["state"] == "failure"
+    assert [c["state"] for c in body["checks"][:20]] == ["failure"] * 20
+
+
+def test_a_capped_walk_never_claims_success(forge, monkeypatch):
+    rows = [{"context": f"c{i}", "status": "success"} for i in range(400)]
+    body, _ = _ci_read(forge, monkeypatch, _paged_status(rows, state="success"))
+    assert body["state"] == "incomplete" and body["checks_total_is_lower_bound"] is True
+
+
+def test_a_capped_walk_that_saw_a_failure_reports_it(forge, monkeypatch):
+    rows = [{"context": "broken", "status": "failure"}] + [
+        {"context": f"c{i}", "status": "success"} for i in range(399)
+    ]
+    body, _ = _ci_read(forge, monkeypatch, _paged_status(rows, state="success"))
+    assert body["state"] == "failure" and body["checks"][0]["context"] == "broken"
+
+
+def test_contexts_sharing_a_very_long_prefix_are_still_distinct(forge, monkeypatch):
+    """Hermes review 7381: no length bound on a context's identity. 70 contexts share a
+    10,001-character prefix; the 20 on page 2 fail."""
+    prefix = "q" * 10_001
+    rows = [{"context": f"{prefix}ok{i}", "status": "success"} for i in range(50)] + [
+        {"context": f"{prefix}bad{i}", "status": "failure"} for i in range(20)
+    ]
+    body, pages = _ci_read(forge, monkeypatch, _paged_status(rows, state="success"))
+    assert len(pages) == 2 and body["checks_total"] == 70
+    assert body["state"] == "failure"

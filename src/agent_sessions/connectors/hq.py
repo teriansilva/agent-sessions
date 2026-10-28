@@ -370,8 +370,15 @@ async def read(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
                     {"context": _guard(c["context"], 200, secrets), "state": c["state"]}
                     for c in ci["checks"]
                 ],
-                "checks_total": len(ci["checks"]),
+                "checks_total": ci["checks_total"],
             }
+            more = "+" if ci["checks_total_capped"] else ""
+            if ci["checks_total_capped"]:
+                payload["checks_total_is_lower_bound"] = True
+            if len(payload["checks"]) < payload["checks_total"] or more:
+                payload["checks_note"] = (
+                    f"showing {len(payload['checks'])} of {payload['checks_total']}{more} checks"
+                )
             length = 0
         else:  # file
             f = await forgejo.read_file(bound, o, r, p["sha"], p["path"])
@@ -394,7 +401,8 @@ async def read(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
     checks = payload.get("checks")
     while not _fits(result) and isinstance(checks, list) and checks:
         checks.pop()
-        payload["checks_note"] = f"showing {len(checks)} of {payload['checks_total']} checks"
+        more = "+" if payload.get("checks_total_is_lower_bound") else ""
+        payload["checks_note"] = f"showing {len(checks)} of {payload['checks_total']}{more} checks"
     if not _fits(result):
         for key in ("body", "text"):
             if isinstance(payload.get(key), str):

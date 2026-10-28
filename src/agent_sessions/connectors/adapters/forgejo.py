@@ -32,6 +32,10 @@ PATH_MAX = 1000
 SEGMENT_MAX = 255
 SEARCH_LIMIT = 20
 COMMENTS_MAX = 50
+CHECKS_KEPT = 50
+#: Forgejo's maximum page size for the commit-status route, and how many pages a count may read.
+STATUS_PAGE_SIZE = 50
+STATUS_PAGES_MAX = 6
 DIR_MAX = 200
 FILE_MAX_BYTES = 256 * 1024
 
@@ -216,21 +220,77 @@ async def read_issue(bound: Bound, o: str, r: str, n: int) -> dict:
     return out
 
 
+#: Forgejo's commit-status severity, worst first: the combined state is the worst of every
+#: context's latest state. A state this build does not know counts as `pending` (never green).
+STATUS_SEVERITY = ("error", "failure", "warning", "pending", "success")
+
+
+def _severity(state: str) -> int:
+    return (
+        STATUS_SEVERITY.index(state)
+        if state in STATUS_SEVERITY
+        else STATUS_SEVERITY.index("pending")
+    )
+
+
 async def read_ci(bound: Bound, o: str, r: str, sha: str) -> dict:
+    """The combined state over ALL contexts, the ``CHECKS_KEPT`` worst checks, and how many
+    there are.
+
+    Forgejo PAGES this route, its page cap is an instance setting (``MAX_RESPONSE_ITEMS``), and
+    the ``state`` it returns is computed over THAT PAGE only. So the walk:
+
+    * takes the page size from what page 1 actually returned, goes on while pages come back that
+      full, and ends at a shorter or empty page, or one that adds no new context (a forge that
+      ignores ``page``);
+    * identifies a context by its FULL text, uncut (only the shown text is cut; memory is
+      already bounded by the transport's body cap times ``STATUS_PAGES_MAX``);
+    * computes the combined state itself, the worst over every distinct context
+      (`STATUS_SEVERITY`), and keeps the worst checks first, so a failure is never hidden.
+
+    If ``STATUS_PAGES_MAX`` pages are read without reaching the end, the total is a lower bound
+    (``checks_total_capped``) and the state is only what was seen: a failure seen stays a
+    failure, but nothing seen-so-far can claim ``success`` (``incomplete``)."""
     base = _repo_path(o, r)
     sha = _sha(sha)
-    st = await _get(bound, f"{base}/commits/{sha}/status")
-    if not isinstance(st, dict):
-        raise ConnectorError("bad_reply", "the forge answered something other than a status")
-    checks = st.get("statuses") if isinstance(st.get("statuses"), list) else []
+    latest: dict[str, str] = {}  # full context → its state, in first-seen order
+    page_size = 0
+    capped = True
+    for page in range(1, STATUS_PAGES_MAX + 1):
+        st = await _get(
+            bound, f"{base}/commits/{sha}/status", {"page": page, "limit": STATUS_PAGE_SIZE}
+        )
+        if not isinstance(st, dict):
+            raise ConnectorError("bad_reply", "the forge answered something other than a status")
+        rows = st.get("statuses") if isinstance(st.get("statuses"), list) else []
+        rows = [c for c in rows if isinstance(c, dict)]
+        if page == 1:
+            page_size = len(rows)
+        fresh = 0
+        for c in rows:
+            raw = c.get("context")
+            context = raw if isinstance(raw, str) else ""  # the FULL text is the identity
+            if context in latest:
+                continue
+            latest[context] = _str(c.get("status"), 20)
+            fresh += 1
+        if not rows or fresh == 0 or len(rows) < page_size:
+            capped = False  # reached the end
+            break
+    if latest:
+        worst = min(latest.values(), key=_severity)
+        state = worst if worst in STATUS_SEVERITY else "pending"
+    else:
+        state = ""  # no statuses at all: Forgejo reports this as pending with zero contexts
+    if capped and state not in ("error", "failure"):
+        state = "incomplete"
+    ordered = sorted(latest.items(), key=lambda kv: _severity(kv[1]))  # stable: worst first
     return {
         "sha": sha,
-        "state": _str(st.get("state"), 20),
-        "checks": [
-            {"context": _str(c.get("context"), 200), "state": _str(c.get("status"), 20)}
-            for c in checks[:50]
-            if isinstance(c, dict)
-        ],
+        "state": state,
+        "checks": [{"context": c[:200], "state": st} for c, st in ordered[:CHECKS_KEPT]],
+        "checks_total": len(latest),
+        "checks_total_capped": capped,
     }
 
 
