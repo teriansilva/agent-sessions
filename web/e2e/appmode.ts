@@ -345,17 +345,26 @@ export async function startStack(): Promise<Stack> {
   );
 }
 
-/** Drive the real connect page all the way to a mounted SPA over the tunnel. */
-export async function connect(page: Page, stack: Stack): Promise<void> {
+/** Drive the real connect page all the way to a mounted SPA over the tunnel. `entry` is the page
+ *  to open: the box's own `/connect.html` by default, or a `/connect/…` path served from the
+ *  public connect build (#1735). */
+export async function connect(page: Page, stack: Stack, entry = "/connect.html"): Promise<void> {
   // The human gate's hold is shortened through the page's own harness seam — the same one the
   // existing connect specs use. Nothing else is stubbed: the socket, handshake and mux are real.
   await page.addInitScript(() => {
     window.__battlelabConnectHarness = { holdMs: 50 };
   });
-  await page.goto("/connect.html");
+  await page.goto(entry);
+  await fillAndConnect(page, stack);
+}
+
+/** On a connect page that is showing its gate: supply the relay and credentials (a reload restores
+ *  them, so filling again is harmless), pass the human gate and connect. */
+export async function fillAndConnect(page: Page, stack: Stack): Promise<void> {
   // The relay field lives behind "Custom relay" — the public deploy defaults it, a local one
   // does not, so the test supplies it the same way an operator running their own relay would.
-  await page.locator("#relay-options summary").click();
+  const options = page.locator("#relay-options");
+  if ((await options.getAttribute("open")) === null) await options.locator("summary").click();
   await page.fill("#relay", `http://127.0.0.1:${stack.relayPort}`);
   await page.fill("#name", CONSOLE_NAME);
   await page.fill("#key", ACCESS_KEY);

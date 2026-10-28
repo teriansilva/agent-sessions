@@ -26,8 +26,10 @@ import {
 } from "./connect";
 import { type MountedApp, mountApp, renderRealApp } from "./appMount";
 import { CONNECT_STEPS, connectSteps, errorState, renderConnectState } from "./connectState";
+import { connectedUrl } from "./connectUrl";
 import {
   type RelayLink,
+  armRelay,
   clearRelay,
   onRelayDockChange,
   publishRelay,
@@ -555,19 +557,9 @@ function saveSession(
   }
 }
 
-function canonicalConnectPath(): string {
-  if (
-    isPublicDeploy() ||
-    location.pathname === "/connect" ||
-    location.pathname.startsWith("/connect/")
-  ) {
-    return "/connect/";
-  }
-  return "/connect.html";
-}
-
 function canonicalizeConnectedUrl(): void {
-  const target = canonicalConnectPath();
+  // #1735: a deep /connect/<route> is kept, so the app opens on the route the operator reloaded on.
+  const target = connectedUrl(location, isPublicDeploy());
   if (`${location.pathname}${location.search}${location.hash}` !== target) {
     history.replaceState(null, "", target);
   }
@@ -691,6 +683,11 @@ async function connect(): Promise<void> {
   try {
     await previous;
     if (ctl.signal.aborted) return;
+    // The app's first requests can already be refused (sign in / password change, #1735): the
+    // end path is armed before it mounts, and cleared with the attempt like the plate.
+    armRelay((message) =>
+      message ? endSession(message, "closed") : endSession("signed out", "signed-out"),
+    );
     const { app, deadline } = await connectApp(base, name, key, ctl.signal);
     const teardown = once(app.teardown);
     if (ctl.signal.aborted) {
@@ -723,7 +720,8 @@ async function connect(): Promise<void> {
         status: sessionStatusEl.textContent ?? "",
         remaining: deadline ? (countdownEl.textContent ?? "") : "",
       },
-      () => endSession("signed out", "signed-out"),
+      (message) =>
+        message ? endSession(message, "closed") : endSession("signed out", "signed-out"),
     );
     updateToggleLabel();
   } catch (err) {

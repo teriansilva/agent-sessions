@@ -1,3 +1,5 @@
+import { appUrl } from "./appBase";
+import { getRelaySnapshot, relayEnd, relaySignOut } from "../homefree/relayStatus";
 import type {
   SpecialistDetail,
   SpecialistDraft,
@@ -225,24 +227,37 @@ export function isApiTunneled(): boolean {
 export function loginRedirectUrl(
   loc: { pathname: string; search: string } = location,
 ): string {
-  return `/login?next=${encodeURIComponent(loc.pathname + loc.search)}`;
+  // The `next` path is the location as the browser shows it (base included): the login page sends
+  // the operator straight back to it. The login page itself sits under the same base (#1735).
+  return `${appUrl("/login")}?next=${encodeURIComponent(loc.pathname + loc.search)}`;
 }
 
 // One-shot guard: several /api calls can 401 at once (config + sessions on load); we
 // only want a single navigation.
 let redirecting = false;
 function gotoLogin(): void {
+  // Through the relay the box's login page is not reachable (#1735): end the relay session and
+  // say why on the connect page, instead of navigating to a page that is not there.
+  if (relayEnd(RELAY_SIGN_IN_NEEDED)) return;
   if (redirecting) return;
   redirecting = true;
   location.assign(loginRedirectUrl());
 }
 
+/** Shown on the connect page when the box answers the streamed app with "sign in" (#1735). */
+export const RELAY_SIGN_IN_NEEDED =
+  "the box asked you to sign in — sign in on the box's own address, then connect again";
+/** Shown on the connect page when the box requires its first password change (#1735). */
+export const RELAY_PASSWORD_CHANGE_NEEDED =
+  "the box needs its password changed first — change it on the box's own address, then connect again";
+
 /** First-run forced password change → the server-rendered /change-password (the SPA has
  *  no change screen; this route is on the SW navigateFallbackDenylist). */
 export function gotoChangePassword(): void {
+  if (relayEnd(RELAY_PASSWORD_CHANGE_NEEDED)) return;
   if (redirecting) return;
   redirecting = true;
-  location.assign("/change-password");
+  location.assign(appUrl("/change-password"));
 }
 
 /** Handle a 401/403 on an /api call (always throws). 401 = not signed in → /login.
@@ -2561,7 +2576,24 @@ export const api = {
 };
 
 async function logout(): Promise<void> {
-  await postVoid("/logout"); // CSRF POST; the server clears the cookie + 303s to /login
+  const r = await apiFetch("/logout", {
+    method: "POST", // CSRF POST; the server clears the cookie + 303s to /login
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+  });
+  // A direct fetch follows that 303 to /login (200). Through the relay the tunnel follows no
+  // redirect and hands back the 303 itself (#1735). Both confirm the box ended the session;
+  // anything else is a failed sign-out and changes nothing here.
+  if (!(r.ok || r.status === 303)) {
+    if (r.status === 401 || r.status === 403) await authGate(r);
+    throw new ApiError(r.status, `POST /logout → ${r.status}`);
+  }
   clearSent(); // #619: sent prompt text must not outlive the session on a shared device
-  window.location.assign("/login");
+  // Through the relay, signing out of the app ends the relay session too (#1735): the box's login
+  // page is not reachable from here, and the connect page is where the next sign-in starts.
+  if (getRelaySnapshot()) {
+    relaySignOut();
+    return;
+  }
+  window.location.assign(appUrl("/login"));
 }

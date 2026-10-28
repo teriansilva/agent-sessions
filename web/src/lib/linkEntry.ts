@@ -8,6 +8,7 @@
  *  and whether another tab may be told to open it — the server's `parse_key` / `MISSION_ID_RE`
  *  remain the gate on what the id can reach. Anything that does not classify is `null`, and a
  *  `null` from a hand-off message is dropped rather than navigated to. */
+import { stripBase } from "./appBase";
 import { MISSION_ID_RE } from "./missionLink";
 import { MISSION_PATH } from "./routes";
 
@@ -28,7 +29,9 @@ export function classifyLink(raw: string, origin: string): LinkEntry | null {
     return null;
   }
   if (url.origin !== origin) return null;
-  const session = /^\/s\/([^/]+)\/([^/]+)\/?$/.exec(url.pathname);
+  // Under the relay the app's URLs carry its base (#1735); the entry's `path` is the route path.
+  const pathname = stripBase(url.pathname);
+  const session = /^\/s\/([^/]+)\/([^/]+)\/?$/.exec(pathname);
   if (session) {
     const [, engine, id] = session;
     // A `new-<uuid>` placeholder names a launch that has not reconciled; it can never be attached
@@ -36,7 +39,7 @@ export function classifyLink(raw: string, origin: string): LinkEntry | null {
     if (!ENGINE_RE.test(engine) || !NATIVE_ID_RE.test(id) || id.startsWith("new-")) return null;
     return { kind: "session", engine, id, path: `/s/${engine}/${id}` };
   }
-  if (url.pathname === MISSION_PATH || url.pathname === `${MISSION_PATH}/`) {
+  if (pathname === MISSION_PATH || pathname === `${MISSION_PATH}/`) {
     const m = url.searchParams.get("m");
     if (m === null || !MISSION_ID_RE.test(m)) return null;
     return { kind: "mission", id: m, path: `${MISSION_PATH}?m=${m}` };

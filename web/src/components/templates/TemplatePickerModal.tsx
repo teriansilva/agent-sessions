@@ -1,3 +1,4 @@
+import { appUrl } from "../../lib/appBase";
 import { VARIABLES_PATH } from "../../lib/routes";
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
@@ -303,7 +304,7 @@ export function TemplatePickerModal({
         {templates !== null && templates.length === 0 && (
           <p className={styles.state}>
             No templates yet —{" "}
-            <a href="/templates" onClick={gallery}>
+            <a href={appUrl("/templates")} onClick={gallery}>
               create one in the gallery
             </a>
             .
@@ -526,7 +527,7 @@ export function TemplatePickerModal({
         )}
 
         <p className={styles.foot}>
-          <a href="/templates" onClick={gallery}>
+          <a href={appUrl("/templates")} onClick={gallery}>
             Manage in the gallery
           </a>
         </p>

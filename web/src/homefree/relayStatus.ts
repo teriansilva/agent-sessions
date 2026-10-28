@@ -39,8 +39,13 @@ export function minutesLeft(remaining: string): string {
 }
 
 let snapshot: RelaySnapshot | null = null;
-let signOutFn: (() => void) | null = null;
+/** The shell's end path: no message is the operator's own Sign out; a message ends the session
+ *  with that reason on the connect page (#1735: the box asked for something the relay can't show). */
+let signOutFn: ((message?: string) => void) | null = null;
 let docked = 0;
+/** Set by `relayEnd` until the next attempt arms: several requests refused at once end the session
+ *  once, and none of the later ones falls through to a navigation the relay can't serve. */
+let endedByBox = false;
 const listeners = new Set<() => void>();
 const dockListeners = new Set<(docked: boolean) => void>();
 
@@ -48,8 +53,16 @@ function emit(): void {
   for (const fn of listeners) fn();
 }
 
+/** The shell, while its attempt MOUNTS the app (#1735): no plate yet, but the app's first requests
+ *  can already be refused by the box, and `relayEnd` must reach the shell then too. Cleared with
+ *  the attempt (`clearRelay`), like everything else here. */
+export function armRelay(end: (message?: string) => void): void {
+  signOutFn = end;
+  endedByBox = false;
+}
+
 /** The shell, once its attempt is connected: what to show, and how to sign out. */
-export function publishRelay(next: RelaySnapshot, signOut: () => void): void {
+export function publishRelay(next: RelaySnapshot, signOut: (message?: string) => void): void {
   snapshot = next;
   signOutFn = signOut;
   emit();
@@ -92,6 +105,18 @@ export function subscribeRelay(fn: () => void): () => void {
 /** The plate's Sign out: the shell's own path, or nothing once the attempt has ended. */
 export function relaySignOut(): void {
   signOutFn?.();
+}
+
+/** End the relay session with a reason the connect page shows (#1735). The box's own server pages
+ *  (`/login`, `/change-password`) are not reachable through the relay, so the app ends here rather
+ *  than navigating to one. Returns false when nothing is published (not streamed through a relay),
+ *  and the caller then does what it does on a direct connection. */
+export function relayEnd(message: string): boolean {
+  if (endedByBox) return true;
+  if (!signOutFn) return false;
+  endedByBox = true;
+  signOutFn(message);
+  return true;
 }
 
 /** A plate is showing. Returns its undock, which counts once however often it is called. */

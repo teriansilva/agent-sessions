@@ -1,3 +1,4 @@
+import { stripBase } from "../../lib/appBase";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useSessionsStore } from "../../app/sessionsStore";
@@ -69,7 +70,7 @@ export function EntryLinks() {
       // A link that ARRIVES while its own page is showing (a session printing its own link, the
       // app focused on the page it is already on) is already open. The boot door is different:
       // it asks about the page it was opened on, so it passes `onScreen` itself.
-      if (!onScreen && window.location.pathname + window.location.search === entry.path) return;
+      if (!onScreen && stripBase(window.location.pathname) + window.location.search === entry.path) return;
       if (entry.kind === "mission" || isMobile || hostable === false || !requestOpen) {
         if (!onScreen) navigate(entry.path);
         return;
@@ -124,7 +125,7 @@ export function EntryLinks() {
       const entry = classifyLink(params.targetURL, window.location.origin);
       if (!entry) return;
       // A cold launch ON the link already rendered it; a reused window has not.
-      const here = window.location.pathname + window.location.search;
+      const here = stripBase(window.location.pathname) + window.location.search;
       handleRef.current(entry, here === entry.path);
     });
   }, []);

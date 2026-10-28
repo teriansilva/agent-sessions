@@ -1,3 +1,4 @@
+import { APP_BASENAME } from "../lib/appBase";
 import { Menu, PanelLeftClose } from "lucide-react";
 import {
   Suspense,
@@ -976,7 +977,11 @@ export default function App() {
   // Back/Forward and every in-app link on a dirty editor — needs one. The whole shell hangs off
   // a single catch-all route; the `<Routes>` inside `Layout` keep working as descendant routes.
   const [router] = useState(() =>
-    createBrowserRouter([{ path: "*", element: <Layout /> }]),
+    // #1735: under the relay the app lives at /connect/; the basename keeps every URL there.
+    createBrowserRouter(
+      [{ path: "*", element: <Layout /> }],
+      APP_BASENAME ? { basename: APP_BASENAME } : undefined,
+    ),
   );
   // The tab's icon: relay + unread (#1736). Once, here, for every route.
   useFavicon();
