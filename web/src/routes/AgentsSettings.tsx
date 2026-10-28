@@ -521,7 +521,7 @@ function AgentUsageMeter({
 function refreshRoster(): Promise<void> {
   return Promise.resolve()
     .then(() => api.engines())
-    .then((d) => setRoster(d.engines, d.problems ?? []))
+    .then((d) => setRoster(d.engines, d.problems ?? [], d.families ?? []))
     .catch(() => markRosterFailed());
 }
 

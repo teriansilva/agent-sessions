@@ -20,7 +20,7 @@
  * roster lands.
  */
 import { useSyncExternalStore } from "react";
-import type { EngineInfo, EngineProblem, OfferedModel } from "../types/api";
+import type { EngineFamily, EngineInfo, EngineProblem, OfferedModel } from "../types/api";
 
 export type RosterStatus = "loading" | "ready" | "failed";
 
@@ -30,6 +30,8 @@ export interface RosterSnapshot {
   loaded: boolean;
   engines: readonly EngineInfo[];
   problems: readonly EngineProblem[];
+  /** The server's family decision (#1728); empty from an older server (no API-first default). */
+  families: readonly EngineFamily[];
 }
 
 const EMPTY: RosterSnapshot = {
@@ -37,15 +39,19 @@ const EMPTY: RosterSnapshot = {
   loaded: false,
   engines: [],
   problems: [],
+  families: [],
 };
 
 let snapshot: RosterSnapshot = EMPTY;
 let byId = new Map<string, EngineInfo>();
+/** Client id → the family row that lists it (#1728). Built from the server's block only. */
+let familyByClient = new Map<string, EngineFamily>();
 const listeners = new Set<() => void>();
 
 function publish(next: RosterSnapshot): void {
   snapshot = next;
   byId = new Map(next.engines.map((e) => [e.id, e]));
+  familyByClient = new Map(next.families.flatMap((f) => f.clients.map((c) => [c, f] as const)));
   for (const fn of listeners) fn();
 }
 
@@ -169,10 +175,43 @@ function normalize(raw: unknown): EngineInfo | null {
   };
 }
 
-/** Install a roster (the provider does this; tests do it directly). */
+/** One `families` row made safe to read (#1728): a malformed row is dropped as a whole, so a
+ *  partial mock or a newer shape can only REMOVE the API-first default, never invent one. */
+function normalizeFamily(raw: unknown): EngineFamily | null {
+  if (!raw || typeof raw !== "object") return null;
+  const f = raw as Partial<EngineFamily>;
+  const d = f.interactive_default as EngineFamily["interactive_default"] | undefined;
+  if (
+    typeof f.family !== "string" ||
+    !Array.isArray(f.clients) ||
+    !f.clients.every((c) => typeof c === "string") ||
+    !d ||
+    typeof d !== "object" ||
+    (d.engine !== null && typeof d.engine !== "string") ||
+    typeof d.reason !== "string"
+  )
+    return null;
+  const reasons: Record<string, string> = {};
+  if (f.reasons && typeof f.reasons === "object" && !Array.isArray(f.reasons)) {
+    for (const [k, v] of Object.entries(f.reasons)) if (typeof v === "string") reasons[k] = v;
+  }
+  return {
+    family: f.family,
+    clients: [...f.clients],
+    interactive_default: { engine: d.engine, reason: d.reason },
+    unattended_admitted: Array.isArray(f.unattended_admitted)
+      ? f.unattended_admitted.filter((c): c is string => typeof c === "string")
+      : [],
+    reasons,
+  };
+}
+
+/** Install a roster (the provider does this; tests do it directly). `families` is the server's
+ *  family decision (#1728) — omitted by an older server, which then has no API-first default. */
 export function setRoster(
   engines: readonly EngineInfo[],
   problems: readonly EngineProblem[] = [],
+  families: readonly EngineFamily[] = [],
 ): void {
   const ordered = (engines as unknown[])
     .map(normalize)
@@ -181,7 +220,10 @@ export function setRoster(
     (a, b) => (a.display?.order ?? 500) - (b.display?.order ?? 500),
   );
   writeHints(ordered);
-  publish({ status: "ready", loaded: true, engines: ordered, problems });
+  const fams = (Array.isArray(families) ? (families as unknown[]) : [])
+    .map(normalizeFamily)
+    .filter((f): f is EngineFamily => f !== null);
+  publish({ status: "ready", loaded: true, engines: ordered, problems, families: fams });
 }
 
 /** A refresh failed. The last good roster is KEPT — a stale roster is never replaced by none. */
@@ -337,6 +379,101 @@ export function runtimeConfirmed(id: string): boolean {
 export function runsInTerminal(id: string): boolean | undefined {
   const runtime = byId.get(id)?.runtime;
   return runtime === undefined || runtime === "unknown" ? undefined : runtime === "pty";
+}
+
+// --- client families: API first (#1728) ---------------------------------------------------------
+//
+// Which client of an agent a new session defaults to is the SERVER's decision (`families`, from
+// `engines.default_client`): the SPA cannot mirror a live readiness probe, so it never derives one.
+// What the SPA adds is the operator's per-device explicit choice (`remembered`, kept by
+// `lib/familyChoice.ts`), applied on top with its own two reasons. An older server sends no block,
+// and then nothing here applies: the pickers behave exactly as before.
+
+/** Why a picker preselects the client it does: the server's base reasons, plus the device's. */
+export type FamilyReason =
+  | "api_ready"
+  | "api_unready"
+  | "api_absent"
+  | "family_retired"
+  | "remembered_explicit"
+  | "remembered_stale"
+  | string;
+
+/** The family row listing client `id`, or `undefined` (an older server, or an unknown id). */
+export function familyOf(id: string): EngineFamily | undefined {
+  return familyByClient.get(id);
+}
+
+export interface FamilyPick {
+  family: EngineFamily;
+  /** The client to preselect, or null when none of the family's clients is offered. */
+  engine: string | null;
+  reason: FamilyReason;
+  /** A remembered client that no longer applies, and why — shown, never silently dropped. */
+  stale: { engine: string; why: string } | null;
+  /** What the create sends: the server's default (`automatic`) or the operator's own choice. */
+  choice: "automatic" | "explicit";
+}
+
+/** THE family resolver every New session picker uses (#1728). `offered` is what the picker can
+ *  start right now (the server's answer); `remembered` the operator's last explicit client for
+ *  this family on this device. A remembered client wins while the family still lists it and it
+ *  can start (`remembered_explicit`); otherwise it is ignored with its reason
+ *  (`remembered_stale`) and the server's base default applies. Nothing here is a readiness check:
+ *  the create re-checks, and refuses a stale `automatic` choice. */
+export function pickInFamily(
+  family: EngineFamily,
+  offered: readonly string[],
+  remembered: string | null | undefined,
+): FamilyPick {
+  let stale: FamilyPick["stale"] = null;
+  if (remembered) {
+    const listed = family.clients.includes(remembered);
+    const info = byId.get(remembered);
+    if (listed && offered.includes(remembered) && info && isActive(info)) {
+      return {
+        family,
+        engine: remembered,
+        reason: "remembered_explicit",
+        stale: null,
+        choice: "explicit",
+      };
+    }
+    stale = {
+      engine: remembered,
+      why: !listed
+        ? "it is no longer installed"
+        : family.reasons[remembered] || "it can’t start a session here right now",
+    };
+  }
+  const base = family.interactive_default.engine;
+  return {
+    family,
+    engine: base && offered.includes(base) ? base : null,
+    reason: stale ? "remembered_stale" : family.interactive_default.reason,
+    stale,
+    choice: "automatic",
+  };
+}
+
+/** The tile mark a family's preselected client carries (#1728 mockup): `default` when its API
+ *  client is ready, `default here` when the console stands in for an unavailable API client, and
+ *  `remembered` for the device's own choice. A one-client family carries none of these. */
+export function familyMark(pick: FamilyPick): { word: string; sub?: string } | null {
+  if (!pick.engine || pick.family.clients.length < 2) return null;
+  switch (pick.reason) {
+    case "remembered_explicit":
+      return { word: "remembered", sub: "your last choice on this device" };
+    case "api_ready":
+      return { word: "default" };
+    case "api_unready":
+    case "remembered_stale":
+      return pick.family.interactive_default.reason === "api_unready"
+        ? { word: "default here", sub: "used because the API client is unavailable" }
+        : { word: "default" };
+    default:
+      return null;
+  }
 }
 
 // --- the eligible-default resolver (#1128) --------------------------------------------------------

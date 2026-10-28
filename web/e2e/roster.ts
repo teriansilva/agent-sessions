@@ -17,13 +17,20 @@ export const ROSTER: { engines: Row[]; problems: unknown[] } = JSON.parse(
  *  (`{ gemini: { present: false } }`). Registered LAST wins, so call it after a catch-all. */
 export async function mockRoster(
   page: Page,
-  opts: { only?: string[]; overrides?: Record<string, Partial<Row>> } = {},
+  opts: {
+    only?: string[];
+    overrides?: Record<string, Partial<Row>>;
+    /** The server's family decision (#1728). Omitted: an older server — no API-first default. */
+    families?: unknown[];
+  } = {},
 ): Promise<void> {
   const engines = ROSTER.engines
     .filter((e) => !opts.only || opts.only.includes(e.id))
     .map((e) => ({ ...e, ...(opts.overrides?.[e.id] ?? {}) }));
   await page.route("**/api/engines", (r) =>
-    r.fulfill({ json: { engines, problems: [] } }),
+    r.fulfill({
+      json: { engines, problems: [], ...(opts.families ? { families: opts.families } : {}) },
+    }),
   );
 }
 

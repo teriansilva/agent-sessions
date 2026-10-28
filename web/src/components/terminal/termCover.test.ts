@@ -36,3 +36,9 @@ test("a 4404 whose lookup resolved to an owner (an alias about to navigate) stil
   expect(termCover(notFound, "found", true)).toBe("opening");
   expect(termCover(notFound, "found", false)).toBeNull();
 });
+
+test("4412 (a stale automatic default, #1728) hands the launch back to the form, whatever the lookup", () => {
+  const stale = { kind: "rejected", reason: "the default changed", code: 4412 } as const;
+  for (const phase of ["pending", "found", "missing", "failed", null] as const)
+    expect(termCover(stale, phase)).toBe("stale-default");
+});

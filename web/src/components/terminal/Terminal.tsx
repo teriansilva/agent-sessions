@@ -78,7 +78,7 @@ import { HandoffModal } from "./HandoffModal";
 import { HeadActions, type HeadAction } from "./HeadActions";
 import { HeadFacts } from "./HeadFacts";
 import { SessionRecapModal } from "./SessionRecapModal";
-import { NotFoundPanel, OPENING_GIVE_UP_MS, OpeningPanel } from "./SessionOpening";
+import { NotFoundPanel, OPENING_GIVE_UP_MS, OpeningPanel, StaleDefaultPanel } from "./SessionOpening";
 import { LOOKUP_FAILED_TEXT, termCover } from "./termCover";
 import styles from "./Terminal.module.css";
 import { missionLink } from "../../lib/missionLink";
@@ -2269,6 +2269,9 @@ export function Terminal({
         {cover === "reopening" && <OpeningPanel overlay reload={reloadRoster} reloadOnMount />}
         {cover === "opening" && <OpeningPanel overlay />}
         {cover === "missing" && <NotFoundPanel overlay />}
+        {cover === "stale-default" && status.kind === "rejected" && (
+          <StaleDefaultPanel overlay reason={status.reason} />
+        )}
         {/* Auto copy-on-select confirmation (#554): keyed on the tick so each copy restarts the
             fade. role/aria-live announce it; the JS timer unmounts it after COPIED_TOAST_MS. */}
         {copied.tick !== 0 && (

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { RosterReload } from "../../app/reloadRoster";
-import { SESSIONS_PATH } from "../../lib/routes";
+import { NEW_SESSION_PATH, SESSIONS_PATH } from "../../lib/routes";
 import button from "../ui/actionButton.module.css";
 import styles from "./RuntimeGate.module.css";
 
@@ -90,6 +90,28 @@ export function NotFoundPanel({ overlay = false }: { overlay?: boolean }) {
       <p>This session was not found.</p>
       <Link className={styles.back} to={SESSIONS_PATH}>
         ← Back to Sessions
+      </Link>
+    </div>
+  );
+  return overlay ? <div className={styles.overlay}>{body}</div> : body;
+}
+
+/** A fresh launch refused because its AUTOMATIC default moved (4412, #1728): nothing was started.
+ *  It hands the refusal back to the New session form, which reloads the agents, explains it and
+ *  lets the operator start again — deliberately, on the default they can now see. */
+export const STALE_DEFAULT_STATE = "staleDefault";
+export function StaleDefaultPanel({ overlay = false, reason }: { overlay?: boolean; reason: string }) {
+  const body = (
+    <div className={styles.panel} role="status" data-session-opening="stale-default">
+      <p className={styles.tag}>NEW SESSION // DEFAULT CHANGED</p>
+      <p>{reason}</p>
+      <Link
+        className={styles.back}
+        to={NEW_SESSION_PATH}
+        state={{ [STALE_DEFAULT_STATE]: reason }}
+        data-testid="stale-default-back"
+      >
+        ← Back to New session
       </Link>
     </div>
   );

@@ -214,6 +214,8 @@ export interface FakeOptions {
   listFailAfterFirst?: number;
   sessions?: Json[];
   templates?: Json[];
+  /** What `engine_state` admits for unattended use (`GET /api/automations` → `engines`). */
+  engines?: Json[];
 }
 
 export interface Fake {
@@ -308,7 +310,7 @@ export async function mockAutomations(page: Page, opts: FakeOptions = {}): Promi
         return json(opts.listFailAfterFirst, { detail: "the automations store failed" });
       return json(200, {
         automations: fake.state.automations,
-        engines: ENGINES,
+        engines: opts.engines ?? ENGINES,
         loop: { enabled: fake.state.loopEnabled, owner: true },
         limits: LIMITS,
       });

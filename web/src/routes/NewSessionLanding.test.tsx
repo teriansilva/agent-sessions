@@ -2243,3 +2243,237 @@ test("a specialist on a chat agent is listed but can't be chosen; the chat start
     vi.mocked(api.specialists).mockImplementation(() => Promise.reject(new Error("no pool")));
   }
 });
+
+// --- API first (#1728 Phase 1) --------------------------------------------------------------------
+//
+// The server's `families` block decides a family's default client; the form preselects it, marks
+// it, keeps the device's explicit pick for the family, and tells the create whether its client is
+// the automatic default or an explicit choice. Engine ids come from the fixture, never a literal.
+
+const API_CLIENT = FIXTURE.find((e) => e.runtime === "api" && e.api?.source)!;
+const CONSOLE = FIXTURE.find((e) => e.id === API_CLIENT.api!.source)!;
+const FAMILY = API_CLIENT.family!;
+
+function familyRow(
+  engine: string | null,
+  reason: string,
+  reasons: Record<string, string> = {},
+) {
+  return {
+    family: FAMILY,
+    clients: [CONSOLE.id, API_CLIENT.id],
+    interactive_default: { engine, reason },
+    unattended_admitted: [],
+    reasons,
+  };
+}
+
+function apiFirst(row = familyRow(API_CLIENT.id, "api_ready")) {
+  localStorage.removeItem("battlelab.familyChoice.v1");
+  setRoster(FIXTURE, [], [row]);
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockResolvedValue({ session_key: `${API_CLIENT.id}:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f` } as never);
+}
+
+const tileFor = (id: string) =>
+  document.querySelector(`label[data-engine="${id}"]`) as HTMLElement;
+
+test("a family with a ready API client preselects it, marked default; Terminal is one tap away (#1728)", async () => {
+  apiFirst();
+  renderLanding([CONSOLE.id, API_CLIENT.id], { ...GUARDED, default_project: "/d" });
+  await findProjects();
+  expect(agentValue()).toBe(API_CLIENT.id);
+  expect(within(tileFor(API_CLIENT.id)).getByTestId("new-session-family-mark")).toHaveTextContent("default");
+  const user = userEvent.setup();
+  await chooseProject(user, "");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  // The create says it is the automatic default: the server refuses it if the default moved.
+  expect(vi.mocked(api.structuredCreate).mock.calls[0][7]).toBe("automatic");
+  setRoster(FIXTURE);
+});
+
+test("an unready API client leaves the terminal as the default here, with the reason (#1728)", async () => {
+  apiFirst(familyRow(CONSOLE.id, "api_unready", { [API_CLIENT.id]: "the CLI needs an update" }));
+  renderLanding([CONSOLE.id], {
+    ...GUARDED,
+    default_project: "/d",
+    unavailable_clients: [{ id: API_CLIENT.id, label: API_CLIENT.label, reason: "the CLI needs an update" }],
+  });
+  await findProjects();
+  expect(agentValue()).toBe(CONSOLE.id);
+  expect(tileFor(CONSOLE.id)).toHaveTextContent("default here");
+  expect(tileFor(CONSOLE.id)).toHaveTextContent("used because the API client is unavailable");
+  const user = userEvent.setup();
+  await chooseProject(user, "");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  const [, opts] = navigateMock.mock.calls[0];
+  expect(opts.state.fresh.choice).toBe("automatic");
+  setRoster(FIXTURE);
+});
+
+test("an explicit Terminal pick is remembered for the family and overrides the API default (#1728)", async () => {
+  apiFirst();
+  const user = userEvent.setup();
+  const first = renderLanding([CONSOLE.id, API_CLIENT.id], { ...GUARDED, default_project: "/d" });
+  await chooseProject(user, "");
+  await chooseAgent(user, CONSOLE.id);
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  expect(navigateMock.mock.calls[0][1].state.fresh.choice).toBe("explicit");
+  first.unmount();
+
+  // Next time on this device: the Terminal pick wins, says so, and the API is one tap away.
+  navigateMock.mockReset();
+  renderLanding([CONSOLE.id, API_CLIENT.id], { ...GUARDED, default_project: "/d" });
+  await findProjects();
+  expect(agentValue()).toBe(CONSOLE.id);
+  expect(tileFor(CONSOLE.id)).toHaveTextContent("remembered");
+  const hint = screen.getByTestId("new-session-remembered");
+  expect(hint).toHaveTextContent(CONSOLE.label);
+  await user.click(within(hint).getByRole("button", { name: "Use API" }));
+  expect(agentValue()).toBe(API_CLIENT.id);
+  expect(localStorage.getItem("battlelab.familyChoice.v1")).not.toContain(CONSOLE.id);
+  setRoster(FIXTURE);
+});
+
+test("a remembered client that can no longer start is ignored, with the reason (#1728)", async () => {
+  apiFirst(familyRow(CONSOLE.id, "api_unready", { [API_CLIENT.id]: "signed out" }));
+  localStorage.setItem(
+    "battlelab.familyChoice.v1",
+    JSON.stringify({ v: 1, choices: { [FAMILY]: API_CLIENT.id } }),
+  );
+  renderLanding([CONSOLE.id], {
+    ...GUARDED,
+    default_project: "/d",
+    unavailable_clients: [{ id: API_CLIENT.id, label: API_CLIENT.label, reason: "signed out" }],
+  });
+  await findProjects();
+  expect(agentValue()).toBe(CONSOLE.id);
+  const stale = screen.getByTestId("new-session-remembered-stale");
+  expect(stale).toHaveTextContent(API_CLIENT.label);
+  expect(stale).toHaveTextContent("signed out");
+  localStorage.removeItem("battlelab.familyChoice.v1");
+  setRoster(FIXTURE);
+});
+
+test("a stale automatic default is refused: nothing opens, the new default is named (#1728)", async () => {
+  apiFirst();
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockRejectedValue(
+      new ApiError(409, `the default changed to ${CONSOLE.label} since this was shown — nothing was started`, {
+        default: { family: FAMILY, engine: CONSOLE.id, reason: "api_unready" },
+      }),
+    );
+  const user = userEvent.setup();
+  renderLanding([CONSOLE.id, API_CLIENT.id], { ...GUARDED, default_project: "/d" });
+  await chooseProject(user, "");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  const err = await screen.findByTestId("start-error");
+  expect(err).toHaveTextContent(`the default changed to ${CONSOLE.label}`);
+  expect(err).toHaveTextContent("press Start again");
+  expect(navigateMock).not.toHaveBeenCalled();
+  setRoster(FIXTURE);
+});
+
+test("an older server without families keeps today's default and sends no choice (#1728)", async () => {
+  localStorage.removeItem("battlelab.familyChoice.v1");
+  setRoster(FIXTURE); // no `families` block
+  renderLanding([CONSOLE.id, API_CLIENT.id], { ...GUARDED, default_project: "/d" });
+  await findProjects();
+  expect(agentValue()).toBe(CONSOLE.id); // the first eligible in roster order, as before
+  expect(screen.queryByTestId("new-session-family-mark")).toBeNull();
+  const user = userEvent.setup();
+  await chooseProject(user, "");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  expect(navigateMock.mock.calls[0][1].state.fresh).not.toHaveProperty("choice");
+});
+
+test("a Terminal pick made while the API client was unready still overrides it once ready (#1728)", async () => {
+  apiFirst(familyRow(CONSOLE.id, "api_unready", { [API_CLIENT.id]: "signed out" }));
+  const user = userEvent.setup();
+  const first = renderLanding([CONSOLE.id], {
+    ...GUARDED,
+    default_project: "/d",
+    unavailable_clients: [{ id: API_CLIENT.id, label: API_CLIENT.label, reason: "signed out" }],
+  });
+  await chooseProject(user, "");
+  await chooseAgent(user, CONSOLE.id); // explicit, though it is the default here
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  first.unmount();
+
+  // The API client is ready now: the operator's Terminal pick still wins.
+  setRoster(FIXTURE, [], [familyRow(API_CLIENT.id, "api_ready")]);
+  renderLanding([CONSOLE.id, API_CLIENT.id], { ...GUARDED, default_project: "/d" });
+  await findProjects();
+  expect(agentValue()).toBe(CONSOLE.id);
+  expect(screen.getByTestId("new-session-remembered")).toHaveTextContent(CONSOLE.label);
+  localStorage.removeItem("battlelab.familyChoice.v1");
+  setRoster(FIXTURE);
+});
+
+test("an explicit pick of the API default forgets a remembered Terminal pick (#1728)", async () => {
+  apiFirst();
+  localStorage.setItem(
+    "battlelab.familyChoice.v1",
+    JSON.stringify({ v: 1, choices: { [FAMILY]: CONSOLE.id } }),
+  );
+  const user = userEvent.setup();
+  renderLanding([CONSOLE.id, API_CLIENT.id], { ...GUARDED, default_project: "/d" });
+  await chooseProject(user, "");
+  expect(agentValue()).toBe(CONSOLE.id);
+  await chooseAgent(user, API_CLIENT.id);
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  expect(localStorage.getItem("battlelab.familyChoice.v1")).not.toContain(CONSOLE.id);
+  setRoster(FIXTURE);
+});
+
+test("an unready stored API default stands in with ITS family's terminal, not the roster's first agent (#1728)", async () => {
+  // The stored default is the SECOND family's API client, unready; its console can start, and the
+  // first family's agents come earlier in roster order.
+  const pairs = FIXTURE.filter((e) => e.runtime === "api" && e.api?.source);
+  const second = pairs[1];
+  const secondConsole = FIXTURE.find((e) => e.id === second.api!.source)!;
+  localStorage.removeItem("battlelab.familyChoice.v1");
+  setRoster(FIXTURE, [], [
+    familyRow(API_CLIENT.id, "api_ready"),
+    {
+      family: second.family!,
+      clients: [secondConsole.id, second.id],
+      interactive_default: { engine: secondConsole.id, reason: "api_unready" },
+      unattended_admitted: [],
+      reasons: { [second.id]: "signed out" },
+    },
+  ]);
+  renderLanding([CONSOLE.id, API_CLIENT.id, secondConsole.id], {
+    ...GUARDED,
+    default_project: "/d",
+    agent_defaults: { bypass: false, default_engine: second.id },
+    unavailable_clients: [{ id: second.id, label: second.label, reason: "signed out" }],
+  });
+  await findProjects();
+  expect(agentValue()).toBe(secondConsole.id);
+  expect(tileFor(secondConsole.id)).toHaveTextContent("default here");
+  // The notice names the client that actually stands in.
+  expect(document.body).toHaveTextContent(`new sessions use ${secondConsole.label} until it is`);
+  setRoster(FIXTURE);
+});
+
+test("a terminal launch refused as a stale default (4412) comes back explained, Start retries (#1728)", async () => {
+  apiFirst();
+  renderLanding([CONSOLE.id, API_CLIENT.id], { ...GUARDED, default_project: "/d" }, {
+    staleDefault: `the default changed to ${API_CLIENT.label} since this was shown — nothing was started`,
+  });
+  await findProjects();
+  const err = screen.getByTestId("start-error");
+  expect(err).toHaveTextContent(`the default changed to ${API_CLIENT.label}`);
+  expect(err).toHaveTextContent("press Start again");
+  expect(agentValue()).toBe(API_CLIENT.id);
+  setRoster(FIXTURE);
+});

@@ -77,6 +77,9 @@ export interface StructuredCreateRequest {
    *  the create runs — #1739). Unstarted, the session waits in the session list for Start. */
   start?: boolean;
   specialist?: { id: string; version: number };
+  /** API first (#1728): whether `engine` is its family's automatic default (the server refuses it
+   *  with the new default if that moved) or an explicit choice. Omitted: the create as before. */
+  choice?: "automatic" | "explicit";
 }
 
 /** Create one API session and return its key. The operation id is the create's identity: a guarded
@@ -123,11 +126,13 @@ export async function createStructuredSession(req: StructuredCreateRequest): Pro
   };
   try {
     const args = [engine, cwd, attempt.id, model, Boolean(attempt.bypass)] as const;
-    const { session_key: key } = await (attempt.specialist
-      ? api.structuredCreate(...args, attempt.effort, attempt.specialist)
-      : attempt.effort
-        ? api.structuredCreate(...args, attempt.effort)
-        : api.structuredCreate(...args));
+    const { session_key: key } = await (req.choice
+      ? api.structuredCreate(...args, attempt.effort, attempt.specialist, req.choice)
+      : attempt.specialist
+        ? api.structuredCreate(...args, attempt.effort, attempt.specialist)
+        : attempt.effort
+          ? api.structuredCreate(...args, attempt.effort)
+          : api.structuredCreate(...args));
     clearAttempt(); // only THIS attempt's slot — a lost guarded one stays recoverable (5916)
     // Phase 2 (#1339): only now — the create's response is in hand — does a skip create launch.
     // The page opens at once, and the request's own outcome goes to the session pane under the

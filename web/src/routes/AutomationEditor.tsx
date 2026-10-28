@@ -28,7 +28,9 @@ import {
 import { MissionRailOnly } from "../components/automations/MissionRailOnly";
 import { useProjects } from "../components/automations/useAutomations";
 import { useEnableFlow } from "../components/automations/useEnableFlow";
-import { engineName, useEngineRoster } from "../app/engineRoster";
+import { engineLabel, engineName, runsInTerminal, useEngineRoster } from "../app/engineRoster";
+import { LegacyTerminalStamp, SwitchToApiButton } from "../components/automations/SwitchToApi";
+import { useSwitchFlow } from "../components/automations/useSwitchFlow";
 import { ApiError, api } from "../lib/api";
 import {
   AUTONOMY_WORDS,
@@ -37,6 +39,7 @@ import {
   actionLabel,
   blankForm,
   bodyFromForm,
+  apiSwitchFor,
   consentFromError,
   errorWords,
   formFromAutomation,
@@ -239,6 +242,27 @@ function Editor({ routeId }: { routeId?: string }) {
     ),
   );
 
+  // "Switch to API client" (#1728 Phase 2): the SAVED automation switches, through the same
+  // validated save, so a switch never carries an unsaved draft along with it.
+  const switchFlow = useSwitchFlow(
+    useCallback(
+      (a: Automation) => {
+        const f = formFromAutomation(a, list?.limits.timezone || "UTC");
+        setSaved(a);
+        setForm(f);
+        setPristine(JSON.stringify(f));
+        const now = a.action?.kind === "start_session" ? engineLabel(a.action.engine) : "its API client";
+        setNotice(
+          a.enabled
+            ? `Saved. “${a.name}” now runs on ${now}, with the scope you approved.`
+            : `Saved. “${a.name}” now runs on ${now}. It is off until you enable it.`,
+        );
+        setInFlight(inFlightNote(a));
+      },
+      [list],
+    ),
+  );
+
   const set = useCallback(<K extends keyof EditorForm>(k: K, v: EditorForm[K]) => {
     setForm((f) => (f ? { ...f, [k]: v } : f));
   }, []);
@@ -355,6 +379,7 @@ function Editor({ routeId }: { routeId?: string }) {
 
   const problems = formProblems(form);
   const engines = list.engines ?? [];
+  const savedSwitch = saved ? apiSwitchFor(saved.action, engines) : null;
   const liveProjects = (projects ?? []).filter((p) => !p.archived || p.id === form.projectId);
   const msgWord =
     form.actionKind === "start_mission"
@@ -662,6 +687,14 @@ function Editor({ routeId }: { routeId?: string }) {
                         </option>
                       ))}
                     </select>
+                    {form.engine && runsInTerminal(form.engine) === true && <LegacyTerminalStamp />}
+                    {saved && savedSwitch && (
+                      <SwitchToApiButton
+                        target={savedSwitch}
+                        blockedBy={dirty ? "Save or discard your changes first." : undefined}
+                        onSwitch={() => switchFlow.open(saved, savedSwitch.engine)}
+                      />
+                    )}
                     <div id={f("engine-why")} className={styles.hint} data-testid="engine-reasons">
                       {engines.filter((e) => !e.ok).map((e) => (
                         <p key={e.id} className={styles.hint}>
@@ -1067,6 +1100,7 @@ function Editor({ routeId }: { routeId?: string }) {
         </aside>
       </div>
 
+      {switchFlow.dialog}
       {consent && saved && (
         <ConsentDialog
           name={form.name || saved.name}

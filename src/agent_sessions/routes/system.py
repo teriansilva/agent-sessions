@@ -282,6 +282,9 @@ def register(
                 # --- from the manifest -------------------------------------------------------
                 "label": m.identity.label,
                 "kind": m.identity.kind,
+                # The client family (#1728): an API client's `api.source`, else its own id.
+                # Grouping only; the default is the `families` block's answer, never the SPA's.
+                "family": m.family,
                 # How a session of this engine runs (#853 §7). The SPA picks the session surface
                 # from it; `pty` is the only runtime this build has.
                 "runtime": m.runtime,
@@ -334,13 +337,18 @@ def register(
                 ),
             }
 
-        def rows_now() -> list[dict]:
+        def rows_now() -> tuple[list[dict], list[dict]]:
             added = prefs.get_agent_defaults()["models"]
-            return [
+            rows = [
                 row(p, added) for p in [*engines.all_providers(), *engines.retiring_providers()]
             ]
+            # The family decision (#1728): which client a new session defaults to, and why, from
+            # the SAME readiness answers the rows just computed (`supports_new` = `can_start`), so
+            # a row and its family never disagree and no client is probed twice per read.
+            ready = {r["id"]: r["supports_new"] for r in rows}
+            return rows, engines.families_block(ready)
 
-        rows = await asyncio.to_thread(rows_now)
+        rows, families = await asyncio.to_thread(rows_now)
         # Manifests that failed to load (#853 P4): diagnostics only, SEPARATE from `engines`, so
         # nothing that lists engines can ever offer one. First-party-only today, so a problem
         # here is a build defect in an in-tree manifest.
@@ -348,7 +356,7 @@ def register(
             {"source": k, "error": v}
             for k, v in sorted(engines.registry.current().problems.items())
         ]
-        return JSONResponse({"engines": rows, "problems": problems})
+        return JSONResponse({"engines": rows, "families": families, "problems": problems})
 
     @app.get("/api/engines/{engine_id}")
     async def engine_detail(engine_id: str, _: str = Depends(logged_in)) -> JSONResponse:

@@ -13,7 +13,7 @@ export async function reloadRoster(): Promise<RosterReload> {
   try {
     const d = await api.engines();
     if (!Array.isArray(d?.engines)) return "failed";
-    setRoster(d.engines, Array.isArray(d.problems) ? d.problems : []);
+    setRoster(d.engines, Array.isArray(d.problems) ? d.problems : [], d.families ?? []);
     return "ok";
   } catch {
     return "failed";

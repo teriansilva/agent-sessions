@@ -37,6 +37,12 @@ from .base import (  # noqa: F401 — public re-exports
 )
 from .claude import ClaudeProvider
 from .codex import CodexProvider
+from .family import (  # noqa: F401 — the client-family resolver (#1728)
+    default_client,
+    families_block,
+    family_of,
+    stale_automatic,
+)
 from .gemini import GeminiProvider
 from .kimi import KimiProvider
 from .opencode import OPENCODE_SCHEMA, OpenCodeProvider
@@ -130,6 +136,10 @@ __all__ = [
     "is_opencode_new_placeholder",
     "parse_runtime_key",
     "unattended_start_state",
+    "default_client",
+    "families_block",
+    "family_of",
+    "stale_automatic",
     "LATE_ID_CAPABILITIES",
     "ShellProvider",
     "OPENCODE_SCHEMA",

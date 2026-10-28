@@ -24,7 +24,7 @@ export function EngineRosterProvider({ children }: { children: ReactNode }) {
           // A response with no `engines` array is not a roster (a stub answering every route with
           // `{}`, a proxy error page): a FAILED load, never "no agents".
           if (!Array.isArray(d?.engines)) throw new Error("not a roster");
-          if (alive) setRoster(d.engines, Array.isArray(d.problems) ? d.problems : []);
+          if (alive) setRoster(d.engines, Array.isArray(d.problems) ? d.problems : [], d.families ?? []);
         })
         .catch(() => {
           if (!alive) return;

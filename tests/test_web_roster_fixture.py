@@ -23,6 +23,7 @@ MANIFEST_FIELDS = (
     "id",
     "label",
     "kind",
+    "family",
     "runtime",
     "display",
     "capabilities",

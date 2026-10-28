@@ -14,6 +14,10 @@ export interface FreshSession {
   /** Started from a specialist (#1693): the version the form saw. The server re-validates it
    *  against this agent and model, takes a capacity slot, and refuses (4422) with its reason. */
   specialist?: { id: string; version: number };
+  /** API first (#1728): `automatic` when this client was its family's DEFAULT on the form, so the
+   *  server refuses it (4412) if the default has moved since; `explicit` for the operator's own
+   *  pick. Absent ⇒ no param — the launch an older form made. */
+  choice?: "automatic" | "explicit";
 }
 
 export function termWsUrl(
@@ -42,6 +46,7 @@ export function termWsUrl(
       params.set("specialist", fresh.specialist.id);
       params.set("specialist_version", String(fresh.specialist.version));
     }
+    if (fresh.choice) params.set("choice", fresh.choice);
   }
   // Per-tab claim (#184): fp + tab let the server's SessionRegistry recognise
   // owner vs secondary; force=1 demotes the current owner.

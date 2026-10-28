@@ -1091,3 +1091,44 @@ textarea.control {
 :root:not([data-motion="full"]) .seg {
   transition: none;
 }
+
+/* --- API first (#1728 Phase 2) ----------------------------------------------------------------- */
+/* "Terminal — unreliable unattended": a NEUTRAL stamp (text-2, the HUD stamp voice). It classifies
+ * what the action targets, never a live state, so it is not a status colour: the automation's own
+ * state keeps its LED and word. */
+.legacyStamp {
+  composes: nj-stamp from global;
+  align-self: flex-start;
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.switchWrap {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+.switchFacts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--sp-1) var(--sp-3);
+  margin: var(--sp-3) 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+.switchFacts dt {
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+.switchFacts dd {
+  margin: 0;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.switchFacts s {
+  color: var(--text-3);
+}

@@ -29,6 +29,9 @@ import {
   useProjects,
 } from "../components/automations/useAutomations";
 import { useEnableFlow } from "../components/automations/useEnableFlow";
+import { LegacyTerminalStamp, SwitchToApiButton } from "../components/automations/SwitchToApi";
+import { useSwitchFlow } from "../components/automations/useSwitchFlow";
+import { engineLabel, useEngineRoster } from "../app/engineRoster";
 import { refreshOrigins } from "../app/automationOrigins";
 import { ApiError, api } from "../lib/api";
 import {
@@ -36,7 +39,9 @@ import {
   errorWords,
   inFlightNote,
   actionLabel,
+  apiSwitchFor,
   duplicateBody,
+  isTerminalTarget,
   needsYou,
   nextRunWords,
   runNowBlock,
@@ -52,7 +57,7 @@ import {
   automationEditPath,
   automationPath,
 } from "../lib/routes";
-import type { Automation, AutomationRun } from "../types/automations";
+import type { Automation, AutomationRun, UnattendedEngine } from "../types/automations";
 import styles from "../components/automations/automations.module.css";
 
 type Filter = "all" | "enabled" | "needs_you" | "off";
@@ -60,6 +65,8 @@ type Filter = "all" | "enabled" | "needs_you" | "off";
 export default function Automations() {
   const navigate = useNavigate();
   const { data, loadedAt, error, loading, reload, applyRow } = useAutomations();
+  // The terminal label and the switch target are asked of the roster (#1728): re-render when it lands.
+  useEngineRoster();
   const projects = useProjects();
   const nowS = useNowS();
   const [q, setQ] = useState("");
@@ -93,6 +100,25 @@ export default function Automations() {
         void reload();
       },
       [reload, applyRow],
+    ),
+  );
+
+  // "Switch to API client" (#1728 Phase 2): the sheet, then the server's consent for an enabled one.
+  const switchFlow = useSwitchFlow(
+    useCallback(
+      (a: Automation) => {
+        applyRow(a);
+        const now = a.action?.kind === "start_session" ? engineLabel(a.action.engine) : "its API client";
+        setNotice({
+          tone: "ok",
+          text: a.enabled
+            ? `“${a.name}” now runs on ${now}, with the scope you approved.`
+            : `“${a.name}” now runs on ${now}. It is off until you enable it.`,
+          note: inFlightNote(a),
+        });
+        void reload();
+      },
+      [applyRow, reload],
     ),
   );
 
@@ -407,6 +433,8 @@ export default function Automations() {
                     loopOn={loopOn}
                     busy={busy === a.id}
                     projectName={projectName}
+                    admitted={data?.engines ?? []}
+                    onSwitch={(engine) => switchFlow.open(a, engine)}
                     onRunNow={() => void runNow(a)}
                     onEnable={() => enable.open(a)}
                     onVerb={(verb, done) => void act(a, () => api.automationVerb(a.id, verb), done)}
@@ -475,6 +503,7 @@ export default function Automations() {
       </div>
 
       {enable.dialog}
+      {switchFlow.dialog}
       {deleting && (
         <ConfirmDialog
           tag="Delete automation"
@@ -507,6 +536,8 @@ function Row({
   loopOn,
   busy,
   projectName,
+  admitted,
+  onSwitch,
   onRunNow,
   onEnable,
   onVerb,
@@ -519,6 +550,9 @@ function Row({
   loopOn: boolean;
   busy: boolean;
   projectName: (id: string) => string;
+  /** What the server admits for unattended use — the switch target's gate (#1728). */
+  admitted: readonly UnattendedEngine[];
+  onSwitch: (engine: string) => void;
   onRunNow: () => void;
   onEnable: () => void;
   onVerb: (verb: "disable" | "pause" | "resume", done: string) => void;
@@ -530,6 +564,8 @@ function Row({
   const next = nextRunWords(a, nowS);
   const block = runNowBlock(a, loopOn);
   const act = a.action;
+  const terminal = isTerminalTarget(act);
+  const switchTo = terminal ? apiSwitchFor(act, admitted) : null;
   const actDetail =
     act?.kind === "start_mission"
       ? AUTONOMY_WORDS[act.autonomy]
@@ -556,6 +592,10 @@ function Row({
         <span className={styles.cellLabel}>Action</span>
         <span>{actionLabel(act?.kind)}</span>
         <small>{actDetail}</small>
+        {terminal && <LegacyTerminalStamp />}
+        {switchTo && (
+          <SwitchToApiButton target={switchTo} busy={busy} onSwitch={() => onSwitch(switchTo.engine)} />
+        )}
       </div>
       <div className={styles.cell}>
         <span className={styles.cellLabel}>Next · last</span>

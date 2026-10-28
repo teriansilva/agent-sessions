@@ -282,7 +282,7 @@ function ReloadRoster() {
     try {
       const d = await api.engines();
       if (!Array.isArray(d?.engines)) throw new Error("not a roster");
-      setRoster(d.engines, Array.isArray(d.problems) ? d.problems : []);
+      setRoster(d.engines, Array.isArray(d.problems) ? d.problems : [], d.families ?? []);
     } catch {
       markRosterFailed();
       setError("Reloaded, but couldn’t read the agent list — showing the last one. Try again.");

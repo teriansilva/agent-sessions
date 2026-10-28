@@ -377,6 +377,17 @@ class Manifest:
     def id(self) -> str:
         return self.identity.id
 
+    @property
+    def family(self) -> str:
+        """The client family (#1728), from what the manifest ALREADY declares — no field of its
+        own: a native API client belongs to the agent its `api.source` names (the agent whose
+        installation it drives); every other manifest is its own family. Never derived by trimming
+        an id, and never claimable: a manifest cannot join another agent's family by saying so,
+        and only a reviewed (first-party or signed) manifest can be runtime `api` at all."""
+        if self.runtime == "api" and self.api is not None:
+            return self.api.source
+        return self.identity.id
+
     def can(self, capability: str) -> bool:
         """Default-deny: an undeclared capability is off."""
         return bool(self.capabilities.get(capability, False))

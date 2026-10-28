@@ -6,3 +6,6 @@
 export const CLOSE_NOT_FOUND = 4404;
 /** Not a terminal session: the engine runs as `api` / `chat`, so the page drew the wrong pane. */
 export const CLOSE_NOT_A_TERMINAL = 4415;
+/** #1728: a fresh launch named its family's AUTOMATIC default, which has moved since the form
+ *  showed it. Nothing was launched; the reason names the new default. */
+export const CLOSE_STALE_DEFAULT = 4412;

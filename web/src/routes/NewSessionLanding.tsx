@@ -6,7 +6,7 @@ import {
   type MouseEvent,
 } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { useConfig } from "../app/config";
+import { useConfig, useConfigRefresh } from "../app/config";
 import { MAP_PATH, useMapWindows } from "../app/workspaceWindows";
 import { ApiError, api } from "../lib/api";
 import { mintNewSessionId } from "../lib/newSession";
@@ -20,11 +20,16 @@ import {
   engineInfo,
   engineLabel,
   engineName,
+  familyMark,
+  familyOf,
   mintsOwnId,
   offeredModels,
+  pickInFamily,
   resolveDefault,
   useEngineRoster,
 } from "../app/engineRoster";
+import { reloadRoster } from "../app/reloadRoster";
+import { readFamilyChoices, rememberFamilyChoice, rememberedFor } from "../lib/familyChoice";
 import { unavailableDefaultNotice } from "../lib/agentDefaults";
 import { levelsOf, resolveSessionDefault } from "../lib/sessionDefaults";
 import { describeLaunchDefaults } from "../lib/launchDefaults";
@@ -55,6 +60,7 @@ import type { SpecialistList } from "../types/specialists";
 import type { WindowSeed } from "../components/overview/useWorkspace";
 import type { FreshSession } from "../lib/termUrl";
 import { openFullScreen, type LaunchOutcome } from "../lib/newSessionLaunch";
+import { STALE_DEFAULT_STATE } from "../components/terminal/SessionOpening";
 import { setupPath } from "../components/plugins/model";
 import button from "../components/ui/actionButton.module.css";
 import styles from "./NewSessionLanding.module.css";
@@ -69,6 +75,13 @@ import styles from "./NewSessionLanding.module.css";
  *  `returnTo: "/overview"` in router state, and then the launch goes back to the MAP as a window
  *  rather than taking over the screen. The form itself stays a page either way — it wants the
  *  room, and a 720×480 window has none to spare. */
+/** A create refused because the family's automatic default moved (#1728): the server's 409
+ *  carries the new default. */
+function isStaleDefault(record: unknown): boolean {
+  const d = (record as { default?: unknown } | undefined)?.default;
+  return !!d && typeof d === "object" && "reason" in d;
+}
+
 /** "12 min old" — how old a kept model list is (#1503). */
 function ageText(minutes: number): string {
   return minutes < 1 ? "less than a minute old" : `${minutes} min old`;
@@ -135,6 +148,14 @@ export function NewSessionForm({
   // Back from the New project wizard (#1187): its router state restores this form as the operator
   // left it, and — on finish only — selects the project just created. Read ONCE, on mount.
   const [restore] = useState(() => readLandingRestore(location.state));
+  // A terminal launch the server refused because its automatic default moved (4412, #1728) comes
+  // back here with the server's words: the form explains it, reloads the agents, and Start is the
+  // operator's deliberate retry. Read ONCE, on mount.
+  const [arrivedStale] = useState(() => {
+    const v = (location.state as Record<string, unknown> | null)?.[STALE_DEFAULT_STATE];
+    return typeof v === "string" && v ? v.slice(0, 300) : null;
+  });
+  const refreshConfig = useConfigRefresh();
   const [engineChoice, setEngineChoice] = useState(
     restore.draft?.engineChoice ?? "",
   );
@@ -237,7 +258,72 @@ export function NewSessionForm({
     ).engine === projectDefaults.engine
       ? projectDefaults.engine
       : null;
-  const engine = engineChoice || projectEngine || defaultChoice.engine || engines[0] || "";
+  // API first (#1728): the default agent picks a FAMILY, and the server's family decision picks
+  // its client — a ready API client, else the console — unless this device remembers the
+  // operator's own pick for that family (`remembered_explicit`; a remembered client that can no
+  // longer start is ignored, `remembered_stale`). A tile picked here, a project's own agent or a
+  // specialist are explicit choices and are never replaced. An older server sends no families:
+  // then nothing here applies and the default is exactly the one before.
+  const [remembered, setRemembered] = useState(() => readFamilyChoices());
+  // Whether the agent on the form was picked by a tile here (rather than a specialist or a draft):
+  // only such a pick is remembered for its family once it starts.
+  const [tilePicked, setTilePicked] = useState(false);
+  // The roster is loaded once per app; readiness moves (a sign-in, an update), so the form asks
+  // again on arrival. The create re-checks anyway, and refuses a default that moved (409 / 4412).
+  useEffect(() => {
+    void reloadRoster();
+  }, []);
+  // The CONFIGURED agent's family decides first: a stored default whose own client cannot start
+  // (an unready API client) stands in with another client of the SAME family (its console), never
+  // with whatever agent happens to come first in roster order. Only when no client of that family
+  // can start does the cross-family fallback (`resolveDefault`) choose — and then its family.
+  const storedDefault = config?.agent_defaults?.default_engine ?? null;
+  const storedFamily = storedDefault ? familyOf(storedDefault) : undefined;
+  const pickFor = (fam: NonNullable<ReturnType<typeof familyOf>>) =>
+    pickInFamily(fam, engines, rememberedFor(remembered, fam.family));
+  const storedPick = storedFamily ? pickFor(storedFamily) : null;
+  const fallbackFamily = defaultChoice.engine ? familyOf(defaultChoice.engine) : undefined;
+  const globalPick = storedPick?.engine ? storedPick : fallbackFamily ? pickFor(fallbackFamily) : null;
+  // The global default as it resolves here: the family's client, else the plain resolver's.
+  const globalEngine = globalPick?.engine ?? defaultChoice.engine;
+  const familyPick = !engineChoice && !projectEngine && globalPick?.engine ? globalPick : null;
+  const engine =
+    engineChoice || projectEngine || familyPick?.engine || defaultChoice.engine || engines[0] || "";
+  // What the create states about the client it names: the family's automatic default (refused by
+  // the server if that default has moved since this screen) or the operator's explicit choice
+  // (honoured while it can start). Unsaid when the server gave no families (an older server).
+  const createChoice: "automatic" | "explicit" | undefined =
+    engineChoice || projectEngine
+      ? familyOf(engine)
+        ? "explicit"
+        : undefined
+      : familyPick?.engine === engine
+        ? familyPick.choice
+        : undefined;
+  // Each family's preselected client carries its mark on its tile (#1728 mockup).
+  const familyMarks: Record<string, { word: string; sub?: string }> = {};
+  for (const fam of roster.families) {
+    const pick = pickInFamily(fam, engines, rememberedFor(remembered, fam.family));
+    const mark = familyMark(pick);
+    if (pick.engine && mark) familyMarks[pick.engine] = mark;
+  }
+  // A pick made on a tile here is remembered for its family once it starts, so an explicit
+  // Terminal pick keeps overriding the API preselection — also when the API client becomes ready
+  // LATER (a Terminal pick made while it stood in as the default is still the operator's choice).
+  // Only an explicit pick of the family's API default forgets it: the default applies again.
+  const noteExplicitPick = () => {
+    if (!tilePicked) return;
+    const fam = familyOf(engine);
+    if (!fam || !fam.clients.some((c) => engineInfo(c)?.runtime === "api")) return;
+    const apiDefault =
+      engine === fam.interactive_default.engine && engineInfo(engine)?.runtime === "api";
+    rememberFamilyChoice(fam.family, apiDefault ? null : engine);
+    setRemembered(readFamilyChoices());
+  };
+  const forgetFamilyPick = (family: string) => {
+    rememberFamilyChoice(family, null);
+    setRemembered(readFamilyChoices());
+  };
   const runtimeOf = (id: string) => engineInfo(id)?.runtime;
   const apiEngines = engines.filter((id) => runtimeOf(id) === "api" || runtimeOf(id) === "chat");
   const consoleEngines = engines.filter((id) => !apiEngines.includes(id));
@@ -410,6 +496,7 @@ export function NewSessionForm({
     }
     const b = bindingOf(option.spec);
     setEngineChoice(b.engine);
+    setTilePicked(false); // the specialist chose this agent, not the operator's own pick
     setModelChoice({ engine: b.engine, model: b.model });
     setEffortChoice({ engine: b.engine, model: b.model, effort: b.effort ?? "default" });
     setApiBypassChoice(null);
@@ -420,7 +507,7 @@ export function NewSessionForm({
   // The restore is one-shot: drop it from the history entry (keeping the map return), so a later
   // Back/Forward onto this entry does not re-select the project or re-apply the draft.
   useEffect(() => {
-    if (!restore.draft && !restore.selectProjectId) return;
+    if (!restore.draft && !restore.selectProjectId && !arrivedStale) return;
     navigate(location.pathname, {
       replace: true,
       state: returnToMap ? { returnTo: MAP_PATH } : null,
@@ -510,7 +597,15 @@ export function NewSessionForm({
       !awaitingRestoredSpecialist,
   );
 
-  const [startError, setStartError] = useState<string | null>(null);
+  const [startError, setStartError] = useState<string | null>(() =>
+    arrivedStale ? `${arrivedStale}. Check the agent above and press Start again.` : null,
+  );
+  useEffect(() => {
+    if (!arrivedStale) return;
+    void reloadRoster();
+    refreshConfig();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on arrival
+  }, []);
   // Chat creation is single-flight (Hermes on #1219): each `/api/chat/new` mints and persists a
   // conversation, so a second click while one is pending would create a duplicate. The ref is
   // the reservation (set before the await, so a same-tick double click is caught); the state
@@ -557,6 +652,7 @@ export function NewSessionForm({
     setStartError(null);
     try {
       const { id: key } = await api.chatNew(engine, cwd);
+      noteExplicitPick();
       if (!mounted.current) return;
       const id = key.slice(key.indexOf(":") + 1);
       openLaunched({ key, engine, id, title: "New session" });
@@ -593,7 +689,9 @@ export function NewSessionForm({
         effort,
         bypass: skip,
         ...(specialist ? { specialist: { id: specialist.id, version: specialist.version } } : {}),
+        ...(createChoice ? { choice: createChoice } : {}),
       });
+      noteExplicitPick();
       if (!mounted.current) return;
       const id = key.slice(key.indexOf(":") + 1);
       openLaunched({ key, engine, id, title: "New session" });
@@ -609,6 +707,14 @@ export function NewSessionForm({
         void structuredModelsStore.revalidate(engine, { force: true });
       }
       if (!mounted.current) return;
+      // The automatic default moved between this screen and Start (#1728): nothing was started.
+      // Ask the roster again, so the form shows the new default, and say so — never launch it
+      // without the operator seeing it.
+      if (e instanceof ApiError && e.status === 409 && isStaleDefault(e.record)) {
+        refreshAgents();
+        setStartError(`${e.message}. Check the agent above and press Start again.`);
+        return;
+      }
       setStartError(
         (e instanceof ApiError && e.message ? e.message : "Couldn’t start that session.") +
           (skip && !(e instanceof ApiError && e.status < 500)
@@ -630,6 +736,43 @@ export function NewSessionForm({
   const openLaunched = (seed: WindowSeed, fresh?: FreshSession) =>
     onLaunched(fresh ? { seed, fresh } : { seed });
 
+  // The agents changed under the form (#1728): ask the server again for the roster AND the startable
+  // list, so the form shows the default it would now choose.
+  const refreshAgents = () => {
+    void reloadRoster();
+    refreshConfig();
+  };
+  const staleWords = (fam: NonNullable<ReturnType<typeof familyOf>>) => {
+    const now = fam.interactive_default.engine;
+    return now
+      ? `The default for ${fam.family} changed to ${engineLabel(now)} since this was shown — nothing was started. Check the agent above and press Start again.`
+      : `The default for ${fam.family} changed and none of its clients can start now — nothing was started.`;
+  };
+  // A terminal launch opens its session page BEFORE the socket is admitted, so an automatic default
+  // is confirmed against the server's CURRENT family decision first (#1728): if it moved, the form
+  // stays, says so, and Start is the operator's deliberate retry. The socket still refuses a
+  // default that moves in the instant between (4412), and that refusal comes back to this form.
+  const startConsoleChecked = async () => {
+    if (chatStarting.current) return;
+    chatStarting.current = true;
+    setStartingChat(true);
+    setStartError(null);
+    try {
+      const fresh = await reloadRoster();
+      if (!mounted.current) return;
+      const fam = familyOf(engine);
+      if (fresh === "ok" && fam && fam.interactive_default.engine !== engine) {
+        refreshConfig();
+        setStartError(staleWords(fam));
+        return;
+      }
+    } finally {
+      chatStarting.current = false;
+      if (mounted.current) setStartingChat(false);
+    }
+    launchConsole();
+  };
+
   const start = () => {
     if (!canStart) return;
     if (engineInfo(engine)?.runtime === "api") {
@@ -640,6 +783,14 @@ export function NewSessionForm({
       void startChat();
       return;
     }
+    if (createChoice === "automatic") {
+      void startConsoleChecked();
+      return;
+    }
+    launchConsole();
+  };
+
+  const launchConsole = () => {
     const id = mintNewSessionId(engine);
     if (!id) return;
     const fresh = {
@@ -647,7 +798,9 @@ export function NewSessionForm({
       bypass,
       ...(model === "default" ? {} : { model }),
       ...(specialist ? { specialist: { id: specialist.id, version: specialist.version } } : {}),
+      ...(createChoice ? { choice: createChoice } : {}),
     };
+    noteExplicitPick();
     // Back to the map as a window, when that is where this came from AND the workspace has room
     // under the operator's cap. The request is queued on the workspace and drained by the canvas
     // once it has mounted and measured — the anchor and the overlay box are facts only the map
@@ -770,15 +923,46 @@ export function NewSessionForm({
               apiEngines={apiEngines}
               unavailable={unavailable}
               value={engine}
-              defaultEngine={defaultChoice.engine ?? ""}
+              defaultEngine={globalEngine ?? ""}
               projectEngine={projectEngine ?? ""}
+              marks={familyMarks}
+              onReaffirm={(id) => {
+                // Choosing the preselected client explicitly: remembered once it starts, and sent
+                // as `explicit`. Model, effort and permission choices stay as they are.
+                setEngineChoice(id);
+                setTilePicked(true);
+              }}
               onChange={(id) => {
                 setEngineChoice(id);
+                setTilePicked(true);
                 dropSpecialist(); // another agent: a plain session
                 setModelChoice(null); // a model belongs to the engine it was chosen for
                 setApiBypassChoice(null); // a skip choice never survives an agent change (Hermes 5913)
               }}
             />
+            {familyPick?.reason === "remembered_explicit" && (
+              <p className={styles.hint} data-testid="new-session-remembered">
+                Remembered: you last chose <b>{engineLabel(familyPick.engine ?? "")}</b> for{" "}
+                {familyPick.family.family} on this device.{" "}
+                <button
+                  type="button"
+                  className={styles.linkButton}
+                  data-testid="new-session-use-default"
+                  onClick={() => forgetFamilyPick(familyPick.family.family)}
+                >
+                  {engineInfo(familyPick.family.interactive_default.engine ?? "")?.runtime === "api"
+                    ? "Use API"
+                    : "Use the default"}
+                </button>
+              </p>
+            )}
+            {familyPick?.stale && (
+              <p className={styles.hint} role="status" data-testid="new-session-remembered-stale">
+                Your last choice for {familyPick.family.family},{" "}
+                <b>{engineLabel(familyPick.stale.engine)}</b>, isn’t used: {familyPick.stale.why}.
+                {familyPick.engine ? ` Starting ${engineLabel(familyPick.engine)} instead.` : ""}
+              </p>
+            )}
           </section>
         )}
         {/* The agent catalog, one tap away (#1739): the same Add-agent flow as Settings → Agents. */}
@@ -925,10 +1109,7 @@ export function NewSessionForm({
 
         {roster.loaded && defaultChoice.unavailableDefault && (
           <p className={styles.hint} role="status">
-            {unavailableDefaultNotice(
-              defaultChoice.unavailableDefault,
-              defaultChoice.engine,
-            )}
+            {unavailableDefaultNotice(defaultChoice.unavailableDefault, globalEngine)}
           </p>
         )}
 
@@ -961,7 +1142,7 @@ export function NewSessionForm({
             <p className={styles.hint} data-testid="new-session-project-defaults">
               <b>{selectedProject.name}</b> starts as{" "}
               {describeLaunchDefaults(projectDefaults, {
-                engine: defaultChoice.engine,
+                engine: globalEngine,
                 bypass: config?.agent_defaults?.bypass ?? true,
               })}
               .{" "}

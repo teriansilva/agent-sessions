@@ -44,6 +44,7 @@ from fastapi import FastAPI, WebSocket
 from .. import (
     agent_tools,
     ai_review_loop,
+    engine_choice,
     engines,
     fsbrowse,
     handoff,
@@ -636,6 +637,21 @@ def register(
                 if not await asyncio.to_thread(_new_cwd_allowed):
                     return await reject(4404)
                 launchtiming.mark("cwd")
+                # API first (#1728): the form sends `choice=automatic` when this client was its
+                # family's DEFAULT on screen. If the default has moved since (an API client became
+                # ready, or this one stopped being the default), nothing is resolved or spawned:
+                # 4412, with the new default named. An explicit pick (or none, an older client)
+                # launches as it always did.
+                try:
+                    stale = await asyncio.to_thread(
+                        engine_choice.stale_for, prov.engine_id, ws.query_params.get("choice")
+                    )
+                except ValueError as e:
+                    return await reject(4422, str(e))  # the finally hands back the lock
+                if stale is not None:
+                    return await reject(
+                        engine_choice.WS_STALE_DEFAULT, engines.family.stale_words(stale)
+                    )
                 # Honor the modal's permission-bypass choice (default on); only "0" is off.
                 bypass = ws.query_params.get("bypass") != "0"
                 # The requested model (#1189), resolved by THE resolver before anything is

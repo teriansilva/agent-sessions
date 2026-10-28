@@ -1588,6 +1588,10 @@ export interface EngineInfo {
   label: string;
   /** `agent` — a coding agent; `terminal` — the plain shell, no agent behind it. */
   kind: "agent" | "terminal" | string;
+  /** The client family (#1728): an API client's `api.source` agent, else its own id. Grouping
+   *  only: which client is a family's default is `EnginesResponse.families`, never derived here. Absent on
+   *  an older server. */
+  family?: string;
   /** How a session runs (#853 §7). `pty` is the only runtime this build has. */
   runtime: "pty" | string;
   display: {
@@ -2102,7 +2106,24 @@ export interface EngineDetail {
 
 export interface EnginesResponse {
   engines: EngineInfo[];
+  /** The server's family decision (#1728). Absent on an older server: no API-first preselection. */
+  families?: EngineFamily[];
   problems?: EngineProblem[];
+}
+
+/** Why a family's base default is the client it is (#1728) — the server's typed reasons. */
+export type FamilyBaseReason = "api_ready" | "api_unready" | "api_absent" | "family_retired";
+
+/** One client family as the server decided it (`/api/engines` → `families`, #1728): its clients
+ *  in display order, the client a new interactive session defaults to and why, the clients
+ *  admitted for unattended work (none until #1273 P3), and why each client that cannot start
+ *  cannot. The SPA reads this; it never re-derives a default or a readiness. */
+export interface EngineFamily {
+  family: string;
+  clients: string[];
+  interactive_default: { engine: string | null; reason: FamilyBaseReason | string };
+  unattended_admitted: string[];
+  reasons: Record<string, string>;
 }
 
 /** Host/system info (Settings → System). Every field is fail-soft server-side, so any

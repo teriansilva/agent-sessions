@@ -54,6 +54,7 @@ from . import (
     template_vars,
 )
 from . import templates as tstore
+from .plugins import kinds
 
 log = logging.getLogger(__name__)
 
@@ -122,12 +123,34 @@ def engine_state(engine: str) -> tuple[bool, str]:
     return True, ""
 
 
+def client_settings_state(action: dict) -> tuple[bool, str]:
+    """An API client target's own settings, checked at save (#1728 "Switch to API client").
+
+    A switch is a fresh consent, never the terminal grant carried over, so what it saves must be
+    something that client can honour: its model is the client's default (an automation's consent
+    covers no model yet, #1189) and "skip permission prompts" only where the client's adapter maps
+    it (`kinds.API_BYPASS_KINDS`, the same set the structured create checks). Asked of the
+    manifest; a console target answers ``(True, "")`` here and keeps its existing checks."""
+    m = engines.manifest_of(action["engine"])
+    if m is None or m.runtime != "api":
+        return True, ""
+    label = m.identity.label
+    if action.get("model") is not None:
+        return False, f"{label} runs its own default model in an automation; choose no model"
+    if action.get("bypass") and (m.api is None or m.api.kind not in kinds.API_BYPASS_KINDS):
+        return False, f"{label} can't skip permission prompts; save it asking before each request"
+    return True, ""
+
+
 def check_save(config: dict) -> None:
     """Save-time checks that need the world (templates, engines, folders). Raises
     ``AutomationError``; blocking — run off the event loop."""
     model.check_template(config)
     action = config["action"]
     if action["kind"] == "start_session":
+        ok, why = client_settings_state(action)
+        if not ok:
+            raise model.AutomationError(why)
         ok, why = engine_state(action["engine"])
         if not ok:
             raise model.AutomationError(why)

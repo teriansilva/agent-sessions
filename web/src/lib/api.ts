@@ -977,11 +977,15 @@ export const api = {
     bypass = false,
     effort?: string,
     specialist?: { id: string; version: number },
+    choice?: "automatic" | "explicit",
   ) =>
     mutateJson<StructuredSnapshot>("POST", "/api/structured/sessions", {
       engine,
       cwd,
       operation_id,
+      // API first (#1728): whether `engine` is its family's automatic default (refused with the
+      // new default if that moved) or the operator's explicit choice. Absent: the create as before.
+      ...(choice ? { choice } : {}),
       ...(model && model !== "default" ? { model } : {}),
       // A level (#1407) only beside a model, and only when chosen: otherwise the request is the
       // one it always was.

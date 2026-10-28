@@ -6,6 +6,7 @@
  *  editor's flat form to the nested body the routes validate strictly — so a field the form does not
  *  own is never sent, and an unknown one can never be. */
 import { ApiError } from "./api";
+import { engineInfo, familyOf, isActive, runsInTerminal } from "../app/engineRoster";
 import type {
   Automation,
   AutomationAction,
@@ -20,6 +21,7 @@ import type {
   RunSummary,
   StripDay,
   Trigger,
+  UnattendedEngine,
   Weekday,
 } from "../types/automations";
 
@@ -606,4 +608,53 @@ export const SCOPE_MOVED_NOTE =
 export function reconsent(next: ConsentRequired, prev: ConsentRequired | null): ConsentRequired {
   if (next.widened !== undefined) return next;
   return { ...next, widened: prev?.widened ?? [] };
+}
+
+// ---- API first: terminal targets and "Switch to API client" (#1728 Phase 2) -------------------------
+
+/** Does this automation start a session in a TERMINAL (a console client)? Asked of the roster's
+ *  runtime — any console target, whatever its history: nothing is stamped on the row. Such an
+ *  automation keeps running (no cutoff before #1728 Phase 3) and is labelled "Terminal —
+ *  unreliable unattended": a terminal has nobody watching it. `false` while the roster is unknown. */
+export function isTerminalTarget(action: AutomationAction | null | undefined): boolean {
+  return action?.kind === "start_session" && runsInTerminal(action.engine) === true;
+}
+
+/** The API client a terminal automation can switch to: its family's API client (the server's
+ *  `families` block), preferring one the server admits for unattended use (`engines[].ok`, the
+ *  same check that refuses the save). `null` when the family has no API client — then there is
+ *  nothing to switch to and no button. `ok: false` carries the server's reason: the button is
+ *  shown, disabled, saying why — never a terminal fallback. */
+export function apiSwitchFor(
+  action: AutomationAction | null | undefined,
+  admitted: readonly UnattendedEngine[],
+): { engine: string; ok: boolean; reason: string } | null {
+  if (!action || action.kind !== "start_session" || !isTerminalTarget(action)) return null;
+  const family = familyOf(action.engine);
+  if (!family) return null;
+  const apiClients = family.clients.filter((c) => {
+    const info = engineInfo(c);
+    return !!info && info.runtime === "api" && isActive(info);
+  });
+  if (apiClients.length === 0) return null;
+  const ok = apiClients.find((c) => admitted.some((e) => e.id === c && e.ok));
+  if (ok) return { engine: ok, ok: true, reason: "" };
+  const first = apiClients[0];
+  const why =
+    admitted.find((e) => e.id === first)?.reason ||
+    family.reasons[first] ||
+    "it can’t be started unattended yet";
+  return { engine: first, ok: false, reason: why };
+}
+
+/** The body "Switch to API client" saves through the ordinary validated `PATCH`: the same action
+ *  on the API client, on its default model, asking before each request. The terminal's permission
+ *  grant is NEVER carried over — a switch is a fresh consent (the server re-asks for an enabled
+ *  automation, and validates the client's own model and permission settings). */
+export function switchBody(
+  a: Automation,
+  engine: string,
+): { revision: number; action: AutomationAction } | null {
+  if (!a.action || a.action.kind !== "start_session") return null;
+  return { revision: a.revision, action: { ...a.action, engine, model: null, bypass: false } };
 }

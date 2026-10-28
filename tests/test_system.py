@@ -45,7 +45,8 @@ def test_engines_lists_all_providers(auth_cfg, fake_jsonl, tmp_home, monkeypatch
     r = c.get("/api/engines")
     assert r.status_code == 200
     d = r.json()
-    assert set(d) == {"engines", "problems"} and d["problems"] == []
+    # #1728 — `families`: each family's clients, base default and reasons, from the same rows.
+    assert set(d) == {"engines", "problems", "families"} and d["problems"] == []
     ids = {e["id"] for e in d["engines"]}
     # every registered provider is reported, present or not
     assert ids == {p.engine_id for p in engines.all_providers()}
@@ -75,8 +76,11 @@ def test_engines_lists_all_providers(auth_cfg, fake_jsonl, tmp_home, monkeypatch
             "terminal",
             "status",
             "status_reason",
+            # #1728 — derived: an API client's `api.source`, else its own id.
+            "family",
         }
         m = engines.get(e["id"]).manifest
+        assert e["family"] == m.family
         assert e["label"] == m.identity.label and e["kind"] == m.identity.kind
         assert e["runtime"] == m.runtime  # `pty`, or `chat` for the API agent (#1209)
         assert e["display"] == {

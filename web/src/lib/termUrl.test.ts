@@ -90,3 +90,15 @@ test("a fresh launch from a specialist names its id and version (#1693)", () => 
   expect(plain.has("specialist")).toBe(false);
   expect(plain.has("specialist_version")).toBe(false);
 });
+
+test("a fresh launch carries its client provenance (#1728) only when the form stated one", () => {
+  const q = (choice?: "automatic" | "explicit") =>
+    new URL(
+      termWsUrl("claude", "id1", 0, { cwd: "/p", bypass: false, ...(choice ? { choice } : {}) }).replace(/^ws/, "http"),
+    ).searchParams;
+  expect(q("automatic").get("choice")).toBe("automatic");
+  expect(q("explicit").get("choice")).toBe("explicit");
+  expect(q().has("choice")).toBe(false);
+  // An attach never carries it.
+  expect(termWsUrl("claude", "id1", 0)).not.toContain("choice");
+});

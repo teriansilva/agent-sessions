@@ -35,7 +35,9 @@ export function AgentTiles({
   value,
   defaultEngine,
   projectEngine = "",
+  marks = {},
   onChange,
+  onReaffirm,
 }: {
   consoleEngines: string[];
   apiEngines: string[];
@@ -44,10 +46,19 @@ export function AgentTiles({
   defaultEngine: string;
   /** The selected project's own agent (#1508), badged `project` — it outranks the global default. */
   projectEngine?: string;
+  /** Each family's preselected client (#1728): `default` (its API client is ready), `default here`
+   *  (the console stands in for an unavailable API client) or `remembered` (this device's own
+   *  pick), with a line saying why. The server's family decision, never derived here. */
+  marks?: Record<string, { word: string; sub?: string }>;
   onChange: (id: string) => void;
+  /** A tap on the tile that is ALREADY selected (#1728): the operator choosing the preselected
+   *  client explicitly — e.g. Terminal while it stands in for an unready API client — so the pick
+   *  can be remembered. Nothing else about the form changes (a radio fires no change for it). */
+  onReaffirm?: (id: string) => void;
 }) {
   const tile = (id: string) => {
     const sub = agentSubtitle(id);
+    const mark = id === projectEngine ? undefined : marks[id];
     return (
       <label
         key={id}
@@ -62,16 +73,24 @@ export function AgentTiles({
           value={id}
           checked={value === id}
           onChange={() => onChange(id)}
+          onClick={() => {
+            if (value === id) onReaffirm?.(id);
+          }}
         />
         <span className={styles.tileName}>
           {engineLabel(id)}
           {id === projectEngine ? (
             <span className={styles.badge}>project</span>
+          ) : mark ? (
+            <span className={styles.badge} data-testid="new-session-family-mark">
+              {mark.word}
+            </span>
           ) : (
             id === defaultEngine && !projectEngine && <span className={styles.badge}>default</span>
           )}
         </span>
         {sub && <span className={styles.tileSub}>{sub}</span>}
+        {mark?.sub && <span className={styles.tileSub}>{mark.sub}</span>}
       </label>
     );
   };

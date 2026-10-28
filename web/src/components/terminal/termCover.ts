@@ -1,5 +1,5 @@
 import type { LookupPhase } from "../../app/sessionsStore";
-import { CLOSE_NOT_FOUND } from "../../lib/termCloseCodes";
+import { CLOSE_NOT_FOUND, CLOSE_STALE_DEFAULT } from "../../lib/termCloseCodes";
 import type { TermStatus } from "../../lib/termSocket";
 
 /** What covers the terminal area instead of its status chip (#1502), from the socket status and
@@ -14,15 +14,19 @@ import type { TermStatus } from "../../lib/termSocket";
  *  - 4404 once the lookup settled `missing`: the real "This session was not found".
  *  - 4404 with the lookup `failed` (a transient error, re-asked): never "not found" — an honest
  *    "couldn't check" in the chip.
+ *  - 4412 (#1728): the launch's automatic default moved; nothing started — `stale-default`, which
+ *    hands the refusal back to the New session form.
  *  - anything else: the chip as before (a 4404 for a session whose row exists still reads
  *    "session not found or ended": its master is gone). */
-export type TermCover = "opening" | "reopening" | "missing" | null;
+export type TermCover = "opening" | "reopening" | "missing" | "stale-default" | null;
 export function termCover(
   status: TermStatus,
   lookup: LookupPhase | null,
   aliased = false,
 ): TermCover {
   if (status.kind === "wrong-runtime") return "reopening";
+  // 4412 (#1728): a fresh launch's automatic default moved — nothing started; back to the form.
+  if (status.kind === "rejected" && status.code === CLOSE_STALE_DEFAULT) return "stale-default";
   if (status.kind !== "rejected" || status.code !== CLOSE_NOT_FOUND) return null;
   if (lookup === "pending" || (lookup === "found" && aliased)) return "opening";
   if (lookup === "missing") return "missing";

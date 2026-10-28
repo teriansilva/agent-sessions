@@ -129,11 +129,20 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     ) -> JSONResponse:
         body = await _json(
             request,
-            {"engine", "cwd", "operation_id", "model", "effort", "bypass", "specialist"},
+            {"engine", "cwd", "operation_id", "model", "effort", "bypass", "specialist", "choice"},
             {"engine", "cwd", "operation_id"},
         )
         if not isinstance(body["engine"], str):
             raise HTTPException(status_code=422, detail="engine must be a string")
+        # API first (#1728): a create of the AUTOMATIC default the form showed is refused, with the
+        # new default, once its family's default moved; an explicit choice is honoured as before.
+        from .. import engine_choice
+
+        stale = await engine_choice.refuse_stale(
+            body["engine"], body.get("choice"), body["operation_id"]
+        )
+        if stale is not None:
+            return stale
         if not isinstance(body.get("bypass", False), bool):
             raise HTTPException(status_code=422, detail="bypass must be a boolean")
         if body.get("effort") is not None and not isinstance(body["effort"], str):

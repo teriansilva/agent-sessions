@@ -10,6 +10,7 @@
       "bin": "/fixture/bin/claude",
       "label": "Claude Code",
       "kind": "agent",
+      "family": "claude",
       "runtime": "pty",
       "api": null,
       "display": {
@@ -145,6 +146,7 @@
       "bin": null,
       "label": "Claude — API",
       "kind": "agent",
+      "family": "claude",
       "runtime": "api",
       "api": {
         "kind": "claude-stream-json",
@@ -203,6 +205,7 @@
       "bin": "/fixture/bin/opencode",
       "label": "opencode",
       "kind": "agent",
+      "family": "opencode",
       "runtime": "pty",
       "api": null,
       "display": {
@@ -258,6 +261,7 @@
       "bin": null,
       "label": "opencode — API",
       "kind": "agent",
+      "family": "opencode",
       "runtime": "api",
       "api": {
         "kind": "opencode-acp",
@@ -316,6 +320,7 @@
       "bin": "/fixture/bin/codex",
       "label": "Codex",
       "kind": "agent",
+      "family": "codex",
       "runtime": "pty",
       "api": null,
       "display": {
@@ -395,6 +400,7 @@
       "bin": null,
       "label": "Codex — API",
       "kind": "agent",
+      "family": "codex",
       "runtime": "api",
       "api": {
         "kind": "codex-app-server",
@@ -453,6 +459,7 @@
       "bin": "/fixture/bin/gemini",
       "label": "Gemini CLI",
       "kind": "agent",
+      "family": "gemini",
       "runtime": "pty",
       "api": null,
       "display": {
@@ -532,6 +539,7 @@
       "bin": "/fixture/bin/copilot",
       "label": "GitHub Copilot CLI",
       "kind": "agent",
+      "family": "copilot",
       "runtime": "pty",
       "api": null,
       "display": {
@@ -601,6 +609,7 @@
       "bin": null,
       "label": "Copilot — API",
       "kind": "agent",
+      "family": "copilot",
       "runtime": "api",
       "api": {
         "kind": "copilot-acp",
@@ -659,6 +668,7 @@
       "bin": "/fixture/bin/agy",
       "label": "Antigravity",
       "kind": "agent",
+      "family": "antigravity",
       "runtime": "pty",
       "api": null,
       "display": {
@@ -714,6 +724,7 @@
       "bin": "/fixture/bin/kimi",
       "label": "Kimi Code",
       "kind": "agent",
+      "family": "kimi",
       "runtime": "pty",
       "api": null,
       "display": {
@@ -769,6 +780,7 @@
       "bin": null,
       "label": "API agent",
       "kind": "agent",
+      "family": "apichat",
       "runtime": "chat",
       "api": null,
       "display": {
@@ -822,6 +834,7 @@
       "bin": "/fixture/bin/bash",
       "label": "Shell",
       "kind": "terminal",
+      "family": "shell",
       "runtime": "pty",
       "api": null,
       "display": {

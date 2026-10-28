@@ -428,3 +428,10 @@ describe("receive watchdog (#1570)", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 });
+
+test("a stale automatic default (4412, #1728) shows the server's words naming the new default", () => {
+  expect(rejectReason(4412, "the default changed to Claude — API since this was shown — nothing was started")).toBe(
+    "the default changed to Claude — API since this was shown — nothing was started",
+  );
+  expect(rejectReason(4412, "")).toBe("the default agent changed since you chose — nothing was started");
+});
