@@ -34,3 +34,11 @@ textarea.input { min-height: 180px; resize: vertical; }
   .terminal { height: 280px; }
   .row > button, .row > a { flex: 1 1 auto; }
 }
+/* The flow embedded in the setup wizard (#1739): step chips instead of the shell's rail. */
+.embedded { display: grid; gap: 12px; min-width: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.chips li { padding: 4px 8px; border: 1px solid var(--line); font: 600 var(--fs-micro) var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--text-3); }
+.chips li[data-state="done"] { color: var(--ok-text); border-color: var(--line-strong); }
+.chips li[data-state="current"] { color: var(--accent-text); border-color: var(--accent); }
+.embeddedHeading { margin: 0; font: 700 var(--fs-row) var(--font-display); letter-spacing: .12em; text-transform: uppercase; color: var(--text); }
+.embeddedHeading:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }

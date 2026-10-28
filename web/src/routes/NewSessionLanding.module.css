@@ -435,3 +435,12 @@
   opacity: 0.55;
   cursor: progress;
 }
+/* "+ Add agent" (#1739): the agent catalog one tap away, quiet beside the form's own choices. */
+.addAgentRow {
+  display: flex;
+  justify-content: flex-start;
+}
+.addAgent {
+  padding: 0 var(--sp-3);
+  color: var(--accent-text);
+}

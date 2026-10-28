@@ -374,3 +374,66 @@ export function resolveDefault(
     unavailableDefault: stored ? stored : null,
   };
 }
+
+// --- the default client: API first (#1739) -------------------------------------------------------
+//
+// THE ONE rule for which client a new session uses when nothing else has been chosen: a READY API
+// client first, otherwise a console (terminal) client. An API client that cannot start is never
+// dropped: it comes back with its reason. The pairing of an API client with its console agent is
+// the API client's own manifest (`api.source`), never a list kept here. #1728's server resolver
+// (`default_client` / `families`) replaces this helper when it lands; there is never a second rule.
+
+/** An API client that cannot start a session right now, and why. */
+export interface UnreadyClient {
+  id: string;
+  label: string;
+  reason: string;
+}
+
+export interface ClientChoices {
+  /** Ready API clients, in roster order. */
+  api: string[];
+  /** Ready console clients (terminal sessions), in roster order. */
+  terminal: string[];
+  /** API clients that cannot start, each with its reason (#1311: absent is explained, never silent). */
+  unready: UnreadyClient[];
+  /** The client to preselect: the first ready API client, else the first console one, else null. */
+  preselect: string | null;
+}
+
+/** The API client that drives console agent `source`, when the roster has one. */
+export function apiClientOf(
+  engines: readonly EngineInfo[],
+  source: string,
+): EngineInfo | undefined {
+  return engines.find(
+    (e) => e.runtime === "api" && !!e.api?.source && e.api.source === source && e.id !== source,
+  );
+}
+
+/** Split the startable engines into API-first choices. `startable` is the server's answer
+ *  (`/api/config.new_session_engines`); `unavailable` its list of API clients that cannot start
+ *  (`unavailable_clients`). Chat clients (an endpoint, not an agent CLI) are neither group. */
+export function clientChoices(
+  engines: readonly EngineInfo[],
+  startable: readonly string[],
+  unavailable: readonly UnreadyClient[] = [],
+): ClientChoices {
+  const can = new Set(startable);
+  const ready = (e: EngineInfo) => can.has(e.id) && eligibleFor(e, "new");
+  const api = engines.filter((e) => e.runtime === "api" && ready(e)).map((e) => e.id);
+  const terminal = engines.filter((e) => e.runtime === "pty" && ready(e)).map((e) => e.id);
+  const unready: UnreadyClient[] = [];
+  const seen = new Set(api);
+  for (const c of unavailable) {
+    if (seen.has(c.id)) continue;
+    seen.add(c.id);
+    unready.push({ id: c.id, label: c.label, reason: c.reason });
+  }
+  for (const e of engines) {
+    if (e.runtime !== "api" || seen.has(e.id) || !isActive(e)) continue;
+    seen.add(e.id);
+    unready.push({ id: e.id, label: e.label, reason: e.api?.unavailable_reason || "not ready" });
+  }
+  return { api, terminal, unready, preselect: api[0] ?? terminal[0] ?? null };
+}

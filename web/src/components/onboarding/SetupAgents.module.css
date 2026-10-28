@@ -1,0 +1,105 @@
+/* The setup wizard's Agents step (#1739). NIGHTJAR tokens only (docs/design.md): no radius on boxes,
+   no gradients, status colour only for state (an LED and a word), 44px targets, one column on a
+   phone, nothing wider than the viewport. */
+
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* A plate (the chamfered `nj-plate`), quiet edge. */
+.item {
+  composes: nj-plate from global;
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--line-strong);
+  border: 1px solid transparent;
+  min-width: 0;
+}
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 10px 12px;
+  min-height: 56px;
+}
+.who {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.name {
+  font-family: var(--font-display);
+  font-size: var(--fs-row);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.chip {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  color: var(--text-2);
+}
+/* The client a new session uses: the accent edge marks the DEFAULT, not a state. */
+.chipDefault {
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+.sub {
+  flex-basis: 100%;
+  min-width: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.end {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+/* The Add-agent flow, inline under its row. */
+.flow {
+  padding: 12px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-1);
+  min-width: 0;
+}
+.note {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--status-degraded);
+  background: var(--bg-2);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+}
+.wait {
+  padding: 16px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+
+@media (max-width: 800px) {
+  .row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .end {
+    justify-content: space-between;
+  }
+  .end > button {
+    flex: 1 1 auto;
+  }
+}

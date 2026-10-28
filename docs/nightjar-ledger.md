@@ -78,6 +78,7 @@ the same list.
 | `components/playbooks/playbookPrompts.module.css` | css | 10 | done | route:playbook-step | fields light their edge on hover/focus (colour only); no ambient motion |
 | `components/playbooks/playbooks.module.css` | css | 10 | done | route:playbooks route:playbook-detail popup:playbook-delete canvas:playbook-flow | dossier cards arrive once (slide + tint flash, Full; at rest in Reduced/Off) |
 | `components/playbooks/ProjectPlaybook.module.css` | css | 10 | todo |  |  |
+| `components/onboarding/SetupAgents.module.css` | css | 11 | todo | no sweep id yet: the first-run wizard is not reachable by the sweep; `e2e/onboarding-agents.spec.ts` drives it desktop + mobile | none of its own: the inline Add-agent flow opens in place, status LEDs steady, the default client is an accent edge, never motion |
 | `components/plugins/PluginSetup.module.css` | css | 11 | done | route:agent-add | none of its own (the wizard rail is Phase 4's WizardShell) |
 | `components/ProjectColorPicker.module.css` | css | 10 | todo |  |  |
 | `components/projects/ProjectSessionDefaults.module.css` | css | 10 | todo |  |  |
@@ -163,6 +164,7 @@ the same list.
 | `components/FolderPickerModal.tsx` | popup | 3 | done | popup:folder-picker | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/links/OpenLinkDialog.tsx` | popup | 3 | done | popup:open-link | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/newSession/NewSessionControls.tsx` | popup | 6 | done | route:new-session newsession:loading newsession:list-failed newsession:no-folder newsession:no-project newsession:many newsession:api | route sector fade (App); tile lock-on (one-shot `nj-glitch-step` as a tile is chosen, Full only); Start press glitch (`.shine`, Full only); `nj-skeleton` scan band on the loading rows (Full only); edge and fill transitions at `--t-fast`; nothing moves in Off |
+| `components/onboarding/SetupAgents.tsx` | popup | 11 | todo | no sweep id yet: the "Leave sign-in?" confirm is the shared ConfirmDialog, driven by `e2e/onboarding-agents.spec.ts` desktop + mobile | the shared ConfirmDialog's: deploy-in, scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/overview/SessionTextDialog.tsx` | popup | 3 | done | popup:session-text | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/playbooks/PlaybookDialog.tsx` | popup | 3 | done | popup:playbook-delete | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/pulse/MissionConsole.tsx` | popup | 8 | done | mission:console mission:details-band mission:question | the details band fades in when opened (≤1399px); disclosures expand by grid rows; the header state chip flashes once on a change; the question card deploys in |

@@ -483,3 +483,88 @@
   gap: 10px;
   align-items: center;
 }
+
+/* Launch step (#1739): the clients a first session can use, API first. One radio row per client,
+   the whole row its 44px target; the default is marked by the accent edge, never a status colour. */
+.clients {
+  composes: nj-plate from global;
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--line-strong);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid transparent;
+  margin-bottom: 13px;
+  min-width: 0;
+}
+.clientGroup {
+  padding: 10px 14px 2px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.client {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  min-width: 0;
+}
+.client:last-child {
+  border-bottom: 0;
+}
+.client input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+.clientOff {
+  cursor: default;
+  color: var(--text-3);
+}
+.clientText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.clientName {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-display);
+  font-size: var(--fs-row);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.clientOff .clientName {
+  color: var(--text-2);
+}
+.clientDefault {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  padding: 1px 6px;
+  border: 1px solid var(--accent);
+  color: var(--accent-text);
+}
+.clientSub {
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+/* The skip disclosure on an API launch (#1739): what the choice turns off, beside the choice. */
+.warn {
+  margin: 0 0 13px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--status-degraded);
+  background: var(--bg-2);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+}

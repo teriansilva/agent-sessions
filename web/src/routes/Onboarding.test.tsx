@@ -4,7 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx, ConfigRefreshCtx } from "../app/config";
 import { api, ApiError } from "../lib/api";
-import type { AppConfig } from "../types/api";
+import type { AppConfig, EngineInfo } from "../types/api";
 import { resetHqChoiceStore } from "../components/hq/hqChoiceStore";
 import { Onboarding } from "./Onboarding";
 
@@ -30,6 +30,10 @@ vi.mock("../lib/api", () => ({
     // #1009: the Usage analytics step saves through this, and reconciles a failure with config().
     setAnalyticsConsent: vi.fn(),
     config: vi.fn(),
+    // #1739: the Agents step reads the catalog; the Launch step creates an API session.
+    plugins: vi.fn(),
+    structuredCreate: vi.fn(),
+    structuredStart: vi.fn(),
   },
   ApiError: class ApiError extends Error {
     status: number;
@@ -119,6 +123,19 @@ beforeEach(() => {
   vi.mocked(api.aiReviewModels).mockReset().mockResolvedValue({ models: [] });
   vi.mocked(api.completeOnboarding).mockReset().mockResolvedValue({});
   vi.mocked(api.setAnalyticsConsent).mockReset();
+  vi.mocked(api.plugins)
+    .mockReset()
+    .mockResolvedValue({
+      feed: { state: "ready", error: null },
+      catalog: [],
+      plugins: [],
+      operations: [],
+      roster_generation: 1,
+      roster_revision: null,
+    });
+  vi.mocked(api.structuredCreate).mockReset();
+  vi.mocked(api.structuredStart).mockReset().mockResolvedValue({} as never);
+  sessionStorage.clear();
   vi.mocked(api.config).mockReset();
   vi.mocked(api.createProject)
     .mockReset()
@@ -133,13 +150,46 @@ beforeEach(() => {
     });
 });
 
-test("welcome → security → agents lists discovered engines from /api/engines", async () => {
+test("welcome → security → agents lists the roster's agents and the catalog's, each with its client (#1739)", async () => {
+  vi.mocked(api.plugins).mockResolvedValue({
+    feed: { state: "ready", error: null },
+    catalog: [
+      {
+        manifest: {
+          identity: { id: "newcomer", label: "Newcomer CLI", publisher: "Example", version: "1.0.0" },
+          runtime: { kind: "pty" },
+        },
+        digest: "d",
+      },
+      {
+        manifest: {
+          identity: { id: "blocked", label: "Blocked CLI", publisher: "Example", version: "2.0.0" },
+          runtime: { kind: "pty" },
+        },
+        digest: "e",
+        installable: false,
+        reason: "not offered for this platform",
+      },
+      {
+        manifest: {
+          identity: { id: "lone-api", label: "Lone API", publisher: "Example", version: "1.0.0" },
+          runtime: { kind: "api" },
+          api: { kind: "x", source: "nowhere" },
+        },
+        digest: "f",
+      },
+    ],
+    plugins: [],
+    operations: [],
+    roster_generation: 1,
+    roster_revision: null,
+  });
   renderWizard();
   expect(
     screen.getByRole("heading", { name: /welcome, commander/i }),
   ).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: /get started/i }));
-  // #675: the new Security step sits between Welcome and Connected agents.
+  // #675: the new Security step sits between Welcome and Agents.
   expect(
     screen.getByRole("heading", { name: /secure your deck/i }),
   ).toBeInTheDocument();
@@ -148,8 +198,105 @@ test("welcome → security → agents lists discovered engines from /api/engines
   ).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: /^continue$/i }));
   expect(await screen.findByText("claude")).toBeInTheDocument();
-  expect(screen.getByText("gemini")).toBeInTheDocument();
-  expect(screen.getByText(/not found/i)).toBeInTheDocument();
+  const list = screen.getByRole("list", { name: "Agents" });
+  // claude's API client is in the roster but not ready: "API available", with the reason.
+  const claude = within(list).getByText("claude").closest("li")!;
+  expect(within(claude).getByText("API available")).toBeInTheDocument();
+  expect(claude).toHaveTextContent(/2\.1\.287 or later is required/);
+  // An agent with no API client at all.
+  const gemini = within(list).getByText("gemini").closest("li")!;
+  expect(within(gemini).getByText("Terminal only")).toBeInTheDocument();
+  // A catalog agent this host lacks: Not installed, with an inline Install.
+  const newcomer = within(list).getByText("Newcomer CLI").closest("li")!;
+  expect(newcomer).toHaveTextContent(/not installed/i);
+  // Every catalog agent is a row (Hermes 7251): one this host can't install says why, no Install…
+  const blocked = within(list).getByText("Blocked CLI").closest("li")!;
+  expect(blocked).toHaveTextContent(/unavailable/i);
+  expect(blocked).toHaveTextContent("not offered for this platform");
+  expect(within(blocked).queryByRole("button")).not.toBeInTheDocument();
+  // …and an API client whose console agent is nowhere is listed on its own.
+  expect(within(list).getByText("Lone API")).toBeInTheDocument();
+  await userEvent.click(within(newcomer).getByRole("button", { name: /install/i }));
+  // The Add-agent flow opens INLINE, fixed on that agent — setup is not left.
+  const flow = await screen.findByRole("region", { name: /set up newcomer cli/i });
+  expect(within(flow).getByRole("button", { name: /review installation/i })).toBeInTheDocument();
+  expect(within(flow).queryByRole("combobox")).not.toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: /your agents/i })).toBeInTheDocument();
+  expect(mockNavigate).not.toHaveBeenCalled();
+});
+
+test("a catalog refresh that fails after a good read withdraws every install action (#1739)", async () => {
+  const good = {
+    feed: { state: "ready" as const, error: null },
+    catalog: [
+      {
+        manifest: {
+          identity: { id: "newcomer", label: "Newcomer CLI", publisher: "Example", version: "1.0.0" },
+          runtime: { kind: "pty" as const },
+        },
+        digest: "d",
+      },
+    ],
+    plugins: [],
+    operations: [],
+    roster_generation: 1,
+    roster_revision: null,
+  };
+  vi.mocked(api.plugins)
+    .mockResolvedValueOnce(good) // the wizard opens
+    .mockResolvedValueOnce(good) // the Agents step, first visit
+    .mockRejectedValue(new Error("feed unreachable")); // every later read
+  renderWizard();
+  await userEvent.click(screen.getByRole("button", { name: /get started/i }));
+  await userEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+  expect(await screen.findByRole("button", { name: /install: newcomer cli/i })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i })); // → ai
+  await userEvent.click(screen.getByRole("button", { name: /^back$/i })); // → agents: re-read fails
+  expect(await screen.findByRole("alert")).toHaveTextContent(/couldn’t load the agent catalog/i);
+  expect(screen.getByText("Newcomer CLI")).toBeInTheDocument(); // the row stays…
+  expect(screen.queryByRole("button", { name: /install/i })).not.toBeInTheDocument(); // …inert
+});
+
+test("an older catalog read answering after a newer failed one changes nothing (#1739)", async () => {
+  let older!: (v: unknown) => void;
+  vi.mocked(api.plugins)
+    .mockReturnValueOnce(new Promise((r) => (older = r)) as never) // the wizard opens: held
+    .mockRejectedValue(new Error("feed unreachable")); // the Agents step's newer read fails
+  renderWizard();
+  await userEvent.click(screen.getByRole("button", { name: /get started/i }));
+  await userEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(/couldn’t load the agent catalog/i);
+  await act(async () =>
+    older({
+      feed: { state: "ready", error: null },
+      catalog: [
+        {
+          manifest: {
+            identity: { id: "newcomer", label: "Newcomer CLI", publisher: "Example", version: "1.0.0" },
+            runtime: { kind: "pty" },
+          },
+          digest: "d",
+        },
+      ],
+      plugins: [],
+      operations: [],
+      roster_generation: 1,
+      roster_revision: null,
+    }),
+  );
+  expect(screen.getByRole("alert")).toHaveTextContent(/couldn’t load the agent catalog/i);
+  expect(screen.queryByText("Newcomer CLI")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /install/i })).not.toBeInTheDocument();
+});
+
+test("the Agents step says when the catalog couldn't load and still lists the host's agents (#1739)", async () => {
+  vi.mocked(api.plugins).mockRejectedValue(new Error("feed unreachable"));
+  renderWizard();
+  await userEvent.click(screen.getByRole("button", { name: /get started/i }));
+  await userEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+  expect(await screen.findByText("claude")).toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent(/couldn’t load the agent catalog/i);
+  expect(screen.queryByRole("button", { name: /^install/i })).not.toBeInTheDocument();
 });
 
 test("security step: login-off (relay) shows the skip panel + how-to-enable-login, not 2FA", async () => {
@@ -591,11 +738,168 @@ test("usage analytics: skipping setup records no analytics decision", async () =
   expect(api.setAnalyticsConsent).not.toHaveBeenCalled();
 });
 
-test("an API client is not offered by the first-run launch, which starts a terminal session (#1311)", async () => {
-  renderWizard(vi.fn(), cfg({ new_session_engines: ["codex-api", "claude"] }));
+// ---- #1739: API first — a ready API client is preselected and its session is created ----
+
+/** The fixture roster with `id`'s API client READY (present, can start). */
+async function withReadyApi(id: string) {
+  const { setRoster } = await import("../app/engineRoster");
+  const fixture = (await import("../test/roster.fixture.json")).default;
+  setRoster(
+    (fixture.engines as EngineInfo[]).map((e) =>
+      e.id === id
+        ? { ...e, present: true, supports_new: true, api: { ...e.api!, unavailable_reason: null } }
+        : e,
+    ),
+  );
+}
+
+test("Launch preselects a ready API client and creates its session before setup completes (#1739)", async () => {
+  await withReadyApi("codex-api");
+  vi.mocked(api.structuredCreate).mockResolvedValue({ session_key: "codex-api:made-1" } as never);
+  const onClose = renderWizard(vi.fn(), cfg({ new_session_engines: ["claude", "codex-api"] }));
+  await gotoLaunchStep();
+  await finishTourToLaunch();
+  const picker = screen.getByRole("radiogroup", { name: "Agent" });
+  expect(within(picker).getByRole("radio", { name: /codex — api/i })).toBeChecked();
+  // The terminal client stays one tap away; an API client that can't start says why.
+  expect(within(picker).getByRole("radio", { name: /claude code/i })).not.toBeChecked();
+  expect(within(picker).getAllByTestId("setup-launch-unready")[0]).toHaveTextContent(/not ready:/i);
+  await userEvent.click(screen.getByRole("button", { name: /launch session/i }));
+  await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/s/codex-api/made-1"));
+  const [engine, cwd, operation] = vi.mocked(api.structuredCreate).mock.calls[0];
+  expect([engine, cwd]).toEqual(["codex-api", "/home/u/battlelab"]);
+  expect(typeof operation).toBe("string");
+  expect(api.completeOnboarding).toHaveBeenCalled();
+  expect(onClose).toHaveBeenCalled();
+  // No stored skip default in the config: an API client FAILS CLOSED, as in New session — a guarded
+  // create, nothing started behind the operator's back (#1339/#1473), and no manual untick needed.
+  expect(vi.mocked(api.structuredCreate).mock.calls[0][4]).toBe(false);
+  expect(api.structuredStart).not.toHaveBeenCalled();
+});
+
+test("an API client skips prompts only when the loaded config's stored default says so (#1739)", async () => {
+  await withReadyApi("codex-api");
+  vi.mocked(api.structuredCreate).mockResolvedValue({ session_key: "codex-api:made-3" } as never);
+  renderWizard(
+    vi.fn(),
+    cfg({ new_session_engines: ["codex-api"], agent_defaults: { bypass: true } } as Partial<AppConfig>),
+  );
+  await gotoLaunchStep();
+  await finishTourToLaunch();
+  expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).toBeChecked();
+  // Pre-ticked by the stored default, so the consequence is said before Launch — as New session
+  // does — and the client's line no longer promises approvals (Hermes 7265).
+  expect(screen.getByTestId("setup-api-bypass-warning")).toHaveTextContent(/without its sandbox/);
+  expect(screen.getByRole("radio", { name: /codex — api/i }).closest("label")).toHaveTextContent(
+    /no approval prompts, no sandbox/,
+  );
+  await userEvent.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
+  expect(screen.queryByTestId("setup-api-bypass-warning")).not.toBeInTheDocument();
+  expect(screen.getByRole("radio", { name: /codex — api/i }).closest("label")).toHaveTextContent(
+    /approvals in the pane/,
+  );
+  await userEvent.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
+  await userEvent.click(screen.getByRole("button", { name: /launch session/i }));
+  await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/s/codex-api/made-3"));
+  // A skip create: two-phase, started only once the create answered, under its key (#1339).
+  expect(vi.mocked(api.structuredCreate).mock.calls[0][4]).toBe(true);
+  expect(api.structuredStart).toHaveBeenCalledWith("codex-api:made-3");
+});
+
+test("a create that answers after setup was closed opens nothing, starts nothing and completes nothing more (#1739)", async () => {
+  await withReadyApi("codex-api");
+  let answer!: (v: unknown) => void;
+  vi.mocked(api.structuredCreate).mockReturnValue(new Promise((r) => (answer = r)) as never);
+  // A stored skip default: the create is a skip create, which must never start once dismissed.
+  const onClose = renderWizard(
+    vi.fn(),
+    cfg({ new_session_engines: ["codex-api"], agent_defaults: { bypass: true } } as Partial<AppConfig>),
+  );
   await gotoLaunchStep();
   await finishTourToLaunch();
   await userEvent.click(screen.getByRole("button", { name: /launch session/i }));
+  // While it runs, the footer's own ways out are held…
+  expect(screen.getByRole("button", { name: /finish without launching/i })).toBeDisabled();
+  expect(screen.getByRole("button", { name: /back/i })).toBeDisabled();
+  // …and Esc (or ✕) closes setup.
+  await userEvent.keyboard("{Escape}");
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  await act(async () => answer({ session_key: "codex-api:late" }));
+  expect(vi.mocked(api.structuredCreate).mock.calls[0][4]).toBe(true);
+  expect(api.structuredStart).not.toHaveBeenCalled(); // created, left unstarted in the list
+  expect(mockNavigate).not.toHaveBeenCalled();
+  expect(onClose).toHaveBeenCalledTimes(1);
+  expect(api.completeOnboarding).toHaveBeenCalledTimes(1); // the close's own, nothing after
+});
+
+test("closing setup while it is being completed after the create starts and opens nothing (#1739)", async () => {
+  await withReadyApi("codex-api");
+  vi.mocked(api.structuredCreate).mockResolvedValue({ session_key: "codex-api:made-4" } as never);
+  let completed!: (v: unknown) => void;
+  vi.mocked(api.completeOnboarding)
+    .mockReturnValueOnce(new Promise((r) => (completed = r)) as never)
+    .mockResolvedValue({});
+  const onClose = renderWizard(
+    vi.fn(),
+    cfg({ new_session_engines: ["codex-api"], agent_defaults: { bypass: true } } as Partial<AppConfig>),
+  );
+  await gotoLaunchStep();
+  await finishTourToLaunch();
+  await userEvent.click(screen.getByRole("button", { name: /launch session/i }));
+  await waitFor(() => expect(api.completeOnboarding).toHaveBeenCalledTimes(1)); // the launch's
+  await userEvent.keyboard("{Escape}");
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  await act(async () => completed({}));
+  expect(api.structuredStart).not.toHaveBeenCalled();
+  expect(mockNavigate).not.toHaveBeenCalled();
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+test("a refused API create keeps setup open with the server's reason — setup is not completed (#1739)", async () => {
+  await withReadyApi("codex-api");
+  vi.mocked(api.structuredCreate).mockRejectedValue(new ApiError("codex is signed out", 409));
+  const onClose = renderWizard(vi.fn(), cfg({ new_session_engines: ["claude", "codex-api"] }));
+  await gotoLaunchStep();
+  await finishTourToLaunch();
+  await userEvent.click(screen.getByRole("button", { name: /launch session/i }));
+  expect(await screen.findByTestId("setup-launch-error")).toHaveTextContent("codex is signed out");
+  expect(api.completeOnboarding).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+  expect(mockNavigate).not.toHaveBeenCalled();
+  // Terminal is one tap away, and launches as before.
+  await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
+  await userEvent.click(screen.getByRole("button", { name: /launch session/i }));
+  expect(mockNavigate).toHaveBeenCalledWith(expect.stringMatching(/^\/s\/claude\//), expect.anything());
+});
+
+test("a lost API create answer keeps its operation id, so the retry is the same create (#1739)", async () => {
+  await withReadyApi("codex-api");
+  vi.mocked(api.structuredCreate)
+    .mockRejectedValueOnce(new ApiError("Bad gateway", 502))
+    .mockResolvedValueOnce({ session_key: "codex-api:made-2" } as never);
+  renderWizard(vi.fn(), cfg({ new_session_engines: ["codex-api"], agent_defaults: { bypass: false } } as Partial<AppConfig>));
+  await gotoLaunchStep();
+  await finishTourToLaunch();
+  // Guarded: the stored default is off, so the box starts unticked.
+  expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
+  await userEvent.click(screen.getByRole("button", { name: /launch session/i }));
+  await screen.findByTestId("setup-launch-error");
+  await userEvent.click(screen.getByRole("button", { name: /launch session/i }));
+  await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/s/codex-api/made-2"));
+  const ids = vi.mocked(api.structuredCreate).mock.calls.map((c) => c[2]);
+  expect(ids[0]).toBe(ids[1]);
+});
+
+test("with no ready API client, the terminal client is preselected and unready API clients are named (#1739)", async () => {
+  renderWizard(vi.fn(), cfg({ new_session_engines: ["codex-api", "claude"] }));
+  await gotoLaunchStep();
+  await finishTourToLaunch();
+  expect(screen.getByRole("radio", { name: /claude code/i })).toBeChecked();
+  expect(screen.getByRole("radiogroup", { name: "Agent" })).toHaveTextContent(
+    /codex 0\.159\.3 or later is required/,
+  );
+  await userEvent.click(screen.getByRole("button", { name: /launch session/i }));
+  expect(api.structuredCreate).not.toHaveBeenCalled();
   expect(mockNavigate).toHaveBeenCalledWith(expect.stringMatching(/^\/s\/claude\//), expect.anything());
 });
 

@@ -36,7 +36,13 @@ import { useProjectPicker } from "../app/useProjectPicker";
 import { usePrefetchStructuredModels, useStructuredModels } from "../app/useStructuredModels";
 import { listAgeMinutes, structuredModelsStore } from "../lib/structuredModelsStore";
 import { AgentTiles, ProjectList } from "../components/newSession/NewSessionControls";
-import { handStart } from "../components/structured/startHandoff";
+import {
+  createStructuredSession,
+  isStoredAttempt,
+  readPendingCreate,
+  writePendingCreate,
+  type PendingCreate,
+} from "../lib/structuredCreate";
 import {
   bindingHolds,
   bindingNote,
@@ -49,6 +55,8 @@ import type { SpecialistList } from "../types/specialists";
 import type { WindowSeed } from "../components/overview/useWorkspace";
 import type { FreshSession } from "../lib/termUrl";
 import { openFullScreen, type LaunchOutcome } from "../lib/newSessionLaunch";
+import { setupPath } from "../components/plugins/model";
+import button from "../components/ui/actionButton.module.css";
 import styles from "./NewSessionLanding.module.css";
 
 /** Landing at "/" — no session selected. Pick an engine + project and start a new session: a
@@ -61,70 +69,9 @@ import styles from "./NewSessionLanding.module.css";
  *  `returnTo: "/overview"` in router state, and then the launch goes back to the MAP as a window
  *  rather than taking over the screen. The form itself stays a page either way — it wants the
  *  room, and a 720×480 window has none to spare. */
-/** The structured create whose outcome is unknown (#1311), per tab. */
-const PENDING_CREATE = "battlelab.pendingStructuredCreate";
-/** `model` (#1313), `bypass` (#1339) and `effort` (#1407) are part of the create's identity: a
- *  retry reuses the id only for the same choices, so a reload can never resend an id with a
- *  different one. */
-type PendingCreate = {
-  engine: string;
-  cwd: string;
-  model?: string;
-  effort?: string;
-  id: string;
-  bypass?: boolean;
-  /** Started from a specialist (#1693): another one, or none, is another create. */
-  specialist?: { id: string; version: number };
-};
-
-function sameSpecialist(
-  a: { id: string; version: number } | undefined,
-  b: { id: string; version: number } | undefined,
-): boolean {
-  return a?.id === b?.id && a?.version === b?.version;
-}
-
 /** "12 min old" — how old a kept model list is (#1503). */
 function ageText(minutes: number): string {
   return minutes < 1 ? "less than a minute old" : `${minutes} min old`;
-}
-
-function readPendingCreate(): PendingCreate | null {
-  try {
-    const v = JSON.parse(sessionStorage.getItem(PENDING_CREATE) ?? "null") as PendingCreate | null;
-    return v &&
-      typeof v.engine === "string" &&
-      typeof v.cwd === "string" &&
-      typeof v.id === "string" &&
-      (v.bypass === undefined || typeof v.bypass === "boolean") &&
-      (v.effort === undefined || typeof v.effort === "string") &&
-      (v.specialist === undefined ||
-        (typeof v.specialist?.id === "string" && typeof v.specialist?.version === "number"))
-      ? v
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function writePendingCreate(v: PendingCreate | null): void {
-  try {
-    if (v) sessionStorage.setItem(PENDING_CREATE, JSON.stringify(v));
-    else sessionStorage.removeItem(PENDING_CREATE);
-  } catch {
-    /* storage unavailable: the in-flight guard still prevents a same-page double create */
-  }
-}
-
-/** A late lookup/action must not offer or clear a different attempt's recovery pointer. */
-function isStoredAttempt(attempt: PendingCreate): boolean {
-  const current = readPendingCreate();
-  return current?.id === attempt.id &&
-    current.engine === attempt.engine &&
-    current.cwd === attempt.cwd &&
-    (current.model ?? "default") === (attempt.model ?? "default") &&
-    Boolean(current.bypass) === Boolean(attempt.bypass) &&
-    sameSpecialist(current.specialist, attempt.specialist);
 }
 
 /** The page host (`/new`, #1648): today's behaviour. Back to the map as a window when the map
@@ -628,68 +575,25 @@ export function NewSessionForm({
     }
   };
 
-  // A native API client (#1311) is created on the server too, through the structured route. The
-  // operation id is the create's identity: a retry after an unknown outcome reuses it (the server
-  // returns the same session), and a different agent or folder is a different create. The
-  // unresolved attempt is kept in sessionStorage, so a reload after a lost response retries the
-  // SAME create instead of starting a second session (Hermes on #1315).
+  // A native API client (#1311) is created on the server too, through the structured route — the
+  // shared `createStructuredSession` (#1739), which owns the operation id, its recovery slot and the
+  // two-phase skip start. The model (#1313), level (#1407), specialist (#1693) and permission mode
+  // (#1339) are part of the create's identity: choosing another one is another create.
   const startStructured = async () => {
     if (chatStarting.current) return;
     chatStarting.current = true;
     setStartingChat(true);
     setStartError(null);
-    const prev = readPendingCreate();
-    // The model (#1313) and the permission mode (#1339) are part of the create's identity:
-    // choosing another one is another create, never a retry that retargets the same operation id.
     const skip = apiCanBypass && bypass;
-    const launchSpecialist = specialist
-      ? { id: specialist.id, version: specialist.version }
-      : undefined;
-    // A skip create keeps NO client recovery slot (Hermes 5913): with the two-phase start a lost
-    // one can never run, and the server lists it — its view offers Start / Discard until it
-    // expires. Only a guarded create reuses an unresolved id.
-    const attempt =
-      !skip &&
-      prev &&
-      !prev.bypass &&
-      prev.engine === engine &&
-      prev.cwd === cwd &&
-      (prev.model ?? "default") === model &&
-      (prev.effort ?? "default") === effort &&
-      sameSpecialist(prev.specialist, launchSpecialist)
-        ? prev
-        : {
-            engine,
-            cwd,
-            model,
-            // Recorded only when chosen, so a create without a level is the one it always was.
-            ...(effort !== "default" ? { effort } : {}),
-            id: crypto.randomUUID(),
-            bypass: skip,
-            ...(launchSpecialist ? { specialist: launchSpecialist } : {}),
-          };
-    if (skip) {
-      if (prev?.bypass) writePendingCreate(null);
-    } else {
-      writePendingCreate(attempt);
-    }
-    const clearAttempt = () => {
-      if (isStoredAttempt(attempt)) writePendingCreate(null);
-    };
     try {
-      const args = [engine, cwd, attempt.id, model, Boolean(attempt.bypass)] as const;
-      const { session_key: key } = await (attempt.specialist
-        ? api.structuredCreate(...args, attempt.effort, attempt.specialist)
-        : attempt.effort
-          ? api.structuredCreate(...args, attempt.effort)
-          : api.structuredCreate(...args));
-      clearAttempt(); // only THIS attempt's slot — a lost guarded one stays recoverable (5916)
-      if (attempt.bypass) {
-        // Phase 2 (#1339): only now — the create's response is in hand — does it launch. Fired,
-        // not awaited (#1505): the page opens at once, and the request's own outcome goes to the
-        // session pane under the same key (a refusal shows its reason; a lost answer says so).
-        handStart(key, api.structuredStart(key));
-      }
+      const key = await createStructuredSession({
+        engine,
+        cwd,
+        model,
+        effort,
+        bypass: skip,
+        ...(specialist ? { specialist: { id: specialist.id, version: specialist.version } } : {}),
+      });
       if (!mounted.current) return;
       const id = key.slice(key.indexOf(":") + 1);
       openLaunched({ key, engine, id, title: "New session" });
@@ -698,16 +602,16 @@ export function NewSessionForm({
         api.setSessionProject(key, projectSel).catch(() => {});
       }
     } catch (e) {
-      if (e instanceof ApiError && e.status < 500) {
-        clearAttempt(); // refused
-        // The server's reason is shown below; a refusal may mean the client's list moved on (a
-        // CLI upgrade), so the cached list is asked again rather than offered as it was (#1503).
-        if (e.status === 422) void structuredModelsStore.revalidate(engine, { force: true });
+      // A refusal has released its slot (the helper); the server's reason is shown below. It may
+      // mean the client's list moved on (a CLI upgrade), so the cached list is asked again rather
+      // than offered as it was (#1503).
+      if (e instanceof ApiError && e.status === 422) {
+        void structuredModelsStore.revalidate(engine, { force: true });
       }
       if (!mounted.current) return;
       setStartError(
         (e instanceof ApiError && e.message ? e.message : "Couldn’t start that session.") +
-          (attempt.bypass && !(e instanceof ApiError && e.status < 500)
+          (skip && !(e instanceof ApiError && e.status < 500)
             ? " If it was created, it waits in your session list and runs only if you start it there."
             : ""),
       );
@@ -717,7 +621,7 @@ export function NewSessionForm({
         setStartingChat(false);
         // A choice on this form covers ONE create (Hermes on #1341, review 5876): after any skip
         // attempt, whatever its outcome, the form falls back to the stored default (#1473).
-        if (attempt.bypass) setApiBypassChoice(null);
+        if (skip) setApiBypassChoice(null);
       }
     }
   };
@@ -877,6 +781,12 @@ export function NewSessionForm({
             />
           </section>
         )}
+        {/* The agent catalog, one tap away (#1739): the same Add-agent flow as Settings → Agents. */}
+        <div className={styles.addAgentRow}>
+          <Link className={`${button.ghost} ${styles.addAgent}`} to={setupPath()} data-testid="new-session-add-agent">
+            + Add agent
+          </Link>
+        </div>
 
         {/* A chosen model whose list has since gone (discovery failed, or a restored draft) keeps
             its select, so what will be sent stays visible and `default` stays one click away. */}

@@ -17,8 +17,21 @@ import { consentSaveError, saveAnalyticsConsent } from "../lib/analyticsConsent"
 import { DOCS_HOME_URL } from "../lib/links";
 import { EnableLoginDetails } from "../components/EnableLoginDetails";
 import { mintNewSessionId } from "../lib/newSession";
-import { engineInfo, mintsOwnId, useEngineRoster } from "../app/engineRoster";
-import type { EngineInfo, Folder, TwoFactorEnrollment } from "../types/api";
+import {
+  clientChoices,
+  engineInfo,
+  engineLabel,
+  mintsOwnId,
+  useEngineRoster,
+} from "../app/engineRoster";
+import type { Folder, TwoFactorEnrollment } from "../types/api";
+import type { PluginCatalog } from "../types/plugins";
+import { ApiError } from "../lib/api";
+import { createStructuredSession, startCreated } from "../lib/structuredCreate";
+import { openFullScreen } from "../lib/newSessionLaunch";
+import { pluginError } from "../components/plugins/model";
+import { SetupAgents } from "../components/onboarding/SetupAgents";
+import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import styles from "./Onboarding.module.css";
 import { AiEndpointSetup } from "./AiEndpointSetup";
 import { HqContactGallery } from "../components/hq/HqContactGallery";
@@ -101,7 +114,7 @@ type Step = (typeof WIZARD_STEPS)[number];
 const STEP_LABEL: Record<Step, string> = {
   welcome: "Welcome",
   security: "Secure your deck",
-  agents: "Connected agents",
+  agents: "Agents",
   ai: "Set up AI",
   contact: "HQ contact",
   project: "First project",
@@ -187,14 +200,45 @@ export function Onboarding({
   const config = useConfig();
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>("welcome");
+  // The Agents step stays mounted once visited (see its render): render-time, like `seeded` below.
+  const [agentsSeen, setAgentsSeen] = useState(false);
+  if (step === "agents" && !agentsSeen) setAgentsSeen(true);
   // The SHARED roster decides whether a launch can mint its id (#853 P4, Hermes on #1134): this
   // wizard's own engine discovery can succeed while the roster is still loading or failed, and a
   // Launch button that is enabled but cannot mint would do nothing on click. One predicate drives
   // both the button and the click, and the wait says why.
   const roster = useEngineRoster();
 
-  // Agents (Connected agents step).
-  const [engines, setEngines] = useState<EngineInfo[] | null>(null);
+  // Agents step (#1739): the agent catalog, read when the wizard opens and after every inline setup.
+  const [catalog, setCatalog] = useState<PluginCatalog | null>(null);
+  const [catalogErr, setCatalogErr] = useState<string | null>(null);
+  // Reads overlap (the wizard opening, every return to Agents, every inline close): only the NEWEST
+  // read's answer counts, so an older success can never undo a newer failure; none lands after
+  // unmount.
+  const catalogGen = useRef(0);
+  useEffect(
+    () => () => {
+      catalogGen.current += 1;
+    },
+    [],
+  );
+  const loadCatalog = useCallback(() => {
+    const gen = ++catalogGen.current;
+    api
+      .plugins()
+      .then((c) => {
+        if (gen !== catalogGen.current) return;
+        setCatalog(c);
+        setCatalogErr(null);
+      })
+      .catch((e) => {
+        if (gen === catalogGen.current) setCatalogErr(pluginError(e));
+      });
+  }, []);
+  // Re-read on every return to the Agents step: an operation started there may have moved on.
+  useEffect(() => {
+    if (mode === "wizard" && step === "agents") loadCatalog();
+  }, [mode, step, loadCatalog]);
   // Security step (#675) — optional TOTP 2FA, reusing the /api/2fa/* enroll→confirm flow.
   // N/A when there is no login (auth_mode=none, e.g. Home Free stream mode).
   const authMode = config?.auth_mode ?? "single-user";
@@ -223,27 +267,51 @@ export function Onboarding({
   const [projectName, setProjectName] = useState("");
   const [newFolder, setNewFolder] = useState("");
   const [folderErr, setFolderErr] = useState<string | null>(null);
-  // Launch.
-  // Onboarding launches a terminal session: API and chat agents (#1209, #1311) are created on the
-  // server from New session instead, so they are not offered here.
-  const newEngines = useMemo(
+  // Launch — API first (#1739): a ready API client is preselected and its session is created on the
+  // server; a console client launches a terminal as before; an API client that cannot start is
+  // listed with its reason. ONE rule decides, shared with the rest of the app (`clientChoices`).
+  // Chat clients (an endpoint, #1209) are started from New session, not here.
+  const choices = useMemo(
     () =>
-      (config?.new_session_engines ?? []).filter((id) => {
-        const runtime = engineInfo(id)?.runtime;
-        return runtime !== "api" && runtime !== "chat";
-      }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-run when the roster lands
-    [config, roster.loaded],
+      clientChoices(
+        roster.engines,
+        config?.new_session_engines ?? [],
+        config?.unavailable_clients ?? [],
+      ),
+    [roster.engines, config],
   );
   const [engineChoice, setEngineChoice] = useState("");
-  const engine = engineChoice || newEngines[0] || "";
+  // A choice that is no longer startable (the roster changed under it) falls back to the default.
+  const engine =
+    (engineChoice && [...choices.api, ...choices.terminal].includes(engineChoice)
+      ? engineChoice
+      : choices.preselect) ?? "";
+  const launchApi = engineInfo(engine)?.runtime === "api";
+  // Only a client whose adapter maps "Skip permission prompts" can skip (#1339); the server re-checks.
+  const launchCanBypass = !launchApi || engineInfo(engine)?.api?.can_bypass === true;
+  const [launchErr, setLaunchErr] = useState<string | null>(null);
   // #681: the folder <select> visibly shows its first option, but raw `cwd` stays "" until the
   // user picks (or a starred default_project seeds it). Derive an effective folder — the first
   // discovered one as a fallback, exactly like `engine` — so the select value, the launch/create
   // guards, and the launched payload all agree with what's on screen. An explicit selection
   // (setCwd) still wins, since a non-empty `cwd` short-circuits the fallback.
   const effectiveCwd = cwd || folders[0]?.cwd || "";
-  const [bypass, setBypass] = useState(true);
+  // Skip permission prompts. A choice made on this form is bound to the client it was made for, so
+  // it never carries from a terminal client into an API client. Without one, a terminal launch
+  // skips (the wizard's long-standing default), but an API client FAILS CLOSED exactly like New
+  // session (#1339/#1473): it skips only when a LOADED config says the stored default is on.
+  const [bypassChoice, setBypassChoice] = useState<{ engine: string; value: boolean } | null>(
+    null,
+  );
+  const bypass = launchApi
+    ? launchCanBypass &&
+      (bypassChoice?.engine === engine
+        ? bypassChoice.value
+        : config?.agent_defaults?.bypass === true)
+    : bypassChoice?.engine === engine
+      ? bypassChoice.value
+      : true;
+  const setBypass = (value: boolean) => setBypassChoice({ engine, value });
   const [busy, setBusy] = useState(false);
   // Usage analytics (#1009). The step exists only when the server supports it and allows it
   // (`available` is false under AGENT_SESSIONS_ANALYTICS=0). The toggle is seeded once, below.
@@ -281,10 +349,7 @@ export function Onboarding({
   useEffect(() => {
     if (mode !== "wizard") return;
     let alive = true;
-    api
-      .engines()
-      .then((r) => alive && setEngines(r.engines))
-      .catch(() => alive && setEngines([]));
+    loadCatalog();
     api
       .folders({ visible: true })
       .then((r) => alive && setFolders(r.folders))
@@ -296,7 +361,7 @@ export function Onboarding({
     return () => {
       alive = false;
     };
-  }, [mode]);
+  }, [mode, loadCatalog]);
 
   // Seed AI fields + default cwd from config the first time it lands — a render-time
   // adjustment, not an effect (the "you might not need an effect" pattern, mirroring Pulse's
@@ -311,7 +376,17 @@ export function Onboarding({
     if (a) setShareAnalytics(a.decided && a.enabled);
   }
 
-  const finish = useCallback(async () => {
+  // A launch in flight belongs to the wizard that is still open (#1739): leaving (Skip, Close, Esc,
+  // Back, unmount) bumps the generation, and a create that answers afterwards opens nothing.
+  const launchGen = useRef(0);
+  useEffect(
+    () => () => {
+      launchGen.current += 1;
+    },
+    [],
+  );
+  const finishNow = useCallback(async () => {
+    launchGen.current += 1;
     try {
       await api.completeOnboarding(newestRelease()?.version);
     } catch {
@@ -319,6 +394,14 @@ export function Onboarding({
     }
     onClose();
   }, [onClose]);
+  // An inline sign-in terminal is live in the Agents step: closing setup would close it and
+  // interrupt the vendor's sign-in, so every way of closing asks first.
+  const [signinLive, setSigninLive] = useState(false);
+  const [askLeave, setAskLeave] = useState(false);
+  const finish = useCallback(() => {
+    if (signinLive) setAskLeave(true);
+    else void finishNow();
+  }, [signinLive, finishNow]);
 
   const startTwofa = async () => {
     setTwofaBusy(true);
@@ -383,25 +466,71 @@ export function Onboarding({
     setStep("tour");
   };
 
-  const launchReady = !!engine && roster.loaded && mintsOwnId(engine) !== undefined;
-  const launchWait = !engine
-    ? null
-    : !roster.loaded
-      ? roster.status === "failed"
-        ? "Couldn’t load the agent list — retrying. Launch becomes available when it loads."
-        : "Loading the agent list…"
-      : mintsOwnId(engine) === undefined
+  // An API client's server mints the id; a console client's id mode must be KNOWN before anything
+  // is minted (#853 P4, #454).
+  const launchReady =
+    !!engine && roster.loaded && (launchApi || mintsOwnId(engine) !== undefined);
+  const launchWait = !roster.loaded
+    ? roster.status === "failed"
+      ? "Couldn’t load the agent list — retrying. Launch becomes available when it loads."
+      : "Loading the agent list…"
+    : !engine
+      ? "No agent can start a session on this host yet. Install one in the Agents step."
+      : !launchApi && mintsOwnId(engine) === undefined
         ? "This agent isn’t in the loaded agent list, so a session can’t be started for it."
         : null;
   const launch = async () => {
-    // The engine's id mode must be KNOWN before anything is minted (#853 P4, #454).
-    if (!engine || !effectiveCwd || !launchReady) return;
+    if (!engine || !effectiveCwd || !launchReady || busy) return;
+    const gen = ++launchGen.current;
     setBusy(true);
+    setLaunchErr(null);
+    if (launchApi) {
+      // Created FIRST, through New session's own create (#1739): a refused or lost create keeps the
+      // wizard open with its reason and does not complete setup; a guarded retry reuses the same
+      // operation id, so it never makes a second session.
+      const skip = bypass;
+      let key: string;
+      try {
+        // A skip create is started HERE, below, only while this launch is still wanted: a wizard
+        // dismissed during the create must not leave an agent running unattended.
+        key = await createStructuredSession({
+          engine,
+          cwd: effectiveCwd,
+          bypass: skip,
+          start: false,
+        });
+      } catch (e) {
+        if (gen !== launchGen.current) return; // setup was left meanwhile
+        setLaunchErr(
+          (e instanceof ApiError && e.message ? e.message : "Couldn’t start that session.") +
+            (skip && !(e instanceof ApiError && e.status < 500)
+              ? " If it was created, it waits in your session list and runs only if you start it there."
+              : ""),
+        );
+        setBusy(false);
+        return;
+      }
+      // Setup was left while the create ran: the session exists (it waits in the session list),
+      // but nothing completes or opens on behalf of a wizard the operator already dismissed.
+      if (gen !== launchGen.current) return;
+      try {
+        await api.completeOnboarding(newestRelease()?.version);
+      } catch {
+        /* non-fatal */
+      }
+      if (gen !== launchGen.current) return; // …or while setup was being completed
+      if (skip) startCreated(key);
+      onClose();
+      const id = key.slice(key.indexOf(":") + 1);
+      openFullScreen(navigate, { seed: { key, engine, id, title: "New session" } });
+      return;
+    }
     try {
       await api.completeOnboarding(newestRelease()?.version);
     } catch {
       /* non-fatal */
     }
+    if (gen !== launchGen.current) return; // setup was left while it was being completed
     onClose();
     const id = mintNewSessionId(engine) ?? "";
     navigate(`/s/${engine}/${id}`, {
@@ -444,7 +573,26 @@ export function Onboarding({
   };
 
   return (
-    <Overlay onClose={finish} title="Set up BattleLab" wide>
+    <Overlay onClose={() => !askLeave && finish()} title="Set up BattleLab" wide>
+      {askLeave && (
+        <ConfirmDialog
+          tag="SIGN-IN"
+          title="Leave sign-in?"
+          confirmLabel="Leave setup"
+          cancelLabel="Stay"
+          role="alertdialog"
+          onCancel={() => setAskLeave(false)}
+          onConfirm={() => {
+            setAskLeave(false);
+            void finishNow();
+          }}
+        >
+          <p>
+            Closing setup closes the temporary sign-in terminal and interrupts sign-in. You can
+            start another attempt from Settings → Agents.
+          </p>
+        </ConfirmDialog>
+      )}
       <nav className={styles.rail} aria-label="Setup steps">
         <span className={styles.railHead}>SETUP</span>
         {steps.map((s, n) => (
@@ -649,37 +797,21 @@ export function Onboarding({
           </Step>
         )}
 
-        {step === "agents" && (
+        {/* Kept mounted (hidden) once visited: an inline setup keeps its operation, its polling and
+            any sign-in terminal across Next / Back (#1739). */}
+        {agentsSeen && (
+          <div hidden={step !== "agents"} data-testid="setup-agents-step">
           <Step
-            title="Connected agents"
-            desc="Detected on this host. Install more, then re-open setup."
+            title="Your agents"
+            desc="BattleLab runs each agent through its API client by default: structured turns, approvals and background work, safe to leave running. Install the agents you use here; their terminal client stays available."
           >
-            <ul className={styles.rows}>
-              {engines === null ? (
-                <li className={styles.skeleton}>Scanning…</li>
-              ) : (
-                engines.map((e) => (
-                  <li key={e.id} className={styles.row}>
-                    <span className={styles.eng}>{e.id}</span>
-                    {e.present ? (
-                      <span className={styles.ok}>✓ ready</span>
-                    ) : (
-                      <span className={styles.na}>— not found</span>
-                    )}
-                    <span className={styles.path}>
-                      {e.bin ?? "install to enable"}
-                    </span>
-                    {e.present && (
-                      <span
-                        className={`${styles.badge} ${e.supports_new ? styles.badgeGo : ""}`}
-                      >
-                        {e.supports_new ? "can start" : "resume only"}
-                      </span>
-                    )}
-                  </li>
-                ))
-              )}
-            </ul>
+            <SetupAgents
+              roster={roster}
+              catalog={catalog}
+              catalogError={catalogErr}
+              onChanged={loadCatalog}
+              onSigninLive={setSigninLive}
+            />
             <Foot>
               <button type="button" className={styles.ghost} onClick={finish}>
                 Skip setup
@@ -701,6 +833,7 @@ export function Onboarding({
               </button>
             </Foot>
           </Step>
+          </div>
         )}
 
         {step === "ai" && (
@@ -926,21 +1059,57 @@ export function Onboarding({
             title="Start your first session"
             desc="Everything's set, Commander — launch into your project."
           >
-            {newEngines.length > 1 && (
-              <label className={styles.field}>
-                <span>Agent</span>
-                <select
-                  value={engine}
-                  onChange={(e) => setEngineChoice(e.target.value)}
+            <div
+              className={styles.clients}
+              role="radiogroup"
+              aria-label="Agent"
+              data-testid="setup-launch-agents"
+            >
+              {choices.api.length > 0 && (
+                <span className={styles.clientGroup}>API · recommended</span>
+              )}
+              {choices.api.map((id) => (
+                <ClientOption
+                  key={id}
+                  id={id}
+                  checked={engine === id}
+                  isDefault={id === choices.preselect}
+                  sub={
+                    engine === id && bypass
+                      ? "Structured session · no approval prompts, no sandbox"
+                      : "Structured session · approvals in the pane"
+                  }
+                  onPick={setEngineChoice}
+                />
+              ))}
+              {/* An API client that cannot start is listed with its reason, never dropped (#1311). */}
+              {choices.unready.map((c) => (
+                <label
+                  key={`unready:${c.id}`}
+                  className={`${styles.client} ${styles.clientOff}`}
+                  data-testid="setup-launch-unready"
                 >
-                  {newEngines.map((id) => (
-                    <option key={id} value={id}>
-                      {id}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
+                  <input type="radio" name="setup-launch-agent" disabled />
+                  <span className={styles.clientText}>
+                    <span className={styles.clientName}>{c.label}</span>
+                    <span className={styles.clientSub}>Not ready: {c.reason}</span>
+                  </span>
+                </label>
+              ))}
+              {choices.terminal.length > 0 && (
+                <span className={styles.clientGroup}>Terminal</span>
+              )}
+              {choices.terminal.map((id) => (
+                <ClientOption
+                  key={id}
+                  id={id}
+                  checked={engine === id}
+                  isDefault={id === choices.preselect}
+                  sub="Runs in a terminal"
+                  onPick={setEngineChoice}
+                />
+              ))}
+            </div>
             <label className={styles.field}>
               <span>Folder</span>
               <select
@@ -957,14 +1126,25 @@ export function Onboarding({
                 ))}
               </select>
             </label>
-            <label className={styles.checkbox}>
-              <input
-                type="checkbox"
-                checked={bypass}
-                onChange={(e) => setBypass(e.target.checked)}
-              />
-              <span>Skip permission prompts</span>
-            </label>
+            {launchCanBypass && (
+              <label className={styles.checkbox}>
+                <input
+                  type="checkbox"
+                  checked={bypass}
+                  onChange={(e) => setBypass(e.target.checked)}
+                />
+                <span>Skip permission prompts</span>
+              </label>
+            )}
+            {/* The same disclosure as New session (#1339): for an API client, skipping prompts also
+                drops its sandbox — said before Launch, whether the box was ticked here or by the
+                stored default. */}
+            {launchApi && bypass && (
+              <p className={styles.warn} role="note" data-testid="setup-api-bypass-warning">
+                {engineLabel(engineInfo(engine)?.api?.source ?? engine)} won’t ask before running
+                commands or editing files, and runs without its sandbox. Fixed for this session.
+              </p>
+            )}
             <p className={styles.copy}>
               Want to read first? The{" "}
               <a href={DOCS_HOME_URL} target="_blank" rel="noopener noreferrer">
@@ -978,15 +1158,29 @@ export function Onboarding({
                 {launchWait}
               </p>
             )}
+            {launchErr && (
+              <p className={styles.err} role="alert" data-testid="setup-launch-error">
+                {launchErr}
+              </p>
+            )}
             <Foot>
-              <button type="button" className={styles.ghost} onClick={finish}>
+              <button
+                type="button"
+                className={styles.ghost}
+                onClick={finish}
+                disabled={busy}
+              >
                 Finish without launching
               </button>
               <span className={styles.grow} />
               <button
                 type="button"
                 className={styles.btn}
-                onClick={() => setStep(analyticsStep ? "analytics" : "tour")}
+                onClick={() => {
+                  launchGen.current += 1;
+                  setStep(analyticsStep ? "analytics" : "tour");
+                }}
+                disabled={busy}
               >
                 <ArrowLeft size={14} /> Back
               </button>
@@ -1086,6 +1280,40 @@ function Step({
       <p className={styles.desc}>{desc}</p>
       <div className={styles.stepBody}>{children}</div>
     </div>
+  );
+}
+
+/** One startable client on the Launch step: a radio row named by the roster (#1739). */
+function ClientOption({
+  id,
+  checked,
+  isDefault,
+  sub,
+  onPick,
+}: {
+  id: string;
+  checked: boolean;
+  isDefault: boolean;
+  sub: string;
+  onPick: (id: string) => void;
+}) {
+  return (
+    <label className={styles.client} data-engine={id}>
+      <input
+        type="radio"
+        name="setup-launch-agent"
+        value={id}
+        checked={checked}
+        onChange={() => onPick(id)}
+      />
+      <span className={styles.clientText}>
+        <span className={styles.clientName}>
+          {engineLabel(id)}
+          {isDefault && <span className={styles.clientDefault}>default</span>}
+        </span>
+        <span className={styles.clientSub}>{sub}</span>
+      </span>
+    </label>
   );
 }
 
