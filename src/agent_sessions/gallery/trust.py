@@ -79,6 +79,19 @@ def checked(record: dict, *, historical=False) -> contract.Gallery:
         ) from None
 
 
+def statement_expiry(parsed: contract.Gallery, *, now: int | None = None) -> int | None:
+    """When the statement keeping this long cut usable expires; None if no current one makes it
+    fresh (#1730 publisher alerts)."""
+    statement = _evidence(storage.root()).current(
+        content_sequence=parsed.sequence,
+        content_digest=parsed.digest,
+        content_issued_at=parsed.issued_at,
+        content_expires_at=parsed.expires_at,
+        now=now,
+    )
+    return statement.expires_at if statement else None
+
+
 def _require_fresh(parsed: contract.Gallery, *, now: int | None = None) -> None:
     """A long cut is usable only while the stored, verified statement names exactly it, is
     unexpired, and sits at the durable statement floor (#1730)."""

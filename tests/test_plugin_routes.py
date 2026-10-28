@@ -727,3 +727,56 @@ def test_public_agent_catalog_api_names_and_preferences(api):
     assert (
         client.get("/api/plugins", headers=headers).json()["feed"]["refresh"]["automatic"] is False
     )
+
+
+def test_publisher_alerts_preference_is_opt_in_and_validated(api):
+    """#1730: the alerts toggle is off by default, stored on its own, and only takes a bool."""
+    client, headers, _ = api
+    assert (
+        client.get("/api/plugins", headers=headers).json()["feed"]["refresh"]["publisher_alerts"]
+        is False
+    )
+    for bad in ({}, {"publisher_alerts": "yes"}, {"publisher_alerts": 1}, {"other": True}):
+        assert (
+            client.patch("/api/agents/catalog/preferences", json=bad, headers=headers).status_code
+            == 422
+        )
+    on = client.patch(
+        "/api/agents/catalog/preferences", json={"publisher_alerts": True}, headers=headers
+    )
+    assert on.status_code == 200
+    refresh = on.json()["feed"]["refresh"]
+    assert refresh["publisher_alerts"] is True and refresh["automatic"] is True  # untouched
+
+
+def test_turning_publisher_alerts_on_checks_at_once(api, monkeypatch):
+    from agent_sessions import feed_alerts
+
+    client, headers, _ = api
+    swept = []
+    monkeypatch.setenv("AGENT_SESSIONS_FEED_ALERTS_LOOP", "1")  # conftest switches the loop off
+    monkeypatch.setattr(feed_alerts, "sweep", lambda: swept.append("now") or [])
+    client.patch(
+        "/api/agents/catalog/preferences", json={"publisher_alerts": True}, headers=headers
+    )
+    client.patch(
+        "/api/agents/catalog/preferences", json={"publisher_alerts": False}, headers=headers
+    )
+    deadline = __import__("time").time() + 5
+    while not swept and __import__("time").time() < deadline:
+        __import__("time").sleep(0.05)
+    assert swept == ["now"]
+
+
+def test_the_alerts_check_on_enable_honours_the_loop_switch(api, monkeypatch):
+    """With the loop switched off (as in the whole test suite), enabling never reaches out."""
+    from agent_sessions import feed_alerts
+
+    client, headers, _ = api
+    swept = []
+    monkeypatch.setattr(feed_alerts, "sweep", lambda: swept.append("now") or [])
+    client.patch(
+        "/api/agents/catalog/preferences", json={"publisher_alerts": True}, headers=headers
+    )
+    __import__("time").sleep(0.3)
+    assert swept == []

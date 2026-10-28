@@ -77,6 +77,15 @@ says it is still current. That statement comes from a separate, low-authority ke
 approve or change anything, so the release key is needed only when the catalog changes, or at
 the latest once per approval window.
 
+**Publisher alerts.** If you publish the agent catalog or the gallery, turn on *I publish these
+feeds: alert me before the agent catalog or the gallery lapses* under Agents → Catalog
+details. BattleLab then warns you, in the bell and by push, when:
+- a long-lived cut ends within 14 days, or a 7-day cut within 2 days;
+- a cut has ended;
+- a long-lived cut's freshness statement expires within 48 hours, or none is current.
+
+The setting is off by default, because only the publisher can act on these warnings. Turning it on means BattleLab checks both feeds every 6 hours, even with the catalog's daily check turned off, so a stale local copy is never reported as a stalled publisher. Each condition is announced once; once it clears, the next occurrence is announced again.
+
 Publish the signed pair on the current public BattleLab GitHub release. Keep a versioned copy
 of each pair (sequence and digest in the asset name), record its source commit, digest and expiry
 in the release notes, then update the compatibility assets `plugin-feed.json` and

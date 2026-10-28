@@ -942,6 +942,7 @@ export const api = {
   saveLocalSkill: (id: string, newId: string, revision: string, origin: string | null, files: Record<string, string>, operation: string) => mutateJson<GalleryOperation>("POST", `/api/library/skills/${encodeURIComponent(id)}/copies`, { new_id: newId, revision, origin, files, operation }),
   plugins: () => pluginCatalog("/api/plugins"),
   agentCatalogPreferences: (automatic: boolean) => mutateJson<PluginCatalog>("PATCH", "/api/agents/catalog/preferences", { automatic }),
+  agentCatalogAlerts: (enabled: boolean) => mutateJson<PluginCatalog>("PATCH", "/api/agents/catalog/preferences", { publisher_alerts: enabled }),
   pluginRefresh: () => pluginCatalog("/api/plugins/feed/refresh", true),
   pluginReview: (body: { plugin_id?: string; local?: unknown; adopted_path?: string }) =>
     pluginPost<PluginReview>("/api/plugins/review", body),

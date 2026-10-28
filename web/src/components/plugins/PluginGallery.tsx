@@ -200,7 +200,7 @@ const rel = (seconds: number | null | undefined) => {
 
 /** The catalog as ONE line under the roster (#1408); the full panel is behind Details. */
 export function CatalogLine({ catalog }: { catalog: Catalog }) {
-  const { data, error, busy, load, refresh, configure } = catalog;
+  const { data, error, busy, load, refresh, configure, configureAlerts } = catalog;
   const feed = data?.feed;
   const failed = !!(feed?.refresh?.error || feed?.error);
   // The catalog's own diagnostic (e.g. unavailable trust records) is shown, never just "failed".
@@ -223,7 +223,7 @@ export function CatalogLine({ catalog }: { catalog: Catalog }) {
     </div>
     <details className={r.disclosure}>
       <summary>Catalog details</summary>
-      <AgentCatalogStatus feed={feed} busy={busy} refresh={() => void refresh()} configure={value => void configure(value)} />
+      <AgentCatalogStatus feed={feed} busy={busy} refresh={() => void refresh()} configure={value => void configure(value)} configureAlerts={value => void configureAlerts(value)} />
     </details>
   </div>;
 }

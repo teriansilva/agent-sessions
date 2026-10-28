@@ -59,7 +59,7 @@ export interface PluginCatalog {
   feed: { state: "ready" | "missing" | "unavailable"; sequence?: number | null; expires_at?: number | null; digest?: string | null; error: string | null;
     source?: "bundled" | "remote" | "unavailable"; stale?: boolean; bundled_digest?: string; release_version?: string;
     definitions_url?: string; history_url?: string; updates_url?: string;
-    refresh?: { automatic: boolean; last_attempt: number | null; last_success: number | null; error: string | null } | null;
+    refresh?: { automatic: boolean; last_attempt: number | null; last_success: number | null; error: string | null; publisher_alerts?: boolean } | null;
   };
   catalog: { manifest: PluginManifest; digest: string; source?: string | null; installable?: boolean; included?: boolean; reason?: string | null }[];
   plugins: PluginInstallation[];

@@ -205,6 +205,7 @@ os.environ.setdefault("AGENT_SESSIONS_NEEDS_YOU_LOOP", "0")
 os.environ.setdefault("AGENT_SESSIONS_AUTOMATION_LOOP", "0")
 # Catalog loop tests opt in explicitly; ordinary app lifespans never access GitHub.
 os.environ.setdefault("AGENT_SESSIONS_CATALOG_LOOP", "0")
+os.environ.setdefault("AGENT_SESSIONS_FEED_ALERTS_LOOP", "0")
 # Shared project memory (#1441) ingests from the lifespan; its tests call `memory.ingest` directly.
 os.environ.setdefault("AGENT_SESSIONS_MEMORY_LOOP", "0")
 os.environ.setdefault("AGENT_SESSIONS_SPECIALIST_LOOP", "0")  # #1693 capacity reconcile

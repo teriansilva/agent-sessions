@@ -4,9 +4,11 @@ import s from "../plugins/PluginSetup.module.css";
 
 const date = (value: number | null | undefined) => value ? new Date(value * 1000).toLocaleString() : "Not checked yet";
 
-export function AgentCatalogStatus({ feed, busy, refresh, configure }: {
+export function AgentCatalogStatus({ feed, busy, refresh, configure, configureAlerts }: {
   feed: PluginCatalog["feed"] | undefined; busy: boolean;
   refresh: () => void; configure: (automatic: boolean) => void;
+  /** Publisher alerts (#1730): only where the operator manages the catalog, not in setup. */
+  configureAlerts?: (enabled: boolean) => void;
 }) {
   return <section className={`${s.panel} ${s.stack}`} aria-label="Public agent catalog">
     <div className={s.row}>
@@ -29,6 +31,10 @@ export function AgentCatalogStatus({ feed, busy, refresh, configure }: {
       {feed?.refresh && <label className={s.check}><input type="checkbox" checked={feed.refresh.automatic} disabled={busy} onChange={event => configure(event.target.checked)} />Automatically check daily</label>}
       <button className={button.ghost} disabled={busy} onClick={refresh}>{busy ? "Refreshing…" : "Refresh catalog"}</button>
     </div>
+    {feed?.refresh && configureAlerts && <label className={s.check}>
+      <input type="checkbox" checked={feed.refresh.publisher_alerts === true} disabled={busy} onChange={event => configureAlerts(event.target.checked)} />
+      I publish these feeds: alert me before the agent catalog or the gallery lapses (checks both every 6 hours)
+    </label>}
     <p>Installing an agent update is a separate action.</p>
     {feed?.digest && <details className={s.details}><summary>Catalog evidence</summary>
       <p>Installed BattleLab release: {feed.release_version ?? "Unknown"}</p>

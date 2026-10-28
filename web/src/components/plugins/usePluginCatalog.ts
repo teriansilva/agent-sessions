@@ -27,5 +27,11 @@ export function usePluginCatalog() {
     catch (e) { setError(pluginError(e)); }
     finally { setBusy(false); }
   };
-  return { data, error, busy, load, refresh, configure };
+  const configureAlerts = async (enabled: boolean) => {
+    setBusy(true); setError("");
+    try { setData(await api.agentCatalogAlerts(enabled)); }
+    catch (e) { setError(pluginError(e)); }
+    finally { setBusy(false); }
+  };
+  return { data, error, busy, load, refresh, configure, configureAlerts };
 }

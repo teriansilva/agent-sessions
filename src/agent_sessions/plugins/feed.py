@@ -377,6 +377,22 @@ def _evidence(path: Path):
     )
 
 
+def statement_expiry(snapshot: Feed, *, now: int | None = None) -> int | None:
+    """When the statement keeping this long cut usable expires; None if no current one makes it
+    fresh (#1730 publisher alerts). A malformed or unsafe floor raises, as for `fresh`."""
+    from . import storage
+
+    with storage.locked("feed.json") as path:
+        statement = _evidence(path).current(
+            content_sequence=snapshot.sequence,
+            content_digest=snapshot.digest,
+            content_issued_at=snapshot.issued_at,
+            content_expires_at=snapshot.expires_at,
+            now=now,
+        )
+    return statement.expires_at if statement else None
+
+
 def fresh(snapshot: Feed, *, now: int | None = None) -> bool:
     """The one usability rule (#1730). A short cut is fresh inside its own window. A long cut is
     fresh only while a stored, verified freshness statement names exactly it, is unexpired, and

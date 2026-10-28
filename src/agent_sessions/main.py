@@ -37,6 +37,7 @@ from . import (
     automation_loop,
     autosort_loop,
     engines,
+    feed_alerts,
     memory,
     memory_loop,
     metadata,  # noqa: F401 — compatibility: tests patch main.metadata.set_alias
@@ -353,6 +354,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # toggle governs it live without a restart.
         update_task = asyncio.create_task(update_loop.run())
         catalog_task = asyncio.create_task(agent_catalog_refresh.run())
+        # Publisher alerts (#1730): opt-in warnings before a feed this operator publishes lapses.
+        feed_alerts_task = asyncio.create_task(feed_alerts.run())
         # Buffer-cap sweeper (#678): enforces the scrollback ring cap OFF the event loop
         # (periodic + kick-coalesced), so the byte pump never probes dtach sockets.
         cap_sweep_task = asyncio.create_task(scrollback.run_cap_sweeper())
@@ -489,6 +492,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 supervisor_task,
                 update_task,
                 catalog_task,
+                feed_alerts_task,
                 cap_sweep_task,
                 mission_task,
                 usage_task,

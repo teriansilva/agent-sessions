@@ -111,7 +111,10 @@ def _list() -> dict:
         "updates_url": "https://github.com/teriansilva/agent-sessions/releases",
     }
     try:
-        feed_view["refresh"] = agent_catalog_refresh.status()
+        feed_view["refresh"] = {
+            **agent_catalog_refresh.status(),
+            "publisher_alerts": prefs.get_feed_alerts(),
+        }
     except (ValueError, OSError):
         feed_view["refresh"] = None
         feed_view["error"] = (
@@ -180,10 +183,21 @@ def register(app: FastAPI, *, logged_in, csrf_guard, cfg, must_change) -> None:
 
     @app.patch("/api/agents/catalog/preferences", dependencies=write)
     async def catalog_preferences(request: Request):
-        body = await _body(request, required={"automatic"})
-        if type(body["automatic"]) is not bool:
-            raise HTTPException(422, "automatic must be true or false")
-        await _call(agent_catalog_refresh.configure, body["automatic"])
+        body = await _body(request, required=set(), optional={"automatic", "publisher_alerts"})
+        if not body or any(type(v) is not bool for v in body.values()):
+            raise HTTPException(422, "automatic and publisher_alerts must be true or false")
+        if "automatic" in body:
+            await _call(agent_catalog_refresh.configure, body["automatic"])
+        if "publisher_alerts" in body:
+            await _call(prefs.set_feed_alerts, body["publisher_alerts"])
+            from .. import feed_alerts
+
+            if body["publisher_alerts"] and feed_alerts.enabled_loop():
+                # Check now rather than up to 6 h later; best effort, off the request. Sweeps
+                # never overlap (feed_alerts._SWEEPING), so repeated toggles can't double-announce.
+                app.state.feed_alerts_kick = asyncio.create_task(
+                    asyncio.to_thread(feed_alerts.sweep)
+                )
         return await _call(_list)
 
     @app.post("/api/plugins/review", dependencies=write)

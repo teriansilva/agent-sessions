@@ -541,6 +541,72 @@ def set_onboarded(value: bool, path: Path | None = None) -> bool:
     return _set("onboarded", bool(value), path)
 
 
+def get_feed_alerts(path: Path | None = None) -> bool:
+    """Publisher alerts (#1730): warn the operator before a feed they publish lapses. Off by
+    default: on another install the alert would be noise nobody there can act on."""
+    return _load(path or _default_path()).get("feed_publisher_alerts") is True
+
+
+def set_feed_alerts(value: bool, path: Path | None = None) -> bool:
+    return _set("feed_publisher_alerts", bool(value), path)
+
+
+def get_feed_alerts_announced(path: Path | None = None) -> list[str]:
+    """The publisher alert keys already announced (`feed_alerts`), so a dismissed row isn't
+    re-pushed. Server-derived keys only."""
+    value = _load(path or _default_path()).get("feed_alerts_announced")
+    return [k for k in value if isinstance(k, str)] if isinstance(value, list) else []
+
+
+def set_feed_alerts_announced(keys: list[str], path: Path | None = None) -> list[str]:
+    return _set("feed_alerts_announced", [k for k in keys if isinstance(k, str)], path)
+
+
+def get_feed_alerts_pushed(path: Path | None = None) -> list[str]:
+    """The publisher alert keys whose push was delivered (`feed_alerts`): a bell row alone is no
+    proof the phone was told."""
+    value = _load(path or _default_path()).get("feed_alerts_pushed")
+    return [k for k in value if isinstance(k, str)] if isinstance(value, list) else []
+
+
+def set_feed_alerts_pushed(keys: list[str], path: Path | None = None) -> list[str]:
+    return _set("feed_alerts_pushed", [k for k in keys if isinstance(k, str)], path)
+
+
+def get_feed_alerts_retracting(path: Path | None = None) -> list[str]:
+    """Cleared publisher alert keys whose bell row couldn't be retracted yet (`feed_alerts`): the
+    row belongs to a finished episode, so it must never stand in for the next one."""
+    value = _load(path or _default_path()).get("feed_alerts_retracting")
+    return [k for k in value if isinstance(k, str)] if isinstance(value, list) else []
+
+
+def set_feed_alerts_retracting(keys: list[str], path: Path | None = None) -> list[str]:
+    return _set("feed_alerts_retracting", [k for k in keys if isinstance(k, str)], path)
+
+
+def set_feed_alert_records(
+    *,
+    announced: list[str] | None = None,
+    pushed: list[str] | None = None,
+    retracting: list[str] | None = None,
+    path: Path | None = None,
+) -> None:
+    """Write several publisher alert records in ONE atomic write (`feed_alerts`): ending an
+    episode moves a key between them, and a crash or a full disk must leave all of them or none
+    changed. A record passed as None is left alone."""
+    path = path or _default_path()
+    with json_write_lock(path):
+        data = read_json_doc(path)
+        for key, value in (
+            ("feed_alerts_announced", announced),
+            ("feed_alerts_pushed", pushed),
+            ("feed_alerts_retracting", retracting),
+        ):
+            if value is not None:
+                data[key] = [k for k in value if isinstance(k, str)]
+        atomic_write_json(path, data)
+
+
 def has_any_prefs(path: Path | None = None) -> bool:
     """Whether the prefs file already holds any keys — a cheap "this install has been used"
     signal for the onboarding default inference (#463): an existing install has set at least

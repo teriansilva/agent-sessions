@@ -203,7 +203,10 @@ class Evidence:
                 with contextlib.suppress(OSError):
                     path.unlink()
 
-    def fresh(
+    def fresh(self, **cut) -> bool:
+        return self.current(**cut) is not None
+
+    def current(
         self,
         *,
         content_sequence: int,
@@ -211,18 +214,18 @@ class Evidence:
         content_issued_at: int,
         content_expires_at: int,
         now: int | None = None,
-    ) -> bool:
-        """The record for exactly this cut verifies now (against the pinned key), ranks at or
-        above the floor, and covers the cut. A missing floor is damage here (our writes never
-        leave a record without one): not fresh. A malformed or unsafe floor raises: the caller
-        reports unavailable trust evidence."""
+    ) -> freshness.Statement | None:
+        """The statement that makes exactly this cut fresh now, or None: its record verifies now
+        (against the pinned key), ranks at or above the floor, and covers the cut. A missing
+        floor is damage here (our writes never leave a record without one): not fresh. A
+        malformed or unsafe floor raises: the caller reports unavailable trust evidence."""
         floor = self.floor()
         if floor is None:
-            return False
+            return None
         try:
             value = self._read(self.record_path(content_digest))
             if value is None:
-                return False
+                return None
             statement, data, signature = self._parsed(value)
             freshness.checked(
                 data,
@@ -233,7 +236,7 @@ class Evidence:
             )
             rank, top = _rank(floor_mark(statement)), _rank(floor)
             if rank < top or (rank == top and statement.digest != floor["digest"]):
-                return False
+                return None
             freshness.covers(
                 statement,
                 content_sequence=content_sequence,
@@ -242,5 +245,5 @@ class Evidence:
                 content_expires_at=content_expires_at,
             )
         except (freshness.FreshnessError, ValueError, OSError):
-            return False
-        return True
+            return None
+        return statement
