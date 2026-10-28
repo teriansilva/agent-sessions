@@ -1,0 +1,434 @@
+/* Share bundles (#1714): the Export… / Import… dialogs on Library → Skills and → Playbooks, on THE
+ * dialog chrome (../HudDialog.module.css, composed by the component; boards in #1714 P0). Rows are
+ * 44 px targets, status colour always sits beside a status word, refusals are red only because they
+ * are failures. Tokens only (docs/nightjar-ledger.md: done). */
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.dialog {
+  margin: auto;
+  width: min(760px, calc(100% - var(--sp-5)));
+  max-height: min(92dvh, 900px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.dialog::backdrop {
+  background: var(--scrim);
+}
+.dialog h2 {
+  margin: 0;
+}
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding-right: var(--sp-1);
+}
+.foot {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+.sum {
+  flex: 1 1 220px;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.sum b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+.prose {
+  margin: 0;
+  max-width: 80ch;
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.prose b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+/* ── Filter field. ── */
+.filter {
+  composes: nj-field from global;
+  min-height: 44px;
+  width: 100%;
+  font-size: var(--fs-input);
+}
+
+/* ── Group heads and item rows. ── */
+.group {
+  margin: var(--sp-2) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.group span {
+  font-weight: 400;
+  letter-spacing: 0.04em;
+}
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+.row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-1) var(--sp-1) 0;
+  border-bottom: 1px solid var(--line);
+}
+.row.included {
+  background: color-mix(in srgb, var(--hud) 6%, transparent);
+}
+.check {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.check input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: inherit;
+}
+.check input:disabled {
+  cursor: default;
+}
+.lock {
+  color: var(--hud-text);
+}
+.mark {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.name {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 0;
+  min-width: 0;
+}
+.title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-body);
+  font-weight: 500;
+  color: var(--text-1);
+}
+.kind {
+  flex: none;
+  padding: 2px 5px;
+  border: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.line {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.line b {
+  color: var(--text-1);
+  font-weight: 500;
+}
+.included .line {
+  color: var(--hud-text);
+}
+.why {
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.warn {
+  color: var(--warn-text);
+}
+.down {
+  color: var(--danger-text);
+}
+.ok {
+  color: var(--ok-text);
+}
+.muted {
+  color: var(--text-3);
+}
+.state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  min-height: 44px;
+}
+.stamp {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 3px 7px;
+  border: 1px solid currentColor;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--text-2);
+}
+/* A status stamp takes its tone's colour (the word stays beside it). */
+.stamp.ok {
+  color: var(--ok-text);
+}
+.stamp.warn {
+  color: var(--warn-text);
+}
+.stamp.down {
+  color: var(--danger-text);
+}
+.stamp.muted,
+.stamp.lock {
+  color: var(--text-2);
+}
+.stamp.lock svg {
+  color: var(--hud-text);
+}
+.open {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: 44px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}
+
+/* ── Banners: provenance, refusals, stale previews. A failure carries the status colour. ── */
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--status-degraded);
+  background: var(--bg-2);
+  font-size: var(--fs-row);
+  line-height: 1.45;
+  color: var(--text-1);
+}
+.banner svg {
+  flex: none;
+  margin-top: 2px;
+}
+.banner p {
+  margin: 0;
+  color: var(--text-2);
+}
+.banner strong {
+  display: block;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.bannerDown {
+  border-left-color: var(--status-down);
+}
+.bannerInfo {
+  border-left-color: var(--text-2);
+}
+.meta {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-1) var(--sp-3);
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+.meta dt {
+  padding-top: 2px;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.meta dd {
+  margin: 0;
+  color: var(--text-1);
+}
+
+/* ── The drop zone (an empty import) and the empty export. ── */
+.drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: 160px;
+  padding: var(--sp-4);
+  border: 1px dashed var(--line-strong);
+  text-align: center;
+  color: var(--text-2);
+}
+.drop b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+.dropActive {
+  border-color: var(--hud);
+  background: color-mix(in srgb, var(--hud) 8%, transparent);
+}
+.hiddenInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ── A preview item's files: the full text, read before importing. ── */
+.files summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+  cursor: pointer;
+}
+.files summary:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.files pre {
+  max-height: 240px;
+  overflow: auto;
+  margin: 0 0 var(--sp-2);
+  padding: var(--sp-2);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  white-space: pre-wrap;
+  color: var(--text-1);
+}
+.fileName {
+  display: block;
+  margin: var(--sp-2) 0 var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+
+/* The explicit acknowledgement to import files the preview couldn't show. */
+.ack {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--status-degraded);
+  background: var(--bg-2);
+  font-size: var(--fs-row);
+  line-height: 1.45;
+  color: var(--text-1);
+  cursor: pointer;
+}
+.ack input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+/* The imported-from-a-file mark on a Library card. */
+.imported {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  width: max-content;
+  padding: 3px 6px;
+  border: 1px dashed var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+@media (max-width: 800px) {
+  .dialog {
+    margin: auto auto 0;
+    width: 100%;
+    max-height: 92dvh;
+  }
+  .row {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+  .state {
+    grid-column: 2;
+    justify-content: flex-start;
+    min-height: 0;
+    padding-bottom: var(--sp-2);
+  }
+  .foot {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+  .foot > button {
+    width: 100%;
+    justify-content: center;
+  }
+  .sum {
+    flex: none;
+    order: 9;
+  }
+  .meta {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

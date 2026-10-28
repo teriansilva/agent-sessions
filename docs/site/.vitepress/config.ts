@@ -163,6 +163,7 @@ export default defineConfig({
           { text: "Prompt Templates", link: "/guide/templates" },
           { text: "Shared memory", link: "/guide/memory" },
           { text: "Playbook & skill gallery", link: "/guide/gallery" },
+          { text: "Sharing skills & playbooks", link: "/guide/sharing" },
           { text: "AI review", link: "/guide/ai-review" },
           { text: "Handoff", link: "/guide/handoff" },
           { text: "Dictation", link: "/guide/dictation" },

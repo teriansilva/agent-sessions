@@ -1453,3 +1453,408 @@ def test_hand_damaged_share_state_is_a_503_and_never_writes_another_import(
         service.confirm(token, _keys(preview))
     assert not (state.root() / f"journal-{other}.json").exists()
     assert not (state.root() / f"preview-{other}.json").exists()
+
+
+# ---- UI PR #1763, Hermes 7280: an unreadable import record is unknown, never "no imports" ------
+
+
+@pytest.mark.parametrize("damage", ["bad-json", "odd-shape", "unreadable"])
+def test_an_unreadable_import_record_is_a_503_never_an_empty_list(auth_cfg, install, damage):
+    from fastapi.testclient import TestClient
+
+    from agent_sessions.main import create_app
+
+    client = TestClient(create_app(auth_cfg), base_url="https://testserver")
+    client.post(
+        "/login",
+        data={"username": "marcus", "password": "hunter2"},
+        headers={"Origin": auth_cfg.origin},
+        follow_redirects=False,
+    )
+    assert client.get("/api/share/imports").json() == {"imports": {}}  # absent: really none
+    if damage == "bad-json":
+        state.write_bytes("imported.json", b"{not json")
+    elif damage == "odd-shape":
+        state.write_json("imported.json", {"items": ["x"]})
+    else:
+        state.write_json("imported.json", {"items": {}})
+        os.chmod(state.root() / "imported.json", 0o644)
+    response = client.get("/api/share/imports")
+    assert response.status_code == 503
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert client.get("/api/share/catalog").status_code == 200  # the picker stays usable
+
+
+# ---- UI PR #1763, Hermes 7283: a copy's provenance survives a failed mark write -----------------
+
+
+def test_a_failed_mark_write_never_loses_provenance_across_sessions(install, monkeypatch):
+    monkeypatch.setattr(service, "MAX_RECORDS", 1)
+    a, b = _distinct(2)
+    pa = service.preview(a)
+    real_write = state.write_json
+
+    def no_marks(name, value):
+        if name == "imported.json":
+            raise OSError(28, "No space left on device")
+        return real_write(name, value)
+
+    with monkeypatch.context() as m:
+        m.setattr(state, "write_json", no_marks)
+        assert service.confirm(pa["token"], _keys(pa))["items"][0]["status"] == "created"
+    assert not (state.root() / "imported.json").exists()
+    digest = pa["bundle"]["digest"]
+    # A fresh session (a reload, another tab) asks the record: the journal still says so.
+    assert service.imports()["skill:skill-0"]["bundle"] == digest
+    # Its record gives way to another preview: the receipt still says so, and the pending mark
+    # is stored on the way.
+    service.preview(b)
+    assert service.imports()["skill:skill-0"]["bundle"] == digest
+    assert "skill:skill-0" in state.read_json("imported.json")["items"]
+
+
+def test_evidence_of_an_unmarked_copy_outlives_its_retention(install, monkeypatch):
+    (a,) = _distinct(1)
+    pa = service.preview(a)
+    real_write = state.write_json
+    with monkeypatch.context() as m:
+        m.setattr(
+            state,
+            "write_json",
+            lambda n, v: (_ for _ in ()).throw(OSError(28, "full"))
+            if n == "imported.json"
+            else real_write(n, v),
+        )
+        service.confirm(pa["token"], _keys(pa))
+        # Long after retention, the unmarked journal is still the copy's only provenance: kept.
+        now = service._now()
+        old = now - service.JOURNAL_RETENTION_S - 10
+        for name in os.listdir(state.root()):
+            os.utime(state.root() / name, (old, old))
+        service._prune()
+    assert service.imports()["skill:skill-0"]["bundle"] == pa["bundle"]["digest"]
+
+
+def test_a_damaged_mark_record_is_never_overwritten(install):
+    state.write_json("imported.json", {"items": ["x"]})
+    (a,) = _distinct(1)
+    pa = service.preview(a)
+    assert service.confirm(pa["token"], _keys(pa))["items"][0]["status"] == "created"
+    assert state.read_json("imported.json") == {"items": ["x"]}
+    with pytest.raises(state.StateError):
+        service.imports()
+
+
+# ---- re-check of c97be282: odd evidence never 500s a preview; odd mark times sort ---------------
+
+
+@pytest.mark.parametrize(
+    "name, doc",
+    [
+        ("journal-" + "a" * 32 + ".json", {"entries": ["x"]}),
+        ("receipt-" + "b" * 32 + ".json", {"result": "x"}),
+    ],
+)
+def test_odd_evidence_is_kept_and_never_breaks_a_preview(install, name, doc):
+    (a,) = _distinct(1)
+    state.write_json(name, doc)
+    now = service._now()
+    old = now - service.JOURNAL_RETENTION_S - 10
+    os.utime(state.root() / name, (old, old))
+    assert service.preview(a)["token"]  # no 500 out of pruning
+    assert (state.root() / name).exists()  # can't tell: kept
+
+
+def test_marks_over_the_cap_with_odd_times_are_bounded_not_a_crash(install, monkeypatch):
+    monkeypatch.setattr(service, "MAX_PROVENANCE", 2)
+    items = {
+        "skill:x": {"bundle": "d", "revision": None, "at": None},
+        "skill:y": {"bundle": "d", "revision": None, "at": "yesterday"},
+        "skill:z": {"bundle": "d", "revision": None, "at": 5},
+    }
+    assert len(service._bounded(dict(items))) == 2
+
+
+# ---- re-check of 502ce8cb: deeply nested or huge-number state is never a 500 --------------------
+
+
+def test_deeply_nested_state_is_unreadable_not_a_crash(install):
+    (a,) = _distinct(1)
+    name = "journal-" + "a" * 32 + ".json"
+    state.write_bytes(name, b"[" * 200000)
+    with pytest.raises(state.StateError):
+        state.read_json(name)
+    with pytest.raises(state.StateError):  # it may hold a copy's provenance: unknown, not "none"
+        service.imports()
+    old = service._now() - service.JOURNAL_RETENTION_S - 10
+    os.utime(state.root() / name, (old, old))
+    assert service.preview(a)["token"]  # prune keeps it, no 500
+    assert (state.root() / name).exists()
+
+
+@pytest.mark.parametrize("where", ["confirm", "preview-sync"])
+def test_a_huge_mark_time_never_breaks_an_import(install, monkeypatch, where):
+    monkeypatch.setattr(service, "MAX_PROVENANCE", 2)
+    state.write_json(
+        "imported.json",
+        {
+            "items": {
+                "skill:x": {"bundle": "d", "revision": None, "at": 10**400},
+                "skill:y": {"bundle": "d", "revision": None, "at": 1},
+            }
+        },
+    )
+    (a,) = _distinct(1)
+    if where == "preview-sync":
+        state.write_json(
+            "receipt-" + "c" * 32 + ".json",
+            {
+                "result": {
+                    "bundle": "b",
+                    "items": [{"kind": "skill", "dest": "q", "status": "created"}],
+                }
+            },
+        )
+    preview = service.preview(a)
+    assert service.confirm(preview["token"], _keys(preview))["items"][0]["status"] == "created"
+    marks = state.read_json("imported.json")["items"]
+    assert len(marks) <= 2 and "skill:skill-0" in marks  # the new mark landed
+
+
+def test_evidence_follows_a_journal_dropped_since_the_listing(install, monkeypatch):
+    monkeypatch.setattr(service, "MAX_RECORDS", 1)
+    (a,) = _distinct(1)
+    pa = service.preview(a)
+    service.confirm(pa["token"], _keys(pa))
+    journal = f"journal-{pa['token']}.json"
+    real_entries, real_read = state.entries, state.read_json
+
+    def gone(name):  # the journal vanished between the listing and the read; its receipt exists
+        if name == journal:
+            return None
+        return real_read(name)
+
+    state.write_json(
+        f"receipt-{pa['token']}.json",
+        {
+            "selection": ["skill:skill-0"],
+            "keys": ["skill:skill-0"],
+            "result": {
+                "bundle": pa["bundle"]["digest"],
+                "items": [
+                    {"kind": "skill", "id": "skill-0", "dest": "skill-0", "status": "created"}
+                ],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        state, "entries", lambda: [e for e in real_entries() if not e[0].startswith("receipt-")]
+    )
+    monkeypatch.setattr(state, "read_json", gone)
+    assert service._evidence()["skill:skill-0"]["bundle"] == pa["bundle"]["digest"]
+
+
+# ---- re-check of 418fbe47: no share-state value reaches the encoder or a datetime unchecked ---
+
+
+def _route_client(auth_cfg):
+    from fastapi.testclient import TestClient
+
+    from agent_sessions.main import create_app
+
+    client = TestClient(
+        create_app(auth_cfg), base_url="https://testserver", raise_server_exceptions=False
+    )
+    client.post(
+        "/login",
+        data={"username": "marcus", "password": "hunter2"},
+        headers={"Origin": auth_cfg.origin},
+        follow_redirects=False,
+    )
+    return client, {
+        "Origin": auth_cfg.origin,
+        "X-CSRF-Token": client.get("/api/config").json()["csrf"],
+    }
+
+
+def _not_a_500(response):
+    assert response.status_code in (200, 404, 409, 422, 503), (response.status_code, response.text)
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        b'{"items":{"skill:a":{"bundle":NaN,"revision":null}}}',
+        b'{"items":{"skill:a":{"bundle":"b","revision":Infinity}}}',
+        b'{"items":{"skill:a":{"bundle":"b","revision":1e999}}}',
+        b'{"items":{"skill:a":{"bundle":' + b"[" * 900 + b"]" * 900 + b',"revision":null}}}',
+    ],
+)
+def test_odd_numbers_in_marks_never_500_imports_or_catalog(auth_cfg, install, doc):
+    client, _ = _route_client(auth_cfg)
+    state.write_bytes("imported.json", doc)
+    _not_a_500(client.get("/api/share/imports"))
+    _not_a_500(client.get("/api/share/catalog"))
+
+
+def test_odd_numbers_in_journal_evidence_never_500_imports(auth_cfg, install):
+    client, _ = _route_client(auth_cfg)
+    state.write_bytes(
+        "journal-" + "a" * 32 + ".json",
+        b'{"bundle":NaN,"entries":{"skill:x":{"dest":"x","outcome":"created"}}}',
+    )
+    _not_a_500(client.get("/api/share/imports"))
+
+
+def test_a_nan_reason_in_a_journal_never_500s_confirm_or_replay(auth_cfg, install):
+    _seed()
+    client, headers = _route_client(auth_cfg)
+    data = _export(("skill", "tdd"))
+    preview = client.post(
+        "/api/share/import/preview",
+        content=data,
+        headers={**headers, "Content-Type": "application/octet-stream"},
+    ).json()
+    token, selection = preview["token"], _keys(preview)
+    record = state.read_json(f"preview-{token}.json")
+    journal = {
+        "format": 1,
+        "token": token,
+        "bundle": record["bundle"],
+        "selection": sorted(selection),
+        "created_at": 1,
+        "entries": {
+            selection[0]: {
+                "dest": "tdd-2",
+                "outcome": "failed",
+                "retry": False,
+                "reason": float("nan"),
+            }
+        },
+    }
+    state.write_bytes(f"journal-{token}.json", json.dumps(journal).encode())
+    body = {"token": token, "selection": selection}
+    _not_a_500(client.post("/api/share/import", json=body, headers=headers))
+    receipt = {
+        "selection": selection,
+        "keys": selection,
+        "result": {"items": [], "x": float("nan")},
+    }
+    state.write_bytes("receipt-" + "f" * 32 + ".json", json.dumps(receipt).encode())
+    _not_a_500(
+        client.post(
+            "/api/share/import", json={"token": "f" * 32, "selection": selection}, headers=headers
+        )
+    )
+
+
+@pytest.mark.parametrize("expires", [10**400, 1e308, -1])
+def test_an_out_of_range_expiry_never_500s_confirm_or_preview(auth_cfg, install, expires):
+    _seed()
+    client, headers = _route_client(auth_cfg)
+    data = _export(("skill", "tdd"))
+    upload = {**headers, "Content-Type": "application/octet-stream"}
+    preview = client.post("/api/share/import/preview", content=data, headers=upload).json()
+    token = preview["token"]
+    record = state.read_json(f"preview-{token}.json")
+    record["expires_at"] = expires
+    state.write_bytes(f"preview-{token}.json", json.dumps(record).encode())
+    # The same file again first (a reused preview answers its expiry), then the confirm.
+    _not_a_500(client.post("/api/share/import/preview", content=data, headers=upload))
+    _not_a_500(
+        client.post(
+            "/api/share/import", json={"token": token, "selection": _keys(preview)}, headers=headers
+        )
+    )
+
+
+# ---- re-check of f5b45273: preview reuse never 500s on a future-dated or token-less record
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        {"created_at": 1e15, "expires_at": 1e15 + 900},
+        {"created_at": 3e11, "expires_at": 3e11 + 900},
+        {"created_at": 10**20, "expires_at": 10**20 + 900},
+        {"token": None},
+    ],
+)
+def test_a_reused_preview_record_with_odd_times_or_no_token_never_500s(auth_cfg, install, damage):
+    _seed()
+    client, headers = _route_client(auth_cfg)
+    data = _export(("skill", "tdd"))
+    upload = {**headers, "Content-Type": "application/octet-stream"}
+    preview = client.post("/api/share/import/preview", content=data, headers=upload).json()
+    token = preview["token"]
+    record = state.read_json(f"preview-{token}.json")
+    for key, value in damage.items():
+        if value is None:
+            record.pop(key)
+        else:
+            record[key] = value
+    state.write_bytes(f"preview-{token}.json", json.dumps(record).encode())
+    _not_a_500(client.post("/api/share/import/preview", content=data, headers=upload))
+    _not_a_500(
+        client.post(
+            "/api/share/import", json={"token": token, "selection": _keys(preview)}, headers=headers
+        )
+    )
+
+
+# ---- Hermes 7292: provenance outlives retention and the cap; unreadable evidence is unknown ---
+
+
+def test_a_present_copys_provenance_survives_retention_and_the_mark_cap(install, monkeypatch):
+    monkeypatch.setattr(service, "MAX_PROVENANCE", 1)
+    monkeypatch.setattr(service, "MAX_RECORDS", 1)
+    a, b = _distinct(2)
+    pa = service.preview(a)
+    assert service.confirm(pa["token"], _keys(pa))["items"][0]["status"] == "created"
+    # Long after retention, A's (marked) journal and records are pruned.
+    old = service._now() - service.JOURNAL_RETENTION_S - 10
+    for name in os.listdir(state.root()):
+        os.utime(state.root() / name, (old, old))
+    pb = service.preview(b)
+    assert service.confirm(pb["token"], _keys(pb))["items"][0]["status"] == "created"
+    found = service.imports()
+    assert found["skill:skill-0"]["bundle"] == pa["bundle"]["digest"]  # A's copy still exists
+    assert found["skill:skill-1"]["bundle"] == pb["bundle"]["digest"]
+
+
+def test_a_mark_of_a_copy_that_no_longer_exists_gives_way_over_the_cap(install, monkeypatch):
+    import shutil
+
+    monkeypatch.setattr(service, "MAX_PROVENANCE", 1)
+    a, b = _distinct(2)
+    pa = service.preview(a)
+    service.confirm(pa["token"], _keys(pa))
+    shutil.rmtree(gallery_storage.skills_root() / "skill-0")  # the operator deletes A's copy
+    pb = service.preview(b)
+    service.confirm(pb["token"], _keys(pb))
+    assert list(state.read_json("imported.json")["items"]) == ["skill:skill-1"]
+
+
+def test_an_unreadable_journal_with_creation_history_makes_the_record_unknown(
+    auth_cfg, install, monkeypatch
+):
+    (a,) = _distinct(1)
+    pa = service.preview(a)
+    real_write = state.write_json
+    with monkeypatch.context() as m:  # the mark write fails: the journal is the only provenance
+        m.setattr(
+            state,
+            "write_json",
+            lambda n, v: (_ for _ in ()).throw(OSError(28, "full"))
+            if n == "imported.json"
+            else real_write(n, v),
+        )
+        service.confirm(pa["token"], _keys(pa))
+    os.chmod(state.root() / f"journal-{pa['token']}.json", 0o644)  # now unreadable
+    with pytest.raises(state.StateError):
+        service.imports()
+    client, _ = _route_client(auth_cfg)
+    response = client.get("/api/share/imports")
+    assert response.status_code == 503
+    assert response.headers["x-content-type-options"] == "nosniff"

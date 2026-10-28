@@ -10,6 +10,8 @@ import { PlaybookCard } from "../components/playbooks/PlaybookCard";
 import { PlaybookDetailPage } from "../components/playbooks/PlaybookDetail";
 import { usePlaybookRead } from "../components/playbooks/usePlaybooks";
 import { api } from "../lib/api";
+import { ShareActions } from "../components/share/ShareDialogs";
+import { useShareImports } from "../components/share/useShareImports";
 import buttons from "../components/ui/actionButton.module.css";
 import styles from "../components/playbooks/playbooks.module.css";
 
@@ -33,6 +35,8 @@ function Library() {
   const [search, setSearch] = useState("");
   const [source, setSource] = useState("");
   const [domain, setDomain] = useState("");
+  const [round, setRound] = useState(0);
+  const imported = useShareImports(round);
   const rows = data?.playbooks ?? [];
   const needle = search.trim().toLowerCase();
   const shown = rows.filter(
@@ -63,7 +67,18 @@ function Library() {
         <span className="nj-notch" aria-hidden="true" />
         Library // <b>playbooks</b>{data ? ` // ${rows.length}` : ""}
       </div>
-      <div className={styles.header}><h1>Playbooks</h1><Link className={buttons.primary} to={PLAYBOOK_NEW_PATH}>New playbook</Link></div>
+      <div className={styles.header}>
+        <h1>Playbooks</h1>
+        <ShareActions
+          kind="playbook"
+          onImported={() => {
+            setRound((n) => n + 1);
+            void reload();
+          }}
+        >
+          <Link className={buttons.primary} to={PLAYBOOK_NEW_PATH}>New playbook</Link>
+        </ShareActions>
+      </div>
       <ViewTabs kind="playbook" view="local" />
       <p className={styles.intro}>
         How a repository works: its flow of agents, the checklist that ends each
@@ -149,7 +164,12 @@ function Library() {
       )}
       <div className={styles.grid}>
         {shown.map((card, i) => (
-          <PlaybookCard key={`${card.source}:${card.id}:${i}`} card={card} ordinal={i + 1} />
+          <PlaybookCard
+            key={`${card.source}:${card.id}:${i}`}
+            card={card}
+            ordinal={i + 1}
+            imported={card.source === "local" && imported.has(`playbook:${card.id}`)}
+          />
         ))}
         {/* The dashed New card closes the grid (#1574 board B1). */}
         {data && (

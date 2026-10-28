@@ -19,6 +19,31 @@ const NS_PROJECT = (id, name, folder) => ({
   session_count: 0,
 });
 
+/** Share bundles (#1714): an export catalog and an import preview for the P1 captures. */
+const SHARE_CATALOG = {
+  imports: {},
+  items: [
+    { kind: "skill", id: "research-with-citations", title: "research-with-citations", depends_on: [], exportable: true, reason: null, source: "local" },
+    { kind: "skill", id: "research-review", title: "research-review", depends_on: [], exportable: true, reason: null, source: "local" },
+    { kind: "skill", id: "tdd", title: "tdd", depends_on: [], exportable: true, reason: null, source: "local" },
+    { kind: "playbook", id: "research-brief", title: "Research brief", depends_on: ["skill:research-with-citations", "skill:research-review"], exportable: true, reason: null, source: "local" },
+    { kind: "playbook", id: "forgejo-workflow", title: "Forgejo workflow", depends_on: [], exportable: true, reason: null, source: "bundled" },
+  ],
+};
+const SHARE_FILE = (path, text) => ({ path, size: text.length, text });
+const SHARE_PREVIEW = {
+  token: "a".repeat(32),
+  expires_at: "2026-10-27T10:15:00Z",
+  bundle: { digest: "9f3c" + "0".repeat(56) + "a71e", size: 41984, format: 1, created_at: "2026-10-26T14:02:00Z", app_version: "0.24.1", source: "Studio laptop", items: 5, files: 9 },
+  items: [
+    { key: "skill:research-with-citations", kind: "skill", id: "research-with-citations", title: "research-with-citations", dest: "research-with-citations", status: "new", reason: null, depends_on: [], uses: [], files: [SHARE_FILE("SKILL.md", "# Research with citations\n\nCite every material claim.\n")] },
+    { key: "skill:research-review", kind: "skill", id: "research-review", title: "research-review", dest: "research-review-2", status: "renamed", reason: null, depends_on: [], uses: [], files: [SHARE_FILE("SKILL.md", "# Research review\n")] },
+    { key: "playbook:research-brief", kind: "playbook", id: "research-brief", title: "Research brief", dest: "research-brief", status: "new", reason: null, depends_on: ["skill:research-with-citations", "skill:research-review"], uses: [{ from: "research-review", to: "research-review-2" }], files: [SHARE_FILE("playbook.toml", "format = 5\n")] },
+    { key: "playbook:release-notes", kind: "playbook", id: "release-notes", title: "Release notes", dest: "release-notes", status: "new", reason: null, depends_on: ["skill:research-review"], uses: [{ from: "research-review", to: "research-review-2" }], files: [SHARE_FILE("playbook.toml", "format = 5\n")] },
+    { key: "playbook:triage", kind: "playbook", id: "triage", title: "Old triage", dest: null, status: "refused", reason: "not a valid playbook here: flows/main.toml: steps[2].after names an unknown step", depends_on: [], uses: [], files: [] },
+  ],
+};
+
 /** @typedef {({ testId: string } | { role: string, name: string, partial?: boolean } | { css: string })
  *   & { upload?: string, fill?: string, select?: string, drag?: [number, number],
  *       wait?: "attached" | "detached" | "visible" }) | { viewport: [number, number] } | { press: string }
@@ -850,6 +875,26 @@ export const SWEEP = [
   },
   // Skills with nothing saved yet: the empty state (`route:skills` is the same page, unpinned).
   { id: "route:skills-empty", path: "/library/skills", present: "h2:has-text('No skills yet')" },
+  // Share bundles (#1714): the export picker with a playbook's skills included, and the import
+  // preview with a rename, a refused dependency and an invalid playbook (boards A and B).
+  {
+    id: "popup:share-export",
+    path: "/library/skills",
+    api: { "/api/share/catalog": { method: "GET", status: 200, json: SHARE_CATALOG } },
+    open: [{ role: "button", name: "Export…" }, { css: "[data-testid='share-export-row-playbook:research-brief'] input" }],
+    expect: "dialog",
+  },
+  {
+    id: "popup:share-import",
+    path: "/library/skills",
+    api: { "/api/share/import/preview": { method: "POST", status: 200, json: SHARE_PREVIEW } },
+    open: [
+      { role: "button", name: "Import…" },
+      { testId: "share-file", upload: "research-kit.battlelab" },
+      { css: "[data-testid='share-preview-row-skill:research-review'] input" },
+    ],
+    expect: "dialog",
+  },
   // ---- /PR4b library B ----
   { id: "route:new-project", path: "/projects/new" },
   { id: "route:settings-interface", path: "/settings/appearance" },

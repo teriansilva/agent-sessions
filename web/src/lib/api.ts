@@ -6,6 +6,7 @@ import type {
   SpecialistList,
 } from "../types/specialists";
 import type { ApiLook } from "../theme/apiLook";
+import type { ShareCatalog, ShareImports, SharePreview, ShareResult } from "../types/share";
 import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, GalleryComparison, GalleryFiles, LocalSkill } from "../types/gallery";
 import type { CollectionInput, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
 import type { Resources, ResourceSettings, ResourceValues } from "../types/resources";
@@ -842,6 +843,30 @@ async function postForBlob(path: string, body: unknown): Promise<Blob> {
   return await r.blob();
 }
 
+/** POST raw bytes (a share bundle, #1714) and read JSON. Errors carry the server's `detail` and
+ *  the whole body (its `reason`) like `mutateJson`. */
+async function postBytes<T>(path: string, body: Blob): Promise<T> {
+  const r = await apiFetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/octet-stream", "X-CSRF-Token": csrfToken },
+    body,
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) {
+    let parsed: unknown;
+    let detail = "";
+    try {
+      parsed = await r.json();
+      detail = (parsed as { detail?: string })?.detail ?? "";
+    } catch {
+      /* non-JSON body */
+    }
+    throw new ApiError(r.status, detail || `POST ${path} → ${r.status}`, parsed);
+  }
+  return (await r.json()) as T;
+}
+
 /** The CSRF token the call socket proves itself with in its first message (#1397): a WebSocket
  *  carries no custom headers, so it is sent in-band. */
 export function currentCsrfToken(): string {
@@ -907,6 +932,12 @@ export const api = {
   compareGallery: (kind: GalleryKind, id: string, digest: string) => mutateJson<GalleryComparison>("POST", "/api/gallery/compare", { kind, id, digest }),
   updateGallery: (kind: GalleryKind, id: string, newId: string, digest: string, comparison: string, files: GalleryFiles, operation: string) => mutateJson<GalleryOperation>("POST", "/api/gallery/update", { kind, id, new_id: newId, digest, comparison, files, operation, acknowledge: true }),
   localSkills: () => getJsonWithDetail<{ skills: LocalSkill[] }>("/api/library/skills"),
+  shareCatalog: () => getJsonWithDetail<ShareCatalog>("/api/share/catalog"),
+  shareImports: () => getJsonWithDetail<{ imports: ShareImports }>("/api/share/imports"),
+  shareExport: (items: { kind: string; id: string }[]) => postForBlob("/api/share/export", { items }),
+  sharePreview: (file: Blob) => postBytes<SharePreview>("/api/share/import/preview", file),
+  shareConfirm: (token: string, selection: string[]) =>
+    mutateJson<ShareResult>("POST", "/api/share/import", { token, selection }),
   localSkill: (id: string) => getJsonWithDetail<LocalSkill>(`/api/library/skills/${encodeURIComponent(id)}`),
   saveLocalSkill: (id: string, newId: string, revision: string, origin: string | null, files: Record<string, string>, operation: string) => mutateJson<GalleryOperation>("POST", `/api/library/skills/${encodeURIComponent(id)}/copies`, { new_id: newId, revision, origin, files, operation }),
   plugins: () => pluginCatalog("/api/plugins"),

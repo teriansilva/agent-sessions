@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import math
 import os
 import re
 import stat
@@ -151,13 +152,27 @@ def write_bytes(name: str, data: bytes) -> None:
         os.fsync(dfd)
 
 
+def _no_constant(name: str) -> float:
+    raise ValueError(f"share state holds {name}")
+
+
+def _finite_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError("share state holds a float out of range")
+    return value
+
+
 def read_json(name: str) -> dict | None:
     data = read_bytes(name, MAX_JSON_BYTES)
     if data is None:
         return None
     try:
-        value = json.loads(data)
-    except (ValueError, UnicodeDecodeError):
+        # NaN, Infinity and out-of-range floats (`1e999` parses to inf) are refused: they would
+        # reach a response the encoder refuses (allow_nan=False) or a datetime/math call.
+        value = json.loads(data, parse_constant=_no_constant, parse_float=_finite_float)
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        # RecursionError: deeply nested JSON (damaged or hostile) is unreadable, never a 500.
         raise StateError("share state is unreadable; it was left untouched") from None
     if not isinstance(value, dict):
         raise StateError("share state is unreadable; it was left untouched")

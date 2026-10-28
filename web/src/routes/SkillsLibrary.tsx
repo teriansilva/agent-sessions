@@ -13,6 +13,8 @@ import { GALLERY_SKILLS_PATH, SKILLS_PATH } from "../lib/routes";
 import { LandingNote, ViewTabs } from "../components/gallery/ViewTabs";
 import type { LocalSkill } from "../types/gallery";
 import { usePlaybookRead } from "../components/playbooks/usePlaybooks";
+import { ImportedMark, ShareActions } from "../components/share/ShareDialogs";
+import { useShareImports } from "../components/share/useShareImports";
 import { FileRow, LeaveGuard, Origin, PendingOperation } from "../components/gallery/Shared";
 import { beginOperation, finishOperation, errorText, ownValue } from "../components/gallery/operations";
 import buttons from "../components/ui/actionButton.module.css";
@@ -20,6 +22,8 @@ import styles from "../components/gallery/gallery.module.css";
 
 export default function SkillsLibrary() {
   const { skillId } = useParams();
+  // A completed import re-reads the list (and the imported marks) by remounting it.
+  const [round, setRound] = useState(0);
   return (
     <main className={styles.page}>
       <div className={`nj-kicker ${styles.kicker}`}><span className="nj-notch" aria-hidden="true" />Library // <b>Skills</b></div>
@@ -27,6 +31,7 @@ export default function SkillsLibrary() {
         <>
           <div className={styles.header}>
             <h1>Skills</h1>
+            <ShareActions kind="skill" onImported={() => setRound((n) => n + 1)} />
           </div>
           <ViewTabs kind="skill" view="local" />
           <p className={styles.intro}>
@@ -37,12 +42,13 @@ export default function SkillsLibrary() {
       )}
       <LandingNote />
       <PendingOperation />
-      {skillId ? <Detail key={skillId} id={skillId} /> : <List />}
+      {skillId ? <Detail key={skillId} id={skillId} /> : <List key={round} round={round} />}
     </main>
   );
 }
-function List() {
+function List({ round }: { round: number }) {
   const read = usePlaybookRead(useCallback(() => api.localSkills(), []));
+  const imported = useShareImports(round);
   return (
     <>
       {read.error && (
@@ -74,6 +80,7 @@ function List() {
             <p>
               <code>{skill.id}</code>
             </p>
+            {imported.has(`skill:${skill.id}`) && <ImportedMark />}
             {skill.error ? (
               <p className={styles.error}>{skill.error}</p>
             ) : (

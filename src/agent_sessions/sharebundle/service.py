@@ -80,7 +80,11 @@ def _label(kind: str) -> str:
 
 
 def catalog() -> dict:
-    return {"items": kinds.catalog(), "imports": imports()}
+    try:
+        known = imports()
+    except state.StateError:
+        known = {}  # the export picker never decides anything from the marks
+    return {"items": kinds.catalog(), "imports": known}
 
 
 def export(items: object, source: object = None) -> tuple[str, bytes]:
@@ -272,7 +276,10 @@ def _prune() -> None:
     for name, mtime, _size in entries:
         try:
             if name.startswith("journal-") and "preview-" + name[len("journal-") :] not in names:
-                state.remove_any(name)  # a journal without its preview record can't be replayed
+                # A journal without its preview record can't be replayed; it goes once it holds
+                # no copy's only provenance.
+                if not _holds_unmarked(name):
+                    state.remove_any(name)
                 continue
             _prune_one(name, now - mtime)
         except (state.StateError, OSError):
@@ -292,7 +299,8 @@ def _prune_one(name: str, age: float) -> None:
         if journal is None or age > JOURNAL_RETENTION_S:
             state.remove_any(name)
     elif name.startswith(("journal-", "receipt-")) and age > JOURNAL_RETENTION_S:
-        state.remove_any(name)
+        if not _holds_unmarked(name):  # the only provenance of a copy is never pruned
+            state.remove_any(name)
     elif name.startswith(".tmp-") and age > 2 * TTL_S:
         state.remove_any(name)
 
@@ -387,7 +395,12 @@ def _strings(value: object) -> bool:
 
 
 def _number(value: object) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # an int beyond float range
+        return False
 
 
 def _check_shapes(record: object, journal: object, token: str) -> None:
@@ -397,8 +410,14 @@ def _check_shapes(record: object, journal: object, token: str) -> None:
     ok = (
         isinstance(record, dict)
         and isinstance(record.get("bundle"), str)
-        and record.get("token", token) == token
+        and record.get("token") == token
         and _number(record.get("expires_at"))
+        and _number(record.get("created_at"))
+        # A preview lives one TTL: anything else is damage (and keeps datetime/math calls sane).
+        and 0 < record["created_at"] < record["expires_at"] <= record["created_at"] + TTL_S + 60
+        # ... and was never created in the future (no far-future record lives or pins forever).
+        # (one TTL of slack, so a clock stepped back by NTP never makes a live record damaged)
+        and record["created_at"] <= _now() + TTL_S
         and isinstance(record.get("bindings"), dict)
         and isinstance(record.get("items"), list)
         and all(
@@ -515,8 +534,41 @@ def preview(data: bytes) -> dict:
     local = _bindings()
     items = _plan(bundle, local)
     bindings = {kind: sorted([k, v] for k, v in ids.items()) for kind, ids in local.items()}
+    try:
+        head = _preview_locked(data, bundle, items, bindings)
+    except fmt.Refused:
+        raise
+    except (KeyError, IndexError, TypeError, ValueError, ArithmeticError) as exc:
+        # Damaged share state met while recording or reusing a preview: a 503, never a 500.
+        log.warning("share preview: damaged state (%s)", type(exc).__name__, exc_info=True)
+        raise state.StateError("share state is damaged; preview the file again later") from None
+    # Built from the verified bundle, outside the damaged-state boundary: a real bug here stays
+    # a visible 500 rather than reading as damaged state.
+    budget = [PREVIEW_TEXT_BYTES]
+    return {
+        "token": head["token"],
+        "expires_at": head["expires_at"],
+        "bundle": {
+            "digest": bundle.digest,
+            "size": bundle.size,
+            "format": fmt.FORMAT,
+            "created_at": bundle.created_at,
+            "app_version": bundle.app_version,
+            "source": bundle.source,
+            "items": len(bundle.items),
+            "files": sum(len(i.files) for i in bundle.items),
+        },
+        "items": [
+            {**entry, "files": _files_view(bundle.item(entry["key"]), budget)}
+            for entry in head["items"]
+        ],
+    }
+
+
+def _preview_locked(data: bytes, bundle: fmt.Bundle, items: list, bindings: dict) -> dict:
     now = _now()
     with state.lock():
+        _sync_marks()
         _prune()
         rows = _inventory(now)
         # The same file previewed again against the same library is the same plan: answer the
@@ -540,25 +592,12 @@ def preview(data: bytes) -> dict:
                 "items": items,
             }
             state.write_json(f"preview-{token}.json", record)
-    budget = [PREVIEW_TEXT_BYTES]
-    return {
-        "token": record["token"],
-        "expires_at": _iso(record["expires_at"]),
-        "bundle": {
-            "digest": bundle.digest,
-            "size": bundle.size,
-            "format": fmt.FORMAT,
-            "created_at": bundle.created_at,
-            "app_version": bundle.app_version,
-            "source": bundle.source,
-            "items": len(bundle.items),
-            "files": sum(len(i.files) for i in bundle.items),
-        },
-        "items": [
-            {**_public(entry), "files": _files_view(bundle.item(entry["key"]), budget)}
-            for entry in record["items"]
-        ],
-    }
+        # Everything read from the stored record is taken here, inside the boundary.
+        return {
+            "token": record["token"],
+            "expires_at": _iso(record["expires_at"]),
+            "items": [_public(entry) for entry in record["items"]],
+        }
 
 
 def _reusable(rows: list[dict], digest: str, bindings: dict, items: list[dict]) -> dict | None:
@@ -717,30 +756,148 @@ def _remember(entry: dict, dest: str, revision: str, bundle: str) -> None:
     misreports) the import; the mark is simply missing."""
     try:
         _write_mark(entry, dest, revision, bundle)
-    except (state.StateError, OSError, ValueError, TypeError, AttributeError):
+    except (state.StateError, OSError, ValueError, TypeError, AttributeError, ArithmeticError):
         log.warning("share import: could not record the imported-from-a-file mark for %s", dest)
 
 
+def _marks() -> dict:
+    """The stored marks (`imported.json`): `{}` when absent; `StateError` when it can't be read
+    or has an odd shape (never treated as empty, and never overwritten)."""
+    try:
+        record = state.read_json("imported.json")
+    except OSError:
+        raise state.StateError("the import record can't be read") from None
+    if record is None:
+        return {}
+    items = record.get("items")
+    if not isinstance(items, dict) or not all(isinstance(v, dict) for v in items.values()):
+        raise state.StateError("the import record is damaged")
+    return items
+
+
+def _evidence() -> dict:
+    """Copies this install's journals and receipts say an import created, as marks. They are the
+    durable record behind `imported.json`: a mark write that failed (it is best effort) never
+    loses a copy's provenance, because the journal or receipt that recorded the outcome stays
+    until its marks are stored (`_holds_unmarked`)."""
+    out: dict = {}
+    for name, _mtime, _size in state.entries():
+        try:
+            if name.startswith("journal-"):
+                doc = state.read_json(name)
+                if doc is None:
+                    # Dropped since the listing: its receipt is written before it goes.
+                    name = "receipt-" + name[len("journal-") :]
+                else:
+                    for key, entry in (doc.get("entries") or {}).items():
+                        if isinstance(entry, dict) and entry.get("outcome") == "created":
+                            out[f"{key.split(':', 1)[0]}:{entry['dest']}"] = {
+                                "bundle": doc["bundle"],
+                                "revision": entry.get("revision"),
+                            }
+                    continue
+            if name.startswith("receipt-"):
+                result = (state.read_json(name) or {}).get("result") or {}
+                for item in result.get("items") or []:
+                    if isinstance(item, dict) and item.get("status") == "created":
+                        out[f"{item['kind']}:{item['dest']}"] = {
+                            "bundle": result["bundle"],
+                            "revision": None,
+                        }
+        except (state.StateError, KeyError, TypeError, AttributeError):
+            # A journal or receipt that can't be read may hold a copy's only provenance: the
+            # whole record is unknown (a 503), never "no imports".
+            raise state.StateError("an import record can't be read") from None
+    return out
+
+
+def _holds_unmarked(name: str) -> bool:
+    """Whether a journal or receipt records a created copy whose mark isn't stored yet (or the
+    marks can't be read): it is then the only provenance, and is kept."""
+    try:
+        marks = _marks()
+        doc = state.read_json(name) or {}
+        if name.startswith("journal-"):
+            created = [
+                f"{k.split(':', 1)[0]}:{e.get('dest')}"
+                for k, e in (doc.get("entries") or {}).items()
+                if isinstance(e, dict) and e.get("outcome") == "created"
+            ]
+        else:
+            created = [
+                f"{i.get('kind')}:{i.get('dest')}"
+                for i in ((doc.get("result") or {}).get("items") or [])
+                if isinstance(i, dict) and i.get("status") == "created"
+            ]
+        return any(key not in marks for key in created)
+    except (state.StateError, KeyError, TypeError, AttributeError):
+        return True  # can't tell: keep it (fail closed), never a 500 out of pruning
+
+
+def _sync_marks() -> None:
+    """Store the marks that only journals or receipts hold yet (a mark write that failed earlier).
+    Best effort, under the share lock; a damaged record is never overwritten."""
+    try:
+        marks = _marks()
+        missing = {k: v for k, v in _evidence().items() if k not in marks}
+        if missing:
+            now = _now()
+            merged = {**{k: {**v, "at": now} for k, v in missing.items()}, **marks}
+            state.write_json("imported.json", {"items": _bounded(merged)})
+    except (state.StateError, OSError, ValueError, TypeError, AttributeError, ArithmeticError):
+        log.warning("share state: could not store pending imported-from-a-file marks")
+
+
+def _bounded(items: dict) -> dict:
+    """Over `MAX_PROVENANCE`, only marks of copies that no longer exist are dropped, oldest first.
+    The mark of a copy that still exists is its provenance and is never evicted (the libraries
+    themselves are bounded, so the marks of present copies are too); when the library can't be
+    read, nothing is dropped."""
+    if len(items) <= MAX_PROVENANCE:
+        return items
+    try:
+        present = {f"{k}:{i}" for k in kinds.KINDS for i in kinds.ids(k)}
+    except (OSError, store.StoreError, gallery_contract.GalleryError, ValueError):
+        return items
+
+    def when(key: str) -> int | float:
+        # No conversion: an int too large for a float is still comparable as it is.
+        at = items[key].get("at")
+        if isinstance(at, bool) or not isinstance(at, int | float):
+            return 0
+        return 0 if isinstance(at, float) and math.isnan(at) else at
+
+    gone = sorted((k for k in items if k not in present), key=when)
+    for old in gone[: max(0, len(items) - MAX_PROVENANCE)]:
+        del items[old]
+    return items
+
+
 def _write_mark(entry: dict, dest: str, revision: str, bundle: str) -> None:
-    record = state.read_json("imported.json") or {"items": {}}
-    items = record.get("items") if isinstance(record.get("items"), dict) else {}
+    items = dict(_marks())  # a damaged record raises: it is never replaced by a partial one
     items[f"{entry['kind']}:{dest}"] = {"bundle": bundle, "revision": revision, "at": _now()}
-    if len(items) > MAX_PROVENANCE:
-        for old in sorted(items, key=lambda k: items[k].get("at", 0))[
-            : len(items) - MAX_PROVENANCE
-        ]:
-            del items[old]
-    state.write_json("imported.json", {"items": items})
+    state.write_json("imported.json", {"items": _bounded(items)})
 
 
 def imports() -> dict:
-    """`{"<kind>:<id>": {bundle, revision}}` of copies created from a file."""
-    try:
-        record = state.read_json("imported.json") or {}
-    except (state.StateError, OSError):
-        return {}
-    items = record.get("items") if isinstance(record.get("items"), dict) else {}
-    return {k: {"bundle": v.get("bundle"), "revision": v.get("revision")} for k, v in items.items()}
+    """`{"<kind>:<id>": {bundle, revision}}` of copies created from a file: the stored marks plus
+    any the journals and receipts hold that a failed mark write didn't store. An absent record
+    with no such evidence is authoritatively empty; a record that can't be read or has an odd
+    shape raises `StateError` (a 503), never `{}`: the import dialog treats "unknown" as
+    "copies may exist" and pre-selects nothing."""
+    # Evidence first: a concurrent preview may store a mark and then prune its journal, so the
+    # mark read afterwards still sees it.
+    evidence = _evidence()
+    marks = _marks()
+    found = {**evidence, **marks}
+
+    def text(value: object) -> str | None:  # only strings reach the response
+        return value if isinstance(value, str) else None
+
+    return {
+        k: {"bundle": text(v.get("bundle")), "revision": text(v.get("revision"))}
+        for k, v in found.items()
+    }
 
 
 def _apply(record: dict, journal: dict, statuses: dict, bundle: fmt.Bundle) -> None:
@@ -897,7 +1054,7 @@ def confirm(token: object, selection: object) -> dict:
     with state.lock():
         try:
             return _confirm_locked(token, selection)
-        except (KeyError, IndexError, TypeError, ValueError) as exc:
+        except (KeyError, IndexError, TypeError, ValueError, ArithmeticError) as exc:
             # Damaged share state (the app's own private files): a 503, kept untouched. Nothing
             # can be duplicated by trying again (NOREPLACE + the digest checks), so the storage
             # answer's "confirming again never makes a second copy" stays true.

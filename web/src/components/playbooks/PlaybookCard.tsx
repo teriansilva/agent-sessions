@@ -8,6 +8,7 @@ import {
 import { playbookPath } from "../../lib/routes";
 import type { PlaybookCardData, PlaybookStep } from "../../types/playbooks";
 import { bindingRole } from "../../types/playbooks";
+import { ImportedMark } from "../share/ShareDialogs";
 import buttons from "../ui/actionButton.module.css";
 import styles from "./playbooks.module.css";
 
@@ -89,9 +90,12 @@ export function PlaybookCard({
   card,
   onSelect,
   ordinal,
+  imported = false,
 }: {
   card: PlaybookCardData;
   onSelect?: (card: PlaybookCardData) => void;
+  /** A local copy created from a share bundle (#1714): it carries the mark. */
+  imported?: boolean;
   /** The card's place in the library list, for the dossier's stamp line (#1574 board B1). */
   ordinal?: number;
 }) {
@@ -108,6 +112,7 @@ export function PlaybookCard({
       </div>
       <h2>{card.name || card.id}</h2>
       <PlaybookSource card={card} />
+      {imported && <ImportedMark />}
       {card.ok ? (
         <>
           <p>{card.summary}</p>
