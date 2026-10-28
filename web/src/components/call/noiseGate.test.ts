@@ -37,6 +37,10 @@ const zeros = (n: number) => Array.from({ length: n }, () => new ArrayBuffer(640
 const isSilence = (b: ArrayBuffer) => new Int16Array(b).every((s) => s === 0);
 /** A quiet room after the browser's noise suppression: near-silence, under the gate. */
 const ROOM = -65;
+/** The seed sweeps push tens of thousands of frames. The longest takes 2.6 s on a quiet host and
+ *  ran past vitest's default 5 s on a loaded CI runner. The work is the test: it gets the time,
+ *  not fewer seeds. */
+const SWEEP_BUDGET_MS = 30_000;
 
 /** Run frames through a gate; what went out, in order. */
 function run(gate: NoiseGate, frames: ArrayBuffer[]): ArrayBuffer[] {
@@ -164,7 +168,7 @@ describe("NoiseGate", () => {
         expect(after.slice(-1400).every(isSilence), `${name}, seed ${seed}`).toBe(true);
       }
     }
-  });
+  }, SWEEP_BUDGET_MS);
 
   test("a jittery room under the level never opens it", () => {
     const r = rng(19);
@@ -248,7 +252,7 @@ describe("NoiseGate", () => {
       expect(g.open, `seed ${seed}`).toBe(false);
       expect(after.slice(-100).every(isSilence)).toBe(true);
     }
-  });
+  }, SWEEP_BUDGET_MS);
 
   test("clicks never open it: two close together, one split over two frames, one in a quiet room (#1669 review)", () => {
     const click = () => {
@@ -283,7 +287,7 @@ describe("NoiseGate", () => {
       const out = run(h, [click(), ...Array.from({ length: 60 }, () => noise(level(), q))]);
       expect(out.every(isSilence), `a click in a -62 ±2 room, seed ${seed}`).toBe(true);
     }
-  });
+  }, SWEEP_BUDGET_MS);
 
   test("a short word right after digital silence, and speech full of zero frames, are heard (#1669 review)", () => {
     for (const db of [-20, -40, -45, -54]) {
