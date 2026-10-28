@@ -215,6 +215,16 @@ class CallError(Exception):
 
 
 # Spoken-text helpers live in `voice_text` (no app imports: the worker uses them too).
+#: The card kinds a spoken reply may be JUDGED for (#1715 P1): a yes/no on one card or a numbered
+#: choice among cards. Needs-you decisions (permission, menu, pick, needs_you) keep the English
+#: grammar until P2 has its own approval.
+JUDGED_KINDS = frozenset({"nudge", "session", "operation", "suggest"})
+
+
+def _judged(cards: list[dict]) -> bool:
+    return bool(cards) and all(c.get("kind") in JUDGED_KINDS for c in cards)
+
+
 from .voice_text import (  # noqa: E402,F401
     CHUNK_WORDS,
     card_sentences,
@@ -296,6 +306,15 @@ class Call:
     #: The pending spoken confirmation (#1397 P2): `{cards, say_id, armed_at, expires_at}`. Server
     #: state only; armed when its read-back has played; one use; void on anything else.
     challenge: dict | None = None
+    #: How many challenges this call has ever installed: only ever grows. A reply's verdict settles
+    #: only if none was installed after its own — even one voided since (Hermes 7336).
+    challenge_seq: int = 0
+    #: How new the newest question or answer TAKEN is, in turn order: a spoken one is its worker
+    #: turn, the "What needs me?" chip ranks after every turn begun before it. A judged non-answer
+    #: whose turn is older than this steps aside; a newer one is still asked (independent review
+    #: of 834d1045: two non-answers in one window must not drop the newer words; Hermes 7359: nor
+    #: may older words be asked after a newer confirmation).
+    taken_turn: float = 0.0
     #: Settlements and Needs-you read-outs run here, never in the worker relay loop (a confirm
     #: following its card for 30 s must not freeze the call's audio and events).
     side_tasks: set = field(default_factory=set, repr=False)
@@ -567,6 +586,7 @@ class Call:
         # still in flight sees it is stale and never installs its challenge (#1631 review 6874).
         self.generation += 1
         gen = self.generation
+        self.taken_turn = max(self.taken_turn, self.user_turn + 0.5)
         await self.void_challenge()
         self._side(self.read_needs_you(gen))
 
@@ -582,7 +602,9 @@ class Call:
 
         task.add_done_callback(done)
 
-    async def on_utterance(self, text: str, *, late: bool = False, turn: int | None = None) -> None:
+    async def on_utterance(
+        self, text: str, *, late: bool = False, turn: int | None = None, captioned: bool = False
+    ) -> None:
         if self.muted:
             return
         # Answering HQ's still-there question (#1668): HQ is told what the words answer, and an
@@ -601,8 +623,13 @@ class Call:
         # challenge (#1631 review 6874).
         self.generation += 1
         gen = self.generation
+        if turn is not None and not late:
+            self.taken_turn = max(self.taken_turn, turn)
         await self.void_challenge()
-        await self.client({"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text})
+        if not captioned:  # a judged reply re-entering as a question was captioned already
+            await self.client(
+                {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text}
+            )
         if NEEDS_YOU_ASK.search(text.lower()) and not self._turn_running():
             self._side(self.read_needs_you(gen))
             return
@@ -761,14 +788,16 @@ class Call:
                 await self.say(line, turn_id=view.get("turn_id"))
             picks = [c for c in cards if c["kind"] == "pick"]
             others = [c for c in cards if c["kind"] != "pick"]
-            if picks and self.language in (None, "en"):
+            if picks and (others or self.language in (None, "en")):
                 # A pick is answered by ITS OWN numbers, so it is offered alone, after the turn's
-                # other cards — those together, as always (#1681).
+                # other cards — those together, as always (#1681). On a call in another language
+                # the other cards are judged (#1715) while the pick stays for the screen: mixed in
+                # one offer, the pick would keep the judged cards from arming (Hermes 7282).
                 first = others or picks[:1]
                 rest = picks if others else picks[1:]
                 await self.offer(first, turn_id=view.get("turn_id"), gen=gen, queue=rest)
             elif cards:
-                # On a call in another language every card is read for the screen (`offer`).
+                # Only picks on a call in another language: read for the screen (`offer`).
                 await self.offer(cards, turn_id=view.get("turn_id"), gen=gen)
         else:
             await self.say(
@@ -798,26 +827,33 @@ class Call:
         challenge, which keeps that generation: a slower, older offer can never displace a newer
         one, and a challenge outlived by its generation never arms or confirms (#1631 reviews).
 
-        The confirmation matcher is English-only (#1397 P3): on a call in any other language the
-        cards are read back for the SCREEN and no challenge is armed, so a translated or
-        misdetected command can never settle one."""
+        On a call in another language, HQ cards (`JUDGED_KINDS`) still arm: a reply the English
+        phrases don't cover is judged (#1715 P1). Anything else — a Needs-you decision, a pick —
+        keeps the English grammar and is read back for the SCREEN with no challenge armed, so a
+        translated or misdetected command can never settle it."""
         await self.void_challenge()
         cards = cards[:4]
         if gen is not None and gen != self.generation:
             return
-        if self.language not in (None, "en"):
+        if self.language not in (None, "en") and not _judged(cards):
+            # Needs-you decisions keep the English grammar (#1715 P2 is held): screen only.
             await self.say(readback_screen_only(cards), kind="readback", turn_id=turn_id)
             return
         # The PENDING challenge exists before its read-back is sent: the worker's `said`, the
         # browser's `played` — and an interruption, mute, tap or new question, which void it —
         # all meet the real challenge, whatever order the awaits resolve in (#1631 reviews).
         sid = uuid.uuid4().hex[:12]
+        line = readback(cards)
         ch = {"cards": cards, "say_id": sid, "sent": False, "armed_at": None,
               "expires_at": None, "gen": self.generation,
               # The Needs-you items still to offer, one at a time, after this one (#1681 P2).
-              "queue": list(queue or [])}  # fmt: skip
+              "queue": list(queue or []),
+              # What was read out, word for word: what the judge is shown (#1715).
+              "readback": line}  # fmt: skip
         self.challenge = ch
-        said = await self.say(readback(cards), kind="readback", turn_id=turn_id, sid=sid)
+        self.challenge_seq += 1
+        ch["seq"] = self.challenge_seq
+        said = await self.say(line, kind="readback", turn_id=turn_id, sid=sid)
         if self.challenge is not ch:
             return  # voided or replaced while its read-back was being sent
         if said is None or (gen is not None and gen != self.generation):
@@ -844,9 +880,23 @@ class Call:
             # Not armed yet, superseded, expired, late, or its turn began before arming or while
             # HQ was still reading it back: a new question (the caller voids the challenge).
             return False
-        if not self._confirmation_language_ok():
-            # Fail closed: a turn not known to be English never confirms (the matcher is
-            # English-only), whatever its words were transcribed as. The caller voids it.
+        if turn != self.user_turn:
+            # Overtaken: the Commander began a newer turn before this one's transcript landed (the
+            # worker can flush turn N after N+1 starts). The newer turn is what they mean now, so
+            # this reply decides nothing on ANY path — judged or English fast path (Hermes 7288,
+            # 7336): a new question.
+            return False
+        # What the call looked like when THIS reply was heard, taken before any await: a verdict
+        # (judged or the English fast path) settles only if no turn began and nothing was typed
+        # since — checked again right before the card's route (Hermes 7282, 7288, 7310).
+        snap = {"starts": self.user_starts, "typed": self.typed_turns,
+                "armed_at": ch.get("armed_at"), "gen": ch["gen"], "seq": ch["seq"],
+                "expires_at": ch.get("expires_at"), "turn": turn}  # fmt: skip
+        english = self._confirmation_language_ok()
+        judged = _judged(ch["cards"])
+        if not english and not judged:
+            # Fail closed: a Needs-you decision is matched by the English grammar only, so a turn
+            # not known to be English never decides one. The caller voids it.
             return False
         first = ch["cards"][0]
         if len(ch["cards"]) == 1 and first["kind"] in ("permission", "menu", "pick"):
@@ -858,28 +908,129 @@ class Call:
         elif len(ch["cards"]) == 1 and first["kind"] == "needs_you" and is_skip(text):
             verdict, idx = "skip", None
         else:
-            verdict, idx = classify_confirmation(text, len(ch["cards"]))
+            # The fixed English phrases decide at once (the fast path); anything they don't cover
+            # — any wording, any language — goes to ONE focused judgement (#1715 P1).
+            verdict, idx = (
+                classify_confirmation(text, len(ch["cards"])) if english else ("other", None)
+            )
+            if verdict == "other" and judged:
+                # `snap` was taken at receipt, before ANY await (this caption send included): a
+                # turn begun after it is newer than the reply and voids its verdict.
+                await self.client(
+                    {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text}
+                )
+                self._side(self._judge_reply(ch, text, snap, late=late, turn=turn))
+                return True
+        return await self._apply_verdict(ch, first, text, verdict, idx, snap=snap)
+
+    async def _judge_reply(
+        self, ch: dict, text: str, snap: dict, *, late: bool = False, turn: int | None = None
+    ) -> None:
+        """Ask the judge what `text` means for challenge `ch` (#1715 P1). A verdict that settles or
+        re-arms acts ONLY if the challenge is still exactly as it was when the reply was heard
+        (`snap`, taken at receipt; `_judge_still_holds`). `other` and no verdict authorise nothing:
+        they are dropped only if a question from a later turn or a typed turn was taken, or the call
+        ended."""
+        from . import voice_judge
+
+        got = await voice_judge.judge_cards(ch.get("readback") or "", len(ch["cards"]), text)
+        if got is not None and got[0] != "other":
+            # A verdict that settles or re-arms: the whole freshness fence, or it decides nothing.
+            if self._judge_still_holds(ch, snap):
+                await self._apply_verdict(
+                    ch, ch["cards"][0], text, got[0], got[1], captioned=True, snap=snap
+                )
+            return
+        # `other` or NO verdict authorises nothing, so a bare turn start (room noise, a breath)
+        # must not swallow the words (independent review of a160b29d). They are dropped only when
+        # something NEWER than them was actually taken: a question from a later turn (or the
+        # chip), a typed turn, or the call ended. A question from an EARLIER turn — another reply
+        # judged in the same window whose verdict came back first — does not drop them (review of
+        # 834d1045): the newer words are what the Commander means now.
+        if (
+            self.state == "ended"
+            or turn is None
+            or self.taken_turn > turn
+            or self.typed_turns != snap["typed"]
+        ):
+            return
+        if got is None:
+            # NO verdict: nothing is decided, the card stays, and the words are not a question. Said
+            # only while this reply's card is still the one waiting: after a newer reply settled
+            # or replaced it, "it's on your screen" would be false.
+            if self.challenge is ch:
+                await self.void_challenge()
+                await self.say("I couldn't tell, Commander. It's on your screen.", kind="outcome")
+            return
+        # Not an answer: the words go on as a new question, as an unmatched reply always did. The
+        # challenge is retired WITHOUT an await, so nothing newer can be asked before these words
+        # take their generation (`on_utterance` takes it before its first await).
+        cleared = self.challenge is ch
+        if cleared:
+            self.challenge = None
+        await self.on_utterance(text, late=late, turn=turn, captioned=True)
+        if cleared and self.challenge is None:
+            await self.client({"t": "challenge", "cards": []})
+
+    def _judge_still_holds(self, ch: dict, snap: dict) -> bool:
+        """The freshness fence after the judge's await (#1715): the SAME challenge, still armed in
+        the same arming and generation, the call live and unmuted, no turn begun and nothing typed
+        since the reply was heard, and still inside this arming's window. The reply's OWN
+        turn-start (and Pipecat's interrupt with it) came before its transcript, so it is in
+        `snap` already; only a subsequent one counts."""
+        return (
+            self.challenge is ch
+            and ch.get("armed_at") is not None
+            and ch.get("armed_at") == snap["armed_at"]
+            and ch["gen"] == snap["gen"] == self.generation
+            and not self.muted
+            and self.state != "ended"
+            and self.user_starts == snap["starts"]
+            and self.typed_turns == snap["typed"]
+            and time.monotonic() <= ch["expires_at"]
+        )
+
+    async def _apply_verdict(
+        self,
+        ch: dict,
+        first: dict,
+        text: str,
+        verdict: str,
+        idx: int | None,
+        *,
+        captioned: bool = False,
+        snap: dict | None = None,
+    ) -> bool:
+        """Act on what the reply means. False only for `other` (a new question). `snap`: the call
+        as of the reply — a settlement goes ahead only if it still holds then."""
+
+        async def caption() -> None:
+            if not captioned:
+                await self.client(
+                    {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text}
+                )
+
         if verdict == "other":
             return False
+        if snap is not None:
+            # An ANSWER from this turn is taken (Hermes 7359): an older reply still being judged
+            # is now older than what the Commander did since, so its words step aside.
+            self.taken_turn = max(self.taken_turn, snap["turn"])
         if verdict in ("confirm", "choose") and idx is not None:
             self.challenge = None  # single use: consumed BEFORE anything is awaited
             card = first if verdict == "choose" else ch["cards"][idx]
-            await self.client(
-                {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text}
-            )
+            await caption()
             await self.client({"t": "challenge", "cards": []})
-            self._side(self._settle_then_next(card, ch["queue"], ch["gen"]))
+            self._side(self._settle_then_next(card, ch["queue"], ch["gen"], snap))
             return True
         if verdict == "skip":
             self.challenge = None
-            await self.client(
-                {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text}
-            )
+            await caption()
             await self.client({"t": "challenge", "cards": []})
             if not await self._offer_next(ch["queue"], ch["gen"]):
                 await self.say("Okay. That was the last one, Commander.", kind="outcome")
             return True
-        await self.client({"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text})
+        await caption()
         if verdict == "cancel":
             await self.void_challenge()
             line = (
@@ -907,10 +1058,12 @@ class Call:
             await self.void_challenge()
         return True
 
-    async def _settle_then_next(self, card: dict, queue: list[dict], gen: int) -> None:
+    async def _settle_then_next(
+        self, card: dict, queue: list[dict], gen: int, snap: dict | None = None
+    ) -> None:
         """Settle one card, then offer the next queued Needs-you item — unless something newer
         (a question, an offer) took the call meanwhile."""
-        await self._settle_if_still_wanted(card)
+        await self._settle_if_still_wanted(card, snap)
         if self.challenge is None and gen == self.generation:
             await self._offer_next(queue, gen)
 
@@ -923,11 +1076,34 @@ class Call:
         await self.offer(rest[:1], gen=gen, queue=rest[1:])
         return True
 
-    async def _settle_if_still_wanted(self, card: dict) -> None:
-        """Settle unless the call ended, was muted, or the card was tapped meanwhile."""
+    async def _settle_if_still_wanted(self, card: dict, snap: dict | None = None) -> None:
+        """Settle unless the call ended, was muted, or the card was tapped meanwhile — or, with
+        `snap` (the call as of the reply), the Commander began another turn or typed since: the
+        newer turn is what they mean now, so the old reply authorises nothing (Hermes 7310)."""
         if self.state == "ended" or self.muted or card["id"] in self.tapped:
             return
-        await self.settle(card)
+        if snap is not None and not self._settle_fence_holds(snap):
+            return
+        await self.settle(card, snap)
+
+    def _settle_fence_holds(self, snap: dict) -> bool:
+        """The reply's freshness fence, at the LAST boundary before the card's route (Hermes 7310,
+        7318): no turn begun and nothing typed since the reply was heard, the same question
+        (generation), no newer challenge EVER installed — not merely none installed now: one offered
+        and then voided (a tap) still supersedes the reply (Hermes 7336) — the call live and
+        unmuted, and still inside the window the reply was heard in."""
+        expires = snap.get("expires_at")
+        return (
+            self.user_starts == snap["starts"]
+            and self.typed_turns == snap["typed"]
+            and self.generation == snap["gen"]
+            and self.challenge is None
+            and self.challenge_seq == snap["seq"]
+            and self.state != "ended"
+            and not self.muted
+            and expires is not None
+            and time.monotonic() <= expires
+        )
 
     def _confirmation_language_ok(self) -> bool:
         """English is KNOWN for this utterance. Where the endpoint detects language — on Auto AND
@@ -943,9 +1119,11 @@ class Call:
             return self.heard_language == "en" and self.language in (None, "en")
         return True
 
-    async def settle(self, card: dict) -> None:
+    async def settle(self, card: dict, snap: dict | None = None) -> None:
         """The card's OWN route, in-process, as the operator (the #1559 mechanism): every guard and
-        re-check a tap gets. What is said is rendered from the route's result."""
+        re-check a tap gets. What is said is rendered from the route's result. `snap`: a spoken
+        reply's freshness fence, re-checked right before the route — after every await here (the
+        suggest branch's folder lookup included)."""
         from . import asgi_call
 
         kind = card["kind"]
@@ -989,6 +1167,8 @@ class Call:
         else:  # operation
             method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
             body = {"decision": "confirm"}
+        if snap is not None and not self._settle_fence_holds(snap):
+            return  # something newer took the call while this settlement was being prepared
         try:
             resp = await asgi_call.call(self.app, self.operator, method, path, body)
         except Exception:  # noqa: BLE001 — never speak an exception; say it failed

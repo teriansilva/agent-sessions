@@ -378,9 +378,10 @@ def readback(cards: list[dict]) -> str:
 
 
 def readback_screen_only(cards: list[dict]) -> str:
-    """The read-back on a call whose language the confirmation matcher does not cover: what each
-    card does, confirmed on the screen only. (English: HQ answers in the call's language, but this
-    fixed line stays short and plain.)"""
+    """The read-back of cards that are NOT judged (#1715: Needs-you decisions, picks) on a call
+    whose language the English matcher does not cover: what each card does, confirmed on the
+    screen only. HQ cards are judged in any language and never read this way. (English: HQ
+    answers in the call's language, but this fixed line stays short and plain.)"""
     if not cards:
         return ""
     parts = [c["line"] for c in cards]

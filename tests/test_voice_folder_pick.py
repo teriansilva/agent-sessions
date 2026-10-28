@@ -147,17 +147,42 @@ def test_a_cancel_with_cards_still_queued_says_they_all_stay(monkeypatch):
     assert r.call.challenge is None
 
 
-def test_on_a_call_in_another_language_every_card_is_read_for_the_screen(monkeypatch):
+def test_on_a_call_in_another_language_the_hq_card_is_judged_and_the_pick_stays_on_screen(
+    monkeypatch,
+):
+    """#1715 (Hermes 7282): a German call's judged card arms on its own; the pick, which keeps the
+    English grammar, follows it for the screen — mixed in one offer it would arm nothing."""
     r = _rig(monkeypatch, _view(more=[NUDGE]))
     r.call.language = "de"
+    r.verdict = ("confirm", 0)
 
     async def go():
         await r.ask("Setz den Standardordner und schick api eine Nachricht")
+        ch = r.call.challenge
+        assert ch is not None and [c["kind"] for c in ch["cards"]] == ["nudge"]
+        assert [c["kind"] for c in ch["queue"]] == ["pick"]
+        await r.readback_played()
+        await r.ev(t="user_started")
+        await r.ev(t="utterance", text="Ja, schick sie", heard_language="de")
+        await r.side()
 
     run(go())
+    assert any(p.endswith("/approve") for _, p, _ in r.routes)  # the nudge, judged
     said = r.said_text()[-1]
-    assert said.startswith(PICK_LINE) and "A message to api: Rerun the tests." in said
-    assert said.endswith("Confirm it on your screen.")
+    assert said.startswith(PICK_LINE) and said.endswith("Confirm it on your screen.")
+    assert r.call.challenge is None  # the pick armed nothing
+
+
+def test_only_picks_on_a_call_in_another_language_are_read_for_the_screen(monkeypatch):
+    r = _rig(monkeypatch, _view())
+    r.call.language = "de"
+
+    async def go():
+        await r.ask("Setz den Standardordner")
+
+    run(go())
+    assert r.said_text()[-1].startswith(PICK_LINE)
+    assert r.said_text()[-1].endswith("Confirm it on your screen.")
     assert r.call.challenge is None
 
 
@@ -374,6 +399,66 @@ def _suggest_rig(monkeypatch, seq):
     answers = iter(seq)
     monkeypatch.setattr(ask_operations, "suggested_folder", lambda pid: next(answers))
     return r
+
+
+@pytest.mark.parametrize("what", ["turn", "typed", "mute", "ended", "expired"])
+def test_a_change_during_the_folder_recheck_voids_the_confirm(monkeypatch, what):
+    """Hermes 7318: the suggest settlement re-checks the folder in a thread before its POST. A
+    turn begun or typed, a mute, the call ending or the reply's window passing during that lookup
+    voids the reply: the fence runs again after it (each clause pinned: independent review of
+    a160b29d)."""
+    import threading
+    import time as real
+    import types
+
+    offset = [0.0]
+    shim = types.SimpleNamespace(
+        **{k: getattr(real, k) for k in dir(real) if not k.startswith("_")},
+    )
+    shim.monotonic = lambda: real.monotonic() + offset[0]
+    monkeypatch.setattr(voice_calls, "time", shim)
+
+    view = _view(op="project.create")
+    view["proposals"][0].update(
+        label="Create project", title="", text="Creates the project web in the folder you choose."
+    )
+    r = Rig(monkeypatch, view)
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def lookup(pid):
+        calls.append(pid)
+        if len(calls) >= 2:  # the settlement's re-check, after the confirm
+            entered.set()
+            release.wait(5)
+        return SUGGESTED
+
+    monkeypatch.setattr(ask_operations, "suggested_folder", lookup)
+
+    async def go():
+        await r.ask("Make a project called web")
+        await r.readback_played()
+        await r.ev(t="user_started")
+        await r.ev(t="utterance", text="Confirm.")
+        side = asyncio.create_task(r.side())
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        if what == "turn":
+            await r.ev(t="user_started")  # the next turn begins during the folder lookup
+        elif what == "typed":
+            assert r.call.on_typed_turn()
+        elif what == "mute":
+            r.call.muted = True
+        elif what == "ended":
+            r.call.state = "ended"
+        else:
+            offset[0] = voice_calls.CHALLENGE_S + 1
+        release.set()
+        await side
+        await r.side()
+
+    run(go())
+    assert not any(m == "POST" for m, _, _ in r.routes)
 
 
 def test_the_existing_folder_is_the_decisions_input(monkeypatch):

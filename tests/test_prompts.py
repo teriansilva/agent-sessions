@@ -59,8 +59,9 @@ def test_registry_covers_every_system_prompt():
     # #1443 added ask_orchestrator; #1525 the 13 HQ contact personas (unguarded: who speaks, sent
     # BEFORE the guarded ask_orchestrator, whose guard stays the last word); #1397 hq_call +
     # hq_call_detailed; hq_handover / hq_handover_plain, when the Commander switched contact
-    # mid-conversation; #1668 hq_call_end (on a call: are the Commander's words a goodbye?)
-    assert len(prompts.REGISTRY) == 40
+    # mid-conversation; #1668 hq_call_end (on a call: are the Commander's words a goodbye?);
+    # #1715 voice_confirm_judge (on a call: did the reply confirm a read-back card?)
+    assert len(prompts.REGISTRY) == 41
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -73,6 +74,9 @@ def test_registry_covers_every_system_prompt():
         # `ask_orchestrator` (#1443) reads agents' screens and transcripts through its tools on
         # every turn: session content is always in front of it.
         "ask_orchestrator",
+        # `voice_confirm_judge` (#1715) decides whether a spoken reply SETTLES a card, and the
+        # read-back it is shown can carry agent-drafted text (a nudge's message, a proposal).
+        "voice_confirm_judge",
         "orchestrator_pass",
         "chat_instruct",
         "mission_objectives",
@@ -147,6 +151,7 @@ EXPECTED_DEFAULT_SHA = {
     "hq_call": "ba7a61d7d1e836f6",  # #1397; #1668: end_call; #1681: readable proposal text
     "hq_call_detailed": "c47168a87e1751e2",  # #1397 (#1626 review); #1668: end_call; #1681: same
     "hq_call_end": "4af567dd1abae1eb",  # #1668: on a call, do the words and HQ's answer end it?
+    "voice_confirm_judge": "1dbd567458fe0b85",  # #1715: did a spoken reply confirm a card?
     "hq_handover": "a27b7d563b8cb484",  # the Commander switched contact mid-conversation
     "hq_handover_plain": "2629dd59306634d4",  # the same, switched to Off
 }

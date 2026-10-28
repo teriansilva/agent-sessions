@@ -44,6 +44,7 @@ EXPECTED_SITES = {
     ("ask_orchestrator.py", "hq_call"),  # #1397: a turn asked on a call — spoken-style answers
     ("ask_orchestrator.py", "hq_call_detailed"),  # #1397: the same, Settings → answers: Detailed
     ("ask_orchestrator.py", "hq_call_end"),  # #1668: on a call, do the Commander's words end it?
+    ("voice_judge.py", "voice_confirm_judge"),  # #1715: did a spoken reply confirm a card?
     ("ask_orchestrator.py", "hq_handover"),  # the Commander switched contact mid-conversation
     ("ask_orchestrator.py", "hq_handover_plain"),  # the same, switched to Off
     ("review.py", "tail_review"),

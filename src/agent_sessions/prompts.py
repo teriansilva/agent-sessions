@@ -581,6 +581,24 @@ a goodbye addressed to a session, mission or agent, for thanks followed by a new
 question or request, and whenever HQ's answer asks them something or holds them on the line. Reply \
 with exactly one word: yes or no."""
 
+_VOICE_CONFIRM_JUDGE = """The Commander is on a voice call with HQ. HQ just read them one card, or \
+several numbered cards, and asked them to confirm. Below, as quoted data, are what HQ read back \
+and the Commander's spoken reply, in any language. Decide what the reply means. confirm: a clear \
+yes to the one card ("yes", "do it", "go ahead", "ja, mach das", "passt, los"). confirm N: a clear \
+yes that names card N, counted from 1 as HQ read them ("the second one", "die zweite bitte"). \
+cancel: a clear no or not now ("no", "leave it", "nee, lass mal", "nicht jetzt"). all: they want \
+every card at once. other: anything else: a question, a new request, a hesitation, a negated, \
+conditional or postponed yes ("don't", "nicht bestätigen", "bestätige nicht", "yes... no, wait", \
+"only tomorrow"), or anything you are not sure about. Only a reply that is clearly and only a yes \
+is ever a confirm."""
+
+#: Not editable (#1715): the caller parses this reply strictly, so an operator's wording of the
+#: judge cannot drop the format it must answer in.
+VOICE_CONFIRM_JUDGE_FORMAT = (
+    "Reply with exactly one of: confirm, confirm N, cancel, all, other. Nothing else: no "
+    "punctuation, no explanation."
+)
+
 _HQ_HANDOVER = """The Commander changed HQ contact during this conversation. An earlier answer \
 that opens with "[Answered by …]" was given by the person named there, not by you: it is their \
 answer, in their words. Never take their name, rank or history as yours, and never answer as \
@@ -784,6 +802,22 @@ REGISTRY: tuple[Prompt, ...] = (
         max_chars=2000,
         block=BLOCK,
         field="hq_call_end",
+    ),
+    Prompt(
+        id="voice_confirm_judge",
+        group="Mission control",
+        label="HQ — did that reply confirm?",
+        description="Asked on a call (#1715) when the Commander answers a read-back card in words "
+        "the fixed English phrases don't cover: does the reply clearly confirm a card, cancel, "
+        "or neither? Only a clear yes settles the card; anything else, or no answer, leaves it "
+        "on the screen.",
+        contract="one token: confirm, confirm N, cancel, all or other",
+        default=_VOICE_CONFIRM_JUDGE,
+        max_chars=2000,
+        block=BLOCK,
+        field="voice_confirm_judge",
+        guarded=True,
+        locked=VOICE_CONFIRM_JUDGE_FORMAT,
     ),
     Prompt(
         id="hq_handover",

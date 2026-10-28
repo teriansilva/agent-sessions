@@ -18,6 +18,7 @@ scripted HQ turn and a recorded in-process route. Pinned:
 from __future__ import annotations
 
 import asyncio
+import types
 
 import pytest
 
@@ -52,6 +53,20 @@ class Rig:
 
         monkeypatch.setattr(ask_orchestrator, "begin", fake_begin)
         monkeypatch.setattr(asgi_call, "call", fake_call)
+        # The confirmation judge (#1715): by default it says `other` — not an answer — so a reply
+        # the English phrases don't cover is a new question, as it always was. A test sets
+        # `self.verdict` (or a callable) to judge otherwise; `self.judged` records what it saw.
+        self.verdict: object = ("other", None)
+        self.judged: list[tuple[str, int, str]] = []
+
+        async def fake_judge(readback, cards, reply):
+            self.judged.append((readback, cards, reply))
+            v = self.verdict
+            return await v() if callable(v) else v
+
+        from agent_sessions import voice_judge
+
+        monkeypatch.setattr(voice_judge, "judge_cards", fake_judge)
         self.call = voice_calls.Call(
             id="c", cid="conv", contact="asia-woman", voice="aria", operator=object(),
             app=object(), registry=None, state="listening",
@@ -93,9 +108,21 @@ class Rig:
         await self.side()
 
     async def side(self):
-        """Settlements and Needs-you read-outs run beside the relay loop: wait for them."""
-        while self.call.side_tasks:
-            await asyncio.gather(*list(self.call.side_tasks), return_exceptions=True)
+        """Settlements, Needs-you read-outs and judgements run beside the relay loop: wait for
+        them — and for a question a judgement handed back (`other`)."""
+        while True:
+            # Yield first: a finished task leaves `side_tasks` only through its done callback,
+            # which runs on the NEXT loop pass — awaiting already-done tasks never yields, so
+            # without this the loop spins forever (it hung pr-validate once).
+            await asyncio.sleep(0)
+            pending = [t for t in self.call.side_tasks if not t.done()]
+            turn = self.call.turn_task
+            if not pending and (turn is None or turn.done()):
+                return
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if turn is not None and not turn.done():
+                await turn
 
     async def readback_played(self):
         """The worker sent the read-back's audio (`said`), then the browser played it out."""
@@ -971,20 +998,44 @@ def test_an_utterance_without_a_turn_number_never_confirms(monkeypatch):
 # --- #1397 P3: the language gate --------------------------------------------------------------
 
 
-def test_a_call_in_another_language_never_arms_a_spoken_confirmation(monkeypatch):
-    """The matcher is English-only: a German call reads the card for the screen and arms nothing,
-    so "bestätigen" — or a misheard English word — cannot settle it."""
+def test_a_call_in_another_language_arms_hq_cards_for_the_judge(monkeypatch):
+    """#1715 P1: a German call arms a card's challenge, and a German reply the English phrases
+    don't cover is judged — the judge sees the read-back word for word and the reply."""
     r = Rig(monkeypatch, NUDGE)
     r.call.language = "de"
+    r.call.detects_language = True
+    r.verdict = ("confirm", 0)
 
     async def go():
         await r.ask("Starte die Tests neu")
-        assert r.call.challenge is None
-        assert r.said_text()[-1].endswith("Confirm it on your screen.")
-        await r.ask("confirm")
+        assert r.call.challenge is not None
+        await r.readback_played()
+        await r.ev(t="user_started")
+        await r.ev(t="utterance", text="Ja, mach das", heard_language="de")
+        await r.side()
 
     run(go())
-    assert not any(p.endswith("/approve") for _, p, _ in r.routes)
+    assert r.judged == [("A message to api-rebase: Rerun the auth tests. Say confirm to send it, "
+                         "or cancel.", 1, "Ja, mach das")]  # fmt: skip
+    assert ("POST", "/api/pulse/actions/act-1/approve", None) in r.routes
+    assert r.asked == ["Starte die Tests neu"]
+
+
+def test_a_needs_you_decision_on_another_language_call_stays_on_screen(monkeypatch):
+    """P2 is held for its own approval: a Needs-you item keeps the English grammar, so on a German
+    call it is read for the screen and arms nothing."""
+    r = Rig(monkeypatch)
+    r.call.language = "de"
+    (card,) = voice_calls.confirmable_cards(NUDGE)
+    card = {**card, "kind": "needs_you"}
+
+    async def go():
+        await r.call.offer([card])
+
+    run(go())
+    assert r.call.challenge is None
+    assert r.said_text()[-1].endswith("Confirm it on your screen.")
+    assert r.judged == []
 
 
 @pytest.mark.parametrize(
@@ -1007,6 +1058,9 @@ def test_with_detection_only_an_english_confirmation_settles(monkeypatch, heard,
     run(go())
     approved = any(p.endswith("/approve") for _, p, _ in r.routes)
     assert approved is ok
+    # The FAST PATH decided only where English was known; otherwise the reply went to the judge
+    # (a nudge is a judged kind), which this rig answers `other`.
+    assert (r.judged == []) is ok
 
 
 def test_auto_without_detection_counts_as_english(monkeypatch):
@@ -1045,6 +1099,7 @@ def test_a_fixed_english_call_still_checks_what_was_heard(monkeypatch, heard, ok
 
     run(go())
     assert any(p.endswith("/approve") for _, p, _ in r.routes) is ok
+    assert (r.judged == []) is ok  # refused by the fast path: judged instead, never matched
 
 
 def test_a_fixed_english_call_without_detection_counts_as_english(monkeypatch):
@@ -1087,3 +1142,707 @@ def test_an_untested_stt_endpoint_fails_spoken_confirmation_closed(monkeypatch):
 
     run(go())
     assert not any(p.endswith("/approve") for _, p, _ in r.routes)
+    assert [j[2] for j in r.judged] == ["confirm"]  # the fast path refused: only the judge saw it
+
+
+# --- #1715 P1: the confirmation judge ----------------------------------------------------------
+
+
+async def _armed(r, view_text: str = "Rerun the tests"):
+    await r.ask(view_text)
+    await r.readback_played()
+
+
+async def _reply(r, text: str, **kw):
+    """The Commander's reply: its own turn start (and Pipecat's interrupt with it), then its
+    transcript — the order the worker sends them."""
+    await r.ev(t="user_started")
+    await r.ev(t="interrupt")
+    await r.ev(t="utterance", text=text, **kw)
+
+
+def test_the_fixed_phrases_decide_without_asking_the_judge(monkeypatch):
+    r = Rig(monkeypatch, NUDGE)
+
+    async def go():
+        await _armed(r)
+        await r.ask("confirm")
+
+    run(go())
+    assert r.judged == [] and any(p.endswith("/approve") for _, p, _ in r.routes)
+
+
+@pytest.mark.parametrize("words", ["passt, los", "yep, ship it", "mach das bitte"])
+def test_a_judged_confirm_settles_through_the_cards_own_route(monkeypatch, words):
+    r = Rig(monkeypatch, NUDGE)
+    r.verdict = ("confirm", 0)
+
+    async def go():
+        await _armed(r)
+        await _reply(r, words)
+        await r.side()
+
+    run(go())
+    assert [p for m, p, _ in r.routes if m == "POST"] == ["/api/pulse/actions/act-1/approve"]
+    assert r.call.challenge is None and r.asked == ["Rerun the tests"]
+    captions = [m for m in r.to_client if m.get("t") == "caption" and m.get("text") == words]
+    assert len(captions) == 1  # shown once, when heard
+
+
+def test_a_judged_number_names_the_card_as_read_back(monkeypatch):
+    r = Rig(monkeypatch, TWO)
+    r.verdict = ("confirm", 1)
+
+    async def go():
+        await _armed(r)
+        await _reply(r, "die zweite bitte")
+        await r.side()
+
+    run(go())
+    posts = [p for m, p, _ in r.routes if m == "POST"]
+    assert posts == ["/api/ask/proposals/prop-2/decide"]
+
+
+def test_no_verdict_decides_nothing_and_asks_nothing(monkeypatch):
+    r = Rig(monkeypatch, NUDGE)
+    r.verdict = None
+
+    async def go():
+        await _armed(r)
+        await _reply(r, "hmm, ja vielleicht")
+        await r.side()
+
+    run(go())
+    assert not any(m == "POST" for m, _, _ in r.routes)
+    assert r.asked == ["Rerun the tests"]  # not passed on as a question either
+    assert r.said_text()[-1] == "I couldn't tell, Commander. It's on your screen."
+    assert r.call.challenge is None
+
+
+def test_a_judged_other_is_a_new_question_captioned_once(monkeypatch):
+    r = Rig(monkeypatch, NUDGE)
+    r.verdict = ("other", None)
+
+    async def go():
+        await _armed(r)
+        await _reply(r, "Wie viele Sitzungen laufen?")
+        await r.side()
+
+    run(go())
+    assert not any(p.endswith("/approve") for _, p, _ in r.routes)
+    assert r.asked == ["Rerun the tests", "Wie viele Sitzungen laufen?"]
+    captions = [
+        m
+        for m in r.to_client
+        if m.get("t") == "caption" and m.get("text") == "Wie viele Sitzungen laufen?"
+    ]
+    assert len(captions) == 1  # fmt: skip
+
+
+def test_a_judged_cancel_leaves_it_on_screen(monkeypatch):
+    r = Rig(monkeypatch, NUDGE)
+    r.verdict = ("cancel", None)
+
+    async def go():
+        await _armed(r)
+        await _reply(r, "nee, lass mal")
+        await r.side()
+
+    run(go())
+    assert not any(m == "POST" for m, _, _ in r.routes)
+    assert r.said_text()[-1] == "Okay. It stays on your screen."
+
+
+def test_a_judged_ambiguous_reply_asks_which_and_rearms(monkeypatch):
+    r = Rig(monkeypatch, TWO)
+    r.verdict = ("ambiguous", None)
+
+    async def go():
+        await _armed(r)
+        await _reply(r, "ja, mach")
+        await r.side()
+        assert r.said_text()[-1] == "Which one, Commander? Say confirm and the number."
+        ch = r.call.challenge
+        assert ch is not None and ch["armed_at"] is None  # re-arms once that line has played
+        await r.readback_played()
+        assert r.call.challenge["armed_at"] is not None
+
+    run(go())
+    assert not any(m == "POST" for m, _, _ in r.routes)
+
+
+# The freshness fence: a delayed verdict lands after the situation changed — it decides nothing.
+
+
+def _gated(r):
+    gate = asyncio.Event()
+
+    async def later():
+        await gate.wait()
+        return ("confirm", 0)
+
+    r.verdict = later
+    return gate
+
+
+async def _race(r, change):
+    gate = _gated(r)
+    await _armed(r)
+    await _reply(r, "ja, mach das")
+    await asyncio.sleep(0)  # the judge is asked, and waits
+    assert r.judged
+    await change()
+    gate.set()
+    await r.side()
+
+
+@pytest.mark.parametrize(
+    "what",
+    ["new-turn", "tap", "mute", "typed", "expired", "rearmed", "replaced", "new-question", "ended"],
+)
+def test_a_delayed_confirm_after_anything_newer_decides_nothing(monkeypatch, what):
+    import time
+
+    r = Rig(monkeypatch, NUDGE)
+
+    async def change():
+        ch = r.call.challenge
+        if what == "new-turn":
+            await r.ev(t="user_started")  # a SUBSEQUENT turn, after the reply's transcript
+        elif what == "tap":
+            await r.call.on_card_decided("act-1")
+        elif what == "mute":
+            r.call.muted = True
+        elif what == "typed":
+            r.call.on_typed_turn()
+        elif what == "expired":
+            ch["expires_at"] = time.monotonic() - 0.01
+        elif what == "rearmed":
+            ch["armed_at"] = ch["armed_at"] + 1.0  # a later arming (after a feedback line)
+        elif what == "replaced":
+            r.call.challenge = {**ch}  # a NEWER challenge, identical in every field but identity
+        elif what == "new-question":
+            r.call.generation += 1
+        elif what == "ended":
+            r.call.state = "ended"
+
+    run(_race(r, change))
+    assert not any(p.endswith("/approve") for _, p, _ in r.routes)
+    if what in ("mute", "typed", "expired", "rearmed", "replaced", "ended"):
+        assert r.call.challenge is not None  # the stale verdict consumed nothing
+
+
+def test_a_turn_begun_before_the_judge_task_starts_still_voids_its_verdict(monkeypatch):
+    """Hermes 7282: the freshness snapshot is taken when the reply is HEARD, not when the judge's
+    task first runs — a turn begun in between is newer than the reply."""
+    r = Rig(monkeypatch, NUDGE)
+    r.verdict = ("confirm", 0)
+
+    async def go():
+        await _armed(r)
+        await _reply(r, "ja, mach das")
+        # No await that yields: the judge's task has not started yet when the next turn begins.
+        await r.ev(t="user_started")
+        await r.side()
+
+    run(go())
+    assert not any(p.endswith("/approve") for _, p, _ in r.routes)
+
+
+def test_a_turn_begun_while_the_caption_is_sent_still_voids_its_verdict(monkeypatch):
+    """Hermes 7288: the snapshot comes before ANY await — a turn begun while the reply's caption is
+    still being sent is newer than the reply."""
+    r = Rig(monkeypatch, NUDGE)
+    r.verdict = ("confirm", 0)
+    held = asyncio.Event()
+    release = asyncio.Event()
+    plain = r.call._to_client
+
+    async def slow_client(m):
+        if m.get("t") == "caption" and m.get("text") == "ja, mach das":
+            held.set()
+            await release.wait()
+        await plain(m)
+
+    async def go():
+        await _armed(r)
+        r.call._to_client = slow_client
+        await r.ev(t="user_started")
+        reply = asyncio.create_task(r.ev(t="utterance", text="ja, mach das"))
+        await held.wait()  # the caption send is in flight…
+        await r.ev(t="user_started")  # …when the next turn begins
+        release.set()
+        await reply
+        await r.side()
+
+    run(go())
+    assert not any(p.endswith("/approve") for _, p, _ in r.routes)
+
+
+def test_a_transcript_overtaken_by_a_newer_turn_is_never_judged(monkeypatch):
+    """Hermes 7288: the worker can flush turn N's transcript after turn N+1 has started. That reply
+    is never judged — the newer turn is what the Commander means now."""
+    r = Rig(monkeypatch, NUDGE)
+    r.verdict = ("confirm", 0)
+
+    async def go():
+        await _armed(r)
+        await r.ev(t="user_started")  # the reply's turn, N
+        n = r.turn
+        await r.ev(t="user_started")  # turn N+1 begins…
+        await r.ev(t="utterance", text="ja, mach das", turn=n)  # …before N's transcript lands
+        await r.side()
+
+    run(go())
+    assert r.judged == []
+    assert not any(p.endswith("/approve") for _, p, _ in r.routes)
+
+
+@pytest.mark.parametrize("path", ["judged", "fast"])
+def test_a_turn_begun_before_the_settlement_still_voids_the_reply(monkeypatch, path):
+    """Hermes 7310: the reply's snapshot is checked right before the card's route. A turn begun
+    while the call is still clearing the challenge (after the verdict, before the route) is newer
+    than the reply — judged or English fast path, nothing is settled."""
+    r = Rig(monkeypatch, NUDGE)
+    r.verdict = ("confirm", 0)
+    held = asyncio.Event()
+    release = asyncio.Event()
+    plain = r.call._to_client
+
+    async def slow_client(m):
+        if m.get("t") == "challenge" and m.get("cards") == []:
+            held.set()
+            await release.wait()
+        await plain(m)
+
+    async def go():
+        await _armed(r)
+        r.call._to_client = slow_client
+        await r.ev(t="user_started")
+        words = "ja, mach das" if path == "judged" else "confirm"
+        reply = asyncio.create_task(r.ev(t="utterance", text=words))
+        side = asyncio.create_task(r.side())
+        await held.wait()  # the verdict is in; the challenge-clear send is in flight…
+        r.call._to_client = plain
+        await r.ev(t="user_started")  # …when the next turn begins
+        release.set()
+        await reply
+        await side
+        await r.side()
+
+    run(go())
+    assert not any(p.endswith("/approve") for _, p, _ in r.routes)
+
+
+@pytest.mark.parametrize("path", ["judged", "fast"])
+def test_a_card_offered_before_the_settlement_voids_the_old_reply(monkeypatch, path):
+    """Hermes 7318: no new turn, but a NEWER challenge is installed (another card offered) while
+    the old verdict's settlement is still pending — the old card is never settled."""
+    r = Rig(monkeypatch, NUDGE)
+    r.verdict = ("confirm", 0)
+    held = asyncio.Event()
+    release = asyncio.Event()
+    plain = r.call._to_client
+
+    async def slow_client(m):
+        if m.get("t") == "challenge" and m.get("cards") == []:
+            held.set()
+            await release.wait()
+        await plain(m)
+
+    async def go():
+        await _armed(r)
+        r.call._to_client = slow_client
+        await r.ev(t="user_started")
+        words = "ja, mach das" if path == "judged" else "confirm"
+        reply = asyncio.create_task(r.ev(t="utterance", text=words))
+        side = asyncio.create_task(r.side())
+        await held.wait()
+        r.call._to_client = plain
+        other = voice_calls.confirmable_cards(TWO)[1:]  # a different card, same generation
+        offered = asyncio.create_task(r.call.offer(other))
+        await asyncio.sleep(0)
+        assert r.call.challenge is not None and r.call.challenge["cards"] == other
+        release.set()
+        await asyncio.gather(reply, side, offered)
+        await r.side()
+
+    run(go())
+    assert not any(p.endswith("/approve") for _, p, _ in r.routes)
+
+
+@pytest.mark.parametrize("path", ["judged", "fast"])
+def test_a_card_offered_then_tapped_before_the_settlement_voids_the_old_reply(monkeypatch, path):
+    """Hermes 7336: a NEWER card is offered while the old verdict's settlement is pending, then
+    tapped (voiding its challenge, so none is installed again) before the release. The newer
+    offer still superseded the old reply: nothing it named is settled."""
+    r = Rig(monkeypatch, NUDGE)
+    r.verdict = ("confirm", 0)
+    held = asyncio.Event()
+    release = asyncio.Event()
+    plain = r.call._to_client
+
+    async def slow_client(m):
+        if m.get("t") == "challenge" and m.get("cards") == []:
+            held.set()
+            await release.wait()
+        await plain(m)
+
+    async def go():
+        await _armed(r)
+        r.call._to_client = slow_client
+        await r.ev(t="user_started")
+        words = "ja, mach das" if path == "judged" else "confirm"
+        reply = asyncio.create_task(r.ev(t="utterance", text=words))
+        side = asyncio.create_task(r.side())
+        await held.wait()
+        r.call._to_client = plain
+        other = voice_calls.confirmable_cards(TWO)[1:]  # a different card, same generation
+        offered = asyncio.create_task(r.call.offer(other))
+        await asyncio.sleep(0)
+        assert r.call.challenge is not None and r.call.challenge["cards"] == other
+        await r.call.on_card_decided(other[0]["id"])  # tapped on screen: its challenge voids
+        assert r.call.challenge is None
+        release.set()
+        await asyncio.gather(reply, side, offered)
+        await r.side()
+
+    run(go())
+    assert not any(p.endswith("/approve") for _, p, _ in r.routes)
+
+
+def test_an_overtaken_fast_path_confirm_decides_nothing(monkeypatch):
+    """Hermes 7336: the overtaken-transcript check runs before EITHER path. An English "confirm"
+    whose turn N lands after turn N+1 began is a new question, never settled."""
+    r = Rig(monkeypatch, NUDGE)
+
+    async def go():
+        await _armed(r)
+        await r.ev(t="user_started")  # the reply's turn, N
+        n = r.turn
+        await r.ev(t="user_started")  # turn N+1 begins…
+        await r.ev(t="utterance", text="confirm", turn=n)  # …before N's transcript lands
+        await r.side()
+
+    run(go())
+    assert r.judged == []
+    assert not any(p.endswith("/approve") for _, p, _ in r.routes)
+
+
+def test_a_newer_question_before_the_settlement_voids_the_old_reply(monkeypatch):
+    """No new turn and no newer challenge, but a NEWER question (the "What needs me?" chip bumps
+    the generation) while the old verdict's settlement is pending: nothing is settled."""
+    r = Rig(monkeypatch, NUDGE)
+    held = asyncio.Event()
+    release = asyncio.Event()
+    plain = r.call._to_client
+
+    async def slow_client(m):
+        if m.get("t") == "challenge" and m.get("cards") == []:
+            held.set()
+            await release.wait()
+        await plain(m)
+
+    async def go():
+        await _armed(r)
+        r.call._to_client = slow_client
+        await r.ev(t="user_started")
+        reply = asyncio.create_task(r.ev(t="utterance", text="confirm"))
+        side = asyncio.create_task(r.side())
+        await held.wait()
+        r.call._to_client = plain
+        gen = r.call.generation
+        await r.call.on_needs_you_request()
+        assert r.call.generation == gen + 1 and r.call.challenge is None
+        release.set()
+        await asyncio.gather(reply, side)
+        await r.side()
+
+    run(go())
+    assert not any(p.endswith("/approve") for _, p, _ in r.routes)
+
+
+def _late_clock(monkeypatch, offset: list[float]):
+    """`voice_calls`' own clock, `offset[0]` seconds ahead once a test moves it (the event loop's
+    clock is untouched)."""
+    import time as real
+
+    shim = types.SimpleNamespace(
+        **{k: getattr(real, k) for k in dir(real) if not k.startswith("_")},
+    )
+    shim.monotonic = lambda: real.monotonic() + offset[0]
+    monkeypatch.setattr(voice_calls, "time", shim)
+
+
+@pytest.mark.parametrize("what", ["typed", "expired"])
+@pytest.mark.parametrize("path", ["judged", "fast"])
+def test_typing_or_expiry_before_the_settlement_voids_the_reply(monkeypatch, path, what):
+    """Independent review of a160b29d: the route-boundary fence's typed and window clauses had no
+    test of their own. A turn TYPED, or the reply's window passing, while the challenge-clear send
+    is in flight (after the verdict, before the route): nothing is settled."""
+    r = Rig(monkeypatch, NUDGE)
+    r.verdict = ("confirm", 0)
+    offset = [0.0]
+    _late_clock(monkeypatch, offset)
+    held = asyncio.Event()
+    release = asyncio.Event()
+    plain = r.call._to_client
+
+    async def slow_client(m):
+        if m.get("t") == "challenge" and m.get("cards") == []:
+            held.set()
+            await release.wait()
+        await plain(m)
+
+    async def go():
+        await _armed(r)
+        r.call._to_client = slow_client
+        await r.ev(t="user_started")
+        words = "ja, mach das" if path == "judged" else "confirm"
+        reply = asyncio.create_task(r.ev(t="utterance", text=words))
+        side = asyncio.create_task(r.side())
+        await held.wait()
+        r.call._to_client = plain
+        if what == "typed":
+            assert r.call.on_typed_turn()
+        else:
+            offset[0] = voice_calls.CHALLENGE_S + 1
+        release.set()
+        await asyncio.gather(reply, side)
+        await r.side()
+
+    run(go())
+    assert not any(p.endswith("/approve") for _, p, _ in r.routes)
+
+
+@pytest.mark.parametrize("verdict", [("other", None), None])
+def test_a_bare_turn_start_during_the_judgement_never_swallows_the_words(monkeypatch, verdict):
+    """Independent review of a160b29d: `other` and no verdict authorise nothing, so a turn start
+    with no words (room noise) while the judge thinks must not drop them silently. `other`: the
+    words are asked; no verdict: HQ says it couldn't tell."""
+    r = Rig(monkeypatch, NUDGE)
+    judging = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow():
+        judging.set()
+        await release.wait()
+        return verdict
+
+    r.verdict = slow
+
+    async def go():
+        await _armed(r)
+        await _reply(r, "Wie viele Sitzungen laufen?")
+        side = asyncio.create_task(r.side())
+        await judging.wait()
+        await r.ev(t="user_started")  # noise: a turn start, and no transcript ever follows
+        release.set()
+        await side
+        await r.side()
+
+    run(go())
+    assert not any(p.endswith("/approve") for _, p, _ in r.routes)
+    if verdict is None:
+        assert r.call.challenge is None
+        assert r.said_text()[-1] == "I couldn't tell, Commander. It's on your screen."
+        assert "Wie viele Sitzungen laufen?" not in r.asked
+    else:
+        # Asked as a question (HQ's answer offers its card afresh: a NEW, unarmed challenge).
+        assert r.asked[-1] == "Wie viele Sitzungen laufen?"
+        assert r.call.challenge is None or r.call.challenge["armed_at"] is None
+
+
+def test_the_judged_words_are_dropped_when_a_newer_turn_was_typed(monkeypatch):
+    """…but a TYPED turn during the judgement is newer and was taken: the older spoken words are
+    no longer what the Commander means, so they are not asked."""
+    r = Rig(monkeypatch, NUDGE)
+    judging = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow():
+        judging.set()
+        await release.wait()
+        return ("other", None)
+
+    r.verdict = slow
+
+    async def go():
+        await _armed(r)
+        await _reply(r, "Wie viele Sitzungen laufen?")
+        side = asyncio.create_task(r.side())
+        await judging.wait()
+        assert r.call.on_typed_turn()
+        release.set()
+        await side
+        await r.side()
+
+    run(go())
+    assert "Wie viele Sitzungen laufen?" not in r.asked
+    assert not any(p.endswith("/approve") for _, p, _ in r.routes)
+
+
+def _held_judge(r, verdicts):
+    """Each judgement waits for its own release; `verdicts[i]` is what judgement i answers."""
+    started = [asyncio.Event() for _ in verdicts]
+    release = [asyncio.Event() for _ in verdicts]
+    n = [0]
+
+    async def judge():
+        i = n[0]
+        n[0] += 1
+        started[i].set()
+        await release[i].wait()
+        return verdicts[i]
+
+    r.verdict = judge
+    return started, release
+
+
+@pytest.mark.parametrize("first_back", ["older", "newer"])
+def test_two_non_answers_in_one_judgement_window_never_lose_the_newer(monkeypatch, first_back):
+    """Independent review of 834d1045: the Commander says two things while a card is armed (Pipecat
+    splits one request at a pause), and both are judged `other`. Whichever verdict comes back
+    first, the NEWER words are asked last — the older ones never displace them."""
+    r = Rig(monkeypatch, NUDGE)
+    started, release = _held_judge(r, [("other", None), ("other", None)])
+
+    async def go():
+        await _armed(r)
+        await _reply(r, "Erste Frage?")
+        side = asyncio.create_task(r.side())
+        await started[0].wait()
+        await _reply(r, "Zweite Frage?")
+        await started[1].wait()
+        order = [0, 1] if first_back == "older" else [1, 0]
+        for i in order:
+            release[i].set()
+            for _ in range(5):
+                await asyncio.sleep(0)
+        await side
+        await r.side()
+
+    run(go())
+    assert r.asked[-1] == "Zweite Frage?"
+    if first_back == "newer":
+        assert "Erste Frage?" not in r.asked  # older words, after newer ones: stepped aside
+    assert not any(p.endswith("/approve") for _, p, _ in r.routes)
+
+
+@pytest.mark.parametrize("path", ["fast", "judged"])
+def test_older_words_are_not_asked_after_a_newer_confirmation(monkeypatch, path):
+    """Hermes 7359: a question still being judged, then a newer reply CONFIRMS the card (the English
+    fast path, or a judged confirm). The older judgement's `other` must not then ask its words: the
+    Commander has acted since, and those words would start a new HQ turn after "Sent."."""
+    r = Rig(monkeypatch, NUDGE)
+    verdicts = [("other", None)] if path == "fast" else [("other", None), ("confirm", 0)]
+    started, release = _held_judge(r, verdicts)
+
+    async def go():
+        await _armed(r)
+        await _reply(r, "Erste Frage?")
+        side = asyncio.create_task(r.side())
+        await started[0].wait()
+        if path == "fast":
+            await _reply(r, "confirm")
+        else:
+            await _reply(r, "ja, mach das")
+            await started[1].wait()
+            release[1].set()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        release[0].set()
+        await side
+        await r.side()
+
+    run(go())
+    assert any(p.endswith("/approve") for _, p, _ in r.routes)
+    assert "Erste Frage?" not in r.asked
+
+
+def test_the_chip_during_the_judgement_drops_the_older_words(monkeypatch):
+    """The "What needs me?" chip pressed while a reply is judged is a newer request: the judged
+    non-answer steps aside instead of being asked after it."""
+    r = Rig(monkeypatch, NUDGE)
+    started, release = _held_judge(r, [("other", None)])
+
+    async def go():
+        await _armed(r)
+        await _reply(r, "Wie viele Sitzungen laufen?")
+        side = asyncio.create_task(r.side())
+        await started[0].wait()
+        await r.call.on_needs_you_request()
+        release[0].set()
+        await side
+        await r.side()
+
+    run(go())
+    assert "Wie viele Sitzungen laufen?" not in r.asked
+
+
+def test_no_verdict_after_a_newer_confirm_says_nothing_false(monkeypatch):
+    """Independent review of 834d1045: a reply still being judged, then a newer English "confirm"
+    settles the card ("Sent."). The older judgement's no-verdict must not then say the card is
+    on the screen."""
+    r = Rig(monkeypatch, NUDGE)
+    started, release = _held_judge(r, [None])
+
+    async def go():
+        await _armed(r)
+        await _reply(r, "hmm, vielleicht")
+        side = asyncio.create_task(r.side())
+        await started[0].wait()
+        await _reply(r, "confirm")
+        for _ in range(20):
+            await asyncio.sleep(0)
+        release[0].set()
+        await side
+        await r.side()
+
+    run(go())
+    assert any(p.endswith("/approve") for _, p, _ in r.routes)
+    assert "I couldn't tell, Commander. It's on your screen." not in r.said_text()
+
+
+def test_judged_words_take_their_place_before_a_newer_question(monkeypatch):
+    """Independent review of a160b29d: `other` used to await the challenge-clear send BEFORE the
+    words took their generation, so a newer question landing in that send was asked first and the
+    older words after it. They now take their place first."""
+    r = Rig(monkeypatch, NUDGE)
+    held = asyncio.Event()
+    release = asyncio.Event()
+    plain = r.call._to_client
+
+    async def slow_client(m):
+        if m.get("t") == "challenge" and m.get("cards") == [] and not release.is_set():
+            held.set()
+            await release.wait()
+        await plain(m)
+
+    async def go():
+        await _armed(r)
+        r.call._to_client = slow_client
+        await _reply(r, "Erste Frage?")
+        side = asyncio.create_task(r.side())
+        await held.wait()
+        r.call._to_client = plain
+        await r.ev(t="user_started")
+        await r.ev(t="utterance", text="Zweite Frage?")
+        release.set()
+        await side
+        await r.side()
+
+    run(go())
+    assert r.asked[-2:] == ["Erste Frage?", "Zweite Frage?"]
+
+
+def test_the_replys_own_interrupt_never_voids_its_verdict(monkeypatch):
+    """Pipecat interrupts at EVERY turn start, the reply's own included (before its transcript):
+    that is not a newer turn, and the judged confirm acts."""
+    r = Rig(monkeypatch, NUDGE)
+
+    async def nothing():
+        return None
+
+    run(_race(r, nothing))
+    assert ("POST", "/api/pulse/actions/act-1/approve", None) in r.routes
