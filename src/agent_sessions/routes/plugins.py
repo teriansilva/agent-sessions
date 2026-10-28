@@ -79,6 +79,8 @@ def _operation(item: dict) -> dict:
         # the same closed manifest/recipe view already returned by review(), never a credential.
         "review": item.get("review"),
         "review_digest": item.get("review_digest") or (item.get("review") or {}).get("digest"),
+        # Commit order of roster decisions (activate / disable / remove), when recorded (#1741).
+        "sequence": item.get("sequence"),
     }
 
 
@@ -227,7 +229,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, cfg, must_change) -> None:
 
     @app.post("/api/plugins/activate", dependencies=write)
     async def plugin_activate(request: Request):
-        body = await _body(request, required={"request_id", "plugin_id", "generation_id"})
+        # The optional preconditions bind a confirmed update or rollback to the state it was
+        # confirmed against (#1741), exactly as disable/remove bind theirs.
+        body = await _body(
+            request,
+            required={"request_id", "plugin_id", "generation_id"},
+            optional={"expected_active", "expected_revision"},
+        )
         return _operation(await _call(manager.activate, **body))
 
     @app.post("/api/plugins/disable", dependencies=write)

@@ -35,7 +35,8 @@ agents that are ready, need setup, have an update, or are disabled. Existing usa
 saved defaults stay on the same page. **Refresh catalog** checks the signed release feed; a
 failed refresh shows its error and keeps the installed roster visible.
 
-Choose **Add agent** or a card's **Set up agent** / **Review update** action. Select a catalog
+Choose **Add agent** or a card's **Set up agent** action (**Update** is the one-confirmation update
+described in [the agent catalog](/guide/agent-catalog#updating-an-agent)). Select a catalog
 entry, or paste a local manifest-and-recipe JSON object. The review shows its publisher, source,
 host access, pinned artifact URLs and digests. Local entries require a fresh confirmation;
 adopting an existing executable requires a separate path-and-digest confirmation.

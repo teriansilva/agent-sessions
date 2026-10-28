@@ -8,7 +8,7 @@
 import { useCallback, useState } from "react";
 import { engineName, type RosterSnapshot } from "../../app/engineRoster";
 import type { PluginCatalog } from "../../types/plugins";
-import { buildRows, catalogOnly, READY_RANK, savedStatus, type RosterRow, type Status } from "../agents/agentStatus";
+import { buildRows, catalogOnly, READY_RANK, savedStatus, versionsOf, type RosterRow, type Status } from "../agents/agentStatus";
 import { pendingOperation } from "../plugins/model";
 import { StatusWord } from "../agents/RosterList";
 import { AgentSetupFlow } from "../plugins/AgentSetupFlow";
@@ -63,6 +63,12 @@ function pluginOf(query: string, catalog: PluginCatalog | null, fallback: string
   );
 }
 
+/** `installed → available` for an installer-managed agent (#1741), as Settings → Agents says it. */
+function versionText(id: string, catalog: PluginCatalog | null): string | null {
+  const v = versionsOf(id, catalog);
+  return v.installed ? (v.available ? `${v.installed} → ${v.available}` : v.installed) : null;
+}
+
 /** The query part of a `setupPath(...)` link, which the flow opens with. */
 const queryOf = (to: string) => (to.includes("?") ? to.slice(to.indexOf("?")) : "");
 
@@ -79,7 +85,7 @@ function rowsOf(roster: RosterSnapshot, catalog: PluginCatalog | null): Row[] {
       out.push({
         id: row.id,
         name: row.label,
-        sub: row.status.reason ?? "Saved installation",
+        sub: [versionText(row.id, catalog), row.status.reason ?? "Saved installation"].filter(Boolean).join(" · "),
         client: catalogApi(row.id) ? "available" : "terminal",
         status: row.status,
         action: row.status.action
@@ -109,7 +115,7 @@ function rowsOf(roster: RosterSnapshot, catalog: PluginCatalog | null): Row[] {
       : installable
         ? { label: "Install", query: `?${new URLSearchParams({ plugin: row.id })}` }
         : null;
-    const facts = [row.label, own.present ? own.bin : null].filter(Boolean).join(" · ");
+    const facts = [row.label, versionText(row.id, catalog), own.present ? own.bin : null].filter(Boolean).join(" · ");
     const why = apiMode && client === "available" ? apiMode.status.reason : row.status.reason;
     out.push({
       id: row.id,

@@ -389,6 +389,74 @@ def test_deactivation_requires_and_binds_the_observed_roster_revision(api, kind)
     assert manager.snapshot() == before
 
 
+@pytest.mark.parametrize("between", ["disable", "remove", "activate"])
+def test_update_activation_binds_the_state_it_was_confirmed_against(api, recipe, between):
+    """#1741: an update or rollback enables a generation only while the roster is still the one the
+    operator confirmed against. A disable, removal or other activation in between refuses it, in
+    the same commit, instead of silently re-enabling or overriding that decision."""
+    from test_plugin_manager import verified
+
+    client, headers, _ = api
+    old = verified(recipe)
+    manager.activate(request_id(), "fixture", old)
+    new = verified(recipe)
+    observed = client.get("/api/plugins", headers=headers).json()["roster_revision"]
+    if between == "activate":
+        manager.activate(request_id(), "fixture", verified(recipe))
+    else:
+        manager.deactivate(request_id(), "fixture", remove=between == "remove")
+    before = manager.snapshot()
+    body = {
+        "request_id": request_id(),
+        "plugin_id": "fixture",
+        "generation_id": new,
+        "expected_active": old,
+        "expected_revision": observed,
+    }
+    response = client.post("/api/plugins/activate", headers=headers, json=body)
+    assert response.status_code == 409, response.text
+    assert manager.snapshot() == before
+    # Against the current state, the same update is allowed — with a fresh confirmation.
+    current = manager.snapshot()
+    fresh = {
+        **body,
+        "request_id": request_id(),
+        "expected_active": current["plugins"]["fixture"]["active"],
+        "expected_revision": current["roster_revision"],
+    }
+    assert client.post("/api/plugins/activate", headers=headers, json=fresh).status_code == 200
+    assert manager.snapshot()["plugins"]["fixture"]["active"] == new
+
+
+def test_plugin_list_orders_roster_decisions_by_commit_sequence(api, recipe, monkeypatch):
+    """#1741: Roll back's "previous generation" needs the activation history's ORDER. Timestamps
+    are whole seconds and the state's keys are written sorted, so each roster decision records a
+    strictly increasing commit sequence; three activations in one second sort correctly by it."""
+    from test_plugin_manager import verified
+
+    client, headers, _ = api
+    gens = [verified(recipe) for _ in range(3)]
+    monkeypatch.setattr(manager, "_now", lambda: 1_700_000_000)
+    for gen in gens:
+        manager.activate(request_id(), "fixture", gen)
+    listed = client.get("/api/plugins", headers=headers).json()["operations"]
+    activations = [o for o in listed if o["kind"] == "activate"]
+    assert {o["created_at"] for o in activations} == {1_700_000_000}  # one second: time can't tell
+    order = [o["generation_id"] for o in sorted(activations, key=lambda o: o["sequence"])]
+    assert order == gens
+
+
+def test_activation_without_preconditions_is_unchanged(api, recipe):
+    from test_plugin_manager import verified
+
+    client, headers, _ = api
+    gen = verified(recipe)
+    body = {"request_id": request_id(), "plugin_id": "fixture", "generation_id": gen}
+    assert client.post("/api/plugins/activate", headers=headers, json=body).status_code == 200
+    extra = {**body, "request_id": request_id(), "confirm": True}
+    assert client.post("/api/plugins/activate", headers=headers, json=extra).status_code == 422
+
+
 @pytest.mark.parametrize("old_tools", ["none", "read", "write"])
 @pytest.mark.parametrize("new_tools", ["none", "read", "write"])
 def test_candidate_endpoint_isolated_until_verified_activation(api, recipe, old_tools, new_tools):

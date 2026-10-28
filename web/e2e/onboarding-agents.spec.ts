@@ -244,6 +244,8 @@ test("setup installs and enables a catalog agent inline, through the guarded ope
   ]);
   expect(m.writes.every((w) => w.csrf === "test-csrf")).toBe(true);
   expect(m.writes[1].body).toMatchObject({ review_id: REVIEW.id, digest: REVIEW.digest, confirm_local: false });
+  // A first installation has nothing to replace, and its enable is still bound to the state read (#1741).
+  expect(m.writes[3].body).toMatchObject({ expected_active: null, expected_revision: null });
   await noHScroll(page);
   if (process.env.SHOTS_1739) await page.screenshot({ path: `${process.env.SHOTS_1739}/agents-${test.info().project.name}.png`, fullPage: true });
 });

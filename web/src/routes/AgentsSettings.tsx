@@ -634,7 +634,14 @@ export function AgentsRoster() {
         </div>
       )}
 
-      {visible.length > 0 && <RosterList rows={visible} usage={b.byEngine} />}
+      {visible.length > 0 && (
+        <RosterList
+          rows={visible}
+          usage={b.byEngine}
+          data={catalog.data}
+          onChanged={() => void catalog.load()}
+        />
+      )}
       {visible.length === 0 && rows.length > 0 && (
         <p role="status" className={`${rr.list} ${rr.empty}`}>
           {filter === "Needs attention" && !query ? "No agents need attention. " : "No agents match these filters. "}

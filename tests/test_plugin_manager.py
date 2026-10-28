@@ -524,6 +524,29 @@ def test_old_generation_stays_active_during_update_failure_and_rollback(recipe, 
     )
 
 
+def test_update_keeps_the_previous_generation_for_running_sessions_and_roll_back(recipe):
+    """#1741: an update installs a NEW generation beside the active one; enabling it moves only the
+    pointer. The previous generation's files stay where a running session's binary came from, the
+    previous provider keeps resolving to them, and Roll back is the same `activate` of it."""
+    old = verified(recipe)
+    manager.activate(request_id(), "fixture", old)
+    running = manager.overlay(LoadResult()).providers["fixture"]  # what a live master launched
+    started_from = running.entrypoint_path()
+    new = verified(recipe)
+    row = manager.snapshot()["plugins"]["fixture"]
+    assert row["active"] == old and row["candidate"] == new  # installing switched nothing
+    manager.activate(request_id(), "fixture", new)
+    assert manager.overlay(LoadResult()).providers["fixture"].entrypoint_path() != started_from
+    # The running session's generation is untouched: same path, same bytes, still executable.
+    assert running.entrypoint_path() == started_from
+    assert Path(started_from).is_file() and os.access(started_from, os.X_OK)
+    assert set(manager.snapshot()["plugins"]["fixture"]["generations"]) == {old, new}
+    # Roll back: the kept generation's verification still stands, so activating it is allowed.
+    manager.activate(request_id(), "fixture", old)
+    assert manager.snapshot()["plugins"]["fixture"]["active"] == old
+    assert manager.overlay(LoadResult()).providers["fixture"].entrypoint_path() == started_from
+
+
 def test_managed_provider_ignores_legacy_override_and_keeps_its_generation_record(
     recipe, monkeypatch
 ):

@@ -341,10 +341,11 @@ test("updates compare the signed recipe, not the operator confirmation digest", 
   await page.getByLabel("Search agents").fill("sample");
   const row = page.locator('[data-plugin-id="sample-agent"]');
   await expect(row).toBeVisible();
-  await expect(row.getByRole("link", { name: "Review update" })).toHaveCount(0);
+  await expect(row.getByRole("link", { name: /^Update/ })).toHaveCount(0);
   m.data.catalog[0].digest = "d".repeat(64);
   await page.getByTestId("catalog-line").getByRole("button", { name: "Refresh", exact: true }).click();
-  await expect(row.getByRole("link", { name: "Review update" })).toBeVisible();
+  // #1741: the action is the one-click Update (it was "Review update").
+  await expect(row.getByRole("link", { name: /^Update/ })).toBeVisible();
   await expect(row.getByText("Update available", { exact: true })).toBeVisible();
 });
 

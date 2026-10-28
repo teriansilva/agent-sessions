@@ -111,6 +111,7 @@
 }
 .end {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
@@ -474,4 +475,27 @@
 .techSummary small {
   color: var(--text-3);
   font-size: var(--fs-meta);
+}
+
+/* "Previous version can't be determined" (#1741): a note with each kept version's own link. */
+.undetermined {
+  flex-basis: 100%;
+  min-width: 0;
+  white-space: normal; /* the end column is nowrap at some widths; a sentence must wrap */
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 800px) {
+  .undetermined {
+    text-align: left;
+  }
+}
+.undetermined a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 4px;
+  color: var(--accent-text);
 }

@@ -15,7 +15,7 @@ import type { DeploymentReceipt, DeploymentRemoval, DeploymentReview, Deployment
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
 import type { AuthoringSchema, DirectPrompt, Files, PromptComparison, Variable } from "../components/playbooks/playbookDraft";
-import type { PluginCatalog, PluginReview, PluginOperation, PluginAction } from "../types/plugins";
+import type { PluginCatalog, PluginReview, PluginOperation, PluginAction, PluginActivation } from "../types/plugins";
 import type { ImportPreview, ImportResult, MemoryProject, MemoryView, NoteEdit } from "../types/memory";
 import type { PlaybookDetail, PlaybookFleet, PlaybookFleetResult, PlaybookFleetReview, PlaybookList, PlaybookVerify, PlaybookWriteResult } from "../types/playbooks";
 import {
@@ -952,7 +952,7 @@ export const api = {
   pluginRecover: () => pluginPost<PluginCatalog>("/api/plugins/recover", {}),
   pluginSignin: (body: PluginAction) => pluginPost<PluginOperation>("/api/plugins/signin", body),
   pluginVerify: (body: PluginAction) => pluginPost<PluginOperation>("/api/plugins/verify", { ...body, confirm_effects: true }),
-  pluginActivate: (body: PluginAction) => pluginPost<PluginOperation>("/api/plugins/activate", body),
+  pluginActivate: (body: PluginActivation) => pluginPost<PluginOperation>("/api/plugins/activate", body),
   pluginDisable: (body: { request_id: string; plugin_id: string; expected_active: string | null; expected_revision: string | null }) => pluginPost<PluginOperation>("/api/plugins/disable", body),
   pluginRemove: (body: { request_id: string; plugin_id: string; expected_active: string | null; expected_revision: string | null }) => pluginPost<PluginOperation>("/api/plugins/remove", body),
   pluginReload: () => pluginPost<{ generation: number }>("/api/plugins/reload", {}),

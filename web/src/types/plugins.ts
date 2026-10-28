@@ -52,6 +52,8 @@ export interface PluginOperation {
   review: PluginReview | null;
   review_digest: string | null;
   error: string | null;
+  /** Commit order of roster decisions (activate / disable / remove), when recorded (#1741). */
+  sequence?: number | null;
 }
 export interface PluginCatalog {
   feed: { state: "ready" | "missing" | "unavailable"; sequence?: number | null; expires_at?: number | null; digest?: string | null; error: string | null;
@@ -69,4 +71,10 @@ export interface PluginAction {
   request_id: string;
   plugin_id: string;
   generation_id: string;
+}
+/** An activation bound to the state it was confirmed against (#1741): the server refuses it when
+ *  the active generation or the roster revision has moved since. */
+export interface PluginActivation extends PluginAction {
+  expected_active?: string | null;
+  expected_revision?: string | null;
 }

@@ -801,11 +801,32 @@ def finish_verification(request_id: str, results: list[dict]) -> dict:
         return copy.deepcopy(item)
 
 
-def activate(request_id: str, plugin_id: str, generation_id: str) -> dict:
-    return _change(request_id, _id(plugin_id), "activate", _operation_id(generation_id))
-
-
 _UNSPECIFIED = object()
+
+
+def activate(
+    request_id: str,
+    plugin_id: str,
+    generation_id: str,
+    *,
+    expected_active=_UNSPECIFIED,
+    expected_revision=_UNSPECIFIED,
+) -> dict:
+    """Enable a verified generation. A caller that confirmed against an observed state (an update
+    or a rollback, #1741) passes it: the same preconditions as revocation, checked in the same
+    commit, so a disable/remove/activation in between refuses rather than being undone."""
+    if expected_active is not _UNSPECIFIED and expected_active is not None:
+        expected_active = _operation_id(expected_active)
+    if expected_revision is not _UNSPECIFIED and expected_revision is not None:
+        expected_revision = _operation_id(expected_revision)
+    return _change(
+        request_id,
+        _id(plugin_id),
+        "activate",
+        _operation_id(generation_id),
+        expected_active,
+        expected_revision,
+    )
 
 
 def deactivate(
@@ -932,6 +953,13 @@ def _commit_change(
             "created_at": _now(),
             "updated_at": _now(),
             "error": None,
+            # Roster decisions in commit order (#1741): timestamps are whole seconds and the
+            # document's keys are written sorted, so neither says which activation came last.
+            "sequence": 1
+            + max(
+                (o.get("sequence", 0) for o in doc["operations"].values()),
+                default=0,
+            ),
         }
         doc["operations"][request_id] = item
         doc["roster_revision"] = request_id

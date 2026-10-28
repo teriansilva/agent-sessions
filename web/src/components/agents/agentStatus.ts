@@ -11,8 +11,8 @@
  *  Nothing here names an engine: grouping reads the manifest's `api.source`. */
 import { isActive } from "../../app/engineRoster";
 import type { EngineInfo, EngineProblem } from "../../types/api";
-import type { PluginCatalog, PluginInstallation } from "../../types/plugins";
-import { pendingOperation, setupPath } from "../plugins/model";
+import type { PluginCatalog, PluginInstallation, PluginManifest } from "../../types/plugins";
+import { pendingOperation, setupPath, verifiedGeneration } from "../plugins/model";
 
 /** An LED tone (docs/design.md §3): up = working, deg = needs the operator, down = broken,
  *  idle = neither (disabled, retiring). */
@@ -84,9 +84,10 @@ function installStatus(id: string, data: PluginCatalog | null): Status | null {
     return status(5, "Needs setup", "deg", { label: "Set up", to: setupPath({ plugin: id }) });
   }
   if (entry && entry.installable !== false && active && entry.digest !== active.review.recipe_digest) {
+    // One click (#1741): the setup flow opens on the one-confirmation update for this agent.
     return status(7, "Update available", "deg", {
-      label: "Review update",
-      to: setupPath({ plugin: id }),
+      label: "Update",
+      to: setupPath({ plugin: id, update: "1" }),
     });
   }
   return null;
@@ -217,4 +218,69 @@ export function rowMatches(row: RosterRow, query: string, filter: RosterFilter):
   if (filter === "Ready") return row.status.rank === READY_RANK;
   if (filter === "Needs attention") return needsAttention(row);
   return true;
+}
+
+// --- versions (#1741) -----------------------------------------------------------------------------
+
+/** The version a manifest installs: its pinned package version, else its identity's. */
+export function manifestVersion(m: PluginManifest | undefined): string | null {
+  return m?.install?.version ?? m?.identity.version ?? null;
+}
+
+export interface Versions {
+  /** The active generation's version, or null when the installer manages nothing active. */
+  installed: string | null;
+  /** The catalog's version when its recipe differs from the active one (an update), else null. */
+  available: string | null;
+  /** The generation that was active before this one, still verified: what Roll back activates. */
+  previous: { id: string; version: string | null } | null;
+  /** When older history cannot say which generation came before (#1741): the kept, verified
+   *  generations to choose from instead — each through its own Enable step, never one click. */
+  undetermined: { id: string; version: string | null }[];
+}
+
+/** `installed → available` and the rollback target, read from `/api/plugins` alone (#1741): the
+ *  catalog entry and the active generation's review on one side, completed `activate` operations
+ *  (durable, never pruned) for which generation was active before. */
+export function versionsOf(id: string, data: PluginCatalog | null): Versions {
+  const { row, active, entry } = installer(id, data);
+  const installed = manifestVersion(active?.review.entry.manifest);
+  const available =
+    entry && entry.installable !== false && active && entry.digest !== active.review.recipe_digest
+      ? manifestVersion(entry.manifest)
+      : null;
+  let previous: Versions["previous"] = null;
+  let undetermined: Versions["undetermined"] = [];
+  if (row?.enabled && active) {
+    // THE rule (#1741, Hermes 7308/7312/7319, §3b strictly safer) — the immediate predecessor of
+    // the active generation is:
+    //  1. if any earlier activation carries a commit `sequence`: the highest one. Sequenced records
+    //     always postdate unsequenced ones, so legacy rows below it cannot matter and are ignored;
+    //  2. only if none does: the newest by whole-second time — ambiguous exactly when that TOP
+    //     timestamp is shared by another generation (ties further down are irrelevant);
+    //  3. ambiguous ⇒ no one-click Roll back; the operator chooses a kept version instead.
+    const history = (data?.operations ?? []).filter(
+      (o) => o.plugin_id === id && o.kind === "activate" && o.state === "complete" && o.generation_id && o.generation_id !== active.id,
+    );
+    const sequenced = history.filter((o) => o.sequence != null);
+    let before: string | null | undefined;
+    if (sequenced.length > 0) {
+      before = sequenced.reduce((x, y) => ((y.sequence ?? 0) > (x.sequence ?? 0) ? y : x)).generation_id;
+    } else if (history.length > 0) {
+      const top = Math.max(...history.map((o) => o.updated_at));
+      const atTop = new Set(history.filter((o) => o.updated_at === top).map((o) => o.generation_id));
+      if (atTop.size === 1) {
+        before = [...atTop][0];
+      } else {
+        undetermined = (row.generations ?? [])
+          .filter((g) => g.id !== active.id && verifiedGeneration(g))
+          .map((g) => ({ id: g.id, version: manifestVersion(g.review.entry.manifest) }));
+      }
+    }
+    const gen = row.generations?.find((g) => g.id === before);
+    if (gen && verifiedGeneration(gen)) {
+      previous = { id: gen.id, version: manifestVersion(gen.review.entry.manifest) };
+    }
+  }
+  return { installed, available, previous, undetermined };
 }

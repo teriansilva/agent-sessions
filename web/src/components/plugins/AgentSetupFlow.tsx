@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { useConfigRefresh } from "../../app/config";
 import { reloadRoster } from "../../app/reloadRoster";
 import { AgentEndpointCard } from "../settings/AgentEndpointCard";
+import { manifestVersion } from "../agents/agentStatus";
 import type { WizardStep } from "../wizard/WizardShell";
 import { SignInTerminal } from "./SignInTerminal";
 import { AGENTS_PATH, pendingOperation, pluginError, rejectedOperation, missingOperation, setupPath, sourceLabel, verifiedGeneration } from "./model";
@@ -117,6 +118,19 @@ export function AgentSetupFlow({
   }, [signinLive, onSigninLive]);
   useEffect(() => () => onSigninLive?.(false), [onSigninLive]);
   const [enabled, setEnabled] = useState(false);
+  // The one-click update (#1741): `?update=1` opens on ONE confirmation for the catalog entry shown;
+  // confirming chains install → verify (with the host's existing vendor login: no sign-in step) →
+  // enable. The chain lives in memory only — a reload reads the operation back and continues
+  // nothing on its own — and stops at the first step that does not pass, leaving the active
+  // generation as it was.
+  const updateMode = new URLSearchParams(search).get("update") === "1";
+  const [auto, setAuto] = useState(false);
+  const [updateFrom, setUpdateFrom] = useState<string | null>(null);
+  const [binding, setBinding] = useState<{ active: string | null; revision: string | null } | null>(null);
+  // The roster moved since the update was confirmed (another tab disabled, removed or changed the
+  // agent): a manual Enable shows what it is now and needs its own confirmation against THAT.
+  const [reconfirm, setReconfirm] = useState<{ active: string | null; revision: string | null; enabled: boolean; version: string | null; since: boolean } | null>(null);
+  const chained = useRef<string | null>(null);
   const review = (operation && operation.kind !== "install" ? catalog?.plugins
     .find(p => p.id === operation.plugin_id)?.generations?.find(g => g.id === operation.generation_id)?.review : null) ?? reviewDraft;
   const pinned: PluginGeneration | undefined = catalog?.plugins
@@ -140,6 +154,9 @@ export function AgentSetupFlow({
     if (op.kind === "signin") setStep(op.state === "complete" ? 3 : 2);
     if (op.kind === "verify") setStep(op.state === "verified" ? 4 : 3);
     if (op.kind === "activate" && op.state === "complete") { setStep(4); setEnabled(true); }
+    // A confirmed update (#1741) continues only through passes; any other settled outcome ends it.
+    const passed = op.kind === "install" ? op.state === "installed" : op.kind === "verify" ? op.state === "verified" : false;
+    if (!pendingOperation(op) && !passed) setAuto(false);
   }, []);
   const loadCatalog = useCallback(async () => {
     const epoch = routeEpoch.current;
@@ -178,7 +195,7 @@ export function AgentSetupFlow({
     setSelected(lockedPlugin ?? id ?? ""); setMode("catalog"); setLocal(""); setAdopted("");
     setOperation(null); setUnknownOperation(op); setGeneration(null); setReview(null);
     setConnected(null); setEnabled(false); setStep(0); setError("");
-    setLocalConfirmed(false); setAdoptConfirmed(false);
+    setLocalConfirmed(false); setAdoptConfirmed(false); setAuto(false); setUpdateFrom(null); setBinding(null); setReconfirm(null);
     void api.plugins().then(result => {
       if (!alive) return;
       setCatalog(result);
@@ -268,17 +285,114 @@ export function AgentSetupFlow({
       confirm_local: localConfirmed, confirm_adopted: adoptConfirmed })));
     await current(loadCatalog());
   });
-  const start = (kind: "signin" | "verify" | "activate") => run(async current => {
+  const begin = async (current: Current, kind: "signin" | "verify" | "activate", bound?: { active: string | null; revision: string | null }) => {
     if (!review || !generation) return;
     const id = crypto.randomUUID();
     const body = { request_id: id, plugin_id: review.plugin_id, generation_id: generation };
-    const op = await submit(current, id, review.plugin_id, generation, () => kind === "signin" ? api.pluginSignin(body) : kind === "verify" ? api.pluginVerify(body) : api.pluginActivate(body));
+    // A confirmed update enables only while the roster is still the one it was confirmed against
+    // (#1741): a disable, removal or other activation since then makes the server refuse it.
+    // Every activation from this flow is bound (#1741): there is no unconditioned enable path.
+    if (kind === "activate" && !bound) throw new Error("Enabling needs a confirmed agent state; reload and try again.");
+    const activation = bound ? { ...body, expected_active: bound.active, expected_revision: bound.revision } : body;
+    const op = await submit(current, id, review.plugin_id, generation, () => kind === "signin" ? api.pluginSignin(body) : kind === "verify" ? api.pluginVerify(body) : api.pluginActivate(activation));
     accept(op);
     if (kind === "signin" && op.state === "ready") setConnected(id);
     if (kind === "activate") { await current(api.pluginReload()); await current(reloadRoster()); refreshConfig(); }
     await current(loadCatalog());
     if (kind === "activate" && op.state === "complete") onDone?.();
+  };
+  const start = (kind: "signin" | "verify" | "activate", bound?: { active: string | null; revision: string | null }) =>
+    run(current => begin(current, kind, bound));
+  // A manual Enable (#1741, Hermes 7290) is never unconditioned: it re-reads the roster and binds
+  // the activation to what it finds. For an update candidate that state must still be the one the
+  // update was confirmed against — if it moved, nothing is sent until the operator confirms again
+  // against the new state.
+  const enableNow = () => run(async current => {
+    if (!review) return;
+    const fresh = await current(api.plugins());
+    setCatalog(fresh);
+    const row = fresh.plugins.find(p => p.id === review.plugin_id);
+    const now = { active: row?.active ?? null, revision: fresh.roster_revision };
+    // THE rule (#1741, Hermes 7290/7299): an UPDATE candidate — the agent already has another
+    // generation as its current one — is enabled only with a binding the operator confirmed in
+    // THIS mount, against the state shown then, and only while that state still holds. No binding
+    // (a reload, a resumed or recovered operation, an error) or a moved state always asks again,
+    // showing the state as it is now. A first installation, or re-enabling the very generation that
+    // is current, has nothing to replace: it is bound to the state just read.
+    const updateCandidate = !!row?.active && row.active !== generation;
+    if (updateCandidate && (!binding || !row?.enabled || now.active !== binding.active || now.revision !== binding.revision)) {
+      const gen = row?.generations?.find(g => g.id === row.active);
+      setReconfirm({ ...now, enabled: !!row?.enabled, version: manifestVersion(gen?.review.entry.manifest), since: !!binding });
+      return;
+    }
+    await begin(current, "activate", updateCandidate ? binding! : now);
   });
+  const enableAgain = () => {
+    if (!reconfirm) return;
+    const bound = { active: reconfirm.active, revision: reconfirm.revision };
+    setBinding(bound);
+    setReconfirm(null);
+    void start("activate", bound);
+  };
+  const entryShown = catalog?.catalog.find(c => c.manifest.identity.id === selected);
+  const selectedRow = catalog?.plugins.find(p => p.id === selected);
+  const activeGen = selectedRow?.generations?.find(g => g.id === selectedRow.active);
+  const versionNow = manifestVersion(activeGen?.review.entry.manifest);
+  const versionNext = manifestVersion(entryShown?.manifest);
+  // An update exists only for an ENABLED agent whose active generation is not the catalog's recipe:
+  // a stale or hand-made `?update=1` (the agent was disabled or removed meanwhile, or is already
+  // current) offers nothing to confirm.
+  const updatable = !!selectedRow?.enabled && !!activeGen && !!entryShown && entryShown.installable !== false &&
+    entryShown.digest !== activeGen.review.recipe_digest;
+  const updateStep = updateMode && step === 0 && !operation && !unknownOperation && !auto && !!selected;
+  const showUpdate = updateStep && updatable;
+  const update = () => run(async current => {
+    if (!entryShown) return;
+    setReview(null);
+    try {
+      // Confirmed against what is on screen — re-read now, so a disable or removal in another tab
+      // since the page loaded stops here, before anything is installed.
+      const fresh = await current(api.plugins());
+      setCatalog(fresh);
+      const row = fresh.plugins.find(p => p.id === selected);
+      const now = row?.generations?.find(g => g.id === row.active);
+      if (!row?.enabled || !now || row.active !== activeGen?.id || fresh.catalog.find(c => c.manifest.identity.id === selected)?.digest !== entryShown.digest) {
+        throw new Error("This agent changed since the update was shown (it was disabled, removed or updated). Nothing was installed.");
+      }
+      setBinding({ active: now.id, revision: fresh.roster_revision });
+      const reviewed = await current(api.pluginReview({ plugin_id: selected }));
+      // The confirmation covered the entry on screen. A server review of anything else — a newer
+      // cut landed meanwhile, or a source that would need its own consent — installs nothing.
+      if (reviewed.recipe_digest !== entryShown.digest || reviewed.source === "local" || reviewed.adopted_path) {
+        throw new Error("The agent catalog changed since this update was shown. Nothing was installed; check the update again.");
+      }
+      setReview(reviewed);
+      setUpdateFrom(versionNow);
+      setAuto(true);
+      const id = crypto.randomUUID();
+      accept(await submit(current, id, reviewed.plugin_id, undefined, () => api.pluginInstall({ request_id: id, review_id: reviewed.id, digest: reviewed.digest,
+        confirm_local: false, confirm_adopted: false })));
+      await current(loadCatalog());
+    } catch (e) {
+      setAuto(false);
+      throw e;
+    }
+  });
+  // Each finished step of a confirmed update starts the next — once per operation, never while
+  // another request is in flight. Anything but a pass ends the chain where it stands.
+  useEffect(() => {
+    if (!auto || busy || !operation || chained.current === operation.id) return;
+    if (operation.kind === "install" && operation.state === "installed" && generation) {
+      chained.current = operation.id;
+      void start("verify");
+    } else if (operation.kind === "verify" && operation.state === "verified") {
+      if (!verifiedGeneration(pinned)) return; // its results are still being read
+      chained.current = operation.id;
+      if (binding) void start("activate", binding);
+    }
+    // `start` is re-made every render from the state listed here; the guard above runs it once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auto, busy, operation, generation, pinned, binding]);
   const recover = () => run(async current => {
     setCatalog(await current(api.pluginRecover()));
     if (operation) accept(await current(api.pluginOperation(operation.id)));
@@ -297,9 +411,27 @@ export function AgentSetupFlow({
       {error && <div role="alert" className={`${s.note} ${s.error}`}>{error}</div>}
       {unknownOperation && <div className={s.note}><p>The request outcome has not been read. Reloading this page will only check the same operation.</p>
         <button className={button.ghost} onClick={() => void readOperation()} disabled={busy}>Check operation status</button></div>}
-      {step === 0 && locked && <p>Review the catalog entry for <b>{catalog?.catalog.find(c => c.manifest.identity.id === selected)?.manifest.identity.label ?? selected}</b>: its source, pinned artifacts and what it can access, before anything is installed.</p>}
-      {step === 0 && locked && catalog?.catalog.find(c => c.manifest.identity.id === selected)?.reason && <p className={s.note}>{catalog.catalog.find(c => c.manifest.identity.id === selected)?.reason}</p>}
-      {step === 0 && !locked && <>
+      {showUpdate && <section className={s.panel} aria-label="Update summary">
+        <dl className={s.kv}>
+          <dt>Version</dt><dd data-testid="update-versions">{versionNow ?? "not installed"} → <b>{versionNext ?? "?"}</b></dd>
+          <dt>Source</dt><dd>{entryShown?.manifest.install?.authority ?? entryShown?.manifest.identity.publisher}{" · "}{entryShown?.source === "bundled" ? "bundled with BattleLab" : `signed catalog${catalog?.feed.sequence ? ` cut #${catalog.feed.sequence}` : ""}`}</dd>
+          <dt>Account</dt><dd>Keeps this host’s {entryShown?.manifest.identity.label} sign-in. No new sign-in unless verification needs one.</dd>
+          <dt>Running sessions</dt><dd>Keep their current version until they restart.</dd>
+          <dt>Verification</dt><dd>Runs the new version in a separate workspace before anything switches: it starts and resumes a test conversation, can access host files, create vendor history, contact the vendor and consume quota.</dd>
+        </dl>
+        <details className={s.details}><summary>Pinned recipe</summary><p className={s.digest}>Recipe: {entryShown?.digest}</p></details>
+        <p className={s.note}>If verification fails, nothing changes: {versionNow ?? "the current version"} stays active.</p>
+        {entryShown?.reason && <p className={s.note}>{entryShown.reason}</p>}
+      </section>}
+      {auto && <p role="status" aria-live="polite" data-testid="update-progress">Updating {entryShown?.manifest.identity.label ?? selected} to {versionNext}: {operation?.kind === "verify" ? "verifying with this host’s sign-in" : operation?.kind === "activate" ? "enabling" : "installing"}…</p>}
+      {updateFrom && !auto && !isEnabled && operation && ["failed", "interrupted"].includes(operation.state) && <p className={s.note} data-testid="update-failed">
+        {operation.kind === "verify" ? "Verification didn’t pass, so nothing changed" : "The update didn’t complete, so nothing changed"}: {updateFrom} stays active.
+        {operation.kind === "verify" && hasSignin && " If it failed on the vendor sign-in, use Back to account setup to sign in, then verify again."}</p>}
+      {updateStep && !updatable && catalog && <p className={s.note} role="status" data-testid="update-unavailable">
+        There is no update to confirm: {entryShown?.manifest.identity.label ?? selected} is {!selectedRow?.enabled || !activeGen ? "not enabled on this host" : "already on the catalog’s version"}. Nothing will be installed.</p>}
+      {step === 0 && !updateStep && locked && <p>Review the catalog entry for <b>{catalog?.catalog.find(c => c.manifest.identity.id === selected)?.manifest.identity.label ?? selected}</b>: its source, pinned artifacts and what it can access, before anything is installed.</p>}
+      {step === 0 && !updateStep && locked && catalog?.catalog.find(c => c.manifest.identity.id === selected)?.reason && <p className={s.note}>{catalog.catalog.find(c => c.manifest.identity.id === selected)?.reason}</p>}
+      {step === 0 && !updateStep && !locked && <>
         <p>Choose an agent catalog entry or review a local manifest and its pinned artifact recipe.</p>
         <div className={s.row}>
           {(["catalog", "local"] as const).map(value => <button key={value} className={`${button.ghost} ${s.filter}`} aria-pressed={mode === value} onClick={() => setMode(value)}>{value === "catalog" ? "Agent catalog" : "Local manifest"}</button>)}
@@ -351,7 +483,7 @@ export function AgentSetupFlow({
         {operation.state === "cleanup_pending" && <button className={button.ghost} disabled={busy} onClick={() => void recover()}>Retry cleanup</button>}
         {operation.kind === "install" && ["failed", "interrupted"].includes(operation.state) && <button className={button.ghost} onClick={reset}>Review a new attempt</button>}
       </section>}
-      {step === 2 && review && generation && <>
+      {step === 2 && !auto && review && generation && <>
         {isChat ? <AgentEndpointCard engine={review.plugin_id} generation={generation} readOnly={endpointFrozen} onSaved={async () => {
           setCatalog(current => current && ({ ...current, plugins: current.plugins.map(p => ({ ...p, generations: p.generations?.map(g => g.id === generation ? { ...g, verification: null } : g) })) }));
           setEnabled(false); await loadCatalog();
@@ -387,18 +519,30 @@ export function AgentSetupFlow({
             <button className={button.primary} disabled={busy || unresolved || !pinned} onClick={() => void start("verify")}>{pinned?.verification ? "Run verification again" : "Verify installation"}</button>
           </div>
           {verifiedGeneration(pinned) && <><p className={s.ok}>All required checks passed for this exact installation. {review.source === "local" && "Its source remains local and untrusted."}</p>
-            <button className={button.primary} disabled={busy || unresolved} onClick={() => void start("activate")}>Enable agent</button></>}
+            {!reconfirm && <button className={button.primary} disabled={busy || unresolved} onClick={() => void enableNow()}>Enable agent</button>}
+            {reconfirm && <section className={s.panel} aria-label="Confirm again" data-testid="update-reconfirm">
+              <p>{reconfirm.since
+                ? <>Since you confirmed this update, {review.entry.manifest.identity.label} {!reconfirm.enabled ? "was disabled or removed" : `changed to ${reconfirm.version ?? "another version"}`}.</>
+                : <>{review.entry.manifest.identity.label} is {!reconfirm.enabled ? `disabled on this host (last on ${reconfirm.version ?? "another version"})` : `on ${reconfirm.version ?? "another version"}`}.</>}
+                {" "}{!reconfirm.enabled
+                  ? <b>Enabling {manifestVersion(review.entry.manifest) ?? "this version"} re-enables an agent that is disabled.</b>
+                  : <>Enabling {manifestVersion(review.entry.manifest) ?? "this version"} replaces it; running sessions keep it until they restart.</>}</p>
+              <div className={s.row}>
+                <button className={button.ghost} disabled={busy} onClick={() => setReconfirm(null)}>Leave it as it is</button>
+                <button className={button.primary} disabled={busy || unresolved} onClick={enableAgain}>Enable {manifestVersion(review.entry.manifest) ?? "this version"} anyway</button>
+              </div>
+            </section>}</>}
         </>}
         {isEnabled && <><p className={s.ok}>Agent enabled. Your saved defaults and budgets are unchanged.</p>
           <button className={button.ghost} disabled={busy} onClick={() => void run(async current => { await current(api.pluginReload()); await current(reloadRoster()); refreshConfig(); })}>Reload agent roster</button></>}
       </>}
     </div>;
 
-  return <Frame steps={STEPS} at={step} heading={HEADINGS[step]}
+  return <Frame steps={STEPS} at={step} heading={showUpdate || auto ? `Update ${entryShown?.manifest.identity.label ?? selected}` : HEADINGS[step]}
     onBack={step === 1 && !operation && !unknownOperation ? () => { setStep(0); setReview(null); setLocalConfirmed(false); setAdoptConfirmed(false); } : undefined}
-    onNext={step === 0 ? prepare : step === 1 && !operation && !unknownOperation ? install : undefined}
-    nextLabel={step === 0 ? "Review installation" : "Install"}
-    nextDisabled={step === 0 ? busy || unresolved || !catalog || (mode === "catalog" ? !selected || catalog.catalog.find(c => c.manifest.identity.id === selected)?.installable === false : !local.trim()) : !canInstall}
+    onNext={showUpdate ? update : updateStep ? undefined : step === 0 ? prepare : step === 1 && !operation && !unknownOperation ? install : undefined}
+    nextLabel={showUpdate ? `Update to ${versionNext ?? "the new version"}` : step === 0 ? "Review installation" : "Install"}
+    nextDisabled={showUpdate ? busy || !entryShown || entryShown.installable === false : step === 0 ? busy || unresolved || !catalog || (mode === "catalog" ? !selected || catalog.catalog.find(c => c.manifest.identity.id === selected)?.installable === false : !local.trim()) : !canInstall}
     dirty={dirty}
     leaveTitle={signinLive ? "Leave sign-in?" : unresolved ? "Leave this operation?" : "Leave setup?"}
     leaveMessage={signinLive ? "Leaving closes this temporary terminal and interrupts sign-in. You can start another attempt from the gallery."

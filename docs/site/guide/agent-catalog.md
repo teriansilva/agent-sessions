@@ -16,8 +16,20 @@ catalog account or private admin service.
 BattleLab checks public GitHub for signed catalog metadata once a day. You can turn this off
 with **Automatically check daily**, or use **Refresh catalog** yourself. The last attempt and
 last successful check are shown separately. Refreshing the catalog does not install software,
-change an enabled agent, or interrupt sessions. **Review update** starts a separate installation
-review; sign-in, verification and enabling remain explicit steps.
+change an enabled agent, or interrupt sessions.
+
+## Updating an agent
+
+When the catalog pins a newer version than the one you run, Settings → Agents shows
+*installed → available* (for example *2.1.286 → 2.1.311*) with **Update**. Update shows one
+confirmation: the versions, the source, what verification does, and that your current version
+stays active if it fails. Confirming installs the new version beside the current one, verifies it
+with this host's existing vendor sign-in (no new sign-in unless verification fails, in which case
+the sign-in step is offered), and then enables it. Running sessions keep the version they were
+started with until they restart.
+
+After an update, the previous version stays installed. **Roll back to …** on the agent's row
+enables it again, after one confirmation, through the same enable step.
 
 Offline, the bundled definitions are still available. Downloading an agent's artifacts needs
 network access. Once a signed remote catalog has been accepted, its entries constrain the

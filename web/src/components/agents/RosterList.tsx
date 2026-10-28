@@ -11,7 +11,9 @@ import { agentPath } from "../../routes/settingsTabs";
 import button from "../ui/actionButton.module.css";
 import { pluginError, setupPath } from "../plugins/model";
 import { api } from "../../lib/api";
-import type { RosterRow, Status } from "./agentStatus";
+import { versionsOf, type RosterRow, type Status, type Versions } from "./agentStatus";
+import { reloadRoster } from "../../app/reloadRoster";
+import { ConfirmDialog } from "../templates/ConfirmDialog";
 import { Gauge } from "../hud/Meters";
 import r from "./Roster.module.css";
 
@@ -44,7 +46,94 @@ function Usage({ row }: { row: AgentUsageRow | undefined }) {
   );
 }
 
-function RowView({ row, usage }: { row: RosterRow; usage: Map<string, AgentUsageRow> }) {
+/** `installed → available`, or the current version and what Roll back would restore (#1741). */
+function versionLine(v: Versions): string | null {
+  if (!v.installed) return null;
+  if (v.available) return `${v.installed} → ${v.available}`;
+  return v.previous ? `${v.installed} active · ${v.previous.version ?? "previous"} kept` : `${v.installed} · current`;
+}
+
+/** Roll back (#1741): activate the generation that was active before, through the existing
+ *  `activate` operation (the server re-checks its verification), then reload the roster. One
+ *  confirmation; running sessions keep the binary they were started with. */
+function RollBack({
+  id,
+  label,
+  target,
+  expected,
+  onChanged,
+}: {
+  id: string;
+  label: string;
+  target: NonNullable<Versions["previous"]>;
+  /** What the operator saw: the server refuses the rollback if either moved since. */
+  expected: { active: string | null; revision: string | null };
+  onChanged?: () => void;
+}) {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const version = target.version ?? "the previous version";
+  const confirm = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await api.pluginActivate({
+        request_id: crypto.randomUUID(),
+        plugin_id: id,
+        generation_id: target.id,
+        expected_active: expected.active,
+        expected_revision: expected.revision,
+      });
+      await api.pluginReload();
+      await reloadRoster();
+      setAsking(false);
+      onChanged?.();
+    } catch (e) {
+      setError(pluginError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <button type="button" className={button.ghost} onClick={() => setAsking(true)}>
+        Roll back to {version}
+      </button>
+      {asking && (
+        <ConfirmDialog
+          tag="ROLL BACK"
+          title={`Roll back ${label} to ${version}?`}
+          confirmLabel={`Roll back to ${version}`}
+          busy={busy}
+          onCancel={() => {
+            setAsking(false);
+            setError("");
+          }}
+          onConfirm={() => void confirm()}
+        >
+          <p>
+            New sessions start on {version}. Running sessions keep the version they were started
+            with until they restart. The current version stays installed.
+          </p>
+          {error && <p role="alert">{error}</p>}
+        </ConfirmDialog>
+      )}
+    </>
+  );
+}
+
+function RowView({
+  row,
+  usage,
+  data,
+  onChanged,
+}: {
+  row: RosterRow;
+  usage: Map<string, AgentUsageRow>;
+  data?: PluginCatalog | null;
+  onChanged?: () => void;
+}) {
   const location = useLocation();
   const [open, setOpen] = useState(false);
   const accent = { "--eng": engineColor(row.id) } as CSSProperties;
@@ -85,6 +174,8 @@ function RowView({ row, usage }: { row: RosterRow; usage: Map<string, AgentUsage
   }
   const action = row.status.action;
   const firstUsage = row.kind === "agent" ? usage.get(row.id) : undefined;
+  const versions = versionsOf(row.id, data ?? null);
+  const line = versionLine(versions);
   return (
     <li
       style={accent}
@@ -102,6 +193,7 @@ function RowView({ row, usage }: { row: RosterRow; usage: Map<string, AgentUsage
         >
           <b>{row.label}</b>
           <small>{row.id}</small>
+          {line && <small data-testid="agent-versions">{line}</small>}
         </Link>
         <StatusWord status={row.status} />
         <span className={r.modes}>
@@ -121,13 +213,48 @@ function RowView({ row, usage }: { row: RosterRow; usage: Map<string, AgentUsage
             ))}
         </span>
         <span className={r.end}>
-          {action ? (
-            <Link className={button.ghost} to={action.to}>
+          {action && (
+            <Link
+              className={button.ghost}
+              to={action.to}
+              aria-label={
+                versions.available ? `${action.label} ${row.label} to ${versions.available}` : undefined
+              }
+            >
               {action.label}
             </Link>
-          ) : (
-            <Usage row={firstUsage} />
           )}
+          {/* Roll back stays offered beside a newer Update: the retained version is the way out
+              of exactly the update that may be the problem (Hermes 7284). */}
+          {versions.previous && (
+            <RollBack
+              id={row.id}
+              label={row.label}
+              target={versions.previous}
+              expected={{
+                active: data?.plugins.find((p) => p.id === row.id)?.active ?? null,
+                revision: data?.roster_revision ?? null,
+              }}
+              onChanged={onChanged}
+            />
+          )}
+          {/* Older history that cannot say which version came before (#1741): no one-click Roll
+              back. Each kept version opens its own Enable step, which shows the agent's current
+              state and confirms against it before anything is sent. */}
+          {versions.undetermined.length > 0 && (
+            <span className={r.undetermined} data-testid="rollback-undetermined">
+              Previous version can’t be determined for older history. Choose a version:{" "}
+              {versions.undetermined.map((g, i) => (
+                <span key={g.id}>
+                  <Link to={setupPath({ plugin: row.id, generation: g.id })} aria-label={`Choose ${row.label} ${g.version ?? g.id}`}>
+                    {g.version ?? g.id}
+                  </Link>
+                  {i < versions.undetermined.length - 1 ? " · " : ""}
+                </span>
+              ))}
+            </span>
+          )}
+          {!action && !versions.previous && versions.undetermined.length === 0 && <Usage row={firstUsage} />}
         </span>
         <span className={r.chev} aria-hidden="true">›</span>
       </div>
@@ -176,14 +303,20 @@ function ReloadRoster() {
 export function RosterList({
   rows,
   usage,
+  data,
+  onChanged,
 }: {
   rows: RosterRow[];
   usage: Map<string, AgentUsageRow>;
+  /** The installer catalog: versions and Roll back (#1741). */
+  data?: PluginCatalog | null;
+  /** An installer change was made here (Roll back): re-read the catalog. */
+  onChanged?: () => void;
 }) {
   return (
     <ul className={r.list} aria-label="All agents">
       {rows.map((row) => (
-        <RowView key={row.id} row={row} usage={usage} />
+        <RowView key={row.id} row={row} usage={usage} data={data} onChanged={onChanged} />
       ))}
     </ul>
   );
