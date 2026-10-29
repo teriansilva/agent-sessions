@@ -415,6 +415,10 @@ class ForgeClient:
             f"PR #{num} is {state} for {branch}",
             number=num,
             head_sha=str(sha) if sha else None,
+            # The PR's head branch AS OBSERVED (#1777 S1c): `_head_matches` made it equal the
+            # branch asked about, which a probe may have derived from the checkout rather than
+            # from its arguments — so a consumer of `head_branch` reads it here, not from args.
+            head_ref=str(head.get("ref") or "") or None,
             pr_state=state,
             merged=bool(pr.get("merged")),
         )

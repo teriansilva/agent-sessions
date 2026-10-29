@@ -141,7 +141,7 @@ def _write_bundle(contents: dict) -> str:
     return tree.digest()
 
 
-def _deploy(folder, tmp_path, monkeypatch, contents: dict) -> dict:
+def _deploy(folder, tmp_path, monkeypatch, contents: dict, bindings=None) -> dict:
     """Review, bind and apply `contents` to a new project through the real lifecycle, confirming
     NO individual target (the default a review shows stays unarmed); a fresh missions store."""
     import shutil
@@ -154,7 +154,7 @@ def _deploy(folder, tmp_path, monkeypatch, contents: dict) -> dict:
     inputs = {
         "destination": str(folder),
         "revision": revision,
-        "bindings": BINDINGS,
+        "bindings": BINDINGS if bindings is None else bindings,
         "project_id": entity.id,
     }
     plan = review.build(PB, inputs, key=KEY)

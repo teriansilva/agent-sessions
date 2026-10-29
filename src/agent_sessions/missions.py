@@ -9800,6 +9800,202 @@ def _fence_plan_project_tx(con, mission_id: str, project_id: str | None) -> None
         )
 
 
+#: The shape each observed slot value must have before it may fill an argument (#1777 S1c).
+_SLOT_SHAPES: dict[str, re.Pattern] = {
+    "head_branch": re.compile(r"[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}"),
+    "branch": re.compile(r"[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}"),
+    "head_sha": re.compile(r"[0-9a-f]{7,64}"),
+    "pr_number": re.compile(r"[1-9][0-9]{0,9}"),
+}
+
+
+def _slot_value(producer, slot: str) -> str | None:
+    """The value a producer evidence row's CURRENT observation gives `slot`, or None (#1777 S1c).
+
+    Only a row whose probe settled `met` on a fresh observation produces anything: an unmet,
+    stale or unknown look is not a fact about the work. Where each slot comes from:
+
+    * `forge_pr` — `pr_number`, `head_sha` and `head_branch` from the PR it observed (the head
+      ref, which is the branch it asked about, explicitly or derived from the checkout);
+    * `git_local` — `branch` and `head_sha` from the checkout it observed.
+    """
+    if str(producer["state"] or "") != "met":
+        return None
+    obs = _loads(producer["observed"])
+    if not isinstance(obs, dict) or obs.get("stale") or obs.get("value") is not True:
+        return None
+    args = _loads(producer["probe_args"]) or {}
+    kind = canonical_probe(producer["probe"])
+    if kind == "forge_pr":
+        raw = {
+            "pr_number": obs.get("number"),
+            "head_sha": obs.get("head_sha"),
+            # The observed head ref first: a `forge_pr` row may omit `branch` and probe the
+            # checkout's (Hermes on #1792). Its argument is the fallback for an older observation.
+            "head_branch": obs.get("head_ref") or args.get("branch"),
+        }.get(slot)
+    elif kind == "git_local":
+        raw = {"branch": obs.get("branch"), "head_sha": obs.get("head_sha")}.get(slot)
+    else:
+        raw = None
+    if isinstance(raw, bool) or raw is None or raw == "":
+        return None
+    value = str(raw)
+    # AN OBSERVED VALUE IS HELD TO ITS SLOT'S SHAPE, stricter than an operator-typed argument:
+    # it came from a checkout or a forge response, not from anyone's review. A branch is a git
+    # ref name; a SHA is hex; a PR number is digits.
+    shape = _SLOT_SHAPES.get(slot)
+    if shape is None or not shape.fullmatch(value) or ".." in value:
+        return None
+    return value
+
+
+def bridge_outputs(
+    mission_id: str, *, now: float | None = None, path: Path | None = None
+) -> list[str]:
+    """Resolve WAITING evidence from its producer step's observed outputs (#1777 S1c, #1193).
+
+    A row applied with `{{steps.<id>.<slot>}}` arguments waits as a `none` gate with its real
+    probe in `pending`. Once a producer row in that step (same objective, a probe whose kind
+    yields the slot) is `met` on a fresh observation, the row becomes its real probe: arguments
+    filled, `pending` cleared, its own `required` restored as `gate`, and a timeline event naming
+    the producer row and its incarnation. ONE transaction reads the producer and writes the row,
+    against the latest plan revision, so a producer that moved cannot fill a row.
+
+    **Authority never comes from an observation.** Only arguments `playbooks.schema.
+    ARG_SLOT_TYPES` lists may take a slot (`branch`, `expect` — never `repo` or `url`), checked
+    here again, and the filled arguments pass `validate_probe_args`; a value that does not is left
+    waiting. A resolved row is never re-targeted when the slot later changes (P6's episodes own
+    that). Idempotent: a repeated sweep finds nothing pending, so it resolves once, and a restart
+    simply runs it again. Returns the keys it resolved.
+    """
+    from . import mission_plan_document as plan_doc
+    from .playbooks import schema
+
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    resolved: list[str] = []
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            # NOT ON A CLOSED, ARCHIVED OR BUSY MISSION (Hermes on #1792): a pass that read a
+            # running mission can lose a race to a terminal transition or an archive, and a
+            # closed mission's objective history is not rewritten afterwards. Checked HERE, in
+            # the writing transaction, like `observe_objective` does.
+            state = con.execute("SELECT state FROM missions WHERE id=?", (mission_id,)).fetchone()
+            try:
+                _fence_busy(con, mission_id)  # archived, or mid archive/unarchive
+            except MissionError:
+                state = None
+            if state is None or state["state"] in TERMINAL_STATES:
+                con.execute("ROLLBACK")
+                return []
+            waiting = con.execute(
+                "SELECT * FROM mission_objectives WHERE mission_id=? AND pending IS NOT NULL "
+                "AND probe='none' AND state != 'waived' ORDER BY ord ASC",
+                (mission_id,),
+            ).fetchall()
+            latest = _latest_plan_tx(con, mission_id) if waiting else None
+            if latest is None:
+                con.execute("COMMIT")
+                return []
+            steps = {s["id"]: s for s in latest["document"]["steps"]}
+            # What each step DECLARES it outputs, from the snapshot flow: a slot a step does not
+            # declare is never taken from it, whatever a stored reference says.
+            declared = {
+                plan_doc.step_id(o["id"], fs["id"]): set(fs.get("outputs") or [])
+                for o in latest["document"]["objectives"]
+                for fs in o["procedure"]["flow"]["steps"]
+            }
+            by_key = {
+                r["key"]: r
+                for r in con.execute(
+                    "SELECT * FROM mission_objectives WHERE mission_id=?", (mission_id,)
+                ).fetchall()
+            }
+            for row in waiting:
+                pending = _loads(row["pending"])
+                step = steps.get(str(row["plan_step"] or ""))
+                if not isinstance(pending, dict) or step is None:
+                    continue
+                refs = pending.get("refs")
+                args = dict(pending.get("args") or {})
+                if not isinstance(refs, dict) or not refs:
+                    continue
+                sources: dict[str, dict] = {}
+                for arg, token in refs.items():
+                    m = schema.STEP_TOKEN_RE.fullmatch(str(token))
+                    if (
+                        m is None
+                        or arg not in schema.ARG_SLOT_TYPES
+                        or schema.SLOT_TYPES.get(m.group(2)) not in schema.ARG_SLOT_TYPES[arg]
+                    ):
+                        break
+                    producer_id = plan_doc.step_id(step["objective"], m.group(1))
+                    producer_step = steps.get(producer_id)
+                    if producer_step is None or m.group(2) not in declared.get(producer_id, ()):
+                        break
+                    value = None
+                    for key in producer_step["evidence"]:
+                        p = by_key.get(key)
+                        if p is None or p["pending"] is not None:
+                            continue
+                        kind = canonical_probe(p["probe"])
+                        if m.group(2) not in schema.OUTPUT_SLOTS.get(kind, frozenset()):
+                            continue
+                        value = _slot_value(p, m.group(2))
+                        if value is not None:
+                            sources[arg] = {
+                                "from": key,
+                                "incarnation": p["incarnation"],
+                                "slot": m.group(2),
+                            }
+                            break
+                    if value is None:
+                        break
+                    args[arg] = value
+                else:
+                    probe = str(pending.get("probe") or "")
+                    try:
+                        _, args_json = _validate_probe(probe, args, True)
+                    except MissionError:
+                        continue  # a value the argument does not take: stays waiting
+                    gate = pending.get("gate", True) is not False
+                    cur = con.execute(
+                        "UPDATE mission_objectives SET probe=?, probe_args=?, gate=?, "
+                        "pending=NULL WHERE mission_id=? AND key=? AND incarnation=? "
+                        "AND pending IS NOT NULL",
+                        (
+                            probe,
+                            args_json,
+                            1 if gate else 0,
+                            mission_id,
+                            row["key"],
+                            row["incarnation"],
+                        ),
+                    )
+                    if cur.rowcount:
+                        resolved.append(row["key"])
+                        _append_event(
+                            con,
+                            mission_id,
+                            "objective",
+                            at=ts,
+                            meta={"by": "bridge", "key": row["key"], "sources": sources},
+                        )
+            if resolved:
+                con.execute("UPDATE missions SET updated_at=? WHERE id=?", (ts, mission_id))
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    return resolved
+
+
 def procedure_scope(mission_id: str, *, path: Path | None = None) -> dict:
     """`{state, project_id}` — what the procedure listing is built for. 404 for an unknown id."""
     validate_id(mission_id)
@@ -13033,6 +13229,7 @@ __all__ = [
     "patch_objectives",
     "pending_archives",
     "apply_procedure",
+    "bridge_outputs",
     "plan_revision",
     "procedure_scope",
     "rollback_schema",

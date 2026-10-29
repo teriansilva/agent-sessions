@@ -166,14 +166,22 @@ def _probe_git_local(mission: dict, args: dict) -> Fact:
     if st.get("repo") is None:
         return Fact.unknown("that folder is not a git repository")
     branch = str(st.get("branch") or "")
+    # THE COMMIT the checkout is on, recorded beside the branch: `schema.OUTPUT_SLOTS` declares
+    # `git_local` produces `head_sha`, and a step whose only `head_sha` producer is this probe
+    # would otherwise wait for ever (#1777 S1c). A bounded ref read, no subprocess; absent when
+    # it can't be read.
+    sha = ""
+    with contextlib.suppress(Exception):
+        sha = str(gitpanel.head_sha(cwd) or "")
+    extra = {"branch": branch, "head_sha": sha or None}
     want = str(args.get("branch") or "").strip()
     if want:
-        return Fact.seen(branch == want, f"on {branch or 'a detached HEAD'}", branch=branch)
+        return Fact.seen(branch == want, f"on {branch or 'a detached HEAD'}", **extra)
     if not branch:
         return Fact.seen(False, "the checkout is on a detached HEAD")
     if branch in ("main", "master"):
-        return Fact.seen(False, f"still on {branch}", branch=branch)
-    return Fact.seen(True, f"on {branch}", branch=branch)
+        return Fact.seen(False, f"still on {branch}", **extra)
+    return Fact.seen(True, f"on {branch}", **extra)
 
 
 def _client_for(target: Target) -> forge_mod.ForgeClient | None:
@@ -599,6 +607,12 @@ def run_for_mission(mission_id: str, *, path=None) -> dict:
 
     from . import session_input  # the fence's busy signal; imported here, as `_fact_fence` does
 
+    # WAITING EVIDENCE FIRST (#1777 S1c): a row whose producer step was observed since the last
+    # pass becomes its real probe now, so this pass can already ask it. Idempotent, and run every
+    # pass, so a restart converges. Fenced like every other write a nudge's facts rest on.
+    if _bridge(mission_id, path):
+        with contextlib.suppress(Exception):
+            mission = missions.get_mission(mission_id, events_limit=1, path=path) or mission
     eligible = _eligible(mission)
     if not eligible:
         return {"probed": 0, "settled": 0, "unknown": 0}
@@ -713,4 +727,20 @@ def run_for_mission(mission_id: str, *, path=None) -> dict:
             missions.set_supervisor_state(
                 _CURSOR_PREFIX + mission_id, str(rows[-1].get("key") or ""), path=path
             )
+    if settled:
+        _bridge(mission_id, path)  # a producer settled in this pass: its consumers need not wait
     return {"probed": probed, "settled": settled, "unknown": unknown}
+
+
+def _bridge(mission_id: str, path) -> list[str]:
+    """`missions.bridge_outputs` under the fact fence; never raises (a pass must not stop)."""
+    from . import session_input
+
+    try:
+        with _fact_fence():
+            return missions.bridge_outputs(mission_id, path=path)
+    except session_input.AuthorityFenceBusy:
+        return []
+    except Exception:  # noqa: BLE001 — the next pass retries; waiting rows stay unmet meanwhile
+        log.debug("bridging %s failed", mission_id, exc_info=True)
+        return []
