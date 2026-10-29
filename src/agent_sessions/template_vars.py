@@ -593,6 +593,12 @@ def _mutate_document(
         finally:
             _hooks.current = outer
         _run_hooks(hooks[0], "cleanup")
+    # Agents' copies (#1786) are re-judged against what was just committed — AFTER this write's
+    # fences are released, so the broker's fence never extends the authorization fence terminal
+    # input waits on (independent review of #1796). Policy only: no process is probed here.
+    from . import secrets_broker
+
+    secrets_broker.after_store_commit()
     return result
 
 

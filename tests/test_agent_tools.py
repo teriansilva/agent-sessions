@@ -95,11 +95,12 @@ def test_copilot_server_tools_are_exactly_the_first_party_tool_names():
     """The narrowing behind `copilot_mcp_config` (#1565 review): the per-server tool lists are
     the SAME names the memory/skills servers answer `tools/list` with — a server that grows a
     tool fails this test until the grant is deliberately widened here, never silently."""
-    from agent_sessions import memory_mcp, skills_mcp
+    from agent_sessions import memory_mcp, secrets_mcp, skills_mcp
 
     assert agent_tools._COPILOT_SERVER_TOOLS == {
         agent_tools.SERVER_NAME: sorted(t["name"] for t in memory_mcp.TOOLS),
         agent_tools.SKILLS_SERVER_NAME: sorted(t["name"] for t in skills_mcp.TOOLS),
+        agent_tools.SECRETS_SERVER_NAME: sorted(t["name"] for t in secrets_mcp.TOOLS),
     }
 
 

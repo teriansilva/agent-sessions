@@ -31,6 +31,8 @@ dependencies = [
 
 [project.scripts]
 agent-sessions = "agent_sessions.cli:main"
+# The secrets helper (#1786): agents without the MCP channel run it from their own shell.
+battlelab-secrets = "agent_sessions.secrets_mcp:cli"
 
 [project.optional-dependencies]
 # Calling HQ (#1397): the voice worker's conversation engine (VAD, Smart Turn end-of-turn,

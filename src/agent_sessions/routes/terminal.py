@@ -62,6 +62,7 @@ from .. import (
     relaunch,
     scanner,
     scopedspawn,
+    secrets_broker,
     session_stream,
     sessionlock,
     sessions,
@@ -883,13 +884,18 @@ def register(
                         kind="terminal",
                         specialist=claim.specialist_id if claim is not None else None,
                     )
+                    # The secrets capability (#1786): minted for THIS new agent process only.
+                    capability = secrets_broker.launch_env(
+                        transcript_key, phys_key, cwd, engine=prov.engine_id, kind="terminal"
+                    )
                     tool = agent_tools.terminal_launch(
                         engines.manifest_of(prov),
                         paths,
                         os.environ,
                         skills_bundle=claim.bundle if claim is not None else None,
+                        secrets_env=capability,
                     )
-                    return paths, tool
+                    return {**paths, **capability}, tool
 
                 try:
                     memory_env, mcp = await asyncio.to_thread(_memory_for_launch)

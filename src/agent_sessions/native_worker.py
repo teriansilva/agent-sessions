@@ -276,6 +276,26 @@ def memory_environment(config: dict) -> dict[str, str]:
     return dict(value)
 
 
+def secrets_environment(config: dict) -> dict[str, str]:
+    """The secrets capability this generation was given (#1786), or ``{}``: the broker's socket
+    path and the token, plus the helper's path where it is installed. Bound by the web process at
+    generation launch and passed explicitly — never read from this process's environment."""
+    from .secrets_broker import ALL_ENV_KEYS, ENV_KEYS
+
+    value = config.get("secrets_env", {})
+    if not isinstance(value, dict):
+        raise WorkerError("invalid secrets environment")
+    if value and (
+        not set(ENV_KEYS) <= set(value) <= set(ALL_ENV_KEYS)
+        or any(
+            not isinstance(v, str) or not v.startswith("/") or "\0" in v or "\n" in v
+            for v in value.values()
+        )
+    ):
+        raise WorkerError("invalid secrets environment")
+    return dict(value)
+
+
 def memory_tool(config: dict):
     """The memory tool this generation carries (#1506), as an `agent_tools.Server`, or None.
 
@@ -301,6 +321,12 @@ def tool_servers(config: dict) -> list:
     adapter whose protocol carries no MCP server refuses the spawn: a specialist never runs
     without the skills it was saved with."""
     out = [t for t in (memory_tool(config),) if t is not None]
+    # The secrets tool (#1786) rides only where the adapter's protocol carries an MCP server; an
+    # agent without one keeps the capability variables and the helper.
+    if kinds.API_MCP_KINDS.get(config["adapter"]):
+        secrets_tool = agent_tools.secrets_server(secrets_environment(config))
+        if secrets_tool is not None:
+            out.append(secrets_tool)
     bundle = config.get("skills_bundle")
     if bundle is None:
         return out
@@ -352,6 +378,7 @@ def child_environment(
     env = native_environment(config)
     env["BATTLELAB_SESSION"] = battlelab_session(config)
     env.update(memory_environment(config))
+    env.update(secrets_environment(config))
     if config["adapter"] == OPENCODE:
         if not isinstance(server_password, str) or len(server_password) < 32:
             raise WorkerError("the opencode listener password is missing")
@@ -486,6 +513,7 @@ class Worker:
             bypass=self.config.get("bypass") is True,
             effort=self.config.get("effort"),
             mcp_config=agent_tools.claude_mcp_config(tools) if tools else None,
+            add_dirs=agent_tools.claude_add_dirs(secrets_environment(self.config)),
         )
 
     async def spawn(self) -> None:

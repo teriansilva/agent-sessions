@@ -76,6 +76,7 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_PLAYBOOKS_DIR": ".config/agent-sessions/playbooks",  # #1191 local playbooks
     "AGENT_SESSIONS_PLAYBOOK_SECRETS": ".config/agent-sessions/playbook-secrets",  # #1191
     "AGENT_SESSIONS_MEMORY_DIR": ".config/agent-sessions/memory",  # #1441
+    "AGENT_SESSIONS_SECRETS_RUNTIME": "srt",  # #1786 agents' secret copies (never the host's)
     "AGENT_SESSIONS_ASK_DIR": ".config/agent-sessions/ask",  # #1443 Ask conversations
     "AGENT_SESSIONS_PULSE_CACHE": ".config/agent-sessions/pulse-cache.json",
     "AGENT_SESSIONS_WORK_RECAP": ".config/agent-sessions/work-recap.json",  # #1086
@@ -378,6 +379,8 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv(
         "AGENT_SESSIONS_MEMORY_DIR", str(tmp_path / ".config" / "agent-sessions" / "memory")
     )
+    # …and agents' secret copies and token files (#1786): never the host's runtime directory.
+    monkeypatch.setenv("AGENT_SESSIONS_SECRETS_RUNTIME", str(tmp_path / "srt"))
     # …and Ask's durable conversations (#1443).
     monkeypatch.setenv(
         "AGENT_SESSIONS_ASK_DIR", str(tmp_path / ".config" / "agent-sessions" / "ask")

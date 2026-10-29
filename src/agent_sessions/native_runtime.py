@@ -58,6 +58,7 @@ from . import (
     native_segments,
     native_state,
     risk_marks,
+    secrets_broker,
 )
 from .plugins import api_source, kinds, storage
 
@@ -577,6 +578,16 @@ def _launch_generation(
     # checks against its protocol (`agent_tools.api_kind`) and shapes into that protocol's own
     # slot.
     config["memory_tool"] = agent_tools.mcp_kind(prov.manifest) if config["memory_env"] else None
+    # The secrets capability (#1786), per GENERATION like memory: bound to this worker, so it is
+    # live exactly while this generation's invocation is the active one.
+    config["secrets_env"] = secrets_broker.launch_env(
+        record["session_key"],
+        record["session_key"],
+        record["request"]["cwd"],
+        engine=record["session_key"].partition(":")[0],
+        kind="api",
+        worker_id=worker.worker_id,
+    )
     if adapter == "opencode-acp":
         # The store the source resolves (`store.path_env` first): the worker's maintenance
         # admission is keyed by this database, like compaction's (Hermes on #1336).

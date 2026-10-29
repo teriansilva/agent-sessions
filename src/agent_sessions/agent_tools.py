@@ -51,6 +51,10 @@ SKILLS_SERVER_NAME = "battlelab_skills"
 SKILLS_MODULE = "agent_sessions.skills_mcp"
 #: Its one environment path: this launch's read-only skill bundle.
 SKILLS_ENV = "BATTLELAB_SKILLS_BUNDLE"
+#: The secrets tool (#1786): its own name, beside memory and skills. Its environment is this
+#: launch's capability (`secrets_broker.launch_env`): the broker's socket and a token.
+SECRETS_SERVER_NAME = "battlelab_secrets"
+SECRETS_MODULE = "agent_sessions.secrets_mcp"
 
 CLAUDE_FLAG = "claude-mcp-config-flag"  # `--mcp-config <json>`, claude 2.1.304
 CODEX_OVERRIDE = "codex-config-override"  # `-c mcp_servers.<name>.*`, codex-cli 0.162.0
@@ -163,6 +167,52 @@ def skills_server(bundle: str | None) -> Server | None:
     )
 
 
+def secrets_server(secrets_env: Mapping[str, str] | None) -> Server | None:
+    """The secrets tool for a launch given a capability (`secrets_broker.launch_env`), or None.
+    Best-effort like memory: the agent still has the helper and its variables if this is None."""
+    from . import secrets_broker
+
+    if not secrets_env:
+        return None
+    if (
+        not set(secrets_broker.ENV_KEYS) <= set(secrets_env)
+        or not set(secrets_env) <= set(secrets_broker.ALL_ENV_KEYS)
+        or any(
+            not isinstance(v, str) or not v.startswith("/") or "\0" in v or "\n" in v
+            for v in secrets_env.values()
+        )
+    ):
+        log.warning("secrets tool: malformed capability environment; not wired in")
+        return None
+    exe = _interpreter("secrets tool")
+    if exe is None:
+        return None
+    # Paths only — the socket and the token FILE. Never the token: this env rides argv.
+    env = {
+        secrets_broker.ENV_SOCKET: secrets_env[secrets_broker.ENV_SOCKET],
+        secrets_broker.ENV_TOKEN_FILE: secrets_env[secrets_broker.ENV_TOKEN_FILE],
+    }
+    return Server(
+        command=exe,
+        args=("-I", "-m", SECRETS_MODULE),
+        env=_with_base_env(env),
+        name=SECRETS_SERVER_NAME,
+    )
+
+
+def claude_add_dirs(secrets_env: Mapping[str, str] | None) -> tuple[str, ...]:
+    """``("--add-dir", <this launch's copy directory>)`` or nothing (#1786 smoke): claude only
+    runs a command on files inside its working directories, so a guarded session could not pass
+    a copy's path to ``wc``/``openssl``/``xcrun``. Exactly this launch's directory — never the
+    copies root, never more."""
+    from . import secrets_broker
+
+    path = (secrets_env or {}).get(secrets_broker.ENV_DIR)
+    if not isinstance(path, str) or not path.startswith("/") or "\0" in path or "\n" in path:
+        return ()
+    return ("--add-dir", path)
+
+
 def _interpreter(what: str) -> str | None:
     exe = sys.executable
     if not exe or not exe.startswith("/"):
@@ -270,6 +320,7 @@ def opencode_config_content(servers: Server | Sequence[Server], existing: str | 
 _COPILOT_SERVER_TOOLS: dict[str, list[str]] = {
     SERVER_NAME: ["memory_index", "memory_read", "memory_search", "memory_write"],
     SKILLS_SERVER_NAME: ["skill_read", "skills_list"],
+    SECRETS_SERVER_NAME: ["secret_list", "secret_path"],
 }
 
 
@@ -317,6 +368,7 @@ def terminal_launch(
     base_env: Mapping[str, str],
     *,
     skills_bundle: str | None = None,
+    secrets_env: Mapping[str, str] | None = None,
 ) -> McpLaunch:
     """What a terminal LAUNCH or an unattended dispatch adds for BattleLab's tools, or `NONE`.
 
@@ -332,12 +384,16 @@ def terminal_launch(
         raise SkillsRefused(str(exc)) from None
     if skills is not None and kind is None:
         raise SkillsRefused("this agent cannot load skills: it has no tool channel")
-    servers = [x for x in (server(memory_env), skills) if x is not None]
+    servers = [
+        x for x in (server(memory_env), skills, secrets_server(secrets_env)) if x is not None
+    ]
     if kind is None or not servers:
         return NONE
     if kind == CLAUDE_FLAG:
         # At the END: `--mcp-config` takes several values, so nothing positional may follow it.
-        return McpLaunch(suffix=("--mcp-config", claude_mcp_config(servers)))
+        return McpLaunch(
+            suffix=(*claude_add_dirs(secrets_env), "--mcp-config", claude_mcp_config(servers))
+        )
     if kind == CODEX_OVERRIDE:
         return McpLaunch(prefix=codex_overrides(servers))
     if kind == COPILOT_FLAG:

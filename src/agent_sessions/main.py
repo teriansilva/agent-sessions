@@ -58,6 +58,7 @@ from . import (
     pulse_loop,
     reaper,
     scrollback,
+    secrets_broker,
     security_headers,
     session_stream,
     shares,
@@ -224,6 +225,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # child — a launch, an auth preflight, a provider probe — can inherit a stale or foreign path.
     # A launch is given them explicitly, and only when its project has memory on.
     memory.scrub_process_environment()
+    # Nor a secrets capability (#1786): one is minted per launch, never inherited.
+    secrets_broker.scrub_process_environment()
 
     # One-time prefs migration (#357 Phase 2): union-merge any legacy `overview_excluded`
     # hide list into `projects_hidden` and drop the old key. A pure no-op once migrated
@@ -337,6 +340,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # AGENT_SESSIONS_REAP_IDLE_SECONDS > 0; defaults to dry-run (logs candidates, kills
         # nothing). Never reaps an attached or recently-active session.
         reaper_task = asyncio.create_task(reaper.run(registry))
+        # The secrets broker (#1786): after `registry.discover()` above, so the startup pass
+        # judges liveness against the re-adopted sessions — a live agent keeps its capability
+        # across this restart, a dead launch's copies are removed. Then it serves the socket.
+        secrets_task = asyncio.create_task(secrets_broker.serve())
         # Periodic AI session review (#356 Phase 2): same reaper pattern. The task exits
         # immediately under the AGENT_SESSIONS_AI_REVIEW_LOOP=0 kill-switch; otherwise it
         # re-reads the ai_review prefs every sweep, so the Settings enable toggle governs
@@ -493,6 +500,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             await _app.state.plugin_jobs.shutdown()
             for task in (
                 reaper_task,
+                secrets_task,
                 review_task,
                 autosort_task,
                 pulse_task,

@@ -1181,6 +1181,7 @@ class ClaudeCodec(_Codec):
         bypass: bool = False,
         effort: str | None = None,
         mcp_config: str | None = None,
+        add_dirs: tuple[str, ...] = (),
     ) -> list[str]:
         native_id = _uuid(session_id)
         argv = [
@@ -1207,6 +1208,12 @@ class ClaudeCodec(_Codec):
         # Every generation of the session gets the level it was created with (#1407).
         if _effort(effort) is not None:
             argv.extend(["--effort", effort])
+        # The secrets tool's copy directory (#1786, `agent_tools.claude_add_dirs`): exactly
+        # ``("--add-dir", <dir>)`` or nothing.
+        if add_dirs:
+            if len(add_dirs) != 2 or add_dirs[0] != "--add-dir":
+                raise ValueError("add_dirs is ('--add-dir', <absolute dir>)")
+            argv.extend(["--add-dir", _path(add_dirs[1])])
         if mcp_config is not None:
             # The memory tool (#1506, `agent_tools.claude_mcp_config`). LAST: the flag takes
             # several values. Not `--strict-mcp-config`: the operator's own servers still load.

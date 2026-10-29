@@ -145,6 +145,11 @@ async def cleanup_runtime(
         scrollback.clear_scrollback([phys_key])
     with contextlib.suppress(Exception):
         owner.clear_owner(engine, phys_native)
+    # The secrets this launch was given (#1786): its capability and every private copy go now.
+    # Off the event loop: it waits on the broker's fence (independent review of #1796).
+    from . import secrets_broker
+
+    await asyncio.to_thread(secrets_broker.revoke_launch, phys_key)
 
     # Stale-socket unlink under the single-writer lock (split-brain guard, 2026-06-12 prod
     # wedge) — shared with Settings → Maintenance's prune (#993) so the guard exists once.

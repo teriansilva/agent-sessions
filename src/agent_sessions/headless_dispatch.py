@@ -785,10 +785,10 @@ async def dispatch(
         # Shared project memory (#1441): never the app's own copies. The paths themselves are bound
         # inside the launch fence, immediately before the spawn (below), so a dispatch refused by
         # authentication or admission never mints an inbox.
-        from . import memory
+        from . import memory, secrets_broker
 
-        for name in memory.ALL_ENV_KEYS:  # incl. a specialist's notebook (#1693)
-            env.pop(name, None)
+        for name in (*memory.ALL_ENV_KEYS, *secrets_broker.ALL_ENV_KEYS):
+            env.pop(name, None)  # incl. a specialist's notebook (#1693) and a capability (#1786)
         # OWNERSHIP STARTS HERE, not at `transfer()` (#898 review 5, finding 2).
         #
         # The moment `create_subprocess_exec` is entered, the lock fd may already have been
@@ -1027,11 +1027,15 @@ async def dispatch(
                             # memory tool its manifest declares (#1506). `launch_env` never
                             # raises; with memory off both are empty.
                             memory_env = memory.launch_env(key, cwd, kind="terminal")
+                            # The secrets capability (#1786), minted inside the fence like memory.
+                            capability = secrets_broker.launch_env(
+                                key, key, cwd, engine=engine, kind="terminal"
+                            )
                             mcp = agent_tools.terminal_launch(
-                                engines.manifest_of(prov), memory_env, env
+                                engines.manifest_of(prov), memory_env, env, secrets_env=capability
                             )
                             spawn_argv = argv[:agent_at] + mcp.argv(argv[agent_at:])
-                            spawn_env = {**env, **memory_env, **mcp.env}
+                            spawn_env = {**env, **memory_env, **capability, **mcp.env}
                             may_have_inherited = True
                             return (
                                 _popen(  # noqa: S603 — literal argv, no shell
