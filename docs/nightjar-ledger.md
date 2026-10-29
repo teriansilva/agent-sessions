@@ -60,6 +60,7 @@ the same list.
 | `components/share/share.module.css` | css | 10 | done | popup:share-export popup:share-import | the shared dialog chrome's (HudDialog.module.css): deploy-in (fade + 6 px rise + scan), scrim fade; ≤800px a sheet; no motion of its own |
 | `components/hq/HqContactGallery.module.css` | css | 11 | done | route:settings-hq-gallery | none of its own: the selection is an edge, never motion; portraits are posters off Full |
 | `components/hq/hq.module.css` | css | 4 | done | popup:hq | portrait loop (Full only, paused with the ambient pause) |
+| `components/hq/HqPage.module.css` | css | 4 | done | route:hq route:hq-missing | none of its own: the conversation on screen is the HUD rail (no movement); the thread's motion is AskConsole's |
 | `components/hq/PrimaryContact.module.css` | css | 5 | done | route:dashboard route:dashboard-acquiring | plate edge lights on hover (no movement); the portrait's own loop is HqPortrait's |
 | `components/hud/buttonGlitch.css` | css | 2 | done | gallery:buttons | glitch: filter only |
 | `components/HudDialog.module.css` | css | 3 | done | popup:hand-off popup:move-to-project popup:session-brief | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |

@@ -932,7 +932,7 @@ test("a slow read never lands over a newer one: A → B → A keeps the second A
   expect(screen.getByText("A, fresh")).toBeInTheDocument();
 });
 
-test("a question sent while the conversation's read is still out keeps its answer and shows the rest", async () => {
+test("a question asked while the conversation's read is still out waits for it, then keeps its answer and shows the rest (#1776)", async () => {
   vi.mocked(api.askConversations).mockResolvedValue({
     conversations: [
       { id: CID, title: "a", created_at: 1, updated_at: 3 },
@@ -955,13 +955,16 @@ test("a question sent while the conversation's read is still out keeps its answe
   await userEvent.click(screen.getByTestId("ask-switcher"));
   await userEvent.click(screen.getAllByTestId("ask-switcher-item")[1]);
   await userEvent.type(screen.getByTestId("composer-input"), "into b{Enter}");
-  expect(await screen.findByText("new answer")).toBeInTheDocument();
-  // The read started before the send lands now, with B as it was before: it must not wipe the
-  // new answer…
+  // Until B's read lands, a turn the server may already hold for B is unknown: nothing is sent
+  // (#1776, Hermes review 7393 — the no-second-send invariant). The draft stays in the box.
+  expect(api.askMessageStream).not.toHaveBeenCalled();
+  expect(screen.getByTestId("composer-input")).toHaveValue("into b");
   await act(async () => slowB.resolve(conversation(OTHER, [earlier])));
-  expect(screen.getByText("new answer")).toBeInTheDocument();
-  // …and B's earlier turns are shown all the same (re-read after the send settled).
   expect(await screen.findByText("an earlier answer")).toBeInTheDocument();
+  await userEvent.type(screen.getByTestId("composer-input"), "{Enter}");
+  expect(await screen.findByText("new answer")).toBeInTheDocument();
+  // …and B's earlier turns are still shown beside the new answer.
+  expect(screen.getByText("an earlier answer")).toBeInTheDocument();
   expect(vi.mocked(api.askMessageStream).mock.calls[0][0]).toBe(OTHER);
 });
 

@@ -1,0 +1,196 @@
+/* HQ's page (#1776): the list beside the thread above the shell's 800px line, master/detail at or
+ * below it. Built from the sidebar's own pieces and tokens — NIGHTJAR plates, the HUD rail on the
+ * conversation on screen, no radius and no gradient (docs/design.md, src/theme/cssGuard.test.ts). */
+
+.page {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* --- the list ----------------------------------------------------------------------------- */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-height: 0;
+  padding: var(--sp-3);
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.listHead {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+/* The callsign, as the sidebar's head draws it: a hazard notch, then HQ in display caps. */
+.title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  color: var(--hud-text);
+}
+.title::before {
+  content: "";
+  flex: none;
+  width: 22px;
+  height: 10px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.85;
+}
+
+.newBtn {
+  composes: ghost from "../ui/actionButton.module.css";
+  align-self: stretch;
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 44px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-0);
+  color: var(--text-3);
+}
+.search:focus-within {
+  border-color: var(--hud);
+}
+.search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 42px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--fs-meta);
+}
+
+.note,
+.empty {
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.note {
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 3px solid var(--status-degraded);
+  background: var(--bg-2);
+}
+
+.rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-height: 52px;
+  padding: var(--sp-1) var(--sp-3);
+  border-left: 3px solid transparent;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-1);
+  text-decoration: none;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+.row:hover {
+  background: color-mix(in srgb, var(--hud) 10%, transparent);
+}
+.row:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+/* The conversation on screen: the HUD rail, as the operator's own turns carry it. */
+.rowCur {
+  border-left-color: var(--hud);
+  background: color-mix(in srgb, var(--hud) 8%, transparent);
+}
+.rowTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-meta);
+}
+.rowMeta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--text-2);
+}
+/* An unseen update from a followed session — the label says so too (`aria-label`). */
+.dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  background: var(--hud);
+}
+
+/* --- the thread ----------------------------------------------------------------------------- */
+
+.thread {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding-inline: var(--sp-3);
+}
+.thread[hidden] {
+  display: none;
+}
+
+.missing {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  min-width: 0;
+  padding: var(--sp-5) var(--sp-3);
+  max-width: 560px;
+}
+.missingTitle {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  letter-spacing: 0.08em;
+  color: var(--text-1);
+}
+.missingText {
+  margin: 0;
+  font-size: var(--fs-body);
+  color: var(--text-2);
+}
+.backLink {
+  composes: ghost from "../ui/actionButton.module.css";
+}
+
+/* --- phone: master/detail ------------------------------------------------------------------- */
+
+@media (max-width: 800px) {
+  .page {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .list {
+    border-right: 0;
+  }
+}

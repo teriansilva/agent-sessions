@@ -74,6 +74,28 @@ out of date and offers no decision until it has read the current one.
 **Dismiss** rejects the pending decision and hides the session while its screen stays the same.
 The moment the screen changes, it can need you again. A dismissal is kept for **7 days**.
 
+## The HQ page
+
+HQ also has a **page of its own**, at `/hq`: your conversations listed on the left (newest first,
+with a search box over their titles) and the open conversation on the right, with the same answers,
+cards, FOLLOWING block and call button as the sidebar. **New conversation** starts an empty one.
+
+Each conversation has its **own address**, `/hq/c/…`, so you can bookmark it, reload it, or open it
+from a link you shared somewhere else. Opened while signed out, it takes you through the normal
+sign-in (and your two-factor code) and then straight to that conversation. A link to a
+conversation that was deleted, or that never existed, says **This conversation isn't here**.
+
+- **From the sidebar:** the **⤢** button (*Open as page*) opens the conversation you are in as a
+  page and closes the sidebar. From an empty thread it opens the page itself. It waits while you
+  have an unsent question or a file staged (*Send or clear your draft first*), so nothing is lost.
+- **One place at a time:** on the HQ page the sidebar stays closed, and the corner HQ icon takes you
+  to the page's question box instead. If the sidebar was still answering in the conversation you
+  opened, the page shows that answer coming in and lets you ask the next question once it has
+  settled.
+- **On a phone** the page shows the list first; a conversation opens full screen, with **‹** to go
+  back to the list.
+- Old `/ask` links open the HQ page on a new conversation.
+
 ## The sidebar
 
 Its header is your contact's looping **portrait**, then **HQ** with the contact's name under it,

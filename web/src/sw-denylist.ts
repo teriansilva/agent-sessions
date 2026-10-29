@@ -67,8 +67,12 @@ export const SPA_PATHS: string[] = [
   // #1058: Ask became a route of its own, and Templates was already one but had never been
   // listed here — both are section-nav destinations an operator can bookmark and reload.
   "/ask",
-  // #1123: the dashboard, where Ask lives now (`/ask` replace-redirects here client-side).
+  // #1123: the dashboard. (`/ask` replace-redirects to HQ's page client-side since #1776.)
   "/dashboard",
+  // #1776: HQ's page, and a conversation on it — the link an external message carries, opened
+  // straight from outside, must get the SPA shell.
+  "/hq",
+  "/hq/c/ask_0123456789abcdef0123456789abcdef",
   "/templates",
   "/templates/new",
   // …and an EXISTING template's editor URL, which is as bookmarkable as the gallery and answers

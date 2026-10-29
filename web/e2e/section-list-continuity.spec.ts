@@ -186,11 +186,12 @@ test.describe("section switches keep the session list (#1233)", () => {
     });
   }
 
-  test("an old /ask link lands on the dashboard — no session sidebar — with Ask open (#1294)", async ({ page }) => {
+  test("an old /ask link lands on HQ's page — no session sidebar, no HQ panel beside it (#1294, #1776)", async ({ page }) => {
     await mockApp(page);
     await page.goto("/ask");
-    await expect(page).toHaveURL(/\/dashboard$/);
-    await expect(page.getByTestId("ask-sidebar")).toHaveAttribute("data-open", "true");
+    await expect(page).toHaveURL(/\/hq$/);
+    await expect(page.getByTestId("hq-page")).toBeVisible();
+    await expect(page.getByTestId("ask-sidebar")).toHaveCount(0);
     await expect(page.locator("aside.sidebar")).toBeHidden();
     await expect(page.locator("header .navToggle")).toHaveCount(0);
   });

@@ -476,6 +476,9 @@ export const SWEEP = [
   // Routes (Phases 4–11). The skeleton: the route itself in its default state; each phase adds its
   // states (loading, empty, error, opened popups, focus) as ids of its own.
   { id: "route:dashboard", path: "/dashboard" },
+  // HQ's page (#1776): the list beside the thread, and a link that names no conversation.
+  { id: "route:hq", path: "/hq", present: "[data-testid='hq-page']" },
+  { id: "route:hq-missing", path: "/hq/c/not-a-conversation", present: "[data-testid='hq-missing']" },
   // ---- PR3 dashboard ----
   // Phase 5's dashboard states: every first read in flight (Acquiring), two reads that failed
   // (a dash and the words, never a zero), and Recent work opened (the grid-rows disclosure).

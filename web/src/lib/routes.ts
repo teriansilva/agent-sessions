@@ -26,12 +26,23 @@ export const LEGACY_MISSION_PATH = "/pulse";
 /** The BattleLab dashboard (#1123), and since #1525 the start page: `/` redirects here. */
 export const DASHBOARD_PATH = "/dashboard";
 
-/** Ask's old conversation page (#878, #1171). Since #1294 Ask is the right-hand sidebar the corner
- *  icon opens; this path survives only as a link that lands on the dashboard with the sidebar open. */
+/** Ask's old conversation page (#878, #1171). Since #1776 this path survives only as a link that
+ *  opens HQ's page (`HQ_PATH`) on a new, empty conversation. */
 export const ASK_PATH = "/ask";
 
-/** HQ's link (#1525: Ask is now HQ): like `ASK_PATH`, the dashboard with the HQ panel open. */
+/** HQ's page (#1776): the conversation list beside the open thread. `/ask` redirects here. */
 export const HQ_PATH = "/hq";
+/** One HQ conversation on the page (#1776): what "Open as page" and an external link open. */
+export const HQ_CONVERSATION_ROUTE = `${HQ_PATH}/c/:cid`;
+export const hqConversationPath = (cid: string) => `${HQ_PATH}/c/${encodeURIComponent(cid)}`;
+/** One dispatch (#1746 P3a) — minted by the dispatch writers; the page opens it in Phase 2. */
+export const hqDispatchPath = (id: string) => `${HQ_PATH}/d/${encodeURIComponent(id)}`;
+/** A conversation id as the server mints it (`ask_store.CID_RE`): checked before any API call,
+ *  so a malformed link is the same "isn't here" as an unknown one, and asks nothing. */
+export const ASK_CID_RE = /^ask_[0-9a-f]{32}$/;
+/** Whether `pathname` (router-relative) is HQ's page: `/hq` and everything under it. */
+export const isHqPath = (pathname: string) =>
+  pathname === HQ_PATH || pathname.startsWith(`${HQ_PATH}/`);
 
 /** The session map (#208 / #424). Labelled MAP in the nav; the path is unchanged. */
 export const MAP_PATH = "/overview";

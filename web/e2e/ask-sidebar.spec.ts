@@ -130,10 +130,12 @@ test("the dashboard's primary HQ contact opens the sidebar, and old /ask and new
   await page.getByTestId("hq-primary-contact").click();
   await expect(page.getByTestId("ask-sidebar")).toHaveAttribute("data-open", "true");
 
+  // #1776: `/hq` is HQ's own page now, and `/ask` goes there; the panel never opens beside it.
   for (const path of ["/ask", "/hq"]) {
     await page.goto(path);
-    await expect(page).toHaveURL(/\/dashboard$/);
-    await expect(page.getByTestId("ask-sidebar")).toHaveAttribute("data-open", "true");
+    await expect(page).toHaveURL(/\/hq$/);
+    await expect(page.getByTestId("hq-page")).toBeVisible();
+    await expect(page.getByTestId("ask-sidebar")).toHaveCount(0);
   }
 });
 

@@ -19,8 +19,10 @@
 import { MessageSquare } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useNavigate } from "react-router-dom";
 
 import { useConfig } from "../../app/config";
+import { HQ_PATH, hqConversationPath } from "../../lib/routes";
 import { coerceRecentWindowDays } from "../../lib/recentWindow";
 import { useModalDrawer } from "../pulse/useModalDrawer";
 import { AskConsole } from "./AskConsole";
@@ -148,6 +150,17 @@ export function AskSidebar() {
     [drawer, close],
   );
 
+  // Open as page (#1776): the conversation on screen on HQ's page, or the page itself from the
+  // empty thread — nothing is minted. The panel closes: the page is now the one console.
+  const navigate = useNavigate();
+  const openPage = useCallback(
+    (id: string | null) => {
+      close();
+      navigate(id ? hqConversationPath(id) : HQ_PATH);
+    },
+    [close, navigate],
+  );
+
   const [needsYou, setNeedsYou] = useState<Set<string> | undefined>();
   const refreshNeedsYou = useRef<() => void>(() => undefined);
   const [details, setDetails] = useState<string | null>(null);
@@ -194,6 +207,7 @@ export function AskSidebar() {
             triggerRef.current?.focus();
           }}
           closeRef={closeRef}
+          onOpenPage={openPage}
         />
       </aside>
       {details ? (

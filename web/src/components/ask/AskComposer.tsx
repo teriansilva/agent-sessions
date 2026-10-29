@@ -53,6 +53,8 @@ export function AskComposer({
   discardFile,
   cleanupPending = 0,
   convKey = null,
+  threadKey = 0,
+  onDraftChange,
 }: {
   /** False when no AI endpoint is configured: the field is disabled and says why. */
   configured: boolean;
@@ -77,8 +79,28 @@ export function AskComposer({
   /** The conversation on screen. Staged files belong to the one they were uploaded to; switching
    *  to a different conversation clears them rather than sending them somewhere else (#1707). */
   convKey?: string | null;
+  /** Whether unsent text or a staged file is in the box (#1776: the sidebar's Open as page waits
+   *  for it, so a draft is never lost or silently carried across). */
+  onDraftChange?: (hasDraft: boolean) => void;
+  /** Moves on every SWITCH of the thread on screen (a pick, New, Back/Forward, a delete) — never
+   *  on the first send creating a conversation (#1776, Hermes review 7393). */
+  threadKey?: number;
 }) {
   const [text, setText] = useState("");
+  // UNSENT TEXT BELONGS TO ITS CONVERSATION (#1776, Hermes review 7393): a switch keeps the text
+  // typed in the thread being left under that conversation (`""` = a thread not created yet) and
+  // shows the next one's own draft — never A's words in B's box, where Send would deliver them.
+  // Adjusted while rendering, as React prescribes for state derived from a prop change.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [thread, setThread] = useState({ key: threadKey, conv: convKey });
+  if (thread.key !== threadKey) {
+    const kept = { ...drafts, [thread.conv ?? ""]: text };
+    setDrafts(kept);
+    setText(kept[convKey ?? ""] ?? "");
+    setThread({ key: threadKey, conv: convKey });
+  } else if (thread.conv !== convKey) {
+    setThread({ key: threadKey, conv: convKey }); // created by its first send: the same thread
+  }
   const [staged, setStaged] = useState<StagedFile[]>([]);
   const attachRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
@@ -87,6 +109,11 @@ export function AskComposer({
   const ready = staged.filter((s) => s.status === "ready" && s.attachment);
   const canSend =
     configured && !busy && !unresolved && (text.trim() !== "" || ready.length > 0);
+
+  const hasDraft = text.trim() !== "" || staged.length > 0;
+  useEffect(() => {
+    onDraftChange?.(hasDraft);
+  }, [hasDraft, onDraftChange]);
 
   const stagedRef = useRef<StagedFile[]>([]);
   // The ref tracks the state SYNCHRONOUSLY inside the updaters (idempotent — the same value

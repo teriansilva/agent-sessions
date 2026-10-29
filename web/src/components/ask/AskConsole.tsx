@@ -60,7 +60,7 @@
  * composer already made for the session pane's Send (`terminal/Compose.module.css`). One box, drawn
  * one way, wherever it appears.
  */
-import { Info, Plus, Trash2, X } from "lucide-react";
+import { ChevronLeft, Info, Maximize2, Plus, Trash2, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -82,7 +82,6 @@ import { missionLink } from "../../lib/missionLink";
 import { settingsPath } from "../../routes/settingsTabs";
 import type {
   AskAttachment,
-  AskConversationSummary,
   AskConversationTurn,
   AskFollow,
   AskOperationDecision,
@@ -106,6 +105,12 @@ import a from "./AskConsole.module.css";
 import type { AskStep } from "./askStep";
 import { ConfirmDialog } from "../templates/ConfirmDialog";
 import { AskSwitcher } from "./AskSwitcher";
+import {
+  conversationRemoved,
+  pageEpochNow,
+  refreshConversations,
+  useAskConversations,
+} from "./askConversationsStore";
 import { AskWorking } from "./AskWorking";
 import { contactById } from "../hq/contacts";
 import { HqPortrait } from "../hq/HqPortrait";
@@ -303,6 +308,11 @@ export function AskConsole({
   cardPollMs = CARD_POLL_MS,
   visible = true,
   reconcileMs = RECONCILE_MS,
+  conversationId,
+  onConversationChange,
+  chrome = "sidebar",
+  onOpenPage,
+  onBack,
 }: {
   /** False when no AI endpoint is configured. Ask has no local fallback, so the control is
    *  disabled and says why. */
@@ -322,6 +332,23 @@ export function AskConsole({
   visible?: boolean;
   /** How long the read continues after a session starts; a test shortens it. */
   reconcileMs?: number;
+  /** CONTROLLED SELECTION (#1776), optional. The HQ page passes the route's conversation (`null`
+   *  = an empty thread) and owns the URL; the sidebar passes neither and keeps its own. */
+  conversationId?: string | null;
+  /** What the console did to its selection: `created` (the first send or file minted it),
+   *  `opened` (a call's "Continue in text"), `deleted` (the one on screen was deleted), `missing`
+   *  (the server has no such conversation: unknown, expired or deleted read the same). */
+  onConversationChange?: (
+    id: string | null,
+    why: "created" | "opened" | "deleted" | "missing",
+  ) => void;
+  /** `page` (#1776): the HQ page's list owns switching and New conversation, so the head shows
+   *  neither; `onBack` adds the phone's ‹ back to the list. */
+  chrome?: "sidebar" | "page";
+  /** The sidebar's Open as page (#1776): called with the conversation on screen (`null` = the
+   *  empty thread). Disabled while the composer holds an unsent draft or a staged file. */
+  onOpenPage?: (id: string | null) => void;
+  onBack?: () => void;
 }) {
   const [turns, setTurns] = useState<AskTurn[]>([]);
   // #1443 Phase 4: followed sessions' updates, which sessions are followed, and unseen updates.
@@ -361,7 +388,25 @@ export function AskConsole({
   );
   const [cid, setCid] = useState<string | null>(null);
   const [title, setTitle] = useState("");
-  const [conversations, setConversations] = useState<AskConversationSummary[] | null>(null);
+  const conversations = useAskConversations();
+  // The latest callback, read when the change happens (never a stale closure in a flight).
+  const changeRef = useRef(onConversationChange);
+  useEffect(() => {
+    changeRef.current = onConversationChange;
+  }, [onConversationChange]);
+  const notify = (id: string | null, why: "created" | "opened" | "deleted" | "missing") =>
+    changeRef.current?.(id, why);
+  /** Unsent text or a staged file in the composer (#1776: Open as page waits for it). */
+  const [hasDraft, setHasDraft] = useState(false);
+  /** Every switch of the thread on screen (#1776): the composer keeps each conversation's draft. */
+  const [thread, setThread] = useState(0);
+  /** The conversation whose read has landed (#1776, Hermes review 7393): until the one on screen
+   *  has been read, a turn the server already holds for it is unknown, so Send waits. */
+  const [hydrated, setHydrated] = useState<string | null>(null);
+  const markLoaded = (id: string) => {
+    loadedFor.current = id;
+    setHydrated(id);
+  };
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const map = useMapWindows();
@@ -437,18 +482,9 @@ export function AskConsole({
     setStreaming(false);
   };
 
-  /** Every read of the conversation LIST takes a generation; only the newest one applies. A read
-   *  sent before a delete must never put the deleted conversation back (Hermes on #1564). */
-  const listGen = useRef(0);
-  const refreshList = useCallback(async () => {
-    const g = ++listGen.current;
-    try {
-      const r = await api.askConversations();
-      if (live.current && g === listGen.current) setConversations(r.conversations ?? []);
-    } catch {
-      /* the switcher keeps what it had */
-    }
-  }, []);
+  /** The conversation LIST is the shared store's (#1776), generation guard included: a read sent
+   *  before a delete never puts the deleted conversation back (Hermes on #1564). */
+  const refreshList = refreshConversations;
 
   /** Show conversation `id` as the server has it. */
   const load = useCallback(async (id: string) => {
@@ -460,7 +496,7 @@ export function AskConsole({
     try {
       const c = await api.askConversation(id);
       if (!fresh()) return;
-      loadedFor.current = id;
+      markLoaded(id);
       ensureCid.current = Promise.resolve(id); // uploads go to the conversation on screen
       setTitle(c.title ?? "");
       setTurns((prev) => merge((c.turns ?? []).map(fromServer), prev));
@@ -495,11 +531,17 @@ export function AskConsole({
             earned = true;
         }
       if (earned) reconcile();
-    } catch {
+    } catch (e) {
+      // No such conversation (#1776): the page says so — unknown, expired and deleted alike.
+      if (fresh() && e instanceof ApiError && e.status === 404) {
+        notify(id, "missing");
+        return;
+      }
       // Keep what is shown; a fresh array re-arms the poll of a still-pending turn.
       if (fresh()) setTurns((prev) => [...prev]);
     }
-    // `current` reads refs only; `reconcile` is stable.
+    // `current` and `notify` read refs only; `reconcile` is stable.
+
   }, [reconcile]);
 
   /** `initial`: the first selection, which may land under a question already asked — so it
@@ -511,6 +553,10 @@ export function AskConsole({
       ensureCid.current = null;
       cidRef.current = id;
       setCid(id);
+      setThread((n) => n + 1);
+      // EVERY selection waits for its own read (Hermes review 7399): A → B → A must not reuse A's
+      // earlier read — A may have gained a pending turn meanwhile.
+      setHydrated(null);
       setTitle("");
       setTurns((prev) => (initial ? prev.filter((t) => t.pending && !t.error) : []));
       setUpdates([]);
@@ -530,12 +576,17 @@ export function AskConsole({
   // the request came before this console mounted (the first open of HQ).
   useEffect(() => {
     const open = (id: string | null) => {
-      if (typeof id === "string" && id && id !== cidRef.current) openConversation(id);
+      if (typeof id === "string" && id && id !== cidRef.current) {
+        openConversation(id);
+        notify(id, "opened");
+      }
     };
     open(takeAskConversation());
     const on = () => open(takeAskConversation());
     window.addEventListener(ASK_OPEN_CONVERSATION_EVENT, on);
     return () => window.removeEventListener(ASK_OPEN_CONVERSATION_EVENT, on);
+    // `notify` reads a ref.
+
   }, [openConversation]);
 
   /** An empty thread: nothing on screen and no conversation chosen; the first question creates
@@ -548,6 +599,7 @@ export function AskConsole({
     ensureCid.current = null;
     cidRef.current = null;
     setCid(null);
+    setThread((n) => n + 1);
     setTitle("");
     setTurns([]);
     setUpdates([]);
@@ -581,9 +633,11 @@ export function AskConsole({
       await api.askDeleteConversation(id);
       if (!live.current) return;
       setConfirmDelete(null);
-      listGen.current++; // a list read still in flight predates the delete: it lands nowhere
-      setConversations((rows) => (rows ? rows.filter((c) => c.id !== id) : rows));
-      if (cidRef.current === id) startNew();
+      conversationRemoved(id); // a list read still in flight predates the delete: it lands nowhere
+      if (cidRef.current === id) {
+        startNew();
+        notify(null, "deleted");
+      }
       void refreshList();
     } catch (e) {
       if (live.current)
@@ -591,28 +645,50 @@ export function AskConsole({
     } finally {
       if (live.current) setDeleting(false);
     }
+    // `notify` reads a ref.
+
   }, [refreshList, startNew]);
 
   // On first mount: the switcher's list. HQ opens on an EMPTY conversation; the kept ones are a
   // pick in the switcher away, and none is reopened on its own.
   useEffect(() => {
     let cancelled = false;
-    const g = ++listGen.current;
-    const newest = () => !cancelled && live.current && g === listGen.current;
-    void (async () => {
-      try {
-        const r = await api.askConversations();
-        if (newest()) setConversations(r.conversations ?? []);
-      } catch {
-        if (newest()) setConversations([]);
-      } finally {
-        if (!cancelled) selectedRef.current?.open();
-      }
-    })();
+    void refreshConversations().finally(() => {
+      if (!cancelled) selectedRef.current?.open();
+    });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  // CONTROLLED SELECTION (#1776): the route's conversation is the one on screen. A change the
+  // console made itself (`created`, `deleted`) comes back here as the same id — nothing to do.
+  useEffect(() => {
+    if (conversationId === undefined) return;
+    if (conversationId === null) {
+      if (cidRef.current !== null) startNew();
+      return;
+    }
+    if (conversationId !== cidRef.current) openConversation(conversationId);
+  }, [conversationId, openConversation, startNew]);
+
+  // The kept sidebar becoming visible again reads its conversation afresh IF HQ's page was used
+  // while it was hidden (#1776): the page may have moved that conversation on. Used alone, the
+  // sidebar behaves exactly as before.
+  const wasVisible = useRef(visible);
+  const epochSeen = useRef(pageEpochNow());
+  useEffect(() => {
+    const before = wasVisible.current;
+    wasVisible.current = visible;
+    if (!visible || before) return;
+    const epoch = pageEpochNow();
+    if (epoch === epochSeen.current) return;
+    epochSeen.current = epoch;
+    if (cidRef.current && !inflight.current) {
+      setHydrated(null); // Send waits for this read too
+      void load(cidRef.current);
+    }
+  }, [visible, load]);
 
   // A turn still running on the server that this page is not streaming (a reload, a dropped
   // connection, another tab) is read again until it settles.
@@ -623,7 +699,15 @@ export function AskConsole({
     return () => window.clearTimeout(timer);
   }, [waiting, cid, turns, load]);
 
-  const busy = streaming || turns.some((t) => t.pending);
+  // Not read yet: a turn the server already holds is unknown, so Send waits (#1776). A read that
+  // failed is retried until one lands.
+  const notRead = cid !== null && hydrated !== cid;
+  const busy = streaming || turns.some((t) => t.pending) || notRead;
+  useEffect(() => {
+    if (!notRead || streaming || !cid) return;
+    const timer = window.setTimeout(() => void load(cid), POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [notRead, streaming, cid, turns, load]);
 
   // A card offers Send / Dismiss only while the LEDGER does. A decision taken elsewhere (Needs
   // you, the bell, another tab) or the proposal's TTL can settle it under an open card, so while
@@ -745,8 +829,9 @@ export function AskConsole({
               id = c.id;
               if (gen === convGen.current) {
                 cidRef.current = id;
-                loadedFor.current = id; // created empty: nothing earlier to read
+                markLoaded(id); // created empty: nothing earlier to read
                 setCid(id);
+                notify(id, "created");
               }
             }
             return id;
@@ -1074,15 +1159,32 @@ export function AskConsole({
           ) : null}
         </div>
         <div className={a.headTools}>
-        <AskSwitcher
-          conversations={conversations}
-          currentId={cid}
-          currentTitle={title || (turns[0]?.question ?? "")}
-          onOpen={() => void refreshList()}
-          onPick={(id) => {
-            if (id !== cidRef.current) openConversation(id);
-          }}
-        />
+        {onBack ? (
+          <button
+            type="button"
+            className={a.back}
+            aria-label="Back to conversations"
+            onClick={onBack}
+            data-testid="ask-back"
+          >
+            <ChevronLeft size={18} aria-hidden="true" />
+          </button>
+        ) : null}
+        {chrome === "sidebar" ? (
+          <AskSwitcher
+            conversations={conversations}
+            currentId={cid}
+            currentTitle={title || (turns[0]?.question ?? "")}
+            onOpen={() => void refreshList()}
+            onPick={(id) => {
+              if (id !== cidRef.current) openConversation(id);
+            }}
+          />
+        ) : (
+          <span className={a.pageTitle} data-testid="ask-page-title">
+            {title || turns[0]?.question || "New conversation"}
+          </span>
+        )}
         {/* Calling HQ (#1397): a call from here continues THIS conversation by voice. */}
         <CallButton variant="icon" testId="ask-call" conversationId={cid} beforeStart={leaveDrawerForCall} />
         <button
@@ -1099,17 +1201,33 @@ export function AskConsole({
         >
           <Trash2 size={17} aria-hidden="true" />
         </button>
-        <button
-          type="button"
-          className={a.newBtn}
-          aria-label="New conversation"
-          disabled={turns.length === 0}
-          onClick={startNew}
-          data-testid="ask-new"
-          title="New conversation"
-        >
-          <Plus size={18} aria-hidden="true" />
-        </button>
+        {chrome === "sidebar" ? (
+          <button
+            type="button"
+            className={a.newBtn}
+            aria-label="New conversation"
+            disabled={turns.length === 0}
+            onClick={startNew}
+            data-testid="ask-new"
+            title="New conversation"
+          >
+            <Plus size={18} aria-hidden="true" />
+          </button>
+        ) : null}
+        {onOpenPage ? (
+          <button
+            type="button"
+            className={a.newBtn}
+            aria-label="Open as page"
+            // A draft or a staged file is never carried across or lost (#1776).
+            disabled={hasDraft}
+            title={hasDraft ? "Send or clear your draft first" : "Open as page"}
+            onClick={() => onOpenPage(cidRef.current)}
+            data-testid="ask-open-page"
+          >
+            <Maximize2 size={16} aria-hidden="true" />
+          </button>
+        ) : null}
         {onClose ? (
           <button
             ref={closeRef}
@@ -1478,8 +1596,9 @@ export function AskConsole({
                 // new screen (#1720 round 3): it returns its id to ITS uploader and stays gone.
                 if (gen === convGen.current) {
                   cidRef.current = id;
-                  loadedFor.current = id;
+                  markLoaded(id);
                   setCid(id);
+                  notify(id, "created");
                 }
               }
               return id;
@@ -1503,6 +1622,8 @@ export function AskConsole({
         }}
         cleanupPending={cleanupPending}
             inputRef={inputRef}
+            onDraftChange={setHasDraft}
+            threadKey={thread}
           />
         </div>
       </div>

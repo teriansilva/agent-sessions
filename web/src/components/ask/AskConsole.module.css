@@ -685,3 +685,13 @@
 .recoveredBtn {
   composes: ghost compact from "../ui/actionButton.module.css";
 }
+/* HQ's page (#1776): the list owns switching, so the head names the conversation instead. */
+.pageTitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+}

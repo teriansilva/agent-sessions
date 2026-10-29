@@ -25,7 +25,7 @@ import { CallProvider } from "../components/call/CallProvider";
 import { callActive, useCall } from "../components/call/callContext";
 import {
   AskPanelContext,
-  useAskPanel,
+  HQ_FOCUS_COMPOSER_EVENT,
   type AskPanel,
 } from "../components/ask/askPanel";
 import { SessionList } from "../components/sidebar/SessionList";
@@ -78,6 +78,7 @@ import {
 import {
   ASK_PATH,
   HQ_PATH,
+  isHqPath,
   NEW_SESSION_PATH,
   SESSIONS_PATH,
   AUTOMATION_NEW_PATH,
@@ -117,6 +118,7 @@ import {
 // Lazy so @xyflow/react stays out of the main bundle until the overview is opened (#139).
 // Wrapped in lazyWithReload so a stale chunk after a deploy self-heals (#160).
 const Overview = lazyWithReload(() => import("../routes/Overview"), "overview");
+const HqPage = lazyWithReload(() => import("../components/hq/HqPage"), "hq-page");
 const NightjarGallery = lazyWithReload(() => import("../routes/NightjarGallery"), "nightjar-gallery");
 // Pulse — the AI-curated recent-work overview (#441 Phase 5). Lazy like Overview so its
 // page code stays out of the main bundle until opened.
@@ -209,7 +211,18 @@ function Layout() {
   const askTriggerRef = useRef<HTMLButtonElement | null>(null);
   const openAsk = useCallback(() => setAskOpen(true), []);
   const closeAsk = useCallback(() => setAskOpen(false), []);
-  const toggleAsk = useCallback(() => setAskOpen((o) => !o), []);
+  // #1776: on HQ's page the panel never opens beside it — one console per conversation. The
+  // corner icon takes the operator to the page's own composer instead.
+  const onHqPage = isHqPath(location.pathname);
+  // Arriving on the page closes the panel (state adjusted while rendering, not in an effect).
+  if (onHqPage && askOpen) setAskOpen(false);
+  const toggleAsk = useCallback(() => {
+    if (onHqPage) {
+      window.dispatchEvent(new CustomEvent(HQ_FOCUS_COMPOSER_EVENT));
+      return;
+    }
+    setAskOpen((o) => !o);
+  }, [onHqPage]);
   const askPanel = useMemo<AskPanel>(
     () => ({
       open: askOpen,
@@ -376,6 +389,8 @@ function Layout() {
    *  mechanism as Settings — hidden, never unmounted, so returning to Sessions is instant. */
   const noSidebar =
     settingsRoute ||
+    // HQ's page (#1776) carries its own conversation list; the session list only took its width.
+    onHqPage ||
     location.pathname === NEW_PROJECT_PATH ||
     location.pathname === DASHBOARD_PATH ||
     location.pathname === PLAYBOOKS_PATH ||
@@ -846,9 +861,16 @@ function Layout() {
                   <Route path={`${AUTOMATIONS_PATH}/:id`} element={<AutomationRuns />} />
                   <Route path={`${AUTOMATIONS_PATH}/:id/edit`} element={<AutomationEditor />} />
                   <Route path={DASHBOARD_PATH} element={<Dashboard />} />
-                  {/* Ask's old page (#1171): now the dashboard with the sidebar open (#1294). */}
-                  <Route path={ASK_PATH} element={<AskRedirect />} />
-                  <Route path={HQ_PATH} element={<AskRedirect />} />
+                  {/* Ask's old page (#1171). `/ask` meant "ask HQ": since #1776 it opens HQ's
+                      page on a new, empty thread (a phone's compose view, not the list). */}
+                  <Route
+                    path={ASK_PATH}
+                    element={<Navigate to={HQ_PATH} state={{ hqCompose: true }} replace />}
+                  />
+                  {/* HQ's page (#1776): ONE route element for `/hq` and `/hq/c/<id>`, so the
+                      console inside it survives the first send's `/hq` → `/hq/c/<id>`. */}
+                  <Route path={HQ_PATH} element={<HqPage />} />
+                  <Route path={`${HQ_PATH}/*`} element={<HqPage />} />
                   {/* #1440: the public gallery is a view inside Playbooks and Skills; the old
                       `/library/gallery[/<digest>][?kind=&id=]` links redirect into it. */}
                   <Route
@@ -962,15 +984,6 @@ function Layout() {
 function LegacyMissionRedirect() {
   const { search, hash } = useLocation();
   return <Navigate to={{ pathname: MISSION_PATH, search, hash }} replace />;
-}
-
-/** `/ask` was Ask's page until #1294. A link to it lands on the dashboard with the sidebar open. */
-function AskRedirect() {
-  const { openAsk } = useAskPanel();
-  useEffect(() => {
-    openAsk();
-  }, [openAsk]);
-  return <Navigate to={DASHBOARD_PATH} replace />;
 }
 
 export default function App() {
