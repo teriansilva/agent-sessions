@@ -13,7 +13,12 @@ from collections.abc import Callable
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
-from .. import secretfence, session_input, template_secrets, variables
+try:  # the package renamed; the old name still works but emits a PendingDeprecationWarning
+    from python_multipart.multipart import MultipartParser, parse_options_header
+except ImportError:  # pragma: no cover - older pins
+    from multipart.multipart import MultipartParser, parse_options_header
+
+from .. import secretfence, session_input, template_secrets, variables, vault_files
 from .. import template_vars as store
 from .templates import _conflict, _err, _expected, _json, _json_object
 from .upload import NO_STORE
@@ -34,10 +39,101 @@ async def _run(fn: Callable, *args):
         )
     except (store.ResolutionUnavailable, store.VariableRefsUnknown) as exc:
         raise _err(503, str(exc)) from None
+    except template_secrets.RedactionUnavailable:
+        raise _err(503, "the secret inventory could not be read; nothing was saved") from None
+    except vault_files.SecretFileUnavailable as exc:
+        raise _err(503, str(exc)) from None
     except (store.VariableStoreUnsupported, template_secrets.SecretKeyUnavailable) as exc:
         raise _err(409, str(exc)) from None
     except store.VariableError as exc:
         raise _err(422, str(exc)) from None
+
+
+#: The whole upload request: the file plus multipart framing. Enforced on every chunk as it
+#: arrives, never on the client's declared length alone; nothing is spooled.
+SECRET_FILE_REQUEST_MAX = vault_files.MAX_BYTES + 16 * 1024
+
+
+async def _secret_file_upload(request: Request) -> tuple[str, bytes]:
+    """The one ``file`` part of a multipart upload: its file name and its bytes, read with a hard
+    ceiling (#1786). The bytes are only ever encrypted — never parsed, logged or echoed."""
+    ctype, params = parse_options_header(request.headers.get("content-type", ""))
+    if ctype != b"multipart/form-data" or not params.get(b"boundary"):
+        raise _err(415, "upload the secret file as multipart/form-data")
+    too_big = f"a secret file is at most {vault_files.MAX_BYTES // 1024} KiB"
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > SECRET_FILE_REQUEST_MAX:
+        raise _err(413, too_big)
+    parts: list[dict] = []
+    header: dict = {"field": b"", "value": b""}
+    ended: list[bool] = []
+
+    def on_part_begin() -> None:
+        parts.append({"headers": {}, "data": bytearray()})
+
+    def on_header_field(data: bytes, start: int, end: int) -> None:
+        header["field"] += data[start:end]
+
+    def on_header_value(data: bytes, start: int, end: int) -> None:
+        header["value"] += data[start:end]
+
+    def on_header_end() -> None:
+        parts[-1]["headers"][header["field"].lower()] = header["value"]
+        header["field"], header["value"] = b"", b""
+
+    def on_part_data(data: bytes, start: int, end: int) -> None:
+        parts[-1]["data"] += data[start:end]
+
+    def on_end() -> None:
+        ended.append(True)
+
+    parser = MultipartParser(
+        params[b"boundary"],
+        {
+            "on_part_begin": on_part_begin,
+            "on_header_field": on_header_field,
+            "on_header_value": on_header_value,
+            "on_header_end": on_header_end,
+            "on_part_data": on_part_data,
+            "on_end": on_end,
+        },
+    )
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > SECRET_FILE_REQUEST_MAX:
+            raise _err(413, too_big)
+        try:
+            parser.write(chunk)
+        except Exception:  # noqa: BLE001 — a malformed body is the client's, never a crash
+            raise _err(422, "the upload is not a valid multipart body") from None
+    try:
+        parser.finalize()
+    except Exception:  # noqa: BLE001
+        raise _err(422, "the upload is not a valid multipart body") from None
+    # Only `on_end` proves the parse reached the CLOSING boundary: a transfer cut mid-body would
+    # otherwise be stored as a complete, silently truncated file (Hermes 7394, 3; #1720 round 9).
+    if not ended:
+        raise _err(422, "the upload ended early — the file was not fully sent")
+    files = []
+    for part in parts:
+        disposition, dparams = parse_options_header(
+            part["headers"].get(b"content-disposition", b"")
+        )
+        if disposition == b"form-data" and dparams.get(b"name") == b"file":
+            files.append((dparams.get(b"filename"), bytes(part["data"])))
+    if len(files) != 1 or not files[0][0]:
+        raise _err(422, "send exactly one file, as the form field 'file'")
+    raw_name, data = files[0]
+    try:
+        name = raw_name.decode("utf-8")
+    except UnicodeDecodeError:
+        raise _err(422, "the file name is not valid UTF-8") from None
+    if not data:
+        raise _err(422, "the file is empty")
+    if len(data) > vault_files.MAX_BYTES:
+        raise _err(413, too_big)
+    return name, data
 
 
 def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
@@ -91,6 +187,18 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         payload = await _json_object(request)
         expected = _expected(payload.pop("expected_updated_at", None))
         result = await _run(variables.update, vid, payload, expected)
+        return result if isinstance(result, Response) else _json(result)
+
+    @app.put("/api/variables/{vid}/file")
+    async def put_file(
+        vid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ):
+        expected = _expected(request.query_params.get("expected_updated_at"))
+        name, data = await _secret_file_upload(request)
+        result = await _run(variables.put_file, vid, data, name, expected)
         return result if isinstance(result, Response) else _json(result)
 
     @app.delete("/api/variables/{vid}", status_code=204)

@@ -25,7 +25,7 @@ from agent_sessions.main import create_app
 
 ROOT = Path(__file__).resolve().parents[1]
 DOC = ROOT / "docs" / "hq-coverage.md"
-CODES = {"have", "#1554", "#1443", "never", "device", "n/a", "prefs", "nested"} | {
+CODES = {"have", "#1554", "#1443", "#1786", "never", "device", "n/a", "prefs", "nested"} | {
     f"P{i}" for i in range(1, 8)
 }
 #: The prefs blocks whose ledger rows split by field, and where their fields are defined.

@@ -59,7 +59,7 @@ import re
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .. import template_vars
+from .. import template_secrets, template_vars
 from ..playbooks import (
     apply,
     authoring,
@@ -191,6 +191,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, signing_key: str) -> None:
             return _err(e)
         except template_vars.VariableError as e:
             return _json({"detail": str(e)}, 422)
+        except template_secrets.RedactionUnavailable:
+            # A variables-store label check could not read the secret inventory (#1786).
+            return _json(
+                {"detail": "the secret inventory could not be read; nothing was written"}, 503
+            )
 
     async def _read_body(request: Request):
         try:

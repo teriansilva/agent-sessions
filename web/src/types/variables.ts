@@ -15,10 +15,14 @@ export interface SharedVariable {
   /** Null only for an old store which has not yet accepted its first shared-library write. */
   id: string | null;
   name: string;
-  kind: "text" | "secret";
+  /** `secret_file` (#1786): content is never returned; only its display name and size. */
+  kind: "text" | "secret" | "secret_file";
   definition: VariableDefinition;
   set: boolean;
   needs_reentry?: boolean;
+  /** Secrets and secret files: whether agents may request it (#1786). */
+  agent_access?: boolean;
+  file?: { name: string; size: number };
   value?: VariableValue;
   created_at: number;
   updated_at: number;

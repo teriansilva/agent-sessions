@@ -33,11 +33,12 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-from . import template_secrets, variable_document, variable_types
+from . import template_secrets, variable_document, variable_types, vault_files
 from . import templates as tstore
 from .atomicjson import atomic_write_json, json_write_lock
 
@@ -55,7 +56,9 @@ PROJECT_VARIABLES_MAX = 64
 RECORDS_MAX = 4_000
 
 EDITABLE_KEYS = frozenset({"name", "value", "kind"})
-KINDS = ("text", "secret")
+KINDS = ("text", "secret", "secret_file")
+#: Kinds whose value is never readable through any response (#1090, #1786).
+SECRET_KINDS = frozenset({"secret", "secret_file"})
 SCOPE_GLOBAL = template_secrets.SCOPE_GLOBAL
 SCOPE_PROJECT = template_secrets.SCOPE_PROJECT
 SCOPES = (SCOPE_GLOBAL, SCOPE_PROJECT)
@@ -174,7 +177,7 @@ def _value(payload: dict) -> str:
 def _kind(raw: object) -> str:
     kind = "text" if raw is None else raw
     if kind not in KINDS:
-        raise VariableError("kind must be 'text' or 'secret'")
+        raise VariableError("kind must be 'text', 'secret' or 'secret_file'")
     return kind  # type: ignore[return-value]
 
 
@@ -203,6 +206,8 @@ def validate(payload: object) -> dict:
     if unknown:
         raise VariableError(f"unknown fields: {unknown}")
     kind = _kind(payload.get("kind"))
+    if kind == "secret_file":
+        raise VariableError("a secret file is created in the shared library and uploaded there")
     value = _secret_value(payload) if kind == "secret" else _value(payload)
     return {"name": _name(payload.get("name")), "kind": kind, "value": value}
 
@@ -235,7 +240,18 @@ def _coerce_record(raw: object, version: int = STORE_VERSION) -> dict:
     base = _BASE_KEYS | (_SCOPE_KEYS if version >= 3 else frozenset())
     if version >= 4:
         base |= {"id", "definition"}
+    if kind == "secret_file" and version < 4:
+        raise VariableError("a secret file exists only in a version-4 store")
     body: dict = {"name": name, "kind": kind, "scope": scope, "project_id": pid}
+    # Agent access (#1786) belongs to the record that HOLDS a secret's value: a project's `ref`
+    # follows the global record's flag and carries none of its own. Stored only when on.
+    if "agent_access" in raw:
+        if raw["agent_access"] is not True or kind not in SECRET_KINDS or "ref" in raw:
+            raise VariableError("agent_access is true on a secret's own record, or absent")
+        if version < 4:
+            raise VariableError("agent_access exists only in a version-4 store")
+        base = base | {"agent_access"}
+        body["agent_access"] = True
     if version >= 4 and raw.get("unset") is True:
         if scope != SCOPE_GLOBAL or set(raw) - base - {"unset"}:
             raise VariableError("only a global definition may have no stored value")
@@ -247,6 +263,11 @@ def _coerce_record(raw: object, version: int = STORE_VERSION) -> dict:
         if unknown:
             raise VariableError(f"unknown record keys: {unknown}")
         body["ref"] = REF_GLOBAL
+    elif kind == "secret_file":
+        unknown = sorted(set(raw) - base - {"file"})
+        if unknown:
+            raise VariableError(f"unknown record keys: {unknown}")
+        body["file"] = _file_meta(raw.get("file"))
     elif kind == "secret":
         unknown = sorted(set(raw) - base - {"secret"})
         env = raw.get("secret")
@@ -282,6 +303,46 @@ def _coerce_record(raw: object, version: int = STORE_VERSION) -> dict:
     }
 
 
+def file_name(raw: object) -> str:
+    """A secret file's display name: printable, no path separator, at most ``FILE_NAME_MAX``.
+    It is metadata only — never a path component anywhere."""
+    if not isinstance(raw, str):
+        raise VariableError("a file name is a string")
+    name = raw.strip()
+    if (
+        not name
+        or len(name) > vault_files.FILE_NAME_MAX
+        or not name.isprintable()
+        or "/" in name
+        or "\\" in name
+        or name in {".", ".."}
+    ):
+        raise VariableError("a file name is 1–255 printable characters with no path separator")
+    return name
+
+
+def _file_meta(raw: object) -> dict:
+    if not isinstance(raw, dict) or set(raw) != {"name", "size", "rev"}:
+        raise VariableError("a secret file record holds its file name, size and revision")
+    size, rev = raw["size"], raw["rev"]
+    if type(size) is not int or not 0 < size <= vault_files.MAX_BYTES:
+        raise VariableError("a secret file's size is 1 byte to 256 KiB")
+    if type(rev) is not int or not 0 < rev <= vault_files.REV_MAX:
+        raise VariableError("a secret file's revision is a positive integer")
+    return {"name": file_name(raw["name"]), "size": size, "rev": rev}
+
+
+def file_aad(rec: dict, rev: int | None = None) -> str:
+    return vault_files.aad(
+        rec["scope"], rec["project_id"], rec["name"], rec["id"], rev or rec["file"]["rev"]
+    )
+
+
+def file_bytes(rec: dict, *, checked: bool = False) -> bytes | None:
+    """A secret file record's plaintext, or ``None`` (missing, tampered, no key). SERVER-ONLY."""
+    return vault_files.read(rec["id"], rec["file"]["rev"], file_aad(rec), checked=checked)
+
+
 def _key(rec: dict) -> tuple[str, str, str]:
     return (rec["scope"], rec["project_id"] or "", rec["name"])
 
@@ -308,6 +369,9 @@ def public(rec: dict, used_by: list[dict] | None = None) -> dict:
     if rec["kind"] == "secret":
         out["set"] = not rec.get("unset", False)
         out["needs_reentry"] = not rec.get("unset") and _decrypt(rec) is None
+    elif rec["kind"] == "secret_file":
+        out["set"] = not rec.get("unset", False)
+        out["needs_reentry"] = not rec.get("unset") and file_bytes(rec) is None
     else:
         # Legacy clients keep their string-shaped response; resolution excludes unset
         # definitions, so an empty display value can never turn into a stored binding.
@@ -333,6 +397,9 @@ def public_binding(rec: dict) -> dict:
     if rec["kind"] == "secret":
         out["set"] = True
         out["needs_reentry"] = _decrypt(rec) is None
+    elif rec["kind"] == "secret_file":
+        out["set"] = True
+        out["needs_reentry"] = file_bytes(rec) is None
     else:
         out["value"] = rec["value"]
     return out
@@ -470,6 +537,29 @@ def _repairable_references(original: dict, records: list[dict]) -> bool:
     )
 
 
+_hooks = threading.local()
+
+
+def after_commit(action: Callable[[], None]) -> None:
+    """Run ``action`` once THIS transaction's document is published, still under its locks (a
+    replaced or deleted secret file's old blob is destroyed only then, #1786). Failures are
+    logged: the record is already committed, and the sweep settles what is left."""
+    _hooks.current[0].append(action)
+
+
+def on_abort(action: Callable[[], None]) -> None:
+    """Run ``action`` if THIS transaction does not publish (a blob published for it is removed)."""
+    _hooks.current[1].append(action)
+
+
+def _run_hooks(actions: list[Callable[[], None]], what: str) -> None:
+    for action in actions:
+        try:
+            action()
+        except Exception as e:  # noqa: BLE001 — the sweep settles anything left behind
+            log.warning("template vars: a secret-file %s step failed (%s)", what, type(e).__name__)
+
+
 def _mutate_document(
     fn: Callable[[list[dict], list[dict]], dict | list | None],
     *,
@@ -492,47 +582,101 @@ def _mutate_document(
         template_secrets.registration_fence(),
         json_write_lock(path),
     ):
-        original: dict = {}
-        records, damaged = _read(path, document=original)
-        if damaged and not (repair_references and _repairable_references(original, records)):
-            raise VariableError(
-                "the variables store could not be read in full; repair it before writing "
-                "or upgrading — nothing was written"
-            )
+        hooks: tuple[list, list] = ([], [])
+        outer = getattr(_hooks, "current", None)
+        _hooks.current = hooks
         try:
-            ledger = variable_document.prepare(records, original)
-        except variable_document.IdentityError as exc:
-            raise VariableError(str(exc)) from None
-        collections = original.get("collections", [])
-        result = fn(records, collections)
-        if len(records) > RECORDS_MAX:
-            raise VariableError(f"the variables store is full (max {RECORDS_MAX} records)")
-        records[:] = [_coerce_record(rec, STORE_VERSION) for rec in records]
-        globals_ = {r["name"]: r for r in records if _is_global(r)}
-        if any(
-            r.get("ref") == REF_GLOBAL
-            and (r["name"] not in globals_ or globals_[r["name"]]["kind"] != r["kind"])
-            for r in records
-        ):
-            raise VariableError("a project reference is still unresolved; nothing was written")
-        records.sort(key=_key)
-        try:
-            document = variable_document.publish_document(
-                records, ledger, STORE_VERSION, collections
-            )
-            if path.exists() and original.get("version", 0) < 4:
-                variable_document.retain_upgrade_backup(path)
-        except variable_document.IdentityError as exc:
-            raise VariableError(str(exc)) from None
-        # Shared project memory (#1441): every agent-readable view is re-checked against the new
-        # secret inventory BEFORE this fence is released. The scopes are enumerated BEFORE the
-        # write, so a failure to enumerate them refuses the write instead of letting a stored
-        # secret settle beside views nobody checked.
-        from . import memory
-
-        with memory.secrets_changing():
-            atomic_write_json(path, document, mode=0o600)
+            result = _transaction(fn, path, repair_references)
+        except BaseException:
+            _run_hooks(hooks[1], "rollback")
+            raise
+        finally:
+            _hooks.current = outer
+        _run_hooks(hooks[0], "cleanup")
     return result
+
+
+def _transaction(
+    fn: Callable[[list[dict], list[dict]], dict | list | None],
+    path: Path,
+    repair_references: bool,
+) -> dict | list | None:
+    original: dict = {}
+    records, damaged = _read(path, document=original)
+    if damaged and not (repair_references and _repairable_references(original, records)):
+        raise VariableError(
+            "the variables store could not be read in full; repair it before writing "
+            "or upgrading — nothing was written"
+        )
+    try:
+        ledger = variable_document.prepare(records, original)
+    except variable_document.IdentityError as exc:
+        raise VariableError(str(exc)) from None
+    collections = original.get("collections", [])
+    before = {_key(r): _labels_and_value(r) for r in records}
+    result = fn(records, collections)
+    if len(records) > RECORDS_MAX:
+        raise VariableError(f"the variables store is full (max {RECORDS_MAX} records)")
+    records[:] = [_coerce_record(rec, STORE_VERSION) for rec in records]
+    _guard_changed_labels(records, before)
+    globals_ = {r["name"]: r for r in records if _is_global(r)}
+    if any(
+        r.get("ref") == REF_GLOBAL
+        and (r["name"] not in globals_ or globals_[r["name"]]["kind"] != r["kind"])
+        for r in records
+    ):
+        raise VariableError("a project reference is still unresolved; nothing was written")
+    records.sort(key=_key)
+    try:
+        document = variable_document.publish_document(records, ledger, STORE_VERSION, collections)
+        if path.exists() and original.get("version", 0) < 4:
+            variable_document.retain_upgrade_backup(path)
+    except variable_document.IdentityError as exc:
+        raise VariableError(str(exc)) from None
+    # Shared project memory (#1441): every agent-readable view is re-checked against the new
+    # secret inventory BEFORE this fence is released. The scopes are enumerated BEFORE the
+    # write, so a failure to enumerate them refuses the write instead of letting a stored
+    # secret settle beside views nobody checked.
+    from . import memory
+
+    with memory.secrets_changing():
+        atomic_write_json(path, document, mode=0o600)
+    return result
+
+
+def _sweep_locked(path: Path) -> int:
+    """Settle the secret-file directory against the store as committed (``vault_files.sweep``).
+    The caller holds the store lock, so no publish is in flight."""
+    # Only a store that reads COMPLETELY — every record valid, the identity ledger consistent —
+    # decides what is an orphan (Hermes 7406, 2). A damaged record could otherwise hide the very
+    # blob it still refers to, and the sweep would destroy it; on any doubt nothing is moved.
+    document: dict = {}
+    try:
+        records, damaged = _read(path, document=document)
+    except VariableStoreUnsupported:
+        return 0
+    if damaged or (path.exists() and not isinstance(document.get("identities"), list)):
+        log.warning("secret files: the variables store is not readable in full; nothing swept")
+        return 0
+    current = {
+        (r["id"], r["file"]["rev"]) for r in records if r["kind"] == "secret_file" and "file" in r
+    }
+    ledger = [e for e in document.get("identities", []) if isinstance(e, dict)]
+    return vault_files.sweep(ledger, current)
+
+
+def sweep_secret_files() -> int:
+    """App start: settle orphans an interrupted write left (#1786). Same lock order as a write's
+    inner part: the registration fence, then the store lock."""
+    path = store_path()
+    with template_secrets.registration_fence(), json_write_lock(path):
+        return _sweep_locked(path)
+
+
+def request_sweep() -> None:
+    """A transaction that touched a secret file settles the directory once it has committed."""
+    path = store_path()
+    after_commit(lambda: _sweep_locked(path))
 
 
 def _read_leniently() -> list[dict]:
@@ -586,7 +730,12 @@ def _bumped(previous: float) -> float:
 def list_variables() -> list[dict]:
     """Every readable GLOBAL variable, by name, with the templates that use it (``used_by``)."""
     usage = tstore.library_usage()  # one read of the template store, not one per variable
-    return [public(rec, usage.get(rec["name"], [])) for rec in sorted(_globals(), key=_key)]
+    # A secret file has no place in the name-based template library (#1786): it is never a field.
+    return [
+        public(rec, usage.get(rec["name"], []))
+        for rec in sorted(_globals(), key=_key)
+        if rec["kind"] != "secret_file"
+    ]
 
 
 def values() -> dict[str, str]:
@@ -624,7 +773,35 @@ def _raw_identity(item: object, version: int) -> tuple[str, str | None, str] | N
     return scope, pid, name
 
 
-def secret_values_checked() -> list[str]:
+def secret_values_checked(*, lenient_files: bool = False) -> list[str]:
+    """See `_secret_values_checked`. A blob destroyed by a write that committed meanwhile (its
+    record already names the next revision) is read again once, never reported as damage."""
+    path = store_path()
+
+    def stamp():
+        try:
+            st = path.stat()
+            return (st.st_mtime_ns, st.st_size, st.st_ino)
+        except FileNotFoundError:
+            return None
+
+    before = stamp()
+    try:
+        return _secret_values_checked(lenient_files=lenient_files)
+    except _FileUnreadable:
+        if stamp() == before:
+            raise VariableError("a secret file in the variables store is unreadable") from None
+    try:
+        return _secret_values_checked(lenient_files=lenient_files)
+    except _FileUnreadable:
+        raise VariableError("a secret file in the variables store is unreadable") from None
+
+
+class _FileUnreadable(Exception):
+    pass
+
+
+def _secret_values_checked(*, lenient_files: bool = False) -> list[str]:
     """Every stored secret's plaintext, for REDACTION — EVERY scope, global and project, and EVERY
     record (two records claiming one identity are both included). Fail-closed where the lenient
     read would fail open.
@@ -670,10 +847,25 @@ def secret_values_checked() -> list[str]:
                 if v is not None:
                     out.append(v)
                 continue
-            if isinstance(item, dict) and (item.get("kind") == "secret" or "secret" in item):
+            if isinstance(item, dict) and (
+                item.get("kind") in SECRET_KINDS or "secret" in item or "file" in item
+            ):
                 raise VariableError(
                     "a secret record in the variables store is unreadable"
                 ) from None
+            continue
+        if rec["kind"] == "secret_file" and "file" in rec:
+            data = file_bytes(rec, checked=True)
+            if data is None:
+                if lenient_files:
+                    continue  # a label check: the unknowable must not block a repair (review)
+                # Missing, tampered, or its key lost/replaced: the transport refuses until the
+                # operator re-uploads or deletes it (#1786 P1 "fail closed on key loss"; Hermes
+                # 7416). Label checks stay lenient, so that repair is always possible.
+                raise _FileUnreadable
+            value = vault_files.text(data)
+            if value is not None:
+                out.append(value)  # binary: no form redaction could match (stated residual)
             continue
         if rec["kind"] == "secret" and "secret" in rec:
             v = template_secrets.decrypt_record_checked(
@@ -722,12 +914,133 @@ def _retire(rec: dict) -> None:
         old = _decrypt(rec)
         if old is not None:
             template_secrets.retire([old])
+    elif rec["kind"] == "secret_file" and "file" in rec:
+        data = file_bytes(rec)
+        if data is not None:
+            vault_files.retire(data)
+
+
+def file_committed(vid: str, rev: int) -> bool:
+    """True when the store as it is NOW on disk refers to blob ``(vid, rev)``. A transaction can
+    fail AFTER its document replaced the old one (a failed directory sync): the record is then
+    visible, and its blob must not be removed (Hermes 7394, 1). Unreadable reads as referenced."""
+    try:
+        raw = json.loads(store_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return True
+    rows = raw.get("variables") if isinstance(raw, dict) else None
+    if not isinstance(rows, list):
+        return True
+    return any(
+        isinstance(r, dict)
+        and r.get("id") == vid
+        and isinstance(r.get("file"), dict)
+        and r["file"].get("rev") == rev
+        for r in rows
+    )
+
+
+def remove_uncommitted_file(vid: str, rev: int) -> None:
+    """An aborted transaction's blob is removed — unless the document did become visible."""
+    if not file_committed(vid, rev):
+        vault_files.remove(vid, rev)
+
+
+def _labels_and_value(rec: dict) -> tuple:
+    """What the backstop below compares: a record's agent-visible labels, and its envelope."""
+    definition = rec.get("definition") or {}
+    file = rec.get("file") if isinstance(rec.get("file"), dict) else {}
+    return (
+        (rec["name"], definition.get("label"), definition.get("help"), file.get("name")),
+        repr(rec.get("secret")),
+    )
+
+
+def _guard_changed_labels(records: list[dict], before: dict) -> None:
+    """The backstop for EVERY writer of the store — the library, the legacy API, project bindings,
+    a playbook's apply and restore (Hermes 7402): inside the one transaction, a record whose labels
+    changed has them checked, and a secret whose value changed is refused if a label already shows
+    it. Unchanged records are not re-judged, so an old label never blocks an unrelated write."""
+    from . import variables
+
+    for rec in records:
+        old = before.get(_key(rec))
+        now = _labels_and_value(rec)
+        if old is not None and old == now:
+            continue
+        labels, envelope = now
+        whats = ("name", "label", "description", "file name")
+        for i, (text, what) in enumerate(zip(labels, whats, strict=True)):
+            # Only a field that CHANGED to a non-empty text is judged: removing or keeping a label
+            # can expose nothing, so it never blocks a write (independent review of #1788).
+            if text and (old is None or old[0][i] != text):
+                variables._withhold_label(str(text), what)
+        if rec["kind"] == "secret" and "secret" in rec and (old is None or old[1] != envelope):
+            value = _decrypt(rec)
+            if value is not None:
+                refuse_secret_in_labels(records, value)
+
+
+def _exposed_labels(records: list[dict]) -> list[tuple[str, str]]:
+    """Every label agents and the access log are shown (#1786): name, label, help, file name."""
+    out: list[tuple[str, str]] = []
+    for r in records:
+        out.append((r["name"], "name"))
+        definition = r.get("definition") or {}
+        for key, what in (("label", "label"), ("help", "description")):
+            if definition.get(key):
+                out.append((str(definition[key]), what))
+        if r.get("kind") == "secret_file" and isinstance(r.get("file"), dict):
+            out.append((str(r["file"]["name"]), "file name"))
+    return out
+
+
+def refuse_secret_in_labels(
+    records: list[dict], value: str, extra: list[tuple[str, str]] | None = None
+) -> None:
+    """Refuse a secret write whose value — or any line or run of it that redaction would match —
+    already shows in a label (Hermes 7398, 2): the label was checked when it was saved, so this
+    is the other order. Called inside the store's transaction; the message names the field only."""
+    needles = [
+        v
+        for v in {value, *template_secrets.fragments(value)}
+        if len(v) >= template_secrets.SECRET_MIN
+    ]
+    if not needles:
+        return
+    # The caller's records may be the legacy shape (no definitions, `_mutate`): the committed
+    # store's labels are read too — under the store lock, so they are the current ones.
+    try:
+        committed, _ = _read(store_path())
+    except VariableStoreUnsupported:
+        committed = []
+    for label, what in [*_exposed_labels(records), *_exposed_labels(committed), *(extra or [])]:
+        if template_secrets.redact_text(label, needles) != label:
+            raise VariableError(
+                f"this secret appears in a variable's {what}; change that {what} first — "
+                "nothing was saved"
+            )
+
+
+def _drop_file(rec: dict) -> None:
+    """``rec``'s blob is destroyed once the transaction that stops referring to it commits."""
+    if rec["kind"] == "secret_file" and "file" in rec:
+        vid, rev = rec["id"], rec["file"]["rev"]
+        after_commit(lambda: vault_files.remove(vid, rev))
+        request_sweep()
 
 
 def create_variable(payload: object) -> dict:
     fields = validate(payload)
 
     def fn(records: list[dict]) -> dict:
+        from . import variables  # the shared library's label check, under the same fences
+
+        variables._withhold_label(fields["name"], "name")
+        if fields["kind"] == "secret":
+            refuse_secret_in_labels(records, fields["value"], [(fields["name"], "name")])
         # One list, one lock: a name is unique across BOTH kinds (per scope) by construction.
         globals_ = [r for r in records if _is_global(r)]
         if any(r["name"] == fields["name"] for r in globals_):
@@ -760,8 +1073,11 @@ def update_variable(name: str, payload: object, expected_updated_at: float) -> d
         rec = _find(records, name)
         if rec["updated_at"] != expected_updated_at:
             raise VariableConflict(public(rec))
+        if rec["kind"] == "secret_file":
+            raise VariableError("a secret file is replaced by uploading it in the shared library")
         if rec["kind"] == "secret":
             value = _secret_value(payload)
+            refuse_secret_in_labels(records, value)
             _retire(rec)
             rec["secret"] = template_secrets.encrypt_scoped(SCOPE_GLOBAL, None, name, value)
         else:
@@ -791,6 +1107,7 @@ def _delete_record(records: list[dict], collections: list[dict], rec: dict) -> N
     if dependants or projects:
         raise VariableInUse(name, dependants, projects)
     _retire(rec)
+    _drop_file(rec)
     records.remove(rec)
     for collection in collections:
         if rec["id"] in collection["variable_ids"]:
@@ -829,6 +1146,8 @@ def _binding(raw: object, pid: str) -> dict:
         if raw["ref"] != REF_GLOBAL:
             raise VariableError(f"{name}: ref must be 'global'")
         return {"name": name, "kind": kind, "ref": REF_GLOBAL}
+    if kind == "secret_file":
+        raise VariableError(f"{name}: a secret file is bound by ref 'global' only")
     value = _secret_value(raw) if kind == "secret" else _value(raw)
     return {"name": name, "kind": kind, "value": value}
 
@@ -851,8 +1170,14 @@ def bind_project(project: object, bindings: object) -> list[dict]:
         raise VariableError("a binding names each variable once")
 
     def fn(records: list[dict]) -> list[dict]:
+        from . import variables  # the shared library's label check, under the same fences
+
         now = time.time()
         for b in wanted:
+            # A binding's name is a label too (Hermes 7402): checked here, inside the fences.
+            variables._withhold_label(b["name"], "name")
+            if b["kind"] == "secret" and "value" in b:
+                refuse_secret_in_labels(records, b["value"], [(b["name"], "name")])
             if "ref" in b:
                 target = next(
                     (r for r in records if _is_global(r) and r["name"] == b["name"]), None
@@ -978,7 +1303,7 @@ class Resolver:
         if rec is None:
             raise BindingMissing(name)  # never an implicit fallback to the global secret
         if rec["kind"] != "secret":
-            raise BindingUnusable(name, "the project binds a text value under this name")
+            raise BindingUnusable(name, f"the project binds a {rec['kind']} under this name")
         if rec.get("ref") == REF_GLOBAL:
             g = self._global_of(
                 name, "secret", why="the global secret this project refers to is gone"

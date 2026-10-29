@@ -62,6 +62,7 @@ from . import (
     session_stream,
     shares,
     specialist_capacity,
+    template_vars,
     update_loop,
     usage_loop,
     voice_calls,
@@ -324,6 +325,13 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # that were displaced; a store that cannot be opened is reported by the next save.
         with contextlib.suppress(Exception):
             await asyncio.get_running_loop().run_in_executor(None, fileedit.startup_resolve)
+        # Settle secret-file blobs an interrupted write left (#1786): a known orphan is retired
+        # into redaction and destroyed, an unknown one quarantined. Best-effort, off the loop: a
+        # failure leaves the files where they are, and the next file write sweeps again.
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, template_vars.sweep_secret_files)
+        except Exception as e:  # noqa: BLE001 — startup must not fail on it, but must not be silent
+            log.warning("secret files: the startup sweep failed (%s)", type(e).__name__)
         # Idle-session reaper (#279): tear down STALE (detached + long-idle) sessions so PTYs/
         # memory/tasks don't accumulate until the app slows. Disabled unless
         # AGENT_SESSIONS_REAP_IDLE_SECONDS > 0; defaults to dry-run (logs candidates, kills

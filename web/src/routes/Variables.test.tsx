@@ -190,3 +190,12 @@ test("Escape retains the draft unless its discard is confirmed", async () => {
   await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
   expect(screen.getByLabelText("Global value", { exact: true })).toHaveValue("a.test changed");
 });
+
+test("a secret file row (#1786) shows only that it is stored and offers no edit until its form exists", async () => {
+  data.variables = [variable({ id: "id-key", name: "asc_api_key", kind: "secret_file", value: undefined, agent_access: false, file: { name: "AuthKey.p8", size: 257 } })];
+  show();
+  const row = await screen.findByRole("article", { name: "asc_api_key" });
+  expect(within(row).getByText("Stored · hidden")).toBeInTheDocument();
+  expect(within(row).queryByText("undefined")).toBeNull();
+  expect(within(row).getByRole("button", { name: "Edit asc_api_key" })).toBeDisabled();
+});

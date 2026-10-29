@@ -9,7 +9,8 @@ export interface VariableDraft {
 export function draftFor(variable?: SharedVariable, kind: "text" | "secret" = "text"): VariableDraft {
   const definition = variable?.definition;
   return {
-    name: variable?.name ?? "", kind: variable?.kind ?? kind,
+    // A secret file (#1786) is never edited through this form: its row offers no Edit.
+    name: variable?.name ?? "", kind: variable?.kind === "secret_file" ? "secret" : variable?.kind ?? kind,
     valueType: definition?.value_type ?? "text", label: definition?.label ?? "", help: definition?.help ?? "",
     required: definition?.required ?? false, choices: definition?.choices?.join("\n") ?? "", pattern: definition?.pattern ?? "",
     hasDefault: definition?.default !== undefined, defaultValue: String(definition?.default ?? ""),

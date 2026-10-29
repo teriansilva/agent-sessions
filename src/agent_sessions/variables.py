@@ -9,10 +9,11 @@ change. Type changes refuse while a template or project depends on the definitio
 
 from __future__ import annotations
 
+import re
 import time
 from copy import deepcopy
 
-from . import template_secrets, variable_document, variable_types
+from . import template_secrets, variable_document, variable_types, vault_files
 from . import template_vars as store
 from . import templates as templates
 
@@ -33,6 +34,12 @@ def _public(rec: dict) -> dict:
         result["value"] = variable_types.stored_value(
             rec["name"], definition, rec["value"], max_len=store.VALUE_MAX
         )
+    if rec["kind"] in store.SECRET_KINDS:
+        # Agent access (#1786): whether agents may request it. A secret file also shows its
+        # display name and size — never content, digest or revision.
+        result["agent_access"] = rec.get("agent_access", False)
+    if rec["kind"] == "secret_file" and "file" in rec:
+        result["file"] = {"name": rec["file"]["name"], "size": rec["file"]["size"]}
     return result
 
 
@@ -104,10 +111,19 @@ def create(payload: object) -> dict:
     kind = store._kind(payload.get("kind"))
     definition = _definition(name, kind, payload.get("definition", {}))
     fields = {"name": name, "kind": kind}
+    if kind == "secret_file" and "value" in payload:
+        raise store.VariableError("create the secret file without a value, then upload the file")
     if "value" in payload:
         fields["value"] = _value(name, kind, definition, payload["value"])
 
     def fn(records: list[dict]) -> dict:
+        _withhold_metadata(name, definition)
+        if kind == "secret" and "value" in fields:
+            store.refuse_secret_in_labels(
+                records,
+                fields["value"],
+                store._exposed_labels([{"name": name, "definition": definition}]),
+            )
         globals_ = [r for r in records if store._is_global(r)]
         if any(r["name"] == name for r in globals_):
             raise store.VariableError(f"a variable named {name} already exists")
@@ -143,11 +159,14 @@ def update(vid: str, payload: object, expected: float) -> dict:
     if (
         not isinstance(payload, dict)
         or not payload
-        or set(payload) - {"definition", "value", "clear_value"}
+        or set(payload) - {"definition", "value", "clear_value", "agent_access"}
     ):
         raise store.VariableError(
-            "update accepts definition, value or clear_value; name and kind are immutable"
+            "update accepts definition, value, clear_value or agent_access; name and kind are "
+            "immutable"
         )
+    if "agent_access" in payload and type(payload["agent_access"]) is not bool:
+        raise store.VariableError("agent_access is true or false")
     if "clear_value" in payload and (payload["clear_value"] is not True or "value" in payload):
         raise store.VariableError("clear_value must be true and cannot accompany a value")
 
@@ -157,6 +176,8 @@ def update(vid: str, payload: object, expected: float) -> dict:
             raise store.VariableConflict(_public(rec))
         old = _definition(rec["name"], rec["kind"], rec["definition"])
         definition = _definition(rec["name"], rec["kind"], payload.get("definition", old))
+        if definition != old:
+            _withhold_metadata(rec["name"], definition, old)
 
         # Labels/help are descriptive only. Every contract-affecting edit needs an unused
         # definition; dependants must be explicitly unbound and reviewed first.
@@ -168,8 +189,17 @@ def update(vid: str, payload: object, expected: float) -> dict:
             projects = store._project_dependants(records, rec["name"])
             if dependants or projects:
                 raise store.VariableInUse(rec["name"], dependants, projects)
+        if "agent_access" in payload:
+            if rec["kind"] not in store.SECRET_KINDS:
+                raise store.VariableError("agent access applies to secrets and secret files only")
+            if payload["agent_access"]:
+                rec["agent_access"] = True
+            else:
+                rec.pop("agent_access", None)
+        if rec["kind"] == "secret_file" and "value" in payload:
+            raise store.VariableError("a secret file is replaced by uploading a file")
         if (
-            rec["kind"] == "secret"
+            rec["kind"] in store.SECRET_KINDS
             and contract(old) != contract(definition)
             and "value" not in payload
             and not rec.get("unset")
@@ -178,12 +208,19 @@ def update(vid: str, payload: object, expected: float) -> dict:
             raise store.VariableError("re-enter the secret when changing its constraints")
         if payload.get("clear_value"):
             store._retire(rec)
+            store._drop_file(rec)
             rec.pop("value", None)
             rec.pop("secret", None)
+            rec.pop("file", None)
             rec["unset"] = True
         elif "value" in payload:
             value = _value(rec["name"], rec["kind"], definition, payload["value"])
             if rec["kind"] == "secret":
+                store.refuse_secret_in_labels(
+                    records,
+                    value,
+                    store._exposed_labels([{"name": rec["name"], "definition": definition}]),
+                )
                 replacement = template_secrets.encrypt_scoped(
                     store.SCOPE_GLOBAL, None, rec["name"], value
                 )
@@ -202,6 +239,88 @@ def update(vid: str, payload: object, expected: float) -> dict:
                     f"provide a compatible value with this definition: {exc}"
                 ) from None
         rec["definition"] = definition
+        rec["updated_at"] = store._bumped(rec["updated_at"])
+        return _public(rec)
+
+    return store._mutate_document(lambda records, collections: fn(records))  # type: ignore[return-value]
+
+
+def _withhold_metadata(name: str, definition: dict, old: dict | None = None) -> None:
+    """Every label an agent or the access log shows — the name, the label, the help text —
+    passes the withholding check (#1786). Called INSIDE the store's transaction, so it judges
+    the secret inventory as of the commit (Hermes 7394, 2 and 5)."""
+    if old is None:
+        _withhold_label(name, "name")
+    for key, what in (("label", "label"), ("help", "description")):
+        # On an edit only a field that CHANGED is judged: an old label never blocks a new one.
+        if definition.get(key) and (old is None or old.get(key) != definition[key]):
+            _withhold_label(str(definition[key]), what)
+
+
+#: Value shapes a label must not hold (#1786). Deliberately NOT `credential_shaped`, which leaves
+#: whole chat messages out and fires on ordinary help text ("API token: create it under …",
+#: "Bearer token sent as the Authorization header"): a label is refused only for a stored secret
+#: or for something that IS a credential value — PEM, URL userinfo, a known token prefix, or a long
+#: random run.
+_TOKEN_PREFIX_RE = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{16,}"
+    r"|xox[abprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9_-]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35})"
+)
+LABEL_RANDOM_RUN_MIN = 32
+
+
+def label_value_shaped(text: str) -> bool:
+    from . import template_suggest as ts
+
+    if ts._PEM_RE.search(text) or ts._USERINFO_RE.search(text) or _TOKEN_PREFIX_RE.search(text):
+        return True
+    return any(
+        len(m.group(0)) >= LABEL_RANDOM_RUN_MIN and ts._looks_random(m.group(0))
+        for m in ts._RUN_RE.finditer(text)
+    )
+
+
+def _withhold_label(label: str, what: str) -> None:
+    """A label agents and the access log see must not carry a secret (#1786): refused, never
+    rewritten — a stored value, or a credential VALUE shape. Judged against every secret whose
+    plaintext is known (`redaction_values_for_labels`): an unreadable file is unknowable and must
+    not block a repair or an unrelated write."""
+    secrets = template_secrets.redaction_values_for_labels()  # unreadable store: refuse
+    if template_secrets.redact_text(label, secrets) != label or label_value_shaped(label):
+        raise store.VariableError(f"the {what} looks like a credential; choose another")
+
+
+def put_file(vid: str, data: bytes, name: object, expected: float) -> dict:
+    """Store (or replace) a secret file's content (#1786). The new blob is published BEFORE the
+    record that refers to it commits; the old one is retired, then destroyed after the commit.
+    The response is the masked row: never the content."""
+    file_name = store.file_name(name)
+    if not 0 < len(data) <= vault_files.MAX_BYTES:
+        raise store.VariableError("a secret file is 1 byte to 256 KiB")
+
+    def fn(records: list[dict]) -> dict:
+        rec = _find(records, vid)
+        if rec["kind"] != "secret_file":
+            raise store.VariableError("only a secret file takes an upload")
+        if rec["updated_at"] != expected:
+            raise store.VariableConflict(_public(rec))
+        # Under the registration fence: no secret can be stored between this check and the commit.
+        _withhold_label(file_name, "file name")
+        text = vault_files.text(data)
+        if text is not None:
+            store.refuse_secret_in_labels(records, text, [(file_name, "file name")])
+        # Before every file write: settle what an interrupted one left (its revision may be ours).
+        store._sweep_locked(store.store_path())
+        rid = rec["id"]
+        rev = rec["file"]["rev"] + 1 if "file" in rec else 1
+        if rev > vault_files.REV_MAX:
+            raise store.VariableError("this secret file's revision counter is exhausted")
+        vault_files.publish(rid, rev, store.file_aad(rec, rev), data)
+        store.on_abort(lambda: store.remove_uncommitted_file(rid, rev))
+        store._retire(rec)
+        store._drop_file(rec)
+        rec.pop("unset", None)
+        rec["file"] = {"name": file_name, "size": len(data), "rev": rev}
         rec["updated_at"] = store._bumped(rec["updated_at"])
         return _public(rec)
 

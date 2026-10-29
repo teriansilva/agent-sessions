@@ -196,8 +196,8 @@ export default function Variables() {
           <label className={styles.search}><Search size={16} aria-hidden="true" /><input aria-label="Search variables" placeholder="Search names and descriptions" value={query} onChange={e => setQuery(e.target.value)} /></label>
           {visible.map(v => <article className={styles.row} key={v.id ?? v.name} aria-label={v.name}>
             <div><div className={styles.name}>{v.kind === "secret" && <LockKeyhole size={14} aria-hidden="true" />}<span>{v.name}</span></div><div className={styles.kind}>{v.kind === "secret" ? "Secret" : v.definition.value_type}{v.definition.label && v.definition.label !== v.name ? ` · ${v.definition.label}` : ""}</div></div>
-            <div className={styles.value}>{v.needs_reentry ? "Needs re-entry" : !v.set ? "No global value" : v.kind === "secret" ? "Stored · hidden" : String(v.value)}</div>
-            <button className={buttons.ghost} disabled={busy || !v.id || needsMigration} aria-label={`Edit ${v.name}`} onClick={() => editVariable(v)}>Edit</button>
+            <div className={styles.value}>{v.needs_reentry ? "Needs re-entry" : !v.set ? "No global value" : v.kind !== "text" ? "Stored · hidden" : String(v.value)}</div>
+            <button className={buttons.ghost} disabled={busy || !v.id || needsMigration || v.kind === "secret_file"} aria-label={`Edit ${v.name}`} onClick={() => editVariable(v)}>Edit</button>
           </article>)}
           {visible.length === 0 && <p className={styles.empty}>{query ? "No variables match this search." : collection ? "This collection is empty. Edit it to choose variables from the library." : "No variables here yet. Create a variable or a secret to get started."}</p>}
         </>}

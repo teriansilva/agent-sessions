@@ -382,6 +382,82 @@ def decrypt_record_checked(scope: str, project_id: str | None, name: str, env: d
     return _open(key, env, aad)
 
 
+# ---- binary blobs (secret files, #1786) --------------------------------------------------------
+
+#: A sealed blob: the magic, the key id (8 ASCII hex), the nonce, then the AES-GCM ciphertext. The
+#: AAD is the caller's (``vault_files.aad``) and is never stored with the blob.
+BLOB_MAGIC = b"BLSF1\n"
+_BLOB_HEAD = len(BLOB_MAGIC) + 8 + NONCE_BYTES
+
+
+def seal_bytes(aad: str, data: bytes) -> bytes:
+    """``data`` sealed under the store key, bound to ``aad``. Raises `SecretKeyUnavailable` when the
+    key file is unusable (callers refuse; nothing is written)."""
+    key = _key_for_write()
+    nonce = os.urandom(NONCE_BYTES)
+    return (
+        BLOB_MAGIC
+        + _kid(key).encode("ascii")
+        + nonce
+        + AESGCM(key).encrypt(nonce, data, aad.encode("utf-8"))
+    )
+
+
+def open_bytes(aad: str, blob: bytes, *, checked: bool = False) -> bytes | None:
+    """The plaintext of a sealed blob, or ``None``: no key, another key, a malformed or tampered
+    blob, or another AAD. With ``checked`` (REDACTION) a key file that exists but cannot be read
+    RAISES `SecretKeyUnavailable`, as ``decrypt_checked`` does."""
+    if checked:
+        key = _read_key()
+    else:
+        try:
+            key = _read_key()
+        except SecretKeyUnavailable:
+            return None
+    if key is None or len(blob) <= _BLOB_HEAD + 16 or not blob.startswith(BLOB_MAGIC):
+        return None
+    # The header's key id is NOT authenticated, so it is never trusted to skip a blob: decryption
+    # is always tried with the current key (independent review of #1788) — a forged id cannot
+    # make a readable file look unknowable.
+    nonce = blob[len(BLOB_MAGIC) + 8 : _BLOB_HEAD]
+    try:
+        return AESGCM(key).decrypt(nonce, blob[_BLOB_HEAD:], aad.encode("utf-8"))
+    except (InvalidTag, ValueError):
+        return None
+
+
+#: A credential-alphabet run inside a multi-line secret (a base64 field, a token): matched even
+#: where a line holds it beside other text.
+_FRAGMENT_RE = re.compile(r"[A-Za-z0-9+/=_\-.]{20,}")
+#: PEM armour: identical in every key of its type, never secret, so never an entry of its own.
+_ARMOUR_RE = re.compile(r"-----(?:BEGIN|END) [A-Z0-9 ]+-----")
+
+
+def fragments(value: str) -> list[str]:
+    """What an agent printing a MULTI-LINE value line by line would still show (#1786): every
+    complete line of at least ``SECRET_MIN`` characters (stripped), except PEM armour, and every
+    credential-alphabet run of 20+ characters. Contract decision (Hermes 7394, 4): a line of a
+    secret is redacted wherever it appears, even an ordinary-looking one such as
+    ``apiVersion: v1`` — over-redacting text is the safe failure. A single-line value has none
+    (the value itself is redacted)."""
+    if "\n" not in value:
+        return []
+    out = {m.group(0) for m in _FRAGMENT_RE.finditer(value)}
+    for line in value.splitlines():
+        line = line.strip()
+        if len(line) >= SECRET_MIN and not _ARMOUR_RE.fullmatch(line):
+            out.add(line)
+    return sorted(out)
+
+
+def _with_fragments(values) -> set[str]:
+    out: set[str] = set()
+    for v in values:
+        out.add(v)
+        out.update(fragments(v))
+    return out
+
+
 # ---- redaction ---------------------------------------------------------------------------------
 
 
@@ -403,7 +479,7 @@ def register_typed(values: list[str]) -> None:
     """Add values typed once at send time to the redaction set, in memory, for ``TYPED_TTL_S``."""
     until = time.time() + TYPED_TTL_S
     with _registration, _lock:
-        for v in values:
+        for v in _with_fragments(values):
             if len(v) >= SECRET_MIN:
                 _typed[v] = until
 
@@ -427,13 +503,16 @@ def _stored_values() -> frozenset[str]:
             sig: object = (st.st_mtime_ns, st.st_size, st.st_ino, current_kid())
         except FileNotFoundError:
             sig = ("absent", current_kid())
-        # The connector tokens (#1750) are stored secrets too: their store is part of the key.
-        sig = (sig, connector_store.signature())
+        # The connector tokens (#1750) are stored secrets too: their store is part of the key. So
+        # are the secret files' blobs (#1786): the JSON names a revision, the blob holds the bytes.
+        from . import vault_files
+
+        sig = (sig, connector_store.signature(), vault_files.signature())
         with _lock:
             if _stored_cache is not None and _stored_cache[0] == sig:
                 return _stored_cache[1]
         stored = [*template_vars.secret_values_checked(), *connector_store.token_values_checked()]
-        values = frozenset(v for v in stored if len(v) >= SECRET_MIN)
+        values = frozenset(v for v in _with_fragments(stored) if len(v) >= SECRET_MIN)
     except Exception as e:  # noqa: BLE001 — any failure to establish the set
         # REFUSE, warm cache or cold (Hermes on #1105, round 2). The known set cannot vouch for a
         # secret stored since it was computed, so "redact what we knew" is still fail-open. The
@@ -451,6 +530,30 @@ def _stored_values() -> frozenset[str]:
                 _typed[gone] = max(_typed.get(gone, 0.0), until)
         _stored_cache = (sig, values)
     return values
+
+
+def redaction_values_for_labels() -> list[str]:
+    """The inventory a LABEL CHECK judges against (#1786, independent review): every stored secret,
+    connector token and typed value whose plaintext is known — a secret file that cannot be read
+    is skipped, because what it holds is unknowable and must not block the operator's repair (or
+    an unrelated write). Uncached; never used for a send: the transport keeps `redaction_values`."""
+    from . import template_vars
+    from .connectors import store as connector_store
+
+    try:
+        stored = [
+            *template_vars.secret_values_checked(lenient_files=True),
+            *connector_store.token_values_checked(),
+        ]
+    except Exception as e:  # noqa: BLE001 — any failure to establish the set
+        raise RedactionUnavailable(
+            f"the secret store could not be read ({type(e).__name__})"
+        ) from None
+    now = time.time()
+    with _lock:
+        typed = {v for v, until in _typed.items() if until > now}
+    values = {v for v in _with_fragments(stored) if len(v) >= SECRET_MIN} | typed
+    return sorted(values, key=len, reverse=True)
 
 
 def redaction_values() -> list[str]:
@@ -493,10 +596,10 @@ def redact_text(text: str, secrets: list[str] | None = None) -> str:
         secrets = redaction_values()
     if not secrets or not text:
         return text
-    variants = [v for s in secrets for v in _variants(s)]
+    variants = _all_variants(secrets)
 
     def replace(t: str) -> str:
-        for v in variants:
+        for v in _candidates(variants, t):
             if v in t:
                 t = t.replace(v, REDACTED)
         return t
@@ -507,9 +610,43 @@ def redact_text(text: str, secrets: list[str] | None = None) -> str:
     # text cannot mask an interleaved one.
     if "\x1b" in text:
         stripped = _ANSI_RE.sub("", text)
-        if any(v in stripped for v in variants):
+        if any(v in stripped for v in _candidates(variants, stripped)):
             text = replace(stripped)
     return text
+
+
+#: The variants of the LAST secret list seen (#1786): a secret file's thousands of line-wise
+#: entries made re-encoding every one of them on every call the transport's main cost. One entry
+#: only, keyed by the exact list, so nothing outlives the set it was computed for.
+_variants_cache: tuple[tuple[str, ...], list[str]] | None = None
+
+
+def _all_variants(secrets: list[str]) -> list[str]:
+    global _variants_cache
+    key = tuple(secrets)
+    with _lock:
+        cached = _variants_cache
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    variants = [v for s in secrets for v in _variants(s)]
+    with _lock:
+        _variants_cache = (key, variants)
+    return variants
+
+
+def _candidates(variants: list[str], text: str) -> list[str]:
+    """The variants that can occur in ``text``, in their original order (#1786).
+
+    A secret file adds thousands of line-wise entries, and testing each against a long prompt
+    dominated the transport. A variant occurs in ``text`` only if its first ``k`` characters do, so
+    the ones whose prefix is absent from the text's ``k``-grams are skipped — exactly the entries
+    the substring test would have rejected. A variant that holds a bracket could be completed by an
+    earlier replacement's ``[secret]`` marker, so it is never skipped."""
+    if len(variants) < 64:
+        return variants
+    k = min(8, min(len(v) for v in variants))
+    grams = {text[i : i + k] for i in range(len(text) - k + 1)}
+    return [v for v in variants if v[:k] in grams or "[" in v or "]" in v]
 
 
 def redact_messages(messages: list) -> list:
@@ -557,7 +694,8 @@ def _redact_call(call: object, secrets: list[str]) -> object:
 
 
 def _reset_for_tests() -> None:
-    global _stored_cache
+    global _stored_cache, _variants_cache
     with _lock:
         _typed.clear()
         _stored_cache = None
+        _variants_cache = None

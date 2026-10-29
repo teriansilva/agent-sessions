@@ -6,7 +6,7 @@ against this text.
 
 **Codes.**
 - `have` — HQ can do it today.
-- `#1554` / `#1443` — owned by that issue.
+- `#1554` / `#1443` / `#1786` — owned by that issue.
 - `P1`–`P7` — this epic's phases.
 - `never` — a recorded exclusion: credentials, prompts, widening permission or autonomy, approving
   a tap, plugin installs, outsiders driving agents, consent. A note like `off only` means
@@ -22,7 +22,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 
 ## The ledger
 
-**Codes.** `have` = HQ can do it today. `#1554` / `#1443` = owned there. `P1`–`P7` = this epic's phases. `R` = read tool, `W` = confirmable action. `device` = browser-local state, not platform state (HQ can't reach this browser's storage; it can offer an **Open** link instead). `never` = recorded exclusion (reasons in the next section). `n/a` = no operator meaning.
+**Codes.** `have` = HQ can do it today. `#1554` / `#1443` / `#1786` = owned there. `P1`–`P7` = this epic's phases. `R` = read tool, `W` = confirmable action. `device` = browser-local state, not platform state (HQ can't reach this browser's storage; it can offer an **Open** link instead). `never` = recorded exclusion (reasons in the next section). `n/a` = no operator meaning.
 
 #### Sessions (sidebar, row menu, pane)
 | Capability | Route(s) | HQ |
@@ -171,6 +171,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Variables library: list (secrets show only `set` / `needs re-entry`) | GET /api/variables | P3 R |
 | Variables: create / edit / delete a text variable; collections create / edit / delete; enable shared variables | POST/PATCH/DELETE /api/variables*, /api/variable-collections*, POST /api/variables/migrate | P3 W |
 | Secrets: create / replace (value typed on the card), delete | POST/PATCH/DELETE /api/variables (kind secret) | P3 W (secret_input) |
+| Secret files: upload / replace (file chosen on the card, or a Secret-shared chat attachment moved server-side); agent access on / off | PUT /api/variables/{vid}/file; PATCH /api/variables/{vid} (`agent_access`) | #1786 W (P4 of that issue; access on only by the operator's tap, never auto-confirmed) |
 | Legacy template-variables routes (API-only) | /api/template-variables* | P3 (via the same store) |
 | Memory: projects, notes, inbox, quarantine; export | GET /api/memory*, …/export | P3 R |
 | Memory: on/off, edit / delete note, clear all, quarantine rewrite / delete, import preview and import, ingest | PUT/PATCH/DELETE/POST /api/memory/{pid}/* | P3 W (clear is destructive) |
@@ -570,6 +571,7 @@ POST   /api/variables                                                           
 POST   /api/variables/migrate                                                     P3
 DELETE /api/variables/{vid}                                                       P3
 PATCH  /api/variables/{vid}                                                       P3
+PUT    /api/variables/{vid}/file                                                  #1786  # secret files (P4 of #1786)
 GET    /api/version                                                               n/a  # app shell read
 GET    /change-password                                                           never  # identity
 POST   /change-password                                                           never  # identity

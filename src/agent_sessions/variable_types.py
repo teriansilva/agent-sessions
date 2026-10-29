@@ -25,6 +25,9 @@ def metadata(name: str, kind: str, raw: object) -> dict:
 
     if not isinstance(raw, dict) or set(raw) - METADATA_KEYS:
         raise DefinitionError("expected variable metadata with known fields only")
+    # A secret file (#1786) carries a secret's definition contract: text type, no default, no
+    # example. The playbook format knows no such kind, so it is validated as a secret.
+    kind = "secret" if kind == "secret_file" else kind
     portable = {key: value for key, value in raw.items() if key != "value_type"}
     portable["type"] = raw.get("value_type", "text")
     try:

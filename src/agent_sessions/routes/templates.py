@@ -335,6 +335,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             raise _err(409, str(e)) from None
         except template_secrets.SecretKeyUnavailable as e:
             raise _err(409, f"{e} — nothing was written") from None
+        except template_secrets.RedactionUnavailable:
+            # A label check could not read the secret inventory (#1786): retryable, not a crash.
+            raise _err(503, "the secret inventory could not be read; nothing was written") from None
         return _json(rec, 201)
 
     @app.patch("/api/template-variables/{name}")
@@ -355,6 +358,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             raise _err(409, str(e)) from None
         except template_secrets.SecretKeyUnavailable as e:
             raise _err(409, f"{e} — nothing was written") from None
+        except template_secrets.RedactionUnavailable:
+            # A label check could not read the secret inventory (#1786): retryable, not a crash.
+            raise _err(503, "the secret inventory could not be read; nothing was written") from None
         except vstore.VariableNotFound:
             raise _err(404, "unknown variable") from None
         except vstore.VariableConflict as e:
@@ -377,6 +383,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             raise _err(409, str(e)) from None
         except template_secrets.SecretKeyUnavailable as e:
             raise _err(409, f"{e} — nothing was written") from None
+        except template_secrets.RedactionUnavailable:
+            # A label check could not read the secret inventory (#1786): retryable, not a crash.
+            raise _err(503, "the secret inventory could not be read; nothing was written") from None
         except vstore.VariableNotFound:
             raise _err(404, "unknown variable") from None
         except vstore.VariableConflict as e:
