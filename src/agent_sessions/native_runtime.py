@@ -3239,8 +3239,8 @@ async def submit(
                 continue
             after = await asyncio.to_thread(_journal, prov, session_id)
             gen = await asyncio.to_thread(_generation, session_id)
-            if gen is not None and _successor_startup_only(
-                after, expected_revision, prior, gen.worker_id
+            if _nothing_to_review(
+                after, expected_revision, prior, gen.worker_id if gen is not None else None
             ):
                 expected_revision = after.revision
                 continue
@@ -3261,25 +3261,35 @@ async def submit(
 _STARTUP_EVENTS = frozenset({"initialized", "session", "background", "response", "memory_pressure"})
 
 
-def _successor_startup_only(
-    journal: native_journal.Journal, after: int, prior: str | None, successor: str
+def _nothing_to_review(
+    journal: native_journal.Journal, after: int, prior: str | None, successor: str | None
 ) -> bool:
-    """Every record since ``after`` is a startup observation by ``successor``, the current
-    generation, which was not live when the send began (``prior``).
+    """Every record since ``after`` is one the operator could not have been answering: a status
+    report (`_status_record`), from any generation, or a startup observation by ``successor``,
+    the current generation, which was not live when the send began (``prior``).
 
     Such a generation has run no turn: what it journals before the claim (initialization,
     session facts, background state) is no activity the operator missed. Nor is a worker
     diagnostic bound to no operation or action — a history frame dropped as oversized while
     the native session loads: the snapshot shows it on no turn. A claim, a handoff,
-    conversation content, or any record by another generation — the idled-out one's last
-    background reports included — keeps the refusal."""
-    if successor == prior:
-        return False
+    conversation content, a turn the agent starts or ends for itself, or any other record by
+    another generation keeps the refusal."""
     start = bisect.bisect_right(journal.events.cursors, after)
     newer = journal.events[start:]
+    fresh = successor is not None and successor != prior
     return len(newer) == journal.revision - after and all(
-        event["worker_id"] == successor and _startup_record(event["event"]) for event in newer
+        _status_record(event["event"])
+        or (fresh and event["worker_id"] == successor and _startup_record(event["event"]))
+        for event in newer
     )
+
+
+def _status_record(event: dict) -> bool:
+    """A background task's progress or an activity heartbeat: an idle agent's running subagent
+    writes one every few seconds, and an explicit expectation refused for it could never be met
+    while the task runs. One carrying ``background_turn`` starts or ends a turn the agent runs
+    for itself (#1427): that is activity, and keeps the refusal."""
+    return event["kind"] == "background" and "background_turn" not in (event.get("data") or {})
 
 
 def _startup_record(event: dict) -> bool:

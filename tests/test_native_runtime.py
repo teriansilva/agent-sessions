@@ -31,6 +31,7 @@ from agent_sessions import (
     metadata,
     native_containment,
     native_events,
+    native_ipc,
     native_journal,
     native_ownership,
     native_runtime,
@@ -853,7 +854,7 @@ def test_only_a_successors_startup_records_keep_an_explicit_expectation(tmp_path
             j.revision = cursor
         return j
 
-    ok = native_runtime._successor_startup_only
+    ok = native_runtime._nothing_to_review
     startup = journal(("new", "background"), ("new", "initialized"), ("new", "session"))
     assert ok(startup, 10, None, "new")
     assert ok(startup, 10, "old", "new")
@@ -861,7 +862,8 @@ def test_only_a_successors_startup_records_keep_an_explicit_expectation(tmp_path
     assert not ok(startup, 10, "new", "new")
     # Only the CURRENT generation's: the idled-out one's last background report (an unsolicited
     # turn finishing) is activity the operator missed, even though nothing was live at the send.
-    assert not ok(journal(("old", "background"), ("new", "session")), 10, None, "new")
+    finished = ("old", "background", {"state": "completed", "background_turn": None})
+    assert not ok(journal(finished, ("new", "session")), 10, None, "new")
     assert not ok(startup, 10, None, "other")
     # The successor's own memory reading (#1643), journaled on its first sample — often before the
     # claim (Hermes on #1651): no activity the operator missed. Another generation's still is.
@@ -907,6 +909,93 @@ async def test_a_turn_sent_at_a_revision_before_unseen_activity_is_still_refused
     with pytest.raises(runtime.StructuredError) as stale:
         await runtime.submit_turn(key, operation_id=ident(), text="two", expected_revision=before)
     assert stale.value.status == 409 and "revision changed" in stale.value.detail
+
+
+def test_a_status_report_from_any_generation_keeps_an_explicit_expectation(tmp_path):
+    """An idle agent's running subagent journals a `background` progress or activity report every
+    few seconds; refusing for them made a send at the seen revision fail almost every time."""
+
+    def journal(*events):
+        j = native_journal.Journal({}, revision=10, events=native_events.Events(tmp_path))
+        for cursor, (worker, kind, data) in enumerate(events, 11):
+            j.events.append(
+                {
+                    "cursor": cursor,
+                    "worker_id": worker,
+                    "connection_id": "c",
+                    "ts": 0.0,
+                    "event": {"kind": kind, "data": data},
+                }
+            )
+            j.revision = cursor
+        return j
+
+    ok = native_runtime._nothing_to_review
+    progress = ("live", "background", {"task_id": "t", "state": "running", "active": True})
+    activity = ("live", "background", {"state": "activity", "active": True})
+    # Written by the worker that was live when the send began, or with no live worker at all.
+    assert ok(journal(progress, activity, progress), 10, "live", "live")
+    assert ok(journal(activity), 10, "live", None)
+    # A turn the agent starts (or ends) for itself is activity, even though its kind is the same.
+    started = ("live", "background", {"state": "running", "background_turn": "b"})
+    ended = ("live", "background", {"state": "completed", "background_turn": None})
+    assert not ok(journal(activity, started), 10, "live", "live")
+    assert not ok(journal(ended), 10, "live", "live")
+    # Conversation content, or another observation the live worker writes, still refuses.
+    assert not ok(journal(activity, ("live", "text", {})), 10, "live", "live")
+    assert not ok(journal(("live", "session", {})), 10, "live", "live")
+    assert not ok(journal(("live", "error", {"message": "m"})), 10, "live", "live")
+
+
+@pytest.mark.parametrize(
+    ("report", "taken"),
+    [
+        ({"task_id": "t", "state": "running", "active": True, "task_state": "running"}, True),
+        ({"state": "activity", "active": True}, True),
+        ({"state": "running", "active": True, "background_turn": str(uuid.uuid4())}, False),
+    ],
+)
+@pytest.mark.anyio
+async def test_a_turn_sent_at_the_seen_revision_survives_a_background_report(
+    host, project, monkeypatch, report, taken
+):
+    """The operator reads an idle conversation and sends at its revision; the live worker
+    journals a background task's report between that read and the claim. The send is taken
+    — and a turn the agent started for itself in that gap still refuses it."""
+    key = await _codex(project)
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="one")
+    snap, _ = await settle(key, first)
+    sid = key.partition(":")[2]
+    gen = native_runtime._generation(sid)
+    assert gen is not None and snap["native"]["worker"] == gen.worker_id
+    seen = (await runtime.snapshot(key))["revision"]
+    binding = native_ipc.Binding(
+        key, gen.worker_id, gen.config["connection_id"], gen.config["adapter"]
+    )
+    root = native_runtime._journal_root(native_runtime._api_provider(ENGINES["codex"]))
+    effect, reported = native_runtime._effect, []
+
+    async def report_first(*args, **kwargs):
+        if not reported:
+            reported.append(
+                native_journal.append_events(
+                    root, binding, [{"kind": "background", "data": report}]
+                )
+            )
+        return await effect(*args, **kwargs)
+
+    monkeypatch.setattr(native_runtime, "_effect", report_first)
+    nxt = ident()
+    if not taken:
+        with pytest.raises(runtime.StructuredError) as stale:
+            await runtime.submit_turn(key, operation_id=nxt, text="two", expected_revision=seen)
+        assert stale.value.status == 409 and "revision changed" in stale.value.detail
+        return
+    await runtime.submit_turn(key, operation_id=nxt, text="two", expected_revision=seen)
+    _, turn = await settle(key, nxt)
+    # Not vacuous: the report really landed after the operator's read, before the claim.
+    assert reported and reported[0] > seen and turn["reply"] == "echo:two"
 
 
 @pytest.mark.parametrize("source", ["codex", "claude", "opencode", "copilot"])
