@@ -12,6 +12,7 @@ resolution-markers = [
 name = "agent-sessions"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -38,6 +39,7 @@ voice = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = "==4.13.0" },
     { name = "cryptography", specifier = "==50.0.0" },
     { name = "fastapi", specifier = "==0.139.0" },
     { name = "httpx", specifier = "==0.28.1" },

@@ -26,6 +26,7 @@ import contextlib
 import os
 import uuid
 
+import anyio
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
@@ -318,8 +319,13 @@ def register(app: FastAPI, *, store: shares.ShareStore, require_share) -> None:
                         head += chunk[: 16 - len(head)]
                 return chunks, head
 
+            # anyio's scope, never `asyncio.wait_for` (#1769): every `@app.middleware` layer is a
+            # BaseHTTPMiddleware that cancels its own anyio scope after each body chunk, and under
+            # a loop stall that swallowed wait_for's cancellation. The timeout was silently lost
+            # and a stalled upload held its slot. A nested anyio scope's cancellation survives.
             try:
-                chunks, head = await asyncio.wait_for(read(), UPLOAD_READ_TIMEOUT_S)
+                with anyio.fail_after(UPLOAD_READ_TIMEOUT_S):
+                    chunks, head = await read()
             except TimeoutError:
                 raise HTTPException(status_code=408, detail="the upload took too long") from None
             if not chunks or not any(chunks):

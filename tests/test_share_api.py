@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 import uuid
 
 import httpx
@@ -1047,21 +1048,43 @@ def test_a_live_upload_can_never_outlive_its_slot():
 
 @pytest.mark.anyio
 async def test_a_stalled_upload_times_out_and_hands_its_slot_back(env, host, project, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(public_api, "UPLOAD_READ_TIMEOUT_S", 0.3)
+    """The read timeout holds even when the event loop stalls (#1769).
+
+    Every `@app.middleware` layer cancels its own anyio scope after each body chunk. With the old
+    `asyncio.wait_for`, a stall of at least the timeout, landing a few loop iterations after the
+    first chunk, let that cancellation swallow the timeout: the read finished and the upload got
+    201 while it should have got 408. The stall is swept across the first iterations after the
+    first chunk (which iteration triggers it depends on the middleware count). The body never
+    resumes, so only the timeout can end a request; the outer deadline turns a lost timeout into
+    a failure, not a hung suite."""
+    monkeypatch.setattr(public_api, "UPLOAD_READ_TIMEOUT_S", 0.1)
     key = await _session("codex", project)
     v, share = await _visitor(env, key)
+    loop = asyncio.get_running_loop()
 
-    async def slow():
-        yield PNG[:8]
-        await asyncio.sleep(2)
-        yield PNG[8:]
+    def stall_after(hops: int) -> None:  # block the loop `hops` iterations from now
+        if hops:
+            loop.call_soon(stall_after, hops - 1)
+        else:
+            time.sleep(0.15)  # longer than the timeout: the stall the race needs
 
     async with contextlib.aclosing(v):
-        r = await v.post(
-            "/api/public/upload", content=slow(), headers={"Content-Type": "image/png"}
-        )
-    assert r.status_code == 408
-    assert env.app.state.share_store.count_upload_rows(share.share_id) == 0
+        for hops in range(12):
+            never = asyncio.Event()
+
+            async def stalled(hops=hops, never=never):
+                loop.call_soon(stall_after, hops)
+                yield PNG[:8]
+                await never.wait()  # the rest of the body never arrives
+                yield PNG[8:]
+
+            body = stalled()
+            async with contextlib.aclosing(body), asyncio.timeout(30):
+                r = await v.post(
+                    "/api/public/upload", content=body, headers={"Content-Type": "image/png"}
+                )
+            assert r.status_code == 408, f"stall {hops} iterations after the first chunk"
+            assert env.app.state.share_store.count_upload_rows(share.share_id) == 0
 
 
 @pytest.mark.anyio

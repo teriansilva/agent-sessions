@@ -26,6 +26,7 @@ dependencies = [
     "cryptography==50.0.0",  # Home Free E2E handshake: X25519/HKDF/AES-GCM/Ed25519 (#27)
     "websockets==16.0",  # Home Free agent relay client (already pulled by uvicorn[standard])
     "segno==1.6.1",  # QR cross-device sign-in: server-side QR SVG, pure-Python zero-dep (#650)
+    "anyio==4.13.0",  # the upload read timeout's cancel scope (#1769; already pulled by starlette)
 ]
 
 [project.scripts]
