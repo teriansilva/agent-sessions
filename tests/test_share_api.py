@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import threading
 import time
 import uuid
 
@@ -1044,6 +1045,157 @@ def test_a_link_id_is_opaque_stable_and_per_link():
 def test_a_live_upload_can_never_outlive_its_slot():
     """Expiring a pending slot is only safe because no request may stream longer than the TTL."""
     assert shares.PENDING_UPLOAD_TTL_S >= 5 * public_api.UPLOAD_READ_TIMEOUT_S
+
+
+@pytest.mark.anyio
+async def test_an_upload_cancelled_from_outside_hands_its_slot_back(env, host, project):  # noqa: F811
+    """A handler cancelled mid-read (a client gone, a shutdown) still releases its slot (#1780).
+
+    The release in the handler's `finally` is itself an await, inside the middleware's cancelled
+    anyio scope: unshielded, that cancellation also cancelled the release, and the slot stayed
+    reserved against the link's cap."""
+    key = await _session("codex", project)
+    v, share = await _visitor(env, key)
+    store = env.app.state.share_store
+    never = asyncio.Event()
+
+    async def stalled():
+        yield PNG[:8]
+        await never.wait()
+        yield PNG[8:]
+
+    body = stalled()
+    async with contextlib.aclosing(v), contextlib.aclosing(body):
+        post = asyncio.ensure_future(
+            v.post("/api/public/upload", content=body, headers={"Content-Type": "image/png"})
+        )
+        async with asyncio.timeout(10):
+            while store.count_upload_rows(share.share_id) == 0:  # the slot is reserved
+                await asyncio.sleep(0.01)
+        post.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await post
+        async with asyncio.timeout(10):
+            while store.count_upload_rows(share.share_id):  # the release runs off the loop
+                await asyncio.sleep(0.01)
+    assert store.count_upload_rows(share.share_id) == 0
+
+
+@pytest.mark.anyio
+async def test_an_upload_cancelled_while_its_slot_is_reserved_hands_it_back(
+    env,
+    host,  # noqa: F811
+    project,  # noqa: F811
+    monkeypatch,
+):
+    """The cancel lands after the reservation commits but before the handler holds the slot
+    (Hermes 7389): the reservation's own task gives it back once it lands (#1780)."""
+    key = await _session("codex", project)
+    v, share = await _visitor(env, key)
+    store = env.app.state.share_store
+    committed, go_on = threading.Event(), threading.Event()
+    reserve = store.reserve_upload
+
+    def slow_return(*args, **kwargs):
+        slot = reserve(*args, **kwargs)
+        committed.set()
+        go_on.wait(10)  # the row is in; the handler hasn't got it yet
+        return slot
+
+    monkeypatch.setattr(store, "reserve_upload", slow_return)
+    async with contextlib.aclosing(v):
+        post = asyncio.ensure_future(
+            v.post("/api/public/upload", content=PNG, headers={"Content-Type": "image/png"})
+        )
+        async with asyncio.timeout(10):
+            while not committed.is_set():
+                await asyncio.sleep(0.01)
+        assert store.count_upload_rows(share.share_id) == 1
+        post.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await post
+        go_on.set()  # now the reservation returns, to a handler that has gone
+        async with asyncio.timeout(10):
+            while store.count_upload_rows(share.share_id):
+                await asyncio.sleep(0.01)
+    assert store.count_upload_rows(share.share_id) == 0
+
+
+@pytest.mark.anyio
+async def test_an_upload_cancelled_after_it_was_stored_leaves_nothing_behind(
+    env,
+    host,  # noqa: F811
+    project,  # noqa: F811
+    monkeypatch,
+):
+    """Cancelled after the fill commits but before the handler answers (Hermes 7391): the visitor
+    never gets the handle, so the stored file and its row are removed, not left on the cap."""
+    key = await _session("codex", project)
+    v, share = await _visitor(env, key)
+    store = env.app.state.share_store
+    committed, go_on = threading.Event(), threading.Event()
+    fill, written = store.fill_upload, []
+    store_upload = upload_routes.store_upload
+
+    def capture(*args, **kwargs):
+        dest, safe = store_upload(*args, **kwargs)
+        written.append(dest)
+        return dest, safe
+
+    def slow_return(*args, **kwargs):
+        ok = fill(*args, **kwargs)
+        committed.set()
+        go_on.wait(10)  # the row is filled; the handler hasn't got the answer yet
+        return ok
+
+    monkeypatch.setattr(upload_routes, "store_upload", capture)
+    monkeypatch.setattr(store, "fill_upload", slow_return)
+    async with contextlib.aclosing(v):
+        post = asyncio.ensure_future(
+            v.post("/api/public/upload", content=PNG, headers={"Content-Type": "image/png"})
+        )
+        async with asyncio.timeout(10):
+            while not committed.is_set():
+                await asyncio.sleep(0.01)
+        assert store.count_upload_rows(share.share_id) == 1 and written[0].exists()
+        post.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await post
+        go_on.set()
+        async with asyncio.timeout(10):
+            while store.count_upload_rows(share.share_id) or written[0].exists():
+                await asyncio.sleep(0.01)
+    assert store.count_upload_rows(share.share_id) == 0 and not written[0].exists()
+
+
+@pytest.mark.anyio
+async def test_an_upload_whose_handle_cant_be_made_answers_503_and_leaves_nothing(
+    env,
+    host,  # noqa: F811
+    project,  # noqa: F811
+    monkeypatch,
+):
+    """No read-back handle (an unusable secret key): the visitor never gets the upload, so its
+    file and row go with the 503 (#1780)."""
+    key = await _session("codex", project)
+    v, share = await _visitor(env, key)
+    store, written = env.app.state.share_store, []
+    store_upload = upload_routes.store_upload
+
+    def capture(*args, **kwargs):
+        dest, safe = store_upload(*args, **kwargs)
+        written.append(dest)
+        return dest, safe
+
+    def unusable(*_a, **_k):
+        raise template_secrets.SecretKeyUnavailable("bad key")
+
+    monkeypatch.setattr(upload_routes, "store_upload", capture)
+    monkeypatch.setattr(share_api, "image_handle", unusable)
+    async with contextlib.aclosing(v):
+        r = await v.post("/api/public/upload", content=PNG, headers={"Content-Type": "image/png"})
+    assert r.status_code == 503
+    assert store.count_upload_rows(share.share_id) == 0 and not written[0].exists()
 
 
 @pytest.mark.anyio

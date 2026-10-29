@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import logging
 import os
 import uuid
 
@@ -41,6 +42,67 @@ MAX_UPLOADS_PER_SHARE = 20
 # The longest one upload request may stream its body. Bounding it is what makes an old reserved
 # slot provably abandoned (see `shares.PENDING_UPLOAD_TTL_S`).
 UPLOAD_READ_TIMEOUT_S = 60
+
+
+log = logging.getLogger(__name__)
+
+#: Slot reservations and releases in flight, so none is garbage-collected before it has run
+#: (#1780).
+_DETACHED: set[asyncio.Future] = set()
+
+
+def _detached(awaitable) -> asyncio.Future:
+    """Run `awaitable` as its own task: cancelling whoever awaits it (through a shield) never
+    cancels it. Kept referenced until done; an error is logged, never lost."""
+    task = asyncio.ensure_future(awaitable)
+    _DETACHED.add(task)
+
+    def done(t: asyncio.Future) -> None:
+        _DETACHED.discard(t)
+        # An HTTPException (a revoked link's 404) is an answer, already returned to whoever
+        # awaited it: only an unexpected failure is worth a warning.
+        if not t.cancelled() and t.exception() is not None:
+            if not isinstance(t.exception(), HTTPException):
+                log.warning("a detached upload-slot task failed", exc_info=t.exception())
+
+    task.add_done_callback(done)
+    return task
+
+
+def _release(store, share_id: str, slot) -> asyncio.Future:
+    """Hand a reserved upload slot back, in its own task (#1780)."""
+    return _detached(asyncio.to_thread(store.release_upload, share_id, slot))
+
+
+async def _owned(awaitable, *, if_abandoned):
+    """Await `awaitable` in its own task (#1780). If THIS await is cancelled (a client gone, a
+    shutdown), the work still finishes, and `if_abandoned(result)` then runs on what it made, so
+    nothing it reserved or wrote is left for a handler that is no longer there to use it."""
+    task = _detached(awaitable)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+
+        def landed(done: asyncio.Future) -> None:
+            if not done.cancelled() and done.exception() is None:
+                if_abandoned(done.result())
+
+        task.add_done_callback(landed)
+        raise
+
+
+def _discard_upload(store, share_id: str, dest) -> asyncio.Future:
+    """Remove an upload whose response never reached its visitor (#1780): nobody holds its
+    handle, so it could only count against the link's cap."""
+
+    def drop() -> None:
+        # The row first: while the file still exists its name can't be taken by another upload,
+        # so this delete can only ever match the abandoned upload's own row.
+        store.release_upload(share_id, dest.name)
+        with contextlib.suppress(OSError):
+            os.unlink(dest)
+
+    return _detached(asyncio.to_thread(drop))
 
 
 class _Gone(Exception):
@@ -298,10 +360,15 @@ def register(app: FastAPI, *, store: shares.ShareStore, require_share) -> None:
         # A slot is RESERVED before any byte is accepted (count + claim in one transaction), under
         # the share's fence with the row re-checked, so concurrent uploads can't slip under the cap
         # and a revoked link reserves nothing. It is handed back on any failure.
-        slot = await _fenced_sync(
-            store,
-            share.share_id,
-            lambda: store.reserve_upload(share.share_id, MAX_UPLOADS_PER_SHARE),
+        # Owned by its own task (#1780, Hermes 7389): a handler cancelled while the reservation
+        # commits never receives its slot, so the slot is given back once it lands.
+        slot = await _owned(
+            _fenced_sync(
+                store,
+                share.share_id,
+                lambda: store.reserve_upload(share.share_id, MAX_UPLOADS_PER_SHARE),
+            ),
+            if_abandoned=lambda got: got is not None and _release(store, share.share_id, got),
         )
         if slot is None:
             raise HTTPException(status_code=429, detail="this link has uploaded enough images")
@@ -345,18 +412,38 @@ def register(app: FastAPI, *, store: shares.ShareStore, require_share) -> None:
                     raise HTTPException(status_code=409, detail="the upload slot expired")
                 return dest
 
-            dest = await _fenced_sync(store, share.share_id, settle)
+            async def stored_with_handle():
+                dest = await _fenced_sync(store, share.share_id, settle)
+                try:
+                    return dest, await _handle_or_503(share.share_id, dest.name)
+                except BaseException:
+                    # No handle (503): the visitor will never hold this upload, so it goes.
+                    await asyncio.shield(_discard_upload(store, share.share_id, dest))
+                    raise
+
+            # Owned too (Hermes 7391): cancelled after the fill commits (or while its read-back
+            # handle is made), the stored file and row would otherwise count against the cap
+            # with no visitor holding their handle. After this, nothing awaits before the answer.
+            dest, image = await _owned(
+                stored_with_handle(),
+                if_abandoned=lambda done: _discard_upload(store, share.share_id, done[0]),
+            )
             filled = True
         finally:
             if not filled:
-                await asyncio.to_thread(store.release_upload, share.share_id, slot)
+                # Its own task, awaited through a shield (#1780): this `finally` also runs when
+                # the handler is cancelled from outside (a client gone, a shutdown), inside the
+                # middleware's cancelled anyio scope, which cancels every await here. A release
+                # awaited directly was cancelled with it and the slot stayed reserved; the task
+                # finishes the release whatever happens to this await.
+                await asyncio.shield(_release(store, share.share_id, slot))
         # `stored` is the name THIS visitor attaches by (it is ours — "shared-image" plus a
         # timestamp — so it carries no operator filename); `image` is its read-back handle.
         return _no_store(
             JSONResponse(
                 {
                     "stored": dest.name,
-                    "image": await _handle_or_503(share.share_id, dest.name),
+                    "image": image,
                     "mime": mime,
                 },
                 status_code=201,
