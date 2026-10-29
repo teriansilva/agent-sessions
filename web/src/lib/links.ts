@@ -18,3 +18,49 @@ export function releaseNotesUrl(version: string | null | undefined): string | nu
   const m = /^v?(\d+\.\d+\.\d+)$/.exec((version ?? "").trim());
   return m ? `${SOURCE_URL}/releases/tag/v${m[1]}` : null;
 }
+
+/** The longest user agent written into a report. Real ones are well under this; a custom or
+ *  extension-padded one is cut so the URL stays far below GitHub's limit (#1742). */
+export const ISSUE_UA_MAX = 300;
+
+/** The longest version written into a report. A release or `0.0.0+<sha>` is far shorter. */
+export const ISSUE_VERSION_MAX = 64;
+
+/** A new issue on the public repo's tracker, its body prefilled (#1742). The reporter fills the
+ *  title, reads the whole body and submits it from their own GitHub account. The app holds no
+ *  credential for the repo and posts no issue.
+ *
+ *  Opening the link DOES send the body to GitHub: it is in the URL the browser requests. So it
+ *  carries only the version and the browser's user agent. A public tracker is the wrong place for
+ *  anything about the install (its origin, the operator's name, paths, session ids, logs), so none
+ *  of those are parameters here. */
+export function newIssueUrl({
+  version,
+  userAgent,
+}: {
+  version: string | null | undefined;
+  userAgent: string | null | undefined;
+}): string {
+  const clip = (v: string | null | undefined, max: number) => {
+    const t = v?.trim() || "unknown";
+    return t.length > max ? `${t.slice(0, max)}…` : t;
+  };
+  const body = [
+    "### What happened",
+    "",
+    "",
+    "### What you expected",
+    "",
+    "",
+    "### Steps to reproduce",
+    "",
+    "1. ",
+    "",
+    "### Environment",
+    "",
+    `- BattleLab: ${clip(version, ISSUE_VERSION_MAX)}`,
+    `- Browser: ${clip(userAgent, ISSUE_UA_MAX)}`,
+    "",
+  ].join("\n");
+  return `${SOURCE_URL}/issues/new?${new URLSearchParams({ body })}`;
+}

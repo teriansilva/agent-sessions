@@ -4,7 +4,8 @@
  *  ⚙ link beside this tile, and the drawer repeated both in its own action row — three places for
  *  the same five things. The operator asked for them here: this tile stays in the bar at every
  *  width (`data-topbar-keep`), so one menu reaches Settings, Security, the tour, the docs and
- *  What's new on a phone and on a desktop alike.
+ *  What's new on a phone and on a desktop alike. Report an issue (#1742) joins that Help group: it
+ *  opens the public repo's new-issue form, prefilled with the version.
  *
  *  The corner used to be four anonymous icons, two of which were destinations (#1058 moved those
  *  into the section nav). What was left had no answer to "which account is this tab?" — on a tool
@@ -37,6 +38,7 @@
  */
 import {
   BookOpen,
+  Bug,
   Compass,
   ExternalLink,
   LogOut,
@@ -47,7 +49,7 @@ import {
 import { Link, useLocation } from "react-router-dom";
 
 import { api } from "../../lib/api";
-import { DOCS_HOME_URL } from "../../lib/links";
+import { DOCS_HOME_URL, newIssueUrl, SOURCE_URL } from "../../lib/links";
 import { settingsPath } from "../../routes/settingsTabs";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
 import help from "./HelpMenu.module.css";
@@ -55,6 +57,7 @@ import styles from "./OperatorMenu.module.css";
 import { operatorInitials } from "./operatorInitials";
 
 const DOCS_HOST = new URL(DOCS_HOME_URL).host;
+const ISSUES_HOST = new URL(SOURCE_URL).host;
 
 export function OperatorMenu({
   username,
@@ -64,6 +67,7 @@ export function OperatorMenu({
   onTour,
   onWhatsNew,
   whatsNewLabel = null,
+  version = null,
 }: {
   /** The operator's login name. `null` on a no-login install, `undefined` before the config
    *  arrives or on a server too old to send it — neither decides whether there IS a login. */
@@ -81,6 +85,9 @@ export function OperatorMenu({
   onWhatsNew?: () => void;
   /** `whatsNewLabel()` — e.g. "What's new in 0.20"; `null` when nothing is bundled. */
   whatsNewLabel?: string | null;
+  /** The running version (`useAppVersion().displayVersion`), written into a reported issue's
+   *  body (#1742). `null` until it is known; the report then says "unknown". */
+  version?: string | null;
 }) {
   // Settings returns to wherever it was opened from, as the old top-bar ⚙ did.
   const location = useLocation();
@@ -221,6 +228,30 @@ export function OperatorMenu({
               {whatsNewLabel}
             </button>
           ) : null}
+          {/* #1742: GitHub's own form, prefilled. The reporter signs in there and sees the whole
+              body before submitting it. Opening the link sends that body to GitHub in the URL;
+              see `newIssueUrl` for what it carries. */}
+          <a
+            role="menuitem"
+            className={help.item}
+            href={newIssueUrl({ version, userAgent: navigator.userAgent })}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Report an issue (opens GitHub in a new tab)"
+            onClick={close}
+            data-testid="operator-report-issue"
+          >
+            <span className={help.icon} aria-hidden="true">
+              <Bug size={15} />
+            </span>
+            <span className={help.label}>
+              Report an issue
+              <span className={help.sub}>{ISSUES_HOST}</span>
+            </span>
+            <span className={help.trail} aria-hidden="true">
+              <ExternalLink size={13} />
+            </span>
+          </a>
           {signedIn ? (
             <button
               type="button"

@@ -9,6 +9,7 @@
  *  and check the click landed.
  */
 import { expect, test, type Page } from "@playwright/test";
+import { SOURCE_URL } from "../src/lib/links";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
 import { animationsSettled } from "./nightjarShell";
 
@@ -119,6 +120,36 @@ test("the panel opens ABOVE the terminal pane and its items are actually clickab
   await expect(page).toHaveURL(/\/settings/);
 });
 
+test("Report an issue opens GitHub's new-issue form in a new tab, prefilled (#1742)", async ({
+  page,
+  context,
+}) => {
+  // The popup is stubbed at the CONTEXT (popups are new pages in it), so the spec never needs the
+  // network: what it proves is that the click lands on the item in the portalled panel and the
+  // tab opens at the right address with the body filled in.
+  await context.route("https://github.com/**", (r) =>
+    r.fulfill({ contentType: "text/html", body: "<title>new issue</title>" }),
+  );
+  await mockShell(page);
+  await page.goto(NEW_SESSION_PATH);
+  await page.getByTestId("operator-menu").click();
+  const panel = page.getByTestId("operator-menu-panel");
+  const item = panel.getByRole("menuitem", { name: /^Report an issue/ });
+  await item.scrollIntoViewIfNeeded();
+  const [popup] = await Promise.all([page.waitForEvent("popup"), item.click()]);
+  const url = new URL(popup.url());
+  expect(`${url.origin}${url.pathname}`).toBe(`${SOURCE_URL}/issues/new`);
+  const body = url.searchParams.get("body") ?? "";
+  expect(body).toContain("### What happened");
+  // The shell passes the running version in (App.tsx): a dropped prop reads "unknown".
+  expect(body).toMatch(/- BattleLab: \S+/);
+  expect(body).not.toContain("- BattleLab: unknown");
+  expect(body).toContain(`- Browser: ${await page.evaluate(() => navigator.userAgent)}`);
+  // noopener: the opened tab has no handle back on BattleLab.
+  expect(await popup.evaluate(() => window.opener)).toBeNull();
+  await expect(panel).toHaveCount(0);
+});
+
 test("Escape closes it and returns focus to the tile", async ({ page }) => {
   await mockShell(page);
   await page.goto(NEW_SESSION_PATH);
@@ -171,6 +202,13 @@ test("on a short landscape screen every item — Sign out included — stays rea
   expect(s.y + s.height).toBeLessThanOrEqual(320);
   // Actually hittable where it is drawn — not covered by anything.
   await signOut.click({ trial: true });
+  // Report an issue (#1742) made the panel one row taller: it must be reachable here too.
+  const report = panel.getByRole("menuitem", { name: /^Report an issue/ });
+  await report.scrollIntoViewIfNeeded();
+  const r = (await report.boundingBox())!;
+  expect(r.y).toBeGreaterThanOrEqual(box.y);
+  expect(r.y + r.height).toBeLessThanOrEqual(320);
+  await report.click({ trial: true });
   // …and the keyboard reaches it too: End moves focus there, which scrolls it into view.
   await panel.getByRole("menuitem").first().focus();
   await page.keyboard.press("End");

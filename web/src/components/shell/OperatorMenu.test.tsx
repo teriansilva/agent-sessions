@@ -13,6 +13,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 
 import { api } from "../../lib/api";
+import { SOURCE_URL } from "../../lib/links";
 import { OperatorMenu } from "./OperatorMenu";
 
 vi.mock("../../lib/api", async () => {
@@ -123,4 +124,27 @@ test("a failed sign-out does not take the app down", async () => {
   await userEvent.click(screen.getByTestId("operator-menu"));
   await userEvent.click(screen.getByTestId("operator-sign-out"));
   expect(api.logout).toHaveBeenCalled();
+});
+
+test("Report an issue opens the public repo's new-issue form in a new tab, with the version (#1742)", async () => {
+  mount({ version: "0.21.0" });
+  await userEvent.click(screen.getByTestId("operator-menu"));
+  const item = screen.getByRole("menuitem", {
+    name: "Report an issue (opens GitHub in a new tab)",
+  });
+  const url = new URL(item.getAttribute("href")!);
+  expect(`${url.origin}${url.pathname}`).toBe(`${SOURCE_URL}/issues/new`);
+  expect(url.searchParams.get("body")).toContain("- BattleLab: 0.21.0");
+  // `noopener`: the GitHub tab gets no handle on this one (reverse tabnabbing).
+  expect(item).toHaveAttribute("target", "_blank");
+  expect(item).toHaveAttribute("rel", "noopener noreferrer");
+  // Choosing it closes the menu, like Documentation.
+  await userEvent.click(item);
+  expect(screen.queryByTestId("operator-menu-panel")).toBeNull();
+});
+
+test("Report an issue is offered on a no-login install as well", async () => {
+  mount({ username: null, authMode: "none" });
+  await userEvent.click(screen.getByTestId("operator-menu"));
+  expect(screen.getByTestId("operator-report-issue")).toBeInTheDocument();
 });

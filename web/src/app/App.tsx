@@ -628,6 +628,7 @@ function Layout() {
                 onTour={() => setTourOpen(true)}
                 onWhatsNew={whatsNew.open}
                 whatsNewLabel={helpWhatsNew}
+                version={version.displayVersion}
               />
             </span>
           </span>

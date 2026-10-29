@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { DOCS_HOME_URL } from "../src/lib/links";
+import { DOCS_HOME_URL, SOURCE_URL } from "../src/lib/links";
 import { mockRoster } from "./roster";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
 import { TOUCH_FLOOR } from "./touchTarget";
@@ -84,17 +84,19 @@ test("the operator menu carries Settings and Help: first item focused, arrows mo
     "Intro tour",
     `Documentation${new URL(DOCS_HOME_URL).host}`,
     "What's new in 0.20",
+    // #1742: the last Help item. No Sign out here: this install has no login.
+    `Report an issue${new URL(SOURCE_URL).host}`,
   ]);
   await expect(menu.getByRole("menuitem", { name: "Settings" })).toBeFocused();
 
   await page.keyboard.press("ArrowDown");
   await expect(menu.getByRole("menuitem", { name: "Security & 2FA" })).toBeFocused();
   await page.keyboard.press("End");
-  await expect(menu.getByRole("menuitem", { name: "What's new in 0.20" })).toBeFocused();
+  await expect(menu.getByRole("menuitem", { name: /^Report an issue/ })).toBeFocused();
   await page.keyboard.press("Home");
   await expect(menu.getByRole("menuitem", { name: "Settings" })).toBeFocused();
   await page.keyboard.press("ArrowUp");
-  await expect(menu.getByRole("menuitem", { name: "What's new in 0.20" })).toBeFocused();
+  await expect(menu.getByRole("menuitem", { name: /^Report an issue/ })).toBeFocused();
 
   await page.keyboard.press("Escape");
   await expect(menu).toHaveCount(0);
