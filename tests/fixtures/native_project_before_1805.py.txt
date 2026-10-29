@@ -1,0 +1,568 @@
+# The API-session projection exactly as it was before #1805, kept as the parity oracle for
+# `tests/test_native_heartbeats.py`. It reads every `background` record from the global index;
+# the test runs it over a copy of the journal whose index still holds the plain heartbeats.
+# Executed in `native_runtime`'s namespace (its helpers are the current ones). Never edit it to
+# follow a change: a deliberate change to the projection replaces this file in the same PR.
+
+def _observe_task(tasks: dict, ended: set[str], data: dict, ts: float) -> None:
+    """Merge one live worker's task observation (#1461), independently of execution state.
+
+    Terminal ids stay ended for this generation, so a late sparse/progress frame cannot revive
+    them. Journal order chooses observations; their timestamps are labels, never ordering keys.
+    """
+    task_id = data["task_id"]
+    state = data.get("task_state", data["state"])
+    if state in native_protocol.TERMINAL_TASK_STATES:
+        ended.add(task_id)
+        tasks.pop(task_id, None)
+        return
+    if task_id in ended:
+        return
+    if task_id not in tasks:
+        if len(tasks) >= native_protocol.MAX_PENDING:
+            return
+        tasks[task_id] = {
+            "task_id": task_id,
+            "state": state or "unknown",
+            "started_at": ts,
+            "updated_at": ts,
+        }
+    task = tasks[task_id]
+    task["updated_at"] = ts
+    if state:
+        task["state"] = state
+    for field in native_protocol.TASK_METADATA_LIMITS:
+        if data.get(field):
+            task[field] = data[field]
+
+
+def project(
+    journal: native_journal.Journal,
+    record: dict,
+    live_worker: str | None,
+    *,
+    max_turns: int | None = None,
+    before: str | None = None,
+    ended_workers: frozenset[str] | set[str] = frozenset(),
+    ended_reason: Callable[[str], str | None] = lambda worker_id: None,
+    ended_code: Callable[[str], str] = lambda worker_id: "worker_ended",
+    live_text: bool = False,
+) -> dict:
+    """Project only displayed turn payloads; transcript consumers may request every turn.
+
+    ``ended_reason`` (#1643) names why a gone generation ended when systemd said so (its memory
+    limit), replacing the generic "worker ended" text. It explains; it never changes a status.
+    ``ended_code`` (#1733): the `not_sent` reason a message still queued by a generation PROVED
+    ended derives — `journal_unwritable` when that generation stopped because the session's
+    record could not be written.
+
+    ``before`` (#1504) projects the ``max_turns`` turns just older than that turn instead of the
+    newest window: a page of history, keyed by turn id so turns appended meanwhile never shift
+    it. ``history_before`` is where the next older page starts, or None at the first turn.
+
+    ``live_text`` (#1727, the operator's own snapshot only): the running operator turn whose reply
+    already has settled messages also shows the message it is streaming now — the partial text
+    after its last settled block — marked ``stream`` so the pane can extend it. Every other
+    reader (history, the public link, missions) keeps the settled reply alone."""
+    turns: dict[str, dict] = {}
+    pending: dict[str, dict] = {}
+    decided: set[str] = set()
+    native_id = record.get("native_id")
+    model_effective = None
+    # What the client REPORTS it runs (#1511): the newest `session` event's model and level. A
+    # report, not evidence; `model_effective` stays the per-turn observation.
+    model_configured = effort_configured = None
+    background = False
+    background_worker: str | None = None  # the worker that reported `background`
+    background_turn: tuple[str | None, str] | None = None  # (target, the worker that minted it)
+    cwd = journal.header.get("cwd")
+    # A removed message (#1447) is not part of the conversation: it never takes a slot in the
+    # turn window, and is not counted as an omitted earlier turn.
+    removed = native_journal.withdrawn(journal)
+    submits = [
+        op.operation_id
+        for op in journal.operations.values()
+        if op.request["action"] == "submit" and op.operation_id not in removed
+    ]
+    # Turns the agent ran for itself (#1438), from the global `background` events that mint their
+    # target. They share ONE display window with operator turns, newest first, so a bounded read
+    # shows what a full one would. Ordered by journal position, never by a wall clock.
+    starts, settled = [], set()
+    tasks, ended_tasks = {}, set()
+    ended: set[str] = set()  # agent turns whose end (or a later start, or a new worker) was seen
+    last: tuple[str, str] | None = None  # (agent turn, the worker that minted it)
+    for item in journal.events.for_operations(set()):
+        kind, data = item["event"]["kind"], item["event"]["data"]
+        if kind == "background" and data.get("task_id") and item["worker_id"] == live_worker:
+            _observe_task(tasks, ended_tasks, data, item["ts"])
+        if kind == "background" and "background_turn" in data:
+            if last is not None:
+                ended.add(last[0])
+            last = (data["background_turn"], item["worker_id"]) if data["background_turn"] else None
+            if data["background_turn"]:
+                starts.append((item["cursor"], data["background_turn"]))
+        elif kind == "turn_completed" and data.get("operation_id"):
+            settled.add(data["operation_id"])
+    if last is not None and last[1] != live_worker:
+        ended.add(last[0])
+    # An own turn that ended having recorded nothing has nothing to show (#1438 follow-up): every
+    # own turn before workers recorded output, and quiet ones since, would be an empty header
+    # taking a slot in the window. A running one always shows — it is what is happening now.
+    starts = [
+        (cursor, agent)
+        for cursor, agent in starts
+        if agent not in ended or journal.events.recorded(agent)
+    ]
+    timeline = sorted(
+        [(journal.operations[op].claimed_revision, 0, op) for op in submits]
+        + [(cursor, 1, agent) for cursor, agent in starts],
+    )
+    if before is None:
+        shown = timeline if max_turns is None else timeline[-max_turns:] if max_turns else []
+    else:
+        at = next((i for i, entry in enumerate(timeline) if entry[2] == before), None)
+        if at is None:
+            raise NativeError(409, "history cursor not found")
+        shown = timeline[max(0, at - (max_turns or 0)) : at]
+    # The oldest turn of the window, when anything older exists. Only the window counts: a live
+    # turn pulled forward below is shown, but it is not where history continues.
+    history_before = shown[0][2] if shown and shown[0] != timeline[0] else None
+    # Live work is never cut (Hermes on #1439), however many turns the agent ran for itself since:
+    # every message the live worker still holds queued, and the newest one it dispatched if it has
+    # not completed (it may have waited behind those turns). Nothing else: an input that settles
+    # without a completion (a steer, a refusal) is history, and history ages out as before.
+    live_submits = [op for op in submits if journal.operations[op].worker_id == live_worker]
+    dispatched = [
+        op for op in live_submits if journal.operations[op].handoff in {"uncertain", "sent"}
+    ]
+    keep = {op for op in live_submits if journal.operations[op].handoff == "queued"}
+    if dispatched and dispatched[-1] not in settled:
+        keep.add(dispatched[-1])
+    waiting = [entry for entry in timeline if entry[1] == 0 and entry[2] in keep]
+    if before is None:
+        shown = sorted({*shown, *waiting})
+    selected = {entry[2] for entry in shown if entry[1] == 0}
+    selected_agents = {entry[2] for entry in shown if entry[1] == 1}
+    agents: dict[str, dict] = {}
+    open_agent: str | None = None
+    oom_counts: dict[str, int] = {}  # invocation → the newest cumulative count shown (#1732)
+    oom_between: list[tuple[int, int]] = []  # session-level OOM notices: (cursor, kills)
+    for op in journal.operations.values():
+        params = op.request["params"]
+        if op.request["action"] == "submit":
+            if op.operation_id not in selected:
+                continue
+            turns[op.operation_id] = {
+                "turn_id": op.operation_id,
+                "status": "pending",
+                "text": params["text"],
+                "ts": op.ts,
+                "attachments": [
+                    native_attachments.public(a) for a in params.get("attachments") or ()
+                ],
+                "reply": "",
+                "reply_ts": None,
+                "partial": "",
+                "partial_item": None,
+                # The message streaming now (#1727): partial text since the last settled block.
+                "open": "",
+                "open_item": None,
+                "context": params.get("context") or {},
+                "tools": [],
+                "handoff": op.handoff,
+                "queued_claim": op.queued,
+                "reason_code": op.reason_code,
+                "worker_id": op.worker_id,
+                "completed": False,
+            }
+        elif op.request["action"] == "decide":
+            # Native request ids repeat (per turn / per connection): key by the exact callback.
+            decided.add((params["approval_worker_id"], params["turn_id"], params["request_id"]))
+        elif op.request["action"] == "send_now" and op.handoff != "not_sent":
+            queued = turns.get(params["queued_turn_id"])
+            if queued is not None:
+                queued["delivery"] = "steering" if params["mode"] == "steer" else "interrupting"
+                queued["delivery_turn_id"] = params["turn_id"]
+                queued["delivery_operation_id"] = op.operation_id
+                queued["delivery_handoff"] = op.handoff
+    observations = (
+        journal.events
+        if max_turns is None
+        else journal.events.for_operations(selected | selected_agents)
+    )
+    for item in observations:
+        kind, data = item["event"]["kind"], item["event"]["data"]
+        # Attribution is by FIELD: an agent turn's output never lands on an operator turn.
+        turn = (
+            agents.get(data["agent_turn"])
+            if "agent_turn" in data
+            else turns.get(data.get("operation_id") or "")
+        )
+        if kind == "session":
+            # A report of a DIFFERENT model retires the earlier observation (#1511): it was made
+            # under the previous model and must not outrank what the client now says it runs.
+            # The same model reported again (claude's `system/init` opens every turn) keeps it.
+            if data.get("model_configured") != model_configured:
+                model_effective = None
+            model_configured = data.get("model_configured")
+            effort_configured = data.get("effort_configured")
+        if kind == "session" and data.get("native_id"):
+            native_id = data["native_id"]
+        elif kind == "model" and data.get("model_effective"):
+            model_effective = data["model_effective"]
+        elif kind == "background":
+            if item["worker_id"] == live_worker:
+                background, background_worker = bool(data.get("active")), item["worker_id"]
+            if "background_turn" in data:
+                background_turn = (data["background_turn"], item["worker_id"])
+                if open_agent is not None:
+                    previous = agents.get(open_agent)
+                    if previous is not None and previous["worker_id"] != item["worker_id"]:
+                        # A new generation speaks: the old one died mid-turn, whatever this says.
+                        _settle_agent(previous, "worker_ended", ended_reason(previous["worker_id"]))
+                    else:
+                        # Its end, or a start that implies it (one turn runs at a time).
+                        _settle_agent(previous, data["state"])
+                open_agent = data["background_turn"]
+                if open_agent in selected_agents and open_agent not in agents:
+                    agents[open_agent] = {
+                        "kind": "agent",
+                        "position": item["cursor"],
+                        "turn_id": open_agent,
+                        "status": "pending",
+                        "ts": item.get("ts"),
+                        "reply": "",
+                        "reply_ts": None,
+                        "partial": "",
+                        "partial_item": None,
+                        "tools": [],
+                        "worker_id": item["worker_id"],
+                        "completed": False,
+                    }
+        elif kind == "memory_oom_kill":
+            # #1732: one notice per (invocation, cumulative count), so a re-read, a reload or a
+            # replayed record never doubles it; two kills between reads are one notice of 2.
+            killed = data["count"] - oom_counts.get(data["invocation_id"], 0)
+            if killed > 0:
+                oom_counts[data["invocation_id"]] = data["count"]
+                if "operation_id" in data or "agent_turn" in data:
+                    if turn is not None:  # a turn outside this window keeps its own notice
+                        turn["oom_kills"] = turn.get("oom_kills", 0) + killed
+                else:
+                    oom_between.append((item["cursor"], killed))
+        elif kind == "approval" and turn is not None:
+            exact = (item["worker_id"], data["operation_id"], data["request_id"])
+            pending[exact] = {**data, "worker_id": item["worker_id"]}
+        elif kind == "approval_cancelled":
+            for exact in [
+                k for k in pending if k[0] == item["worker_id"] and k[2] == data["request_id"]
+            ]:
+                pending.pop(exact)
+        elif turn is None:
+            if kind == "turn_completed" and item["worker_id"] == live_worker:
+                background = bool(data.get("background_active"))
+                background_worker = item["worker_id"]
+            continue
+        elif kind == "text":
+            if data["text"] and turn["reply_ts"] is None:
+                turn["reply_ts"] = item.get("ts")
+            if data["partial"]:
+                # Streamed pieces of ONE message concatenate; a new message id starts a paragraph.
+                item = data.get("item_id")
+                if item and turn["partial_item"] and item != turn["partial_item"]:
+                    _append(turn, "partial", data["text"])
+                else:
+                    _append(turn, "partial", data["text"], continues=True)
+                turn["partial_item"] = item or turn["partial_item"]
+                if "open" in turn:
+                    # The same rules for the message in progress alone, from its own start.
+                    if item and turn["open_item"] and item != turn["open_item"]:
+                        _append(turn, "open", data["text"])
+                    else:
+                        _append(turn, "open", data["text"], continues=True)
+                    turn["open_item"] = item or turn["open_item"]
+            else:
+                # Each settled text block is its own message: without a break, "…done.Next…".
+                _append(turn, "reply", data["text"])
+                if "open" in turn:
+                    # It settles what was streaming: nothing is in progress until the next delta.
+                    for key in ("open_starts", "open_cut", "open_starts_cut"):
+                        turn.pop(key, None)
+                    turn["open"], turn["open_item"] = "", None
+            if data.get("questions") and data.get("item_id"):
+                # The newest question the agent asked in this turn (#1463), and the id an
+                # answer names as its `reply_to`.
+                turn["questions"] = data["questions"]
+                turn["question_id"] = data["item_id"]
+        elif kind == "tool":
+            entry = {
+                "name": data.get("tool") or "tool",
+                "outcome": data.get("state") or ("completed" if data.get("completed") else ""),
+                "summary": (data.get("summary") or "")[:500],
+                "id": data["item_id"],
+            }
+            # Indexed (not a scan of every earlier call): a long turn has tens of thousands.
+            index = turn.setdefault("_tool_index", {})
+            found = index.get(entry["id"])
+            existing = None if found is None else found[1]
+            if existing is not None and not data.get("tool"):
+                entry["name"] = existing["name"]
+            if entry["name"] == "execute" and data.get("summary"):
+                raw = _payload(data["summary"])
+                if isinstance(raw, dict):
+                    entry["summary"] = str(raw.get("command") or "Command unavailable")[:500]
+            if existing is None:
+                # Where the call came in the text so far — settled or still streaming, whichever
+                # the reply turns out to be shown from.
+                entry["_at"] = {
+                    key: turn.get(f"{key}_cut", 0) + len(turn[key]) for key in ("reply", "partial")
+                }
+                turn["tools"].append(entry)
+                index[entry["id"]] = (len(turn["tools"]) - 1, entry)
+                if len(turn["tools"]) > TOOLS_SHOWN:
+                    # Fell out of the calls a snapshot shows: its risk is never asked for.
+                    turn["tools"][-TOOLS_SHOWN - 1].pop("_risk_sources", None)
+            else:
+                # A result names only the call it answers (Claude's carry no tool): it keeps the
+                # call's name rather than the placeholder (#1438).
+                if not data.get("tool"):
+                    entry.pop("name")
+                existing.update({k: v for k, v in entry.items() if v})
+            # The same advisory classifier as a pending card (#1339): a tool row that ran a
+            # command — asked or, in a skip-permissions session, never asked — says so. Only a
+            # call a snapshot can show (the newest TOOLS_SHOWN) is classified, once, after the
+            # walk (`_classify_tools`): classifying every call of a 19,000-call turn on every
+            # read took ~20 s per snapshot.
+            row = existing if existing is not None else entry
+            place = len(turn["tools"]) - 1 if existing is None else found[0]
+            if data.get("summary") and len(turn["tools"]) - place <= TOOLS_SHOWN:
+                # With the name the call had THEN: a later event may report the same call under
+                # another kind, which must not reclassify an earlier command (Hermes on #1711).
+                row.setdefault("_risk_sources", []).append((row["name"], data["summary"]))
+        elif kind == "input_accepted":
+            turn["completed"] = True
+            turn["status"], turn["delivery"] = "delivered", "steered"
+        elif kind == "delivery_failed" and data["control_id"] == turn.get("delivery_operation_id"):
+            turn["delivery"], turn["delivery_reason"] = "interrupt_failed", data["message"]
+        elif kind == "turn_completed":
+            turn["completed"] = True
+            turn["status"] = "done" if data["state"] == "completed" else "failed"
+            if data["state"] == "interrupted":
+                turn["code"] = "interrupted"
+            if data.get("error"):
+                turn["reason"] = data["error"][:2000]
+            if data.get("text") and not turn["reply"]:
+                turn["reply"] = data["text"]
+                if turn["reply_ts"] is None:
+                    turn["reply_ts"] = item.get("ts")
+            if item["worker_id"] == live_worker:
+                background = bool(data.get("background_active"))
+                background_worker = item["worker_id"]
+            for key, value in list(pending.items()):
+                if value.get("operation_id") == turn["turn_id"]:
+                    pending.pop(key)
+        elif kind == "error" and data.get("action") in {"turn/start", "turn/steer"}:
+            if not turn["completed"]:  # the agent refused the turn: it definitely did not run
+                turn["completed"] = True
+                turn["status"] = "failed"
+                turn["reason"] = data.get("message") or "the agent refused this turn"
+        elif kind == "disconnected" or (kind == "error" and data.get("operation_id")):
+            if kind == "error" and data.get("native_will_retry"):
+                continue
+            if not turn["completed"]:
+                turn["status"], turn["code"] = "failed", "uncertain"
+                # #1732: the worker outlives its agent now; once it is gone, what it recorded of
+                # the agent's end (or systemd's of the unit's) explains the disconnect.
+                gone = item["worker_id"] != live_worker
+                turn["reason"] = (
+                    data.get("message")
+                    or (ended_reason(item["worker_id"]) if gone else None)
+                    or "the native connection closed"
+                )
+    _classify_tools([*turns.values(), *agents.values()], cwd)
+    in_flight = None
+    requests = []
+    for turn in [*turns.values(), *agents.values()]:
+        # A reply that came whole at the end has no settled text before any call: all sit at 0.
+        if turn["reply"] or turn.get("kind") == "agent":
+            _place_tools(turn, "reply")
+            _place_breaks(turn, "reply")
+        else:
+            turn["reply"] = turn["partial"]
+            _place_tools(turn, "partial")
+            _place_breaks(turn, "partial")
+            if not turn["completed"]:
+                # Shown from the streamed text of a turn still open (#1727): the pane may extend
+                # it with that turn's next partial text events, from the message it names here.
+                turn["stream"] = {"item": turn["partial_item"]}
+    for turn in turns.values():
+        if turn["handoff"] == "not_sent":
+            # An operator message proved never sent (#1538), queued OR direct (a Send again is
+            # usually direct): its reason, as a closed code, and its own derived retry id, so a
+            # chain of failed attempts stays recoverable at its newest link. Never a Send now
+            # control (not a turn) or an uncertain handoff. A direct refusal written before
+            # #1538 has no code and reads `unexpected`.
+            _not_sent(turn, turn["reason_code"] or "unexpected", journal)
+        elif turn["handoff"] == "queued":
+            if turn["worker_id"] != live_worker and turn["worker_id"] in ended_workers:
+                # Its worker ended, on AUTHORITATIVE evidence (`_exit_proved`), with the message
+                # still queued: the same proved non-send. The durable record is written by
+                # `_settle_stranded`; this derivation is the fallback when it could not be.
+                _not_sent(turn, ended_code(turn["worker_id"]), journal)
+            else:
+                # Live, or not seen live by an observation that proves nothing (a `/proc` read
+                # can fail): still pending. Neither `not_sent` nor Send again (#1538).
+                turn["status"] = "queued"
+        elif not turn["completed"] and turn["status"] == "pending":
+            if turn["worker_id"] != live_worker:
+                turn["status"], turn["code"] = "failed", "uncertain"
+                turn["reason"] = (
+                    ended_reason(turn["worker_id"])
+                    or "the native worker ended before this turn settled"
+                )
+            else:
+                if turn.get("delivery") == "steering":
+                    turn["status"] = "delivering"
+                else:
+                    in_flight = turn["turn_id"]
+        if (
+            turn.get("delivery") in {"interrupting", "interrupt_failed"}
+            and turn["status"] != "queued"
+        ):
+            # "Interrupted by Send now — your next message is answered below" needs BOTH: the
+            # interrupt was SENT and not refused (it may have stopped its target), and the message
+            # itself was SENT (it really is answered below). Otherwise the link is dropped and the
+            # target reads as plainly interrupted (#1442; Hermes on #1451).
+            if (
+                turn["delivery"] == "interrupt_failed"
+                or turn.get("delivery_handoff") != "sent"
+                or turn["handoff"] != "sent"
+                or turn["status"] == "failed"
+            ):
+                turn.pop("delivery_turn_id", None)
+            turn.pop("delivery", None)
+            turn.pop("delivery_reason", None)
+    for exact, approval in pending.items():
+        request_id = exact[2]
+        if exact in decided or approval["worker_id"] != live_worker:
+            continue
+        turn = turns.get(approval["operation_id"])
+        if turn is None or turn["turn_id"] != in_flight:
+            continue
+        turn["status"] = "awaiting_approval"
+        offered = _offered(record.get("adapter"), approval, cwd)
+        requests.append(
+            {
+                "request_id": request_id,
+                "turn_id": turn["turn_id"],
+                "kind": approval["tool"],
+                "item_id": approval["item_id"],
+                "summary": approval["summary"],
+                # The complete request the decision approves; a UI must render it in full
+                # before offering approval (the digest binds the decision to these bytes).
+                "payload": _payload(approval["summary"]),
+                "payload_digest": approval["payload_digest"],
+                # Approve is offered only for a request presented COMPLETELY (a file change's
+                # patch, a permission prompt's whole context); declining needs no review.
+                # Never for an agent question (#1463), whatever the worker offered: an approve
+                # sends it no answers, and a worker from before #1463 still offers one.
+                "choices": [
+                    c
+                    for c in approval["choices"]
+                    if c != "approve"
+                    or (
+                        approval.get("complete") is True
+                        and approval["tool"] != native_questions.ASK_TOOL
+                    )
+                ],
+                "complete": approval.get("complete") is True,
+                # #1339: the standing grants the request itself proposed, each labelled with what
+                # it covers (risky ones included — operator direction), and the advisory risk.
+                "always": [native_grants.public(c) for c in offered["always"]],
+                "risk": offered["risk"],
+                "operator_only": True,
+                "context": dict(turn["context"]),
+            }
+        )
+    if live_text:
+        for turn in turns.values():
+            _show_open(turn, turn["turn_id"] == in_flight and turn["status"] == "pending")
+    for agent in agents.values():
+        if agent["worker_id"] != live_worker:
+            # Its worker is gone: nothing will end this turn now.
+            _settle_agent(agent, "worker_ended", ended_reason(agent["worker_id"]))
+    for turn_id, turn in turns.items():
+        turn["position"] = journal.operations[turn_id].claimed_revision
+    shown_turns = sorted([*turns.values(), *agents.values()], key=lambda t: t["position"])
+    oom_start = _place_oom_between(oom_between, journal, timeline, turns, agents)
+    for turn in shown_turns:
+        for key in (
+            "partial",
+            "partial_item",
+            "handoff",
+            "queued_claim",
+            "reason_code",
+            "worker_id",
+            "completed",
+            "delivery_operation_id",
+            "delivery_handoff",
+            "position",
+            "reply_cut",
+            "partial_cut",
+            "reply_starts",
+            "partial_starts",
+            "reply_starts_cut",
+            "partial_starts_cut",
+            "_tool_index",
+            "open",
+            "open_item",
+            "open_cut",
+            "open_starts",
+            "open_starts_cut",
+        ):
+            turn.pop(key, None)
+    return {
+        "turns": shown_turns,
+        # Session-level OOM notices before the first turn (#1732), shown only with that turn.
+        **({"oom_kills_start": oom_start} if oom_start else {}),
+        "omitted_turns": len(timeline) - len(shown_turns),
+        "history_before": history_before,
+        "revision": journal.revision,
+        "cwd": journal.header["cwd"],
+        "in_flight": in_flight,
+        "model": record["request"]["model"],
+        "effort": record["request"].get("effort"),
+        "bypass": _effective_bypass(record),
+        "can_enable_bypass": (
+            record.get("adapter") in kinds.API_BYPASS_KINDS
+            and bool(record.get("native_id"))
+            and bool(record.get("generations"))
+            and _start_state(record) in (None, STARTED)
+            and not _effective_bypass(record)
+        ),
+        "permission_change": {
+            key: value
+            for key, value in _permission_change(record).items()
+            if key in {"operation_id", "state"}
+        },
+        **pending_start_view(record, live_worker),
+        # The generation-scoped launch view (#1505): starting / ready / failed + reason.
+        "launch": launch_view(record),
+        "model_effective": model_effective,
+        "model_configured": model_configured,
+        "effort_configured": effort_configured,
+        "pending_requests": requests,
+        "native": {
+            "native_id": native_id,
+            "worker": live_worker,
+            # Only the live worker's own report: an exited or replaced generation's task ended
+            # with it, so its last `active` would show an idle replacement busy forever.
+            "background_active": background and background_worker == live_worker,
+            "background_tasks": list(tasks.values()),
+            # Only the live worker's own turn is a Send now target (#1427): a target minted by an
+            # exited or replaced generation names a turn nothing can stop any more.
+            "background_turn": background_turn[0]
+            if background_turn is not None and background_turn[1] == live_worker
+            else None,
+        },
+    }

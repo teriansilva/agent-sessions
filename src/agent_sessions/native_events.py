@@ -18,6 +18,8 @@ from array import array
 from collections.abc import Sequence
 from pathlib import Path
 
+from . import native_protocol
+
 
 class SpoolFull(Exception):
     """Discard the derived cache and rebuild from authoritative bytes."""
@@ -91,6 +93,46 @@ class _Spool:
             return os.pread(self.file.fileno(), length, offset)
 
 
+def heartbeat(event: dict) -> bool:
+    """A `background` record that neither starts nor ends a turn the agent runs for itself
+    (#1427): a task's progress or an activity / status report. An idle agent's running subagent
+    writes one every few seconds, so a long session holds tens of thousands (#1805). They are kept
+    out of the session-wide index: what a snapshot needs of them is folded at append instead."""
+    return event["kind"] == "background" and "background_turn" not in event["data"]
+
+
+def observe_task(tasks: dict, ended: set[str], data: dict, ts: float) -> None:
+    """Merge one worker's task observation (#1461), independently of execution state.
+
+    Terminal ids stay ended for this generation, so a late sparse/progress frame cannot revive
+    them. Journal order chooses observations; their timestamps are labels, never ordering keys.
+    """
+    task_id = data["task_id"]
+    state = data.get("task_state", data["state"])
+    if state in native_protocol.TERMINAL_TASK_STATES:
+        ended.add(task_id)
+        tasks.pop(task_id, None)
+        return
+    if task_id in ended:
+        return
+    if task_id not in tasks:
+        if len(tasks) >= native_protocol.MAX_PENDING:
+            return
+        tasks[task_id] = {
+            "task_id": task_id,
+            "state": state or "unknown",
+            "started_at": ts,
+            "updated_at": ts,
+        }
+    task = tasks[task_id]
+    task["updated_at"] = ts
+    if state:
+        task["state"] = state
+    for field in native_protocol.TASK_METADATA_LIMITS:
+        if data.get(field):
+            task[field] = data[field]
+
+
 class Events(Sequence):
     def __init__(self, directory: Path | None = None, *, limit: int = SPOOL_BYTES):
         self._spool = _Spool(directory, limit)
@@ -100,6 +142,10 @@ class Events(Sequence):
         self._operations: dict[str | None, array] = {}
         self._agent_turns: set[str] = set()
         self._global = array("Q")
+        # Folded from every `background` record at append (#1805), per worker: the newest plain
+        # heartbeat's (cursor, active), and the task inventory with that worker's ended ids.
+        self._beats: dict[str, tuple[int, bool]] = {}
+        self._tasks: dict[str, tuple[dict[str, dict], set[str]]] = {}
         # (cursor, item id) of the newest settled question the agent asked (#1463): what an
         # answer's `reply_to` must still name when it is claimed.
         self.last_question: tuple[int, str] | None = None
@@ -131,6 +177,11 @@ class Events(Sequence):
         result._operations = {key: indexes[:] for key, indexes in self._operations.items()}
         result._agent_turns = set(self._agent_turns)
         result._global = self._global[:]
+        result._beats = dict(self._beats)
+        result._tasks = {
+            worker: ({task_id: dict(task) for task_id, task in tasks.items()}, set(ended))
+            for worker, (tasks, ended) in self._tasks.items()
+        }
         result.last_question = self.last_question
         return result
 
@@ -153,8 +204,15 @@ class Events(Sequence):
             and event["data"].get("item_id")
         ):
             self.last_question = (item["cursor"], event["data"]["item_id"])
+        if event["kind"] == "background" and event["data"].get("task_id"):
+            tasks, ended = self._tasks.setdefault(item["worker_id"], ({}, set()))
+            observe_task(tasks, ended, event["data"], item["ts"])
+        if heartbeat(event):
+            # Never indexed (#1805): a snapshot reads only the newest one per worker, from here,
+            # and its tasks from the fold above. A full read still walks every record.
+            self._beats[item["worker_id"]] = (item["cursor"], bool(event["data"].get("active")))
         # These affect session state even when their turn is outside the display window.
-        if event["kind"] in {
+        elif event["kind"] in {
             "session",
             "model",
             "background",
@@ -194,6 +252,15 @@ class Events(Sequence):
         empty text block never counts."""
         return agent_turn in self._agent_turns
 
+    def heartbeat_of(self, worker_id: str) -> tuple[int, bool] | None:
+        """(cursor, active) of ``worker_id``'s newest plain heartbeat, if it wrote one."""
+        return self._beats.get(worker_id)
+
+    def tasks_of(self, worker_id: str) -> list[dict]:
+        """``worker_id``'s tasks still running, in the order first seen; copies."""
+        tasks, _ = self._tasks.get(worker_id, ({}, set()))
+        return [dict(task) for task in tasks.values()]
+
     def for_operations(self, operations: set[str]):
         indexes = [self._global]
         indexes.extend(self._operations[key] for key in operations if key in self._operations)
@@ -218,6 +285,20 @@ class Events(Sequence):
             )
             + sys.getsizeof(self._agent_turns)
             + sum(sys.getsizeof(key) for key in self._agent_turns)
+            + sys.getsizeof(self._beats)
+            + sum(sys.getsizeof(key) + sys.getsizeof(value) for key, value in self._beats.items())
+            + sys.getsizeof(self._tasks)
+            + sum(
+                sys.getsizeof(worker)
+                + sys.getsizeof(tasks)
+                + sum(
+                    sys.getsizeof(task) + sum(sys.getsizeof(v) for v in task.values())
+                    for task in tasks.values()
+                )
+                + sys.getsizeof(ended)
+                + sum(sys.getsizeof(task_id) for task_id in ended)
+                for worker, (tasks, ended) in self._tasks.items()
+            )
         )
 
     @property

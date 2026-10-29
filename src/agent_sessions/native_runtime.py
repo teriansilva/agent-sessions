@@ -2032,38 +2032,6 @@ def _journal(prov, session_id: str) -> native_journal.Journal:
         raise NativeError(404 if exc.code == "unavailable" else 503, exc.detail) from None
 
 
-def _observe_task(tasks: dict, ended: set[str], data: dict, ts: float) -> None:
-    """Merge one live worker's task observation (#1461), independently of execution state.
-
-    Terminal ids stay ended for this generation, so a late sparse/progress frame cannot revive
-    them. Journal order chooses observations; their timestamps are labels, never ordering keys.
-    """
-    task_id = data["task_id"]
-    state = data.get("task_state", data["state"])
-    if state in native_protocol.TERMINAL_TASK_STATES:
-        ended.add(task_id)
-        tasks.pop(task_id, None)
-        return
-    if task_id in ended:
-        return
-    if task_id not in tasks:
-        if len(tasks) >= native_protocol.MAX_PENDING:
-            return
-        tasks[task_id] = {
-            "task_id": task_id,
-            "state": state or "unknown",
-            "started_at": ts,
-            "updated_at": ts,
-        }
-    task = tasks[task_id]
-    task["updated_at"] = ts
-    if state:
-        task["state"] = state
-    for field in native_protocol.TASK_METADATA_LIMITS:
-        if data.get(field):
-            task[field] = data[field]
-
-
 def _show_open(turn: dict, streaming: bool) -> None:
     """The message an operator turn was streaming after its settled ones (#1727), handed to the
     snapshot SEPARATELY (``reply_open``, its message starts in ``reply_open_breaks``): the snapshot
@@ -2128,6 +2096,7 @@ def project(
     model_configured = effort_configured = None
     background = False
     background_worker: str | None = None  # the worker that reported `background`
+    background_at = -1  # the cursor of the record that set it, against the newest heartbeat
     background_turn: tuple[str | None, str] | None = None  # (target, the worker that minted it)
     cwd = journal.header.get("cwd")
     # A removed message (#1447) is not part of the conversation: it never takes a slot in the
@@ -2142,13 +2111,12 @@ def project(
     # target. They share ONE display window with operator turns, newest first, so a bounded read
     # shows what a full one would. Ordered by journal position, never by a wall clock.
     starts, settled = [], set()
-    tasks, ended_tasks = {}, set()
+    # Folded from every `background` record at append (#1805); plain heartbeats are not indexed.
+    tasks = journal.events.tasks_of(live_worker) if live_worker is not None else []
     ended: set[str] = set()  # agent turns whose end (or a later start, or a new worker) was seen
     last: tuple[str, str] | None = None  # (agent turn, the worker that minted it)
     for item in journal.events.for_operations(set()):
         kind, data = item["event"]["kind"], item["event"]["data"]
-        if kind == "background" and data.get("task_id") and item["worker_id"] == live_worker:
-            _observe_task(tasks, ended_tasks, data, item["ts"])
         if kind == "background" and "background_turn" in data:
             if last is not None:
                 ended.add(last[0])
@@ -2267,6 +2235,7 @@ def project(
         elif kind == "background":
             if item["worker_id"] == live_worker:
                 background, background_worker = bool(data.get("active")), item["worker_id"]
+                background_at = item["cursor"]
             if "background_turn" in data:
                 background_turn = (data["background_turn"], item["worker_id"])
                 if open_agent is not None:
@@ -2316,6 +2285,7 @@ def project(
             if kind == "turn_completed" and item["worker_id"] == live_worker:
                 background = bool(data.get("background_active"))
                 background_worker = item["worker_id"]
+                background_at = item["cursor"]
             continue
         elif kind == "text":
             if data["text"] and turn["reply_ts"] is None:
@@ -2412,6 +2382,7 @@ def project(
             if item["worker_id"] == live_worker:
                 background = bool(data.get("background_active"))
                 background_worker = item["worker_id"]
+                background_at = item["cursor"]
             for key, value in list(pending.items()):
                 if value.get("operation_id") == turn["turn_id"]:
                     pending.pop(key)
@@ -2433,6 +2404,11 @@ def project(
                     or (ended_reason(item["worker_id"]) if gone else None)
                     or "the native connection closed"
                 )
+    # The live worker's newest plain heartbeat (#1805), unindexed, is newer than whatever set the
+    # flag above: it is the report the flag would have ended on.
+    beat = journal.events.heartbeat_of(live_worker) if live_worker is not None else None
+    if beat is not None and beat[0] > background_at:
+        background, background_worker = beat[1], live_worker
     _classify_tools([*turns.values(), *agents.values()], cwd)
     in_flight = None
     requests = []
@@ -2612,7 +2588,7 @@ def project(
             # Only the live worker's own report: an exited or replaced generation's task ended
             # with it, so its last `active` would show an idle replacement busy forever.
             "background_active": background and background_worker == live_worker,
-            "background_tasks": list(tasks.values()),
+            "background_tasks": tasks,
             # Only the live worker's own turn is a Send now target (#1427): a target minted by an
             # exited or replaced generation names a turn nothing can stop any more.
             "background_turn": background_turn[0]
