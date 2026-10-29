@@ -221,6 +221,37 @@ async def _watch_turn(task: asyncio.Task, queue: asyncio.Queue[dict]) -> AsyncIt
             get.cancel()
 
 
+#: A mission-local procedure is one flow document; the bundle format bounds a flow file at
+#: `schema.MAX_TOML_BYTES`, and its JSON spelling gets the same order of room (#1777).
+PROCEDURE_BODY_MAX = 4 * 64 * 1024
+_NO_STORE = {"Cache-Control": "no-store"}
+
+
+async def _bounded_body(request: Request, limit: int) -> dict:
+    """`_body` with a size cap read INCREMENTALLY: a chunked body has no Content-Length, and
+    `request.body()` would buffer all of it before any check."""
+    declared = request.headers.get("content-length", "")
+    if declared.isascii() and declared.isdigit() and int(declared) > limit:
+        raise missions.MissionError("request body is too large", status=413)
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > limit:
+            raise missions.MissionError("request body is too large", status=413)
+        chunks.append(chunk)
+    raw = b"".join(chunks)
+    if not raw.strip():
+        return {}
+    try:
+        payload = json.loads(raw)
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        raise missions.MissionError("request body is not valid JSON", status=422) from None
+    if not isinstance(payload, dict):
+        raise missions.MissionError("request body must be a JSON object", status=422)
+    return payload
+
+
 async def _body(request: Request) -> dict:
     """The request body as an object, or a 422 — **an unparseable body is never an empty one**.
 
@@ -2345,6 +2376,84 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         except missions.MissionError as e:
             return _fail(e)
         return JSONResponse({"objectives": rows})
+
+    # ---- procedures and the plan document (#1777, #1613 P4 slice 1) -------------------------
+
+    @app.get("/api/missions/{mission_id}/procedures")
+    async def procedures_route(mission_id: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        """The procedures this mission can apply, BY INDEX, from its project's deployed playbook,
+        with the digest of exactly this list. Read-only; a reason when there are none."""
+        from .. import mission_procedures  # the playbook package imports late (an import cycle)
+
+        try:
+            out = await missions.run_admitted(lambda: mission_procedures.listing(mission_id))
+        except missions.MissionError as e:
+            return _fail(e)
+        return JSONResponse(out, headers=_NO_STORE)
+
+    @app.post("/api/missions/{mission_id}/procedure")
+    async def apply_procedure_route(
+        mission_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Apply ONE procedure as one more objective: `{index, listing}` names a deployed one by
+        its index in the list the server built; `{mission_local: {flow_id, flow}}` is one the
+        operator wrote, held to the bundle's own flow validator. Never both. The plan revision and
+        the evidence rows commit together or not at all."""
+        from .. import mission_procedures
+
+        try:
+            body = await _bounded_body(request, PROCEDURE_BODY_MAX)
+            if "mission_local" in body:
+                if set(body) != {"mission_local"}:
+                    raise missions.MissionError(
+                        "a mission-local procedure takes only mission_local", status=422
+                    )
+                local = body["mission_local"]
+                if not isinstance(local, dict) or set(local) != {"flow_id", "flow"}:
+                    raise missions.MissionError("mission_local is {flow_id, flow}", status=422)
+                out = await missions.run_admitted(
+                    lambda: mission_procedures.apply_local(
+                        mission_id, local["flow_id"], local["flow"]
+                    )
+                )
+            else:
+                if set(body) != {"index", "listing"}:
+                    raise missions.MissionError(
+                        "a procedure is chosen by {index, listing}", status=422
+                    )
+                out = await missions.run_admitted(
+                    lambda: mission_procedures.apply_listed(
+                        mission_id, body["index"], body["listing"]
+                    )
+                )
+        except missions.MissionError as e:
+            return _fail(e)
+        return JSONResponse(out, headers=_NO_STORE)
+
+    @app.get("/api/missions/{mission_id}/plan/revisions/{revision}")
+    async def plan_revision_route(
+        mission_id: str, revision: str, _user: str = Depends(logged_in)
+    ) -> JSONResponse:
+        """One plan-document revision (`latest` or its number) plus each step's DERIVED state.
+
+        Not `GET …/plan`: `POST`/`PATCH …/plan` are the dispatch proposal (#893), a different
+        object, and one path naming two things is how a client reads the wrong one."""
+        from .. import mission_procedures
+
+        try:
+            if revision == "latest":
+                n = None
+            elif revision.isascii() and revision.isdigit() and len(revision) <= 9:
+                n = int(revision)
+            else:
+                raise missions.MissionError("revision is a number or latest", status=422)
+            out = await missions.run_admitted(lambda: mission_procedures.plan(mission_id, n))
+        except missions.MissionError as e:
+            return _fail(e)
+        return JSONResponse(out, headers=_NO_STORE)
 
     @app.post("/api/missions/{mission_id}/objectives/{objective_key}/stand-down")
     async def stand_down_route(

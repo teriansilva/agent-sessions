@@ -35,7 +35,7 @@ Every noun has one meaning. UI copy, docs and code comments use these words.
 | **Session** | One **instance** of a specialist on **one procedure step**: a separately fenced episode | — | Outlives its step as an identity, or carries context to another step | today as a session (one per step: target P6) |
 | **Mission plan** | A reusable plan: objectives, dependencies, project **slots**, role needs (skills and minimum grade) | — | Contains real projects, specialists or secret values | target (P7a) |
 | **Mission** | A plan bound to real projects and specialists, executing | Objectives, the team, the event log, the conversation | Bypasses a project's playbook | today (one project; objectives per project: target P4) |
-| **Objective** | One project, one of its procedures, and that procedure's inputs | Step states | — | today written from the instruction by HQ, or added by the operator (project + procedure: target P4) |
+| **Objective** | One project, one of its procedures, and that procedure's inputs | Step states | — | today: written from the instruction by HQ, added by the operator, or applied as a procedure from the project's deployed playbook (or a mission-local one), single project (P4 slice 1, #1777); HQ choosing them: target P5 |
 | **Patrol** | A session outside any mission: ad-hoc work. An API session by default; a terminal when chosen explicitly | — | — | today |
 | **Standing operation** | An ongoing mission: a pinned mission plan plus triggers (schedule, event, loop until a condition), standing consent, limits and a **ledger**. It stays open and launches sorties | Triggers, limits, ledger, sortie history | Does work itself | target (P7b) |
 | **Sortie** | One run of a standing operation: a normal, bounded mission launched by a trigger | Its objectives and outcome | Carries context to the next sortie except through the ledger | target (P7b) |
@@ -195,11 +195,11 @@ There are three public kinds: **playbooks** and **skills** (the existing feed), 
 | Concept | Today on `main` | Target, and the phase that delivers it |
 |---|---|---|
 | Glossary, this document | — | P0 |
-| Checklists | Removed (P1, #1653): HQ writes a mission's objectives from the instruction | Objective templates return as playbook procedures (P4) |
+| Checklists | Removed (P1, #1653): HQ writes a mission's objectives from the instruction | Playbook procedures replace them: applied by the operator today (P4 slice 1, #1777); chosen by HQ in P5 |
 | Playbook steps | **Format 5 (P2, #1654):** an agent step names a role (skills + minimum grade); formats ≤4 keep their recorded engine/model read-only | Several procedures per project; filling roles from the pool (P3/P5) |
 | Project memory | The BattleLab memory tool, per project | Unchanged; plus specialist notes per specialist × project (P3) |
 | Specialists, the pool | **Library → Specialists (P3 S1, #1693):** a versioned, revision-fenced pool; each specialist is its own saved profile (engine, model, effort); its grade derived from the operator's model → grade map, which ships empty | Skills activated per session (P3 S2), specialist notes (P3 S3), capacity reservations and starting a session from a specialist (P3 S4) |
-| Mission scope | One project per mission | One project per objective; single project first, then cross-project (P4) |
+| Mission scope | One project per mission. A mission's plan document holds its objectives, each a procedure from that project's deployed playbook or a mission-local one, applied by the operator before dispatch (P4 slice 1, #1777) | Cross-project objectives (P4 slice 2) |
 | Planning | A one-shot planner; the lead agent is planned in #1472 | HQ plans with the Commander (P5, needs mission-ready API clients) |
 | Execution | Terminal-supervised missions | API sessions under plan approval (P6, needs mission-ready API clients and the recorded D3 approval) |
 | Mission plans | — | Library and a separate public feed (P7a) |

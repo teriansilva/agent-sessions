@@ -7718,6 +7718,7 @@ def put_plan(
             state = str(row["state"] or "")
             if state not in PLANNABLE_STATES:
                 raise MissionError(f"a mission that is {state} cannot be planned", status=409)
+            _fence_plan_project_tx(con, mission_id, project_id)
             have_state = str(row["plan_state"] or "")
             have_gen = int(row["plan_generation"] or 0)
             # THE GENERATION FENCE, compared under the lock that writes. A planner run is
@@ -8603,6 +8604,7 @@ def claim_plan(
                     )
             use_cwd = cwd if cwd is not None else row["cwd"]
             use_project = project_id if cwd is not None else row["project_id"]
+            _fence_plan_project_tx(con, mission_id, use_project)
             if not use_cwd:
                 raise MissionError("a plan without a project cannot be dispatched", status=422)
             if not row["engine"]:
@@ -9765,6 +9767,174 @@ def _plan_row(row) -> dict:
     }
 
 
+#: The states a procedure may be applied in (#1777, #1193 "new or draft-undispatched"): before
+#: dispatch, never after. A running mission's "what done means" is not rewritten under its agent.
+PROCEDURE_STATES: frozenset[str] = frozenset({"draft", "planned"})
+#: Keys a procedure's evidence is minted under (`mission_plan_document.evidence_key`).
+_PLAN_KEY_RE = re.compile(r"^o[1-9][0-9]?--")
+#: Which objective-row source each procedure origin writes, and which plan author it records.
+#: Fixed here, not by the caller's choice of words: provenance is per ORIGIN (#1777).
+_PROCEDURE_ORIGINS = {
+    "playbook": ("playbook", "playbook"),
+    "mission_local": ("operator", "operator"),
+}
+
+
+def _fence_plan_project_tx(con, mission_id: str, project_id: str | None) -> None:
+    """Refuse a dispatch proposal (or its launch) in a project other than the plan's (#1777).
+
+    Slice 1 is single-project: every objective in the plan names the mission's project, and the
+    evidence rows carry it. The dispatch proposal can name a project, and the launch stamps that
+    onto the mission — so without this, a mission whose objectives say project A could launch its
+    session in project B (Hermes on #1790). **Caller holds the transaction.**"""
+    latest = _latest_plan_tx(con, mission_id)
+    if latest is None:
+        return
+    named = {o["project_id"] for o in latest["document"]["objectives"]}
+    if project_id not in named:
+        raise MissionError(
+            "this mission's objectives name project "
+            + ", ".join(sorted(named))
+            + "; the plan cannot move it to another project",
+            status=409,
+        )
+
+
+def procedure_scope(mission_id: str, *, path: Path | None = None) -> dict:
+    """`{state, project_id}` — what the procedure listing is built for. 404 for an unknown id."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT state, project_id FROM missions WHERE id=?", (mission_id,)
+        ).fetchone()
+    finally:
+        con.close()
+    if row is None:
+        raise MissionNotFound(mission_id)
+    return {"state": row["state"], "project_id": row["project_id"]}
+
+
+def apply_procedure(
+    mission_id: str,
+    *,
+    project_id: str,
+    procedure: dict,
+    inputs: list[dict],
+    items: list[dict],
+    reason: str,
+    now: float | None = None,
+    path: Path | None = None,
+) -> dict:
+    """Apply ONE procedure to a mission as one more objective (#1777 S1b) — in ONE transaction.
+
+    Writes the next plan revision (every earlier objective plus this one) and this objective's
+    evidence rows together, so the plan and the rows can never disagree, and a refusal writes
+    neither. `items` are the procedure's evidence in flow order, each already resolved by the
+    caller (`mission_procedures`) from a reviewed source: `{step, key, title, probe, probe_args,
+    pending, gate}`. A waiting item arrives as `probe = none` with its real probe in `pending`.
+
+    Refused (409) unless the mission is still `draft`/`planned`, still in `project_id` (slice 1 is
+    single-project: the objective's project IS the mission's), and does not already hold an
+    identical objective — re-applying never duplicates (#1193).
+    """
+    from . import mission_plan_document as plan_doc
+
+    validate_id(mission_id)
+    origin = procedure.get("source") if isinstance(procedure, dict) else None
+    if origin not in _PROCEDURE_ORIGINS:
+        raise MissionError(f"a procedure cannot come from {origin!r}", status=500)
+    row_source, author_kind = _PROCEDURE_ORIGINS[origin]
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            _fence_busy(con, mission_id)
+            m = con.execute(
+                "SELECT state, project_id FROM missions WHERE id=?", (mission_id,)
+            ).fetchone()
+            if m is None:
+                raise MissionNotFound(mission_id)
+            if m["state"] not in PROCEDURE_STATES:
+                raise MissionError(
+                    f"mission {mission_id} is {m['state']}; a procedure is applied before the "
+                    "mission is dispatched",
+                    status=409,
+                )
+            if not m["project_id"]:
+                raise MissionError(
+                    "the mission has no project; every objective names one (choose it first)",
+                    status=409,
+                )
+            if m["project_id"] != project_id:
+                raise MissionError(
+                    "the mission's project changed since the procedures were listed", status=409
+                )
+            latest = _latest_plan_tx(con, mission_id)
+            prior = latest["document"] if latest else None
+            objectives_so_far = list(prior["objectives"]) if prior else []
+            for o in objectives_so_far:
+                if o["procedure"] == procedure and o["inputs"] == inputs:
+                    raise MissionError(
+                        f"objective {o['id']} already applies this procedure with these inputs",
+                        status=409,
+                    )
+            used = [int(o["id"][1:]) for o in objectives_so_far]
+            oid = f"o{max(used, default=0) + 1}"
+            reasons = {}
+            for o in objectives_so_far:
+                first = next(s for s in prior["steps"] if s["objective"] == o["id"])
+                reasons[o["id"]] = first["envelope"]["reason"]
+            reasons[oid] = reason
+            new = {"id": oid, "project_id": project_id, "procedure": procedure, "inputs": inputs}
+            doc = plan_doc.build([*objectives_so_far, new], reasons)
+            expected = {k for s in doc["steps"] if s["objective"] == oid for k in s["evidence"]}
+            keys = [plan_doc.evidence_key(oid, it["key"]) for it in items]
+            if sorted(keys) != sorted(expected) or len(keys) != len(set(keys)):
+                raise MissionError("the evidence does not match the procedure", status=500)
+            added_unmet_gate = False
+            applied: list[dict] = []
+            for it, key in zip(items, keys, strict=True):
+                op = {
+                    "key": key,
+                    "title": it["title"],
+                    "probe": it["probe"],
+                    "probe_args": it.get("probe_args"),
+                    "gate": bool(it["gate"]),
+                }
+                pending = it.get("pending")
+                placement = {
+                    "project_id": project_id,
+                    "plan_step": plan_doc.step_id(oid, it["step"]),
+                    "pending": None if pending is None else json.dumps(pending, sort_keys=True),
+                }
+                added_unmet_gate |= _op_add(
+                    con, mission_id, op, row_source, ts, placement=placement
+                )
+                applied.append({"op": "add", "key": key, "source": row_source})
+            revision = _append_plan_revision_tx(
+                con, mission_id, doc, author_kind=author_kind, reason=reason, ts=ts
+            )
+            _finish_objective_write(
+                con,
+                mission_id,
+                by="procedure",
+                applied=applied,
+                added_unmet_gate=added_unmet_gate,
+                prior_state=m["state"],
+                ts=ts,
+            )
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    return {"revision": revision, "objective": oid}
+
+
 def plan_revision(
     mission_id: str, revision: int | None = None, *, path: Path | None = None
 ) -> dict | None:
@@ -10047,8 +10217,14 @@ def _check_op_fields(op: dict) -> None:
         raise MissionError(f"unknown field(s) for {kind}: {', '.join(sorted(extra))}", status=422)
 
 
-def _op_add(con, mission_id: str, op: dict, source: str, ts: float) -> bool:
-    """Insert one objective. Returns True iff it is an unmet **gate** (which can reopen review)."""
+def _op_add(
+    con, mission_id: str, op: dict, source: str, ts: float, *, placement: dict | None = None
+) -> bool:
+    """Insert one objective. Returns True iff it is an unmet **gate** (which can reopen review).
+
+    `placement` — the row's project, plan step and waiting probe (#1777) — is a keyword the
+    procedure writer alone passes. It is never read from `op`, so no PATCH can claim a step, a
+    project or a pending probe for a row it adds."""
     count = con.execute(
         "SELECT COUNT(*) FROM mission_objectives WHERE mission_id=?", (mission_id,)
     ).fetchone()[0]
@@ -10057,6 +10233,14 @@ def _op_add(con, mission_id: str, op: dict, source: str, ts: float) -> bool:
     key = _cap(op.get("key"), OBJECTIVE_KEY_MAX)
     if not key or not re.match(r"^[a-z0-9][a-z0-9_-]*$", key):
         raise MissionError("objective key must be a lowercase slug", status=422)
+    # THE MINTED NAMESPACE IS THE PROCEDURE WRITER'S (#1777): `o<k>--…` names a plan step's
+    # evidence. An operator row under it would either block a later apply or, re-added after a
+    # drop, stand in for the plan's evidence with a probe the plan never had.
+    if placement is None and _PLAN_KEY_RE.match(key):
+        raise MissionError(
+            "objective keys starting o<number>-- are reserved for a procedure's evidence",
+            status=422,
+        )
     title = _cap(op.get("title"), OBJECTIVE_TITLE_MAX)
     if not title:
         raise MissionError("objective title is required", status=422)
@@ -10118,8 +10302,8 @@ def _op_add(con, mission_id: str, op: dict, source: str, ts: float) -> bool:
         con.execute(
             "INSERT INTO mission_objectives "
             "(mission_id, key, ord, title, probe, probe_args, gate, state, source, incarnation, "
-            "direction, direction_source) "
-            "VALUES (?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?)",
+            "direction, direction_source, project_id, plan_step, pending) "
+            "VALUES (?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?, ?, ?, ?)",
             (
                 mission_id,
                 key,
@@ -10136,6 +10320,9 @@ def _op_add(con, mission_id: str, op: dict, source: str, ts: float) -> bool:
                 # `template` was a checklist's copy (#983); checklists were removed (#1653), so a
                 # direction written here is always the operator's.
                 None if direction is None else "operator",
+                (placement or {}).get("project_id"),
+                (placement or {}).get("plan_step"),
+                (placement or {}).get("pending"),
             ),
         )
     except sqlite3.IntegrityError:
@@ -12845,7 +13032,9 @@ __all__ = [
     "objectives",
     "patch_objectives",
     "pending_archives",
+    "apply_procedure",
     "plan_revision",
+    "procedure_scope",
     "rollback_schema",
     "pending_unarchives",
     "record_settlement",

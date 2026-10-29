@@ -54,10 +54,17 @@ def _objective(
     fid: str = "research",
     project: str = "p-0123456789ab",
     source: str = "playbook",
+    manifest_format: int = 5,
 ):
     doc = _research_doc() if doc is None else doc
     variables = _research()[0]["variables"] if variables is None else variables
-    flow = validate.flow_snapshot(doc, fid, variables, roles_only=source == "mission_local")
+    flow = validate.flow_snapshot(
+        doc,
+        fid,
+        variables,
+        roles_only=source == "mission_local",
+        manifest_format=manifest_format if source == "playbook" else None,
+    )
     proc = {
         "source": source,
         "flow_id": fid,
@@ -68,7 +75,11 @@ def _objective(
         "variables": copy.deepcopy(variables),
     }
     if source == "playbook":
-        proc |= {"playbook_id": "research-brief", "revision": "r1"}
+        proc |= {
+            "playbook_id": "research-brief",
+            "revision": "r1",
+            "manifest_format": manifest_format,
+        }
     return {"id": oid, "project_id": project, "procedure": proc, "inputs": []}
 
 
@@ -231,7 +242,9 @@ def test_a_legacy_step_role_is_never_promoted_into_a_plan():
     flow = pb["flows"][fid]
     assert flow["steps"][0]["role"]["legacy_hint"]  # the read-only view exists…
     authored = tomllib.loads((FIXTURES / "inbox-triage/flows" / f"{fid}.toml").read_text())
-    doc = _doc(_objective("o1", authored, variables=pb["variables"], fid=fid))
+    doc = _doc(
+        _objective("o1", authored, variables=pb["variables"], fid=fid, manifest_format=pb["format"])
+    )
     assert all(s["role"] is None for s in doc["steps"])  # …and binds nothing
 
 
@@ -351,9 +364,15 @@ def test_the_longest_item_key_a_flow_may_declare_becomes_evidence_end_to_end(sto
     assert plan_doc.evidence_key("o1", "short") == "o1--short"  # a key that fits is unchanged
 
     m = missions.create_mission("x", cwd="/tmp")
-    missions.patch_objectives(
-        m["id"], [{"op": "add", "key": k, "title": "t", "probe": "supervisor_judged"} for k in keys]
-    )
+    con = missions._ready(store)  # the procedure writer's own insert: the namespace is reserved
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        for k in keys:
+            op = {"key": k, "title": "t", "probe": "supervisor_judged", "gate": True}
+            missions._op_add(con, m["id"], op, "playbook", 1.0, placement={"plan_step": "o20.s"})
+        con.execute("COMMIT")
+    finally:
+        con.close()
     assert [o["key"] for o in missions.objectives(m["id"])] == keys
     # Rolled back, a v33 build (pinned) can still waive and drop it.
     missions.rollback_schema(33, path=store)
@@ -490,6 +509,58 @@ def test_a_mission_local_target_variable_must_be_typed_by_the_operator(store, kw
     assert missions.plan_revision(m["id"]) is None
     # The control: the same procedure with an operator-typed target variable is accepted.
     assert _seed_plan(m["id"], store, plan_doc.build([good], {"o1": "r"})) == 1
+
+
+_FORMAT1_PROBE = {
+    "format": 1,
+    "title": "Probe",
+    "steps": [
+        {
+            "id": "s",
+            "title": "s",
+            "actor": {"kind": "operator"},
+            "checklist": [
+                {
+                    "key": "up",
+                    "title": "up",
+                    "probe": "http_status",
+                    "probe_args": {"url": "{{endpoint}}"},
+                }
+            ],
+        }
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    ("manifest", "flow_format", "refused"),
+    [(2, 1, False), (1, 2, True), (1, 1, True), (2, 2, False)],
+    ids=["manifest2-flow1", "manifest1-flow2", "manifest1-flow1", "manifest2-flow2"],
+)
+def test_a_deployed_snapshot_keys_the_target_rule_on_its_manifest_format(
+    manifest, flow_format, refused
+):
+    """The independent review on #1781: the bundle loader applies the format-1 target-variable
+    rule by the MANIFEST's format, so a deployed snapshot must too — a format 2 manifest's
+    confirmed default stays applicable even in a format 1 flow, and the reverse stays refused."""
+    doc = {**copy.deepcopy(_FORMAT1_PROBE), "format": flow_format}
+    variables = _endpoint(default="https://example.invalid/")
+    if refused:
+        with pytest.raises(PlaybookFormatError, match="must be typed by the operator"):
+            validate.flow_snapshot(
+                doc, "probe", variables, roles_only=False, manifest_format=manifest
+            )
+    else:
+        o = _objective("o1", doc, variables=variables, fid="probe", manifest_format=manifest)
+        assert _doc(o)["objectives"][0]["procedure"]["manifest_format"] == manifest
+
+
+@pytest.mark.parametrize("bad", [None, 0, 6, True, "5"])
+def test_a_deployed_snapshot_must_name_a_supported_manifest_format(bad):
+    o = _objective("o1")
+    o["procedure"]["manifest_format"] = bad
+    with pytest.raises(plan_doc.PlanError, match="manifest_format"):
+        _doc(o)
 
 
 def test_a_revision_reason_must_be_encodable(store):

@@ -911,7 +911,14 @@ def flow_document(doc: object, fid: str, variables: list[dict] | None = None) ->
     return flow_snapshot(doc, fid, variables or [], roles_only=True)
 
 
-def flow_snapshot(doc: object, fid: str, variables: object, *, roles_only: bool) -> dict:
+def flow_snapshot(
+    doc: object,
+    fid: str,
+    variables: object,
+    *,
+    roles_only: bool,
+    manifest_format: int | None = None,
+) -> dict:
     """Re-validate a flow AS AUTHORED, at a trust boundary that holds only stored data (#1777).
 
     A mission plan snapshots each procedure as its authored document plus the variable
@@ -941,8 +948,17 @@ def flow_snapshot(doc: object, fid: str, variables: object, *, roles_only: bool)
     # individually, so ANY target-bearing variable it references must be typed by the operator —
     # no default, no choices — whatever format declared it. A deployed procedure keeps its
     # bundle's rule: format 1 refuses such defaults outright; format 2+ defaults were confirmed
-    # target by target in the deployment review its targets come from.
-    if roles_only or doc["format"] == 1:
+    # target by target in the deployment review its targets come from. The bundle loader keys
+    # that rule on the MANIFEST's format, not the flow file's (a format 2 manifest may nest a
+    # format 1 flow, and the reverse), so a deployed snapshot carries its manifest format and is
+    # held to the same key (the independent review on #1781).
+    if not roles_only and (
+        isinstance(manifest_format, bool)
+        or not isinstance(manifest_format, int)
+        or manifest_format not in schema.SUPPORTED_FORMATS
+    ):
+        raise _fail("flow: manifest_format", "a deployed snapshot names its playbook's format")
+    if roles_only or manifest_format == 1:
         _check_target_variables(declared, targets)
     return flow
 

@@ -171,6 +171,7 @@ def _snapshot(p: dict, what: str) -> dict:
             p["flow_id"],
             p["variables"],
             roles_only=p["source"] == "mission_local",
+            manifest_format=p.get("manifest_format"),
         )
     except PlaybookFormatError as e:
         raise PlanError(f"{what} is not a valid flow ({e})") from None
@@ -221,7 +222,7 @@ def validate_document(doc: object) -> dict:
             raise PlanError(f"{what}.procedure.source must be one of {sorted(SOURCES)}")
         keys = {"source", "flow_id", "title", "flow", "digest", "document", "variables"}
         if p["source"] == "playbook":
-            keys |= {"playbook_id", "revision"}
+            keys |= {"playbook_id", "revision", "manifest_format"}
         p = _exact_keys(p, keys, f"{what}.procedure")
         if not isinstance(p["flow_id"], str) or not schema.FILE_ID_RE.fullmatch(p["flow_id"]):
             raise PlanError(f"{what}.procedure.flow_id has an invalid shape")
