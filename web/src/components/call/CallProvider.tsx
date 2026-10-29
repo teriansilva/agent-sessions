@@ -15,6 +15,7 @@ import { useHqContact } from "../hq/useHqContact";
 import { browserCallAudio, type CallAudioFactory } from "./callAudio";
 import { CallClient, IDLE, type CallSnapshot } from "./callClient";
 import { CallContext, type CallContextValue } from "./callContext";
+import { holdScreen } from "./callWakeLock";
 
 const noClient = {
   subscribe: () => () => undefined,
@@ -114,6 +115,10 @@ export function CallProvider({
     window.addEventListener(ACTION_RESOLVED_EVENT, onResolved);
     return () => window.removeEventListener(ACTION_RESOLVED_EVENT, onResolved);
   }, [client]);
+
+  // The screen stays on while the call is connected (`holdScreen`): a dark screen hides the page.
+  const connected = snap.phase === "connected";
+  useEffect(() => (connected ? holdScreen() : undefined), [connected]);
 
   // Leaving the page ends the call (a reload, a sign-out's navigation, closing the tab).
   useEffect(() => {

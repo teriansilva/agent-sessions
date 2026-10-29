@@ -309,6 +309,44 @@ test("HQ's speech plays in a 24 kHz audio context, so its chunks are never resam
   await expect.poll(rates).toContain(24_000);
 });
 
+test("a connected call keeps the screen on, and hanging up lets it sleep again", async ({ page }) => {
+  // A phone's screen timing out mid-call hid the page, and the call stopped hearing the
+  // Commander until it was unlocked. The call holds a screen wake lock from `connected` to the end.
+  await page.addInitScript(() => {
+    const log: string[] = [];
+    (window as unknown as { __wake: string[] }).__wake = log;
+    if (!("wakeLock" in navigator)) return; // the assertion below names the missing API
+    // Recorded, and granted: headless Chromium may refuse a real screen lock.
+    navigator.wakeLock.request = (type?: WakeLockType) => {
+      log.push(`request:${type}`);
+      const sentinel = Object.assign(new EventTarget(), {
+        released: false,
+        type: "screen" as WakeLockType,
+        onrelease: null,
+        release: () => {
+          sentinel.released = true;
+          log.push("release");
+          return Promise.resolve();
+        },
+      });
+      return Promise.resolve(sentinel as unknown as WakeLockSentinel);
+    };
+  });
+  const srv = await mockShell(page);
+  await connect(page, srv);
+  expect(await page.evaluate(() => "wakeLock" in navigator)).toBe(true);
+  const wake = () => page.evaluate(() => (window as unknown as { __wake: string[] }).__wake);
+  expect(await wake()).toEqual([]); // dialing: nothing held yet
+
+  srv.connected[0] = true;
+  say(srv, { t: "connected" });
+  await expect.poll(wake).toEqual(["request:screen"]);
+
+  await page.getByTestId("call-end").click();
+  await expect(page.getByTestId("call-ended")).toHaveAttribute("data-reason", "hung_up");
+  await expect.poll(wake).toEqual(["request:screen", "release"]);
+});
+
 test("the Audio sheet lists the browser's devices and switches the mic mid-call without dropping it (#1670)", async ({ page }) => {
   const srv = await mockShell(page);
   const panel = await connect(page, srv);

@@ -88,6 +88,12 @@ enter that server's key again or remove it.
   the call) HQ asks "Are you still there, Commander?"; only no answer within about a
   minute ends the call.
 - A call also ends when you sign out or when a speech service fails (the reason is shown).
+- **The screen stays on during a call**, where the browser allows it. A phone stops listening
+  once its screen goes dark, so the call asks the browser to keep the screen awake until you hang
+  up (a battery saver can refuse). If you lock the phone yourself or switch to another app, HQ
+  may not hear you until you come back.
+- **A slow speech server pauses rather than stutters.** If text-to-speech can't keep up, HQ waits
+  a moment and then speaks the next stretch in one piece.
 
 ### Acting by voice
 

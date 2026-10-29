@@ -8,17 +8,25 @@
  *    (the queue ran dry less than `pauseS` ago) the cushion grows by `stepS`, up to `maxS`, for
  *    the rest of that utterance: a jittery path buys itself headroom instead of stuttering on
  *    every late chunk, and a clean next turn starts without the extra delay.
+ *  - The steps are seconds, not tens of milliseconds: a self-hosted TTS can synthesize SLOWER
+ *    than real time (VoxCPM2 measured at 1.05–2.1× on sentence-length text, up to 6 s behind
+ *    within one sentence), and no cushion hides that. What the cushion decides is how the silence
+ *    is spent: 60 ms steps up to 0.4 s spent it as many short gaps inside words (heard as
+ *    stutter); a one-second rebuffer spends it as a pause or two. On recorded replies through the
+ *    live relay, that halved the gaps and all but removed the short ones, for 80 ms more before
+ *    the first word. A queue dry for under 2 s is still the same reply: synthesis of a slow
+ *    sentence can leave a hole that long, and it must not reset what the reply has learned.
  *  Pure: the audio clock is passed in, so the schedule is unit-tested. */
 
 export const PLAYBACK = {
   /** The headroom a fresh utterance starts with… */
-  startS: 0.12,
-  /** …grown by this much after each mid-utterance underrun… */
-  stepS: 0.06,
+  startS: 0.2,
+  /** …grown by this much after each mid-utterance underrun (a rebuffer, not a nudge)… */
+  stepS: 1.0,
   /** …up to this much. */
-  maxS: 0.4,
+  maxS: 3.0,
   /** A queue dry for longer than this was a pause between utterances, not an underrun. */
-  pauseS: 0.5,
+  pauseS: 2.0,
 };
 
 export class PlaybackClock {
