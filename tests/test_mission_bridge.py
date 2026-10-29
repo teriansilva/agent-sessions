@@ -350,3 +350,39 @@ def test_the_sweep_does_not_bridge_after_losing_a_race_to_a_terminal_state(runni
     monkeypatch.setattr(missions, "get_mission", read_then_fail)
     mission_probes.run_for_mission(running)
     assert _rows(running)[WAITING]["pending"] is not None
+
+
+def test_a_producers_pr_number_is_not_carried_into_another_repository(running):
+    """The consumer asks another repository than its producer: the number stays behind."""
+    con = sqlite3.connect(missions._db_path())
+    con.execute(
+        "UPDATE mission_objectives SET probe_args=? WHERE mission_id=? AND key=?",
+        (json.dumps({"repo": "org/app", "branch": "feature/x", "number": 7}), running, PRODUCER),
+    )
+    row = con.execute(
+        "SELECT pending FROM mission_objectives WHERE mission_id=? AND key=?", (running, WAITING)
+    ).fetchone()
+    pending = json.loads(row[0])
+    pending["args"] = {"repo": "org/other"}
+    con.execute(
+        "UPDATE mission_objectives SET pending=? WHERE mission_id=? AND key=?",
+        (json.dumps(pending), running, WAITING),
+    )
+    con.commit()
+    con.close()
+    _observe(running, PRODUCER, number=7, head_ref="feature/x")
+    assert missions.bridge_outputs(running) == [WAITING]
+    assert _rows(running)[WAITING]["probe_args"] == {"repo": "org/other", "branch": "feature/x"}
+
+
+def test_a_producers_pr_number_is_carried_within_its_repository(running):
+    con = sqlite3.connect(missions._db_path())
+    con.execute(
+        "UPDATE mission_objectives SET probe_args=? WHERE mission_id=? AND key=?",
+        (json.dumps({"repo": "org/app", "branch": "feature/x", "number": 7}), running, PRODUCER),
+    )
+    con.commit()
+    con.close()
+    _observe(running, PRODUCER, number=7, head_ref="feature/x")
+    assert missions.bridge_outputs(running) == [WAITING]
+    assert _rows(running)[WAITING]["probe_args"]["number"] == 7

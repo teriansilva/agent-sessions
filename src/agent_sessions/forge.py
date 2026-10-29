@@ -331,6 +331,70 @@ class ForgeClient:
                 return None, True  # the last page, so the search WAS complete
         return None, False
 
+    def open_pull_heads(self, repo: str) -> tuple[list[dict], bool]:
+        """`(rows, complete)` — this repository's OPEN pull requests, `{number, title, branch}`.
+
+        The server-built list a procedure input is chosen from BY INDEX (#1777 S1d, #1076): the
+        model or the operator picks a position, never types a target. Only PRs whose head is a
+        branch OF THIS repository — `_head_matches`, so a fork's same-named branch is excluded
+        (its PR could never be the mission's). Through `_get`, the one inventoried read, within
+        the same page budget as `_find_pr`; `complete` says whether the walk reached the end.
+        """
+        out: list[dict] = []
+        for page in range(1, self.PR_MAX_PAGES + 1):
+            rows = self._get(
+                f"{self._api}{self._repo_path(repo)}/pulls",
+                {"state": "open", "limit": self.PR_PAGE, "per_page": self.PR_PAGE, "page": page},
+            )
+            if not isinstance(rows, list):
+                raise ForgeError("forge answered an unexpected shape")
+            for pr in rows:
+                if not isinstance(pr, dict):
+                    continue
+                head = pr.get("head") if isinstance(pr.get("head"), dict) else {}
+                ref = head.get("ref")
+                if not isinstance(ref, str) or not ref or not self._head_matches(pr, repo, ref):
+                    continue
+                num = pr.get("number")
+                if isinstance(num, bool) or not isinstance(num, int):
+                    continue
+                title = pr.get("title") if isinstance(pr.get("title"), str) else ""
+                out.append({"number": num, "title": title[:200], "branch": ref})
+            if len(rows) < self.PR_PAGE:
+                return out, True
+        return out, False
+
+    def pull_by_number(self, repo: str, number: int, branch: str = "") -> Fact:
+        """The pull request a mission objective was BOUND to by number (#1777 S1d), open or not.
+
+        One `GET …/pulls/{number}` through `_get`. Its head must still be a branch OF THIS
+        repository — and the bound branch, when one is given — or the answer is `unknown`: a
+        number that now names someone else's PR is never this objective's evidence. The fact
+        has `pull_request`'s shape, so its consumers read it unchanged."""
+        try:
+            data = self._get(f"{self._api}{self._repo_path(repo)}/pulls/{int(number)}")
+        except (ForgeError, ValueError) as e:
+            return Fact.unknown(str(e) if isinstance(e, ForgeError) else "bad PR number")
+        except httpx.HTTPError as e:
+            return Fact.unknown(_why(e))
+        if not isinstance(data, dict):
+            return Fact.unknown("forge answered an unexpected shape")
+        head = data.get("head") if isinstance(data.get("head"), dict) else {}
+        ref = str(head.get("ref") or "")
+        if not ref or not self._head_matches(data, repo, branch or ref):
+            return Fact.unknown(f"PR #{int(number)} is no longer this objective's pull request")
+        state = str(data.get("state") or "").lower()
+        sha = head.get("sha")
+        return Fact.seen(
+            state == "open",
+            f"PR #{int(number)} is {state} for {ref}",
+            number=int(number),
+            head_sha=str(sha) if sha else None,
+            head_ref=ref,
+            pr_state=state,
+            merged=bool(data.get("merged")),
+        )
+
     def pull_request(
         self,
         repo: str,

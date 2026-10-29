@@ -810,7 +810,12 @@ def register(
                     "args": {
                         kind: {
                             "required": sorted(n for n, (req, _) in spec.items() if req),
-                            "optional": sorted(n for n, (req, _) in spec.items() if not req),
+                            # A SERVER-bound argument (`number`, #1777) is never an editor field.
+                            "optional": sorted(
+                                n
+                                for n, (req, _) in spec.items()
+                                if not req and n not in missions.SERVER_BOUND_ARGS
+                            ),
                         }
                         for kind, spec in missions.PROBE_ARG_SCHEMA.items()
                     },
@@ -819,7 +824,12 @@ def register(
                     # integer — is a field the UI offers and the server always refuses (#900
                     # review, finding 6). The names say WHICH arguments exist; these say what a
                     # well-formed value looks like. Validation is still entirely server-side.
-                    "types": missions.PROBE_ARG_TYPES,
+                    "types": {
+                        kind: {
+                            n: t for n, t in types.items() if n not in missions.SERVER_BOUND_ARGS
+                        }
+                        for kind, types in missions.PROBE_ARG_TYPES.items()
+                    },
                     # …and WHICH CHECKED FACTS a direction may name, per probe (#983 P2): the one
                     # placeholder table the renderer and the save validation use, so the editor's
                     # fact chips can never offer a placeholder the server would refuse.

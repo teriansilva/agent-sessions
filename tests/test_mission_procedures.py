@@ -343,7 +343,7 @@ def test_applying_writes_one_revision_and_the_evidence_together(deployed):
     assert o1["procedure"]["revision"] == deployed["revision"]
     assert o1["inputs"] == [
         {"name": "repo", "source": "deployment"},
-        {"name": "work_branch", "source": "deployment"},
+        {"name": "work_branch", "source": "deployment", "value": "feature/x"},
     ]
     review_step = next(s for s in rev["document"]["steps"] if s["id"] == "o1.review")
     assert review_step["role"] == {"skills": ["code-review"], "min_grade": "frontier"}

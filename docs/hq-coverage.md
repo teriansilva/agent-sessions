@@ -90,7 +90,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Plan again; plan manually; change plan project / engine / brief | POST …/plan, PATCH …/plan | P5 W |
 | Objectives: add, rename, waive, reorder, remove, overrule the judge, edit / reset / clear direction, preview a direction | PATCH …/objectives, POST /api/mission-directions/preview | P5 W/R |
 | Stand down an objective's nudges | POST …/objectives/{key}/stand-down | P5 W |
-| Procedures (#1777): list the project's procedures by index, apply one or a mission-local one; read a plan revision with its derived step states | GET …/procedures, POST …/procedure, GET …/plan/revisions/{latest\|n} | P5 W/R |
+| Procedures (#1777): list the project's procedures by index, apply one or a mission-local one; read a plan revision with its derived step states | GET …/procedures, GET …/procedures/{index}/inputs, POST …/procedure, GET …/plan/revisions/{latest\|n} | P5 W/R |
 | Relay words to a held session; edit an AI-drafted direction and send | POST …/relay | P5 W |
 | Spawn a sub-agent beside a held session | POST …/spawn | P5 W (starts agents) |
 | Answer menus automatically (auto-choose) | PATCH …/autonomy | **never** for on (widens autonomy); off is P5 W |
@@ -390,6 +390,7 @@ PATCH  /api/missions/{mission_id}/plan                                          
 GET    /api/missions/{mission_id}/plan/revisions/{revision}                       P5
 POST   /api/missions/{mission_id}/plan                                            P5
 POST   /api/missions/{mission_id}/procedure                                       P5
+GET    /api/missions/{mission_id}/procedures/{index}/inputs                       P5
 GET    /api/missions/{mission_id}/procedures                                      P5
 POST   /api/missions/{mission_id}/relay                                           P5
 GET    /api/missions/{mission_id}/screen/{session_key:path}                       P5

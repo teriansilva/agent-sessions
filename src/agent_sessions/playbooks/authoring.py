@@ -113,6 +113,7 @@ def vocabulary() -> dict:
                         ),
                     }
                     for name, (required, contract) in args.items()
+                    if name not in missions.SERVER_BOUND_ARGS
                 },
             }
             for kind, args in missions.PROBE_ARG_SCHEMA.items()

@@ -59,6 +59,8 @@ def test_the_adapter_has_no_write_method_at_all():
         "PR_MAX_PAGES",
         "GITHUB_AUTHORITATIVE",
         "pull_request",
+        "open_pull_heads",  # #1777 S1d: a read (GET …/pulls?state=open), through `_get`
+        "pull_by_number",  # #1777 S1d: a read (GET …/pulls/{n}), through `_get`
         "checks",
         "review",
         "merged",

@@ -2391,6 +2391,23 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return _fail(e)
         return JSONResponse(out, headers=_NO_STORE)
 
+    @app.get("/api/missions/{mission_id}/procedures/{index}/inputs")
+    async def procedure_inputs_route(
+        mission_id: str, index: int, listing: str = "", _user: str = Depends(logged_in)
+    ) -> JSONResponse:
+        """The server-built CHOICES for each choosable input of one listed procedure (#1777 S1d,
+        #1076): the deployed value plus the open, non-fork pull requests' head branches of the
+        reviewed repository. An apply names a choice by its index and echoes `choices`."""
+        from .. import mission_procedures
+
+        try:
+            out = await asyncio.to_thread(
+                mission_procedures.input_choices, mission_id, index, listing
+            )
+        except missions.MissionError as e:
+            return _fail(e)
+        return JSONResponse(out, headers=_NO_STORE)
+
     @app.post("/api/missions/{mission_id}/procedure")
     async def apply_procedure_route(
         mission_id: str,
@@ -2420,13 +2437,31 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     )
                 )
             else:
-                if set(body) != {"index", "listing"}:
+                if set(body) not in (
+                    {"index", "listing"},
+                    {"index", "listing", "inputs", "choices"},
+                ):
                     raise missions.MissionError(
-                        "a procedure is chosen by {index, listing}", status=422
+                        "a procedure is chosen by {index, listing}, optionally with "
+                        "{inputs, choices} picked by index",
+                        status=422,
+                    )
+                # Picked inputs re-read the forge's open pull requests (bounded, fail-soft) to
+                # check the choices digest: OFF the missions pool and outside every lock. The
+                # store write then goes through the pool's admission like every other write.
+                picked = None
+                if "inputs" in body:
+                    picked = await asyncio.to_thread(
+                        mission_procedures.resolve_picks,
+                        mission_id,
+                        body["index"],
+                        body["listing"],
+                        body["inputs"],
+                        body["choices"],
                     )
                 out = await missions.run_admitted(
                     lambda: mission_procedures.apply_listed(
-                        mission_id, body["index"], body["listing"]
+                        mission_id, body["index"], body["listing"], picked=picked
                     )
                 )
         except missions.MissionError as e:

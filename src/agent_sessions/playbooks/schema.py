@@ -228,6 +228,7 @@ ARG_TYPE_BY_CONTRACT: dict[object, str] = {
     missions._arg_text: "text",
     missions._arg_url: "url",
     missions._arg_status: "int",
+    missions._arg_pr_number: "int",
 }
 assert all(
     fn in ARG_TYPE_BY_CONTRACT

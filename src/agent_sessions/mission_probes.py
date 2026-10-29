@@ -482,6 +482,21 @@ def probe_one(mission: dict, obj: dict, *, target: Target | None = None) -> Fact
         if kind == "forge_run":
             return client.run(repo, str(args.get("workflow") or ""), branch)
 
+        # BOUND TO ONE PULL REQUEST BY NUMBER (#1777 S1d): the PR a procedure input was picked
+        # as. Asked about directly — never "the first PR on this branch", which a reused branch
+        # or a second PR on the same head would answer with someone else's PR.
+        bound = args.get("number")
+        if kind in missions.PR_PROBES and isinstance(bound, int) and not isinstance(bound, bool):
+            pr = client.pull_by_number(repo, bound, str(args.get("branch") or ""))
+            if kind == "forge_pr" or not pr.observed:
+                return pr
+            head = (pr.extra or {}).get("head_sha") or ""
+            if kind == "forge_checks":
+                return _about_pr(client.checks(repo, head), bound, head)
+            if kind == "forge_review":
+                return _about_pr(client.review(repo, bound, head), bound, head)
+            return _about_pr(client.merged(repo, bound), bound, head)
+
         # `forge_pr` asks whether a PR is OPEN, so it is the one caller that does not want a
         # closed one folded in.
         if kind == "forge_pr":

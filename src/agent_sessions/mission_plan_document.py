@@ -147,6 +147,23 @@ def _one_line(value: object, what: str, *, max_len: int) -> str:
     return value
 
 
+#: Bound on a CHOSEN input value recorded in a plan (S1d): a branch picked by index.
+INPUT_VALUE_MAX = 200
+
+
+def _input_value_ok(value: object) -> bool:
+    """A recorded input value: one bounded, printable, encodable line (a chosen branch)."""
+    if not isinstance(value, str) or not value or len(value) > INPUT_VALUE_MAX:
+        return False
+    if any(ch < " " or ch == "\x7f" for ch in value):
+        return False
+    try:
+        value.encode()
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _exact_keys(d: object, keys: set[str], what: str) -> dict:
     if not isinstance(d, dict):
         raise PlanError(f"{what} must be an object")
@@ -242,7 +259,17 @@ def validate_document(doc: object) -> dict:
             or len(inputs) > schema.MAX_VARIABLES
             or any(
                 not isinstance(row, dict)
-                or set(row) != {"name", "source"}
+                or set(row)
+                not in (
+                    {"name", "source"},
+                    {"name", "source", "value"},
+                    {"name", "source", "value", "number"},
+                )
+                or ("value" in row and not _input_value_ok(row["value"]))
+                or (
+                    "number" in row
+                    and (type(row["number"]) is not int or not 0 < row["number"] < 10_000_000_000)
+                )
                 or not isinstance(row["name"], str)
                 or not schema.VARIABLE_NAME_RE.fullmatch(row["name"])
                 or not isinstance(row["source"], str)

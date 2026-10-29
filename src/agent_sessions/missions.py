@@ -413,6 +413,22 @@ def _arg_status(kind: str, name: str, value: object) -> None:
         raise MissionError(f"probe {kind}: {name} must be an HTTP status 100-599", status=422)
 
 
+def _arg_pr_number(kind: str, name: str, value: object) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise MissionError(f"probe {kind}: {name} must be an integer", status=422)
+    if not (1 <= value < 10_000_000_000):
+        raise MissionError(f"probe {kind}: {name} must be a pull request number", status=422)
+
+
+#: Arguments the SERVER binds and no author writes (#1777 S1d): `number` is the pull request a
+#: procedure input was PICKED as, by index from the forge's own list. A playbook refuses it
+#: (`playbooks.validate._check_arg`) and the editors' schema exports leave it out, so it is never
+#: offered as a field; a probe given one asks about exactly that PR.
+SERVER_BOUND_ARGS: frozenset[str] = frozenset({"number"})
+#: The forge probes that are about ONE pull request, and so can be bound to it by number.
+PR_PROBES: frozenset[str] = frozenset({"forge_pr", "forge_checks", "forge_review", "forge_merged"})
+
+
 #: name -> (required?, value contract)
 _ArgSpec = dict[str, tuple[bool, object]]
 
@@ -434,10 +450,26 @@ PROBE_ARG_SCHEMA: dict[str, _ArgSpec] = {
     # "server resolves the entity" rule and one fewer target an operator can typo; naming it
     # explicitly is for the case where the objective is about a DIFFERENT repository than the one
     # the work happens in.
-    "forge_pr": {"repo": (False, _arg_text), "branch": (False, _arg_text)},
-    "forge_checks": {"repo": (False, _arg_text), "branch": (False, _arg_text)},
-    "forge_review": {"repo": (False, _arg_text), "branch": (False, _arg_text)},
-    "forge_merged": {"repo": (False, _arg_text), "branch": (False, _arg_text)},
+    "forge_pr": {
+        "repo": (False, _arg_text),
+        "branch": (False, _arg_text),
+        "number": (False, _arg_pr_number),
+    },
+    "forge_checks": {
+        "repo": (False, _arg_text),
+        "branch": (False, _arg_text),
+        "number": (False, _arg_pr_number),
+    },
+    "forge_review": {
+        "repo": (False, _arg_text),
+        "branch": (False, _arg_text),
+        "number": (False, _arg_pr_number),
+    },
+    "forge_merged": {
+        "repo": (False, _arg_text),
+        "branch": (False, _arg_text),
+        "number": (False, _arg_pr_number),
+    },
     "forge_run": {
         "repo": (False, _arg_text),
         "workflow": (False, _arg_text),
@@ -479,6 +511,7 @@ _ARG_TYPE_NAME: dict[object, str] = {
     _arg_text: "text",
     _arg_url: "text",
     _arg_status: "int",
+    _arg_pr_number: "int",
 }
 
 PROBE_ARG_TYPES: dict[str, dict[str, str]] = {
@@ -9955,6 +9988,27 @@ def bridge_outputs(
                     if value is None:
                         break
                     args[arg] = value
+                    # THE PRODUCER'S PULL REQUEST TRAVELS WITH ITS BRANCH (Hermes on #1793): a
+                    # producer bound to a picked PR names that PR, not "a PR on this branch", so a
+                    # PR-scoped consumer that was not bound at apply asks about the same PR.
+                    producer_args = _loads(p["probe_args"]) or {}
+                    bound = producer_args.get("number")
+                    if (
+                        arg == "branch"
+                        and str(pending.get("probe") or "") in PR_PROBES
+                        and "number" not in args
+                        # The same repository: a PR number means nothing in another one. A
+                        # consumer naming none (it would fall back to the checkout's origin)
+                        # takes the producer's REVIEWED repository with the number (Hermes on
+                        # #1793) — the authority that number was picked within.
+                        and args.get("repo") in (None, producer_args.get("repo"))
+                        and producer_args.get("repo")
+                        and isinstance(bound, int)
+                        and not isinstance(bound, bool)
+                    ):
+                        args["repo"] = producer_args["repo"]
+                        args["number"] = bound
+                        sources[arg]["number"] = bound
                 else:
                     probe = str(pending.get("probe") or "")
                     try:
@@ -9994,6 +10048,52 @@ def bridge_outputs(
         finally:
             con.close()
     return resolved
+
+
+def _legacy_value(con, mission_id: str, objective: dict, name: str) -> str | None:
+    """The branch an objective applied before #1777 S1d ACTUALLY targets for variable `name`,
+    read from its own evidence rows (concrete or waiting arguments), or None when no row says."""
+    from . import mission_plan_document as plan_doc
+
+    token = "{{" + name + "}}"
+    for step in objective["procedure"]["flow"]["steps"]:
+        for item in step["checklist"]:
+            if item["probe_args"].get("branch") != token:
+                continue
+            row = con.execute(
+                "SELECT probe_args, pending FROM mission_objectives WHERE mission_id=? AND key=?",
+                (mission_id, plan_doc.evidence_key(objective["id"], item["key"])),
+            ).fetchone()
+            if row is None:
+                continue
+            args = _loads(row["probe_args"]) or (_loads(row["pending"]) or {}).get("args") or {}
+            value = args.get("branch")
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
+def _same_inputs(con, mission_id: str, objective: dict, now: list[dict]) -> bool:
+    """Do an earlier objective's inputs and these name the same thing?
+
+    An input recorded before #1777 S1d has no `value`. Its value is what its own evidence rows
+    target (`_legacy_value`) — never "any value" (Hermes on #1793): an S1b objective on branch A
+    is a duplicate of a new apply on A, and NOT of one on a re-deployed branch B. When no row
+    says, it is not a duplicate."""
+    before = objective["inputs"]
+    if len(before) != len(now):
+        return False
+    for a, b in zip(before, now, strict=True):
+        if a["name"] != b["name"] or a["source"] != b["source"]:
+            return False
+        if a.get("number") != b.get("number"):
+            return False
+        if "value" in a:
+            if a["value"] != b.get("value"):
+                return False
+        elif "value" in b and _legacy_value(con, mission_id, objective, a["name"]) != b["value"]:
+            return False
+    return True
 
 
 def procedure_scope(mission_id: str, *, path: Path | None = None) -> dict:
@@ -10071,7 +10171,7 @@ def apply_procedure(
             prior = latest["document"] if latest else None
             objectives_so_far = list(prior["objectives"]) if prior else []
             for o in objectives_so_far:
-                if o["procedure"] == procedure and o["inputs"] == inputs:
+                if o["procedure"] == procedure and _same_inputs(con, mission_id, o, inputs):
                     raise MissionError(
                         f"objective {o['id']} already applies this procedure with these inputs",
                         status=409,

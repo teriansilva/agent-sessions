@@ -783,6 +783,10 @@ def _check_arg(
 ) -> None:
     kind = item["probe"]
     where = f"{item['_where']}.probe_args.{name}"
+    if name in missions.SERVER_BOUND_ARGS:
+        raise _fail(
+            where, "is bound by the server from a chosen pull request; a playbook never names one"
+        )
     _req, contract = missions.PROBE_ARG_SCHEMA[kind][name]
     arg_type = schema.ARG_TYPE_BY_CONTRACT[contract]
     var = _whole_var_ref(value)

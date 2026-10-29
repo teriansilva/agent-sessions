@@ -275,8 +275,137 @@ def _listing(mission_id: str) -> tuple[dict, dict | None, dict | None]:
     return out, record, bundle
 
 
-def apply_listed(mission_id: str, index: object, listing_digest: object) -> dict:
-    """Apply the procedure at `index` of the listing whose digest the client echoes."""
+# ---- procedure inputs picked by index (S1d, #1076) ----------------------------------------------
+
+#: How many choices one input offers: the deployed value plus open pull requests.
+MAX_CHOICES = 50
+#: The arguments whose variable may be chosen per objective. `branch` only: it NARROWS a target
+#: within the reviewed repository, never chooses one (`repo`/`url` stay deployment-reviewed).
+CHOOSABLE_ARGS = frozenset({"branch"})
+
+
+def _forge_client():
+    """The configured forge's client, or None. Its credential stays server-side."""
+    from . import forge, prefs
+
+    try:
+        cfg = prefs.get_forge()
+        if not cfg.get("enabled") or not str(cfg.get("base_url") or "").strip():
+            return None
+        return forge.ForgeClient(
+            kind=str(cfg.get("kind") or ""),
+            base_url=str(cfg.get("base_url") or ""),
+            token=str(cfg.get("token") or ""),
+            owner=str(cfg.get("owner") or ""),
+        )
+    except Exception:  # noqa: BLE001 — fail-soft: no forge means the deployed value only
+        return None
+
+
+def _choosable(fid: str, flow: dict, facts: dict) -> dict[str, dict]:
+    """`{variable: {deployed, repos}}` for each variable a `branch` argument of this procedure
+    takes whole: its REVIEWED value and the reviewed repositories it narrows within."""
+    targets = {t.get("id"): t for t in facts["targets"] if isinstance(t, dict)}
+    out: dict[str, dict] = {}
+    for step in flow["steps"]:
+        for item in step["checklist"]:
+            t = targets.get(f"flow:{fid}:{step['id']}:{item['key']}") or {}
+            for arg, symbolic in item["probe_args"].items():
+                var = validate._whole_var_ref(symbolic)
+                if var is None or arg not in CHOOSABLE_ARGS:
+                    continue
+                deployed = (t.get("args") or {}).get(arg)
+                if not isinstance(deployed, str) or not deployed:
+                    continue
+                row = out.setdefault(var, {"deployed": deployed, "repos": set()})
+                if row["deployed"] != deployed:
+                    row["conflict"] = True
+                repo = (t.get("args") or {}).get("repo")
+                if isinstance(repo, str) and repo and item["probe"].startswith("forge_"):
+                    row["repos"].add(repo)
+    return {k: v for k, v in out.items() if not v.get("conflict")}
+
+
+def _choices_for(row: dict) -> tuple[list[dict], str]:
+    """`(choices, listed)`: the deployed value first, then the open, non-fork PRs' head branches
+    of the ONE reviewed repository (#1076) in PR-number order, each shaped like a git ref name.
+    `listed` says how far the PR list went — `complete`, `partial` (the page budget ran out) or
+    `unavailable` (no forge, an unreachable one, or not exactly one reviewed repository), which
+    leaves the deployed value alone."""
+    choices = [{"index": 0, "value": row["deployed"], "source": "deployment"}]
+    if len(row["repos"]) != 1:
+        return choices, "unavailable"
+    client = _forge_client()
+    if client is None:
+        return choices, "unavailable"
+    try:
+        pulls, complete = client.open_pull_heads(next(iter(row["repos"])))
+    except Exception:  # noqa: BLE001 — an unreachable forge degrades to the deployed value
+        return choices, "unavailable"
+    numbers: set[int] = set()
+    for pr in sorted(pulls, key=lambda p: p["number"]):
+        branch = pr["branch"]
+        # One choice per PULL REQUEST (its number is its identity), not per branch: two open PRs
+        # on one head (different bases) are two choices, and the deployed branch's own PR is a
+        # numbered choice beside choice 0 (the branch, unbound).
+        if pr["number"] in numbers:
+            continue
+        if not missions._SLOT_SHAPES["branch"].fullmatch(branch):
+            continue
+        if ".." in branch or len(choices) >= MAX_CHOICES:
+            continue
+        numbers.add(pr["number"])
+        choices.append(
+            {
+                "index": len(choices),
+                "value": branch,
+                "source": "pull_request",
+                "number": pr["number"],
+                "title": pr["title"],
+                "repo": next(iter(row["repos"])),
+            }
+        )
+    return choices, "complete" if complete else "partial"
+
+
+def _input_choices(now: dict, record: dict, bundle: dict, index: int) -> dict:
+    row = now["procedures"][index]
+    fid = row["flow_id"]
+    choosable = _choosable(fid, bundle["flows"][fid], record["review_facts"])
+    inputs: dict[str, list[dict]] = {}
+    listed: dict[str, str] = {}
+    for var in sorted(choosable):
+        inputs[var], listed[var] = _choices_for(choosable[var])
+    # The digest binds what a pick MEANS — position, value, source and PR number — and not a
+    # PR's title, so retitling a PR is not a stale list (the independent review on #1793).
+    basis = {
+        "listing": now["listing"],
+        "index": index,
+        "inputs": {
+            var: [[c["index"], c["value"], c["source"], c.get("number")] for c in rows]
+            for var, rows in inputs.items()
+        },
+    }
+    return {
+        "index": index,
+        "listing": now["listing"],
+        "inputs": inputs,
+        "listed": listed,
+        "deployed": {var: row["deployed"] for var, row in choosable.items()},
+        "choices": _digest(basis),
+    }
+
+
+def input_choices(mission_id: str, index: object, listing_digest: object) -> dict:
+    """The server-built choices for each choosable input of the procedure at `index` (#1076).
+
+    BLOCKING, and it may make the bounded forge read — run it off the event loop, never inside
+    the missions write lock (it takes none)."""
+    now, record, bundle = _checked_listing(mission_id, index, listing_digest)
+    return _input_choices(now, record, bundle, index)  # type: ignore[arg-type]
+
+
+def _checked_listing(mission_id: str, index: object, listing_digest: object):
     if type(index) is not int or index < 0:
         raise ProcedureError("index must be a non-negative integer", status=422)
     if not isinstance(listing_digest, str) or not listing_digest:
@@ -290,15 +419,78 @@ def apply_listed(mission_id: str, index: object, listing_digest: object) -> dict
         raise ProcedureError(now["reason"], status=409)
     if index >= len(now["procedures"]):
         raise ProcedureError("no procedure has that index", status=422)
-    row = now["procedures"][index]
-    if not row["ready"]:
-        raise ProcedureError(row["reason"], status=409)
-    pid = now["project_id"]
+    if not now["procedures"][index]["ready"]:
+        raise ProcedureError(now["procedures"][index]["reason"], status=409)
+    return now, record, bundle
+
+
+def _chosen(picks: object, choices_digest: object, offered: dict) -> dict[str, dict]:
+    """`{variable: choice}` from the client's `{variable: {"choice": n}}` against the offered set.
+
+    The shape carries a POSITION and nothing else: a value, a URL or a branch name in it is a
+    422, so no caller — operator UI, or HQ in P5 — can put a target into this request."""
+    if not isinstance(picks, dict) or not picks:
+        raise ProcedureError("inputs is {variable: {choice: n}}", status=422)
+    if offered["choices"] != choices_digest:
+        raise ProcedureError(
+            "the input choices changed (a pull request opened or closed, or the forge could not "
+            "be read); read them again",
+            status=409,
+        )
+    out: dict[str, dict] = {}
+    for var, pick in picks.items():
+        if var not in offered["inputs"]:
+            raise ProcedureError(f"{var} is not a choosable input of this procedure", status=422)
+        if not isinstance(pick, dict) or set(pick) != {"choice"}:
+            raise ProcedureError("each input is {choice: n}: a position, never a value", status=422)
+        n = pick["choice"]
+        if type(n) is not int or not 0 <= n < len(offered["inputs"][var]):
+            raise ProcedureError(f"{var}: no choice has that index", status=422)
+        out[var] = offered["inputs"][var][n]
+    return out
+
+
+def resolve_picks(
+    mission_id: str, index: object, listing_digest: object, inputs: object, choices: object
+) -> dict[str, dict]:
+    """`{variable: choice}` for the client's positions, checked against a FRESH read of the
+    offered choices (the bounded forge read). BLOCKING and possibly slow: run it off the event
+    loop and outside the missions pool; it takes no missions lock."""
+    now, record, bundle = _checked_listing(mission_id, index, listing_digest)
+    offered = _input_choices(now, record, bundle, index)  # type: ignore[arg-type]
+    return _chosen(inputs, choices, offered)
+
+
+def apply_listed(
+    mission_id: str,
+    index: object,
+    listing_digest: object,
+    *,
+    inputs: object = None,
+    choices: object = None,
+    picked: dict[str, dict] | None = None,
+) -> dict:
+    """Apply the procedure at `index` of the listing whose digest the client echoes; optionally
+    with per-objective inputs picked by index (`inputs` + `choices`, checked here, or `picked`
+    already checked by `resolve_picks` — the route's split, so the forge read runs off the
+    missions pool and the store write through it). The listing is re-checked either way."""
+    if picked is None and inputs is not None:
+        picked = resolve_picks(mission_id, index, listing_digest, inputs, choices)
+    now, record, bundle = _checked_listing(mission_id, index, listing_digest)
     assert record is not None and bundle is not None  # a listing with procedures has both
-    fid = row["flow_id"]
+    return _apply_from(mission_id, now, record, bundle, index, picked or {})  # type: ignore[arg-type]
+
+
+def _apply_from(
+    mission_id: str, now: dict, record: dict, bundle: dict, index: int, picked: dict
+) -> dict:
+    pid = now["project_id"]
+    fid = now["procedures"][index]["flow_id"]
     flow = bundle["flows"][fid]
     revision = record["applied_paths"]["revision"]
     items = _reviewed_items(fid, flow, record["review_facts"])
+    if picked:
+        items = _with_picks(flow, items, picked)
     procedure = {
         "source": "playbook",
         "playbook_id": record["playbook_id"],
@@ -311,7 +503,23 @@ def apply_listed(mission_id: str, index: object, listing_digest: object) -> dict
         "variables": copy.deepcopy(bundle["variables"]),
         "manifest_format": bundle["format"],
     }
-    inputs = [{"name": n, "source": "deployment"} for n in _variables_used(flow)]
+    # EVERY choosable variable records the value it took, picked or not, so applying with no
+    # pick and picking choice 0 (the deployed value) are the same objective — a duplicate — and
+    # never two (the independent review on #1793). Other variables record their source only.
+    choosable = _choosable(fid, flow, record["review_facts"])
+    inputs = []
+    for n in _variables_used(flow):
+        if n in picked:
+            row = {"name": n, "source": picked[n]["source"], "value": picked[n]["value"]}
+            if picked[n].get("number") is not None:
+                # THE PR'S IDENTITY, not just its branch (Hermes on #1793): a branch reused by a
+                # later PR, or two open PRs on one head, are different objectives.
+                row["number"] = picked[n]["number"]
+            inputs.append(row)
+        elif n in choosable:
+            inputs.append({"name": n, "source": "deployment", "value": choosable[n]["deployed"]})
+        else:
+            inputs.append({"name": n, "source": "deployment"})
     return missions.apply_procedure(
         mission_id,
         project_id=pid,
@@ -320,6 +528,95 @@ def apply_listed(mission_id: str, index: object, listing_digest: object) -> dict
         items=items,
         reason=f"applied {record['playbook_id']}@{revision[:12]} · {fid}",
     )
+
+
+def _bind_number(it: dict, picked: dict, branch_ref: object, var_steps: dict[str, set]) -> None:
+    """Bind a PR-scoped forge item to ITS picked pull request's NUMBER (#1777 S1d).
+
+    An item is about a picked variable when its symbolic `branch` is exactly that variable, or a
+    step reference into a step whose branch-bearing items take it (the waiting `forge_review` on
+    `{{steps.implement.head_branch}}`: the number rides in `pending.args`, and the bridge fills
+    only the reference). Each item is bound to the ONE numbered pick it is about, so two picks in
+    one apply bind their own evidence (Hermes on #1793). An item about none stays unbound — on
+    another variable, or with no `branch` (the checkout's); binding it would make its gate unknown
+    for ever. A step reference into a step that takes SEVERAL branch variables is left unbound
+    too: whichever producer settles first names its output, so no single PR is meant."""
+    probe = it["pending"]["probe"] if it["pending"] else it["probe"]
+    if probe not in missions.PR_PROBES or not isinstance(branch_ref, str):
+        return
+    m = schema.STEP_TOKEN_RE.fullmatch(branch_ref)
+    if m is not None and sum(m.group(1) in steps for steps in var_steps.values()) > 1:
+        # The referenced step takes SEVERAL branch variables, picked or not: which PR its output
+        # names is decided by whichever producer settles first, so no number is bound and the
+        # item keeps branch resolution (the independent review on #1793).
+        return
+    about = []
+    for var, pick in picked.items():
+        if pick.get("number") is None:
+            continue
+        if branch_ref == "{{" + var + "}}" or (
+            m is not None and m.group(1) in var_steps.get(var, set())
+        ):
+            about.append(pick)
+    if len(about) != 1:  # a direct reference names one variable; a step token, one step's
+        return
+    pick = about[0]
+    if isinstance(pick["number"], bool) or not isinstance(pick["number"], int):
+        raise ProcedureError("a picked pull request has a number", status=422)
+    if it["pending"]:
+        args = it["pending"]["args"]
+    else:
+        if it["probe_args"] is None:
+            it["probe_args"] = {}
+        args = it["probe_args"]
+    # A PR number belongs to ONE repository. An item that names another is left unbound; one that
+    # names none (it would fall back to the checkout's origin, Hermes on #1793) is bound to the
+    # pick's REVIEWED repository with the number — the authority the number was chosen within.
+    if args.get("repo") not in (None, pick.get("repo")) or not pick.get("repo"):
+        return
+    args["repo"] = pick["repo"]
+    args["number"] = pick["number"]
+    if not it["pending"]:
+        missions.validate_probe_args(it["probe"], args)
+
+
+def _with_picks(flow: dict, items: list[dict], picked: dict) -> list[dict]:
+    """The reviewed items with each chosen variable's `branch` arguments set to its choice."""
+    symbolic = {
+        (step["id"], item["key"]): item["probe_args"]
+        for step in flow["steps"]
+        for item in step["checklist"]
+    }
+    # Which steps take each variable as a branch: a step reference into one of them is about the
+    # same pull request as the variable (`_bind_number`).
+    var_steps: dict[str, set] = {}
+    for step in flow["steps"]:
+        for item in step["checklist"]:
+            var = validate._whole_var_ref(item["probe_args"].get("branch"))
+            if var is not None:
+                var_steps.setdefault(var, set()).add(step["id"])
+    out = []
+    for it in items:
+        it = copy.deepcopy(it)
+        for arg, value in symbolic[(it["step"], it["key"])].items():
+            var = validate._whole_var_ref(value)
+            if var not in picked or arg not in CHOOSABLE_ARGS:
+                continue
+            value = picked[var].get("value")
+            # RE-CHECKED HERE, not trusted from the caller (the independent review on #1793):
+            # `picked` comes from `resolve_picks` today, and a later caller (HQ, P5) must not be
+            # able to hand this a value the offered list could never have held.
+            if not isinstance(value, str) or not missions._SLOT_SHAPES["branch"].fullmatch(value):
+                raise ProcedureError(f"{var}: a picked value must be a branch name", status=422)
+            if ".." in value:
+                raise ProcedureError(f"{var}: a picked value must be a branch name", status=422)
+            target = it["pending"]["args"] if it["pending"] else it["probe_args"]
+            target[arg] = value
+        _bind_number(it, picked, symbolic[(it["step"], it["key"])].get("branch"), var_steps)
+        if not it["pending"]:
+            missions.validate_probe_args(it["probe"], it["probe_args"])
+        out.append(it)
+    return out
 
 
 def apply_local(mission_id: str, flow_id: object, doc: object) -> dict:
