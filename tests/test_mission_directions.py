@@ -1564,11 +1564,14 @@ def test_v27_upgrades_a_v26_store_with_NULL_directions_and_the_fresh_column_orde
             con.close()
 
     fresh = cols()
-    # v30 (#1088) appends `judge_rejected_fp` after the two v27 columns.
-    assert fresh[-3:] == ["direction", "direction_source", "judge_rejected_fp"]
+    # v30 (#1088) appends `judge_rejected_fp` after the two v27 columns, and v34 (#1777) its three.
+    assert fresh[-6:-3] == ["direction", "direction_source", "judge_rejected_fp"]
+    assert fresh[-3:] == [name for name, _kind in missions.OBJECTIVE_COLUMNS_V34]
 
     con = sqlite3.connect(db)
     # A real v26 store has none of the later columns either.
+    for name, _kind in missions.OBJECTIVE_COLUMNS_V34:
+        con.execute(f"ALTER TABLE mission_objectives DROP COLUMN {name}")
     con.execute("ALTER TABLE mission_objectives DROP COLUMN judge_rejected_fp")
     con.execute("ALTER TABLE mission_objectives DROP COLUMN direction_source")
     con.execute("ALTER TABLE mission_objectives DROP COLUMN direction")

@@ -22,6 +22,7 @@ Nothing here opens a file, a socket or a process: it reads the in-memory `tree.T
 from __future__ import annotations
 
 import contextlib
+import copy
 import tomllib
 from collections.abc import Iterator
 from typing import Any
@@ -895,6 +896,87 @@ def _check_graph(
 
 def _flow(tree: Tree, fid: str, rel: str, variables: dict, targets: dict[str, str]) -> dict:
     doc = _format(_toml(tree, rel, max_bytes=schema.MAX_TOML_BYTES), rel)
+    return _flow_doc(doc, fid, rel, variables, targets)
+
+
+def flow_document(doc: object, fid: str, variables: list[dict] | None = None) -> dict:
+    """ONE flow, validated outside a bundle: a mission-local procedure (#1777, #1613 §3).
+
+    The same function the bundle loader runs on every `flows/*.toml` (`_flow_doc`), so a
+    mission-local procedure passes exactly the rules a deployed playbook's flows pass — the closed
+    value space, no literal target, step references only from strict ancestors, the bounds — and
+    is never a bypass. `variables` are the normalized declarations it may reference (the project's
+    deployed playbook's, or none). It must be flow format 5: a mission step names a role.
+    """
+    return flow_snapshot(doc, fid, variables or [], roles_only=True)
+
+
+def flow_snapshot(doc: object, fid: str, variables: object, *, roles_only: bool) -> dict:
+    """Re-validate a flow AS AUTHORED, at a trust boundary that holds only stored data (#1777).
+
+    A mission plan snapshots each procedure as its authored document plus the variable
+    declarations it may reference. Whoever writes a plan revision, the store re-runs this — the
+    bundle loader's own `_flow_doc` over the document, after re-reading the declarations through
+    the bundle's own `_variables` reader — so a stored snapshot is VALID by the shared rules, not
+    because a caller said so. Where the document and declarations came FROM (the deployed
+    revision, or the operator's own mission-local procedure) is the writer's responsibility
+    (`mission_procedures`); this proves validity, not provenance. `roles_only` refuses flow
+    formats below 5 (a mission-local procedure); a deployed procedure keeps the format its
+    playbook was reviewed at.
+    """
+    if not isinstance(doc, dict):
+        raise _fail("flow", "must be a table")
+    if not isinstance(fid, str) or not schema.FILE_ID_RE.fullmatch(fid):
+        raise _fail("flow: id", f"has an invalid shape: {fid!r}")
+    declared = declarations(variables)
+    doc = _format(copy.deepcopy(doc), "flow")
+    if roles_only and doc["format"] < schema.ROLE_FORMAT:
+        raise _fail(
+            "flow: format", f"a mission-local procedure is flow format {schema.ROLE_FORMAT}"
+        )
+    targets: dict[str, str] = {}
+    flow = _flow_doc(doc, fid, "flow", declared, targets)
+    # THE TARGET-VARIABLE RULE, which a bundle applies after its flows (Hermes on #1781). A
+    # mission-local procedure has no deployment review that could confirm a bundle default
+    # individually, so ANY target-bearing variable it references must be typed by the operator —
+    # no default, no choices — whatever format declared it. A deployed procedure keeps its
+    # bundle's rule: format 1 refuses such defaults outright; format 2+ defaults were confirmed
+    # target by target in the deployment review its targets come from.
+    if roles_only or doc["format"] == 1:
+        _check_target_variables(declared, targets)
+    return flow
+
+
+#: Normalized declaration fields whose "absent" spelling is this value; the reader re-derives them.
+_DECLARATION_ABSENT = {"pattern": None, "choices": [], "default": None}
+
+
+def declarations(variables: object) -> dict[str, dict]:
+    """Normalized variable declarations, re-read through `_variables` and required to round-trip.
+
+    A declaration decides what a flow may reference and which type fits which argument, so a
+    stored one is never trusted as given: it must be exactly what the bundle reader produces."""
+    if not isinstance(variables, list):
+        raise _fail("variables", "must be a list of declarations")
+    raw = []
+    for i, v in enumerate(variables):
+        if not isinstance(v, dict):
+            raise _fail(f"variables[{i}]", "must be a table")
+        raw.append(
+            {
+                k: copy.deepcopy(val)
+                for k, val in v.items()
+                if not (k in _DECLARATION_ABSENT and val == _DECLARATION_ABSENT[k])
+            }
+        )
+    with _in("variables"):
+        out = _variables(_Reader({"variables": raw}, ""))
+    if list(out.values()) != variables:
+        raise _fail("variables", "are not normalized declarations")
+    return out
+
+
+def _flow_doc(doc: dict, fid: str, rel: str, variables: dict, targets: dict[str, str]) -> dict:
     with _in(rel):
         fr = _Reader(doc, "")
         fr.raw("format")

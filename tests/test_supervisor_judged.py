@@ -76,6 +76,10 @@ def test_a_v29_store_migrates_the_old_name_WITHOUT_touching_gate(store):
     # …and what a LATER migration adds, which a real v29 store cannot have (v31, #1060).
     con.execute("DROP TRIGGER IF EXISTS automation_owner_menu")
     con.execute("ALTER TABLE missions DROP COLUMN auto_choose")
+    # …and v34's (#1777): the plan table and the objective columns appended after this one.
+    con.execute("DROP TABLE IF EXISTS mission_plan_revisions")
+    for name, _kind in missions.OBJECTIVE_COLUMNS_V34:
+        con.execute(f"ALTER TABLE mission_objectives DROP COLUMN {name}")
     con.execute("PRAGMA user_version=29")
     con.commit()
     con.close()

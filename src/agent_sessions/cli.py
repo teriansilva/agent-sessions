@@ -79,7 +79,52 @@ def _build_parser() -> argparse.ArgumentParser:
     vr.add_argument("--models", action="store_true", help="also remove the downloaded models")
     vr.add_argument("--yes", action="store_true", help="don't ask")
     vsub.add_parser("serve", help="Run the speech server in the foreground (on its socket)")
+
+    # The way back for the missions store (#1777): a build refuses a store newer than itself, so
+    # rolling the app back past a schema bump needs the store stamped down first. Deletes nothing.
+    ms = sub.add_parser("missions-schema", help="Inspect or roll back the missions store schema")
+    msub = ms.add_subparsers(dest="missions_cmd")
+    mst = msub.add_parser("status", help="The store's schema and this build's")
+    mrb = msub.add_parser(
+        "rollback",
+        help="Stamp the store down for the previous build; deletes nothing",
+    )
+    for q in (mst, mrb):
+        q.add_argument("--db", default=None, help="missions.db (default: the app's store path)")
+    mrb.add_argument("--to", type=int, required=True, help="the schema the previous build reads")
     return p
+
+
+def _missions_schema(args) -> int:
+    import sqlite3
+    from pathlib import Path
+
+    from . import missions
+
+    path = Path(args.db).expanduser() if args.db else missions._db_path()
+    if args.missions_cmd == "status":
+        if not path.exists():
+            print(f"no missions store at {path}")
+            return 1
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            version = con.execute("PRAGMA user_version").fetchone()[0]
+        finally:
+            con.close()
+        print(f"{path}: schema {version}; this build reads {missions.SCHEMA_VERSION}")
+        return 0
+    if args.missions_cmd == "rollback":
+        try:
+            out = missions.rollback_schema(args.to, path=path)
+        except missions.MissionError as e:
+            print(f"error: {e}")
+            return 2
+        print(f"missions store {path}: schema {out['from']} → {out['to']}")
+        print("Nothing was deleted. Stop the app before rolling it back.")
+        print("Opening the store with this build again re-upgrades it.")
+        return 0
+    print("usage: agent-sessions missions-schema {status,rollback}")
+    return 1
 
 
 def _voice(args) -> int:
@@ -183,6 +228,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "voice":
         return _voice(args)
+
+    if args.cmd == "missions-schema":
+        return _missions_schema(args)
 
     if args.cmd == "autoupdate":
         from . import update

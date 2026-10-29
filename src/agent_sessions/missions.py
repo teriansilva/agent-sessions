@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 33
+SCHEMA_VERSION = 34
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -95,6 +95,9 @@ OBJECTIVE_TITLE_MAX = 200
 #: refused, so the row kept its previous FRESH observation instead of turning stale — and a
 #: direction would have been filled from it (#983).
 OBSERVED_MAX = 2000
+#: Unchanged by #1777 on purpose: a build that predates v34 caps every key it is sent at 64, so a
+#: longer key would be unaddressable (no waive, no drop) after `rollback_schema`. A procedure's
+#: minted evidence keys fit it by construction (`mission_plan_document.evidence_key`).
 OBJECTIVE_KEY_MAX = 64
 #: Reserved in objective and playbook item keys: `--` was how a checklist template's second use
 #: on one mission was keyed (#1061). Checklists are gone (#1653), but objectives written then still
@@ -109,6 +112,9 @@ LIST_LIMIT_MAX = 200
 LIST_LIMIT_DEFAULT = 50
 #: Objectives are an operator-sized list, not a data feed.
 OBJECTIVES_MAX = 50
+#: Bound on one stored plan revision (#1777). A plan snapshots ≤ 20 flows, each as authored
+#: (≤ `mission_plan_document.DOCUMENT_MAX`) and normalized, so this is a column guard.
+PLAN_DOCUMENT_MAX = 8 * 1024 * 1024
 
 #: Events kept per mission. Trimming drops the oldest *droppable* kinds first (see
 #: :data:`EVENT_KINDS_PRESERVED`) — never a decision, a state change or an objective edit, or
@@ -804,6 +810,12 @@ CREATE TABLE IF NOT EXISTS mission_objectives (
   -- list; cleared by the supervisor pass once the output has moved on. Appended last, like the
   -- two above, so an upgraded store and a fresh one agree on the stored DDL.
   judge_rejected_fp TEXT,
+  -- v34 (#1777): the objective's own project (dual read: NULL reads the mission's), the plan step
+  -- it is evidence for, and the probe it is WAITING to become (`OBJECTIVE_COLUMNS_V34`). Appended
+  -- last for the same column-order reason as the three above.
+  project_id        TEXT,
+  plan_step         TEXT,
+  pending           TEXT,
   PRIMARY KEY (mission_id, key)
 );
 
@@ -1280,6 +1292,111 @@ PERMISSION_HOLDS_DDL = (
 _SCHEMA += ";\n".join(PERMISSION_HOLDS_DDL) + ";\n"
 
 
+# THE PLAN DOCUMENT (#1777, #1613 P4; the store #1578 specified). A mission's plan is a list of
+# REVISIONS, each a validated JSON document (`mission_plan_document.validate_document`), and a
+# revision is never edited, replaced or deleted on its own (three triggers), so "what the mission
+# was planned as at revision 2" stays true after revision 3. Rows leave only with their mission
+# (the cascade, inside `delete_mission`'s scrub under `secure_delete`): a plan holds operator text.
+PLAN_REVISIONS_DDL = (
+    "CREATE TABLE IF NOT EXISTS mission_plan_revisions ("
+    "mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE, "
+    "revision INTEGER NOT NULL CHECK(revision >= 1), "
+    "kind TEXT NOT NULL, author_kind TEXT NOT NULL, reason TEXT NOT NULL, "
+    "document_json TEXT NOT NULL, created_at REAL NOT NULL, "
+    "PRIMARY KEY (mission_id, revision))",
+    "CREATE TRIGGER IF NOT EXISTS mission_plan_revisions_append_only "
+    "BEFORE UPDATE ON mission_plan_revisions BEGIN "
+    "SELECT RAISE(ABORT, 'a plan revision is never edited'); END",
+    # `INSERT OR REPLACE` deletes the old row and inserts a new one, so no UPDATE trigger fires;
+    # this refuses it (and any second row under a number) before the conflict resolution runs.
+    "CREATE TRIGGER IF NOT EXISTS mission_plan_revisions_no_replace "
+    "BEFORE INSERT ON mission_plan_revisions WHEN EXISTS (SELECT 1 FROM mission_plan_revisions "
+    "WHERE mission_id=NEW.mission_id AND revision=NEW.revision) BEGIN "
+    "SELECT RAISE(ABORT, 'a plan revision is never replaced'); END",
+    # A revision leaves only WITH its mission (the cascade): the mission row is already gone when
+    # the cascade deletes its children, and is still there for any other delete.
+    "CREATE TRIGGER IF NOT EXISTS mission_plan_revisions_no_delete "
+    "BEFORE DELETE ON mission_plan_revisions WHEN EXISTS (SELECT 1 FROM missions "
+    "WHERE id=OLD.mission_id) BEGIN "
+    "SELECT RAISE(ABORT, 'a plan revision leaves only with its mission'); END",
+)
+_SCHEMA += ";\n".join(PLAN_REVISIONS_DDL) + ";\n"
+
+#: v34's columns on `mission_objectives`: in the base DDL (last, for a fresh install) and
+#: appended by the upgrade step (`ALTER … ADD COLUMN` appends), so both installs agree on order.
+#:
+#: * `project_id` — the objective's own project (#1613 §3: every objective names one). **Dual
+#:   read:** a row without one (every row before v34) reads its mission's `project_id`.
+#: * `plan_step` — the plan step this evidence belongs to (#1193 "objectives carry their step").
+#: * `pending` — evidence waiting for an upstream step's output: `{probe, args, refs}`. The row
+#:   itself is a `none` gate until the bridge resolves it, so it stays unmet and a build that
+#:   predates v34 reads an ordinary manual check, never a probe with a missing argument.
+OBJECTIVE_COLUMNS_V34 = (("project_id", "TEXT"), ("plan_step", "TEXT"), ("pending", "TEXT"))
+
+
+def _migrate_33_to_34(con) -> None:
+    """Additive only (workflow §0): a table, a trigger and three nullable columns. Idempotent, so a
+    store rolled back to 33 (`rollback_schema`) and opened again by this build converges."""
+    for statement in PLAN_REVISIONS_DDL:
+        con.execute(statement)
+    if not _has_table(con, "mission_objectives"):
+        return
+    have = {r[1] for r in con.execute("PRAGMA table_info(mission_objectives)")}
+    for name, kind in OBJECTIVE_COLUMNS_V34:
+        if name not in have:
+            con.execute(f"ALTER TABLE mission_objectives ADD COLUMN {name} {kind}")
+
+
+#: The versions `rollback_schema` can take a store back to, newest first. One entry per additive
+#: step whose previous build reads the newer file unchanged once `user_version` says so.
+ROLLBACK_TARGETS: frozenset[int] = frozenset({33})
+
+
+def rollback_schema(to: int, *, path: Path | None = None) -> dict:
+    """Take the store back to schema `to` for the previous build, deleting nothing (#1777).
+
+    A build refuses a store newer than itself, so rolling the app back past v34 would make every
+    mission read fail. This is the way back: `user_version` set to `to`, in one transaction, and
+    nothing else. The v34 table and columns stay where they are — a v33 build never reads them,
+    every `INSERT INTO mission_objectives` names its columns, and waiting evidence is already a
+    plain required `none` row — so opening the store with this build again re-runs the idempotent
+    step and converges.
+
+    **No backup copy, deliberately.** The change is one header integer and is undone by setting it
+    back. A copy would be a second home for mission text that `delete_mission`'s physical scrub
+    (`secure_delete`, WAL included) can never reach: a mission deleted after the rollback would
+    live on in it.
+    """
+    if to not in ROLLBACK_TARGETS:
+        raise MissionError(f"cannot roll the missions store back to schema {to}", status=422)
+    p = path or _db_path()
+    if not p.exists():
+        raise MissionError("there is no missions store to roll back", status=404)
+    with _write_lock, _schema_lock:
+        con = _connect(p)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            version = int(con.execute("PRAGMA user_version").fetchone()[0])
+            if version > SCHEMA_VERSION:
+                raise MissionError(
+                    f"missions store is at schema {version}, newer than this build", status=409
+                )
+            if version <= to:
+                raise MissionError(
+                    f"the missions store is at schema {version}; nothing to roll back", status=409
+                )
+            con.execute(f"PRAGMA user_version={int(to)}")
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+        _schema_done.discard(str(p))
+    return {"from": version, "to": to}
+
+
 def _migrate_32_to_33(con) -> None:
     for statement in PERMISSION_HOLDS_DDL:
         con.execute(statement)
@@ -1384,6 +1501,8 @@ def _migrate(con) -> int:
             _migrate_31_to_32(con)
         if version < 33:
             _migrate_32_to_33(con)
+        if version < 34:
+            _migrate_33_to_34(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -2489,9 +2608,16 @@ def _event_row(row) -> dict:
     return d
 
 
-def _objective_row(row) -> dict:
+def _objective_row(row, mission_project: str | None = None) -> dict:
     d = dict(row)
     d["gate"] = bool(d.get("gate"))
+    # THE DUAL READ (#1777, #1613 P4): an objective names its own project; a row written before
+    # v34 has none and reads its mission's. `missions.project_id` is never dropped and is still
+    # written, so the two agree for every single-project mission.
+    d["project_id"] = d.get("project_id") or mission_project
+    # Evidence WAITING for an upstream step's output (#1777 D-P4-3): the probe it will become and
+    # the `{{steps.<id>.<slot>}}` references it waits on. NULL for every other row.
+    d["pending"] = _loads(d.get("pending"))
     # THE ALIAS ON READ (#1088): a row the v30 migration did not reach reads as the current kind.
     d["probe"] = canonical_probe(d.get("probe"))
     d["probe_args"] = _loads(d.get("probe_args"))
@@ -2960,7 +3086,7 @@ def get_mission(
         con.close()
     mission = _row_to_mission(row)
     mission["sessions"] = [dict(s) for s in sessions]
-    mission["objectives"] = [_objective_row(o) for o in objectives]
+    mission["objectives"] = [_objective_row(o, row["project_id"]) for o in objectives]
     mission["objectives_fit"] = _objectives_fit(fit_row["meta"] if fit_row else None)
     mission["events"] = [_event_row(e) for e in events]
     _attach_settlements(mission["events"], path=path)
@@ -7210,7 +7336,10 @@ def propose_completion(
             if not rows:
                 con.execute("ROLLBACK")
                 return False
-            parsed = [_objective_row(r) for r in rows]
+            owner = con.execute(
+                "SELECT project_id FROM missions WHERE id=?", (mission_id,)
+            ).fetchone()
+            parsed = [_objective_row(r, owner["project_id"] if owner else None) for r in rows]
             # THE SAME PREDICATE THE BOARD USES, not a second, weaker one (#897 re-review,
             # finding 1). `state == 'met'` is the stored settlement — it says a probe once saw the
             # gate hold, and nothing more. For a gate whose truth can move (a check re-run red, a
@@ -9570,13 +9699,92 @@ def objectives(mission_id: str, *, path: Path | None = None) -> list[dict]:
         # An unknown mission is a 404, not an empty list: "this mission has no objectives" and
         # "this mission does not exist" are different answers and the client acts on them
         # differently.
-        if con.execute("SELECT 1 FROM missions WHERE id=?", (mission_id,)).fetchone() is None:
+        owner = con.execute("SELECT project_id FROM missions WHERE id=?", (mission_id,)).fetchone()
+        if owner is None:
             raise MissionNotFound(mission_id)
         rows = con.execute(
             "SELECT * FROM mission_objectives WHERE mission_id=? ORDER BY ord ASC",
             (mission_id,),
         ).fetchall()
-        return [_objective_row(r) for r in rows]
+        return [_objective_row(r, owner["project_id"]) for r in rows]
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------- the plan document (#1777)
+
+
+def _append_plan_revision_tx(
+    con, mission_id: str, document: dict, *, author_kind: str, reason: str, ts: float
+) -> int:
+    """Append the next plan revision. **Caller holds the transaction** — the one that also writes
+    the objective rows the revision describes, so the two can never disagree (#1578's rule).
+
+    The document is validated here, on write, whoever built it: an invalid revision is refused with
+    its reason and nothing is stored. Revision numbers come from the table inside the transaction,
+    so two writers serialize on `BEGIN IMMEDIATE` and never collide.
+    """
+    from . import mission_plan_document as plan_doc
+
+    if author_kind not in plan_doc.AUTHOR_KINDS:
+        raise MissionError(f"a plan revision cannot be written by {author_kind!r}", status=500)
+    reason = plan_doc._one_line(reason, "the revision reason", max_len=plan_doc.REASON_MAX)
+    doc = plan_doc.validate_document(document)
+    blob = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    if len(blob.encode()) > PLAN_DOCUMENT_MAX:
+        raise MissionError("the plan document is too large", status=422)
+    nxt = con.execute(
+        "SELECT COALESCE(MAX(revision), 0) + 1 FROM mission_plan_revisions WHERE mission_id=?",
+        (mission_id,),
+    ).fetchone()[0]
+    con.execute(
+        "INSERT INTO mission_plan_revisions "
+        "(mission_id, revision, kind, author_kind, reason, document_json, created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (mission_id, int(nxt), "authored", author_kind, reason, blob, ts),
+    )
+    return int(nxt)
+
+
+def _latest_plan_tx(con, mission_id: str) -> dict | None:
+    row = con.execute(
+        "SELECT * FROM mission_plan_revisions WHERE mission_id=? ORDER BY revision DESC LIMIT 1",
+        (mission_id,),
+    ).fetchone()
+    return None if row is None else _plan_row(row)
+
+
+def _plan_row(row) -> dict:
+    return {
+        "revision": int(row["revision"]),
+        "kind": row["kind"],
+        "author_kind": row["author_kind"],
+        "reason": row["reason"],
+        "created_at": row["created_at"],
+        "document": json.loads(row["document_json"]),
+    }
+
+
+def plan_revision(
+    mission_id: str, revision: int | None = None, *, path: Path | None = None
+) -> dict | None:
+    """One plan revision (the latest when `revision` is None), or None when there is none.
+
+    An unknown mission is `MissionNotFound`, never "no plan": the two are different answers."""
+    validate_id(mission_id)
+    if revision is not None and (type(revision) is not int or revision < 1):
+        raise MissionError("revision must be a positive integer", status=422)
+    con = _ready(path)
+    try:
+        if con.execute("SELECT 1 FROM missions WHERE id=?", (mission_id,)).fetchone() is None:
+            raise MissionNotFound(mission_id)
+        if revision is None:
+            return _latest_plan_tx(con, mission_id)
+        row = con.execute(
+            "SELECT * FROM mission_plan_revisions WHERE mission_id=? AND revision=?",
+            (mission_id, revision),
+        ).fetchone()
+        return None if row is None else _plan_row(row)
     finally:
         con.close()
 
@@ -12637,6 +12845,8 @@ __all__ = [
     "objectives",
     "patch_objectives",
     "pending_archives",
+    "plan_revision",
+    "rollback_schema",
     "pending_unarchives",
     "record_settlement",
     "record_settlements",

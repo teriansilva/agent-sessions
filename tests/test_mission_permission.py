@@ -445,5 +445,5 @@ def test_the_holds_table_arrives_by_migration(tmp_path, monkeypatch):
     missions.reset_schema_cache_for_test()
     assert missions.permission_holds_open(SESSION) == []
     con = sqlite3.connect(db)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION == 33
+    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION
     con.close()
