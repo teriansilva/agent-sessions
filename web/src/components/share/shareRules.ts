@@ -1,7 +1,9 @@
 /** Pure rules of the share dialogs (#1714). The server decides at confirm; these mirror it so the
  *  picker and the preview show the same answer before the operator commits. */
+import { engineName } from "../../app/engineRoster";
 import type {
   ShareCatalog,
+  ShareChoice,
   ShareCatalogItem,
   ShareImports,
   SharePreview,
@@ -172,4 +174,24 @@ export const sharedImportMemory: ImportMemory = newImportMemory();
 export function resetImportMemory(): void {
   sharedImportMemory.created.clear();
   sharedImportMemory.unclear.clear();
+}
+
+// ---- specialists (#1714 P2) --------------------------------------------------------------------
+
+/** A specialist with nothing chosen to run it yet. */
+export const NO_CHOICE: ShareChoice = { engine: "", model: "default", effort: null };
+
+/** What this page knows about an agent: whether it can start a new session here and whether it
+ *  can load skills (a tool channel). `undefined` = not in the roster (yet). */
+export type AgentFacts = (engine: string) => { starts: boolean; skills: boolean } | undefined;
+
+/** Why `choice` can't be sent for this specialist, judged on what this page knows; `null` when it
+ *  may be sent (the server checks it again, the way a save is checked). */
+export function choiceProblem(item: SharePreviewItem, choice: ShareChoice, agent: AgentFacts): string | null {
+  if (!choice.engine) return "Choose the agent it runs on.";
+  const facts = agent(choice.engine);
+  if (facts && !facts.starts) return `${engineName(choice.engine)} can't start a session here. Choose another agent.`;
+  if ((item.specialist?.skills.length ?? 0) > 0 && facts && !facts.skills)
+    return `${engineName(choice.engine)} cannot load skills, and this specialist pins skills. Choose an agent that can.`;
+  return null;
 }

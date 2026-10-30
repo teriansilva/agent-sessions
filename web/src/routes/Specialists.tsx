@@ -7,6 +7,8 @@ import { Link, useLocation, useParams } from "react-router-dom";
 import { usePlaybookRead } from "../components/playbooks/usePlaybooks";
 import { SpecialistCard } from "../components/specialists/SpecialistCard";
 import { SpecialistEditor } from "../components/specialists/SpecialistEditor";
+import { ShareActions } from "../components/share/ShareDialogs";
+import { useShareImports } from "../components/share/useShareImports";
 import { api } from "../lib/api";
 import { SPECIALIST_NEW_PATH } from "../lib/routes";
 import buttons from "../components/ui/actionButton.module.css";
@@ -94,6 +96,8 @@ function Pool() {
   const { data, error, loading, reload } = usePlaybookRead(read);
   // Archived specialists are hidden from new use, never lost: one toggle shows them instead.
   const [showArchived, setShowArchived] = useState(false);
+  const [round, setRound] = useState(0);
+  const imported = useShareImports(round);
   const all = data?.specialists ?? [];
   const archivedCount = all.filter((s) => s.archived).length;
   const rows = all.filter((s) => s.archived === showArchived);
@@ -106,9 +110,17 @@ function Pool() {
       </div>
       <div className={pb.header}>
         <h1>Specialists</h1>
-        <Link className={buttons.primary} to={SPECIALIST_NEW_PATH}>
-          New specialist
-        </Link>
+        <ShareActions
+          kind="specialist"
+          onImported={() => {
+            setRound((n) => n + 1);
+            void reload();
+          }}
+        >
+          <Link className={buttons.primary} to={SPECIALIST_NEW_PATH}>
+            New specialist
+          </Link>
+        </ShareActions>
       </div>
       <p className={pb.intro}>
         The jobs HQ staffs your missions from. Each one has the skills it brings, the
@@ -154,7 +166,13 @@ function Pool() {
       )}
       <div className={pb.grid}>
         {rows.map((s, i) => (
-          <SpecialistCard key={s.id} specialist={s} ordinal={i + 1} onChanged={() => void reload()} />
+          <SpecialistCard
+            key={s.id}
+            specialist={s}
+            ordinal={i + 1}
+            imported={imported.has(`specialist:${s.id}`)}
+            onChanged={() => void reload()}
+          />
         ))}
         {data && !showArchived && (
           <Link to={SPECIALIST_NEW_PATH} className={pb.newCard}>

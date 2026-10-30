@@ -1,8 +1,11 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { resetRoster, setRoster } from "../../app/engineRoster";
+import fixture from "../../test/roster.fixture.json";
+import type { EngineInfo } from "../../types/api";
 import { api, ApiError } from "../../lib/api";
-import type { SharePreview } from "../../types/share";
+import type { SharePreview, SharePreviewItem } from "../../types/share";
 import { ShareActions } from "./ShareDialogs";
 import { resetImportMemory } from "./shareRules";
 import { useShareImports } from "./useShareImports";
@@ -412,4 +415,250 @@ test("import: a reused skill is listed as already here, needs no tick, and satis
   expect(result).toHaveTextContent("a (yours, reused)");
   expect(within(result).queryByRole("link")).toBeNull();
   expect(within(dialog).getByRole("status")).toHaveTextContent("2 of the 2 items you chose were imported");
+});
+
+
+// ---- specialists (#1714 P2) ---------------------------------------------------------------------
+
+afterEach(() => resetRoster());
+
+const SPEC = (over: Partial<NonNullable<SharePreviewItem["specialist"]>> = {}): SharePreviewItem => ({
+  key: "specialist:rev",
+  kind: "specialist",
+  id: "rev",
+  title: "Reviewer",
+  dest: "rev",
+  status: "new",
+  reason: null,
+  depends_on: ["skill:b"],
+  uses: [],
+  files: [{ path: "specialist.json", size: 10, text: "{}" }],
+  specialist: {
+    title: "Reviewer",
+    summary: "",
+    capacity: 1,
+    skills: ["b"],
+    suggests: { engine: "claude", model: "claude-opus-5", effort: null },
+    settled: { engine: "claude", model: "claude-opus-5", effort: null },
+    settle_reason: null,
+    grade: null,
+    ...over,
+  },
+});
+
+async function previewWith(item: SharePreviewItem) {
+  setRoster(fixture.engines as EngineInfo[]);
+  vi.mocked(api.sharePreview).mockResolvedValue({ ...PREVIEW, items: [PREVIEW.items[1], item] });
+  mount();
+  fireEvent.click(screen.getByRole("button", { name: "Import…" }));
+  const dialog = await screen.findByTestId("share-import");
+  fireEvent.change(within(dialog).getByTestId("share-file"), { target: { files: [new File(["x"], "kit.battlelab")] } });
+  await within(dialog).findByTestId("share-settle-specialist:rev");
+  return dialog;
+}
+
+test("import: a specialist whose suggestion holds here is ready, and confirm sends that choice", async () => {
+  const dialog = await previewWith(SPEC());
+  const fields = within(dialog).getByTestId("share-settle-specialist:rev");
+  expect(fields).toHaveTextContent("The suggested agent and model work here.");
+  expect(within(fields).getByLabelText("Agent for Reviewer")).toHaveValue("claude");
+  expect(within(fields).getByLabelText("Model for Reviewer")).toHaveValue("claude-opus-5");
+  expect(within(dialog).getByTestId("share-preview-row-specialist:rev")).toHaveTextContent("version 1 · capacity 1 · pins b");
+  vi.mocked(api.shareConfirm).mockResolvedValue({ token: PREVIEW.token, bundle: PREVIEW.bundle.digest, repreview: null, items: [] });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Import 2 items" }));
+  await waitFor(() =>
+    expect(api.shareConfirm).toHaveBeenCalledWith(PREVIEW.token, ["skill:b", "specialist:rev"], {
+      "specialist:rev": { engine: "claude", model: "claude-opus-5", effort: null },
+    }),
+  );
+});
+
+test("import: a suggestion that doesn't hold here must be settled before Import is offered", async () => {
+  const dialog = await previewWith(
+    SPEC({
+      suggests: { engine: "codex-api", model: "gpt-5", effort: "high" },
+      settled: null,
+      settle_reason: "Suggested codex-api · gpt-5 · high, but codex-api cannot start a session on this host. Choose what it runs on here.",
+    }),
+  );
+  const row = within(dialog).getByTestId("share-preview-row-specialist:rev");
+  expect(row).toHaveTextContent("Choose agent");
+  expect(row).toHaveTextContent("codex-api cannot start a session on this host");
+  expect(screen.getByTestId("share-preview-summary")).toHaveTextContent("1 needs an agent");
+  const importButton = within(dialog).getByRole("button", { name: "Import 2 items" });
+  expect(importButton).toBeDisabled();
+  // An agent that can't load skills is not offered for a specialist that pins skills.
+  const gemini = within(row).getByRole("option", { name: /gemini · cannot load skills/ }) as HTMLOptionElement;
+  expect(gemini.disabled).toBe(true);
+  fireEvent.change(within(row).getByLabelText("Agent for Reviewer"), { target: { value: "codex" } });
+  expect(row).toHaveTextContent("You chose codex. The file suggested codex-api · gpt-5 · high.");
+  expect(importButton).toBeEnabled();
+  vi.mocked(api.shareConfirm).mockResolvedValue({ token: PREVIEW.token, bundle: PREVIEW.bundle.digest, repreview: null, items: [] });
+  fireEvent.click(importButton);
+  await waitFor(() =>
+    expect(api.shareConfirm).toHaveBeenCalledWith(PREVIEW.token, ["skill:b", "specialist:rev"], {
+      "specialist:rev": { engine: "codex", model: "default", effort: null },
+    }),
+  );
+});
+
+test("import: a choice the server refuses (422 settle) is shown on its row, nothing was imported, and it stays editable", async () => {
+  const dialog = await previewWith(SPEC());
+  vi.mocked(api.shareConfirm).mockRejectedValue(
+    new ApiError(422, "Nothing was imported: what a specialist runs on doesn't work here. Change it, then import again.", {
+      detail: "Nothing was imported",
+      reason: "settle",
+      items: { "specialist:rev": "claude doesn't offer the model claude-opus-5 now." },
+    }),
+  );
+  fireEvent.click(within(dialog).getByRole("button", { name: "Import 2 items" }));
+  const fields = within(dialog).getByTestId("share-settle-specialist:rev");
+  expect(await within(fields).findByRole("alert")).toHaveTextContent("claude doesn't offer the model claude-opus-5 now.");
+  expect(within(dialog).getByText(/Nothing was imported: what a specialist runs on/)).toBeInTheDocument();
+  await waitFor(() => expect(within(fields).getByLabelText("Agent for Reviewer")).toHaveFocus());
+  const model = within(fields).getByLabelText("Model for Reviewer");
+  expect(model).toBeEnabled();
+  fireEvent.change(model, { target: { value: "claude-sonnet-5" } });
+  expect(within(fields).queryByRole("alert")).toBeNull();
+});
+
+test("import: the settled specialist's result links to its new page", async () => {
+  const dialog = await previewWith(SPEC());
+  vi.mocked(api.shareConfirm).mockResolvedValue({
+    token: PREVIEW.token,
+    bundle: PREVIEW.bundle.digest,
+    repreview: null,
+    items: [
+      { key: "skill:b", kind: "skill", id: "b", title: "b", status: "created", dest: "b", reason: null },
+      { key: "specialist:rev", kind: "specialist", id: "rev", title: "Reviewer", status: "created", dest: "rev-2", reason: null },
+    ],
+  });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Import 2 items" }));
+  const row = await within(dialog).findByTestId("share-result-row-specialist:rev");
+  expect(within(row).getByRole("link", { name: /Open/ })).toHaveAttribute("href", "/library/specialists/rev-2");
+});
+
+// ---- independent review of #1812 ----------------------------------------------------------------
+
+const SETTLE_422 = () =>
+  new ApiError(422, "Nothing was imported: what a specialist runs on doesn't work here. Change it, then import again.", {
+    reason: "settle",
+    items: { "specialist:rev": "claude doesn't offer the model claude-opus-5 now." },
+  });
+
+test("import: after a 422 settle, Import waits for a changed choice, the banner clears with the fix, and a repeat refocuses", async () => {
+  const dialog = await previewWith(SPEC());
+  const fields = within(dialog).getByTestId("share-settle-specialist:rev");
+  const importButton = within(dialog).getByRole("button", { name: "Import 2 items" });
+  vi.mocked(api.shareConfirm).mockRejectedValue(SETTLE_422());
+  fireEvent.click(importButton);
+  await within(fields).findByRole("alert");
+  expect(importButton).toBeDisabled(); // the refused choice is unchanged
+  expect(within(dialog).getByText("Import failed.")).toBeInTheDocument();
+  const model = within(fields).getByLabelText("Model for Reviewer");
+  fireEvent.change(model, { target: { value: "claude-sonnet-5" } });
+  expect(importButton).toBeEnabled();
+  expect(within(dialog).queryByText("Import failed.")).toBeNull();
+  fireEvent.change(model, { target: { value: "claude-opus-5" } });
+  (document.activeElement as HTMLElement | null)?.blur();
+  fireEvent.click(importButton); // the identical refusal again
+  await waitFor(() => expect(within(fields).getByLabelText("Agent for Reviewer")).toHaveFocus());
+});
+
+test("import: a renamed skill pinned only by a specialist says specialists follow it, not playbooks", async () => {
+  const spec = { ...SPEC(), uses: [{ from: "b", to: "b-2" }] };
+  setRoster(fixture.engines as EngineInfo[]);
+  vi.mocked(api.sharePreview).mockResolvedValue({
+    ...PREVIEW,
+    items: [{ ...PREVIEW.items[1], dest: "b-2", status: "renamed" }, spec],
+  });
+  mount();
+  fireEvent.click(screen.getByRole("button", { name: "Import…" }));
+  const dialog = await screen.findByTestId("share-import");
+  fireEvent.change(within(dialog).getByTestId("share-file"), { target: { files: [new File(["x"], "kit.battlelab")] } });
+  const row = await within(dialog).findByTestId("share-preview-row-skill:b");
+  expect(row).toHaveTextContent("specialists in this file that use it are pointed at b-2");
+  expect(row).not.toHaveTextContent("playbooks");
+});
+
+test("import: an unticked specialist's choice is never sent", async () => {
+  const dialog = await previewWith(SPEC());
+  fireEvent.click(within(dialog).getByLabelText("Import Specialist Reviewer"));
+  vi.mocked(api.shareConfirm).mockResolvedValue({ token: PREVIEW.token, bundle: PREVIEW.bundle.digest, repreview: null, items: [] });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Import 1 item" }));
+  await waitFor(() => expect(api.shareConfirm).toHaveBeenCalled());
+  expect(vi.mocked(api.shareConfirm).mock.calls[0]).toEqual([PREVIEW.token, ["skill:b"]]);
+});
+
+test("import: after a lost answer, the retry re-sends exactly the same choices", async () => {
+  const dialog = await previewWith(SPEC());
+  fireEvent.change(within(dialog).getByLabelText("Agent for Reviewer"), { target: { value: "codex" } });
+  vi.mocked(api.shareConfirm).mockRejectedValueOnce(new ApiError(503, "Share storage is unavailable."));
+  fireEvent.click(within(dialog).getByRole("button", { name: "Import 2 items" }));
+  const retry = await within(dialog).findByRole("button", { name: "Try again (same selection)" });
+  expect(within(dialog).getByLabelText("Agent for Reviewer")).toBeDisabled();
+  vi.mocked(api.shareConfirm).mockResolvedValue({ token: PREVIEW.token, bundle: PREVIEW.bundle.digest, repreview: null, items: [] });
+  fireEvent.click(retry);
+  await waitFor(() => expect(api.shareConfirm).toHaveBeenCalledTimes(2));
+  const calls = vi.mocked(api.shareConfirm).mock.calls;
+  expect(calls[1]).toEqual(calls[0]);
+  expect(calls[0][2]).toEqual({ "specialist:rev": { engine: "codex", model: "default", effort: null } });
+});
+
+test("import: a 422 settle on the retry of a lost answer keeps the dialog frozen", async () => {
+  const dialog = await previewWith(SPEC());
+  vi.mocked(api.shareConfirm).mockRejectedValueOnce(new ApiError(503, "Share storage is unavailable."));
+  fireEvent.click(within(dialog).getByRole("button", { name: "Import 2 items" }));
+  const retry = await within(dialog).findByRole("button", { name: "Try again (same selection)" });
+  vi.mocked(api.shareConfirm).mockRejectedValueOnce(SETTLE_422());
+  fireEvent.click(retry);
+  await waitFor(() => expect(api.shareConfirm).toHaveBeenCalledTimes(2));
+  expect(await within(dialog).findByRole("button", { name: "Try again (same selection)" })).toBeInTheDocument();
+  expect(within(dialog).getByText(/The retry was refused/)).toBeInTheDocument();
+  expect(within(dialog).getByLabelText("Agent for Reviewer")).toBeDisabled();
+});
+
+test("import: a failure recorded for good (a pinned skill moved) offers Preview again, never Retry", async () => {
+  const dialog = await previewWith(SPEC());
+  vi.mocked(api.shareConfirm).mockResolvedValue({
+    token: PREVIEW.token,
+    bundle: PREVIEW.bundle.digest,
+    repreview: null,
+    items: [
+      { key: "skill:b", kind: "skill", id: "b", title: "b", status: "created", dest: "b", reason: null, retry: false },
+      {
+        key: "specialist:rev",
+        kind: "specialist",
+        id: "rev",
+        title: "Reviewer",
+        status: "failed",
+        dest: "rev",
+        reason: "Nothing was written: a skill it pins changed or can't be read during the import. Preview the file again to import it.",
+        retry: false,
+      },
+    ],
+  });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Import 2 items" }));
+  await within(dialog).findByTestId("share-result-row-specialist:rev");
+  expect(within(dialog).queryByRole("button", { name: "Retry failed items" })).toBeNull();
+  vi.mocked(api.sharePreview).mockClear();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Preview again" }));
+  await waitFor(() => expect(api.sharePreview).toHaveBeenCalledTimes(1));
+  expect(api.shareConfirm).toHaveBeenCalledTimes(1); // the same token is never confirmed again
+});
+
+test("import: a retriable failure still offers Retry failed items (and an older answer without `retry` counts as one)", async () => {
+  const dialog = await previewWith(SPEC());
+  vi.mocked(api.shareConfirm).mockResolvedValue({
+    token: PREVIEW.token,
+    bundle: PREVIEW.bundle.digest,
+    repreview: null,
+    items: [
+      { key: "skill:b", kind: "skill", id: "b", title: "b", status: "failed", dest: "b", reason: "Nothing was written: a storage error (EIO). Confirm again to retry this item." },
+      { key: "specialist:rev", kind: "specialist", id: "rev", title: "Reviewer", status: "skipped", dest: "rev", reason: "Not attempted." },
+    ],
+  });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Import 2 items" }));
+  expect(await within(dialog).findByRole("button", { name: "Retry failed items" })).toBeInTheDocument();
+  expect(within(dialog).queryByRole("button", { name: "Preview again" })).toBeNull();
 });

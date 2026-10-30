@@ -437,3 +437,66 @@
 .reusedMark {
   color: var(--text-3);
 }
+
+/* ── What an imported specialist runs on (#1714 P2): settled in the preview. ── */
+.runs {
+  display: grid;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.runsHead {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.runsHead span {
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--sp-2);
+}
+.field {
+  display: grid;
+  gap: var(--sp-1);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.select {
+  composes: nj-field from global;
+  min-height: 44px;
+  min-width: 0;
+  font-size: var(--fs-input);
+}
+.select[aria-invalid="true"] {
+  border-color: var(--status-degraded);
+}
+.gradeLine {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: baseline;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.grade,
+.ungraded {
+  padding: 2px var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid var(--accent);
+  color: var(--accent-text);
+}
+.ungraded {
+  border: 1px dashed var(--line-strong);
+  color: var(--text-3);
+}

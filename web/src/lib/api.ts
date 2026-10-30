@@ -6,7 +6,7 @@ import type {
   SpecialistList,
 } from "../types/specialists";
 import type { ApiLook } from "../theme/apiLook";
-import type { ShareCatalog, ShareImports, SharePreview, ShareResult } from "../types/share";
+import type { ShareCatalog, ShareChoice, ShareImports, SharePreview, ShareResult } from "../types/share";
 import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, GalleryComparison, GalleryFiles, LocalSkill } from "../types/gallery";
 import type { CollectionInput, SecretAccessEntry, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
 import type { Resources, ResourceSettings, ResourceValues } from "../types/resources";
@@ -936,8 +936,10 @@ export const api = {
   shareImports: () => getJsonWithDetail<{ imports: ShareImports }>("/api/share/imports"),
   shareExport: (items: { kind: string; id: string }[]) => postForBlob("/api/share/export", { items }),
   sharePreview: (file: Blob) => postBytes<SharePreview>("/api/share/import/preview", file),
-  shareConfirm: (token: string, selection: string[]) =>
-    mutateJson<ShareResult>("POST", "/api/share/import", { token, selection }),
+  /** `settle` (#1714 P2): what each imported specialist runs on, by item key; sent only when the
+   *  file holds specialists, so a skills-and-playbooks import is the request it always was. */
+  shareConfirm: (token: string, selection: string[], settle?: Record<string, ShareChoice>) =>
+    mutateJson<ShareResult>("POST", "/api/share/import", settle ? { token, selection, settle } : { token, selection }),
   localSkill: (id: string) => getJsonWithDetail<LocalSkill>(`/api/library/skills/${encodeURIComponent(id)}`),
   saveLocalSkill: (id: string, newId: string, revision: string, origin: string | null, files: Record<string, string>, operation: string) => mutateJson<GalleryOperation>("POST", `/api/library/skills/${encodeURIComponent(id)}/copies`, { new_id: newId, revision, origin, files, operation }),
   plugins: () => pluginCatalog("/api/plugins"),

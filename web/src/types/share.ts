@@ -98,6 +98,10 @@ export interface ShareResultItem {
   status: ShareOutcome;
   dest: string | null;
   reason: string | null;
+  /** A failed item a confirm of this same preview may still create. `false` = recorded for good
+   *  (a destination taken, a pinned skill that moved): only a new preview gets past it. Absent
+   *  from an older server's answer, which is treated as retriable. */
+  retry?: boolean;
 }
 
 export interface ShareResult {

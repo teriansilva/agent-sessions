@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { ShareCatalogItem, SharePreviewItem } from "../../types/share";
-import { asCatalog, asImports, asPreview, closure, initialSelection, previewStates } from "./shareRules";
+import { asCatalog, asImports, asPreview, choiceProblem, closure, initialSelection, NO_CHOICE, previewStates } from "./shareRules";
 
 const cat = (kind: string, id: string, depends_on: string[] = []): ShareCatalogItem => ({
   kind,
@@ -80,5 +80,21 @@ describe("shape guards (an e2e stub answers {})", () => {
     expect(asImports([])).toEqual({});
     expect(asImports({ "skill:a": { bundle: "d", revision: 3 } })).toEqual({ "skill:a": { bundle: "d", revision: null } });
     expect(asPreview({})).toBeNull();
+  });
+});
+
+
+describe("a specialist's choice (#1714 P2)", () => {
+  const spec = { ...item("specialist:s", ["skill:a"]), specialist: { title: "S", summary: "", capacity: 1, skills: ["a"], suggests: { engine: null, model: null, effort: null }, settled: null, settle_reason: null, grade: null } };
+  const facts = (id: string) => ({ ok: { starts: true, skills: true }, noskills: { starts: true, skills: false }, gone: { starts: false, skills: true } } as Record<string, { starts: boolean; skills: boolean }>)[id];
+  test("nothing chosen, an agent that can't start, and skills on an agent without a channel are refused", () => {
+    expect(choiceProblem(spec, NO_CHOICE, facts)).toMatch(/Choose the agent/);
+    expect(choiceProblem(spec, { engine: "gone", model: "default", effort: null }, facts)).toMatch(/can't start/);
+    expect(choiceProblem(spec, { engine: "noskills", model: "default", effort: null }, facts)).toMatch(/cannot load skills/);
+    expect(choiceProblem(spec, { engine: "ok", model: "default", effort: null }, facts)).toBeNull();
+  });
+  test("a specialist without skills may run on an agent without a tool channel", () => {
+    const bare = { ...spec, specialist: { ...spec.specialist, skills: [] } };
+    expect(choiceProblem(bare, { engine: "noskills", model: "default", effort: null }, facts)).toBeNull();
   });
 });

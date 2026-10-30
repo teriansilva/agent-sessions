@@ -164,7 +164,7 @@ export default defineConfig({
           { text: "Shared memory", link: "/guide/memory" },
           { text: "Secrets for agents", link: "/guide/secrets" },
           { text: "Playbook & skill gallery", link: "/guide/gallery" },
-          { text: "Sharing skills & playbooks", link: "/guide/sharing" },
+          { text: "Sharing specialists, skills & playbooks", link: "/guide/sharing" },
           { text: "AI review", link: "/guide/ai-review" },
           { text: "Handoff", link: "/guide/handoff" },
           { text: "Dictation", link: "/guide/dictation" },

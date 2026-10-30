@@ -38,6 +38,11 @@ class ItemRefused(ValueError):
     """This item cannot be exported or imported; the message is the reason, in words."""
 
 
+class PinMoved(store.Conflict):
+    """A skill a specialist pins no longer holds the pinned revision at publication: retrying the
+    same plan can never succeed, so the remedy is a new preview (never "confirm again")."""
+
+
 # ---- skills ---------------------------------------------------------------------------------
 
 
@@ -371,7 +376,7 @@ def _specialist_publish(dest: str, body: dict) -> str:
                 skill_bundles._snapshot(lib_fd, ref["id"], ref["revision"])
             created = specialist_store.create(body, sid=dest)
     except skill_bundles.BundleRefused:
-        raise store.Conflict("a skill it pins changed or can't be read during the import") from None
+        raise PinMoved("a skill it pins changed or can't be read during the import") from None
     except specialist_store.StoreError as exc:
         raise _store_errors(exc) from None
     except skill_bundles._DIR_ERRORS:

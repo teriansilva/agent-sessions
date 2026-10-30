@@ -476,6 +476,16 @@ def _inventory(now: float) -> list[dict]:
     return rows
 
 
+def _retriable(journal: dict, key: str, status: dict) -> bool:
+    """Whether confirming this same preview again may still create a failed item: false once its
+    failure is recorded for good (a destination taken, a pin that moved), which only a new
+    preview can get past. The dialog offers *Retry failed items* only for retriable failures."""
+    if status.get("status") != "failed":
+        return False
+    recorded = journal["entries"].get(key, {})
+    return not (recorded.get("outcome") == "failed" and not recorded.get("retry"))
+
+
 def _result(token: str, record: dict, journal: dict, statuses: dict, stale: str | None) -> dict:
     plan = {e["key"]: e for e in record["items"]}
     return {
@@ -489,6 +499,7 @@ def _result(token: str, record: dict, journal: dict, statuses: dict, stale: str 
                 "id": plan[key]["id"],
                 "title": plan[key]["title"],
                 **statuses[key],
+                "retry": _retriable(journal, key, statuses[key]),
             }
             for key in (e["key"] for e in record["items"])
         ],
@@ -1237,6 +1248,12 @@ def _after_failure(journal: dict, entry: dict, key: str, digest: str, exc: Excep
         return {"status": "created", "dest": entry["dest"], "reason": None}
     if current is None:
         detail = _failure_text(exc)
+        if isinstance(exc, kinds.PinMoved):
+            # A pinned skill moved under the import: the same plan can never succeed, so it is
+            # settled for good and the remedy is a new preview (never "confirm again").
+            reason = f"Nothing was written: {detail}. Preview the file again to import it."
+            _record_outcome(journal, key, outcome="failed", retry=False, reason=reason)
+            return {"status": "failed", "dest": entry["dest"], "reason": reason}
         reason = f"Nothing was written: {detail}. Confirm again to retry this item."
         _record_outcome(journal, key, outcome="failed", retry=True, reason=reason)
         return {"status": "failed", "dest": entry["dest"], "reason": reason}

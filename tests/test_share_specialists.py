@@ -432,6 +432,7 @@ def test_a_specialist_already_at_the_destination_is_never_adopted(tmp_path, monk
     result = service.confirm(preview["token"], _keys(preview))
     row = next(i for i in result["items"] if i["key"] == f"specialist:{sid}")
     assert row["status"] == "failed" and "nothing was overwritten" in row["reason"]
+    assert row["retry"] is False  # taken for good
     assert pool.get(sid)["current"]["title"] == "Someone else's"
 
 
@@ -453,6 +454,7 @@ def test_a_choice_that_stops_holding_before_apply_fails_that_item_and_writes_not
     row = next(i for i in result["items"] if i["key"] == f"specialist:{sid}")
     assert row["status"] == "failed"
     assert row["reason"].startswith("Nothing was written:")
+    assert row["retry"] is True  # nothing journaled: confirming again may still create it
     assert pool.ids() == []
     monkeypatch.setattr(specialists, "check_draft", real)
     again = service.confirm(preview["token"], _keys(preview))  # nothing journaled: tried again
@@ -895,6 +897,12 @@ def test_a_skill_changed_after_validation_never_gets_pinned(tmp_path, monkeypatc
     row = next(i for i in result["items"] if i["key"] == f"specialist:{sid}")
     assert row["status"] == "failed"
     assert "changed or can't be read during the import" in row["reason"]
+    assert row["reason"].endswith("Preview the file again to import it.")
+    assert row["retry"] is False  # the dialog offers Preview again, never Retry failed items
+    # Settled for good: a retry of the same preview reports it as it was, never "confirm again".
+    monkeypatch.setattr(specialists, "check_draft", real)
+    again = service.confirm(preview["token"], _keys(preview))
+    assert next(i for i in again["items"] if i["key"] == f"specialist:{sid}") == row
     assert pool.ids() == []
 
 

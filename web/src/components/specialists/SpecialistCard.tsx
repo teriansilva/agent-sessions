@@ -6,6 +6,7 @@ import { engineColor, engineName } from "../../app/engineRoster";
 import { api } from "../../lib/api";
 import { specialistPath } from "../../lib/routes";
 import type { Specialist } from "../../types/specialists";
+import { ImportedMark } from "../share/ShareDialogs";
 import { GRADE_LABEL } from "./grades";
 import buttons from "../ui/actionButton.module.css";
 import pb from "../playbooks/playbooks.module.css";
@@ -15,9 +16,12 @@ export function SpecialistCard({
   specialist,
   ordinal,
   onChanged,
+  imported = false,
 }: {
   specialist: Specialist;
   ordinal?: number;
+  /** Created by an import from a file (#1714 P2): the Library's provenance mark. */
+  imported?: boolean;
   /** After a held slot is released, so the pool reloads. */
   onChanged?: () => void;
 }) {
@@ -63,6 +67,7 @@ export function SpecialistCard({
         <span className={styles.version}>v{v.version}</span>
         {specialist.archived && <span className={styles.version}>archived</span>}
       </div>
+      {imported && <ImportedMark />}
       {v.summary && <p>{v.summary}</p>}
       <p className={styles.runsOn} style={{ borderLeftColor: engineColor(v.engine) }}>
         {engineName(v.engine)} · <code>{v.model}</code>

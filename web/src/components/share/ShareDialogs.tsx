@@ -25,6 +25,7 @@ import { api, ApiError } from "../../lib/api";
 import { playbookPath, SKILLS_PATH, specialistPath } from "../../lib/routes";
 import type {
   ShareCatalog,
+  ShareChoice,
   ShareKind,
   SharePreview,
   SharePreviewItem,
@@ -44,6 +45,9 @@ import {
   sizeText,
 } from "./shareRules";
 import { sharedImportMemory, unshown, type ImportMemory } from "./shareRules";
+import { choiceProblem, NO_CHOICE } from "./shareRules";
+import { SettleFields } from "./SettleFields";
+import { eligibleFor, useEngineRoster } from "../../app/engineRoster";
 import styles from "./share.module.css";
 
 const KIND_LABEL: Record<string, string> = { skill: "Skill", playbook: "Playbook", specialist: "Specialist" };
@@ -171,7 +175,13 @@ function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void 
   const items = useMemo(() => catalog?.items ?? [], [catalog]);
   const included = useMemo(() => closure(items, chosen), [items, chosen]);
   const needle = filter.trim().toLowerCase();
-  const order: string[] = kind === "playbook" ? ["playbook", "skill"] : ["skill", "playbook"];
+  const order: string[] =
+    kind === "playbook"
+      ? ["playbook", "skill", "specialist"]
+      : kind === "specialist"
+        ? ["specialist", "skill", "playbook"]
+        : ["skill", "playbook", "specialist"];
+  const hasSpecialists = items.some((i) => i.kind === "specialist");
   const total = chosen.size + included.size;
   const toggle = (key: string) =>
     setChosen((old) => {
@@ -251,7 +261,7 @@ function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void 
         <div className={styles.drop}>
           <FileText size={28} aria-hidden />
           <b>Nothing to export yet</b>
-          <span>Create a skill or a playbook, or add one from the gallery; it will be listed here.</span>
+          <span>Create a specialist, a skill or a playbook, or add one from the gallery; it will be listed here.</span>
         </div>
       )}
       {!!items.length && (
@@ -307,8 +317,8 @@ function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void 
                       </span>
                       <span className={styles.line}>
                         {locked
-                          ? `Included — needed by ${by!.map((b) => b.slice(b.indexOf(":") + 1)).join(", ")}`
-                          : `${i.id}${i.source !== "local" ? ` · ${i.source}` : ""}${i.depends_on.length ? ` · needs ${i.depends_on.length} skill${i.depends_on.length === 1 ? "" : "s"}` : ""}`}
+                          ? `Included — ${by!.every((b) => b.startsWith("specialist:")) ? "pinned" : "needed"} by ${by!.map((b) => b.slice(b.indexOf(":") + 1)).join(", ")}`
+                          : `${i.id}${i.source !== "local" ? ` · ${i.source}` : ""}${i.depends_on.length ? ` · ${i.kind === "specialist" ? "pins" : "needs"} ${i.depends_on.length} skill${i.depends_on.length === 1 ? "" : "s"}` : ""}`}
                       </span>
                       {!i.exportable && <span className={`${styles.why} ${styles.down}`}>{i.reason ?? "Can't be exported."}</span>}
                     </div>
@@ -327,11 +337,18 @@ function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void 
           </section>
         );
       })}
+      {hasSpecialists && (
+        <Banner icon={<FileText size={16} aria-hidden />} title="What a specialist carries.">
+          The job: its title, summary, capacity and pinned skills, exactly at the versions it pins.
+          Its agent, model and effort go only as a suggestion; whoever imports it chooses what runs
+          it. Its notes, sessions, grade and project names stay here.
+        </Banner>
+      )}
       {!!items.length && (
         <Banner tone="warn" icon={<AlertTriangle size={16} aria-hidden />} title="Check the text for secrets before you share it.">
-          Skills and playbooks travel exactly as written. A token, password or key pasted into one
-          of their files goes into the bundle with it. Secret variables themselves are never
-          exported.
+          Specialists, skills and playbooks travel exactly as written. A token, password or key
+          pasted into one of their files goes into the bundle with it. Secret variables themselves
+          are never exported.
         </Banner>
       )}
     </Shell>
@@ -354,6 +371,16 @@ const STALE: Record<string, string> = {
   evicted:
     "This preview's file was cleared to make room for other imports. Nothing was imported. Preview the file again to continue.",
 };
+
+/** Who in this file uses skill `id` under a new name: "playbooks", "specialists", "items" (both),
+ *  or null — so a rename note names what actually follows it. */
+function usersOf(preview: SharePreview, id: string): string | null {
+  const kinds = new Set(
+    preview.items.filter((o) => o.kind !== "skill" && o.uses.some((u) => u.from === id)).map((o) => o.kind),
+  );
+  if (!kinds.size) return null;
+  return kinds.size > 1 ? "items" : kinds.has("specialist") ? "specialists" : "playbooks";
+}
 
 function linkTo(item: { kind: string; dest: string | null }): string | null {
   if (!item.dest) return null;
@@ -411,11 +438,17 @@ function PreviewRow({
   disabled,
   onToggle,
   already,
-  referenced = false,
+  usedBy = null,
+  settle,
+  needsChoice = false,
 }: {
   already?: string;
-  /** A playbook in this file uses this skill (its reference follows the rename). */
-  referenced?: boolean;
+  /** A specialist's agent/model/effort fields (#1714 P2), shown while it is to be imported. */
+  settle?: ReactNode;
+  /** A specialist to be imported that has no agent it can run on yet. */
+  needsChoice?: boolean;
+  /** Who in this file uses this skill ("playbooks", "specialists", "items"): they follow its rename. */
+  usedBy?: string | null;
   item: SharePreviewItem;
   state: ReturnType<typeof previewStates> extends Map<string, infer S> ? S : never;
   checked: boolean;
@@ -432,6 +465,8 @@ function PreviewRow({
       <span className={`${styles.stamp} ${styles.down}`}>Refused</span>
     ) : state.state === "deselected" ? (
       <span className={styles.stamp}>Deselected</span>
+    ) : needsChoice ? (
+      <span className={`${styles.stamp} ${styles.warn}`}>Choose agent</span>
     ) : item.status === "renamed" ? (
       <span className={`${styles.stamp} ${styles.warn}`}>Renamed</span>
     ) : (
@@ -475,7 +510,15 @@ function PreviewRow({
           ) : item.dest ? (
             " → new copy"
           ) : null}
-          {item.uses.length ? ` · uses ${item.uses.map((u) => u.to).join(", ")}` : ""}
+          {item.specialist
+            ? ` · version 1 · capacity ${item.specialist.capacity}${
+                item.specialist.skills.length
+                  ? ` · pins ${item.specialist.skills.map((sk) => item.uses.find((u) => u.from === sk)?.to ?? sk).join(", ")}`
+                  : ""
+              }`
+            : item.uses.length
+              ? ` · uses ${item.uses.map((u) => u.to).join(", ")}`
+              : ""}
         </span>
         {reused && (
           <span className={styles.why} data-testid="share-reused">
@@ -487,10 +530,12 @@ function PreviewRow({
         {state.state !== "refused" && item.status === "renamed" && (
           <span className={`${styles.why} ${styles.warn}`}>
             A {item.kind} named {item.id} already exists here. Yours stays untouched; this copy is {item.dest}
-            {item.uses.length
+            {item.uses.length && item.kind === "specialist"
+              ? ", pinned to the renamed skills"
+              : item.uses.length
               ? ", and its references are rewritten to match"
-              : referenced
-                ? `, and playbooks in this file that use it are pointed at ${item.dest}`
+              : usedBy
+                ? `, and ${usedBy} in this file that use it are pointed at ${item.dest}`
                 : ""}
             .
           </span>
@@ -500,6 +545,7 @@ function PreviewRow({
             Already imported from this file as {already}. Ticking it imports a second copy.
           </span>
         )}
+        {state.state === "import" && settle}
         {!serverRefused && !reused && <Files item={item} />}
       </div>
       <div className={styles.state}>{stamp}</div>
@@ -603,6 +649,11 @@ function ImportDialog({
   // Files this preview couldn't show: importing them needs an explicit acknowledgement.
   const [ack, setAck] = useState(false);
   const [held, setHeld] = useState(false);
+  // What each imported specialist runs on (#1714 P2): the server-settled suggestion, else nothing
+  // chosen yet; and the server's reason for a choice it refused (a 422 `settle`).
+  const [choices, setChoices] = useState<Map<string, ShareChoice>>(new Map());
+  const [problems, setProblems] = useState<Record<string, string>>({});
+  const roster = useEngineRoster();
   const done = useRef<HTMLButtonElement>(null);
   const settle = useRef<HTMLButtonElement>(null);
   const frozenNow = phase.at === "preview" || phase.at === "confirming" ? phase.frozen : undefined;
@@ -642,6 +693,14 @@ function ImportDialog({
       setFromLibrary(library);
       setHeld(hold);
       setAck(false);
+      setProblems({});
+      setChoices(
+        new Map(
+          preview.items
+            .filter((i) => i.kind === "specialist" && i.specialist)
+            .map((i) => [i.key, i.specialist!.settled ?? NO_CHOICE]),
+        ),
+      );
       setSelected(
         hold
           ? new Set()
@@ -658,7 +717,12 @@ function ImportDialog({
     setPhase({ at: "confirming", preview, frozen });
     setError("");
     try {
-      const result = asResult(await api.shareConfirm(preview.token, [...selected]));
+      const chosen = settleFor(preview);
+      const result = asResult(
+        chosen
+          ? await api.shareConfirm(preview.token, [...selected], chosen)
+          : await api.shareConfirm(preview.token, [...selected]),
+      );
       if (!live.current) return;
       if (!result) throw new Error("The import answer could not be read.");
       const digest = preview.bundle.digest;
@@ -676,10 +740,22 @@ function ImportDialog({
       if (!live.current) return;
       const status = e instanceof ApiError ? e.status : 0;
       const reason = e instanceof ApiError ? (e.record as { reason?: string } | undefined)?.reason : undefined;
-      if (reason && STALE[reason]) setPhase({ at: "preview", preview, stale: reason });
+      if (reason === "settle" && frozen !== "unclear") {
+        // Refused before anything was written (#1714 P2): say which choice, keep it editable.
+        const items = (e as ApiError).record as { items?: unknown } | undefined;
+        setProblems(
+          items?.items && typeof items.items === "object" ? (items.items as Record<string, string>) : {},
+        );
+        setError(errorText(e));
+        setPhase({ at: "preview", preview });
+      } else if (reason && STALE[reason]) setPhase({ at: "preview", preview, stale: reason });
       else if (frozen === "unclear" && reason !== "selection") {
         // Still unclear: a refusal of the retry doesn't prove the first confirm didn't land.
-        setError(errorText(e));
+        setError(
+          reason === "settle"
+            ? "The retry was refused: what a specialist runs on doesn't work here now."
+            : errorText(e),
+        );
         setPhase({ at: "preview", preview, frozen: "unclear" });
       } else if (reason === "selection") {
         memory.unclear.add(preview.bundle.digest);
@@ -702,6 +778,27 @@ function ImportDialog({
     }
   };
   const again = () => file && void check(file);
+  const agentFacts = (id: string) => {
+    const e = roster.engines.find((x) => x.id === id);
+    return e && { starts: e.kind === "agent" && eligibleFor(e, "new"), skills: !!e.tools?.mcp };
+  };
+  /** The specialists this confirm would create that still need a valid choice. */
+  const unsettled = (preview: SharePreview, states: ReturnType<typeof previewStates>) =>
+    preview.items.filter(
+      (i) =>
+        i.kind === "specialist" &&
+        i.specialist &&
+        states.get(i.key)?.state === "import" &&
+        (choiceProblem(i, choices.get(i.key) ?? NO_CHOICE, agentFacts) !== null || !!problems[i.key]),
+    );
+  /** `settle` for the confirm: each selected specialist's choice, or undefined without any. */
+  function settleFor(preview: SharePreview): Record<string, ShareChoice> | undefined {
+    const out: Record<string, ShareChoice> = {};
+    for (const i of preview.items)
+      if (i.kind === "specialist" && i.status !== "refused" && selected.has(i.key) && choices.get(i.key)?.engine)
+        out[i.key] = choices.get(i.key)!;
+    return Object.keys(out).length ? out : undefined;
+  }
 
   let body: ReactNode;
   let foot: ReactNode;
@@ -785,6 +882,7 @@ function ImportDialog({
     const refused = wont.filter((i) => states.get(i.key)?.state === "refused").length;
     // Files the operator is about to import without having been able to read them here.
     const blind = will.reduce((n, i) => n + unshown(i), 0);
+    const waiting = unsettled(preview, states);
     const stale = phase.at === "preview" ? phase.stale : undefined;
     const toggle = (key: string) => {
       setAck(false);
@@ -806,9 +904,25 @@ function ImportDialog({
             disabled={busy || !!stale || !!frozen}
             onToggle={() => toggle(item.key)}
             already={labelled.get(item.key)}
-            referenced={
-              item.kind === "skill" &&
-              preview.items.some((o) => o.kind === "playbook" && o.uses.some((u) => u.from === item.id))
+            usedBy={item.kind === "skill" ? usersOf(preview, item.id) : null}
+            needsChoice={waiting.some((w) => w.key === item.key)}
+            settle={
+              item.specialist ? (
+                <SettleFields
+                  item={item}
+                  choice={choices.get(item.key) ?? NO_CHOICE}
+                  disabled={busy || !!stale || !!frozen}
+                  problem={problems[item.key]}
+                  focusProblem={item.key === preview.items.find((i) => problems[i.key])?.key}
+                  onChange={(next) => {
+                    setChoices((old) => new Map(old).set(item.key, next));
+                    const rest = Object.fromEntries(Object.entries(problems).filter(([k]) => k !== item.key));
+                    setProblems(rest);
+                    // The refusal was about the choices: once none is left, its banner goes too.
+                    if (problems[item.key] && !Object.keys(rest).length) setError("");
+                  }}
+                />
+              ) : undefined
             }
           />
         ))}
@@ -859,8 +973,8 @@ function ImportDialog({
           </Banner>
         )}
         <Banner icon={<AlertTriangle size={16} aria-hidden />} title="Not signed — imported from a file.">
-          Skills and playbooks are instructions your agents will read. Review them before you import.
-          Nothing is activated, deployed, launched or made a default.
+          Specialists, skills and playbooks are instructions your agents will read. Review them
+          before you import. Nothing is activated, deployed, launched or made a default.
         </Banner>
         <dl className={styles.meta} data-testid="share-bundle-meta">
           <dt>File</dt>
@@ -926,6 +1040,7 @@ function ImportDialog({
           {reusedItems.length ? ` · ${reusedItems.length} reused` : ""}
           {renamed ? ` · ${renamed} renamed` : ""}
           {refused ? ` · ${refused} refused` : ""}
+          {waiting.length ? ` · ${waiting.length} need${waiting.length === 1 ? "s" : ""} an agent` : ""}
           {blind > 0 && !ack ? ` · ${blind} unreviewed file${blind === 1 ? "" : "s"} need${blind === 1 ? "s" : ""} your OK` : ""}{" "}
           · nothing changes until you confirm
         </p>
@@ -954,7 +1069,11 @@ function ImportDialog({
             Preview again
           </button>
         ) : (
-          <button className={buttons.primary} disabled={busy || !will.length || (blind > 0 && !ack)} onClick={() => void confirm(preview)}>
+          <button
+            className={buttons.primary}
+            disabled={busy || !will.length || (blind > 0 && !ack) || waiting.length > 0}
+            onClick={() => void confirm(preview)}
+          >
             {phase.at === "confirming" ? "Importing…" : `Import ${will.length} item${will.length === 1 ? "" : "s"}`}
           </button>
         )}
@@ -964,6 +1083,8 @@ function ImportDialog({
     const { result } = phase;
     const shown = result.items.filter((i) => i.status !== "not_selected");
     const count = (s: string) => shown.filter((i) => i.status === s).length;
+    const terminal = shown.filter((i) => i.status === "failed" && i.retry === false).length;
+    const retriable = count("failed") - terminal;
     // What the operator chose and BattleLab attempted: refusals were never going to be created.
     const chosen = shown.filter((i) => i.status !== "refused" && i.status !== "reused").length;
     body = (
@@ -994,10 +1115,18 @@ function ImportDialog({
           {count("skipped") ? ` · ${count("skipped")} skipped` : ""}
           {count("refused") ? ` · ${count("refused")} refused` : ""}
         </p>
-        {(result.repreview || count("failed") > 0) && (
-          <button className={buttons.ghost} onClick={result.repreview ? again : () => void confirm(phase.preview)}>
+        {/* A failure recorded for good (taken, a pinned skill that moved) only clears with a new
+            preview; a retriable one is retried under this same preview, never re-imported. */}
+        {(result.repreview || terminal > 0) && (
+          <button className={buttons.ghost} onClick={again} disabled={!file}>
             <RefreshCw size={16} aria-hidden />
-            {result.repreview ? "Preview again" : "Retry failed items"}
+            Preview again
+          </button>
+        )}
+        {!result.repreview && retriable > 0 && (
+          <button className={buttons.ghost} onClick={() => void confirm(phase.preview)}>
+            <RefreshCw size={16} aria-hidden />
+            Retry failed items
           </button>
         )}
         <button ref={done} className={buttons.primary} onClick={close}>
