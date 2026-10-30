@@ -138,11 +138,12 @@ OPERATION_STATES = frozenset(
         "dismissed",
         "interrupted",
         "unconfirmed",
+        "unsettled",
     }
 )
 OP_VERB_MAX = 40
 #: What an operation card may ask the OPERATOR for (never the model): a folder they pick.
-OPERATION_INPUTS = frozenset({"folder", "value"})
+OPERATION_INPUTS = frozenset({"folder", "value", "file"})
 OP_SUMMARY_MAX = 400
 _OP_FIELD_RE = re.compile(r"^[a-z_]{1,40}$")
 OP_FIELDS_MAX = 8
@@ -356,12 +357,16 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
                     and 0 < size <= 10 * 1024 * 1024
                 ):
                     raise ValueError("malformed attachment size")
+                if "secret" in a and type(a["secret"]) is not bool:
+                    raise ValueError("malformed attachment secret flag")
                 admitted.append(
                     {
                         "id": aid,
                         "name": text(a.get("name"), 200),
                         "kind": kind,
                         "size": size,
+                        # #1786: shared as a secret — its bytes never reach a model.
+                        **({"secret": True} if a.get("secret") is True else {}),
                     }
                 )
             out["attachments"] = admitted
@@ -955,6 +960,24 @@ def _admit_operation(e: dict, pid: str, tid: str, secrets: list[str], *, fresh: 
         v = e.get(k)
         if isinstance(v, int | float) and not isinstance(v, bool):
             out[k] = float(v)
+    # What a move committed (#1786): the Library record it created and that record's file
+    # revision — the only proof a resumed move accepts, never a name or matching bytes.
+    committed = e.get("committed")
+    if committed is not None:
+        # rev 0: created, its upload not yet confirmed. digest: a KEYED digest of the bytes
+        # moved (`template_secrets.keyed_digest`), never the bytes and never a bare hash.
+        if not (
+            isinstance(committed, dict)
+            and set(committed) == {"id", "rev", "digest"}
+            and isinstance(committed["id"], str)
+            and re.fullmatch(r"[0-9a-f]{32}", committed["id"])
+            and type(committed["rev"]) is int
+            and 0 <= committed["rev"] <= 10**9
+            and isinstance(committed["digest"], str)
+            and _DIGEST_RE.match(committed["digest"])
+        ):
+            raise ValueError("malformed committed destination")
+        out["committed"] = {k: committed[k] for k in ("id", "rev", "digest")}
     return out
 
 

@@ -1013,7 +1013,7 @@ export function AskConsole({
     async (
       pid: string,
       decision: "confirm" | "dismiss",
-      inputs?: { folder?: string; value?: string },
+      inputs?: { folder?: string; value?: string; file?: File },
     ) => {
       const id = cidRef.current;
       setDeciding((s) => new Set(s).add(pid));
@@ -1583,7 +1583,7 @@ export function AskConsole({
             busy={busy}
             onAsk={(q, atts) => ask(q, atts)} // the outcome drives the composer's draft restore
         convKey={cid}
-        uploadFile={async (file) => {
+        uploadFile={async (file, secret) => {
           // The conversation is created by what the operator does in it — the first question or
           // the first file (#1707), never by New conversation. SINGLE-FLIGHT: several files
           // picked at once must not each create one (the last id would win and the rest would be
@@ -1613,14 +1613,14 @@ export function AskConsole({
             });
           }
           const id = await ensureCid.current;
-          const { attachment } = await api.askUploadAttachment(id, file);
+          const { attachment } = await api.askUploadAttachment(id, file, secret);
           return { attachment, cid: id };
         }}
         discardFile={(cid, attachment) => {
           // Discarded against the CID the file was UPLOADED to, never whatever is on screen now
           // (#1720 round 3): after A→B the id means nothing in B, and after New there is no B.
           // Retried until it lands, with a visible pending count while it has not (#1720 round 5).
-          void discardWithRetry(cid, attachment.id, (d) =>
+          return discardWithRetry(cid, attachment.id, (d) =>
             setCleanupPending((n) => Math.max(0, n + d)),
           );
         }}

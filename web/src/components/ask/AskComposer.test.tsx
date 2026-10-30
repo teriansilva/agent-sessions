@@ -490,3 +490,108 @@ test("an admitted turn is never offered as Not sent", async () => {
   expect(screen.queryByTestId("ask-recovered")).toBeNull();
   expect((screen.getByTestId("composer-input") as HTMLTextAreaElement).value).toBe("");
 });
+
+// --- #1786: the per-file Secret switch ------------------------------------------------------
+
+test("a key file stages as a secret by default; an ordinary file does not", async () => {
+  const { uploadFile } = mount();
+  pick(new File(["k"], "AuthKey_7F3K2L9QXA.p8"));
+  pick(new File(["hello"], "deploy.log", { type: "text/plain" }));
+  await waitFor(() => expect(uploadFile).toHaveBeenCalledTimes(2));
+  expect(uploadFile.mock.calls.map((c) => [(c[0] as File).name, c[1]])).toEqual([
+    ["AuthKey_7F3K2L9QXA.p8", true],
+    ["deploy.log", false],
+  ]);
+  const switches = screen.getAllByTestId("ask-staged-secret");
+  await waitFor(() => expect(switches[0]).toHaveAttribute("aria-checked", "true"));
+  expect(switches[1]).toHaveAttribute("aria-checked", "false");
+  expect(switches[0]).toHaveAccessibleName("Share AuthKey_7F3K2L9QXA.p8 as a secret");
+});
+
+test("flipping the switch shares the file again with the new flag and takes the old one back", async () => {
+  const discardFile = vi.fn();
+  const { uploadFile } = mount({ discardFile });
+  pick(new File(["hello"], "notes.txt", { type: "text/plain" }));
+  await waitFor(() => expect(screen.getByText("Ready")).toBeTruthy());
+  fireEvent.click(screen.getByTestId("ask-staged-secret"));
+  await waitFor(() => expect(uploadFile).toHaveBeenCalledTimes(2));
+  expect(uploadFile.mock.calls[1][1]).toBe(true);
+  expect(discardFile).toHaveBeenCalledWith("ask_aaa", ATT);
+  await waitFor(() =>
+    expect(screen.getByTestId("ask-staged-secret")).toHaveAttribute("aria-checked", "true"),
+  );
+});
+
+test("an iOS provisioning profile starts as a secret, and so does every key type", async () => {
+  const { uploadFile } = mount();
+  pick(new File(["p"], "Release.mobileprovision"));
+  await waitFor(() => expect(uploadFile).toHaveBeenCalledTimes(1));
+  expect(uploadFile.mock.calls[0][1]).toBe(true);
+});
+
+test("with four files staged, flipping Secret lets the old copy go BEFORE the new upload", async () => {
+  // The server's rule, enforced here: at most four staged files at once.
+  const staged = new Set<string>();
+  let n = 0;
+  const uploadFile = vi.fn(async () => {
+    if (staged.size >= 4) throw new Error("at most 4 files can wait for a message");
+    const id = String(++n).padStart(32, "0");
+    staged.add(id);
+    return { attachment: { ...ATT, id }, cid: "ask_aaa" };
+  });
+  const discardFile = vi.fn(
+    (_cid: string, att: AskAttachment) =>
+      new Promise<void>((resolve) =>
+        setTimeout(() => {
+          staged.delete(att.id);
+          resolve();
+        }, 30),
+      ),
+  );
+  mount({ uploadFile, discardFile });
+  for (const name of ["a.txt", "b.txt", "c.txt", "d.txt"]) pick(new File(["x"], name));
+  await waitFor(() => expect(screen.getAllByText("Ready")).toHaveLength(4));
+  fireEvent.click(screen.getAllByTestId("ask-staged-secret")[0]);
+  await waitFor(() => expect(uploadFile).toHaveBeenCalledTimes(5));
+  await waitFor(() => expect(screen.getAllByText("Ready")).toHaveLength(4));
+  expect(screen.queryByText("Couldn't read that file")).toBeNull();
+  expect(screen.getAllByTestId("ask-staged-secret")[0]).toHaveAttribute("aria-checked", "true");
+});
+
+test("with four staged, a slow removal keeps the flip waiting — never a refused fifth upload", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const staged = new Set<string>();
+    let n = 0;
+    const uploadFile = vi.fn(async () => {
+      if (staged.size >= 4) throw new Error("at most 4 files can wait for a message");
+      const id = String(++n).padStart(32, "0");
+      staged.add(id);
+      return { attachment: { ...ATT, id }, cid: "ask_aaa" };
+    });
+    const discardFile = vi.fn(
+      (_cid: string, att: AskAttachment) =>
+        new Promise<void>((resolve) =>
+          setTimeout(() => {
+            staged.delete(att.id);
+            resolve();
+          }, 20_000), // a retried removal: far longer than any fixed wait
+        ),
+    );
+    const { onAsk } = mount({ uploadFile, discardFile });
+    for (const name of ["a.txt", "b.txt", "c.txt", "d.txt"]) pick(new File(["x"], name));
+    await waitFor(() => expect(screen.getAllByText("Ready")).toHaveLength(4));
+    fireEvent.click(screen.getAllByTestId("ask-staged-secret")[0]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(screen.getByText("Removing the previous copy…")).toBeTruthy();
+    expect(uploadFile).toHaveBeenCalledTimes(4); // nothing uploaded while the old copy counts
+    fireEvent.click(screen.getByTestId("composer-send"));
+    expect(onAsk).not.toHaveBeenCalled(); // Send stays blocked while it waits
+    await vi.advanceTimersByTimeAsync(11_000);
+    await waitFor(() => expect(screen.getAllByText("Ready")).toHaveLength(4));
+    expect(uploadFile).toHaveBeenCalledTimes(5);
+    expect(screen.queryByText("Couldn't read that file")).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});

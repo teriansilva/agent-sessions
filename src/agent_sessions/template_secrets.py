@@ -76,7 +76,9 @@ _typed: dict[str, float] = {}
 #: fence across its snapshot AND its write. So a secret registered "during" such a write lands
 #: strictly before it (and is redacted) or strictly after it (the record was clean when written);
 #: re-checking later only moves the window, a shared lock closes it. Re-entrant, process-wide.
-#: Lock order: `session_input.mutation_fence` → this → any store's own file lock.
+#: Lock order: an HQ conversation's attachments fence (`ask_attachments.attachments_fence`, held
+#: by `ask_orchestrator.begin` across an append, and by #1786's move) → `session_input.
+#: mutation_fence` → this → any store's own file lock. Never the attachments fence inside this one.
 _registration = threading.RLock()
 
 

@@ -105,3 +105,82 @@ for (const theme of ["dark", "light"] as const) {
     expect(bodies).toEqual([{ decision: "confirm" }]);
   });
 }
+
+test("an unfinished move says how far it got, and Finish runs it again", async ({ page }) => {
+  const fake = await shell(
+    page,
+    card({
+      op: "secret.store_attachment",
+      label: "Store shared file as secret",
+      verb: "Store",
+      title: "asc_api_key",
+      text: "Moves the file “AuthKey_7F3K2L9QXA.p8” you shared as a secret into the Library.",
+      needs: [],
+      state: "unsettled",
+      summary:
+        "Stored in the Library as “asc_api_key”, but the chat copy could not be deleted yet. " +
+        "Confirm again to finish.",
+      can_confirm: true,
+      can_dismiss: false,
+    }),
+  );
+  const bodies = await decideRoute(fake, page, {
+    state: "done",
+    summary: "Stored in the Library as “asc_api_key”. The chat copy is deleted.",
+  });
+  const c = await open(page);
+  const outcome = c.getByTestId("ask-operation-outcome");
+  await expect(outcome).toContainText("Not finished");
+  await expect(c.getByTestId("ask-operation-dismiss")).toHaveCount(0);
+  const finish = c.getByTestId("ask-operation-finish");
+  await minTarget(finish);
+  await noSidewaysScroll(page);
+  await finish.click();
+  await expect(outcome).toContainText("Done", { timeout: 20_000 });
+  expect(bodies).toEqual([{ decision: "confirm" }]);
+});
+
+test("the store-secret-file card sends the chosen file as one multipart part", async ({ page }) => {
+  const fake = await shell(
+    page,
+    card({
+      op: "secret.create_file",
+      label: "Store secret file",
+      title: "asc_api_key",
+      text: "Stores a new secret file “asc_api_key” in the Library. Choose the file below.",
+      needs: ["file"],
+    }),
+  );
+  const seen: { url: string; type: string; body: string }[] = [];
+  await page.route(`**/api/ask/proposals/${PID}/decide**`, (r) => {
+    const req = r.request();
+    seen.push({
+      url: req.url(),
+      type: req.headers()["content-type"] ?? "",
+      body: req.postDataBuffer()?.toString("latin1") ?? "",
+    });
+    Object.assign(fake.conversations[0].turns[0].proposals![0], {
+      state: "done",
+      summary: "Stored. Agent access is off.",
+      can_confirm: false,
+      can_dismiss: false,
+    });
+    return r.fulfill({ status: 202, json: { proposal: { state: "deciding" } } });
+  });
+  const c = await open(page);
+  await expect(c.getByTestId("ask-operation-confirm")).toBeDisabled();
+  await minTarget(c.getByTestId("ask-operation-choose"));
+  await c.getByLabel("Secret file").setInputFiles({
+    name: "AuthKey_7F3K2L9QXA.p8",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from("-----BEGIN PRIVATE KEY-----\nMIGT\n-----END PRIVATE KEY-----\n"),
+  });
+  await expect(c.getByTestId("ask-operation-file")).toContainText("AuthKey_7F3K2L9QXA.p8");
+  await noSidewaysScroll(page);
+  await c.getByTestId("ask-operation-confirm").click();
+  await expect(c.getByTestId("ask-operation-outcome")).toContainText("Done", { timeout: 20_000 });
+  expect(seen).toHaveLength(1);
+  expect(seen[0].url).toContain("decision=confirm");
+  expect(seen[0].type).toContain("multipart/form-data");
+  expect(seen[0].body).toContain('filename="AuthKey_7F3K2L9QXA.p8"');
+});

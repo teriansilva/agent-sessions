@@ -1869,8 +1869,10 @@ export const api = {
   askMessageStream: streamAskTurn,
   /** Share one file in the conversation (#1707): one file per request, the kind is decided
    *  server-side from the bytes. Answers the descriptor the message will carry. */
-  askUploadAttachment: (id: string, file: File) => {
+  askUploadAttachment: (id: string, file: File, secret = false) => {
     const fd = new FormData();
+    // The field comes first: the server reads it before the file part (#1786).
+    fd.append("secret", secret ? "1" : "0");
     fd.append("file", file, file.name || "pasted");
     return postForm<{ attachment: AskAttachment }>(
       `/api/ask/conversations/${enc(id)}/attachments`,
@@ -1917,13 +1919,23 @@ export const api = {
   decideAskOperation: (
     id: string,
     decision: "confirm" | "dismiss",
-    inputs?: { folder?: string; value?: string },
-  ) =>
-    mutateJson<{ proposal: AskOperationDecision }>(
+    inputs?: { folder?: string; value?: string; file?: File },
+  ) => {
+    if (decision === "confirm" && inputs?.file) {
+      // A file chosen on a create card (#1786): one multipart part, the confirm in the query.
+      const fd = new FormData();
+      fd.append("file", inputs.file, inputs.file.name || "file");
+      return postForm<{ proposal: AskOperationDecision }>(
+        `/api/ask/proposals/${enc(id)}/decide?decision=confirm`,
+        fd,
+      );
+    }
+    return mutateJson<{ proposal: AskOperationDecision }>(
       "POST",
       `/api/ask/proposals/${enc(id)}/decide`,
       inputs ? { decision, inputs } : { decision },
-    ),
+    );
+  },
   /** A Library card's draft (#1611): the files, the diff or the automation's scope lines. 409 when
    *  the draft no longer matches its card. */
   askProposalContent: (id: string) =>

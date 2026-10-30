@@ -72,3 +72,16 @@ test("a decode failure with bytes present keeps Download", async () => {
   expect(screen.getByTestId("ask-attachment-download")).toBeTruthy();
   expect(screen.queryByText("gone")).toBeNull();
 });
+
+test("a file shared as a secret offers no View, preview or Download and never fetches bytes", async () => {
+  const secret = { ...att("text"), name: "notes.txt", secret: true };
+  vi.spyOn(api, "askAttachmentMeta").mockResolvedValue({ attachment: secret });
+  const blob = vi.spyOn(api, "askAttachmentBlob");
+  render(<AttachmentCard cid={CID} att={secret} expanded />);
+  await waitFor(() => expect(screen.getByTestId("ask-attachment-secret")).toBeTruthy());
+  expect(screen.getByText(/Secret ·/)).toBeTruthy();
+  expect(screen.queryByTestId("ask-attachment-view")).toBeNull();
+  expect(screen.queryByTestId("ask-attachment-download")).toBeNull();
+  expect(screen.queryByTestId("ask-attachment-preview")).toBeNull();
+  expect(blob).not.toHaveBeenCalled();
+});

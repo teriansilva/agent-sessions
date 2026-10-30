@@ -122,6 +122,7 @@ def test_every_catalog_operation_names_a_route_the_app_registers(app, monkeypatc
             "skill": "changelog-writer",
             "automation": "aut1",
             "secret": "0" * 32,
+            "attachment": "0" * 32,
         }.get(op.target, "")
         for runtime in ("terminal", "api"):
             method, path, _body = op.route(target, fields, dict(facts, runtime=runtime))

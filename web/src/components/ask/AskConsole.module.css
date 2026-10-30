@@ -515,6 +515,16 @@
   composes: icon compact from "../ui/actionButton.module.css";
   flex: 0 0 auto;
 }
+/* The per-file Secret switch (#1786): a compact ghost with its state in words. */
+.pillSecret {
+  composes: ghost compact from "../ui/actionButton.module.css";
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.pillSecret[aria-checked="true"] {
+  color: var(--hud-text);
+  border-color: var(--hud-dim);
+}
 .pills {
   display: flex;
   flex-direction: column;

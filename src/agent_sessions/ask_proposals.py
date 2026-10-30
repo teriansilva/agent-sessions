@@ -174,6 +174,15 @@ def add(cid: str, entry: dict) -> dict:
     return written[-1]
 
 
+def _resumes(row: dict, decision: object) -> bool:
+    """A confirm of an ``unsettled`` operation its runner can resume (#1786's move)."""
+    from . import ask_operations
+
+    return (
+        row.get("kind") == "operation" and decision == "confirm" and ask_operations._resumable(row)
+    )
+
+
 def _update(cid: str, pid: str, **changes) -> dict | None:
     """Re-read under the sidecar lock, apply ``changes`` to one entry, write. Blocking."""
     with ask_store.proposals_lock(cid):
@@ -228,6 +237,16 @@ def recover(cid: str) -> None:
                         from . import ask_operations
 
                         reason = ask_operations.INTERRUPTED_REASON
+                        if ask_operations.resumes_after_a_stop(r):
+                            # A move that had noted what it committed (#1786) is finished from
+                            # there, never left half done: confirm again resumes it.
+                            r.update(
+                                state=ask_operations.UNSETTLED,
+                                outcome=ask_operations.RESUME_AFTER_STOP,
+                                settled_at=time.time(),
+                            )
+                            changed = True
+                            continue
                     r.update(state=INTERRUPTED, reason=reason, settled_at=time.time())
                     changed = True
             if changed:
@@ -315,7 +334,7 @@ async def decide(
         row = await asyncio.to_thread(_row, cid, pid)
         if row is None:
             raise ProposalError(404, "no such proposal")
-        if row.get("state") != PENDING:
+        if row.get("state") != PENDING and not _resumes(row, decision):
             # The same tap again, while it runs or after.
             return 200, ask_operations.view(row) if row.get("kind") == "operation" else view(row)
         raise ProposalError(
@@ -327,7 +346,7 @@ async def decide(
         if row is None:
             raise ProposalError(404, "no such proposal")
         if row.get("kind") == "operation":
-            if row.get("state") != PENDING:
+            if row.get("state") != PENDING and not _resumes(row, decision):
                 return 200, ask_operations.view(row)
             if operator is None or app is None:
                 raise ProposalError(503, "operations can't run in this process")

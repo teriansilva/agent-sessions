@@ -1517,7 +1517,13 @@ async def _propose_secret(turn: _Turn, args: dict) -> tuple[dict, dict]:
     operator, app = _operator(turn)
     try:
         staged = await ask_secrets.prepare(
-            args.get("action"), args, known=turn.secrets, app=app, operator=operator
+            args.get("action"),
+            args,
+            known=turn.secrets,
+            app=app,
+            operator=operator,
+            cid=turn.cid,
+            attachments=turn.attachments,
         )
     except ask_library.Refused as e:
         raise _ToolRefused(str(e), e.code) from None
@@ -1973,13 +1979,22 @@ TOOLS: dict[str, Tool] = {
             _spec(
                 "propose_secret",
                 "Propose a secret card. Nothing changes until the operator confirms it. "
-                "create (name, optional description): stores a new text secret; the operator "
-                "types its value on the card, and you never see or send it — never ask for a "
-                "secret's value in the chat. access_on (id): lets agents in the projects that "
-                "bind it request a private copy; it widens access, so propose it only when the "
-                "operator asked for it. access_off (id). ids from list_secrets in this turn.",
+                "create (name, optional description, optional kind text | file): stores a new "
+                "secret; the operator types its value (or, kind file, chooses the file) on the "
+                "card, and you never see or send it — never ask for a secret's value in the "
+                "chat. access_on (id): lets agents in the projects that bind it request a "
+                "private copy; it widens access, so propose it only when the "
+                "operator asked for it. access_off (id). ids from list_secrets in this turn. "
+                "store_attachment (attachment_index, name, optional description): moves a file "
+                "the operator shared WITH THIS MESSAGE as a secret into the Library; you never "
+                "see its contents. attachment_index is its place in the message's files, 0 first.",
                 {
-                    "action": {"type": "string", "enum": ["create", "access_on", "access_off"]},
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "access_on", "access_off", "store_attachment"],
+                    },
+                    "attachment_index": {"type": "integer"},
+                    "kind": {"type": "string", "enum": ["text", "file"]},
                     "id": {"type": "string"},
                     "name": {"type": "string"},
                     "description": {"type": "string"},
@@ -2726,6 +2741,7 @@ def turn_views(records: list[dict]) -> list[dict]:
                         "name": a.get("name") or "",
                         "kind": a.get("kind") or "other",
                         "size": a.get("size") or 0,
+                        **({"secret": True} if a.get("secret") is True else {}),
                     }
                     for a in (r.get("attachments") or [])
                     if isinstance(a, dict)

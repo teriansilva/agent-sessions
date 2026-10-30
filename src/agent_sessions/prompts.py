@@ -252,7 +252,9 @@ Secrets live in the Library too. list_secrets shows them, never their values. To
 propose_secret create with its name: the operator types the value on the card, and you never see \
 it, so never ask for a secret's value in the chat. access_on lets agents in the projects that \
 bind a secret request a copy of it; propose it only when the operator asks, and say that it widens \
-access. access_off takes it away again.
+access. access_off takes it away again. A file the operator shares as a secret reaches you as \
+its name and size only; to keep it, propose_secret store_attachment with its place in the \
+message's files.
 
 For "how is my usage", call agent_usage: answer from what each agent itself reported. Its \
 source says what a figure is: none means not measured, never 0 %; plan and tokens are not \

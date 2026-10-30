@@ -557,6 +557,8 @@ const OPERATION_OUTCOMES: Record<
   dismissed: { word: "Dismissed", tone: "neutral", detail: () => "Nothing ran." },
   interrupted: { word: "Interrupted", tone: "warn", detail: (p) => p.reason },
   unconfirmed: { word: "Ran, unconfirmed", tone: "warn", detail: (p) => p.summary },
+  // A move that committed but did not finish (#1786): Finish runs it again from where it stopped.
+  unsettled: { word: "Not finished", tone: "warn", detail: (p) => p.summary },
   unknown: {
     word: "Status unavailable",
     tone: "neutral",
@@ -576,8 +578,14 @@ const OPERATION_GROUP: Record<string, string> = {
 
 /** An automation the tap lets run unattended reads as such, not as a bare "External". */
 const UNATTENDED = new Set(["automation.enable", "automation.widen"]);
+/** The largest secret file the Library takes (`vault_files.MAX_BYTES`). */
+const SECRET_FILE_MAX = 256 * 1024;
+const formatBytes = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`);
+
 /** Turning a secret's agent access on (#1786) widens what agents can read: said on the stamp. */
 const WIDENS = new Set(["secret.access_on"]);
+/** Storing a shared file as a secret (#1786) deletes the chat copy once the Library holds it. */
+const MOVES = new Set(["secret.store_attachment"]);
 
 const RISK_STAMP: Record<AskOperationCard["risk"], { label: string; tone?: "down" | "hud" }> = {
   reversible: { label: "Reversible" },
@@ -596,7 +604,7 @@ export function OperationCard({
   deciding: boolean;
   /** Why the last tap was refused, when the card itself did not change. */
   error: string | null;
-  onConfirm: (inputs?: { folder?: string; value?: string }) => void;
+  onConfirm: (inputs?: { folder?: string; value?: string; file?: File }) => void;
   onDismiss: () => void;
 }) {
   const [picked, setFolder] = useState("");
@@ -607,6 +615,11 @@ export function OperationCard({
   const [typed, setTyped] = useState(false);
   const needsValue = p.needs.includes("value");
   const valueId = useId();
+  // A secret FILE chosen here (#1786): held by this card until the confirm sends it, never read.
+  const needsFile = p.needs.includes("file");
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [chosen, setChosen] = useState<File | null>(null);
+  const [fileWhy, setFileWhy] = useState("");
   // A Library card (#1611) offers Confirm only once its content is on screen.
   const [shown, setShown] = useState(false);
   const onShown = useCallback((v: boolean) => setShown(v), []);
@@ -622,9 +635,15 @@ export function OperationCard({
     ? { label: "Runs agents unattended", tone: "hud" as const }
     : WIDENS.has(p.op)
       ? { label: "Widens access", tone: "hud" as const }
-      : RISK_STAMP[p.risk];
+      : MOVES.has(p.op)
+        ? { label: "Moves the chat copy", tone: "hud" as const }
+        : RISK_STAMP[p.risk];
   const danger = p.risk === "destructive";
-  const ready = (!needsFolder || folder !== "") && (!needsValue || typed) && (!p.content || shown);
+  const ready =
+    (!needsFolder || folder !== "") &&
+    (!needsValue || typed) &&
+    (!needsFile || chosen !== null) &&
+    (!p.content || shown);
   const off = deciding || !p.can_confirm;
   const edge = out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
   return (
@@ -657,6 +676,53 @@ export function OperationCard({
           {p.text}
         </p>
         {p.content ? <LibraryContent id={p.action_id} onShown={onShown} /> : null}
+        {needsFile && !out ? (
+          <div className={c.secretField}>
+            <span>File</span>
+            <div className={c.secretFile}>
+              <span data-testid="ask-operation-file">
+                {chosen ? `${chosen.name} · ${formatBytes(chosen.size)}` : "No file chosen"}
+              </span>
+              <button
+                type="button"
+                className={c.ghost}
+                disabled={off}
+                onClick={() => fileInput.current?.click()}
+                data-testid="ask-operation-choose"
+              >
+                {chosen ? "Choose another…" : "Choose file…"}
+              </button>
+              <input
+                ref={fileInput}
+                type="file"
+                hidden
+                aria-label="Secret file"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = "";
+                  setFileWhy("");
+                  if (!f) return;
+                  if (f.size === 0 || f.size > SECRET_FILE_MAX) {
+                    setChosen(null);
+                    setFileWhy(
+                      f.size === 0
+                        ? "That file is empty."
+                        : `A secret file can be at most ${formatBytes(SECRET_FILE_MAX)}.`,
+                    );
+                    return;
+                  }
+                  setChosen(f);
+                }}
+              />
+            </div>
+            {fileWhy ? (
+              <span role="alert" data-testid="ask-operation-file-why">
+                {fileWhy}
+              </span>
+            ) : null}
+            <small>Stored encrypted; it is never shown or downloaded again. HQ never sees it.</small>
+          </div>
+        ) : null}
         {needsValue && !out ? (
           <div className={c.secretField}>
             <label htmlFor={valueId}>Value</label>
@@ -764,7 +830,10 @@ export function OperationCard({
             className={danger ? c.ctaDanger : c.cta}
             disabled={off || !ready}
             onClick={() => {
-              if (needsValue) {
+              if (needsFile && chosen) {
+                onConfirm({ file: chosen });
+                setChosen(null);
+              } else if (needsValue) {
                 const field = valueRef.current;
                 onConfirm({ value: field?.value ?? "" });
                 if (field) field.value = "";
@@ -792,6 +861,17 @@ export function OperationCard({
           <span className={c.od}>{out.detail(p)}</span>
           {(p.state === "done" || p.state === "unconfirmed") && p.library ? (
             <OpenInLibrary saved={p.library} />
+          ) : null}
+          {p.state === "unsettled" && p.can_confirm ? (
+            <button
+              type="button"
+              className={c.cta}
+              disabled={deciding}
+              onClick={() => onConfirm(undefined)}
+              data-testid="ask-operation-finish"
+            >
+              Finish
+            </button>
           ) : null}
         </div>
       )}

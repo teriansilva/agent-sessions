@@ -134,7 +134,7 @@ EXPECTED_DEFAULT_SHA = {
     # and the read-only settings view) and #1559 (proposing session and project operations,
     # confirmed on a card). #1634: it names no identity of its own — "You are Ask" is gone.
     # #1750: the connector read tools, and connector text named as data like agents' screens.
-    "ask_orchestrator": "87d68b413561e85f",
+    "ask_orchestrator": "49bbcfd1e8c63d6d",
     # #1525: the HQ contacts; #1634: each a character, not an archetype, with the rules in each.
     "hq_persona_asia_woman": "376c34c3cf99c0c4",
     "hq_persona_asia_man": "35dddc73b8ca9e3c",

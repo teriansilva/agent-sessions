@@ -495,3 +495,10 @@
   outline: 2px solid var(--accent-text);
   outline-offset: -3px;
 }
+.secretFile {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-1);
+}

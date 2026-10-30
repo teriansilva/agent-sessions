@@ -119,23 +119,39 @@ export function AttachmentCard({
 }) {
   const [open, setOpen] = useState(expanded);
   const [broken, setBroken] = useState(false);
+  // A file shared as a SECRET (#1786) is never fetched back: the absence probe only.
+  const secret = att.secret === true;
   // The absence probe runs for every kind; preview bytes only for an image, or a text
   // excerpt the operator opened.
-  const preview = useAttachment(cid, att.id, att.kind, att.kind === "image" || open);
+  const preview = useAttachment(
+    cid,
+    att.id,
+    secret ? "other" : att.kind,
+    !secret && (att.kind === "image" || open),
+  );
   const download = useDownload(cid, att.id, att.name);
   const gone = preview.state === "gone";
 
   return (
-    <div className={a.card} data-testid="ask-attachment" data-kind={att.kind}>
+    <div
+      className={a.card}
+      data-testid="ask-attachment"
+      data-kind={att.kind}
+      data-secret={secret ? "true" : undefined}
+    >
       <div className={a.cardHead}>
         <span className={a.cardName} title={att.name}>
           {att.name}
         </span>
         <span className={a.cardMeta}>
-          {gone ? "gone" : `${att.kind === "image" ? "Image" : att.kind === "text" ? "Text" : "File"} · ${formatSize(att.size)}`}
+          {gone
+            ? secret
+              ? "moved or gone"
+              : "gone"
+            : `${secret ? "Secret" : att.kind === "image" ? "Image" : att.kind === "text" ? "Text" : "File"} · ${formatSize(att.size)}`}
         </span>
         <div className={a.cardActions}>
-          {att.kind === "text" && !gone ? (
+          {att.kind === "text" && !gone && !secret ? (
             <button
               type="button"
               className={`${a.cardBtn}`}
@@ -146,7 +162,7 @@ export function AttachmentCard({
               {open ? "Hide" : "View"}
             </button>
           ) : null}
-          {!gone ? (
+          {!gone && !secret ? (
             <button
               type="button"
               className={a.cardBtn}
@@ -158,7 +174,12 @@ export function AttachmentCard({
           ) : null}
         </div>
       </div>
-      {att.kind === "image" && !gone ? (
+      {secret && !gone ? (
+        <div className={a.cardNote} data-testid="ask-attachment-secret">
+          Shared as a secret: HQ sees only its name and size, and it is never shown here again.
+        </div>
+      ) : null}
+      {att.kind === "image" && !gone && !secret ? (
         preview.state === "src" && !broken ? (
           <img
             className={a.cardImg}
@@ -176,7 +197,7 @@ export function AttachmentCard({
           <div className={a.cardFallback}>Loading…</div>
         )
       ) : null}
-      {att.kind === "text" && open && !gone ? (
+      {att.kind === "text" && open && !gone && !secret ? (
         preview.state === "text" ? (
           <>
             <pre className={a.cardPreview} data-testid="ask-attachment-preview">

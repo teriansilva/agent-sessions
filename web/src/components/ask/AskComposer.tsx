@@ -28,6 +28,10 @@ import type { AskAttachment } from "../../types/api";
 import compose from "../terminal/Compose.module.css";
 import styles from "../pulse/mission.module.css";
 import a from "./AskConsole.module.css";
+import { secretByDefault } from "./secretFiles";
+
+/** A staged pill's own identity (never shown, never sent). */
+const newLocal = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 /** One staged file, from picker to claimable id. */
 export interface StagedFile {
@@ -43,6 +47,11 @@ export interface StagedFile {
   cid?: string;
   /** The named reason once `failed` — never a silent drop. */
   why?: string;
+  /** Share it as a SECRET (#1786): HQ sees only its name and size and can only propose moving
+   *  it into the Library. On by default for key and certificate files. */
+  secret: boolean;
+  /** The picked file, kept to upload it again when the Secret switch changes. */
+  file?: File;
 }
 
 export function AskComposer({
@@ -73,10 +82,13 @@ export function AskComposer({
   cleanupPending?: number;
   inputRef?: Ref<HTMLTextAreaElement>;
   /** Stage one file server-side, answering the descriptor AND the conversation it landed in. */
-  uploadFile?: (file: File) => Promise<{ attachment: AskAttachment; cid: string }>;
+  uploadFile?: (file: File, secret: boolean) => Promise<{ attachment: AskAttachment; cid: string }>;
   /** Take back a staged file the operator removed (or whose pill went away mid-upload) FROM THE
    *  CONVERSATION IT WAS UPLOADED TO, so the server's four-file quota frees at once (#1720). */
-  discardFile?: (cid: string, attachment: AskAttachment) => void;
+  /** Takes a staged file back; its promise settles once the server has let it go (the Secret
+   *  switch waits for that before uploading the replacement, so a full set never goes over the
+   *  staged-file limit, #1786). */
+  discardFile?: (cid: string, attachment: AskAttachment) => void | Promise<void>;
   /** The conversation on screen. Staged files belong to the one they were uploaded to; switching
    *  to a different conversation clears them rather than sending them somewhere else (#1707). */
   convKey?: string | null;
@@ -217,40 +229,83 @@ export function AskComposer({
     for (const s of r.items) if (s.attachment && s.cid) discardFile?.(s.cid, s.attachment);
   };
 
+  /** Upload ``file`` for the pill ``local`` with its Secret flag; a pill gone meanwhile hands its
+   *  blob straight back. A flag changed meanwhile wins: this answer is dropped and discarded. */
+  const upload = (local: string, file: File, secret: boolean) => {
+    if (!uploadFile) return;
+    const current = (x: StagedFile) => x.local === local && x.secret === secret;
+    uploadFile(file, secret).then(
+      ({ attachment, cid }) => {
+        // The pill may be gone (Remove mid-upload, or a conversation switch), or its Secret
+        // switch moved since: the just-landed blob goes back to the server at once.
+        if (!stagedRef.current.some(current)) {
+          discardFile?.(cid, attachment);
+          return;
+        }
+        setStagedTracked((prev) =>
+          prev.map((s) => (current(s) ? { ...s, status: "ready", attachment, cid } : s)),
+        );
+      },
+      () =>
+        // A named failure, never a silent drop: the pill stays and blocks Send until removed.
+        setStagedTracked((prev) =>
+          prev.map((s) =>
+            current(s) ? { ...s, status: "failed", why: "Couldn't read that file" } : s,
+          ),
+        ),
+    );
+  };
+
   const stage = (files: FileList | null) => {
     if (!files?.length || !uploadFile) return;
     draftRev.current += 1; // a new staged file is an edit the restore must not overwrite
     for (const file of Array.from(files)) {
-      const local = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const local = newLocal();
+      const name = file.name || "pasted";
+      const secret = secretByDefault(name);
       setStagedTracked((prev) => [
         ...prev,
-        { local, name: file.name || "pasted", size: file.size, status: "uploading" },
+        { local, name, size: file.size, status: "uploading", secret, file },
       ]);
-      uploadFile(file).then(
-        ({ attachment, cid }) => {
-          // The pill may be gone (Remove mid-upload, or a conversation switch): the just-landed
-          // blob goes back to the server at once rather than holding the quota until the TTL.
-          if (!stagedRef.current.some((s) => s.local === local)) {
-            discardFile?.(cid, attachment);
-            return;
-          }
-          setStagedTracked((prev) =>
-            prev.map((s) =>
-              s.local === local ? { ...s, status: "ready", attachment, cid } : s,
-            ),
-          );
-        },
-        () =>
-          // A named failure, never a silent drop: the pill stays and blocks Send until removed.
-          setStagedTracked((prev) =>
-            prev.map((s) =>
-              s.local === local
-                ? { ...s, status: "failed", why: "Couldn't read that file" }
-                : s,
-            ),
-          ),
-      );
+      upload(local, file, secret);
     }
+  };
+
+  /** Flip a pill's Secret switch: the file is shared again with the new flag (the old upload is
+   *  taken back), because the server fixes the flag at upload. */
+  const toggleSecret = async (local: string) => {
+    const s = stagedRef.current.find((x) => x.local === local);
+    if (!s || !s.file || s.status === "uploading") return;
+    draftRev.current += 1;
+    const secret = !s.secret;
+    const old = s.attachment && s.cid ? { cid: s.cid, attachment: s.attachment } : null;
+    setStagedTracked((prev) =>
+      prev.map((x) =>
+        x.local === local
+          ? {
+              ...x,
+              secret,
+              status: "uploading",
+              attachment: undefined,
+              cid: undefined,
+              why: old ? "Removing the previous copy…" : undefined,
+            }
+          : x,
+      ),
+    );
+    // The old copy is let go FIRST: with four files staged, a fifth upload before the discard
+    // lands would be refused by the server's staged-file limit.
+    if (old) {
+      // The replacement waits until the old copy is CONFIRMED gone (Hermes on #1816): uploading
+      // first could be refused by the staged-file limit with four files waiting. The pill says
+      // what it waits for, Send stays blocked meanwhile, and Remove still works.
+      await Promise.resolve(discardFile?.(old.cid, old.attachment)).catch(() => {});
+    }
+    if (!stagedRef.current.some((x) => x.local === local && x.secret === secret)) return;
+    setStagedTracked((prev) =>
+      prev.map((x) => (x.local === local && x.secret === secret ? { ...x, why: undefined } : x)),
+    );
+    upload(local, s.file, secret);
   };
 
   const remove = (local: string) => {
@@ -343,11 +398,28 @@ export function AskComposer({
               <span className={`${styles.led} ${s.status === "ready" ? "up" : s.status === "failed" ? "down" : "draft"}`} aria-hidden="true" />
               <span className={a.pillName}>{s.name}</span>
               <span className={a.pillMeta}>{formatSize(s.size)}</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={s.secret}
+                aria-label={`Share ${s.name} as a secret`}
+                title="A secret is never shown to HQ; HQ can only propose storing it in the Library"
+                className={`${a.pillSecret} btn-compact`}
+                disabled={s.status === "uploading" || !s.file}
+                onClick={() => void toggleSecret(s.local)}
+                data-testid="ask-staged-secret"
+              >
+                Secret · {s.secret ? "on" : "off"}
+              </button>
               <span
                 className={s.status === "failed" ? a.pillWhy : a.pillState}
                 data-testid="ask-staged-state"
               >
-                {s.status === "uploading" ? "Uploading…" : s.status === "failed" ? s.why : "Ready"}
+                {s.status === "uploading"
+                  ? (s.why ?? "Uploading…")
+                  : s.status === "failed"
+                    ? s.why
+                    : "Ready"}
               </span>
               <button
                 type="button"

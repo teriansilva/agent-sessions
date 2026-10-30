@@ -55,13 +55,21 @@ never sees a secret's value:
 
 - **Listing.** HQ sees each secret's name, type, whether a value is stored, its agent access and
   the projects that bind it. It never sees a value.
-- **Storing.** HQ proposes a card with the name. You type the value into the card's own field,
-  which sends it straight to the encrypted store. HQ never asks for a value in the chat; if a
+- **Storing.** HQ proposes a card with the name. You type the value into the card's own field (or,
+  for a secret file, choose the file on the card), which sends it straight to the encrypted store. HQ never asks for a value in the chat; if a
   message ever does, don't paste one. A new secret starts with agent access off.
 - **Agent access.** HQ can propose turning a secret's agent access on or off, as a card you tap.
   Turning it on is stamped **Widens access** and names the projects whose agents could request it.
   If those projects change before you tap, the card goes out of date and nothing happens. These
   cards are never confirmed by voice on a call, and never automatically.
+- **Sharing a key file.** Each file you attach in HQ's composer has a **Secret** switch. It is on
+  by default for key and certificate files (`.p8`, `.p12`, `.pem`, `.key` and similar). A file
+  shared as a secret reaches HQ as its name and size only; HQ never sees its contents, and the
+  chat never shows it again. HQ can then propose **Store shared file as secret**: confirm it and
+  BattleLab stores the file in the Library, checks that the stored copy matches, and only then
+  deletes the copy in the chat. If something stops it halfway, the card says **Not finished**
+  and **Finish** completes it without storing the file twice. A secret file can be at most 256 KB;
+  a larger one stays in the chat as a secret.
 
 ## How an agent asks
 

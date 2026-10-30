@@ -85,9 +85,10 @@ def _ascii_name(name: str) -> str:
     return out[:200] or "file"
 
 
-async def _read_one_attachment(request: Request) -> tuple[str, bytes]:
-    """`(name, bytes)` for ONE file part, charged before the bytes are accepted. A second file
-    part is refused (one file per request); fields come first and are ignored apart from size."""
+async def _read_one_attachment(request: Request) -> tuple[str, bytes, bool]:
+    """`(name, bytes, secret)` for ONE file part, charged before the bytes are accepted. A second
+    file part is refused (one file per request). The one field read is ``secret`` (#1786: shared
+    as a secret when it is ``1``); any other field is ignored apart from its size."""
     ctype, params = parse_options_header(request.headers.get("content-type", ""))
     if ctype != b"multipart/form-data":
         raise _UploadMalformed("this route takes a multipart upload")
@@ -109,6 +110,8 @@ async def _read_one_attachment(request: Request) -> tuple[str, bytes]:
         "total": 0,
         "saw": False,
         "field": bytearray(),
+        "part": b"",  # the current part's form name
+        "secret": bytearray(),
         "ended": False,  # the terminal boundary was seen (#1720 round 9)
     }
     header = {"field": bytearray(), "value": bytearray()}
@@ -117,6 +120,7 @@ async def _read_one_attachment(request: Request) -> tuple[str, bytes]:
         header["field"] = bytearray()
         header["value"] = bytearray()
         state["is_file"] = False
+        state["part"] = b""
 
     def on_header_field(data: bytes, start: int, end: int) -> None:
         header["field"] += data[start:end]
@@ -128,6 +132,7 @@ async def _read_one_attachment(request: Request) -> tuple[str, bytes]:
         if bytes(header["field"]).lower() == b"content-disposition":
             _, p = parse_options_header(bytes(header["value"]))
             state["is_file"] = b"filename" in p
+            state["part"] = p.get(b"name", b"")
             if state["is_file"]:
                 state["name"] = p.get(b"filename", b"").decode("utf-8", "replace")
         header["field"] = bytearray()
@@ -162,6 +167,8 @@ async def _read_one_attachment(request: Request) -> tuple[str, bytes]:
             if len(state["field"]) + len(chunk) > _MAX_FIELD_BYTES:
                 raise _UploadMalformed("an upload field is too large")
             state["field"] += chunk
+            if state["part"] == b"secret":
+                state["secret"] += chunk
 
     parser = MultipartParser(
         boundary,
@@ -197,7 +204,10 @@ async def _read_one_attachment(request: Request) -> tuple[str, bytes]:
         raise _UploadMalformed("the upload ended early — the file was not fully sent")
     if not state["buf"]:
         raise _UploadMalformed("no file part in the request")
-    return state["name"], bytes(state["buf"])
+    secret = bytes(state["secret"]).strip()
+    if secret not in (b"", b"0", b"1"):
+        raise _UploadMalformed("secret is 1 or 0")
+    return state["name"], bytes(state["buf"]), secret == b"1"
 
 
 def _ndjson(ev: dict) -> str:
@@ -506,8 +516,24 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         if not ask_proposals.valid_pid(pid):
             return JSONResponse({"detail": "no such proposal"}, status_code=404)
         body: object = None
-        with contextlib.suppress(Exception):
-            body = await request.json()
+        if request.headers.get("content-type", "").startswith("multipart/form-data"):
+            # A file chosen on a create card (#1786's file mode): ONE `file` part, read with the
+            # Library upload route's own bounds; the confirm rides the query. The bytes exist only
+            # in this request and the in-process upload.
+            from fastapi import HTTPException
+
+            from .variables import _secret_file_upload
+
+            if request.query_params.get("decision") != "confirm":
+                return JSONResponse({"detail": "a file only comes with a confirm"}, status_code=422)
+            try:
+                fname, fdata = await _secret_file_upload(request)
+            except HTTPException as e:
+                return JSONResponse({"detail": e.detail}, status_code=e.status_code)
+            body = {"decision": "confirm", "inputs": {"file": {"name": fname, "data": fdata}}}
+        else:
+            with contextlib.suppress(Exception):
+                body = await request.json()
         if not isinstance(body, dict):
             return JSONResponse({"detail": "body must be a JSON object"}, status_code=422)
         decision, bypass = body.get("decision"), body.get("bypass", False)
@@ -619,14 +645,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         if not (ask_store.valid_cid(cid) and await asyncio.to_thread(ask_store.exists, cid)):
             return _missing(cid)
         try:
-            name, data = await _read_one_attachment(request)
+            name, data, secret = await _read_one_attachment(request)
         except ask_attachments.AttachmentRefused as e:
             return JSONResponse({"detail": e.detail}, status_code=e.status)
         except _UploadMalformed as e:
             return JSONResponse({"detail": str(e)}, status_code=422)
         aid = ask_attachments.new_aid()
         try:
-            desc = await asyncio.to_thread(ask_attachments.publish, cid, aid, name, data)
+            desc = await asyncio.to_thread(
+                lambda: ask_attachments.publish(cid, aid, name, data, secret=secret)
+            )
         except ask_attachments.AttachmentRefused as e:
             return JSONResponse({"detail": e.detail}, status_code=e.status)
         except ask_store.ConversationNotFound:
@@ -678,14 +706,25 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 return JSONResponse({"detail": e.detail}, status_code=e.status)
             os.close(fd)
             name, kind = await asyncio.to_thread(ask_attachments.read_meta, cid, aid)
+            secret = await asyncio.to_thread(ask_attachments.read_secret, cid, aid)
+            desc = {"id": aid, "name": name, "kind": kind, "size": size}
             return JSONResponse(
-                {"attachment": {"id": aid, "name": name, "kind": kind, "size": size}},
+                {"attachment": {**desc, **({"secret": True} if secret else {})}},
                 headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
             )
         try:
             fd, size = await asyncio.to_thread(ask_attachments.open_blob, cid, aid)
         except ask_attachments.AttachmentRefused as e:
             return JSONResponse({"detail": e.detail}, status_code=e.status)
+        if await asyncio.to_thread(ask_attachments.read_secret, cid, aid):
+            # A file shared as a SECRET (#1786) is never served back: no view, no excerpt, no
+            # download. It can only be moved into the Library (or removed with its conversation).
+            os.close(fd)
+            return JSONResponse(
+                {"detail": "a file shared as a secret is never shown again"},
+                status_code=403,
+                headers={"Cache-Control": "no-store"},
+            )
         name, kind = await asyncio.to_thread(ask_attachments.read_meta, cid, aid)
         download = request.query_params.get("download") == "1" or kind == "other"
         media = {"image": "image/png", "text": "text/plain"}.get(kind, "application/octet-stream")

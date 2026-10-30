@@ -29,6 +29,7 @@ storage names/kinds remain immutable. Removing a collection never removes its va
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -558,6 +559,31 @@ def _run_hooks(actions: list[Callable[[], None]], what: str) -> None:
             action()
         except Exception as e:  # noqa: BLE001 — the sweep settles anything left behind
             log.warning("template vars: a secret-file %s step failed (%s)", what, type(e).__name__)
+
+
+def ids_ever_used() -> set[str]:
+    """Every ID the store has ever issued: live records AND the identity ledger's retired entries
+    (deletion never makes an ID reusable). Read under the caller's write fences."""
+    original: dict = {}
+    records, _damaged = _read(store_path(), document=original)
+    ledger = original.get("identities") if isinstance(original.get("identities"), list) else []
+    return {r["id"] for r in records if isinstance(r.get("id"), str)} | {
+        e["id"] for e in ledger if isinstance(e, dict) and isinstance(e.get("id"), str)
+    }
+
+
+@contextlib.contextmanager
+def write_fences_held():
+    """The store's write fences, held WITHOUT writing (#1786's move): while they are held no record
+    can be created, replaced or deleted, so a check made inside still holds for what follows."""
+    from . import session_input
+
+    with (
+        session_input.mutation_fence(),
+        template_secrets.registration_fence(),
+        json_write_lock(store_path()),
+    ):
+        yield
 
 
 def _mutate_document(

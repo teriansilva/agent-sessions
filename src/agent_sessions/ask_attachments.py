@@ -252,8 +252,13 @@ def claimed_ids(records: list[dict]) -> set[str]:
     return out
 
 
-def publish(cid: str, aid: str, name: str, data: bytes) -> dict:
+def publish(cid: str, aid: str, name: str, data: bytes, *, secret: bool = False) -> dict:
     """Store one blob and answer its descriptor. Blocking.
+
+    ``secret`` (#1786 P4b): the operator shared it as a SECRET. Its bytes then never reach a
+    model (no excerpt, no pixels — `prompt_block`, the body readers) and are never served back
+    (`routes/ask.get_attachment`); HQ may only propose moving it into the Library
+    (`ask_secrets` `secret.store_attachment`). The flag is fixed at upload, in the sidecar.
 
     The conversation-existence check runs **inside** the fence, immediately before the publish —
     never after the fence is released — so a concurrent ``delete_conversation`` either removes the
@@ -315,7 +320,7 @@ def publish(cid: str, aid: str, name: str, data: bytes) -> dict:
             os.close(fd)
         os.replace(tmp, dest)
         try:
-            write_meta(cid, aid, name, kind)
+            write_meta(cid, aid, name, kind, secret=secret)
         except OSError:
             # Roll BOTH artifacts back (#1720 round 8): a blob whose sidecar never landed is an
             # invisible staged slot — four of them eat the whole quota while the composer only
@@ -335,7 +340,13 @@ def publish(cid: str, aid: str, name: str, data: bytes) -> dict:
             with contextlib.suppress(OSError):
                 (attachments_dir(cid) / f"{aid}.meta").unlink(missing_ok=True)
             raise
-    return {"id": aid, "name": name, "kind": kind, "size": len(data)}
+    return {
+        "id": aid,
+        "name": name,
+        "kind": kind,
+        "size": len(data),
+        **({"secret": True} if secret else {}),
+    }
 
 
 def claim(cid: str, aids: list[str], records: list[dict]) -> list[dict]:
@@ -376,18 +387,28 @@ def claim(cid: str, aids: list[str], records: list[dict]) -> list[dict]:
         if not (attachments_dir(cid) / f"{aid}.meta").exists():
             raise AttachmentRefused("that upload did not finish")
         name, kind = read_meta(cid, aid)
-        out.append({"id": aid, "name": name, "kind": kind, "size": st.st_size})
+        secret = read_secret(cid, aid)
+        out.append(
+            {
+                "id": aid,
+                "name": name,
+                "kind": kind,
+                "size": st.st_size,
+                **({"secret": True} if secret else {}),
+            }
+        )
     return out
 
 
-def write_meta(cid: str, aid: str, name: str, kind: str) -> None:
+def write_meta(cid: str, aid: str, name: str, kind: str, *, secret: bool = False) -> None:
     """Persist the blob's display name and its ONE classification beside it (publish-time; 0600,
     never on the blob's path). Everything downstream reads this and never re-classifies a
     prefix — see :func:`classify`."""
     meta = attachments_dir(cid) / f"{aid}.meta"
     fd = os.open(meta, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
     try:
-        os.write(fd, json.dumps({"name": clean_name(name), "kind": kind}).encode("utf-8"))
+        meta = {"name": clean_name(name), "kind": kind, **({"secret": True} if secret else {})}
+        os.write(fd, json.dumps(meta).encode("utf-8"))
     finally:
         os.close(fd)
 
@@ -406,6 +427,17 @@ def read_meta(cid: str, aid: str) -> tuple[str, str]:
     return (name if name != "file" else "file"), (kind if kind in KINDS else "other")
 
 
+def read_secret(cid: str, aid: str) -> bool:
+    """Was the blob shared as a SECRET (#1786)? A sidecar that cannot be read answers True: a
+    blob whose disposition is not proven is never shown to a model or served back."""
+    meta = attachments_dir(cid) / f"{aid}.meta"
+    try:
+        raw = json.loads(meta.read_bytes()[: 4 * 1024])
+    except (OSError, ValueError):
+        return True
+    return not isinstance(raw, dict) or raw.get("secret", False) is not False
+
+
 def read_text_bodies(cid: str, descriptors: list[dict]) -> dict[str, bytes]:
     """The TEXT bodies for a turn's attachments (id → bytes) — the WHOLE file, bounded by the
     store's own :data:`MAX_FILE_BYTES`.
@@ -415,8 +447,8 @@ def read_text_bodies(cid: str, descriptors: list[dict]) -> dict[str, bytes]:
     3). A missing or unreadable blob contributes nothing — the descriptor still stands."""
     out: dict[str, bytes] = {}
     for a in descriptors:
-        if a.get("kind") != "text" or not valid_aid(a.get("id")):
-            continue
+        if a.get("kind") != "text" or a.get("secret") or not valid_aid(a.get("id")):
+            continue  # a SECRET file's bytes are never read for a model (#1786)
         with contextlib.suppress(OSError, AttachmentRefused):
             fd, _size = open_blob(cid, a["id"])
             try:
@@ -445,8 +477,8 @@ def read_image_bodies(cid: str, descriptors: list[dict]) -> dict[str, tuple[str,
     out: dict[str, tuple[str, bytes]] = {}
     total = 0
     for a in descriptors:
-        if a.get("kind") != "image" or not valid_aid(a.get("id")):
-            continue
+        if a.get("kind") != "image" or a.get("secret") or not valid_aid(a.get("id")):
+            continue  # a SECRET image's pixels are never shown to a model (#1786)
         with contextlib.suppress(OSError, AttachmentRefused):
             fd, size = open_blob(cid, a["id"])
             try:
@@ -632,6 +664,69 @@ def discard(cid: str, aid: str) -> str:
         return "discarded"
 
 
+def secret_bytes(cid: str, aid: str, limit: int) -> bytes:
+    """The whole blob of a file shared as a SECRET, for its move into the Library (#1786) — never
+    for a model. Refused when it was not shared as a secret, is gone, or is over ``limit``."""
+    if not read_secret(cid, aid) or not (attachments_dir(cid) / f"{aid}.meta").exists():
+        raise AttachmentRefused("only a file shared as a secret can be moved into the Library")
+    fd, size = open_blob(cid, aid)
+    try:
+        if size > limit:
+            raise AttachmentRefused("that file is too large for a secret file", status=413)
+        chunks, got = [], 0
+        while got <= limit:
+            chunk = os.read(fd, 64 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            got += len(chunk)
+        data = b"".join(chunks)
+    finally:
+        os.close(fd)
+    if len(data) > limit or len(data) != size:
+        raise AttachmentRefused("that file changed while it was read")
+    return data
+
+
+def release_secret(cid: str, aid: str) -> str:
+    """Release the chat copy of a SENT secret file once the Library holds it (#1786 custody
+    transfer): the tombstone first, then the bytes, under the fence like `discard`. Answers
+    ``"released"``, ``"gone"`` (already released) or ``"retry"`` (the durable marker could not be
+    written — the copy is still there and the move is not finished). Sent history keeps the
+    descriptor; the file itself is gone (`open_blob` refuses a tombstoned id)."""
+    if not (ask_store.valid_cid(cid) and valid_aid(aid)):
+        return "gone"
+    with attachments_fence(cid):
+        return release_secret_held(cid, aid)
+
+
+def release_secret_held(cid: str, aid: str) -> str:
+    """`release_secret` for a caller that ALREADY holds ``attachments_fence(cid)`` — and takes
+    nothing else. The fence order is attachments fence → store fences (`ask_orchestrator.begin`
+    holds it across an append that takes the registration fence), so a move that must also hold
+    the store's fences takes this fence FIRST (independent review of #1816: the reverse order
+    deadlocked a move against a message being sent)."""
+    if not (ask_store.valid_cid(cid) and valid_aid(aid)):
+        return "gone"
+    if not ask_store.exists(cid) or is_taken_back(cid, aid):
+        return "gone"
+    if not _blob_path(cid, aid).exists():
+        return "gone"
+    if not read_secret(cid, aid):
+        raise AttachmentRefused("only a file shared as a secret is released this way")
+    try:
+        fd = os.open(
+            _tombstone(cid, aid),
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600,
+        )
+        os.close(fd)
+    except OSError:
+        return "retry"
+    complete_tombstones(cid)
+    return "released"
+
+
 def reap_staged(now: float | None = None) -> int:
     """Retention's attachment pass: orphan directories (conversation gone) and staged blobs past
     :data:`STAGED_TTL` that no user record claims. Returns how many blobs went."""
@@ -697,7 +792,8 @@ def prompt_note(attachments: list[dict]) -> str:
                 name = template_secrets.redact_text(str(a.get("name") or "file"), secrets)
                 if template_suggest.credential_shaped(name):
                     name = _withhold_name()
-                parts.append(f"{name} ({a.get('kind')}, {_human(int(a.get('size') or 0))})")
+                kind = "secret file" if a.get("secret") else a.get("kind")
+                parts.append(f"{name} ({kind}, {_human(int(a.get('size') or 0))})")
         return (
             f"[Shared {len(attachments)} file{'s' if len(attachments) != 1 else ''}: "
             + "; ".join(parts)
@@ -709,6 +805,7 @@ def prompt_note(attachments: list[dict]) -> str:
         total = 0
         for a in attachments:
             k = a.get("kind") if a.get("kind") in KINDS else "other"
+            k = "secret" if a.get("secret") else k
             kinds[k] = kinds.get(k, 0) + 1
             total += int(a.get("size") or 0)
         listed = ", ".join(f"{n} {k}{'s' if n != 1 else ''}" for k, n in sorted(kinds.items()))
@@ -718,6 +815,11 @@ def prompt_note(attachments: list[dict]) -> str:
 #: What an image's note says about its pixels (#1779) — true for the request it rides on.
 IMAGE_SHOWN = " (attached below — you can see it)"
 IMAGE_NOT_SHOWN = " (not shown to you — only its name and size reached you)"
+#: What a SECRET file's note says (#1786): its contents never reach the model.
+CONTENTS_WITHHELD_NOTE = (
+    " (shared as a secret: its contents are never shown to you. To keep it, propose_secret "
+    "store_attachment moves it into the Library)"
+)
 
 
 def prompt_block(attachment: dict, body: bytes | None, *, image_shown: bool = False) -> str:
@@ -731,6 +833,9 @@ def prompt_block(attachment: dict, body: bytes | None, *, image_shown: bool = Fa
     redactor, and the rest looked harmless) — a known-secret fragment reached the model. The
     order here is load-bearing: redact the full text, withhold on the full text, cut only after.
     """
+    if attachment.get("secret"):
+        # Metadata only (#1786): never its contents, whatever its kind — and never a cue to quote.
+        return prompt_note([attachment]) + CONTENTS_WITHHELD_NOTE
     if attachment.get("kind") == "image":
         return prompt_note([attachment]) + (IMAGE_SHOWN if image_shown else IMAGE_NOT_SHOWN)
     if body is None or attachment.get("kind") != "text":

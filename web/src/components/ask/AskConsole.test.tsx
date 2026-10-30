@@ -2366,6 +2366,82 @@ test("turning a secret's agent access on is stamped Widens access", async () => 
   expect(within(card).getByTestId("ask-operation-confirm")).toBeEnabled();
 });
 
+test("an unsettled move says how far it got and Finish confirms it again", async () => {
+  withConversation([
+    opTurn(
+      opCard({
+        op: "secret.store_attachment",
+        label: "Store shared file as secret",
+        verb: "Store",
+        state: "unsettled",
+        summary: "Stored in the Library as “asc_api_key”, but the chat copy could not be deleted yet.",
+        can_confirm: true,
+        can_dismiss: false,
+      }),
+    ),
+  ]);
+  vi.mocked(api.decideAskOperation).mockResolvedValue({
+    proposal: { state: "deciding", summary: "", reason: "", can_confirm: false, can_dismiss: false },
+  });
+  await mountAt(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-operation");
+  const outcome = within(card).getByTestId("ask-operation-outcome");
+  expect(outcome).toHaveTextContent("Not finished");
+  expect(outcome).toHaveTextContent("could not be deleted yet");
+  expect(within(card).queryByTestId("ask-operation-dismiss")).toBeNull();
+  await userEvent.click(within(card).getByTestId("ask-operation-finish"));
+  expect(api.decideAskOperation).toHaveBeenCalledWith(PID, "confirm", undefined);
+});
+
+test("a store-secret-file card takes the file on the card, refuses an oversize one and sends it once", async () => {
+  withConversation([
+    opTurn(
+      opCard({
+        op: "secret.create_file",
+        label: "Store secret file",
+        verb: "Store",
+        title: "asc_api_key",
+        text: "Stores a new secret file “asc_api_key” in the Library.",
+        needs: ["file"],
+      }),
+    ),
+  ]);
+  vi.mocked(api.decideAskOperation).mockResolvedValue({
+    proposal: { state: "deciding", summary: "", reason: "", can_confirm: false, can_dismiss: false },
+  });
+  await mountAt(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-operation");
+  const confirm = within(card).getByTestId("ask-operation-confirm");
+  expect(confirm).toBeDisabled();
+  const input = within(card).getByLabelText("Secret file") as HTMLInputElement;
+  await userEvent.upload(input, new File([new Uint8Array(256 * 1024 + 1)], "big.bin"));
+  expect(within(card).getByTestId("ask-operation-file-why")).toHaveTextContent("at most 256.0 KB");
+  expect(confirm).toBeDisabled();
+  const key = new File(["-----BEGIN PRIVATE KEY-----"], "AuthKey.p8");
+  await userEvent.upload(input, key);
+  expect(within(card).getByTestId("ask-operation-file")).toHaveTextContent("AuthKey.p8");
+  await userEvent.click(confirm);
+  expect(api.decideAskOperation).toHaveBeenCalledWith(PID, "confirm", { file: key });
+});
+
+test("the store-shared-file card says it moves the chat copy", async () => {
+  withConversation([
+    opTurn(
+      opCard({
+        op: "secret.store_attachment",
+        label: "Store shared file as secret",
+        verb: "Store",
+        title: "asc_api_key",
+        text: "Moves the file “AuthKey.p8” you shared as a secret into the Library.",
+      }),
+    ),
+  ]);
+  await mountAt(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-operation");
+  expect(card).toHaveTextContent("Moves the chat copy");
+  expect(card).not.toHaveTextContent("Reversible");
+});
+
 test("a destructive card says so and uses the danger confirm", async () => {
   withConversation([
     opTurn(

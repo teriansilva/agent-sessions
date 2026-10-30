@@ -43,8 +43,23 @@ STALE, DISMISSED, INTERRUPTED = "stale", "dismissed", "interrupted"
 #: The route answered 2xx but its result was too large to read back: it ran, what it did is
 #: unknown — never reported as a failure (#1559 review).
 UNCONFIRMED = "unconfirmed"
+#: A move that committed but did not finish (#1786: the secret is in the Library, the chat copy
+#: is not yet released). The ONE state confirmed again: an operation with its own idempotent
+#: runner (`Operation.run`) picks up where it stopped.
+UNSETTLED = "unsettled"
 STATES = frozenset(
-    {PENDING, DECIDING, DONE, PARTLY_DONE, FAILED, STALE, DISMISSED, INTERRUPTED, UNCONFIRMED}
+    {
+        PENDING,
+        DECIDING,
+        DONE,
+        PARTLY_DONE,
+        FAILED,
+        STALE,
+        DISMISSED,
+        INTERRUPTED,
+        UNCONFIRMED,
+        UNSETTLED,
+    }
 )
 UNCONFIRMED_SAID = (
     "It went through, but its result was too large to read back here, so HQ can't say what "
@@ -155,6 +170,12 @@ def _secret_name(v: object) -> object:
     return secret_name(v)
 
 
+def _secret_file_input(v: object) -> object:
+    from .ask_secrets import file_input
+
+    return file_input(v)
+
+
 def _description(v: object) -> object:
     from .ask_secrets import description
 
@@ -166,6 +187,7 @@ def _description(v: object) -> object:
 INPUT_GATES: dict[str, Callable[[object], object]] = {
     "folder": _folder_input,
     "value": _secret_value_input,
+    "file": _secret_file_input,
 }
 #: Optional with an input (``existing`` with ``folder``): never required, never alone — and only
 #: on the operations whose route acts on it (`_if_dir`): anywhere else it would be accepted and
@@ -340,6 +362,10 @@ class Operation:
     #: (`ask_store.write_draft`), bound to the card by its sha256, and reaches the route as
     #: `fields["_content"]` only after that sha256 matched again at the tap.
     draft: bool = False
+    #: Several route calls with their own order (#1786's custody-transfer move), instead of
+    #: ``route``: ``async (cid, target, fields, facts, app, operator) → {"state", "outcome"}``.
+    #: Idempotent: an ``unsettled`` card is confirmed again and the runner resumes.
+    run: Callable | None = None
 
 
 class _Moved(Exception):
@@ -820,8 +846,11 @@ def actions(group: str) -> list[str]:
 # ---- facts, binding -----------------------------------------------------------------------------
 
 
-async def facts_for(op: Operation, target: str, fields: dict, app, operator) -> dict | None:
-    """The target's facts as the card shows them, or None when the target is gone."""
+async def facts_for(
+    op: Operation, target: str, fields: dict, app, operator, *, cid: str = ""
+) -> dict | None:
+    """The target's facts as the card shows them, or None when the target is gone. ``cid`` is the
+    conversation the card is in (a shared file's facts, #1786)."""
     if op.target == "session":
         facts = await _session_facts(app, operator, target)
         if facts is not None and op.id == "session.move" and fields.get("project_id"):
@@ -843,6 +872,10 @@ async def facts_for(op: Operation, target: str, fields: dict, app, operator) -> 
         from . import ask_secrets
 
         return await ask_secrets.facts(op, target, app, operator)
+    if op.target == "attachment":
+        from . import ask_secrets
+
+        return await asyncio.to_thread(ask_secrets.attachment_facts, cid, target)
     return {}
 
 
@@ -1012,7 +1045,7 @@ def view(row: dict) -> dict:
         "state": state,
         "summary": row.get("outcome") or "",
         "reason": row.get("reason") or "",
-        "can_confirm": state == PENDING,
+        "can_confirm": state == PENDING or _resumable(row),
         "can_dismiss": state == PENDING,
     }
     if state == PENDING and row.get("op") in _PICK_FROM_PROJECT:
@@ -1030,6 +1063,26 @@ def view(row: dict) -> dict:
     if op is not None and op.group == "secret" and state in (DONE, UNCONFIRMED):
         out["library"] = {"kind": "secret", "id": str(row.get("target") or "")}
     return out
+
+
+#: What an interrupted move that had noted its commit says (#1786): it resumes, never replays.
+RESUME_AFTER_STOP = (
+    "BattleLab stopped while this ran. What it stored is noted; confirm again to finish from "
+    "there."
+)
+
+
+def resumes_after_a_stop(row: dict) -> bool:
+    """A ``deciding`` operation abandoned by a stop that can be finished, not reported: its own
+    runner resumes (`Operation.run`) and it had noted what it committed (#1786's move)."""
+    op = CATALOG.get(row.get("op") or "")
+    return op is not None and op.run is not None and isinstance(row.get("committed"), dict)
+
+
+def _resumable(row: dict) -> bool:
+    """An ``unsettled`` move whose operation can resume it (confirmed again, never dismissed)."""
+    op = CATALOG.get(row.get("op") or "")
+    return row.get("state") == UNSETTLED and op is not None and op.run is not None
 
 
 def _saved_id(op: Operation, row: dict) -> str:
@@ -1087,7 +1140,7 @@ async def stage(
             raise Refused(
                 f"refused: the {k} contains a secret or looks like a credential", "credential"
             )
-    facts = await facts_for(op, target, fields, app, operator)
+    facts = await facts_for(op, target, fields, app, operator, cid=cid)
     if facts is None:
         raise Refused("refused: that is no longer available", "not_available")
     shown = facts.get("title") or facts.get("name") or title
@@ -1301,6 +1354,16 @@ async def decide_locked(
             )
             return 200, view(row or {})
         extras = gate_inputs(op, inputs)  # before `deciding`: a bad input leaves it pending
+        if _resumable(row):
+            # An unfinished move confirmed again (#1786): its runner resumes where it stopped,
+            # from what it committed, and facts that its own first steps changed (the chat copy
+            # released) are expected.
+            extras["_resumed"] = True
+            if isinstance(row.get("committed"), dict):
+                extras["_committed"] = dict(row["committed"])
+        if op.run is not None:
+            # A runner notes its progress on its own entry as it goes (#1786: what it committed).
+            extras["_pid"] = row["id"]
         if content is not None:
             extras["_content"] = content
         row = await asyncio.to_thread(
@@ -1316,6 +1379,23 @@ async def decide_locked(
             os.close(fd)
 
 
+async def _route_once(op: Operation, row: dict, fields: dict, now, app, operator) -> dict:
+    """The catalog's one route call for ``op``, and the outcome it settles to."""
+    try:
+        # Off the loop: a folder change reads the project store (its flock, #974).
+        method, path, body = await asyncio.to_thread(op.route, row["target"], fields, now or {})
+    except _Moved as e:
+        return {"state": STALE, "reason": f"{e} since this was proposed; nothing ran"}
+    resp = await asgi_call.call(app, operator, method, path, body)
+    if resp.truncated and 200 <= resp.status < 300:
+        state, said = UNCONFIRMED, UNCONFIRMED_SAID
+    else:
+        state, said = op.outcome(resp.status, resp.body, row["facts"])
+    if state == FAILED:
+        said = op.failure(resp.status, resp.detail, row["facts"])
+    return {"state": state, "outcome": said[:SUMMARY_MAX]}
+
+
 async def _run(
     cid: str, row: dict, op: Operation, fd: int, operator, app, extras: dict | None = None
 ) -> None:
@@ -1328,31 +1408,20 @@ async def _run(
     outcome: dict
     try:
         try:
-            now = await facts_for(op, row["target"], row["fields"], app, operator)
+            now = await facts_for(op, row["target"], row["fields"], app, operator, cid=cid)
             why = changed(row["facts"], now)
+            if why and (extras or {}).get("_resumed"):
+                why, now = "", row["facts"]
             if why:
                 outcome = {"state": STALE, "reason": f"{why} since this was proposed; nothing ran"}
             else:
                 fields = {**row["fields"], **(extras or {})}
-                try:
-                    # Off the loop: a folder change reads the project store (its flock, #974).
-                    method, path, body = await asyncio.to_thread(
-                        op.route, row["target"], fields, now or {}
-                    )
-                except _Moved as e:
-                    outcome = {
-                        "state": STALE,
-                        "reason": f"{e} since this was proposed; nothing ran",
-                    }
+                if op.run is not None:
+                    # Its own ordered steps (#1786's move); it settles itself.
+                    outcome = await op.run(cid, row["target"], fields, now or {}, app, operator)
+                    outcome["outcome"] = str(outcome.get("outcome") or "")[:SUMMARY_MAX]
                 else:
-                    resp = await asgi_call.call(app, operator, method, path, body)
-                    if resp.truncated and 200 <= resp.status < 300:
-                        state, said = UNCONFIRMED, UNCONFIRMED_SAID
-                    else:
-                        state, said = op.outcome(resp.status, resp.body, row["facts"])
-                    if state == FAILED:
-                        said = op.failure(resp.status, resp.detail, row["facts"])
-                    outcome = {"state": state, "outcome": said[:SUMMARY_MAX]}
+                    outcome = await _route_once(op, row, fields, now, app, operator)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 — a decision must always settle

@@ -1070,7 +1070,7 @@ export interface AskOperationCard {
   /** The server's sentence for what it will do. */
   text: string;
   /** Card inputs only the operator supplies: a folder, or a secret's write-only value (#1786). */
-  needs: ("folder" | "value")[];
+  needs: ("folder" | "value" | "file")[];
   state:
     | "pending"
     | "deciding"
@@ -1081,6 +1081,7 @@ export interface AskOperationCard {
     | "dismissed"
     | "interrupted"
     | "unconfirmed"
+    | "unsettled"
     | "unknown"
     | "gone";
   /** The outcome sentence, once settled. */
@@ -1163,6 +1164,9 @@ export interface AskAttachment {
   name: string;
   kind: "image" | "text" | "other";
   size: number;
+  /** Shared as a secret (#1786): never shown to HQ, never served back; HQ can only propose
+   *  moving it into the Library. */
+  secret?: boolean;
 }
 
 export interface AskConversation {

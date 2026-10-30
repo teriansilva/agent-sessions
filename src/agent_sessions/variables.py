@@ -121,8 +121,22 @@ def _value(name: str, kind: str, definition: dict, raw: object) -> str:
 
 
 def create(payload: object) -> dict:
-    if not isinstance(payload, dict) or set(payload) - {"name", "kind", "definition", "value"}:
-        raise store.VariableError("a variable accepts name, kind, definition and value only")
+    """A new library variable. ``id`` is optional: a caller that must note the record BEFORE it
+    exists (HQ's custody-transfer move, #1786) chooses a fresh one; it must be well-formed and
+    unused, and is otherwise assigned here."""
+    if not isinstance(payload, dict) or set(payload) - {
+        "name",
+        "kind",
+        "definition",
+        "value",
+        "id",
+    }:
+        raise store.VariableError("a variable accepts name, kind, definition, value and id only")
+    chosen = payload.get("id")
+    if chosen is not None and not (
+        isinstance(chosen, str) and variable_document.ID_RE.fullmatch(chosen)
+    ):
+        raise store.VariableError("id is 32 lowercase hex characters")
     name = store._name(payload.get("name"))
     kind = store._kind(payload.get("kind"))
     definition = _definition(name, kind, payload.get("definition", {}))
@@ -149,6 +163,12 @@ def create(payload: object) -> dict:
             raise store.VariableInUse(name, dependants, projects)
         if len(globals_) >= store.VARIABLES_MAX:
             raise store.VariableError("the variables library is full")
+        # Live AND retired: a deleted record's id is never reused (its access log, an agent's
+        # copies and any leftover sealed blob are keyed by it — independent review of #1816).
+        if chosen is not None and (
+            any(r.get("id") == chosen for r in records) or chosen in store.ids_ever_used()
+        ):
+            raise store.VariableError("that id is already used")
         now = time.time()
         record = (
             store._stored(fields, store.SCOPE_GLOBAL, None, now, now)
@@ -163,7 +183,7 @@ def create(payload: object) -> dict:
                 "updated_at": now,
             }
         )
-        record["id"] = variable_document.new_id()
+        record["id"] = chosen or variable_document.new_id()
         record["definition"] = definition
         records.append(record)
         return _public(record, records)

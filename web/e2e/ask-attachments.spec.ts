@@ -15,6 +15,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { openAsk, pickConversation } from "./askSidebar";
+import { TOUCH_FLOOR } from "./touchTarget";
 import {
   mockAskConversations,
   turnOf,
@@ -669,4 +670,92 @@ test("a turn admitted AFTER the reconcile is never offered for resend", async ({
   await expect(back.getByTestId("ask-recovered")).toHaveCount(1);
   await expect(back.getByTestId("ask-recovered-restore")).toHaveCount(0);
   await expect(back.getByTestId("ask-recovered")).toContainText("may already be sent");
+});
+
+// ---- #1786: shared as a secret ------------------------------------------------------------------
+
+test("a key file stages with Secret on, the flag rides the upload, and the switch is a real control", async ({
+  page,
+}) => {
+  await mockShell(page);
+  const bodies: string[] = [];
+  // AFTER the shell's route: Playwright matches the last registration first.
+  await page.route(/\/api\/ask\/conversations\/[^/]+\/attachments\/[^/?]+$/, (r) =>
+    r.request().method() === "DELETE"
+      ? r.fulfill({ json: { discarded: true } })
+      : r.fallback(),
+  );
+  await page.route("**/api/ask/conversations/*/attachments", async (r) => {
+    if (r.request().method() !== "POST") return r.fulfill({ json: {} });
+    bodies.push(r.request().postDataBuffer()?.toString("latin1") ?? "");
+    const secret = /name="secret"\r\n\r\n1/.test(bodies[bodies.length - 1]);
+    return r.fulfill({
+      status: 201,
+      json: {
+        attachment: {
+          ...att("8".repeat(32), "AuthKey_7F3K2L9QXA.p8", "text", 257),
+          ...(secret ? { secret: true } : {}),
+        },
+      },
+    });
+  });
+  await page.goto("/");
+  const panel = await openAsk(page);
+  await panel.getByTestId("ask-attach-input").setInputFiles({
+    name: "AuthKey_7F3K2L9QXA.p8",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from("-----BEGIN PRIVATE KEY-----\nMIGT\n-----END PRIVATE KEY-----\n"),
+  });
+  const pill = panel.getByTestId("ask-staged-pill");
+  await expect(pill.getByTestId("ask-staged-state")).toHaveText("Ready");
+  const sw = pill.getByTestId("ask-staged-secret");
+  await expect(sw).toHaveAttribute("role", "switch");
+  await expect(sw).toHaveAttribute("aria-checked", "true");
+  expect(bodies).toHaveLength(1);
+  expect(bodies[0]).toMatch(/name="secret"\r\n\r\n1/);
+  // A compact control: the 44 px floor wherever a finger is the pointer (docs/design.md §8).
+  if (test.info().project.name === "mobile") {
+    const box = (await sw.boundingBox())!;
+    expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  }
+  // By keyboard: off shares it again as an ordinary file.
+  await sw.focus();
+  await page.keyboard.press("Enter");
+  await expect(sw).toHaveAttribute("aria-checked", "false");
+  await expect(pill.getByTestId("ask-staged-state")).toHaveText("Ready");
+  expect(bodies).toHaveLength(2);
+  expect(bodies[1]).toMatch(/name="secret"\r\n\r\n0/);
+  const { scroll, inner } = await page.evaluate(() => ({
+    scroll: document.documentElement.scrollWidth,
+    inner: window.innerWidth,
+  }));
+  expect(scroll).toBeLessThanOrEqual(inner);
+});
+
+test("a file shared as a secret shows its name and size only — no View, no Download", async ({
+  page,
+}) => {
+  const fake = await mockShell(page);
+  fake.conversations[0].turns[0].attachments = [
+    { ...att(AID_TXT, "notes.txt", "text", LOG.length), secret: true },
+  ];
+  let fetchedBytes = false;
+  await page.route(/\/api\/ask\/conversations\/[^/]+\/attachments\/[^/?]+(\?|$)/, (r) => {
+    if (r.request().url().includes("meta=1"))
+      return r.fulfill({
+        json: { attachment: { ...att(AID_TXT, "notes.txt", "text", LOG.length), secret: true } },
+      });
+    fetchedBytes = true;
+    return r.fulfill({ status: 403, json: { detail: "never shown again" } });
+  });
+  await page.goto("/");
+  const panel = await openAsk(page);
+  await pickConversation(panel);
+  const card = panel.getByTestId("ask-attachment");
+  await expect(card).toHaveAttribute("data-secret", "true");
+  await expect(card).toContainText("Secret ·");
+  await expect(card.getByTestId("ask-attachment-secret")).toBeVisible();
+  await expect(card.getByTestId("ask-attachment-view")).toHaveCount(0);
+  await expect(card.getByTestId("ask-attachment-download")).toHaveCount(0);
+  expect(fetchedBytes).toBe(false);
 });

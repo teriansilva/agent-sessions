@@ -24,6 +24,8 @@ from dataclasses import dataclass
 FORWARDED = (b"cookie", b"x-csrf-token", b"origin")
 #: The largest response body kept. Every catalog route answers a small JSON object.
 RESPONSE_MAX = 1 << 20
+#: The largest multipart body sent (#1786: a secret file is at most 256 KiB, plus its framing).
+FORM_MAX = 256 * 1024 + 16 * 1024
 
 
 @dataclass(frozen=True)
@@ -66,17 +68,52 @@ class Response:
         return ""
 
 
+def _multipart(field: str, filename: str, payload: bytes) -> tuple[bytes, bytes]:
+    """ONE file part, framed the way a browser sends it: ``(body, content-type)``. The file name
+    is display text only (the route treats it so); quotes, backslashes and line breaks are
+    dropped so it can never break the part's header."""
+    import uuid
+
+    boundary = f"battlelab-{uuid.uuid4().hex}".encode()
+    safe = "".join(c for c in filename if c.isprintable() and c not in '"\\\r\n') or "file"
+    head = (
+        b"--" + boundary + b"\r\n"
+        b'Content-Disposition: form-data; name="' + field.encode() + b'"; '
+        b'filename="' + safe.encode("utf-8") + b'"\r\n'
+        b"Content-Type: application/octet-stream\r\n\r\n"
+    )
+    body = head + payload + b"\r\n--" + boundary + b"--\r\n"
+    return body, b"multipart/form-data; boundary=" + boundary
+
+
 async def call(
-    app, operator: Operator, method: str, path: str, body: dict | None, *, query: str = ""
+    app,
+    operator: Operator,
+    method: str,
+    path: str,
+    body: dict | None,
+    *,
+    query: str = "",
+    form: tuple[str, str, bytes] | None = None,
 ) -> Response:
     """Send ``method path`` with ``body`` (JSON) through ``app`` as ``operator``. ``query`` is a
-    fixed string the caller authors (a facts read), never part of a catalog path."""
+    fixed string the caller authors (a facts read), never part of a catalog path. ``form`` is
+    instead ONE file part ``(field, file name, bytes)`` as a bounded multipart body (#1786: a
+    secret file moved into the Library through the same upload route the page uses)."""
     if not path.startswith("/") or "?" in path or "#" in path:
         raise ValueError("a catalog path is an absolute path with no query")
-    data = b"" if body is None else json.dumps(body).encode()
+    if form is not None and body is not None:
+        raise ValueError("a call sends JSON or one file part, not both")
     headers = list(operator.headers)
-    if body is not None:
-        headers += [(b"content-type", b"application/json")]
+    if form is not None:
+        data, ctype = _multipart(*form)
+        if len(data) > FORM_MAX:
+            raise ValueError("that file is too large to send in process")
+        headers += [(b"content-type", ctype)]
+    else:
+        data = b"" if body is None else json.dumps(body).encode()
+        if body is not None:
+            headers += [(b"content-type", b"application/json")]
     headers += [(b"content-length", str(len(data)).encode())]
     scope = {
         "type": "http",
