@@ -914,3 +914,40 @@ def test_a_copy_whose_revision_cannot_be_checked_is_removed_and_the_pass_goes_on
     secrets_broker.reconcile(probe=False)
     assert not os.path.exists(a)  # unknowable: fail closed
     assert not os.path.exists(b)  # and the copy after it is still judged
+
+
+def test_serve_binds_a_private_socket_without_touching_the_process_umask(broker, monkeypatch):
+    """The umask is process-global: narrowing it around the bind made directories other threads
+    created meanwhile lose their execute bit (a flaky PermissionError in unrelated tests, and the
+    same window in the running app). The socket is made 0600 on its own before it listens."""
+    import socket as socket_mod
+
+    def forbidden(mask):
+        raise AssertionError("serve() must not change the process umask")
+
+    monkeypatch.setattr(os, "umask", forbidden)
+    monkeypatch.setattr(secrets_broker, "_server_running", False)
+    monkeypatch.setattr(secrets_broker, "reconcile", lambda **_k: None)
+    path = secrets_broker.socket_path()
+    seen: dict = {}
+
+    async def run():
+        task = asyncio.create_task(secrets_broker.serve())
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if secrets_broker._server_running:
+                break
+        seen["running"] = secrets_broker._server_running
+        seen["mode"] = stat.S_IMODE(os.stat(path).st_mode)
+        probe = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
+        try:
+            await asyncio.get_running_loop().sock_connect(probe, str(path))
+            seen["answers"] = True
+        finally:
+            probe.close()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert seen == {"running": True, "mode": 0o600, "answers": True}

@@ -1163,6 +1163,26 @@ def _answers(path: Path) -> bool:
         s.close()
 
 
+def _bound_private(path: Path):
+    """A listening-ready AF_UNIX socket bound at ``path`` and made 0600 BEFORE it listens.
+
+    Never through ``os.umask``: the umask is process-global, and narrowing it around the bind
+    made every file or directory another thread created in that moment unreadable (a directory
+    without its execute bit — flaky tests, and the same window in the running app). The instant
+    between bind and chmod is harmless: a socket accepts no connection before ``listen``, which
+    asyncio calls only after it is handed this socket, and every peer is checked for our uid."""
+    import socket
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.bind(str(path))
+        os.chmod(path, 0o600)
+    except BaseException:
+        sock.close()
+        raise
+    return sock
+
+
 async def serve() -> None:
     """Serve the broker until cancelled: startup reconciliation first, then the socket, then a
     periodic pass. A socket some other process still answers on is never taken over; a failure to
@@ -1179,11 +1199,9 @@ async def serve() -> None:
                 log.warning("secrets broker: %s is served by another process; not serving", path)
                 return
             path.unlink()
-        old = os.umask(0o177)
-        try:
-            server = await asyncio.start_unix_server(_client, path=str(path), limit=REQUEST_MAX + 2)
-        finally:
-            os.umask(old)
+        server = await asyncio.start_unix_server(
+            _client, sock=_bound_private(path), limit=REQUEST_MAX + 2
+        )
         ours = os.lstat(path).st_ino
     except (OSError, Refused):
         log.warning("secrets broker: cannot serve; agents get no secrets tool", exc_info=True)
