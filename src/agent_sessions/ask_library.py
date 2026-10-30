@@ -23,7 +23,10 @@ model never writes a project id, folder path, engine id or session key into a co
 
 **HQ never widens permission or autonomy** (the #1558 never-list): a config with permission bypass
 on, or mission autonomy ``dispatch_auto_choose``, is refused at staging for create, edit and
-enable. The operator can still set either in the Library.
+enable. The operator can still set either in the Library. The one exception is a library secret's
+agent access (`ask_secrets`, #1786): the operator approved HQ PROPOSING `secret.access_on` (#1786,
+comment 113807) as a card they tap — never voice-confirmed, never automatic, stale when the bound
+projects change.
 """
 
 from __future__ import annotations

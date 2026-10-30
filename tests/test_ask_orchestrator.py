@@ -291,6 +291,8 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "list_automations": "read",
         "automation_detail": "read",
         "propose_library": "proposal",
+        "list_secrets": "read",
+        "propose_secret": "proposal",
         # #1750: the Commander's connected services — reads only; P1a has no send or proposal.
         "list_connectors": "read",
         "connector_search": "read",

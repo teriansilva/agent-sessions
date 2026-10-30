@@ -2309,6 +2309,63 @@ test("an operation card shows the server's wording and confirms with nothing but
   ).toHaveTextContent("Running");
 });
 
+// --- #1786: secret cards ----------------------------------------------------------------------
+
+test("a store-secret card takes the value on the card, sends it once and keeps none of it", async () => {
+  withConversation([
+    opTurn(
+      opCard({
+        op: "secret.create",
+        label: "Store secret",
+        verb: "Store",
+        title: "deploy_token",
+        text: "Stores a new secret “deploy_token” in the Library.",
+        needs: ["value"],
+      }),
+    ),
+  ]);
+  vi.mocked(api.decideAskOperation).mockResolvedValue({
+    proposal: { state: "deciding", summary: "", reason: "", can_confirm: false, can_dismiss: false },
+  });
+  await mountAt(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-operation");
+  expect(card).toHaveTextContent("Secret");
+  const confirm = within(card).getByTestId("ask-operation-confirm");
+  expect(confirm).toBeDisabled();
+  const field = within(card).getByLabelText("Value");
+  expect(field).toHaveAttribute("type", "password");
+  await userEvent.type(field, "card-typed-value-1786");
+  expect(confirm).toBeEnabled();
+  await userEvent.click(confirm);
+  expect(api.decideAskOperation).toHaveBeenCalledWith(PID, "confirm", {
+    value: "card-typed-value-1786",
+  });
+  // Cleared at once: whatever the card shows next, the typed value is no longer held in it.
+  const after = within(card).queryByLabelText("Value");
+  if (after) expect(after).toHaveValue("");
+});
+
+test("turning a secret's agent access on is stamped Widens access", async () => {
+  withConversation([
+    opTurn(
+      opCard({
+        op: "secret.access_on",
+        risk: "external",
+        label: "Turn agent access on",
+        verb: "Turn on",
+        title: "asc_api_key",
+        text: "Lets agents in Atlas iOS request a private copy of “asc_api_key”.",
+      }),
+    ),
+  ]);
+  await mountAt(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-operation");
+  expect(card).toHaveTextContent("Widens access");
+  expect(card).not.toHaveTextContent("External");
+  expect(within(card).queryByLabelText("Value")).toBeNull();
+  expect(within(card).getByTestId("ask-operation-confirm")).toBeEnabled();
+});
+
 test("a destructive card says so and uses the danger confirm", async () => {
   withConversation([
     opTurn(

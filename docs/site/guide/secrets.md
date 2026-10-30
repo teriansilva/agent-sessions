@@ -48,6 +48,21 @@ None of this can recall a copy an agent has already read, copied or sent anywher
 A project you deleted or archived while it still bound the secret appears in the list as
 **deleted or archived project**, so you can untick it.
 
+## From HQ
+
+You can also ask HQ to list your secrets, store a new one or switch a secret's agent access. HQ
+never sees a secret's value:
+
+- **Listing.** HQ sees each secret's name, type, whether a value is stored, its agent access and
+  the projects that bind it. It never sees a value.
+- **Storing.** HQ proposes a card with the name. You type the value into the card's own field,
+  which sends it straight to the encrypted store. HQ never asks for a value in the chat; if a
+  message ever does, don't paste one. A new secret starts with agent access off.
+- **Agent access.** HQ can propose turning a secret's agent access on or off, as a card you tap.
+  Turning it on is stamped **Widens access** and names the projects whose agents could request it.
+  If those projects change before you tap, the card goes out of date and nothing happens. These
+  cards are never confirmed by voice on a call, and never automatically.
+
 ## How an agent asks
 
 The page's **How agents reach secrets** list shows, for each installed agent, which way it asks:

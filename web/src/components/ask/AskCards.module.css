@@ -465,3 +465,33 @@
   outline: 2px solid var(--accent-text);
   outline-offset: 2px;
 }
+
+/* A secret's write-only value (#1786): typed on the card, never shown again. The `nj-field` look,
+ * as the free-text answer. */
+.secretField {
+  display: grid;
+  gap: var(--sp-1);
+  margin-top: var(--sp-2);
+  font-size: var(--fs-label);
+  color: var(--text-2);
+}
+.secretField input {
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--text-1);
+  font-size: var(--fs-meta);
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.secretField input:hover {
+  border-color: var(--hud-dim);
+}
+.secretField input:focus {
+  border-color: var(--hud);
+}
+.secretField input:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}

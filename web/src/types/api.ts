@@ -1069,7 +1069,8 @@ export interface AskOperationCard {
   title: string;
   /** The server's sentence for what it will do. */
   text: string;
-  needs: "folder"[];
+  /** Card inputs only the operator supplies: a folder, or a secret's write-only value (#1786). */
+  needs: ("folder" | "value")[];
   state:
     | "pending"
     | "deciding"
@@ -1093,7 +1094,7 @@ export interface AskOperationCard {
   content?: boolean;
   /** A done (or unconfirmed) Library save: what it saved, for the card's Open in Library link. An
    *  empty id (a new automation, whose id the route chose) opens the list. */
-  library?: { kind: "playbook" | "skill" | "automation"; id: string };
+  library?: { kind: "playbook" | "skill" | "automation" | "secret"; id: string };
 }
 
 /** What a Library card shows of its draft (#1611): the files, the diff against what HQ read, or an

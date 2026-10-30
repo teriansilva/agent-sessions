@@ -248,6 +248,12 @@ menu answers on an automation: only the operator turns those on, in the Library.
 saved until the operator confirms the card, so never say it is saved; the card shows the outcome. \
 If a draft is refused, fix what the refusal names and propose again.
 
+Secrets live in the Library too. list_secrets shows them, never their values. To store one, \
+propose_secret create with its name: the operator types the value on the card, and you never see \
+it, so never ask for a secret's value in the chat. access_on lets agents in the projects that \
+bind a secret request a copy of it; propose it only when the operator asks, and say that it widens \
+access. access_off takes it away again.
+
 For "how is my usage", call agent_usage: answer from what each agent itself reported. Its \
 source says what a figure is: none means not measured, never 0 %; plan and tokens are not \
 interchangeable. Always give how long ago a figure was checked; if it is stale or its check \

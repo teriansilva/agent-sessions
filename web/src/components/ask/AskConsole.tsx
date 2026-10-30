@@ -1010,7 +1010,11 @@ export function AskConsole({
    *  picked folder) — never what to run. 202 = running; the re-read and the poll follow it. A
    *  refusal that did not change the card (a 422 for a missing folder) is said under it. */
   const decideOperation = useCallback(
-    async (pid: string, decision: "confirm" | "dismiss", inputs?: { folder: string }) => {
+    async (
+      pid: string,
+      decision: "confirm" | "dismiss",
+      inputs?: { folder?: string; value?: string },
+    ) => {
       const id = cidRef.current;
       setDeciding((s) => new Set(s).add(pid));
       let error: string | null = null;

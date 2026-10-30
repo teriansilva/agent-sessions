@@ -179,6 +179,9 @@ class _Turn:
     #: Library ids THIS turn's read tools returned (#1611), by group: what `propose_library` may
     #: name. ``{"playbook": {id: {...}}, "skill": {...}, "automation": {...}}``.
     library: dict = field(default_factory=lambda: {"playbook": {}, "skill": {}, "automation": {}})
+    #: Library secret ids THIS turn's `list_secrets` returned (#1786): what `propose_secret` may
+    #: name. ``{id: {"name": ...}}``. Never a value.
+    secrets: dict = field(default_factory=dict)
     #: HQ judged that the operator's words mean the call is over (#1668): `end_call` was used on
     #: this CALL turn. Memory only, never stored: the settled view carries it to the call alone.
     end_call: bool = False
@@ -1109,12 +1112,17 @@ async def _stage(
         )
     except ask_operations.Refused as e:
         raise _ToolRefused(str(e), e.code) from None
+    # Belt and braces (Hermes on #1813): what goes back to the model passes the store boundary.
+    target_said, summary_said = [
+        await asyncio.to_thread(ask_store.guard_text, str(v), max(len(str(v)), 1))
+        for v in (staged["target"], staged["summary"])
+    ]
     return (
         {
             "proposed": True,
             "action": op.label,
-            "target": staged["target"],
-            "what_happens": staged["summary"],
+            "target": target_said,
+            "what_happens": summary_said,
             "note": "The operator now sees a card and confirms it or not. Nothing has happened "
             "yet; never say it has. The card shows the outcome.",
         },
@@ -1491,6 +1499,29 @@ async def _automation_detail(turn: _Turn, args: dict) -> tuple[dict, dict]:
     out, known = await _library_read(turn, ask_library.automation_detail, aid)
     ask_library.remember(turn.library["automation"], aid, known)
     return out, {"count": 1}
+
+
+async def _list_secrets(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    from . import ask_secrets
+
+    rows, known = await _library_read(turn, ask_secrets.list_secrets)
+    turn.secrets.update(known)
+    return {"secrets": rows}, {"count": len(rows)}
+
+
+async def _propose_secret(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """Stage a secret card (#1786): store one (the operator types its value on the card) or
+    switch its agent access. Never a value; a target is one `list_secrets` returned this turn."""
+    from . import ask_library, ask_secrets
+
+    operator, app = _operator(turn)
+    try:
+        staged = await ask_secrets.prepare(
+            args.get("action"), args, known=turn.secrets, app=app, operator=operator
+        )
+    except ask_library.Refused as e:
+        raise _ToolRefused(str(e), e.code) from None
+    return await _stage(turn, staged["op"], staged["target"], staged["title"], staged["fields"])
 
 
 async def _propose_library(turn: _Turn, args: dict) -> tuple[dict, dict]:
@@ -1922,6 +1953,40 @@ TOOLS: dict[str, Tool] = {
                 ["group", "action"],
             ),
             _propose_library,
+        ),
+        Tool(
+            "list_secrets",
+            "read",
+            _spec(
+                "list_secrets",
+                "The Library's secrets: id, name, kind (text or file), whether a value is "
+                "stored, whether it needs re-entry, agent access, the projects that bind it, its "
+                "description and, for a file, its file name. Never a value.",
+                {},
+                [],
+            ),
+            _list_secrets,
+        ),
+        Tool(
+            "propose_secret",
+            "proposal",
+            _spec(
+                "propose_secret",
+                "Propose a secret card. Nothing changes until the operator confirms it. "
+                "create (name, optional description): stores a new text secret; the operator "
+                "types its value on the card, and you never see or send it — never ask for a "
+                "secret's value in the chat. access_on (id): lets agents in the projects that "
+                "bind it request a private copy; it widens access, so propose it only when the "
+                "operator asked for it. access_off (id). ids from list_secrets in this turn.",
+                {
+                    "action": {"type": "string", "enum": ["create", "access_on", "access_off"]},
+                    "id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+                ["action"],
+            ),
+            _propose_secret,
         ),
         Tool(
             "agent_usage",

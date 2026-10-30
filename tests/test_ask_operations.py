@@ -98,6 +98,11 @@ def test_every_catalog_operation_names_a_route_the_app_registers(app, monkeypatc
     facts = {"runtime": "terminal", "name": "p", "sessions": 1, "matched": 1, "revision": 2}
     fields = {"title": "t", "tag": "t", "color": "", "name": "n", "days": 3, "folder": "/x"}
     fields.update(project_id="p1", project_name="p", new_id="copy", enabled=True)
+    # A secret (#1786): the create's card input, and the revision an access card reads at the tap.
+    fields.update(secret_name="asc_api_key", description="", value="card-typed-value-1786")
+    from agent_sessions import ask_secrets
+
+    monkeypatch.setattr(ask_secrets, "_current", lambda target, facts: 1.0)
     # A library save (#1611) builds its body from its bound draft, injected at the tap.
     fields["_content"] = {
         "files": {"playbook.toml": ""},
@@ -116,6 +121,7 @@ def test_every_catalog_operation_names_a_route_the_app_registers(app, monkeypatc
             "playbook": "release-train",
             "skill": "changelog-writer",
             "automation": "aut1",
+            "secret": "0" * 32,
         }.get(op.target, "")
         for runtime in ("terminal", "api"):
             method, path, _body = op.route(target, fields, dict(facts, runtime=runtime))

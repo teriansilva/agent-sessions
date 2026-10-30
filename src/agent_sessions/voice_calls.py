@@ -137,6 +137,7 @@ TOOL_ACTIVITY = {
     "skill_detail": "reading that skill",
     "list_automations": "reading your automations",
     "automation_detail": "reading that automation",
+    "list_secrets": "reading your secrets",
     "read_settings": "reading your settings",
     "list_connectors": "checking your connected services",
     "connector_search": "searching your connected service",
@@ -148,6 +149,7 @@ TOOL_ACTIVITY = {
     "propose_session_change": "preparing a card for you",
     "propose_project_change": "preparing a card for you",
     "propose_library": "preparing a card for you",
+    "propose_secret": "preparing a card for you",
 }
 #: Said once per turn as a tool starts (the lookups worth naming at once).
 PROGRESS_LINES = {
@@ -1551,7 +1553,9 @@ def _voice_operation(op_id: object) -> bool:
     from . import ask_library, ask_operations
 
     op = ask_operations.CATALOG.get(op_id) if isinstance(op_id, str) else None
-    return op is not None and op.group not in ask_library.GROUPS
+    # A secret operation (#1786) is never voice-confirmed: turning agent access on widens what
+    # agents can read, and the operator approved HQ proposing it only as a card they tap.
+    return op is not None and op.group not in (*ask_library.GROUPS, "secret")
 
 
 #: The Library operations a voice may confirm (#1681): NEW drafts that run nothing, each only

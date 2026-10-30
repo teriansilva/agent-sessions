@@ -143,8 +143,30 @@ def _existing_input(v: object) -> bool:
     return True
 
 
-#: Inputs only the operator supplies, on the card, with the confirm.
-INPUT_GATES: dict[str, Callable[[object], object]] = {"folder": _folder_input}
+def _secret_value_input(v: object) -> object:
+    from .ask_secrets import value_input
+
+    return value_input(v)
+
+
+def _secret_name(v: object) -> object:
+    from .ask_secrets import secret_name
+
+    return secret_name(v)
+
+
+def _description(v: object) -> object:
+    from .ask_secrets import description
+
+    return description(v)
+
+
+#: Inputs only the operator supplies, on the card, with the confirm. ``value`` is a secret's
+#: value (#1786 P4): it exists only in the tap request and the in-process route call.
+INPUT_GATES: dict[str, Callable[[object], object]] = {
+    "folder": _folder_input,
+    "value": _secret_value_input,
+}
 #: Optional with an input (``existing`` with ``folder``): never required, never alone — and only
 #: on the operations whose route acts on it (`_if_dir`): anywhere else it would be accepted and
 #: silently ignored (review of #1692).
@@ -162,6 +184,8 @@ GATES: dict[str, Callable[[object], object]] = {
     "color": _color,
     "name": _name,
     "days": _days,
+    "secret_name": _secret_name,
+    "description": _description,
 }
 
 
@@ -292,7 +316,7 @@ def _older(status: int, body: object) -> tuple[str, str]:
 @dataclass(frozen=True)
 class Operation:
     id: str
-    group: str  # "session" | "project" | "playbook" | "skill" | "automation"
+    group: str  # "session" | "project" | "playbook" | "skill" | "automation" | "secret"
     action: str  # the propose tool's `action` value
     label: str  # the card's Action row
     verb: str  # the card's button
@@ -777,8 +801,9 @@ def _ops() -> tuple[Operation, ...]:
 
 def _all_ops() -> tuple[Operation, ...]:
     from .ask_library import library_ops
+    from .ask_secrets import secret_ops
 
-    return (*_ops(), *library_ops())
+    return (*_ops(), *library_ops(), *secret_ops())
 
 
 CATALOG: dict[str, Operation] = {op.id: op for op in _all_ops()}
@@ -814,6 +839,10 @@ async def facts_for(op: Operation, target: str, fields: dict, app, operator) -> 
         from . import ask_library
 
         return await ask_library.facts(op, target, app, operator)
+    if op.target == "secret":
+        from . import ask_secrets
+
+        return await ask_secrets.facts(op, target, app, operator)
     return {}
 
 
@@ -859,6 +888,11 @@ def changed(before: dict, now: dict | None) -> str:
         return "its folders changed"
     # A library target (#1611): saved elsewhere, switched on or off, or its scope moved.
     # Switching on or off also moves the revision: name the more specific change first.
+    # A secret (#1786): its agent access, or the projects whose agents it would reach.
+    if "agent_access" in before and before["agent_access"] != now.get("agent_access"):
+        return "its agent access was switched elsewhere"
+    if "project_set" in before and before["project_set"] != now.get("project_set"):
+        return "the projects that can use it changed"
     if "enabled" in before and before["enabled"] != now.get("enabled"):
         return "it was switched on" if now.get("enabled") else "it was switched off"
     if "revision" in before and before["revision"] != now.get("revision"):
@@ -993,6 +1027,8 @@ def view(row: dict) -> dict:
         and state in (DONE, UNCONFIRMED)
     ):
         out["library"] = {"kind": op.group, "id": _saved_id(op, row)}
+    if op is not None and op.group == "secret" and state in (DONE, UNCONFIRMED):
+        out["library"] = {"kind": "secret", "id": str(row.get("target") or "")}
     return out
 
 
@@ -1074,6 +1110,24 @@ async def stage(
             raise Refused(f"refused: {e}", "not_recorded") from None
     bind = await asyncio.to_thread(binding, op.id, target, fields, facts, sha)
     summary = op.describe(fields, facts)
+    # What the card says goes back to the MODEL too (`ask_orchestrator._stage`): a sentence the
+    # store boundary would change — a stored secret's value inside a fact such as a project name —
+    # is refused, never staged or returned (Hermes on #1813).
+    if len(summary) > SUMMARY_MAX:
+        # The card stores at most SUMMARY_MAX characters: a sentence that long would be cut, and
+        # a cut access card could hide a project the tap widens access to (#1813 review).
+        raise Refused(
+            "refused: this card would be too long to show in full — the operator can do it in "
+            "the Library",
+            "too_long",
+        )
+    for said in (summary, str(shown)):
+        if await asyncio.to_thread(ask_store.guard_text, said, max(len(said), 1)) != said:
+            raise Refused(
+                "refused: the card would show a secret or something that looks like a "
+                "credential",
+                "credential",
+            )
     try:
         await append_card(
             cid,

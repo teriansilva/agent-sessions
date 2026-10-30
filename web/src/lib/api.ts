@@ -1903,7 +1903,11 @@ export const api = {
    *  the bypass value the operator saw — never what to start; 202 while it launches. */
   /** Confirm or dismiss an operation HQ proposed (#1559). The body is the decision and what the
    *  card asked the operator for (a picked folder) — never what to run; 202 while it runs. */
-  decideAskOperation: (id: string, decision: "confirm" | "dismiss", inputs?: { folder?: string }) =>
+  decideAskOperation: (
+    id: string,
+    decision: "confirm" | "dismiss",
+    inputs?: { folder?: string; value?: string },
+  ) =>
     mutateJson<{ proposal: AskOperationDecision }>(
       "POST",
       `/api/ask/proposals/${enc(id)}/decide`,

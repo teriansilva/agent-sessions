@@ -17,7 +17,7 @@
  *  session and it received the brief; anything less proved says so, and nothing is retried.
  */
 import { Eye, FolderOpen, Play, Send } from "lucide-react";
-import { type ReactNode, useCallback, useState } from "react";
+import { type ReactNode, useCallback, useId, useRef, useState } from "react";
 
 import type {
   AskNudgeCard,
@@ -571,10 +571,13 @@ const OPERATION_GROUP: Record<string, string> = {
   playbook: "Playbook",
   skill: "Skill",
   automation: "Automation",
+  secret: "Secret",
 };
 
 /** An automation the tap lets run unattended reads as such, not as a bare "External". */
 const UNATTENDED = new Set(["automation.enable", "automation.widen"]);
+/** Turning a secret's agent access on (#1786) widens what agents can read: said on the stamp. */
+const WIDENS = new Set(["secret.access_on"]);
 
 const RISK_STAMP: Record<AskOperationCard["risk"], { label: string; tone?: "down" | "hud" }> = {
   reversible: { label: "Reversible" },
@@ -593,10 +596,17 @@ export function OperationCard({
   deciding: boolean;
   /** Why the last tap was refused, when the card itself did not change. */
   error: string | null;
-  onConfirm: (inputs?: { folder: string }) => void;
+  onConfirm: (inputs?: { folder?: string; value?: string }) => void;
   onDismiss: () => void;
 }) {
   const [picked, setFolder] = useState("");
+  // A secret's value (#1786): typed here, sent with the confirm and cleared at once. The field is
+  // uncontrolled — the value lives in the DOM node only, never in React state or a `value`
+  // attribute — and nothing else (a store, a draft, the card the server returns) ever holds it.
+  const valueRef = useRef<HTMLInputElement>(null);
+  const [typed, setTyped] = useState(false);
+  const needsValue = p.needs.includes("value");
+  const valueId = useId();
   // A Library card (#1611) offers Confirm only once its content is on screen.
   const [shown, setShown] = useState(false);
   const onShown = useCallback((v: boolean) => setShown(v), []);
@@ -610,9 +620,11 @@ export function OperationCard({
   const folder = fromProject && !choices.includes(picked) ? "" : picked;
   const stamp = UNATTENDED.has(p.op)
     ? { label: "Runs agents unattended", tone: "hud" as const }
-    : RISK_STAMP[p.risk];
+    : WIDENS.has(p.op)
+      ? { label: "Widens access", tone: "hud" as const }
+      : RISK_STAMP[p.risk];
   const danger = p.risk === "destructive";
-  const ready = (!needsFolder || folder !== "") && (!p.content || shown);
+  const ready = (!needsFolder || folder !== "") && (!needsValue || typed) && (!p.content || shown);
   const off = deciding || !p.can_confirm;
   const edge = out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
   return (
@@ -645,6 +657,24 @@ export function OperationCard({
           {p.text}
         </p>
         {p.content ? <LibraryContent id={p.action_id} onShown={onShown} /> : null}
+        {needsValue && !out ? (
+          <div className={c.secretField}>
+            <label htmlFor={valueId}>Value</label>
+            <input
+              ref={valueRef}
+              id={valueId}
+              type="password"
+              // Not the operator's login: a browser must never fill or offer a saved password here.
+              autoComplete="new-password"
+              spellCheck={false}
+              maxLength={2000}
+              disabled={off}
+              onChange={(e) => setTyped(e.target.value !== "")}
+              data-testid="ask-operation-value"
+            />
+            <small>Write-only: it goes straight to the encrypted store. HQ never sees it.</small>
+          </div>
+        ) : null}
         {danger && !out ? (
           <div className={c.note} role="note" data-testid="ask-operation-danger">
             <span>This can&apos;t be undone.</span>
@@ -733,7 +763,14 @@ export function OperationCard({
             type="button"
             className={danger ? c.ctaDanger : c.cta}
             disabled={off || !ready}
-            onClick={() => onConfirm(needsFolder ? { folder } : undefined)}
+            onClick={() => {
+              if (needsValue) {
+                const field = valueRef.current;
+                onConfirm({ value: field?.value ?? "" });
+                if (field) field.value = "";
+                setTyped(false);
+              } else onConfirm(needsFolder ? { folder } : undefined);
+            }}
             data-testid="ask-operation-confirm"
           >
             {p.verb}

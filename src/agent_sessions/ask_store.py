@@ -142,7 +142,7 @@ OPERATION_STATES = frozenset(
 )
 OP_VERB_MAX = 40
 #: What an operation card may ask the OPERATOR for (never the model): a folder they pick.
-OPERATION_INPUTS = frozenset({"folder"})
+OPERATION_INPUTS = frozenset({"folder", "value"})
 OP_SUMMARY_MAX = 400
 _OP_FIELD_RE = re.compile(r"^[a-z_]{1,40}$")
 OP_FIELDS_MAX = 8
