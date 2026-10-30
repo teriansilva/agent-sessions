@@ -416,4 +416,56 @@ describe("useApiHistory", () => {
     expect(new Set(workers).size).toBe(workers.length); // no duplicates
     expect([...workers].sort()).toEqual(ends.map((e) => e.worker).sort());
   });
+
+  it("an eviction prunes the ends already held; one before the first turn goes with that turn", () => {
+    const held = [end("w-start", null), end("w1", "t1"), end("w5", "t5")];
+    // The cap evicted t0…t2: what followed them has nowhere to render, and neither has the start.
+    expect(holdEnds(held, undefined, range(3, 8), false).map((e) => e.worker)).toEqual(["w5"]);
+    expect(holdEnds(held, [end("w6", "t6")], range(3, 8), false).map((e) => e.worker)).toEqual(["w6", "w5"]);
+    // Nothing evicted: the same list, so the hook sets no state.
+    expect(holdEnds(held, undefined, range(0, 8), true)).toBe(held);
+  });
+
+  it("read-back past the cap evicts the oldest turns and the ends that followed them", async () => {
+    const all = range(0, 1_100);
+    const ends = [end("w-start", null), ...all.map((t, i) => end(`w${i}`, t.turn_id))];
+    const anchored = (turns: StructuredTurn[], first: boolean) => {
+      const held = new Set(ids(turns));
+      return ends.filter((e) => (e.after_turn === null ? first : held.has(e.after_turn)));
+    };
+    vi.spyOn(api, "structuredHistory").mockImplementation((_k, before, limit = 50) => {
+      const at = all.findIndex((t) => t.turn_id === before);
+      const start = Math.max(0, at - limit);
+      const turns = all.slice(start, at);
+      return Promise.resolve({
+        session_key: "codex-api:s",
+        turns,
+        before: start > 0 ? turns[0].turn_id : null,
+        has_more: start > 0,
+        worker_ends: anchored(turns, start === 0),
+      });
+    });
+    const snap = (from: number, to: number) => {
+      const window = all.slice(from, to);
+      return {
+        ...snapshot(window, `t${from}`),
+        native: { worker_ends: anchored(window, false) },
+      } as StructuredSnapshot;
+    };
+    const { result, up, rerender } = setup(snap(970, 1_020));
+    for (let i = 0; i < 25 && result.current.status !== "end"; i += 1) {
+      await up();
+      await waitFor(() => expect(result.current.status).not.toBe("loading"));
+    }
+    expect(result.current.status).toBe("end");
+    expect(result.current.ends[0].worker).toBe("w-start");
+    // The window slides on 80 turns: read back, 1,050 held, and the oldest 50 give way.
+    rerender({ s: snap(1_050, 1_100) });
+    await waitFor(() => expect(result.current.status).toBe("capped"));
+    expect(ids(above(result.current))[0]).toBe("t50");
+    const workers = result.current.ends.map((e) => e.worker);
+    expect(workers).not.toContain("w-start");
+    expect(workers).not.toContain("w49");
+    expect(workers).toContain("w50");
+  });
 });

@@ -113,22 +113,24 @@ export function mergeHistory(
   return { turns: [...above, ...history, ...window], seam: window[0]?.turn_id };
 }
 
-/** Ends a page brought, kept only where they render: after a turn now held, or (`after_turn`
- *  null) when the page reached the first turn with nothing cut. Merged by worker, the newer copy
- *  winning; the order is the server's. */
+/** The ends to hold now, kept only where they render: after a turn now held, or (`after_turn`
+ *  null) while the conversation's first turn is held. Applies to what a page brought and to what
+ *  was already held, so a cap eviction takes the ends of the turns it evicted. Merged by worker,
+ *  the newer copy winning; the order is the server's. The same list when nothing changed. */
 export function holdEnds(
   held: StructuredWorkerEnd[],
   page: StructuredWorkerEnd[] | undefined,
   turns: Turn[],
-  reachedFirst: boolean,
+  firstHeld: boolean,
 ): StructuredWorkerEnd[] {
   const ids = new Set(turns.map((t) => t.turn_id));
-  const kept = (page ?? []).filter((e) =>
-    e.after_turn === null ? reachedFirst : ids.has(e.after_turn),
-  );
-  if (!kept.length) return held;
+  const renders = (e: StructuredWorkerEnd) =>
+    e.after_turn === null ? firstHeld : ids.has(e.after_turn);
+  const kept = (page ?? []).filter(renders);
   const fresh = new Set(kept.map((e) => e.worker));
-  return [...kept, ...held.filter((e) => !fresh.has(e.worker))];
+  const rest = held.filter((e) => renders(e) && !fresh.has(e.worker));
+  if (!kept.length && rest.length === held.length) return held;
+  return [...kept, ...rest];
 }
 
 /** Every end to render: the held pages' and the snapshot's (whose copy of a worker wins). */
@@ -195,8 +197,8 @@ export function useApiHistory(
     setHeld(next);
   }, []);
   const keepEnds = useCallback(
-    (page: StructuredWorkerEnd[] | undefined, turns: Turn[], reachedFirst: boolean) => {
-      const next = holdEnds(heldEndsRef.current, page, turns, reachedFirst);
+    (page: StructuredWorkerEnd[] | undefined, turns: Turn[], firstHeld: boolean) => {
+      const next = holdEnds(heldEndsRef.current, page, turns, firstHeld);
       if (next === heldEndsRef.current) return;
       heldEndsRef.current = next;
       setHeldEnds(next);
@@ -420,7 +422,8 @@ export function useApiHistory(
         const { held: next, capped } = appendGap(heldRef.current, c.read);
         holdPlace();
         setBoth(next);
-        keepEnds(c.ends, next, false);
+        // Read-back evicts from the top: the first turn, if held, is still held unless it did.
+        keepEnds(c.ends, next, !capped);
         joined.current = boundary;
         if (capped) setState("capped");
       } catch {
