@@ -373,3 +373,43 @@ test("import: an import record answered without its list (a stub, `{}`) is unkno
   expect(within(dialog).getByText("Couldn't check whether this file was imported before.")).toBeInTheDocument();
   expect(within(dialog).getByLabelText("Import Skill a")).not.toBeChecked();
 });
+
+test("import: a reused skill is listed as already here, needs no tick, and satisfies what needs it (#1714 P2)", async () => {
+  const reused: SharePreview = {
+    ...PREVIEW,
+    items: [
+      { ...PREVIEW.items[0], dest: "a", status: "reused" },
+      PREVIEW.items[1],
+      { ...PREVIEW.items[2], uses: [] },
+    ],
+  };
+  vi.mocked(api.sharePreview).mockResolvedValue(reused);
+  mount();
+  fireEvent.click(screen.getByRole("button", { name: "Import…" }));
+  const dialog = await screen.findByTestId("share-import");
+  fireEvent.change(within(dialog).getByTestId("share-file"), { target: { files: [new File(["x"], "kit.battlelab")] } });
+  const row = await within(dialog).findByTestId("share-preview-row-skill:a");
+  expect(row).toHaveAttribute("data-state", "reused");
+  expect(row).toHaveTextContent("Reused");
+  expect(within(row).queryByRole("checkbox")).toBeNull();
+  expect(within(dialog).getByRole("region", { name: "Already here" })).toContainElement(row);
+  expect(within(dialog).getByTestId("share-preview-row-playbook:p")).toHaveAttribute("data-state", "import");
+  expect(screen.getByTestId("share-preview-summary")).toHaveTextContent("2 to import · 1 reused");
+  vi.mocked(api.shareConfirm).mockResolvedValue({
+    token: PREVIEW.token,
+    bundle: PREVIEW.bundle.digest,
+    repreview: null,
+    items: [
+      { key: "skill:a", kind: "skill", id: "a", title: "a", status: "reused", dest: "a", reason: null },
+      { key: "skill:b", kind: "skill", id: "b", title: "b", status: "created", dest: "b", reason: null },
+      { key: "playbook:p", kind: "playbook", id: "p", title: "P", status: "created", dest: "p", reason: null },
+    ],
+  });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Import 2 items" }));
+  await waitFor(() => expect(api.shareConfirm).toHaveBeenCalledWith(PREVIEW.token, ["skill:b", "playbook:p"]));
+  const result = await within(dialog).findByTestId("share-result-row-skill:a");
+  expect(result).toHaveTextContent("Reused");
+  expect(result).toHaveTextContent("a (yours, reused)");
+  expect(within(result).queryByRole("link")).toBeNull();
+  expect(within(dialog).getByRole("status")).toHaveTextContent("2 of the 2 items you chose were imported");
+});

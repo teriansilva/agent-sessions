@@ -432,3 +432,8 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* A reused copy (#1714 P2): nothing to select, shown with a lock in the checkbox column. */
+.reusedMark {
+  color: var(--text-3);
+}

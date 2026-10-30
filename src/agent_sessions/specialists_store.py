@@ -361,9 +361,14 @@ def _new_id(con: sqlite3.Connection, title: str) -> str:
 # ---- API ----------------------------------------------------------------------------------------
 
 
-def create(body: dict, *, now: float | None = None) -> dict:
-    """A new specialist at version 1 from an already-checked body (`specialists.check_draft`)."""
+def create(body: dict, *, now: float | None = None, sid: str | None = None) -> dict:
+    """A new specialist at version 1 from an already-checked body (`specialists.check_draft`).
+
+    ``sid`` asks for exactly that id (a share-bundle import's planned destination, #1714 P2): an
+    id already taken is refused (409), never reused or renamed here."""
     ts = time.time() if now is None else now
+    if sid is not None and not ID_RE.fullmatch(sid):
+        raise StoreError("not a specialist id", status=422)
     with _tx() as con:
         (count,) = con.execute("SELECT COUNT(*) FROM specialists").fetchone()
         if count >= SPECIALISTS_MAX:
@@ -371,7 +376,11 @@ def create(body: dict, *, now: float | None = None) -> dict:
                 f"the pool holds at most {SPECIALISTS_MAX} specialists, archived ones included",
                 status=409,
             )
-        sid = _new_id(con, body["title"])
+        if sid is not None:
+            if con.execute("SELECT 1 FROM specialists WHERE id = ?", (sid,)).fetchone():
+                raise StoreError(f"a specialist {sid} already exists", status=409)
+        else:
+            sid = _new_id(con, body["title"])
         con.execute(
             "INSERT INTO specialists (id, current_version, revision, archived, created_at, "
             "updated_at) VALUES (?, 1, 1, 0, ?, ?)",
@@ -462,6 +471,14 @@ def version(sid: str, n: int) -> dict:
         if r is None:
             raise NotFound("specialist version")
         return _version_row(r)
+
+
+def ids() -> list[str]:
+    """Every specialist id, archived ones included (an id is taken either way)."""
+    if not db_path().exists():
+        return []
+    with _read() as con:
+        return [r["id"] for r in con.execute("SELECT id FROM specialists ORDER BY id")]
 
 
 def list_all() -> list[dict]:

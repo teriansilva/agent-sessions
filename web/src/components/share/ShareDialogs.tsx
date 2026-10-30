@@ -22,7 +22,7 @@ import {
   X,
 } from "lucide-react";
 import { api, ApiError } from "../../lib/api";
-import { playbookPath, SKILLS_PATH } from "../../lib/routes";
+import { playbookPath, SKILLS_PATH, specialistPath } from "../../lib/routes";
 import type {
   ShareCatalog,
   ShareKind,
@@ -46,8 +46,8 @@ import {
 import { sharedImportMemory, unshown, type ImportMemory } from "./shareRules";
 import styles from "./share.module.css";
 
-const KIND_LABEL: Record<string, string> = { skill: "Skill", playbook: "Playbook" };
-const GROUP_LABEL: Record<string, string> = { skill: "Skills", playbook: "Playbooks" };
+const KIND_LABEL: Record<string, string> = { skill: "Skill", playbook: "Playbook", specialist: "Specialist" };
+const GROUP_LABEL: Record<string, string> = { skill: "Skills", playbook: "Playbooks", specialist: "Specialists" };
 
 function errorText(e: unknown): string {
   return e instanceof Error && e.message ? e.message : "Something went wrong.";
@@ -359,6 +359,7 @@ function linkTo(item: { kind: string; dest: string | null }): string | null {
   if (!item.dest) return null;
   if (item.kind === "skill") return `${SKILLS_PATH}/${encodeURIComponent(item.dest)}`;
   if (item.kind === "playbook") return playbookPath(item.dest);
+  if (item.kind === "specialist") return specialistPath(item.dest);
   return null;
 }
 
@@ -423,7 +424,10 @@ function PreviewRow({
 }) {
   const inputId = `share-i-${item.key}`;
   const serverRefused = item.status === "refused";
-  const stamp =
+  const reused = state.state === "reused";
+  const stamp = reused ? (
+    <span className={styles.stamp}>Reused</span>
+  ) :
     state.state === "refused" ? (
       <span className={`${styles.stamp} ${styles.down}`}>Refused</span>
     ) : state.state === "deselected" ? (
@@ -435,16 +439,22 @@ function PreviewRow({
     );
   return (
     <li className={styles.row} data-testid={`share-preview-row-${item.key}`} data-state={state.state}>
-      <label className={styles.check} htmlFor={inputId}>
-        <input
-          id={inputId}
-          type="checkbox"
-          checked={checked && !serverRefused}
-          disabled={disabled || serverRefused}
-          aria-label={`Import ${KIND_LABEL[item.kind] ?? item.kind} ${item.title}`}
-          onChange={onToggle}
-        />
-      </label>
+      {reused ? (
+        <span className={`${styles.check} ${styles.reusedMark}`} aria-hidden>
+          <Lock size={14} />
+        </span>
+      ) : (
+        <label className={styles.check} htmlFor={inputId}>
+          <input
+            id={inputId}
+            type="checkbox"
+            checked={checked && !serverRefused}
+            disabled={disabled || serverRefused}
+            aria-label={`Import ${KIND_LABEL[item.kind] ?? item.kind} ${item.title}`}
+            onChange={onToggle}
+          />
+        </label>
+      )}
       <div className={styles.name}>
         <span className={styles.title}>
           <span className={styles.kind}>{KIND_LABEL[item.kind] ?? item.kind}</span>
@@ -452,7 +462,12 @@ function PreviewRow({
         </span>
         <span className={styles.line}>
           <b>{item.id}</b>
-          {item.dest && item.dest !== item.id ? (
+          {reused ? (
+            <>
+              {" → already here as "}
+              <b>{item.dest}</b>
+            </>
+          ) : item.dest && item.dest !== item.id ? (
             <>
               {" → "}
               <b>{item.dest}</b>
@@ -462,6 +477,12 @@ function PreviewRow({
           ) : null}
           {item.uses.length ? ` · uses ${item.uses.map((u) => u.to).join(", ")}` : ""}
         </span>
+        {reused && (
+          <span className={styles.why} data-testid="share-reused">
+            Your {item.dest} was imported from a file with this same version and hasn't changed
+            since. Nothing is copied: items in this file that need it use your {item.dest}.
+          </span>
+        )}
         {state.state === "refused" && <span className={`${styles.why} ${styles.down}`}>{state.reason}</span>}
         {state.state !== "refused" && item.status === "renamed" && (
           <span className={`${styles.why} ${styles.warn}`}>
@@ -479,7 +500,7 @@ function PreviewRow({
             Already imported from this file as {already}. Ticking it imports a second copy.
           </span>
         )}
-        {!serverRefused && <Files item={item} />}
+        {!serverRefused && !reused && <Files item={item} />}
       </div>
       <div className={styles.state}>{stamp}</div>
     </li>
@@ -488,6 +509,7 @@ function PreviewRow({
 
 const OUTCOME: Record<string, { word: string; tone: string; icon: ReactNode }> = {
   created: { word: "Created", tone: styles.ok, icon: <Check size={16} aria-hidden /> },
+  reused: { word: "Reused", tone: styles.muted, icon: <Check size={16} aria-hidden /> },
   refused: { word: "Refused", tone: styles.down, icon: <Ban size={16} aria-hidden /> },
   failed: { word: "Failed", tone: styles.down, icon: <X size={16} aria-hidden /> },
   skipped: { word: "Skipped", tone: styles.muted, icon: <ArrowRight size={16} aria-hidden /> },
@@ -508,7 +530,11 @@ function ResultRow({ item, onOpen }: { item: ShareResultItem; onOpen: () => void
         </span>
         <span className={styles.line}>
           {item.dest ?? item.id}
-          {item.dest && item.dest !== item.id ? ` (renamed from ${item.id})` : ""}
+          {item.status === "reused"
+            ? " (yours, reused)"
+            : item.dest && item.dest !== item.id
+              ? ` (renamed from ${item.id})`
+              : ""}
         </span>
         {item.reason && <span className={`${styles.why} ${o.tone}`}>{item.reason}</span>}
       </div>
@@ -753,7 +779,8 @@ function ImportDialog({
     const states = previewStates(preview.items, selected, labelled);
     const frozen = phase.frozen;
     const will = preview.items.filter((i) => states.get(i.key)?.state === "import");
-    const wont = preview.items.filter((i) => states.get(i.key)?.state !== "import");
+    const reusedItems = preview.items.filter((i) => states.get(i.key)?.state === "reused");
+    const wont = preview.items.filter((i) => !["import", "reused"].includes(states.get(i.key)?.state ?? ""));
     const renamed = will.filter((i) => i.status === "renamed").length;
     const refused = wont.filter((i) => states.get(i.key)?.state === "refused").length;
     // Files the operator is about to import without having been able to read them here.
@@ -856,10 +883,18 @@ function ImportDialog({
             Every item was refused. The reasons are listed on each item.
           </Banner>
         )}
+        {!!reusedItems.length && (
+          <section aria-label="Already here">
+            <h3 className={styles.group}>
+              Already here <span>// {reusedItems.length} reused, not copied</span>
+            </h3>
+            {rows(reusedItems)}
+          </section>
+        )}
         {!!will.length && (
           <section aria-label="Will import">
             <h3 className={styles.group}>
-              Will import <span>// {will.length} of {preview.items.length} selected</span>
+              Will import <span>// {will.length} of {preview.items.length - reusedItems.length} selected</span>
             </h3>
             {rows(will)}
           </section>
@@ -888,6 +923,7 @@ function ImportDialog({
       <>
         <p className={styles.sum} data-testid="share-preview-summary">
           <b>{will.length} to import</b>
+          {reusedItems.length ? ` · ${reusedItems.length} reused` : ""}
           {renamed ? ` · ${renamed} renamed` : ""}
           {refused ? ` · ${refused} refused` : ""}
           {blind > 0 && !ack ? ` · ${blind} unreviewed file${blind === 1 ? "" : "s"} need${blind === 1 ? "s" : ""} your OK` : ""}{" "}
@@ -929,7 +965,7 @@ function ImportDialog({
     const shown = result.items.filter((i) => i.status !== "not_selected");
     const count = (s: string) => shown.filter((i) => i.status === s).length;
     // What the operator chose and BattleLab attempted: refusals were never going to be created.
-    const chosen = shown.filter((i) => i.status !== "refused").length;
+    const chosen = shown.filter((i) => i.status !== "refused" && i.status !== "reused").length;
     body = (
       <>
         {result.repreview && (
@@ -953,6 +989,7 @@ function ImportDialog({
       <>
         <p className={styles.sum}>
           <b>{count("created")} created</b>
+          {count("reused") ? ` · ${count("reused")} reused` : ""}
           {count("failed") ? ` · ${count("failed")} failed` : ""}
           {count("skipped") ? ` · ${count("skipped")} skipped` : ""}
           {count("refused") ? ` · ${count("refused")} refused` : ""}

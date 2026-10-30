@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { ShareCatalogItem, SharePreviewItem } from "../../types/share";
-import { asCatalog, asImports, asPreview, closure, previewStates } from "./shareRules";
+import { asCatalog, asImports, asPreview, closure, initialSelection, previewStates } from "./shareRules";
 
 const cat = (kind: string, id: string, depends_on: string[] = []): ShareCatalogItem => ({
   kind,
@@ -57,6 +57,19 @@ describe("preview states", () => {
     const s = previewStates([item("skill:a", [], "refused"), item("playbook:p", ["skill:a"])], new Set(["playbook:p"]));
     const p = s.get("playbook:p");
     expect(p && "reason" in p && p.reason).toMatch(/can't be imported/);
+  });
+});
+
+describe("reused copies (#1714 P2)", () => {
+  const items = [item("skill:a", [], "reused"), item("specialist:s", ["skill:a"])];
+  test("a reused skill needs no selection and satisfies its dependents", () => {
+    const s = previewStates(items, new Set(["specialist:s"]));
+    expect(s.get("skill:a")).toEqual({ state: "reused" });
+    expect(s.get("specialist:s")).toEqual({ state: "import" });
+  });
+  test("the starting selection never holds a reused item", () => {
+    const preview = { token: "t", expires_at: "", bundle: {} as never, items };
+    expect([...initialSelection(preview)]).toEqual(["specialist:s"]);
   });
 });
 

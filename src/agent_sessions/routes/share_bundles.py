@@ -173,5 +173,7 @@ def register(app, *, logged_in, csrf_guard) -> None:
         return await _guarded(_import(request))
 
     async def _import(request: Request):
-        value = await _json(request, {"token", "selection"}, {"token", "selection"})
-        return _response(await call(service.confirm, value["token"], value["selection"]))
+        value = await _json(request, {"token", "selection", "settle"}, {"token", "selection"})
+        return _response(
+            await call(service.confirm, value["token"], value["selection"], value.get("settle"))
+        )

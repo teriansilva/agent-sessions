@@ -1,6 +1,6 @@
 /** Share bundles (#1714): the shapes `/api/share/*` answers. */
 
-export type ShareKind = "skill" | "playbook";
+export type ShareKind = "skill" | "playbook" | "specialist";
 
 /** One exportable local item and the items it needs (`"<kind>:<id>"` keys). */
 export interface ShareCatalogItem {
@@ -35,11 +35,34 @@ export interface SharePreviewItem {
   id: string;
   title: string;
   dest: string | null;
-  status: "new" | "renamed" | "refused";
+  /** `reused`: a local copy imported earlier with exactly this content, unchanged since — used
+   *  as it is, never copied again, and needing no selection (#1714 P2). */
+  status: "new" | "renamed" | "refused" | "reused";
   reason: string | null;
   depends_on: string[];
   uses: { from: string; to: string }[];
   files: SharePreviewFile[];
+  /** A specialist's job and what runs it here (#1714 P2). */
+  specialist?: SharePreviewSpecialist;
+}
+
+export interface ShareChoice {
+  engine: string;
+  model: string;
+  effort: string | null;
+}
+
+export interface SharePreviewSpecialist {
+  title: string;
+  summary: string;
+  capacity: number;
+  skills: string[];
+  /** The file's suggestion, never trusted: only `settled` is checked against this install. */
+  suggests: { engine: string | null; model: string | null; effort: string | null };
+  settled: ShareChoice | null;
+  settle_reason: string | null;
+  /** Derived from THIS install's model grades for `settled`, never read from the file. */
+  grade: string | null;
 }
 
 export interface SharePreview {
@@ -60,6 +83,7 @@ export interface SharePreview {
 
 export type ShareOutcome =
   | "created"
+  | "reused"
   | "refused"
   | "failed"
   | "skipped"

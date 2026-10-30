@@ -149,6 +149,28 @@ def _runs_on(engine: object, model: object, effort: object, has_skills: bool) ->
     return engine, chosen or DEFAULT_MODEL, level
 
 
+def runs_on(engine: object, model: object, effort: object, *, has_skills: bool) -> dict:
+    """The canonical ``{engine, model, effort}`` a draft with these choices would store, or
+    `DraftRefused` — exactly `check_draft`'s agent/model/effort check, for a caller that settles
+    the choice before the skills exist here (a share-bundle preview, #1714 P2). Off the loop."""
+    chosen = _runs_on(engine, model, effort, has_skills)
+    return {"engine": chosen[0], "model": chosen[1], "effort": chosen[2]}
+
+
+def runnable_here(*, has_skills: bool) -> bool:
+    """Whether ANY registered agent here could hold a specialist: one that can start and, when it
+    carries skills, has a tool channel. Asked of the manifests; no engine is named."""
+    for prov in engines.all_providers():
+        manifest = getattr(prov, "manifest", None)
+        if manifest is None or manifest.identity.kind != "agent":
+            continue
+        if has_skills and manifest.tools_mcp is None:
+            continue
+        if engines.registry.can_start(prov):
+            return True
+    return False
+
+
 def check_draft(draft: object, *, library: dict[str, str] | None = None) -> dict:
     """The version body a draft becomes, or `DraftRefused`. Off the loop (it may ask a CLI)."""
     if not isinstance(draft, dict):

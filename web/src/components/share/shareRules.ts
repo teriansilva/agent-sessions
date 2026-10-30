@@ -41,6 +41,7 @@ export function closure(
 
 export type PreviewState =
   | { state: "import" }
+  | { state: "reused" }
   | { state: "deselected" }
   | { state: "refused"; reason: string };
 
@@ -59,6 +60,8 @@ export function previewStates(
     if (known) return known;
     let result: PreviewState;
     if (item.status === "refused") result = { state: "refused", reason: item.reason ?? "refused" };
+    // A reused copy is used as it is: nothing to select, and it satisfies its dependents.
+    else if (item.status === "reused") result = { state: "reused" };
     else if (!selected.has(item.key)) result = { state: "deselected" };
     else {
       result = { state: "import" };
@@ -100,7 +103,9 @@ export function initialSelection(
   already: ReadonlyMap<string, string> = new Map(),
 ): Set<string> {
   return new Set(
-    preview.items.filter((i) => i.status !== "refused" && !already.has(i.key)).map((i) => i.key),
+    preview.items
+      .filter((i) => i.status !== "refused" && i.status !== "reused" && !already.has(i.key))
+      .map((i) => i.key),
   );
 }
 

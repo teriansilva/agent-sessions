@@ -106,7 +106,9 @@ def export(items: object, source: object = None) -> tuple[str, bytes]:
             or not isinstance(raw["id"], str)
             or not kinds.id_ok(raw["kind"], raw["id"])
         ):
-            raise ShareError("each item is {kind, id} of a skill or playbook", status=422)
+            raise ShareError(
+                "each item is {kind, id} of a skill, playbook or specialist", status=422
+            )
         if (raw["kind"], raw["id"]) not in wanted:
             wanted.append((raw["kind"], raw["id"]))
     # A skill the library can't read travels as a reference, never as a broken item.
@@ -121,12 +123,31 @@ def export(items: object, source: object = None) -> tuple[str, bytes]:
             data = kinds.export(kind, item_id)
         except kinds.ItemRefused as exc:
             raise ShareError(f"{kinds.LABELS[kind]} {item_id}: {exc}", status=422) from None
-        deps = [d for d in data["depends_on"] if d.split(":", 1)[1] in held]
+        if kind == "specialist":
+            # A specialist's pins are requirements, never references: one the library can't
+            # read refuses its export (and its bytes are proved below).
+            gone = next((s for s in data["pins"] if s not in held), None)
+            if gone is not None:
+                why = "unreadable" if gone in kinds.ids("skill") else "missing"
+                reason = kinds._pin_reason(gone, data["version"], why)
+                raise ShareError(f"Specialist {item_id}: {reason}", status=422)
+            deps = list(data["depends_on"])
+        else:
+            deps = [d for d in data["depends_on"] if d.split(":", 1)[1] in held]
         data["depends_on"] = deps
         read[(kind, item_id)] = data
         queue.extend(tuple(d.split(":", 1)) for d in deps)
         if len(read) > fmt.MAX_ITEMS:
             raise ShareError(f"a bundle holds at most {fmt.MAX_ITEMS} items", status=422)
+    for (_kind, item_id), data in read.items():
+        # The pinned revision is proved against the very bytes going into the file: the library
+        # keeps only each skill's current tree, so anything else is not the pinned version.
+        for sid, pinned in (data.get("pins") or {}).items():
+            if fmt.tree_digest(read[("skill", sid)]["files"]) != pinned:
+                raise ShareError(
+                    f"Specialist {item_id}: {kinds._pin_reason(sid, data['version'], 'changed')}",
+                    status=422,
+                )
     order = sorted(read, key=lambda k: (kinds.LEVEL[k[0]], list(read).index(k)))
     now = _now()
     try:
@@ -176,7 +197,7 @@ def _order(bundle: fmt.Bundle) -> list[fmt.Item]:
 def _fresh_id(kind: str, item_id: str, taken: set[str]) -> str | None:
     if item_id not in taken:
         return item_id
-    limit = 48 if kind == "playbook" else 64
+    limit = 48 if kind in ("playbook", "specialist") else 64  # the stores' own ID lengths
     for n in range(2, MAX_RENAME + 1):
         suffix = f"-{n}"
         candidate = item_id[: limit - len(suffix)].rstrip("-_") + suffix
@@ -185,11 +206,91 @@ def _fresh_id(kind: str, item_id: str, taken: set[str]) -> str | None:
     return None
 
 
-def _bindings() -> dict:
-    return {kind: kinds.ids(kind) for kind in kinds.KINDS}
+def _bindings(bundle: fmt.Bundle | None = None) -> dict:
+    """Every id and revision the stores hold now. The specialist pool is bound only for a file
+    that carries specialists: a skills-and-playbooks import never depends on that store."""
+    carried = {item.kind for item in bundle.items} if bundle is not None else set(kinds.KINDS)
+    return {
+        kind: kinds.ids(kind)
+        for kind in kinds.KINDS
+        if kind != "specialist" or "specialist" in carried
+    }
 
 
-def _plan(bundle: fmt.Bundle, local: dict) -> list[dict]:
+def _reusable_skills() -> dict[str, list[str]]:
+    """`{content digest: [local skill ids]}` of skills this install imported from a file and that
+    still hold exactly that content: provenance (the import record), never a name match. An import
+    record that can't be read reuses nothing (each skill is then copied, as in P1)."""
+    try:
+        known = imports()
+        current = kinds.ids("skill")
+    except (state.StateError, OSError, store.StoreError, gallery_contract.GalleryError, ValueError):
+        return {}
+    out: dict[str, list[str]] = {}
+    for key, mark in known.items():
+        kind, _, sid = key.partition(":")
+        revision = mark.get("revision")
+        if kind == "skill" and revision is not None and current.get(sid) == revision:
+            out.setdefault(revision, []).append(sid)
+    return {digest: sorted(found) for digest, found in out.items()}
+
+
+def _settle_view(files: dict[str, bytes], checked: dict | None = None) -> dict:
+    """What the preview shows of an incoming specialist: the job, the file's suggestion, and that
+    suggestion checked against this install exactly as a save is checked (`settled`, canonical,
+    or the reason it doesn't hold here). The grade is derived here, never read from the file. A
+    specialist no agent here could ever run is `ItemRefused`."""
+    from .. import model_grades, specialists
+
+    doc = kinds.specialist_doc(files)
+    has_skills = bool(doc["skills"])
+    hint = doc["suggests"]
+    settled, reason = None, None
+    checked = {} if checked is None else checked
+    if hint["engine"] is None:
+        reason = "The file suggests no agent. Choose the agent it runs on."
+    else:
+        model = hint["model"] if hint["model"] is not None else specialists.DEFAULT_MODEL
+        # One check per distinct suggestion per preview: a file can't make a preview ask an
+        # agent's CLI for its models once per specialist.
+        key = (hint["engine"], model, hint["effort"], has_skills)
+        if key not in checked:
+            try:
+                checked[key] = specialists.runs_on(
+                    hint["engine"], model, hint["effort"], has_skills=has_skills
+                )
+            except specialists.DraftRefused as exc:
+                checked[key] = exc
+        if isinstance(checked[key], specialists.DraftRefused):
+            said = " · ".join(v for v in (hint["engine"], hint["model"], hint["effort"]) if v)
+            reason = f"Suggested {said}, but {checked[key].detail}. Choose what it runs on here."
+        else:
+            settled = dict(checked[key])
+    if settled is None and not specialists.runnable_here(has_skills=has_skills):
+        raise kinds.ItemRefused(
+            "none of the agents on this install can load skills, and it pins skills"
+            if has_skills
+            else "no agent on this install can start a session"
+        )
+    grade = (
+        model_grades.grade_of(settled["engine"], settled["model"]) if settled is not None else None
+    )
+    return {
+        "title": doc["title"],
+        "summary": doc["summary"],
+        "capacity": doc["capacity"],
+        "skills": doc["skills"],
+        "suggests": hint,
+        "settled": settled,
+        "settle_reason": reason,
+        "grade": grade,
+    }
+
+
+def _plan(bundle: fmt.Bundle, local: dict, reusable: dict | None = None) -> list[dict]:
+    reusable = reusable or {}
+    reused: set[str] = set()
+    checked: dict = {}
     by_key = {item.key: item for item in bundle.items}
     plan: dict[str, dict] = {}
     taken = {kind: set(local.get(kind, {})) for kind in kinds.KINDS}
@@ -218,6 +319,12 @@ def _plan(bundle: fmt.Bundle, local: dict) -> list[dict]:
         plan[item.key] = entry
         try:
             requires = kinds.validate(item.kind, item.id, item.files)
+            if item.kind in kinds.CARRIES_ALL:
+                absent = next((s for s in requires if f"skill:{s}" not in by_key), None)
+                if absent is not None:
+                    raise kinds.ItemRefused(
+                        f"it pins skill {absent}, which this file doesn't carry"
+                    )
             expected = sorted(f"skill:{s}" for s in requires if f"skill:{s}" in by_key)
             if sorted(item.depends_on) != expected:
                 raise kinds.ItemRefused("its declared dependencies don't match its content")
@@ -227,6 +334,17 @@ def _plan(bundle: fmt.Bundle, local: dict) -> list[dict]:
                         f"needs {_label(by_key[dep].kind)} {by_key[dep].id}, "
                         "which can't be imported"
                     )
+            found = reusable.get(fmt.tree_digest(item.files)) if item.kind == "skill" else None
+            # Each local copy is reused by ONE bundled skill: two distinct skills in the file with
+            # the same bytes keep two identities (the second becomes a copy of its own).
+            found = [sid for sid in found or [] if sid not in reused]
+            if found:
+                # A copy this install imported from a file with exactly this content, unchanged
+                # since: reused, never copied again (and never a name match).
+                dest = item.id if item.id in found else found[0]
+                reused.add(dest)
+                entry.update(status="reused", dest=dest, digest=fmt.tree_digest(item.files))
+                continue
             dest = _fresh_id(item.kind, item.id, taken[item.kind])
             if dest is None:
                 raise kinds.ItemRefused("no free ID is left for a renamed copy")
@@ -234,8 +352,11 @@ def _plan(bundle: fmt.Bundle, local: dict) -> list[dict]:
                 by_key[d].id: plan[d]["dest"] for d in item.depends_on if by_key[d].kind == "skill"
             }
             final = kinds.rewrite(item.kind, item.id, dest, item.files, renames)
+            if item.kind == "specialist":
+                entry["specialist"] = _settle_view(item.files, checked)
         except kinds.ItemRefused as exc:
             entry.update(status="refused", reason=str(exc))
+            entry.pop("specialist", None)
             continue
         taken[item.kind].add(dest)
         entry.update(
@@ -382,12 +503,15 @@ def _receipt(token: str, record: dict, journal: dict) -> dict:
     pending = [k for k, v in statuses.items() if v["status"] == "pending"]
     stale = "expired" if pending else None
     _mark_stale(statuses, pending, stale)
-    return {
+    receipt = {
         "format": 1,
         "selection": journal["selection"],
         "keys": sorted(e["key"] for e in record["items"]),
         "result": _result(token, record, journal, statuses, stale),
     }
+    if journal.get("settle"):
+        receipt["settle"] = journal["settle"]
+    return receipt
 
 
 def _strings(value: object) -> bool:
@@ -401,6 +525,24 @@ def _number(value: object) -> bool:
         return math.isfinite(value)
     except OverflowError:  # an int beyond float range
         return False
+
+
+def _choice_ok(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("engine"), str)
+        and isinstance(value.get("model"), str)
+        and (value.get("effort") is None or isinstance(value.get("effort"), str))
+    )
+
+
+def _specialist_view_ok(view: object) -> bool:
+    """A recorded specialist view has what confirm reads: its skills and a settled choice."""
+    return (
+        isinstance(view, dict)
+        and _strings(view.get("skills"))
+        and (view.get("settled") is None or _choice_ok(view.get("settled")))
+    )
 
 
 def _check_shapes(record: object, journal: object, token: str) -> None:
@@ -424,6 +566,7 @@ def _check_shapes(record: object, journal: object, token: str) -> None:
             isinstance(i, dict)
             and all(isinstance(i.get(f), str) for f in item_fields)
             and _strings(i.get("depends_on"))
+            and ("specialist" not in i or _specialist_view_ok(i["specialist"]))
             for i in record["items"]
         )
     )
@@ -439,6 +582,8 @@ def _check_shapes(record: object, journal: object, token: str) -> None:
                 isinstance(e, dict) and isinstance(e.get("dest"), str)
                 for e in journal["entries"].values()
             )
+            and isinstance(journal.get("settle", {}), dict)
+            and all(_choice_ok(c) for c in journal.get("settle", {}).values())
         )
     if not ok:
         raise state.StateError("share state is damaged; it was kept untouched")
@@ -531,14 +676,14 @@ def _same_plan(row: dict, digest: str, bindings: dict, items: list[dict]) -> boo
 
 def preview(data: bytes) -> dict:
     bundle = fmt.read(data)
-    local = _bindings()
-    items = _plan(bundle, local)
+    local = _bindings(bundle)
+    items = _plan(bundle, local, _reusable_skills())
     bindings = {kind: sorted([k, v] for k, v in ids.items()) for kind, ids in local.items()}
     try:
         head = _preview_locked(data, bundle, items, bindings)
     except fmt.Refused:
         raise
-    except (KeyError, IndexError, TypeError, ValueError, ArithmeticError) as exc:
+    except (KeyError, IndexError, TypeError, ValueError, ArithmeticError, AttributeError) as exc:
         # Damaged share state met while recording or reusing a preview: a 503, never a 500.
         log.warning("share preview: damaged state (%s)", type(exc).__name__, exc_info=True)
         raise state.StateError("share state is damaged; preview the file again later") from None
@@ -609,10 +754,13 @@ def _reusable(rows: list[dict], digest: str, bindings: dict, items: list[dict]) 
 
 
 def _public(entry: dict) -> dict:
-    return {
+    out = {
         k: entry[k]
         for k in ("key", "kind", "id", "title", "dest", "status", "reason", "depends_on", "uses")
     }
+    if "specialist" in entry:
+        out["specialist"] = entry["specialist"]
+    return out
 
 
 # ---- confirm --------------------------------------------------------------------------------
@@ -626,6 +774,8 @@ def _fresh(record: dict, journal: dict) -> str | None:
     for key, entry in journal["entries"].items():
         own.setdefault(key.split(":", 1)[0], set()).add(entry["dest"])
     for kind in kinds.KINDS:
+        if kind == "specialist" and kind not in record["bindings"]:
+            continue  # this preview carried no specialist, so the pool never shaped its plan
         bound = {k: v for k, v in record["bindings"].get(kind, [])}
         current = {k: v for k, v in kinds.ids(kind).items() if k not in own.get(kind, set())}
         if current != bound:
@@ -703,7 +853,10 @@ def _status(record: dict, journal: dict) -> dict[str, dict]:
     for key in _topo(record):
         entry = plan[key]
         recorded = journal["entries"].get(key, {})
-        if recorded.get("outcome") == "created":
+        if entry["status"] == "reused":
+            # Nothing to import: the local copy it names is used as it is, selected or not.
+            out[key] = {"status": "reused", "dest": entry["dest"], "reason": None}
+        elif recorded.get("outcome") == "created":
             out[key] = {"status": "created", "dest": recorded["dest"], "reason": None}
         elif recorded.get("outcome") == "failed" and not recorded.get("retry"):
             out[key] = {"status": "failed", "dest": recorded["dest"], "reason": recorded["reason"]}
@@ -902,11 +1055,15 @@ def imports() -> dict:
 
 def _apply(record: dict, journal: dict, statuses: dict, bundle: fmt.Bundle) -> None:
     plan = {e["key"]: e for e in record["items"]}
+    reuse: dict = {}
     for key in _topo(record):
         if statuses[key]["status"] != "pending":
             continue
         entry = plan[key]
-        blocked = next((d for d in entry["depends_on"] if statuses[d]["status"] != "created"), None)
+        blocked = next(
+            (d for d in entry["depends_on"] if statuses[d]["status"] not in ("created", "reused")),
+            None,
+        )
         if blocked is not None:
             dep = plan[blocked]
             word = "failed" if statuses[blocked]["status"] == "failed" else "was not imported"
@@ -916,7 +1073,7 @@ def _apply(record: dict, journal: dict, statuses: dict, bundle: fmt.Bundle) -> N
                 "reason": f"Not attempted: it {_needs(dep, 'which ' + word)}.",
             }
             continue
-        moved = _moved_dependency(journal, plan, entry)
+        moved = _moved_dependency(journal, plan, entry, reuse)
         if moved is not None:
             statuses[key] = {
                 "status": "stale",
@@ -938,12 +1095,30 @@ def _apply(record: dict, journal: dict, statuses: dict, bundle: fmt.Bundle) -> N
         except kinds.ItemRefused as exc:
             statuses[key] = {"status": "failed", "dest": entry["dest"], "reason": str(exc)}
             continue
-        digest = fmt.tree_digest(final)
-        if digest != entry["digest"]:
+        if fmt.tree_digest(final) != entry["digest"]:
             statuses[key] = {
                 "status": "failed",
                 "dest": entry["dest"],
                 "reason": "The planned content changed; preview the file again.",
+            }
+            continue
+        try:
+            payload, digest = kinds.prepare(
+                item.kind,
+                final,
+                choice=_choice(journal, entry),
+                pins=_pins(journal, plan, statuses, entry),
+            )
+        except kinds.ItemRefused as exc:
+            # Refused by its own validator now (an agent or model gone since the preview):
+            # nothing was written, and nothing is journaled, so a later confirm tries again.
+            statuses[key] = {
+                "status": "failed",
+                "dest": entry["dest"],
+                "reason": (
+                    f"Nothing was written: {exc}. Preview the file again to choose what it "
+                    "runs on."
+                ),
             }
             continue
         try:
@@ -976,13 +1151,37 @@ def _apply(record: dict, journal: dict, statuses: dict, bundle: fmt.Bundle) -> N
         journal["entries"][key] = {"dest": entry["dest"], "digest": digest, "intent_at": _now()}
         state.write_json(f"journal-{journal['token']}.json", journal)
         try:
-            revision = kinds.publish(item.kind, entry["dest"], final)
+            revision = kinds.publish(item.kind, entry["dest"], payload)
         except (OSError, store.StoreError, gallery_contract.GalleryError, ValueError) as exc:
             statuses[key] = _after_failure(journal, entry, key, digest, exc)
             continue
         _record_outcome(journal, key, outcome="created", revision=revision)
         _remember(entry, entry["dest"], revision, journal["bundle"])
         statuses[key] = {"status": "created", "dest": entry["dest"], "reason": None}
+
+
+def _choice(journal: dict, entry: dict) -> dict | None:
+    """The agent, model and effort a specialist is created with: the operator's choice recorded
+    with this confirm, else the file's suggestion as the preview settled it."""
+    chosen = (journal.get("settle") or {}).get(entry["key"])
+    if chosen is not None:
+        return chosen
+    return (entry.get("specialist") or {}).get("settled")
+
+
+def _pins(journal: dict, plan: dict, statuses: dict, entry: dict) -> dict[str, str]:
+    """`{local skill id: revision}` of the copies a dependent uses: the ones this import created
+    (their journaled revision) or reused (the content the preview matched)."""
+    out: dict[str, str] = {}
+    for dep in entry["depends_on"]:
+        if plan[dep]["kind"] != "skill":
+            continue
+        if statuses[dep]["status"] == "reused":
+            out[plan[dep]["dest"]] = plan[dep]["digest"]
+        else:
+            recorded = journal["entries"].get(dep, {})
+            out[recorded.get("dest", "")] = recorded.get("revision") or ""
+    return out
 
 
 def _failure_text(exc: Exception) -> str:
@@ -993,15 +1192,24 @@ def _failure_text(exc: Exception) -> str:
     return getattr(exc, "detail", None) or str(exc) or type(exc).__name__
 
 
-def _moved_dependency(journal: dict, plan: dict, entry: dict) -> str | None:
+def _moved_dependency(journal: dict, plan: dict, entry: dict, reuse: dict) -> str | None:
     """The destination of a created dependency that no longer holds its journaled revision.
 
     A retry applies a dependent only against the exact copies this import made: a copy deleted,
     edited or replaced since then (even by another skill now at that ID) blocks the dependent."""
     for dep in entry["depends_on"]:
-        recorded = journal["entries"].get(dep, {})
-        if recorded.get("outcome") != "created":
-            continue
+        if plan[dep]["status"] == "reused":
+            # A reused copy must still be the one the preview matched: the import record still
+            # names it as imported with this content, and it still holds exactly that content.
+            if "skills" not in reuse:
+                reuse["skills"] = _reusable_skills()  # read once per confirm
+            if plan[dep]["dest"] not in reuse["skills"].get(plan[dep]["digest"], []):
+                return plan[dep]["dest"]
+            recorded = {"dest": plan[dep]["dest"], "revision": plan[dep]["digest"]}
+        else:
+            recorded = journal["entries"].get(dep, {})
+            if recorded.get("outcome") != "created":
+                continue
         try:
             current = kinds.at(plan[dep]["kind"], recorded["dest"])
         except (OSError, store.StoreError, gallery_contract.GalleryError, ValueError):
@@ -1040,8 +1248,80 @@ def _after_failure(journal: dict, entry: dict, key: str, digest: str, exc: Excep
     return {"status": "failed", "dest": entry["dest"], "reason": reason}
 
 
-def confirm(token: object, selection: object) -> dict:
+def _settle_request(value: object) -> dict:
+    """The operator's choices, by item key: `{"specialist:<id>": {engine, model, effort}}`."""
+    if value is None:
+        return {}
+    ok = isinstance(value, dict) and len(value) <= fmt.MAX_ITEMS
+    for key, choice in (value or {}).items() if ok else ():
+        ok = (
+            isinstance(key, str)
+            and key.startswith("specialist:")
+            and isinstance(choice, dict)
+            and set(choice) == {"engine", "model", "effort"}
+            and all(
+                isinstance(choice[f], str) and 0 < len(choice[f]) <= kinds.SUGGEST_MAX
+                for f in ("engine", "model")
+            )
+            and (
+                choice["effort"] is None
+                or (isinstance(choice["effort"], str) and 0 < len(choice["effort"]) <= 64)
+            )
+        )
+        if not ok:
+            break
+    if not ok:
+        raise ShareError(
+            'settle is {"specialist:<id>": {engine, model, effort}} for this preview\'s '
+            "specialists",
+            status=422,
+        )
+    return {k: dict(v) for k, v in value.items()}
+
+
+def _check_settle(record: dict, selection: list[str], settle: dict) -> None:
+    """Before anything is written: every selected specialist this confirm may create has a choice
+    (the operator's, or the suggestion the preview settled) that holds here now, checked the way a
+    save is. Otherwise 422 `settle`, naming each item's reason; nothing is journaled or created."""
+    from .. import specialists
+
+    plan = {e["key"]: e for e in record["items"]}
+    unknown = sorted(k for k in settle if plan.get(k, {}).get("kind") != "specialist")
+    if unknown:
+        raise ShareError(f"{fmt.shown(unknown[0])} is not a specialist in this preview", status=422)
+    problems: dict[str, str] = {}
+    statuses = _status(record, {"selection": sorted(selection), "entries": {}})
+    for key in selection:
+        entry = plan[key]
+        if entry["kind"] != "specialist" or statuses[key]["status"] != "pending":
+            continue  # refused here or for a dependency: it creates nothing, so needs no choice
+        view = entry.get("specialist") or {}
+        choice = settle.get(key) or view.get("settled")
+        if choice is None:
+            problems[key] = "Choose the agent it runs on."
+            continue
+        try:
+            specialists.runs_on(
+                choice.get("engine"),
+                choice.get("model"),
+                choice.get("effort"),
+                has_skills=bool(view.get("skills")),
+            )
+        except specialists.DraftRefused as exc:
+            problems[key] = f"{exc.detail[:1].upper()}{exc.detail[1:]}."
+    if problems:
+        raise ShareError(
+            "Nothing was imported: what a specialist runs on doesn't work here. Change it, then "
+            "import again.",
+            status=422,
+            reason="settle",
+            items=problems,
+        )
+
+
+def confirm(token: object, selection: object, settle: object = None) -> dict:
     token = _token(token)
+    settle = _settle_request(settle)
     if (
         not isinstance(selection, list)
         or not all(isinstance(k, str) for k in selection)
@@ -1053,8 +1333,15 @@ def confirm(token: object, selection: object) -> dict:
         raise ShareError("choose at least one item to import", status=422)
     with state.lock():
         try:
-            return _confirm_locked(token, selection)
-        except (KeyError, IndexError, TypeError, ValueError, ArithmeticError) as exc:
+            return _confirm_locked(token, selection, settle)
+        except (
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+            ArithmeticError,
+            AttributeError,
+        ) as exc:
             # Damaged share state (the app's own private files): a 503, kept untouched. Nothing
             # can be duplicated by trying again (NOREPLACE + the digest checks), so the storage
             # answer's "confirming again never makes a second copy" stays true.
@@ -1062,7 +1349,8 @@ def confirm(token: object, selection: object) -> dict:
             raise state.StateError("share state is damaged; it was kept untouched") from None
 
 
-def _confirm_locked(token: str, selection: list[str]) -> dict:
+def _confirm_locked(token: str, selection: list[str], settle: dict | None = None) -> dict:
+    settle = settle or {}
     record = state.read_json(f"preview-{token}.json")
     if record is None:
         # Unreadable (mode, link count) is a 503 like an unreadable record: it may be read
@@ -1072,6 +1360,7 @@ def _confirm_locked(token: str, selection: list[str]) -> dict:
         if receipt is not None and not (
             _strings(receipt.get("selection"))
             and _strings(receipt.get("keys"))
+            and isinstance(receipt.get("settle", {}), dict)
             and isinstance(receipt.get("result"), dict)
             and isinstance(receipt["result"].get("items"), list)
         ):
@@ -1081,7 +1370,7 @@ def _confirm_locked(token: str, selection: list[str]) -> dict:
             unknown = sorted(set(selection) - set(receipt["keys"]))
             if unknown:
                 raise ShareError(f"{fmt.shown(unknown[0])} is not in this preview", status=422)
-            if receipt.get("selection") != sorted(selection):
+            if receipt.get("selection") != sorted(selection) or receipt.get("settle", {}) != settle:
                 raise ShareError(
                     "This preview was already confirmed with a different selection. "
                     "Preview the file again to import other items.",
@@ -1098,7 +1387,9 @@ def _confirm_locked(token: str, selection: list[str]) -> dict:
     unknown = sorted(set(selection) - keys)
     if unknown:
         raise ShareError(f"{fmt.shown(unknown[0])} is not in this preview", status=422)
-    if journal is not None and journal["selection"] != sorted(selection):
+    if journal is not None and (
+        journal["selection"] != sorted(selection) or journal.get("settle", {}) != settle
+    ):
         raise ShareError(
             "This preview was already confirmed with a different selection. "
             "Preview the file again to import other items.",
@@ -1111,6 +1402,7 @@ def _confirm_locked(token: str, selection: list[str]) -> dict:
             why = "evicted"  # checked before any journal exists: nothing pins this preview
         if why:
             raise ShareError(_STALE[why], status=409, reason=why)
+        _check_settle(record, selection, settle)
         journal = {
             "format": 1,
             "token": token,
@@ -1119,6 +1411,8 @@ def _confirm_locked(token: str, selection: list[str]) -> dict:
             "created_at": _now(),
             "entries": {},
         }
+        if settle:
+            journal["settle"] = settle
         state.write_json(f"journal-{token}.json", journal)
     plan = {e["key"]: e for e in record["items"]}
     _reconcile(journal, plan, expired=_now() > record["expires_at"])
