@@ -59,7 +59,11 @@
 @media (min-width: 801px) {
   .app.collapsed,
   .app.noSidebar {
-    grid-template-columns: 1fr;
+    /* minmax(0, ...), never a bare 1fr: an item in a lone 1fr track sets that track's minimum to
+     * its own min-content, so a full footer grew the whole shell past the viewport and pushed the
+     * right of every bar off screen. With the list open the bars span two tracks, one flexible,
+     * and the same content has no automatic minimum, which is why only this form overflowed. */
+    grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
       "topbar"
       "callbar"
@@ -564,6 +568,8 @@
   align-items: center;
   gap: 12px;
   min-width: 0;
+  /* Clips when the bar is full, so the host and version never run under the update chip. */
+  overflow: hidden;
   /* Host and version sit at the right end; the live telemetry (#1531) leads the bar. */
   margin-left: auto;
 }
