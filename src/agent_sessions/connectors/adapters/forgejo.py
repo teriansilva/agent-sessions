@@ -281,7 +281,7 @@ async def read_ci(bound: Bound, o: str, r: str, sha: str) -> dict:
         worst = min(latest.values(), key=_severity)
         state = worst if worst in STATUS_SEVERITY else "pending"
     else:
-        state = ""  # no statuses at all: Forgejo reports this as pending with zero contexts
+        state = ""  # no statuses at all: Forgejo answers an empty state with zero contexts
     if capped and state not in ("error", "failure"):
         state = "incomplete"
     ordered = sorted(latest.items(), key=lambda kv: _severity(kv[1]))  # stable: worst first
