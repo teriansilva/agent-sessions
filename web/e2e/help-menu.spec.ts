@@ -238,6 +238,8 @@ test("the setup wizard's Welcome and Launch steps link the docs in a new tab and
   await wizard.getByRole("button", { name: /Get started/ }).click();
   await wizard.getByRole("button", { name: /Skip — continue/ }).click();
   await wizard.getByRole("button", { name: /^Next/ }).click();
+  await expect(wizard.getByRole("heading", { name: "Sized for this machine." })).toBeVisible();
+  await wizard.getByRole("button", { name: /^Next/ }).click();
   await wizard.getByRole("button", { name: /I'll do this later/ }).click();
   await wizard.getByRole("button", { name: /^Next/ }).click();
   await expect(wizard.getByRole("heading", { name: "The lay of the land" })).toBeVisible();

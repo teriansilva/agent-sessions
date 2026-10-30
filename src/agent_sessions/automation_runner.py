@@ -49,6 +49,7 @@ from . import (
     notifications,
     prefs,
     project_dirs,
+    session_capacity,
     session_input,
     template_send,
     template_vars,
@@ -365,6 +366,12 @@ async def _start_mission(run: dict, config: dict, pins: dict, *, registry) -> tu
             return "refused", f"{drift} — it needs your approval again"
         if not await asyncio.to_thread(scope_ok, cwd):
             return "refused", "the project's folder is outside your project folders"
+        # Before the mission and its planner call exist: a run refused at the session limit must
+        # not leave a model call and another planned mission behind on every schedule (#1819).
+        try:
+            await asyncio.to_thread(session_capacity.check)
+        except session_capacity.SessionLimitReached as e:
+            return "refused", str(e)
         try:
             text, inputs = await asyncio.to_thread(_render_plain, config, pins)
         except RunRefused as e:

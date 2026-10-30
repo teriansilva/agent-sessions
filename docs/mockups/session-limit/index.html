@@ -1,0 +1,130 @@
+<!doctype html>
+<html data-theme="dark"><meta charset="utf-8"><title>Session limit — mockup</title>
+<style>
+@import url('../../../web/src/tokens.css');
+/* Headless Chromium on the mockup host only has Liberation; the app's own stacks apply in the build. */
+:root { --mono: "Liberation Mono", monospace; --sans: "Liberation Sans", sans-serif; }
+* { box-sizing: border-box; font-family: inherit; }
+body { margin: 0; padding: 24px; background: var(--bg-0); color: var(--text-1); font: 14px/1.55 var(--sans); }
+h1 { font: 700 18px var(--mono); margin: 0 0 20px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
+.mobile .grid { grid-template-columns: 1fr; width: 375px; }
+.tag { font: 700 11px var(--mono); letter-spacing: .1em; color: var(--text-3); margin: 0 0 8px; }
+.card { background: var(--bg-1); border: 1px solid var(--line-strong); }
+.bar { display: flex; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--line); font: 700 12px var(--mono); }
+.bar span:last-child { color: var(--text-3); font-weight: 400; }
+.body { padding: 18px 16px; }
+h2 { font: 700 15px var(--mono); margin: 0 0 6px; }
+h3 { font: 700 13px var(--mono); text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; }
+p { margin: 0 0 12px; color: var(--text-2); font-size: 13px; }
+.spec { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 14px 0; }
+.spec div { background: var(--bg-2); border: 1px solid var(--line); padding: 10px 12px; min-width: 0; }
+.spec b { display: block; font: 700 17px var(--mono); }
+.spec small { color: var(--text-3); font: 11px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+.spec .sel { border-color: var(--accent); }
+.spec .sel b { color: var(--accent-text); }
+label { display: block; font-size: 13px; margin: 14px 0; }
+input { display: block; width: 100%; margin: 8px 0; min-height: 44px; padding: 10px 12px; background: var(--bg-2); color: var(--text-1); border: 1px solid var(--line-strong); font: 15px var(--mono); }
+small.h { display: block; color: var(--text-2); font-size: 12px; line-height: 1.6; }
+.foot { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+.grow { flex: 1; }
+button { min-height: 44px; padding: 10px 14px; background: transparent; color: var(--text-1); border: 1px solid var(--line-strong); font: 700 12px var(--mono); text-transform: uppercase; letter-spacing: .05em; }
+.pri { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.count { font: 700 26px var(--mono); }
+.count em { font-style: normal; color: var(--text-3); font-size: 15px; }
+.row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); min-width: 0; }
+.row div { flex: 1; min-width: 0; }
+.row b { display: block; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row span { color: var(--text-3); font: 11px var(--mono); }
+.row button { min-height: 44px; flex-shrink: 0; }
+.row .held { color: var(--text-3); font: 11px var(--mono); text-align: right; flex: 0 0 auto; }
+.note { border: 1px solid var(--line-strong); padding: 10px 12px; font-size: 12px; color: var(--text-2); margin-top: 12px; }
+.pane { background: var(--term-bg); border: 1px solid var(--line-strong); min-height: 230px; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.pane > div { max-width: 340px; text-align: center; }
+.mission { display: flex; gap: 10px; padding: 10px 12px; border: 1px solid var(--line-strong); margin-top: 10px; font-size: 13px; color: var(--text-2); }
+.mission i { flex: 0 0 8px; height: 8px; margin-top: 6px; background: var(--status-degraded); border-radius: 50%; }
+.scroll { max-height: 188px; overflow-y: auto; border-bottom: 1px solid var(--line); }
+.scroll .row:first-child { border-top: 1px solid var(--line); }
+.more { font: 11px var(--mono); color: var(--text-3); padding: 8px 0 0; }
+</style>
+<h1>Session limit · what the operator sees</h1>
+<div class="grid">
+<section>
+<p class="tag">A · FIRST-TIME SETUP — NEW STEP "YOUR SYSTEM"</p>
+<div class="card"><div class="bar"><span>BATTLELAB / SETUP</span><span>4 of 9</span></div><div class="body">
+<h2>Sized for this machine.</h2>
+<p>We read this host and picked how many agent sessions can run at once.</p>
+<div class="spec"><div><b>8</b><small>CPUs</small></div><div><b>32 GiB</b><small>Memory</small></div><div class="sel"><b>28</b><small>Sessions</small></div></div>
+<p><strong>Memory sets this limit:</strong> 1 GiB per session, after keeping 3 GiB for the system. CPUs alone would allow 48, at 6 per CPU.</p>
+<p>When 28 are running, new sessions and missions are refused until one is archived or ends, or you raise the limit. Subagents inside a session don't count. Nothing running is ever stopped.</p>
+<label>Maximum running sessions<input type="number" value="28"><small class="h">Recommended for this system: 28. Range: 1–256. You can change this any time in Settings → Resources.</small></label>
+<div class="foot"><button>Back</button><span class="grow"></span><button class="pri">Next</button></div>
+</div></div>
+</section>
+<section>
+<p class="tag">B · SETTINGS → RESOURCES — NEW FIRST CARD</p>
+<div class="card"><div class="bar"><span>SESSION LIMIT</span><span>31 RUNNING</span></div><div class="body">
+<p>How many agent sessions can run at once. Subagents inside a session don't count.</p>
+<div class="spec"><div><b>8</b><small>CPUs</small></div><div><b>32 GiB</b><small>Memory</small></div><div class="sel"><b>28</b><small>Recommended</small></div></div>
+<label>Maximum running sessions<input type="number" value="40"><small class="h">Recommended for this system: 28 (memory sets it: 1 GiB per session). Range: 1–256.</small></label>
+<div class="note">40 is above the recommendation for this system. Sessions may slow each other down.</div>
+<div class="note">31 sessions are running, above the recommended 28. Nothing is stopped.</div>
+<div class="foot"><button class="pri">Save limits</button><button>Restore recommended</button></div>
+</div></div>
+</section>
+<section>
+<p class="tag">C · BLOCKED — OPENS WHEREVER A START WAS REFUSED</p>
+<div class="card"><div class="bar"><span>SESSION LIMIT REACHED</span><span>✕</span></div><div class="body">
+<div class="count">28 <em>of 28 running</em></div>
+<p>Nothing was started. Archive a session to free a slot; its history is kept and you can restore it later. Or raise the limit.</p>
+<div class="scroll"><div class="row"><div><b>Fix the deploy watcher race</b><span>claude · agent-sessions · idle 3 d</span></div><button>Archive</button></div>
+<div class="row"><div><b>Landing page copy pass</b><span>codex · landing · idle 19 h</span></div><button>Archive</button></div>
+<div class="row"><div><b>Refactor the relay handshake with a long title that truncates</b><span>opencode · relay · idle 4 h</span></div><button>Archive</button></div>
+<div class="row"><div><b>Mission: migrate billing</b><span>claude · billing · working</span></div><span class="held">Held by mission</span></div>
+</div><p class="more">Showing all 28 · least recently active first · the list scrolls, these buttons stay</p><div class="foot"><button>Raise the limit</button><span class="grow"></span><button class="pri" disabled style="opacity:.45">Try again</button></div>
+</div></div>
+</section>
+<section>
+<p class="tag">D · WHERE THE REFUSAL SHOWS</p>
+<div class="pane"><div><h3>Session limit reached</h3><p>28 of 28 sessions are running. Archive one or raise the limit to open this session.</p><button class="pri">Free a slot</button></div></div>
+<div class="mission"><i></i><span><strong>Mission not started.</strong> Session limit reached: 28 of 28 running. Archive a session or raise the limit, then start it again. <u>Free a slot</u></span></div>
+<div class="mission"><i></i><span><strong>Automation "Nightly audit" refused.</strong> Session limit reached: 28 of 28 running. Nothing was started.</span></div>
+</section>
+<section>
+<p class="tag">C2 · A SLOT IS FREE — TRY AGAIN ENABLES</p>
+<div class="card"><div class="bar"><span>SLOT FREE</span><span>✕</span></div><div class="body">
+<div class="count">27 <em>of 28 running</em></div>
+<p>"Fix the deploy watcher race" is archived and its history kept. You can start this now.</p>
+<div class="foot"><button>Raise the limit</button><span class="grow"></span><button class="pri">Try again</button></div>
+</div></div>
+</section>
+<section>
+<p class="tag">C3 · NOTHING CAN BE ARCHIVED — EVERY SESSION IS A MISSION'S</p>
+<div class="card"><div class="bar"><span>SESSION LIMIT REACHED</span><span>✕</span></div><div class="body">
+<div class="count">2 <em>of 2 running</em></div>
+<p>Both running sessions belong to a mission, so they can't be archived from here. Finish or stop the mission, or raise the limit.</p>
+<div class="row"><div><b>Mission: migrate billing</b><span>claude · billing · working</span></div><span class="held">Held by mission</span></div>
+<div class="row"><div><b>Mission: migrate billing · sub-agent</b><span>codex · billing · working</span></div><span class="held">Held by mission</span></div>
+<div class="foot"><button class="pri">Raise the limit</button></div>
+</div></div>
+</section>
+<section>
+<p class="tag">C4 · THE LIST COULD NOT BE READ, OR SOME SESSIONS DID NOT ANSWER</p>
+<div class="card"><div class="bar"><span>SESSION LIMIT REACHED</span><span>✕</span></div><div class="body">
+<div class="count">28 <em>of 28 running</em></div>
+<p>Couldn't read the running sessions. Nothing was started. Try again, or raise the limit.</p>
+<p class="more">Or, when the list loads with gaps: "3 more didn't answer and count as running."</p>
+<div class="foot"><button>Raise the limit</button><span class="grow"></span><button class="pri">Reload</button></div>
+</div></div>
+</section>
+<section>
+<p class="tag">E · ALREADY OVER THE LIMIT AFTER AN UPDATE — THE FIRST REFUSAL SAYS WHY</p>
+<div class="card"><div class="bar"><span>SESSION LIMIT REACHED</span><span>✕</span></div><div class="body">
+<div class="count">31 <em>of 28 running</em></div>
+<p>This limit was set from what this machine is recommended. Nothing was stopped. Raise it if this machine can carry more, or archive 4 sessions to start another.</p>
+<div class="scroll"><div class="row"><div><b>Fix the deploy watcher race</b><span>claude · agent-sessions · idle 3 d</span></div><button>Archive</button></div><div class="row"><div><b>Landing page copy pass</b><span>codex · landing · idle 19 h</span></div><button>Archive</button></div></div>
+<div class="foot"><button class="pri">Raise the limit</button><span class="grow"></span><button disabled style="opacity:.45">Try again</button></div>
+</div></div>
+</section>
+</div>
+<script>const q=new URLSearchParams(location.search);document.documentElement.dataset.theme=q.get('theme')||'dark';if(q.get('mobile'))document.body.classList.add('mobile');</script></html>

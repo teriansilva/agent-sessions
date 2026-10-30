@@ -25,6 +25,7 @@
  *  to make it.
  */
 import { useState } from "react";
+import { openSessionLimit, SESSION_LIMIT_REFUSAL } from "../../lib/sessionLimit";
 
 import { ApiError, api } from "../../lib/api";
 
@@ -91,6 +92,7 @@ export function MissionSpawn({
         out.outcome != null ? out.outcome === "started" : out.state === "running";
       if (!started) {
         onNote(out.reason || `The sub-agent ended as ${out.state}.`);
+        if (out.refusal === SESSION_LIMIT_REFUSAL) openSessionLimit();
       } else {
         // Only a real start clears the draft: a refusal that eats what you typed teaches you not
         // to type.

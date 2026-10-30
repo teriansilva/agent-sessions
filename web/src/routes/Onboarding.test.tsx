@@ -1,4 +1,5 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
+import type { ResourceSettings } from "../types/resources";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -10,6 +11,8 @@ import { Onboarding } from "./Onboarding";
 
 vi.mock("../lib/api", () => ({
   api: {
+    resources: vi.fn(() => Promise.reject(new Error("not this test's business"))),
+    setResources: vi.fn(),
     engines: vi.fn(),
     folders: vi.fn(),
     fsDirs: vi.fn(),
@@ -56,6 +59,7 @@ async function gotoLaunchStep() {
   await userEvent.click(screen.getByRole("button", { name: /get started/i })); // → security
   await userEvent.click(screen.getByRole("button", { name: /^continue$/i })); // → agents
   await screen.findByText("claude");
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i })); // → your system
   await userEvent.click(screen.getByRole("button", { name: /^next$/i })); // → ai
   await userEvent.click(screen.getByRole("button", { name: /^next$/i })); // → project
 }
@@ -74,6 +78,7 @@ async function gotoAiStep() {
   await userEvent.click(screen.getByRole("button", { name: /get started/i })); // → security
   await userEvent.click(screen.getByRole("button", { name: /^continue$/i })); // → agents
   await screen.findByText("claude");
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i })); // → your system
   await userEvent.click(screen.getByRole("button", { name: /^next$/i })); // → ai
 }
 
@@ -1050,4 +1055,103 @@ test("an endpoint removed while the contact step is open moves on, and the store
   expect(api.setPrefs).not.toHaveBeenCalledWith(
     expect.objectContaining({ hq_contact: expect.anything() }),
   );
+});
+
+// ---- "Your system" (#1819) --------------------------------------------------------------------
+
+const systemSettings = (over: Partial<ResourceSettings> = {}) =>
+  ({
+    values: { max_sessions: 28 },
+    recommended: { max_sessions: 28 },
+    bounds: { max_sessions: { min: 1, max: 256 } },
+    sources: { max_sessions: "recommended" },
+    capacity: {
+      memory_bytes: 32 * 1024 ** 3,
+      cpus: 8,
+      reserved_bytes: 3.2 * 1024 ** 3,
+      by_memory: 28,
+      by_cpu: 48,
+      limited_by: "memory",
+      recommended: 28,
+    },
+    running: 0,
+    ...over,
+  }) as unknown as ResourceSettings;
+
+async function gotoSystemStep(settings = systemSettings()) {
+  vi.mocked(api.resources).mockResolvedValue({ settings });
+  renderWizard();
+  await userEvent.click(screen.getByRole("button", { name: /get started/i }));
+  await userEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+  await screen.findByText("claude");
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  await screen.findByTestId("setup-system-reason");
+}
+
+test("setup explains the limit it picked: the machine, the number and the reason", async () => {
+  await gotoSystemStep();
+  expect(screen.getByTestId("session-capacity-facts")).toHaveTextContent("8");
+  expect(screen.getByTestId("session-capacity-facts")).toHaveTextContent("32 GiB");
+  expect(screen.getByTestId("session-capacity-facts")).toHaveTextContent("28");
+  expect(screen.getByTestId("setup-system-reason")).toHaveTextContent(
+    "Memory sets this limit: 1 GiB per session, after keeping 3 GiB for the system. CPUs alone would allow 48",
+  );
+  expect(screen.getByText(/When 28 are running/)).toHaveTextContent("Subagents");
+});
+
+test("Next without an edit saves nothing: the limit keeps following the recommendation", async () => {
+  await gotoSystemStep();
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  await screen.findByText("Set up your AI");
+  expect(api.setResources).not.toHaveBeenCalled();
+});
+
+test("an edited limit is saved, and an out-of-range one can't leave the step", async () => {
+  vi.mocked(api.setResources).mockResolvedValue({ settings: systemSettings() });
+  await gotoSystemStep();
+  const input = screen.getByTestId("setup-system-limit");
+  await userEvent.clear(input);
+  await userEvent.type(input, "999");
+  expect(screen.getByRole("button", { name: /^next$/i })).toBeDisabled();
+  await userEvent.clear(input);
+  await userEvent.type(input, "12");
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  await screen.findByText("Set up your AI");
+  expect(api.setResources).toHaveBeenCalledWith({ max_sessions: 12 });
+});
+
+test("a re-run shows the saved limit next to the recommendation", async () => {
+  await gotoSystemStep(
+    systemSettings({
+      values: { max_sessions: 60 } as ResourceSettings["values"],
+      sources: { max_sessions: "settings" } as ResourceSettings["sources"],
+    }),
+  );
+  expect(screen.getByTestId("setup-system-limit")).toHaveValue(60);
+  expect(screen.getByText(/You set 60\. Recommended for this system: 28\./)).toBeInTheDocument();
+});
+
+test("Next waits for the explanation, and a read that never answers doesn't trap setup", async () => {
+  vi.mocked(api.resources).mockReturnValue(new Promise(() => {}));
+  renderWizard();
+  await userEvent.click(screen.getByRole("button", { name: /get started/i }));
+  await userEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+  await screen.findByText("claude");
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  expect(screen.getByText("Reading this system…")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^next$/i })).toBeDisabled();
+  await screen.findByRole("alert", undefined, { timeout: 12_000 });
+  expect(screen.getByRole("button", { name: /^next$/i })).toBeEnabled();
+}, 20_000);
+
+test("an unreadable answer never traps setup", async () => {
+  vi.mocked(api.resources).mockRejectedValue(new Error("no"));
+  renderWizard();
+  await userEvent.click(screen.getByRole("button", { name: /get started/i }));
+  await userEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+  await screen.findByText("claude");
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  await screen.findByRole("alert");
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  await screen.findByText("Set up your AI");
 });

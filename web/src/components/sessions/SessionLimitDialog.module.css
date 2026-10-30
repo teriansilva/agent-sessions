@@ -1,0 +1,88 @@
+/* The limit dialog (#1819). The list scrolls and the actions stay outside it, so they are reachable
+ * on a phone with every session listed. Tokens only. */
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  min-height: 0;
+}
+.count {
+  margin: 0;
+  font: 700 var(--fs-readout-sm) var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.count em {
+  font-style: normal;
+  font-size: var(--fs-body);
+  color: var(--text-muted);
+}
+.copy,
+.more {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-row);
+  line-height: 1.6;
+}
+.more {
+  font-size: var(--fs-label);
+}
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  max-height: min(40dvh, 360px);
+  min-height: 0;
+  border-block: 1px solid var(--line);
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  min-width: 0;
+}
+.row + .row {
+  border-top: 1px solid var(--line);
+}
+.what {
+  flex: 1;
+  min-width: 0;
+}
+.what b,
+.what span {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.what b {
+  font-size: var(--fs-row);
+}
+.what span,
+.held {
+  color: var(--text-muted);
+  font: var(--fs-label) var(--font-mono);
+}
+.held {
+  flex-shrink: 0;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.grow {
+  flex: 1;
+}
+.primary {
+  composes: primary from "../ui/actionButton.module.css";
+  text-decoration: none;
+}
+.secondary {
+  composes: ghost from "../ui/actionButton.module.css";
+  text-decoration: none;
+  flex-shrink: 0;
+}

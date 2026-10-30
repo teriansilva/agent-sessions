@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { openSessionLimit } from "../../lib/sessionLimit";
 import { Link } from "react-router-dom";
 import type { RosterReload } from "../../app/reloadRoster";
 import { NEW_SESSION_PATH, SESSIONS_PATH } from "../../lib/routes";
@@ -113,6 +114,34 @@ export function StaleDefaultPanel({ overlay = false, reason }: { overlay?: boole
       >
         ← Back to New session
       </Link>
+    </div>
+  );
+  return overlay ? <div className={styles.overlay}>{body}</div> : body;
+}
+
+/** A launch refused because the session limit is reached (4429, #1819). Nothing was started, and
+ *  the way out is the limit dialog, which retries this connection once there is a slot. */
+export function SessionLimitPanel({
+  overlay = false,
+  reason,
+  onRetry,
+}: {
+  overlay?: boolean;
+  reason: string;
+  onRetry: () => void;
+}) {
+  const body = (
+    <div className={styles.panel} role="status" data-session-opening="session-limit">
+      <p className={styles.tag}>SESSION VIEW // SESSION LIMIT REACHED</p>
+      <p>{reason}</p>
+      <button
+        type="button"
+        className={styles.back}
+        data-testid="session-limit-free"
+        onClick={() => openSessionLimit(onRetry)}
+      >
+        Free a slot
+      </button>
     </div>
   );
   return overlay ? <div className={styles.overlay}>{body}</div> : body;

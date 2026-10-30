@@ -17,6 +17,7 @@
  *  session and it received the brief; anything less proved says so, and nothing is retried.
  */
 import { Eye, FolderOpen, Play, Send } from "lucide-react";
+import { openSessionLimit } from "../../lib/sessionLimit";
 import { type ReactNode, useCallback, useId, useRef, useState } from "react";
 
 import type {
@@ -378,6 +379,15 @@ export function SessionCard({
                   The project was being changed just as this started, so nothing started. Start
                   it again.
                 </span>
+              </div>
+            ) : null}
+            {p.notice === "session_limit" ? (
+              <div className={c.note} role="status" data-testid="ask-session-notice">
+                <span>The session limit is reached, so nothing started. </span>
+                <button type="button" onClick={() => openSessionLimit()}>
+                  Free a slot
+                </button>
+                <span> and start it again.</span>
               </div>
             ) : null}
             {p.notice === "default_changed" ? (

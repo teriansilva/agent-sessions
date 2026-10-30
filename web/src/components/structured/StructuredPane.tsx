@@ -1,4 +1,5 @@
 import { useApiLogProps } from "../../theme/apiLookStore";
+import { isSessionLimit, openSessionLimit } from "../../lib/sessionLimit";
 import {
   ArrowDown,
   ArrowLeftRight,
@@ -2006,6 +2007,9 @@ export function StructuredPane({
         confirmHistory(history); // the conversation has it: `apply` already dropped the entry
         return;
       }
+      // A send to an idled session starts its worker (#1819): at the limit it is refused, the
+      // message stays in the outbox, and the way out opens. It is a definite refusal (below).
+      if (isSessionLimit(e)) openSessionLimit();
       setOutbox((list) =>
         updateEntry(list, id, (x) =>
           definite(e)
@@ -2511,6 +2515,7 @@ export function StructuredPane({
       setStartOutcome(null);
     } catch (e) {
       // A definite refusal shows its reason; no answer may still have reached BattleLab (#1505).
+      if (isSessionLimit(e)) openSessionLimit();
       setStartOutcome(
         e instanceof ApiError && e.status >= 400 && e.status < 500
           ? { key, phase: "refused", reason: detail(e, "refused") }

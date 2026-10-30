@@ -2208,3 +2208,176 @@ async def test_a_reviewed_api_session_without_a_recap_gets_one_and_no_work_is_as
     before = len(calls)
     assert await ai_review_loop.sweep(_NoTerminals()) == ([], 0)
     assert len(calls) == before
+
+
+def _session_limit_of(monkeypatch, limit, others=frozenset()):
+    """The limit, with the real walk of the API records plus `others` as terminal sessions."""
+    from agent_sessions import ptybridge, resource_limits
+
+    monkeypatch.setattr(resource_limits, "max_sessions", lambda: limit)
+    monkeypatch.setattr(
+        ptybridge, "master_census", lambda: ([tuple(k.split(":", 1)) for k in others], 0)
+    )
+
+
+@pytest.mark.parametrize("source", ["codex", "claude"])
+@pytest.mark.anyio
+async def test_at_the_session_limit_a_create_starts_nothing_and_leaves_nothing_behind(
+    host, project, monkeypatch, source
+):
+    """#1819: refused before ownership, a specialist slot or a worker exists."""
+    _session_limit_of(monkeypatch, 1, {"codex:someone-else"})
+    launched = len(host.launches)
+    with pytest.raises(runtime.StructuredError) as refused:
+        await runtime.create_session(ENGINES[source], str(project), operation_id=ident())
+    assert refused.value.status == 429
+    assert "Session limit reached: 1 of 1 running" in refused.value.detail
+    assert len(host.launches) == launched
+    # No record, so no dead row in the session list (the `ChatStoreKind` scan reads them).
+    assert not any(native_state.root().glob("*.json"))
+    # Nothing was left pending: the same creation goes through once there is a slot.
+    _session_limit_of(monkeypatch, 1)
+    created = await runtime.create_session(ENGINES[source], str(project), operation_id=ident())
+    assert created["session_key"]
+    assert len(host.launches) == launched + 1
+
+
+@pytest.mark.parametrize("source", ["codex", "claude"])
+@pytest.mark.anyio
+async def test_a_send_to_an_idled_session_is_gated_like_any_start_and_works_below_the_limit(
+    host, project, monkeypatch, source
+):
+    """#1819: `_relaunch_sync` calls `_launch_locked` directly, past the create path's gate."""
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 0.5)
+    engine = ENGINES[source]
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="one")
+    snap, _ = await settle(key, first)
+    worker = snap["native"]["worker"]
+    for _ in range(200):
+        if native_state.read_lifecycle(worker).get("phase") == "exited":
+            break
+        await asyncio.sleep(0.05)
+    assert native_state.read_lifecycle(worker)["phase"] == "exited"
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 60.0)
+
+    # Full: the send is refused, starts nothing, and the session is still there to retry.
+    launched = len(host.launches)
+    _session_limit_of(monkeypatch, 1, {"codex:someone-else"})
+    refused_id = ident()
+    with pytest.raises(runtime.StructuredError) as refused:
+        await runtime.submit_turn(key, operation_id=refused_id, text="two")
+    assert refused.value.status == 429
+    assert len(host.launches) == launched
+    assert (await runtime.snapshot(key))["native"]["worker"] is None
+
+    # A slot frees: the same session takes a message, in a new worker.
+    _session_limit_of(monkeypatch, 1)
+    again = ident()
+    await runtime.submit_turn(key, operation_id=again, text="three")
+    _, turn = await settle(key, again)
+    assert turn["reply"] == "echo:three"
+    assert len(host.launches) == launched + 1
+
+
+@pytest.mark.anyio
+async def test_a_running_api_worker_counts_toward_the_limit_and_one_that_exited_does_not(
+    host, project, monkeypatch
+):
+    from agent_sessions import session_capacity
+
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 0.5)
+    _session_limit_of(monkeypatch, 5)
+    created = await runtime.create_session(ENGINES["codex"], str(project), operation_id=ident())
+    key = created["session_key"]
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="one")
+    snap, _ = await settle(key, first)
+    assert key in native_runtime.running_session_keys()
+    assert session_capacity.count() == 1
+    worker = snap["native"]["worker"]
+    for _ in range(200):
+        if native_state.read_lifecycle(worker).get("phase") == "exited":
+            break
+        await asyncio.sleep(0.05)
+    assert key not in native_runtime.running_session_keys()
+    assert session_capacity.count() == 0
+
+
+@pytest.mark.anyio
+async def test_a_corrupt_api_record_holds_no_slot(host, project, monkeypatch):
+    (native_state.root()).mkdir(parents=True, exist_ok=True)
+    (native_state.root() / f"{ident()}.json").write_text("{nope")
+    assert native_runtime.running_session_keys() == set()
+
+
+@pytest.mark.anyio
+async def test_a_send_after_a_permission_change_is_a_start_like_any_other(
+    host, project, monkeypatch
+):
+    """#1819, Hermes. Enabling Skip permissions stops the worker and launches nothing: the next
+    message births the successor, whenever it comes. Carrying the change's operation id on that
+    send doesn't make it the same running process."""
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 0.5)
+    engine = ENGINES["codex"]
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="one")
+    snap, _ = await settle(key, first)
+    worker = snap["native"]["worker"]
+    for _ in range(200):
+        if native_state.read_lifecycle(worker).get("phase") == "exited":
+            break
+        await asyncio.sleep(0.05)
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 60.0)
+    session_id = key.split(":", 1)[1]
+    # `exited` is written just before the process is gone, and only gone frees its successor.
+    for _ in range(200):
+        if native_runtime.classify(session_id, worker) != "live":
+            break
+        await asyncio.sleep(0.05)
+    operation = ident()
+    record = native_state.read_session(session_id)
+    record["permission_change"] = {"operation_id": operation, "state": "enabled", "actor": "op"}
+    native_state.write_session(session_id, record)
+    launched = len(host.launches)
+
+    _session_limit_of(monkeypatch, 1, {"codex:someone-else"})
+    with pytest.raises(native_runtime.NativeError) as refused:
+        native_runtime._relaunch_sync(engine, session_id, operation)
+    assert refused.value.status == 429
+    assert len(host.launches) == launched
+
+    _session_limit_of(monkeypatch, 1)
+    assert native_runtime._relaunch_sync(engine, session_id, operation)
+    assert len(host.launches) == launched + 1
+
+
+@pytest.mark.anyio
+async def test_a_create_holds_its_slot_from_before_its_record_through_its_launch(
+    host, project, monkeypatch
+):
+    """#1819, Hermes. Between a check and a later admission, a competing launch could take the last
+    slot and the create would answer 429 with its record already written: a dead row."""
+    from agent_sessions import chat_store, session_capacity
+
+    _session_limit_of(monkeypatch, 1)
+    real_create = chat_store.create
+    competitor = []
+
+    def create(*a, **k):
+        # Mid-create, with the record written and nothing launched: the last slot is taken.
+        try:
+            session_capacity.admit("codex:competing").release()
+            competitor.append("admitted")
+        except session_capacity.SessionLimitReached:
+            competitor.append("refused")
+        return real_create(*a, **k)
+
+    monkeypatch.setattr(chat_store, "create", create)
+    launched = len(host.launches)
+    created = await runtime.create_session(ENGINES["codex"], str(project), operation_id=ident())
+    assert created["session_key"]
+    assert competitor == ["refused"]
+    assert len(host.launches) == launched + 1

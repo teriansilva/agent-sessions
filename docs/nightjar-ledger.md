@@ -91,6 +91,7 @@ the same list.
 | `components/pulse/Orchestrator.module.css` | css | 8 | done | mission:decisions | a decision card deploys in (fade + 6 px rise; 120 ms fade in Reduced); option rows tint their edge on hover |
 | `components/sessions/AdoptToMissionModal.module.css` | css | 3 | done | popup:adopt | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/settings/AgentEndpointCard.module.css` | css | 11 | todo |  |  |
+| `components/sessions/SessionLimitDialog.module.css` | css | 3 | done | popup:session-limit | none: a list and two plates; the shared dialog owns the deploy-in |
 | `components/settings/ResourceLimits.module.css` | css | 11 | done | route:settings-resources | none: fields light their edge on focus |
 | `components/shares/Shares.module.css` | css | 11 | done | route:settings-sharing route:settings-sharing-revoke-all | none: a live link's LED is steady |
 | `components/shell/HelpMenu.module.css` | css | 4 | done | popup:operator-menu | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
@@ -176,6 +177,7 @@ the same list.
 | `components/pulse/MissionTitle.tsx` | popup | 3 | done | popup:mission-title | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/pulse/NotificationBell.tsx` | popup | 4 | done | popup:bell | deploy-in, drawer slide-in, row arrival flash |
 | `components/pulse/ObjectiveDirectionDialog.tsx` | popup | 3 | done | popup:objective-direction | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
+| `components/sessions/SessionLimitDialog.tsx` | popup | 3 | done | popup:session-limit | deploy-in from the shared dialog, scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/sessions/AdoptToMissionModal.tsx` | popup | 3 | done | popup:adopt | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/shares/SharePubliclyModal.tsx` | popup | 3 | done | popup:share-publicly | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/sidebar/MoveToProjectModal.tsx` | popup | 3 | done | popup:move-to-project | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |

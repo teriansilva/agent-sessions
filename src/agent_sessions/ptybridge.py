@@ -256,20 +256,37 @@ def list_sessions_checked() -> tuple[list[tuple[str, str]], bool]:
     :func:`list_sessions` folds into "not running" — right for routing, wrong for a count that
     claims to know how many agents run. The sessions that DID answer ALIVE are still returned.
     """
+    found, unknown, listed = _census()
+    return found, listed and not unknown
+
+
+def master_census() -> tuple[list[tuple[str, str]], int]:
+    """``(alive, unknown)``: the masters that answered, and how many sockets could not be asked.
+
+    For a limit (#1819): a socket that could not be asked may be a running agent, so it is a number
+    the caller adds, where :func:`list_sessions_checked` only says that something was unclear.
+    Raises OSError when the runtime directory itself can't be listed."""
+    found, unknown, listed = _census()
+    if not listed:
+        raise OSError("the runtime directory could not be listed")
+    return found, unknown
+
+
+def _census() -> tuple[list[tuple[str, str]], int, bool]:
     out: list[tuple[str, str]] = []
     try:
         entries = list(runtime_dir().iterdir())
     except FileNotFoundError:
-        return out, True  # no runtime dir means no sockets: a COMPLETE "nothing is running"
+        return out, 0, True  # no runtime dir means no sockets: a COMPLETE "nothing is running"
     except OSError:
-        return out, False
-    complete = True
+        return out, 0, False
+    unknown = 0
     for p in entries:
         if p.suffix != ".sock" or is_broker_socket(p.name) or not p.is_socket():
             continue
         verdict = probe_master(p)
         if verdict is UNKNOWN:
-            complete = False
+            unknown += 1
             continue
         if verdict is not ALIVE:
             continue
@@ -277,4 +294,4 @@ def list_sessions_checked() -> tuple[list[tuple[str, str]], bool]:
         engine, sep, sid = stem.partition("-")
         if sep and engine and sid:
             out.append((engine, sid))
-    return out, complete
+    return out, unknown, True

@@ -767,7 +767,7 @@ SESSION_PROPOSAL_STATES = frozenset(
 )
 #: Proposals one conversation may hold — the most its turns can make.
 MAX_SESSION_PROPOSALS = MAX_TURNS * 3
-NOTICES = frozenset({"", "default_changed", "busy"})
+NOTICES = frozenset({"", "default_changed", "busy", "session_limit"})
 _ENGINE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 PATH_MAX = 4_096

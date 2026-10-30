@@ -63,6 +63,7 @@ from .. import (
     scanner,
     scopedspawn,
     secrets_broker,
+    session_capacity,
     session_stream,
     sessionlock,
     sessions,
@@ -503,6 +504,16 @@ def register(
             if lock is not None:
                 lock.release()
             return await reject(4500)
+        # The session limit (#1819). LAUNCH-only, so an attach to a running session is never
+        # refused. The code is terminal for the client: 4409/4502 would retry for ever.
+        capacity_slot = None
+        if action == sessions.LAUNCH:
+            try:
+                capacity_slot = await asyncio.to_thread(session_capacity.admit, phys_key)
+            except session_capacity.SessionLimitReached as e:
+                if lock is not None:
+                    lock.release()
+                return await reject(session_capacity.CLOSE_CODE, str(e))
         # Set once we are actually about to run a fresh master (past every reject) so the finally
         # can record whether that launch exited instantly (backstop bookkeeping, #631).
         launch_started_at: float | None = None
@@ -1113,6 +1124,9 @@ def register(
                 with contextlib.suppress(Exception):
                     await registry.on_detach(prov.engine_id, phys_native, viewer_id=ws)
         finally:
+            if capacity_slot is not None:
+                # A master that came up counts by itself; until now the two were one, by key.
+                capacity_slot.release()
             # A launch whose agent never printed (rejected, failed spawn, client gone) still
             # logs its line once, here; after a first output this is a no-op.
             if timings is not None:

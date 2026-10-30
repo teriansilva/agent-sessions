@@ -371,6 +371,34 @@ export const SWEEP = [
   { id: "popup:share-publicly", path: SAPI, ...head("Share this session publicly"), expectCss: "[data-testid='share-publicly']" },
   { id: "popup:adopt", path: S6, ...head("Adopt this session into a mission"), expectCss: "[data-testid='adopt-dialog']" },
   {
+    // #1819: the limit dialog, full. The list scrolls and the plates stay in reach.
+    id: "popup:session-limit",
+    path: "/settings/resources",
+    api: {
+      "/api/system": SB.SYSTEM,
+      "/api/system/resources": SB.RESOURCES,
+      "/api/sessions/capacity": {
+        limit: 28,
+        recommended: 28,
+        source: "recommended",
+        readable: true,
+        running: 28,
+        others: 0,
+        sessions: Array.from({ length: 12 }, (_, n) => ({
+          id: `claude:7c1e6a00-5b2d-4c8e-9f31-0a6d2e8b40${10 + n}`,
+          title: `Running session ${n + 1}`,
+          engine: "claude",
+          project: "agent-sessions",
+          last_mtime: 1_790_000_000 + n,
+          working: false,
+          mission: null,
+        })),
+      },
+    },
+    open: [{ testId: "session-limit-see-running" }],
+    expectCss: "[data-testid='session-limit-dialog']",
+  },
+  {
     id: "popup:toast",
     path: S1,
     grant: ["clipboard-read", "clipboard-write"],

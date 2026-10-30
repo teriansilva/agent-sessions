@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import threading
 import time
 from pathlib import Path
@@ -31,9 +32,11 @@ from .. import (
     project_dirs,
     projects,
     ptybridge,
+    resource_limits,
     review,
     runtime_cleanup,
     scanner,
+    session_capacity,
     shares,
     transcript,
     transcript_owner,
@@ -52,6 +55,8 @@ _WORKING_WINDOW_S = 10.0
 # a viewer being attached or the agent talking — probed once per TTL for the whole host rather
 # than per row, since the 15 s sidebar poll and a keystroke burst would otherwise re-probe every
 # socket on each request.
+log = logging.getLogger("agent_sessions.routes.sessions")
+
 _RUNNING_TTL_S = 5.0
 _running_lock = threading.Lock()
 _running_cache: tuple[float, frozenset[str], bool] | None = None
@@ -543,6 +548,57 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         """The dashboard's live and recent sessions (#1123) — see :func:`_dashboard_sync`.
         Read-only, bounded, scoped like the list, off the event loop (#678)."""
         return JSONResponse(await asyncio.to_thread(_dashboard_sync, live_limit, recent_limit))
+
+    def _session_capacity_sync() -> dict:
+        """The limit, the count and every running session the operator can see (#1819).
+
+        Least recently active first: the likeliest to archive. A socket that didn't answer, or a
+        session outside the list's scope, counts as running and has no row: `others` says how many.
+        """
+        limit = resource_limits.settings()
+        out = {
+            "limit": limit["values"]["max_sessions"],
+            "recommended": limit["recommended"]["max_sessions"],
+            "source": limit["sources"]["max_sessions"],
+        }
+        try:
+            keys, unknown = session_capacity.running()
+        except OSError:
+            log.warning("session limit: the running sessions could not be read", exc_info=True)
+            return out | {"readable": False, "running": None, "others": 0, "sessions": []}
+        scoped, _memberships, _pinned, aliases, _ok = _scoped_rows(archived=False, snapshot=None)
+        stems = {session_capacity.stem(k) for k in keys}
+        rows = sorted(
+            (
+                r
+                for r in scoped
+                if session_capacity.stem(engines.physical_key(r["id"], aliases)) in stems
+            ),
+            key=lambda r: r["last_mtime"],
+        )
+        running = len(keys) + unknown
+        return out | {
+            "readable": True,
+            "running": running,
+            "others": max(0, running - len(rows)),
+            "sessions": [
+                {
+                    "id": r["id"],
+                    "title": r["title"],
+                    "engine": r["engine"],
+                    "project": r["project"].get("name") or r["project"].get("label") or r["cwd"],
+                    "last_mtime": r["last_mtime"],
+                    "working": bool(r.get("working")),
+                    "mission": r.get("mission"),
+                }
+                for r in rows
+            ],
+        }
+
+    # Before `/api/sessions/{sid}`, which would otherwise take "capacity" for a session id.
+    @app.get("/api/sessions/capacity")
+    async def session_capacity_route(_user: str = Depends(logged_in)) -> JSONResponse:
+        return JSONResponse(await asyncio.to_thread(_session_capacity_sync))
 
     @app.get("/api/sessions")
     async def list_sessions(

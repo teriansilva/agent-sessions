@@ -52,7 +52,7 @@ import {
   useSessionsStore,
 } from "../../app/sessionsStore";
 import { AdoptToMissionModal } from "../sessions/AdoptToMissionModal";
-import { CLOSE_NOT_FOUND } from "../../lib/termCloseCodes";
+import { CLOSE_NOT_FOUND, CLOSE_SESSION_LIMIT } from "../../lib/termCloseCodes";
 import {
   TermSocket,
   type TermGateHolder,
@@ -78,7 +78,8 @@ import { HandoffModal } from "./HandoffModal";
 import { HeadActions, type HeadAction } from "./HeadActions";
 import { HeadFacts } from "./HeadFacts";
 import { SessionRecapModal } from "./SessionRecapModal";
-import { NotFoundPanel, OPENING_GIVE_UP_MS, OpeningPanel, StaleDefaultPanel } from "./SessionOpening";
+import { NotFoundPanel, OPENING_GIVE_UP_MS, OpeningPanel, SessionLimitPanel,
+  StaleDefaultPanel } from "./SessionOpening";
 import { LOOKUP_FAILED_TEXT, termCover } from "./termCover";
 import styles from "./Terminal.module.css";
 import { missionLink } from "../../lib/missionLink";
@@ -1362,6 +1363,9 @@ export function Terminal({
           }
         },
         onStatus: (s) => {
+          // Refused at the session limit (#1819): the socket opened but nothing launched, so a
+          // retry must still ask for the launch. Without its new=1 it is a resume of nothing: 4404.
+          if (s.kind === "rejected" && s.code === CLOSE_SESSION_LIMIT) freshConsumed = false;
           setStatus(s);
           if (s.kind === "connected") {
             // The socket OPENED → the server received new=1 and launched. Only NOW stop sending the
@@ -2271,6 +2275,13 @@ export function Terminal({
         {cover === "missing" && <NotFoundPanel overlay />}
         {cover === "stale-default" && status.kind === "rejected" && (
           <StaleDefaultPanel overlay reason={status.reason} />
+        )}
+        {cover === "session-limit" && status.kind === "rejected" && (
+          <SessionLimitPanel
+            overlay
+            reason={status.reason}
+            onRetry={() => sockRef.current?.retry()}
+          />
         )}
         {/* Auto copy-on-select confirmation (#554): keyed on the tick so each copy restarts the
             fade. role/aria-live announce it; the JS timer unmounts it after COPIED_TOAST_MS. */}

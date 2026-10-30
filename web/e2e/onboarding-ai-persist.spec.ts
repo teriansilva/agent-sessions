@@ -148,6 +148,7 @@ test("wizard AI setup persists and Settings reflects it live — no reload (#692
   await dialog.getByRole("button", { name: /get started/i }).click(); // → security
   await dialog.getByRole("button", { name: /skip.*continue/i }).click(); // → agents
   await expect(dialog.getByText("claude", { exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: /^next$/i }).click(); // → your system
   await dialog.getByRole("button", { name: /^next$/i }).click(); // → ai
 
   // Save connection → checked, saved, and the Model field becomes a dropdown from the listing.

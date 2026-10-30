@@ -9,3 +9,5 @@ export const CLOSE_NOT_A_TERMINAL = 4415;
 /** #1728: a fresh launch named its family's AUTOMATIC default, which has moved since the form
  *  showed it. Nothing was launched; the reason names the new default. */
 export const CLOSE_STALE_DEFAULT = 4412;
+/** #1819: the session limit is reached. Nothing was launched; the operator frees a slot and retries. */
+export const CLOSE_SESSION_LIMIT = 4429;

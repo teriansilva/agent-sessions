@@ -33,6 +33,7 @@ import { MissionRailSlotProvider } from "../components/pulse/railSlot";
 import { useModalDrawer } from "../components/pulse/useModalDrawer";
 import { NewSessionLanding } from "../routes/NewSessionLanding";
 import { Onboarding } from "../routes/Onboarding";
+import { SessionLimitHost } from "../components/sessions/SessionLimitDialog";
 import { whatsNewBundleVersion, whatsNewLabel } from "../whatsnew/due";
 import { useWhatsNew } from "../whatsnew/useWhatsNew";
 import { WhatsNewCtx } from "../whatsnew/WhatsNewContext";
@@ -934,6 +935,7 @@ function Layout() {
           )}
         </footer>
       </div>
+      <SessionLimitHost />
       {(showSetup || wizardReplay) && (
         <Onboarding
           mode="wizard"

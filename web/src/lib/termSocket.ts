@@ -10,7 +10,12 @@
 // seq on a transcript attach and carries the exact turn boundary of the attach payload
 // for the scroll-up lazy-loader.
 
-import { CLOSE_NOT_A_TERMINAL, CLOSE_NOT_FOUND, CLOSE_STALE_DEFAULT } from "./termCloseCodes";
+import {
+  CLOSE_NOT_A_TERMINAL,
+  CLOSE_NOT_FOUND,
+  CLOSE_SESSION_LIMIT,
+  CLOSE_STALE_DEFAULT,
+} from "./termCloseCodes";
 
 export type TermStatus =
   | { kind: "connecting" }
@@ -68,13 +73,25 @@ export interface TermSocketHandlers {
 // 4412 (#1728): the form's AUTOMATIC default is no longer its family's default (an API client
 // became ready, or stopped being ready, between display and Start). Nothing was launched; the
 // server names the new default. Terminal, never retried.
-const NO_RETRY = new Set([4401, 4403, CLOSE_NOT_FOUND, CLOSE_NOT_A_TERMINAL, CLOSE_STALE_DEFAULT, 4422, 4500]);
+// 4429 (#1819): the session limit is reached and nothing was launched. Terminal until the operator
+// frees a slot and asks again (`retry`): it does not clear by itself in any time worth polling for.
+const NO_RETRY = new Set([
+  4401,
+  4403,
+  CLOSE_NOT_FOUND,
+  CLOSE_NOT_A_TERMINAL,
+  CLOSE_STALE_DEFAULT,
+  4422,
+  CLOSE_SESSION_LIMIT,
+  4500,
+]);
 const REJECT_REASON: Record<number, string> = {
   4401: "session expired — please sign in again",
   4403: "blocked (origin mismatch)",
   4404: "session not found or ended",
   4412: "the default agent changed since you chose — nothing was started",
   4422: "that model isn’t offered for this session",
+  4429: "session limit reached",
   4500: "couldn’t start this session",
 };
 
@@ -83,7 +100,7 @@ const REJECT_REASON: Record<number, string> = {
  *  Every other code keeps its fixed wording. */
 export function rejectReason(code: number, serverReason?: string): string {
   const fixed = REJECT_REASON[code] ?? "unavailable";
-  if (code !== 4422 && code !== 4412) return fixed;
+  if (code !== 4422 && code !== 4412 && code !== CLOSE_SESSION_LIMIT) return fixed;
   const r = typeof serverReason === "string" ? serverReason.trim().slice(0, 160) : "";
   return r || fixed;
 }
@@ -381,6 +398,14 @@ export class TermSocket {
   }
 
   /** Stop for good (component unmount): no further reconnects. */
+  /** Ask again after a deliberate reject the operator has since resolved (#1819). */
+  retry(): void {
+    if (this.stopped || !this.rejected) return;
+    this.rejected = false;
+    this.attempt = 0;
+    this.connect();
+  }
+
   close(): void {
     this.stopped = true;
     if (typeof window !== "undefined")

@@ -264,6 +264,18 @@ The host's OS, platform, CPU and load, memory, disk, uptime and Python version.
 
 ### Resources · `resources`
 
+**Session limit.** How many agent sessions can run at once, sized for this machine. BattleLab reads
+the host's memory and CPUs (and any container limit on them) and recommends the lower of two
+figures: 1 GiB per session after keeping 10% of memory (at least 2 GiB) for the system, and 6
+sessions per CPU. You can set anything from 1 to 256. While you haven't saved a value, the limit
+follows the recommendation.
+
+A session counts while its agent runs, whichever way it was started: terminal or API, by you, a
+mission, an automation or HQ. An agent's own subagents don't count, and neither does a session that
+has ended. At the limit a new start is refused and nothing is queued. Archive a running session,
+wait for one to end, or raise the limit. Nothing that's running is ever stopped by this limit,
+including when you lower it.
+
 **API session memory limit** sets the combined memory allowance for an agent and its tools,
 in GiB (default **8**, range **1–1024**). Reaching the limit kills one of that session's
 processes, usually the largest tool; the agent usually keeps running and sees a failed command.

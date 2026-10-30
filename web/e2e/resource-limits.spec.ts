@@ -34,26 +34,40 @@ const fixture = (): Resources => ({
       api_tasks: 4096,
       library_threads: 8,
       api_memory_gib: 8,
+      max_sessions: 28,
     },
     recommended: {
       console_tasks: 4096,
       api_tasks: 4096,
       library_threads: 8,
       api_memory_gib: 8,
+      max_sessions: 28,
     },
     bounds: {
       console_tasks: { min: 256, max: 16384 },
       api_tasks: { min: 256, max: 16384 },
       library_threads: { min: 1, max: 64 },
       api_memory_gib: { min: 1, max: 1024 },
+      max_sessions: { min: 1, max: 256 },
     },
     sources: {
       console_tasks: "recommended",
       api_tasks: "recommended",
       library_threads: "recommended",
       api_memory_gib: "recommended",
+      max_sessions: "recommended",
     },
     console_tasks_max: "4096",
+    capacity: {
+      memory_bytes: 32 * 1024 ** 3,
+      cpus: 8,
+      reserved_bytes: 3.2 * 1024 ** 3,
+      by_memory: 28,
+      by_cpu: 48,
+      limited_by: "memory",
+      recommended: 28,
+    },
+    running: 31,
     library_overrides: [],
     notice: null,
   },
@@ -157,6 +171,7 @@ test("save, reload and restore recommended values", async ({ page }) => {
     api_tasks: 4096,
     library_threads: 8,
     api_memory_gib: 8,
+    max_sessions: 28,
   });
 });
 
@@ -235,6 +250,7 @@ for (const legacy of ["50%", "infinity", "2048"])
       api_tasks: 4096,
       library_threads: 8,
       api_memory_gib: 8,
+      max_sessions: 28,
     });
   });
 
@@ -301,4 +317,25 @@ test("Host no longer includes resource controls or running usage", async ({
   await expect(
     page.getByText("Running resource usage", { exact: true }),
   ).toHaveCount(0);
+});
+
+test("Session limit: the machine, the recommendation, the running count and the notices (#1819)", async ({
+  page,
+}) => {
+  await setup(page);
+  await page.goto(settingsPath("resources"));
+  const card = page.getByTestId("session-limit-card");
+  await expect(card).toContainText("31 running");
+  await expect(page.getByTestId("session-capacity-facts")).toContainText("32 GiB");
+  await expect(card).toContainText("Memory sets this limit");
+  await expect(card).toContainText(
+    "31 sessions are running, above the recommended 28. Nothing is stopped.",
+  );
+  const limit = page.getByLabel("Maximum running sessions");
+  await expect(limit).toHaveValue("28");
+  await expect(card).not.toContainText("above the recommendation");
+  await limit.fill("40");
+  await expect(card).toContainText("40 is above the recommendation");
+  await page.getByRole("button", { name: "Save limits" }).click();
+  await expect(page.getByRole("status")).toContainText("Saved for new launches");
 });

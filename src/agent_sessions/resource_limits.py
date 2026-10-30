@@ -11,7 +11,7 @@ import os
 import re
 from collections.abc import Mapping
 
-from . import prefs
+from . import prefs, sysinfo
 
 DEFAULTS = {"console_tasks": 4096, "api_tasks": 4096, "library_threads": 8, "api_memory_gib": 8}
 BOUNDS = {
@@ -19,6 +19,7 @@ BOUNDS = {
     "api_tasks": (256, 16384),
     "library_threads": (1, 64),
     "api_memory_gib": (1, 1024),
+    "max_sessions": (sysinfo.MIN_SESSIONS, sysinfo.MAX_SESSIONS),
 }
 THREAD_VARIABLES = (
     "OPENBLAS_NUM_THREADS",
@@ -36,20 +37,33 @@ def valid(key: str, value: object) -> bool:
     return type(value) is int and low <= value <= high
 
 
+def recommended() -> dict[str, int]:
+    """The fixed defaults, plus the one value that is read off this host (#1819)."""
+    return DEFAULTS | {"max_sessions": sysinfo.session_capacity()["recommended"]}
+
+
 def saved() -> dict[str, int]:
     block = prefs.read_block(_BLOCK)
     if not isinstance(block, dict):
         return {}
-    return {key: block[key] for key in DEFAULTS if valid(key, block.get(key))}
+    return {key: block[key] for key in BOUNDS if valid(key, block.get(key))}
 
 
 def values() -> dict[str, int]:
-    return DEFAULTS | saved()
+    return recommended() | saved()
+
+
+def max_sessions() -> int:
+    """The limit in force. Unsaved, it follows the recommendation; saved, it stays."""
+    stored = saved().get("max_sessions")
+    return stored if stored is not None else sysinfo.session_capacity()["recommended"]
 
 
 def save(patch: object) -> None:
-    if not isinstance(patch, dict) or not patch or patch.keys() - DEFAULTS.keys():
-        raise ValueError("expected console_tasks, api_tasks, library_threads or api_memory_gib")
+    if not isinstance(patch, dict) or not patch or patch.keys() - BOUNDS.keys():
+        raise ValueError(
+            "expected console_tasks, api_tasks, library_threads, api_memory_gib or max_sessions"
+        )
     for key, value in patch.items():
         if not valid(key, value):
             low, high = BOUNDS[key]
@@ -59,10 +73,16 @@ def save(patch: object) -> None:
         clean = {
             k: v
             for k, v in (old.items() if isinstance(old, dict) else ())
-            if k in DEFAULTS and valid(k, v)
+            if k in BOUNDS and valid(k, v)
         }
-        return clean | patch
+        merged = clean | patch
+        # Saving the recommendation means following it (#1819), so "Restore recommended" unpins
+        # the limit instead of freezing today's number when the host later changes.
+        if merged.get("max_sessions") == suggested:
+            del merged["max_sessions"]
+        return merged
 
+    suggested = sysinfo.session_capacity()["recommended"]
     prefs.mutate_block(_BLOCK, merge)
 
 
@@ -116,7 +136,9 @@ def thread_environment(
 
 def settings() -> dict:
     stored = saved()
-    configured = DEFAULTS | stored
+    capacity = sysinfo.session_capacity()
+    suggested = DEFAULTS | {"max_sessions": capacity["recommended"]}
+    configured = suggested | stored
     console = console_policy(stored)
     # A representable legacy value makes the untouched form reflect the actual next launch.
     if console["source"] == "environment" and console["tasks_max"].isdigit():
@@ -126,15 +148,16 @@ def settings() -> dict:
     block = prefs.read_block(_BLOCK)
     invalid = block is not None and (
         not isinstance(block, dict)
-        or any(k not in DEFAULTS or not valid(k, v) for k, v in block.items())
+        or any(k not in BOUNDS or not valid(k, v) for k, v in block.items())
     )
     return {
         "values": configured,
-        "recommended": DEFAULTS,
+        "recommended": suggested,
         "bounds": {k: {"min": lo, "max": hi} for k, (lo, hi) in BOUNDS.items()},
-        "sources": {k: "settings" if k in stored else "recommended" for k in DEFAULTS}
+        "sources": {k: "settings" if k in stored else "recommended" for k in BOUNDS}
         | {"console_tasks": console["source"]},
         "console_tasks_max": console["tasks_max"],
+        "capacity": capacity,
         "library_overrides": [
             {
                 "name": k,

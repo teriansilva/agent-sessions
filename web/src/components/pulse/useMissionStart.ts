@@ -25,6 +25,7 @@
  *    saves a first plan through the same route an edit uses, without a `plan_id`.
  */
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { openSessionLimit, SESSION_LIMIT_REFUSAL } from "../../lib/sessionLimit";
 
 import { ApiError, api } from "../../lib/api";
 import { objectivesDigestInput, sha256Hex } from "../../lib/digest";
@@ -342,6 +343,7 @@ export function useMissionStart(
               out.reason || `Begin ended with mission state ${out.state}.`;
             setError(why);
             onNote(why);
+            if (out.refusal === SESSION_LIMIT_REFUSAL) openSessionLimit();
           }
         },
         true,

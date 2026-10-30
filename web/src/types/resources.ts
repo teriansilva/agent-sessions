@@ -3,6 +3,36 @@ export type ResourceValues = {
   api_tasks: number;
   library_threads: number;
   api_memory_gib: number;
+  max_sessions: number;
+};
+/** What the host offers and what the recommendation made of it (#1819). A null was unreadable. */
+export type SessionCapacityFacts = {
+  memory_bytes: number | null;
+  cpus: number | null;
+  reserved_bytes: number | null;
+  by_memory: number | null;
+  by_cpu: number | null;
+  limited_by: "memory" | "cpu" | "unknown";
+  recommended: number;
+};
+export type RunningSessionRow = {
+  id: string;
+  title: string;
+  engine: string;
+  project: string;
+  last_mtime: number;
+  working: boolean;
+  mission: { id: string; title: string; state: string } | null | undefined;
+};
+/** `GET /api/sessions/capacity`: the limit dialog's list. */
+export type SessionCapacity = {
+  limit: number;
+  recommended: number;
+  source: string;
+  readable: boolean;
+  running: number | null;
+  others: number;
+  sessions: RunningSessionRow[];
 };
 export type ResourceSettings = {
   values: ResourceValues;
@@ -10,6 +40,8 @@ export type ResourceSettings = {
   bounds: Record<keyof ResourceValues, { min: number; max: number }>;
   sources: Record<keyof ResourceValues, string>;
   console_tasks_max: string;
+  capacity: SessionCapacityFacts;
+  running: number | null;
   library_overrides: { name: string; value: string }[];
   notice: string | null;
 };

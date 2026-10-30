@@ -6,6 +6,7 @@ import { ConfigCtx } from "../app/config";
 import { setRoster } from "../app/engineRoster";
 import fixture from "../test/roster.fixture.json";
 import { ApiError, api } from "../lib/api";
+import { listenSessionLimit } from "../lib/sessionLimit";
 import { mintNewSessionId } from "../lib/newSession";
 import { projectPickerStore } from "../lib/projectPickerStore";
 import { structuredModelsStore } from "../lib/structuredModelsStore";
@@ -718,6 +719,37 @@ test("an API skip tick is never restored from a draft and never survives an agen
   expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).toBeChecked(); // console: its own (restored) choice
   await chooseAgent(user, "codex-api");
   expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
+});
+
+test("Try again after the session limit asks the form as it is now: a spent Skip choice stays spent (#1819)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  const user = userEvent.setup();
+  let retry: (() => void) | undefined;
+  const offRetry = listenSessionLimit((next) => {
+    retry = next ?? undefined;
+  });
+  try {
+    vi.mocked(api.structuredCreate)
+      .mockReset()
+      .mockRejectedValueOnce(new ApiError(429, "Session limit reached: 1 of 1 running."))
+      .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+    renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
+    await chooseProject(user, "");
+    await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
+    await user.click(screen.getByRole("button", { name: /start session/i }));
+    await screen.findByTestId("start-error");
+    expect(vi.mocked(api.structuredCreate).mock.calls[0][4]).toBe(true);
+    // A Skip choice covers one create: the form is back on its guarded default…
+    expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
+    // …so the retry the dialog holds must not send what the form no longer shows.
+    await act(async () => retry?.());
+    await vi.waitFor(() => expect(api.structuredCreate).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.structuredCreate).mock.calls[1][4]).toBe(false);
+  } finally {
+    offRetry();
+    sessionStorage.clear();
+  }
 });
 
 test("a lost skip create keeps no client slot: the error points at the session list, a reload asks nothing (5913)", async () => {

@@ -48,6 +48,7 @@ import {
   writePendingCreate,
   type PendingCreate,
 } from "../lib/structuredCreate";
+import { isSessionLimit, openSessionLimit } from "../lib/sessionLimit";
 import {
   bindingHolds,
   bindingNote,
@@ -675,6 +676,7 @@ export function NewSessionForm({
   // shared `createStructuredSession` (#1739), which owns the operation id, its recovery slot and the
   // two-phase skip start. The model (#1313), level (#1407), specialist (#1693) and permission mode
   // (#1339) are part of the create's identity: choosing another one is another create.
+  const latestStart = useRef<() => Promise<void>>(async () => {});
   const startStructured = async () => {
     if (chatStarting.current) return;
     chatStarting.current = true;
@@ -707,6 +709,15 @@ export function NewSessionForm({
         void structuredModelsStore.revalidate(engine, { force: true });
       }
       if (!mounted.current) return;
+      if (isSessionLimit(e)) {
+        setStartError(e instanceof Error ? e.message : "Session limit reached.");
+        // Asks the form as it is THEN, not this attempt's closure: a Skip choice covers one create
+        // and was just reset (below), and a retry must not spend it behind a guarded form.
+        openSessionLimit(() => {
+          if (mounted.current) void latestStart.current();
+        });
+        return;
+      }
       // The automatic default moved between this screen and Start (#1728): nothing was started.
       // Ask the roster again, so the form shows the new default, and say so — never launch it
       // without the operator seeing it.
@@ -742,6 +753,9 @@ export function NewSessionForm({
     void reloadRoster();
     refreshConfig();
   };
+  useEffect(() => {
+    latestStart.current = startStructured;
+  });
   const staleWords = (fam: NonNullable<ReturnType<typeof familyOf>>) => {
     const now = fam.interactive_default.engine;
     return now

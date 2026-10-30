@@ -1651,3 +1651,108 @@ async def test_spawn_fence_holds_across_authorize_and_the_spawn_and_guard_marks_
     assert out.ok
     assert state["seen"] == [("authorize", True), ("spawn", True)]
     assert marked == [True]
+
+
+def _session_limit_of(monkeypatch, limit, running=frozenset()):
+    from agent_sessions import resource_limits, session_capacity
+
+    monkeypatch.setattr(resource_limits, "max_sessions", lambda: limit)
+    monkeypatch.setattr(session_capacity, "_api_running", lambda: set(running))
+    return session_capacity
+
+
+@pytest.mark.anyio
+async def test_at_the_session_limit_nothing_runs_not_even_the_auth_probe(
+    env, prov, reg, monkeypatch
+):
+    """#1819: the probe is a real, possibly metered agent, so the refusal comes before it."""
+    _session_limit_of(monkeypatch, 1, {"codex:running"})
+    spawned = []
+    monkeypatch.setattr(headless_dispatch, "_popen", lambda *a, **k: spawned.append(a))
+    probed = []
+    monkeypatch.setattr(
+        headless_dispatch.engine_auth,
+        "check",
+        lambda *a, **k: probed.append(a) or (headless_dispatch.engine_auth.AUTHENTICATED, ""),
+    )
+    out = await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="go", start_timeout=0.3
+    )
+    assert out.ok is False and out.launched is False
+    assert out.refusal == "session_limit"
+    assert "1 of 1 running" in out.reason
+    assert not probed, "a refused dispatch ran the auth probe"
+    assert not spawned
+    assert sessionlock.is_locked(out.key) is False
+
+
+@pytest.mark.anyio
+async def test_one_reservation_covers_the_probe_and_the_spawn_and_outlives_them(
+    env, prov, reg, monkeypatch
+):
+    """#1819: a launch never runs without a slot, and the probe's agent takes no second one."""
+    capacity = _session_limit_of(monkeypatch, 5)
+    held_at = {}
+
+    def held() -> int:
+        return len(list(capacity._slots_dir().iterdir()))
+
+    def check(*_a, **_k):
+        held_at["probe"] = held()
+        return headless_dispatch.engine_auth.AUTHENTICATED, ""
+
+    monkeypatch.setattr(headless_dispatch.engine_auth, "check", check)
+    _stub_spawn(monkeypatch)
+    stubbed_popen = headless_dispatch._popen
+
+    def popen(*a, **k):
+        held_at["spawn"] = held()
+        return stubbed_popen(*a, **k)
+
+    monkeypatch.setattr(headless_dispatch, "_popen", popen)
+    await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="go", start_timeout=0.3
+    )
+    assert held_at == {"probe": 1, "spawn": 1}
+    assert held() == 0, "the reservation outlived its launch"
+
+
+@pytest.mark.anyio
+async def test_a_cancelled_launch_keeps_its_slot_until_its_late_spawn_has_run(
+    env, prov, reg, monkeypatch
+):
+    """#1819, Hermes: a launch must never run after its reservation has gone.
+
+    A thread can't be cancelled, so a spawn can still run after the request is gone. Releasing the
+    slot before that worker is joined would let another launch take it while this agent starts.
+
+    Red against releasing it at the top of the `finally`.
+    """
+    import threading
+
+    capacity = _session_limit_of(monkeypatch, 5)
+    order: list[str] = []
+    entered = threading.Event()
+    _late_spawn(monkeypatch, order, delay=0.4, entered=entered)
+    late_popen = headless_dispatch._popen
+    held_at_spawn = []
+
+    def popen(*a, **k):
+        proc = late_popen(*a, **k)  # returns after its delay: past the cancellation below
+        held_at_spawn.append(len(list(capacity._slots_dir().iterdir())))
+        return proc
+
+    monkeypatch.setattr(headless_dispatch, "_popen", popen)
+    _stub_started(monkeypatch)
+    task = asyncio.ensure_future(
+        headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="go")
+    )
+    await asyncio.get_running_loop().run_in_executor(None, entered.wait, 30)
+    assert entered.is_set()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await asyncio.wait_for(asyncio.shield(task), timeout=20)
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
+    assert held_at_spawn == [1], "the slot was gone before the late spawn ran"
+    assert list(capacity._slots_dir().iterdir()) == []

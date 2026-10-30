@@ -90,6 +90,7 @@ from . import (
     opencode_admission,
     ptybridge,
     scopedspawn,
+    session_capacity,
     session_input,
     sessionlock,
     start_evidence,
@@ -704,7 +705,15 @@ async def dispatch(
             # waited on would otherwise leave a zombie behind for the life of the process.
             await asyncio.to_thread(late.wait)
 
+    capacity_slot: session_capacity.Reservation | None = None
     try:
+        # THE SESSION LIMIT (#1819), first of all: the auth probe below launches a real agent, and a
+        # refused dispatch spends nothing.
+        try:
+            capacity_slot = await asyncio.to_thread(session_capacity.admit, key)
+        except session_capacity.SessionLimitReached as e:
+            out.reason, out.refusal = str(e), session_capacity.SESSION_LIMIT
+            return out
         try:
             maintenance_admission = await opencode_admission.for_launch(engine)
         except opencode_admission.Unavailable as e:
@@ -1301,3 +1310,7 @@ async def dispatch(
         if admission is not None:
             with contextlib.suppress(Exception):
                 admission.release()
+        if capacity_slot is not None:
+            # LAST, once the workers above are joined: nothing can launch after this. The auth
+            # probe ran under this slot too; a master that came up now counts by itself.
+            capacity_slot.release()

@@ -157,6 +157,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Update now / reinstall (restarts the service) | POST /api/update/apply, GET /api/update/progress | P6 W (external; the card says the conversation reconnects) |
 | Usage analytics consent | POST /api/prefs `analytics_consent` | **never** (consent is the operator's own act) |
 | Host and resources (read); resource limits (edit) | GET /api/system, /api/system/resources; POST /api/system/resources | P6 R/W |
+| The session limit: the count and what runs (#1819) | GET /api/sessions/capacity | P6 R |
 | Maintenance: scrollback size and clear; prune (preview, prune); compact (measure, compact) | GET/POST /api/scrollback*, /api/maintenance/prune, /api/maintenance/compact | P6 R/W (destructive) |
 | What's new / onboarding done flags, tour, help | POST /api/prefs `onboarded`, `whats_new_seen`; client | n/a |
 
@@ -495,6 +496,7 @@ POST   /api/pulse/scan                                                          
 GET    /api/scrollback                                                            P6
 POST   /api/scrollback/clear                                                      P6
 GET    /api/sessions                                                              P1
+GET    /api/sessions/capacity                                                     P6
 POST   /api/sessions/archive-older                                                P1
 GET    /api/sessions/{sid}                                                        P1
 POST   /api/sessions/{sid}/archive                                                P1

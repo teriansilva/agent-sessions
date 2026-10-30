@@ -963,3 +963,35 @@ def test_a_launch_that_did_not_start_follows_nothing(live, ai, world):
     live.decide(live.card(cid)["action_id"])
     assert live.settled(cid)["state"] == "unconfirmed"
     assert ask_follow.state(cid)["following"] == []
+
+
+def test_at_the_session_limit_the_card_is_not_spent_and_can_be_tapped_again(
+    live, ai, world, monkeypatch
+):
+    """#1819. The notice goes through the real store, whose `NOTICES` validates it: a value it
+    didn't know raised, the settlement was swallowed, and the card read "interrupted"."""
+    from agent_sessions import headless_dispatch
+
+    launch = headless_dispatch.dispatch
+    full = [True]
+
+    async def dispatch(**kw):
+        if not full[0]:
+            return await launch(**kw)
+        out = headless_dispatch.Dispatch(
+            key=f"{kw['engine']}:x", engine=kw["engine"], native="x", cwd=kw["cwd"]
+        )
+        out.reason, out.refusal = "Session limit reached: 1 of 1 running.", "session_limit"
+        return out
+
+    monkeypatch.setattr(headless_dispatch, "dispatch", dispatch)
+    cid, _ = _propose(live, ai)
+    pid = live.card(cid)["action_id"]
+    assert live.decide(pid).status_code == 202
+    card = live.settled(cid)
+    assert card["state"] == "pending" and card["notice"] == "session_limit" and card["can_start"]
+    assert world["spawned"] == []
+
+    full[0] = False
+    assert live.decide(pid).status_code == 202
+    assert live.settled(cid)["state"] == "started"

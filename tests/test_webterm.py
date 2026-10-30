@@ -2874,3 +2874,69 @@ def test_ws_launch_runs_its_blocking_calls_off_the_loop(
     lines = [r.getMessage() for r in caplog.records if "launch timings" in r.getMessage()]
     assert len(lines) == 1 and "engine=claude op=terminal" in lines[0], lines
     assert str(cwd) not in lines[0] and "12345678" not in lines[0]
+
+
+def _session_limit_of(monkeypatch, limit, running=frozenset()):
+    from agent_sessions import resource_limits, session_capacity
+
+    monkeypatch.setattr(resource_limits, "max_sessions", lambda: limit)
+    monkeypatch.setattr(session_capacity, "_api_running", lambda: set(running))
+
+
+def test_ws_at_the_session_limit_a_launch_closes_4429_and_frees_the_lock(
+    fake_jsonl, auth_cfg, monkeypatch
+):
+    # #1819: refused before anything is started, and the single-writer lock must not stay held.
+    from agent_sessions import sessionlock
+
+    _session_limit_of(monkeypatch, 1, {"codex:running"})
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4429
+    assert sessionlock.is_locked(_GOOD) is False
+
+
+def test_ws_at_the_session_limit_an_attach_is_never_refused(fake_jsonl, auth_cfg, monkeypatch):
+    # #1819: the limit only ever stops a start. A running session stays reachable however low it is.
+    from agent_sessions import session_capacity, sessions
+    from agent_sessions.routes import terminal
+
+    _session_limit_of(monkeypatch, 1, {"codex:a", "codex:b", "codex:c"})
+    asked = []
+    real_admit = session_capacity.admit
+    monkeypatch.setattr(session_capacity, "admit", lambda key: asked.append(key) or real_admit(key))
+    monkeypatch.setattr(sessions, "open_action", lambda e, n: (sessions.ATTACH, None))
+    ran = []
+
+    async def fake_run(ws, *a, **k):
+        ran.append(True)
+        await ws.close(code=1000)
+
+    monkeypatch.setattr(terminal.webterm, "run", fake_run)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    _close_code(c, f"/ws/term/{_GOOD}", headers)
+    assert ran
+    assert not asked
+
+
+def test_ws_below_the_session_limit_a_launch_holds_a_slot_until_it_settles(
+    fake_jsonl, auth_cfg, monkeypatch
+):
+    from agent_sessions import session_capacity
+    from agent_sessions.routes import terminal
+
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "/bin/true")
+    _session_limit_of(monkeypatch, 2)
+    during = []
+
+    async def fake_run(ws, *a, **k):
+        during.append(len(list(session_capacity._slots_dir().iterdir())))
+        await ws.close(code=1000)
+
+    monkeypatch.setattr(terminal.webterm, "run", fake_run)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    _close_code(c, f"/ws/term/{_GOOD}", headers)
+    assert during == [1]
+    assert list(session_capacity._slots_dir().iterdir()) == []

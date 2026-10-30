@@ -115,3 +115,47 @@
   padding: 12px 0;
   cursor: pointer;
 }
+/* The host's facts and what was picked for it (#1819). The picked plate carries the brand edge. */
+.spec {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-2);
+  margin: 0;
+}
+.spec div {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  padding: 10px 12px;
+  min-width: 0;
+}
+.spec dd {
+  margin: 0;
+  font: 700 var(--fs-title) var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.spec dt {
+  color: var(--text-muted);
+  font: var(--fs-label) var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.spec .picked {
+  border-color: var(--accent);
+}
+.spec .picked dd {
+  color: var(--accent-text);
+}
+.memory h3 {
+  margin: var(--sp-4) 0 0;
+  font: 700 var(--fs-row) var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.memory h3 span {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+.memory > button {
+  align-self: flex-start;
+  margin-top: var(--sp-2);
+}

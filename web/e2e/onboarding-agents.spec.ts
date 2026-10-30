@@ -194,6 +194,7 @@ async function openSetup(page: Page) {
 
 async function toLaunch(page: Page) {
   const dialog = await openSetup(page);
+  await dialog.getByRole("button", { name: /^next$/i }).click(); // → your system
   await dialog.getByRole("button", { name: /^next$/i }).click(); // → ai
   await dialog.getByRole("button", { name: /i'll do this later/i }).click(); // → project
   await dialog.getByRole("button", { name: /^next$/i }).click(); // → tour
@@ -336,7 +337,7 @@ test("a live inline sign-in is never closed silently: Close and closing setup as
 
   // Next and Back move between steps without unmounting the sign-in.
   await dialog.getByRole("button", { name: /^next$/i }).click();
-  await expect(dialog.getByRole("heading", { name: "Set up your AI" })).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "Sized for this machine." })).toBeVisible();
   await dialog.getByRole("button", { name: "Back", exact: true }).click();
   await expect(terminal).toBeVisible();
   expect(m.sockets).toEqual({ opened: 1, closed: 0 });
@@ -357,7 +358,7 @@ test("an install still running on the server keeps its operation across Next / B
   await flow.getByRole("button", { name: "Install", exact: true }).click();
   await expect(flow.getByRole("region", { name: "Operation status" })).toContainText(/install · running/i);
   await dialog.getByRole("button", { name: /^next$/i }).click();
-  await expect(dialog.getByRole("heading", { name: "Set up your AI" })).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "Sized for this machine." })).toBeVisible();
   await dialog.getByRole("button", { name: "Back", exact: true }).click();
   // The same operation, read back — never a second install.
   await expect(flow.getByRole("region", { name: "Operation status" })).toContainText(/install · running/i);

@@ -1,9 +1,19 @@
 import { useEffect, useState } from "react";
 import { api } from "../../lib/api";
-import type { Resources, ResourceValues } from "../../types/resources";
+import { capacityReason, gib, openSessionLimit } from "../../lib/sessionLimit";
+import type {
+  Resources,
+  ResourceValues,
+  SessionCapacityFacts,
+} from "../../types/resources";
 import styles from "./ResourceLimits.module.css";
 
 const fields: { key: keyof ResourceValues; label: string; help: string }[] = [
+  {
+    key: "max_sessions",
+    label: "Maximum running sessions",
+    help: "",
+  },
   {
     key: "api_memory_gib",
     label: "API session memory limit (GiB)",
@@ -31,7 +41,34 @@ const draftOf = (values: ResourceValues): Draft => ({
   api_tasks: String(values.api_tasks),
   library_threads: String(values.library_threads),
   api_memory_gib: String(values.api_memory_gib),
+  max_sessions: String(values.max_sessions),
 });
+
+/** What the host offers and what was picked for it: Settings and first-time setup read the same. */
+export function SessionCapacityFactsRow({
+  capacity,
+  label,
+}: {
+  capacity: SessionCapacityFacts;
+  label: string;
+}) {
+  return (
+    <dl className={styles.spec} data-testid="session-capacity-facts">
+      <div>
+        <dd>{capacity.cpus ?? "?"}</dd>
+        <dt>CPUs</dt>
+      </div>
+      <div>
+        <dd>{capacity.memory_bytes === null ? "?" : gib(capacity.memory_bytes)}</dd>
+        <dt>Memory</dt>
+      </div>
+      <div className={styles.picked}>
+        <dd>{capacity.recommended}</dd>
+        <dt>{label}</dt>
+      </div>
+    </dl>
+  );
+}
 
 export function ResourceLimits() {
   const [data, setData] = useState<Pick<Resources, "settings"> | null>(null);
@@ -149,8 +186,11 @@ export function ResourceLimits() {
           }}
         />
         <small>
-          {help} Recommended: {data.settings.recommended[key].toLocaleString()}.
-          Range: {data.settings.bounds[key].min.toLocaleString()}–
+          {help}
+          {help ? " " : ""}Recommended
+          {key === "max_sessions" ? " for this system" : ""}:{" "}
+          {data.settings.recommended[key].toLocaleString()}. Range:{" "}
+          {data.settings.bounds[key].min.toLocaleString()}–
           {data.settings.bounds[key].max.toLocaleString()}.
         </small>
       </label>
@@ -160,10 +200,10 @@ export function ResourceLimits() {
   return (
     <>
       <section className={styles.card} aria-labelledby="resources-heading">
-        <h2 id="resources-heading">Memory limit</h2>
+        <h2 id="resources-heading">Sessions and memory</h2>
         <p className={styles.hint}>
-          Choose how much memory each API session can use, including the tools
-          it runs.
+          Choose how many sessions run at once, and how much memory each API
+          session can use, including the tools it runs.
         </p>
         {error && (
           <p className={styles.notice} role="alert">
@@ -183,6 +223,54 @@ export function ResourceLimits() {
               void save();
             }}
           >
+            <div className={styles.memory} data-testid="session-limit-card">
+              <h3>
+                Session limit
+                {data.settings.running !== null && (
+                  <span> · {data.settings.running} running</span>
+                )}
+              </h3>
+              <p className={styles.hint}>
+                How many agent sessions can run at once. Subagents inside a
+                session don't count. At the limit, new sessions and missions are
+                refused until one is archived or ends, or you raise the limit.
+                Nothing running is ever stopped.
+              </p>
+              <SessionCapacityFactsRow
+                capacity={data.settings.capacity}
+                label="Recommended"
+              />
+              <p className={styles.hint}>
+                {capacityReason(data.settings.capacity)}
+              </p>
+              {fields
+                .filter(({ key }) => key === "max_sessions")
+                .map(renderField)}
+              {Number(draft.max_sessions) >
+                data.settings.recommended.max_sessions && (
+                <p className={styles.notice}>
+                  {draft.max_sessions} is above the recommendation for this
+                  system. Sessions may slow each other down.
+                </p>
+              )}
+              {data.settings.running !== null &&
+                data.settings.running >
+                  data.settings.recommended.max_sessions && (
+                  <p className={styles.notice}>
+                    {data.settings.running} sessions are running, above the
+                    recommended {data.settings.recommended.max_sessions}.
+                    Nothing is stopped.
+                  </p>
+                )}
+              <button
+                type="button"
+                className={styles.secondary}
+                data-testid="session-limit-see-running"
+                onClick={() => openSessionLimit()}
+              >
+                See what's running
+              </button>
+            </div>
             <div className={styles.memory}>
               {fields
                 .filter(({ key }) => key === "api_memory_gib")
@@ -198,7 +286,10 @@ export function ResourceLimits() {
               <summary>Advanced process and thread limits</summary>
               <div className={styles.fields}>
                 {fields
-                  .filter(({ key }) => key !== "api_memory_gib")
+                  .filter(
+                    ({ key }) =>
+                      key !== "api_memory_gib" && key !== "max_sessions",
+                  )
                   .map(renderField)}
               </div>
               {data.settings.sources.console_tasks === "environment" && (
@@ -279,6 +370,7 @@ export function ResourceLimits() {
                     api_tasks: true,
                     library_threads: true,
                     api_memory_gib: true,
+                    max_sessions: true,
                   });
                   setMessage(
                     "Recommended values selected. Save to apply them to new launches.",

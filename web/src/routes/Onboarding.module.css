@@ -568,3 +568,7 @@
   font-size: var(--fs-meta);
   color: var(--text-1);
 }
+/* "Your system" (#1819): the limit's field meets the 44 px touch floor on every pointer. */
+.limitField input {
+  min-height: 44px;
+}

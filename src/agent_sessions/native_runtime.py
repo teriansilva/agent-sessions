@@ -59,6 +59,7 @@ from . import (
     native_state,
     risk_marks,
     secrets_broker,
+    session_capacity,
 )
 from .plugins import api_source, kinds, storage
 
@@ -905,7 +906,18 @@ def _validate_create(cwd: object, model: object) -> tuple[str, str | None]:
     return cwd, model
 
 
-def _create_sync(
+def _create_sync(*args, **kwargs) -> str | None:
+    """`_create_admitted`, releasing the session limit's slot once its launch has settled."""
+    slots: list[session_capacity.Reservation] = []
+    try:
+        return _create_admitted(slots, *args, **kwargs)
+    finally:
+        for slot in slots:
+            slot.release()
+
+
+def _create_admitted(
+    slots: list,
     engine_id: str,
     session_id: str,
     cwd: str,
@@ -991,6 +1003,9 @@ def _create_sync(
                 raise NativeError(409, reason or "native client is not ready")
             if not os.path.isdir(cwd):
                 raise NativeError(422, "cwd is not a directory")
+            # The session limit, before anything is written, and held through the launch: a refused
+            # create leaves no row behind, and no launch can take the slot in between (#1819).
+            slots.append(_admit_session(session_key))
             record = {
                 "version": 1,
                 "session_key": session_key,
@@ -1040,6 +1055,31 @@ def _reserve_and_launch_locked(
 ) -> str:
     """Commit ownership and launch the FIRST generation of a creation (or a retried skip start's
     successor). Caller holds the lock."""
+    with _session_slot(record["session_key"]):
+        return _reserve_and_launch_admitted(session_id, record, prov, binding, mode=mode)
+
+
+def _admit_session(session_key: str) -> session_capacity.Reservation:
+    try:
+        return session_capacity.admit(session_key)
+    except session_capacity.SessionLimitReached as exc:
+        raise NativeError(429, str(exc), reason=session_capacity.SESSION_LIMIT) from None
+
+
+@contextlib.contextmanager
+def _session_slot(session_key: str):
+    """The session limit (#1819), before any ownership, specialist slot or worker exists, so a
+    refusal leaves nothing behind. The worker counts by itself once it is launched."""
+    slot = _admit_session(session_key)
+    try:
+        yield
+    finally:
+        slot.release()
+
+
+def _reserve_and_launch_admitted(
+    session_id: str, record: dict, prov, binding, *, mode: str = "create"
+) -> str:
     from . import specialist_launch
     from .engines import registry
 
@@ -1890,7 +1930,8 @@ def _relaunch_sync(engine_id: str, session_id: str, permission_operation: str | 
             # Claude writes no history until a first turn: --resume of an id it never wrote
             # fails, while --session-id of one it did collides. Ask the store, not the journal.
             mode = "create"
-        return _launch_locked(session_id, record, prov, binding, mode=mode)
+        with _session_slot(record["session_key"]):
+            return _launch_locked(session_id, record, prov, binding, mode=mode)
 
 
 async def _live_generation(
@@ -2942,6 +2983,30 @@ def _live_worker(session_id: str) -> str | None:
         return None
     worker = native_containment.WorkerIdentity(gen.worker_id)
     return gen.worker_id if HOST.worker_running(worker, life.get("pid")) else None
+
+
+def running_session_keys() -> set[str]:
+    """Session key of every API session whose current worker runs, for the limit (#1819).
+
+    One pass over the session records, no subprocess. An unreadable record is skipped and logged,
+    so a corrupt old file never holds a slot."""
+    found: set[str] = set()
+    try:
+        paths = list(native_state.root().glob("*.json"))
+    except (OSError, native_state.StateError, ValueError):
+        log.warning("session limit: the API session records could not be listed", exc_info=True)
+        return found
+    for path in paths:
+        try:
+            record = native_state.read(path)
+            if not isinstance(record, dict) or record.get("closed") is True:
+                continue
+            key = record.get("session_key")
+            if isinstance(key, str) and record.get("current_worker") and _live_worker(path.stem):
+                found.add(key)
+        except (OSError, ValueError, TypeError, native_state.StateError):
+            log.warning("session limit: unreadable API session record %s", path.name)
+    return found
 
 
 def _exit_proved(session_id: str, worker_id: str) -> bool:

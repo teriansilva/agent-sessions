@@ -1033,7 +1033,7 @@ export interface AskSessionCard {
   reason: string;
   /** `default_changed`: the bypass default moved since this was proposed; check and start again.
    *  `busy`: the project was being changed as it started; nothing started, tap again. */
-  notice: "" | "default_changed" | "busy";
+  notice: "" | "default_changed" | "busy" | "session_limit";
   can_start: boolean;
   can_dismiss: boolean;
 }

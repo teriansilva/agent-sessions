@@ -80,6 +80,7 @@ async function walkToAnalyticsStep(dialog: Locator) {
   await dialog.getByRole("button", { name: /get started/i }).click(); // → security
   await dialog.getByRole("button", { name: /skip.*continue/i }).click(); // → agents
   await expect(dialog.getByText("claude", { exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: /^next$/i }).click(); // → your system
   await dialog.getByRole("button", { name: /^next$/i }).click(); // → ai
   await dialog.getByRole("button", { name: /^next$/i }).click(); // → project
   await dialog.getByRole("button", { name: /^next$/i }).click(); // → tour

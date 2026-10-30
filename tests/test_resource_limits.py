@@ -33,6 +33,7 @@ def test_bad_settings_are_atomic(value):
         "api_tasks": 4096,
         "library_threads": 4,
         "api_memory_gib": 8,
+        "max_sessions": resource_limits.sysinfo.session_capacity()["recommended"],
     }
 
 
@@ -111,7 +112,7 @@ def test_invalid_or_absent_legacy_keeps_finite_budget(monkeypatch, legacy):
 
 def test_corrupt_block_uses_defaults_and_reports_notice():
     prefs.mutate_block("resource_limits", lambda _: {"api_tasks": True, "console_tasks": 999999})
-    assert resource_limits.values() == resource_limits.DEFAULTS
+    assert resource_limits.values() == resource_limits.recommended()
     assert resource_limits.settings()["notice"]
 
 

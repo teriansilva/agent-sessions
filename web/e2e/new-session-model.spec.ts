@@ -61,6 +61,44 @@ test("default is selected and launches with no model; a chosen model rides the s
   expect(q.getAll("model")).toHaveLength(1);
 });
 
+test("refused at the session limit, Try again still launches a NEW session (#1819)", async ({
+  page,
+}) => {
+  await mockBackend(page, ["claude"]);
+  const urls: URL[] = [];
+  let full = true;
+  await page.routeWebSocket(/\/ws\/term\//, (ws) => {
+    urls.push(new URL(ws.url()));
+    if (full) void ws.close({ code: 4429, reason: "Session limit reached: 1 of 1 running." });
+  });
+  await page.route("**/api/sessions/capacity", (r) =>
+      r.fulfill({
+        json: {
+          limit: 1,
+          recommended: 1,
+          source: "recommended",
+          readable: true,
+          running: full ? 1 : 0,
+          others: full ? 1 : 0,
+          sessions: [],
+        },
+      }),
+  );
+  await page.goto(NEW_SESSION_PATH);
+  await page.getByRole("button", { name: /start session/i }).click();
+  await expect.poll(() => urls.length).toBe(1);
+  expect(urls[0].searchParams.get("new")).toBe("1");
+  await page.getByTestId("session-limit-free").click();
+  full = false;
+  await page.getByTestId("session-limit-dialog").getByRole("button", { name: "Close session limit dialog" }).click();
+  await page.getByTestId("session-limit-free").click();
+  await page.getByTestId("session-limit-dialog").getByRole("button", { name: "Try again" }).click();
+  await expect.poll(() => urls.length).toBe(2);
+  // Without new=1 the server takes a resume of nothing and closes 4404, "session not found".
+  expect(urls[1].searchParams.get("new")).toBe("1");
+  expect(urls[1].searchParams.get("cwd")).toBe(urls[0].searchParams.get("cwd"));
+});
+
 test("a default launch sends no model parameter at all (#1189)", async ({ page }) => {
   await mockBackend(page, ["claude"]);
   const sockets = await captureSockets(page);

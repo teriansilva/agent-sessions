@@ -1,5 +1,9 @@
 import type { LookupPhase } from "../../app/sessionsStore";
-import { CLOSE_NOT_FOUND, CLOSE_STALE_DEFAULT } from "../../lib/termCloseCodes";
+import {
+  CLOSE_NOT_FOUND,
+  CLOSE_SESSION_LIMIT,
+  CLOSE_STALE_DEFAULT,
+} from "../../lib/termCloseCodes";
 import type { TermStatus } from "../../lib/termSocket";
 
 /** What covers the terminal area instead of its status chip (#1502), from the socket status and
@@ -18,7 +22,13 @@ import type { TermStatus } from "../../lib/termSocket";
  *    hands the refusal back to the New session form.
  *  - anything else: the chip as before (a 4404 for a session whose row exists still reads
  *    "session not found or ended": its master is gone). */
-export type TermCover = "opening" | "reopening" | "missing" | "stale-default" | null;
+export type TermCover =
+  | "opening"
+  | "reopening"
+  | "missing"
+  | "stale-default"
+  | "session-limit"
+  | null;
 export function termCover(
   status: TermStatus,
   lookup: LookupPhase | null,
@@ -27,6 +37,8 @@ export function termCover(
   if (status.kind === "wrong-runtime") return "reopening";
   // 4412 (#1728): a fresh launch's automatic default moved — nothing started; back to the form.
   if (status.kind === "rejected" && status.code === CLOSE_STALE_DEFAULT) return "stale-default";
+  // 4429 (#1819): the session limit is reached — nothing started; free a slot and try again.
+  if (status.kind === "rejected" && status.code === CLOSE_SESSION_LIMIT) return "session-limit";
   if (status.kind !== "rejected" || status.code !== CLOSE_NOT_FOUND) return null;
   if (lookup === "pending" || (lookup === "found" && aliased)) return "opening";
   if (lookup === "missing") return "missing";

@@ -39,7 +39,7 @@ import os
 import re
 import time
 
-from . import ask_store
+from . import ask_store, session_capacity
 
 log = logging.getLogger(__name__)
 
@@ -498,8 +498,9 @@ async def _launch(cid: str, row: dict, fd: int, registry) -> None:
     try:
         if outcome.pop("retry", False):
             # Nothing was spawned and nothing about the card changed: it can be tapped again.
+            notice = outcome.pop("notice", "busy")
             await asyncio.to_thread(
-                _update, cid, pid, state=PENDING, bypass=None, session_key="", notice="busy"
+                _update, cid, pid, state=PENDING, bypass=None, session_key="", notice=notice
             )
         elif outcome.pop("reconfirm", False):
             current = await asyncio.to_thread(bypass_default)
@@ -559,6 +560,9 @@ def _outcome(out, fenced_why: str) -> dict:
             if fenced_why == PROJECT_BUSY:
                 return {"retry": True}
             return {"state": STALE, "reason": fenced_why, "session_key": ""}
+        if out.refusal == session_capacity.SESSION_LIMIT:
+            # The operator archives a session and taps again (#1819): the card isn't spent.
+            return {"retry": True, "notice": "session_limit"}
         return {
             "state": FAILED,
             "reason": f"{out.reason or 'the launch did not happen'} — nothing was started",

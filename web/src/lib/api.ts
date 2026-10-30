@@ -9,7 +9,7 @@ import type { ApiLook } from "../theme/apiLook";
 import type { ShareCatalog, ShareChoice, ShareImports, SharePreview, ShareResult } from "../types/share";
 import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, GalleryComparison, GalleryFiles, LocalSkill } from "../types/gallery";
 import type { CollectionInput, SecretAccessEntry, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
-import type { Resources, ResourceSettings, ResourceValues } from "../types/resources";
+import type { SessionCapacity, Resources, ResourceSettings, ResourceValues } from "../types/resources";
 import type { CreatedShare, ShareList, ShareMode } from "./shareFormat";
 import type { DeploymentReceipt, DeploymentRemoval, DeploymentReview, DeploymentStatus, PlaybookInputs } from "../types/playbookDeployment";
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
@@ -1189,6 +1189,8 @@ export const api = {
   telemetry: () => getJson<Telemetry>("/api/telemetry"),
   resources: () => getJson<Pick<Resources, "settings">>("/api/system/resources?usage=false"),
   setResources: (body: Partial<ResourceValues>) => mutateJson<{ settings: ResourceSettings }>("POST", "/api/system/resources", body),
+  /** The session limit, the count and what runs (#1819): the limit dialog's list. */
+  sessionCapacity: () => getJson<SessionCapacity>("/api/sessions/capacity"),
   /** Self-update: compare the running version to the channel's latest. */
   updateCheck: () => getJson<UpdateInfo>("/api/update/check"),
   /** Apply the channel's latest (re-runs the installer detached). CSRF-guarded; 202. */
@@ -2409,6 +2411,7 @@ export const api = {
       outcome?: "started" | "failed" | "refused";
       reason: string;
       session_key: string | null;
+      refusal?: string;
     }>(
       "POST",
       `/api/missions/${encodeURIComponent(id)}/spawn`,
@@ -2421,7 +2424,7 @@ export const api = {
     expectCwd: string,
     expectObjectives: string,
   ) =>
-    mutateJson<{ state: string; reason: string; session_key: string | null }>(
+    mutateJson<{ state: string; reason: string; session_key: string | null; refusal?: string }>(
       "POST",
       `/api/missions/${encodeURIComponent(id)}/dispatch`,
       // `expect_cwd` is a COMPARAND, never a launch argument: the server resolves the path from

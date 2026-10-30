@@ -1030,6 +1030,33 @@ def test_a_dispatch_mission_goes_through_the_dispatch_route_and_concludes_with_t
     assert store.get_run(run["id"])["outcome"] == "ok"
 
 
+def test_at_the_session_limit_a_mission_run_is_refused_before_any_mission_or_planner_call(
+    mission_env, monkeypatch
+):
+    """#1819: every scheduled run would otherwise spend a model call and leave a planned mission."""
+    from agent_sessions import resource_limits, session_capacity
+    from agent_sessions.routes import missions as mroutes
+
+    monkeypatch.setattr(session_capacity, "_api_running", lambda: {"codex:running"})
+    monkeypatch.setattr(resource_limits, "max_sessions", lambda: 1)
+    planned = []
+
+    async def producers(mid):
+        planned.append(mid)
+
+    monkeypatch.setattr(mroutes, "_produce_for_new_mission", producers)
+    before = len(missions.list_missions()["missions"]) if hasattr(missions, "list_missions") else 0
+    aid = _made(_mission_config("dispatch"))
+    run = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))["run"]
+    assert run["outcome"] == "refused"
+    assert "Session limit reached: 1 of 1 running" in run["reason"]
+    assert run.get("mission_id") in (None, "")
+    assert not planned
+    assert mission_env == []
+    if hasattr(missions, "list_missions"):
+        assert len(missions.list_missions()["missions"]) == before
+
+
 def test_higher_mission_autonomy_is_a_widening(mission_env):
     aid = _made(_mission_config("propose"))
     row = store.get(aid)

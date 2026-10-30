@@ -66,21 +66,31 @@ export const SYSTEM = {
 
 export const RESOURCES = {
   settings: {
-    values: { console_tasks: 4096, api_tasks: 4096, library_threads: 8, api_memory_gib: 8 },
-    recommended: { console_tasks: 4096, api_tasks: 4096, library_threads: 8, api_memory_gib: 8 },
+    values: { console_tasks: 4096, api_tasks: 4096, library_threads: 8, api_memory_gib: 8, max_sessions: 28 },
+    recommended: { console_tasks: 4096, api_tasks: 4096, library_threads: 8, api_memory_gib: 8, max_sessions: 28 },
     bounds: {
       console_tasks: { min: 256, max: 16384 },
       api_tasks: { min: 256, max: 16384 },
       library_threads: { min: 1, max: 64 },
-      api_memory_gib: { min: 1, max: 1024 },
+      api_memory_gib: { min: 1, max: 1024 }, max_sessions: { min: 1, max: 256 },
     },
     sources: {
       console_tasks: "recommended",
       api_tasks: "recommended",
       library_threads: "recommended",
-      api_memory_gib: "recommended",
+      api_memory_gib: "recommended", max_sessions: "recommended",
     },
     console_tasks_max: "4096",
+    capacity: {
+      memory_bytes: 34359738368,
+      cpus: 8,
+      reserved_bytes: 3435973837,
+      by_memory: 28,
+      by_cpu: 48,
+      limited_by: "memory",
+      recommended: 28,
+    },
+    running: 12,
     library_overrides: [],
   },
   usage: { observed_at: NOW, console_containment: "verified", truncated: false, error: null, groups: [] },

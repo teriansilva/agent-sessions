@@ -30,6 +30,7 @@ from .. import (
     resource_usage,
     scancache,
     scopedspawn,
+    session_capacity,
     session_input,
     sysinfo,
     telemetry,
@@ -518,10 +519,19 @@ def register(
 
         return JSONResponse({"sessions": await asyncio.to_thread(_collect)})
 
+    def _resource_settings() -> dict:
+        settings = resource_limits.settings()
+        # The count the Session limit card reads (#1819). Unreadable is None, never a healthy zero.
+        try:
+            settings["running"] = session_capacity.count()
+        except OSError:
+            settings["running"] = None
+        return settings
+
     @app.get("/api/system/resources")
     async def resources_get(usage: bool = True, _: str = Depends(logged_in)) -> JSONResponse:
         def collect():
-            result = {"settings": resource_limits.settings()}
+            result = {"settings": _resource_settings()}
             if usage:
                 result["usage"] = resource_usage.collect()
             return result
@@ -547,7 +557,7 @@ def register(
             raise HTTPException(status_code=422, detail=str(exc)) from None
         except OSError:
             raise HTTPException(status_code=503, detail="could not save resource limits") from None
-        return JSONResponse({"settings": await asyncio.to_thread(resource_limits.settings)})
+        return JSONResponse({"settings": await asyncio.to_thread(_resource_settings)})
 
     @app.get("/api/update/check")
     async def update_check(_: str = Depends(logged_in)) -> JSONResponse:

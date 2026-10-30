@@ -1,4 +1,7 @@
 import encodeQR from "@paulmillr/qr";
+import { SessionCapacityFactsRow } from "../components/settings/ResourceLimits";
+import { capacityReason } from "../lib/sessionLimit";
+import type { ResourceSettings } from "../types/resources";
 import {
   ArrowLeft,
   ArrowRight,
@@ -103,6 +106,7 @@ const WIZARD_STEPS = [
   "welcome",
   "security",
   "agents",
+  "system",
   "ai",
   "contact",
   "project",
@@ -115,6 +119,7 @@ const STEP_LABEL: Record<Step, string> = {
   welcome: "Welcome",
   security: "Secure your deck",
   agents: "Agents",
+  system: "Your system",
   ai: "Set up AI",
   contact: "HQ contact",
   project: "First project",
@@ -827,13 +832,21 @@ export function Onboarding({
               <button
                 type="button"
                 className={`${styles.pri} shine`}
-                onClick={() => setStep("ai")}
+                onClick={() => setStep("system")}
               >
                 Next <ArrowRight size={14} />
               </button>
             </Foot>
           </Step>
           </div>
+        )}
+
+        {step === "system" && (
+          <SetupSystem
+            onBack={() => setStep("agents")}
+            onNext={() => setStep("ai")}
+            onSkip={finish}
+          />
         )}
 
         {step === "ai" && (
@@ -854,7 +867,7 @@ export function Onboarding({
               <button
                 type="button"
                 className={styles.btn}
-                onClick={() => setStep("agents")}
+                onClick={() => setStep("system")}
               >
                 <ArrowLeft size={14} /> Back
               </button>
@@ -1314,6 +1327,148 @@ function ClientOption({
         <span className={styles.clientSub}>{sub}</span>
       </span>
     </label>
+  );
+}
+
+const READ_WAIT_MS = 10_000;
+
+/** "Your system" (#1819): what this host offers, the session limit picked for it, and why. Skipping
+ *  setup, or pressing Next untouched, leaves the recommendation in force; only an edit is saved. */
+function SetupSystem({
+  onBack,
+  onNext,
+  onSkip,
+}: {
+  onBack: () => void;
+  onNext: () => void;
+  onSkip: () => void;
+}) {
+  const [settings, setSettings] = useState<ResourceSettings | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    api
+      .resources()
+      .then((r) => {
+        if (!active) return;
+        setSettings(r.settings);
+        setDraft(String(r.settings.values.max_sessions));
+      })
+      .catch(() => {
+        if (active) setFailed(true);
+      });
+    // A read that never answers must not trap setup behind a disabled Next.
+    const giveUp = setTimeout(() => setFailed(true), READ_WAIT_MS);
+    return () => {
+      active = false;
+      clearTimeout(giveUp);
+    };
+  }, []);
+  const bounds = settings?.bounds.max_sessions;
+  const value = Number(draft);
+  const valid =
+    !!bounds && /^\d+$/.test(draft) && value >= bounds.min && value <= bounds.max;
+  const edited = !!settings && valid && value !== settings.values.max_sessions;
+  const next = async () => {
+    if (!edited) {
+      onNext();
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await api.setResources({ max_sessions: value });
+      onNext();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "The limit couldn't be saved.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const recommended = settings?.recommended.max_sessions;
+  return (
+    <Step
+      title="Sized for this machine."
+      desc="We read this host and picked how many agent sessions can run at once."
+    >
+      {!settings && !failed && (
+        <p className={styles.copy} role="status">
+          Reading this system…
+        </p>
+      )}
+      {failed && !settings && (
+        <p className={styles.copy} role="alert">
+          This system couldn't be read just now. BattleLab still picks a limit from it, and you can
+          see and change that in Settings → Resources.
+        </p>
+      )}
+      {settings && (
+        <>
+          <SessionCapacityFactsRow
+            capacity={settings.capacity}
+            label={settings.sources.max_sessions === "settings" ? "Recommended" : "Sessions"}
+          />
+          <p className={styles.copy} data-testid="setup-system-reason">
+            {capacityReason(settings.capacity)}
+          </p>
+          <p className={styles.copy}>
+            When {settings.values.max_sessions} are running, new sessions and missions are refused
+            until one is archived or ends, or you raise the limit. Subagents inside a session don't
+            count. Nothing running is ever stopped.
+          </p>
+          <label className={`${styles.field} ${styles.limitField}`}>
+            <span>Maximum running sessions</span>
+            <input
+              type="number"
+              inputMode="numeric"
+              min={bounds?.min}
+              max={bounds?.max}
+              step="1"
+              value={draft}
+              disabled={saving}
+              data-testid="setup-system-limit"
+              onChange={(e) => {
+                setDraft(e.target.value);
+                setError("");
+              }}
+            />
+          </label>
+          <p className={styles.copy}>
+            {settings.sources.max_sessions === "settings"
+              ? `You set ${settings.values.max_sessions}. Recommended for this system: ${recommended}.`
+              : `Recommended for this system: ${recommended}.`}{" "}
+            Range: {bounds?.min}–{bounds?.max}. You can change this any time in Settings →
+            Resources.
+          </p>
+        </>
+      )}
+      {error && (
+        <p className={styles.copy} role="alert">
+          {error}
+        </p>
+      )}
+      <Foot>
+        <button type="button" className={styles.ghost} onClick={onSkip}>
+          Skip setup
+        </button>
+        <span className={styles.grow} />
+        <button type="button" className={styles.btn} onClick={onBack}>
+          <ArrowLeft size={14} /> Back
+        </button>
+        <button
+          type="button"
+          className={`${styles.pri} shine`}
+          // Not past the explanation while it is still on its way; a failed read has its own words.
+          disabled={saving || (settings ? !valid : !failed)}
+          onClick={() => void next()}
+        >
+          Next <ArrowRight size={14} />
+        </button>
+      </Foot>
+    </Step>
   );
 }
 
