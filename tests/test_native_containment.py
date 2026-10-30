@@ -58,7 +58,6 @@ def test_launch_has_one_contained_entrypoint_and_private_output():
         "KillMode=control-group",
         "Restart=no",
         "SendSIGKILL=yes",
-        "RuntimeMaxSec=86400",
         "TasksMax=4096",
         "MemoryMax=8G",
         "Delegate=no",
@@ -67,6 +66,8 @@ def test_launch_has_one_contained_entrypoint_and_private_output():
         "StandardError=null",
     }
     assert {"--property=" + value for value in expected} <= set(argv)
+    # No 24 h cap (#1724): only the idle rule, the operator's Stop and the budgets end a worker.
+    assert not any(arg.startswith("--property=RuntimeMaxSec") for arg in argv)
     assert argv[argv.index("--") + 1 :] == [
         "/usr/bin/env",
         "-i",

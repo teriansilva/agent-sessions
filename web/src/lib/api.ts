@@ -1070,8 +1070,19 @@ export const api = {
     mutateJson<StructuredSnapshot>("POST", `${structuredPath(key)}/start`),
   structuredEnableBypass: (key: string, operation_id: string) =>
     mutateJson<StructuredSnapshot>("POST", `${structuredPath(key)}/skip-permissions`, { operation_id }),
-  structuredStop: (key: string) =>
-    mutateJson<{ containment: Containment }>("POST", `${structuredPath(key)}/stop`),
+  /** `confirm` (#1724): the `native.stop_inventory` the operator was shown. The worker rechecks
+   *  it against a fresh scan; a changed set answers 409 `reason: "inventory_changed"` with the
+   *  current `inventory`, and nothing is stopped. Without it, Stop confirms that nothing runs.
+   *  An exact Stop also ends anything those jobs start while it runs (the dialog says so; the
+   *  settlement lists them as started while stopping).
+   *  `{ worker, everything: true }`: Stop everything of exactly that generation, the disclosed
+   *  second kind (a changed list, one over the display limits, an unreadable scan, or a worker
+   *  that can't be reached — a 503 `reason: "worker_unreachable"`). */
+  structuredStop: (
+    key: string,
+    confirm?: { worker: string; digest: string } | { worker: string; everything: true },
+  ) =>
+    mutateJson<{ containment: Containment }>("POST", `${structuredPath(key)}/stop`, confirm),
   structuredContainment: (key: string) =>
     getJsonWithDetail<{ containment: Containment }>(`${structuredPath(key)}/containment`),
 

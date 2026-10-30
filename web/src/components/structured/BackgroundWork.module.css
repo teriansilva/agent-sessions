@@ -37,3 +37,111 @@
   .facts { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .facts dd + dt { margin-top: 8px; }
 }
+
+/* A process the agent started (#1724, the process floor): its program name and pid only. */
+.process { font-family: var(--font-mono); }
+
+/* Stop, when background work runs (#1724): two observation lists inside the one confirm dialog. */
+.notice {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 var(--sp-3);
+  padding: 8px 10px;
+  border-left: 3px solid var(--status-unknown);
+  background: color-mix(in srgb, var(--text-1) 4%, transparent);
+  color: var(--text-1);
+  line-height: 1.5;
+}
+.noticeChanged { border-left-color: var(--status-degraded); }
+.stopLead { margin: 0 0 var(--sp-2); color: var(--text-1); line-height: 1.5; }
+.stopGroup {
+  margin: var(--sp-2) 0 0;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line-strong);
+  font: 600 var(--fs-meta) var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.stopList { margin: 0; padding: 0; list-style: none; }
+.stopList > li {
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-strong);
+}
+.stopList > li > :not(:first-child) { grid-column: 2; }
+.stopName { font-family: var(--font-mono); color: var(--text-1); overflow-wrap: anywhere; }
+.stopMeta {
+  font: var(--fs-meta) var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.stamp {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 6px;
+  border: 1px solid var(--line-strong);
+  font: 600 var(--fs-meta) var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.unknownMark { width: 7px; height: 7px; border: 1px solid var(--status-unknown); }
+.stopNote { margin: var(--sp-3) 0 0; color: var(--text-2); line-height: 1.5; }
+
+/* Work that ended with its worker, and idle exits (#1724): transcript rows, never a failure. */
+.ends { display: grid; gap: 6px; margin: 6px 0; }
+.end {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 8px 12px;
+  border-left: 1px dashed var(--line-strong);
+  background: color-mix(in srgb, var(--text-1) 4%, transparent);
+  font: 12px var(--font-mono);
+  color: var(--text-2);
+  min-width: 0;
+}
+.endTag {
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.endWhat { color: var(--text-1); overflow-wrap: anywhere; min-width: 0; }
+.endWhen { margin-left: auto; font-variant-numeric: tabular-nums; }
+@media (max-width: 800px) {
+  .endWhen { margin-left: 0; }
+}
+
+/* An unreadable process scan (#1724): the session won't idle out; Stop is offered beside it. */
+.scanUnknown {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 6px 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--status-unknown);
+  background: color-mix(in srgb, var(--text-1) 4%, transparent);
+  color: var(--text-1);
+  font: 12px var(--font-mono);
+}
+.scanUnknownText { flex: 1 1 240px; min-width: 0; line-height: 1.5; }
+.scanUnknownStop {
+  min-height: 44px;
+  padding: 0 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--status-down);
+  color: var(--danger-text);
+  font: 600 12px var(--font-mono);
+  cursor: pointer;
+}
+.scanUnknownStop:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

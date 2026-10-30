@@ -50,6 +50,7 @@ from . import (
     native_ipc,
     native_journal,
     native_memory,
+    native_processes,
     native_protocol,
     native_questions,
     native_segments,
@@ -70,6 +71,24 @@ INVENTORY_CHANGED = (
     "the agent's background tasks or turn changed since you confirmed; "
     "review them and confirm again"
 )
+STOP_CHANGED = (
+    "the session's background work changed since you confirmed; review it and confirm again"
+)
+#: Attempts at the readiness baseline of the process floor (#1724); later idle ticks retry it
+#: while no turn has run.
+BASELINE_TRIES = 3
+#: The longest a process-only change waits to be journaled (#1724): bounds churn's records.
+INVENTORY_INTERVAL = 300.0
+#: Claims of a Stop retried at the current revision while the agent keeps writing (#1724).
+STOP_CLAIM_TRIES = 5
+#: The exact Stop's freeze (#1724): scan→SIGSTOP passes, and the time, before an unstable set is
+#: treated as changed.
+FREEZE_PASSES = 10
+FREEZE_SECONDS = 2.0
+#: Pause between freeze passes / resume attempts, and the abort's immediate resume retries
+#: before the remainder is left to idle ticks and shown in the pane (#1724).
+FREEZE_RETRY = 0.02
+RESUME_RETRIES = 5
 FLUSH_INTERVAL = 0.2
 STDERR_TAIL = 4096
 _URGENT = frozenset(
@@ -85,6 +104,9 @@ _URGENT = frozenset(
     }
 )
 
+
+#: Observations that mean a turn ran (#1724): after one, a missing process baseline is never taken.
+_TURN_KINDS = frozenset({"turn_started", "turn_completed", "text", "tool", "approval"})
 
 OPENCODE = "opencode-acp"
 COPILOT = "copilot-acp"
@@ -455,6 +477,34 @@ class Worker:
         self.last_activity = time.monotonic()
         self.idle_timeout = float(config.get("idle_timeout") or IDLE_TIMEOUT)
         self.reported_send_now: str | None = None
+        # The process floor (#1724): the readiness baseline of (pid, start) identities, the
+        # latest reading against it, the group it reads (once pinned), and the last inventory
+        # journaled. Unknown until the baseline is taken; unknown is busy.
+        self.baseline: frozenset[tuple[int, int]] | None = None
+        self.floor = native_processes.Floor(native_processes.UNKNOWN)
+        self._floor_group: str | None = None
+        self.written: dict | None = None  # the last inventory served
+        self.written_at = 0.0
+        self.journaled = False  # an inventory reached the journal this generation
+        self.tick = min(30.0, max(0.05, self.idle_timeout / 4))
+        # 5 min; scaled down with a short configured idle timeout (tests), never above 5 min.
+        self.inventory_interval = min(INVENTORY_INTERVAL, 10 * self.tick)
+        self.turn_seen = False  # a turn of any kind ran: a missing baseline is never taken now
+        self.stop_accepted = False  # a Stop of this generation was accepted and is under way
+        # Seams of the exact Stop's freeze (#1724): the signal and the (pid, start) recheck.
+        self._signal = os.kill
+        self._recheck = native_processes.read_process
+        # The paused ledger (#1724): every (pid, start) an exact Stop's freeze SIGSTOPped and
+        # has not confirmed resumed (or killed). `unresumed`: its size as last journaled.
+        self.paused: dict[tuple[int, int], native_processes.Process] = {}
+        self.paused_by: str | None = None
+        self.unresumed = 0
+        # The ONE exact Stop in progress (Hermes on PR #1757 head a19fc823): from before its
+        # first SIGSTOP until its frozen set is killed or it is refused and resumed, it owns the
+        # ledger, and nothing else (an idle tick) may resume a process it froze.
+        self.stop_owner: str | None = None
+        self.settled = False  # an orderly end wrote its `background_settled`
+        self.signalled = False  # SIGTERM/SIGINT: the unit is being stopped
         # OOM kills in this worker's unit (#1732). `_oom_base`: the hierarchical counter when the
         # worker started; `_oom_seen`: the last count journaled (kills since the base);
         # `_oom_turn`: the turn in flight at the last read; `_turn_key`: the turn the worker last
@@ -660,6 +710,23 @@ class Worker:
                 self.stop_child()
                 return
 
+    def write_checked(self, events) -> None:
+        """Journal ``events`` NOW, raising `JournalError` rather than stopping the child: a
+        record the exact Stop depends on (#1724, Hermes on PR #1757) is a checked precondition,
+        and its failure fails that Stop closed with the unit still running. What was pending is
+        written first (journal order); on failure, nothing of ``events`` stays pending."""
+        mark = len(self.pending)
+        self.record(events)
+        ours, self.pending = self.pending[mark:], self.pending[:mark]
+        while self.pending:
+            batch = self.pending[: native_ipc.MAX_EVENTS]
+            native_journal.append_events(self.journal_root, self.binding, batch)
+            del self.pending[: len(batch)]
+        for start in range(0, len(ours), native_ipc.MAX_EVENTS):
+            native_journal.append_events(
+                self.journal_root, self.binding, ours[start : start + native_ipc.MAX_EVENTS]
+            )
+
     async def flusher(self) -> None:
         while not self.done.is_set():
             with contextlib.suppress(asyncio.TimeoutError):
@@ -694,7 +761,520 @@ class Worker:
         return self.native_busy()
 
     def busy(self) -> bool:
-        return bool(self.queued) or self.native_busy()
+        """Stay alive (#1724): a turn, a queued message, an approval or question, an agent turn,
+        an engine-reported background task (Claude's tasks, Codex's terminals) or a live process
+        the agent spawned — or a process scan that cannot say. Never decides dispatch."""
+        return (
+            bool(self.queued)
+            or self.native_busy()
+            or bool(getattr(self.codec, "terminals", None))
+            or self.floor.busy
+        )
+
+    # --- the process floor and the background inventory (#1724) ---------------------------
+
+    def _observe(self) -> native_processes.Scan:
+        unit = native_containment.WorkerIdentity(self.worker_id).unit
+        pinned = self._floor_group
+        if pinned is None:
+            try:
+                pinned = native_state.read_lifecycle(self.worker_id).get("control_group")
+            except (native_state.StateError, OSError):
+                pinned = None
+        observed = native_processes.observe(unit, pinned if isinstance(pinned, str) else None)
+        if observed.state == native_processes.OK:
+            self._floor_group = pinned
+        return observed
+
+    def take_baseline(self, tries: int = BASELINE_TRIES) -> None:
+        """Everything in the group now is the worker, its CLI and what the CLI started to get
+        ready. Taken at readiness; one that cannot be read is retried on later idle ticks only
+        while no turn has run (`baseline_open`). After that it is never guessed: it could
+        swallow the agent's own work, so the floor stays unknown (busy) for the generation."""
+        for attempt in range(tries):
+            observed = self._observe()
+            if observed.state != native_processes.UNKNOWN:
+                if observed.state == native_processes.OK:
+                    self.baseline = frozenset(p.identity for p in observed.processes)
+                self.floor = native_processes.floor(observed, self.baseline)
+                return
+            if attempt + 1 < tries:
+                time.sleep(0.1)
+        self.floor = native_processes.Floor(native_processes.UNKNOWN)
+
+    @property
+    def baseline_open(self) -> bool:
+        """May a missing baseline still be taken? Only until the first turn of any kind."""
+        return self.baseline is None and not self.turn_seen and self.floor.state != "uncontained"
+
+    def observe_floor(self) -> native_processes.Floor:
+        if self.floor.state == native_processes.UNCONTAINED:
+            return self.floor
+        if self.baseline_open:
+            self.take_baseline(1)
+            return self.floor
+        self.floor = native_processes.floor(self._observe(), self.baseline)
+        return self.floor
+
+    def engine_ids(self) -> list[str]:
+        return sorted(
+            set(getattr(self.codec, "_background", ())) | set(getattr(self.codec, "terminals", ()))
+        )
+
+    def _aged(self, floor: native_processes.Floor) -> tuple[native_processes.Process, ...]:
+        """The processes that have lived at least one idle tick (#1724): what a periodic
+        inventory journals. A loop's short-lived children keep the worker alive (liveness uses
+        every process) but never reach the journal one by one."""
+        if floor.observed is None:
+            return floor.processes
+        span = self.tick * os.sysconf("SC_CLK_TCK")
+        return tuple(p for p in floor.processes if floor.observed - p.start >= span)
+
+    def inventory(self, floor: native_processes.Floor | None = None, *, aged: bool = False) -> dict:
+        """The active set as an inventory. ``aged``: only processes older than one tick (the
+        periodic journal record); otherwise every process (Stop, settlement). The digest covers
+        everything, listed or not; `more` / `engine_more` count what is not listed."""
+        floor = self.floor if floor is None else floor
+        engine = self.engine_ids()
+        processes = self._aged(floor) if aged else floor.processes
+        listed = processes[: native_ipc.MAX_INVENTORY_PROCESSES]
+        identities = frozenset(p.identity for p in processes)
+        return {
+            "engine": engine[: native_ipc.MAX_INVENTORY_TASKS],
+            "engine_more": max(0, len(engine) - native_ipc.MAX_INVENTORY_TASKS),
+            "processes": [
+                {
+                    "pid": p.pid,
+                    "start": p.start,
+                    "comm": p.comm,
+                    "started_at": native_processes.started_at(p),
+                }
+                for p in listed
+            ],
+            "more": len(processes) - len(listed),
+            "scan": floor.state,
+            "digest": native_ipc.stop_digest(self.worker_id, engine, identities, floor.state),
+        }
+
+    def record_inventory(self, data: dict, *, force: bool = False) -> None:
+        """Journal the active set when it changed. Nothing active and nothing journaled yet
+        writes nothing."""
+        if self.written is not None and self.written["digest"] == data["digest"]:
+            return
+        self.written, self.written_at = data, time.monotonic()
+        empty = not data["engine"] and not data["processes"] and data["scan"] != "unknown"
+        if empty and not force and not self.journaled:
+            return
+        self.journaled = True
+        self.record([native_protocol.NativeEvent("background_inventory", data)])
+
+    @staticmethod
+    def complete(inventory: dict) -> bool:
+        """May this inventory be confirmed EXACTLY (#1724)? Only when the dialog can list all of
+        it: every process and every task named (none past the display limits) and a readable
+        scan. Anything else is confirmed only by Stop everything."""
+        return (
+            inventory["more"] == 0
+            and inventory.get("engine_more", 0) == 0
+            and inventory["scan"] != native_processes.UNKNOWN
+        )
+
+    def note_engine(self) -> None:
+        """An engine task started or ended: journal the set with it, in the same batch."""
+        written = self.written["engine"] if self.written is not None else []
+        if self.ready.is_set() and written != self.engine_ids():
+            self.record_inventory(self.inventory(aged=True))
+
+    def after_floor(self, terminals_before: set[str]) -> None:
+        """A readable floor with no agent process means no terminal the client reported can
+        still run (its shell is such a process): retire the ones known before the scan. Then
+        journal the set if it changed: at once for an engine task (or the first one), otherwise
+        — processes, a scan that became (un)readable — at most once per `inventory_interval`
+        (5 min): process churn or a flapping scan never journals a record per tick."""
+        retire = getattr(self.codec, "retire_terminals", None)
+        if (
+            retire is not None
+            and self.floor.state == native_processes.OK
+            and not self.floor.processes
+        ):
+            ended = terminals_before & set(self.codec.terminals)
+            if ended:
+                self.record(retire(ended))
+        data = self.inventory(aged=True)
+        last = self.written
+        if last is not None and last["digest"] == data["digest"]:
+            return
+        urgent = last is None or last["engine"] != data["engine"]
+        if urgent or time.monotonic() - self.written_at >= self.inventory_interval:
+            self.record_inventory(data)
+
+    def settle(
+        self,
+        reason: str,
+        data: dict,
+        *,
+        idle_for: int | None = None,
+        confirmed: dict | None = None,
+        checked: bool = False,
+    ) -> None:
+        """An orderly end (#1724): what was still active ends with this worker, for this reason.
+        Durable before the child is stopped; a crash before it leaves the last inventory.
+        ``confirmed``: the inventory a Stop was confirmed against; a process of ``data`` (the
+        final scan) not in it started while the Stop ran, and is marked so. ``checked``: the
+        exact Stop's settlement raises `JournalError` instead (it fails that Stop closed)."""
+        settled = {
+            key: data[key]
+            for key in ("engine", "processes", "more", "scan", "engine_more")
+            if key in data
+        }
+        if confirmed is not None:
+            known = {(p["pid"], p["start"]) for p in confirmed["processes"]}
+            settled["processes"] = [
+                p if (p["pid"], p["start"]) in known else {**p, "started_during_stop": True}
+                for p in settled["processes"]
+            ]
+        settled["reason"] = reason
+        if idle_for is not None:
+            settled["idle_for"] = idle_for
+        event = native_protocol.NativeEvent("background_settled", settled)
+        if checked:
+            self.write_checked([event])
+            self.settled = True
+            return
+        self.settled = True
+        self.record([event])
+        self.flush()
+
+    # --- the exact Stop's freeze (#1724) ---------------------------------------------------
+
+    def _signalable(self, pid: int) -> bool:
+        """Never pid ≤ 1, never the worker itself or its process group (killpg(1) is kill(-1))."""
+        own = {os.getpid()}
+        with contextlib.suppress(OSError):
+            own.add(os.getpgid(0))
+        return pid > 1 and pid not in own
+
+    def _members(self) -> set[int]:
+        """The pids of this worker's own unit cgroup (sub-cgroups included); `ScanError` when it
+        cannot be read. Membership only, never a guess."""
+        if not self._floor_group:
+            raise native_processes.ScanError("no pinned group")
+        return native_processes.members(self._floor_group)
+
+    def _send(self, process: native_processes.Process, sig: int, *, ledger: bool = False) -> bool:
+        """Signal one process scanned from this unit's cgroup, only while its pid still names
+        the same (pid, start) identity. False when it is gone, no longer that process, or the
+        signal could not be delivered. ``ledger``: a SIGSTOP enters the paused ledger right
+        before the signal is sent, and leaves it if the signal was not delivered."""
+        if not self._signalable(process.pid):
+            return False
+        try:
+            current = self._recheck(process.pid)
+        except native_processes.ScanError:
+            return False
+        if current is None or current.start != process.start:
+            return False
+        if ledger:
+            self.paused[process.identity] = process
+        try:
+            self._signal(process.pid, sig)
+        except OSError:
+            if ledger:
+                self.paused.pop(process.identity, None)
+            return False
+        return True
+
+    def _stopped(self, process: native_processes.Process) -> bool | None:
+        """Is this process confirmed stopped (`T`/`t`)? None when it is gone (or its pid now
+        names another process): nothing of it can run any more. False when it runs, or when it
+        cannot be read — never assumed stopped."""
+        try:
+            current = self._recheck(process.pid)
+        except native_processes.ScanError:
+            return False
+        if current is None or current.start != process.start:
+            return None
+        return current.state in {"T", "t"}
+
+    def freeze_and_check(self, confirmed: dict) -> dict:
+        """SIGSTOP every process of this unit (sub-cgroups included) but the worker, until every
+        one present is CONFIRMED stopped (its state re-read as `T`) or gone, and a rescan finds
+        no new one (≤ `FREEZE_PASSES` passes, ≤ `FREEZE_SECONDS`). A stopped process cannot
+        fork, so the set is then stable. A process that cannot be stopped, or whose stop cannot
+        be confirmed, within those bounds is `unstable`: fail closed (Hermes on PR #1757). Every
+        SIGSTOP goes into the paused ledger first, so it is always resumed on any way out but
+        acceptance. Then revalidate the frozen set against the confirmed inventory: every agent
+        process confirmed or a descendant of a confirmed one (what the dialog discloses), the
+        engine tasks unchanged; anything else is `changed`."""
+        try:
+            return self._freeze(confirmed)
+        except BaseException:
+            self.resume_paused()  # an exception never strands a stopped job
+            raise
+
+    def _freeze(self, confirmed: dict) -> dict:
+        frozen: set[tuple[int, int]] = set()
+        gone: set[tuple[int, int]] = set()
+        deadline = time.monotonic() + FREEZE_SECONDS
+        observed = None
+        for attempt in range(FREEZE_PASSES):
+            observed = self._observe()
+            if observed.state != native_processes.OK:
+                return {"problem": "unstable", "observed": observed}
+            pending = [
+                p
+                for p in sorted(observed.processes)
+                if p.identity not in frozen and p.identity not in gone and self._signalable(p.pid)
+            ]
+            if not pending:
+                break
+            for process in pending:
+                # Into the ledger before the signal: whatever happens next, it is resumed.
+                self._send(process, signal.SIGSTOP, ledger=True)
+            for process in pending:
+                stopped = self._stopped(process)
+                if stopped is None:
+                    gone.add(process.identity)
+                    self.paused.pop(process.identity, None)
+                elif stopped:
+                    frozen.add(process.identity)
+            if time.monotonic() >= deadline:
+                return {"problem": "unstable", "observed": observed}
+            if attempt + 1 < FREEZE_PASSES:
+                time.sleep(FREEZE_RETRY)
+        else:
+            return {"problem": "unstable", "observed": observed}
+        floor = native_processes.floor(observed, self.baseline)
+        self.floor = floor
+        allowed = {(p["pid"], p["start"]) for p in confirmed["processes"]}
+        running = {p.pid: p for p in observed.processes}
+
+        def disclosed(process: native_processes.Process) -> bool:
+            seen, current = set(), process
+            while current is not None and current.pid not in seen:
+                if current.identity in allowed:
+                    return True
+                seen.add(current.pid)
+                current = running.get(current.ppid)
+            return False
+
+        changed = set(self.engine_ids()) != set(confirmed["engine"]) or not all(
+            disclosed(p) for p in floor.processes
+        )
+        return {"problem": "changed" if changed else None, "observed": observed}
+
+    def resume_paused(self) -> int:
+        """SIGCONT every process in the paused ledger, and keep in it only those whose resume
+        cannot be confirmed. An unreadable identity is resumed anyway while its pid is still a
+        member of this unit's cgroup (a resumed wrong process is harmless; a suspended job is
+        not). Never pid ≤ 1, the worker's own pid or group. Returns what is still unresumed."""
+        try:
+            members = self._members()
+        except native_processes.ScanError:
+            members = None
+        for identity, process in list(self.paused.items()):
+            if not self._signalable(process.pid):
+                del self.paused[identity]
+                continue
+            try:
+                current = self._recheck(process.pid)
+            except native_processes.ScanError:
+                if members is not None and process.pid in members:
+                    with contextlib.suppress(OSError):
+                        self._signal(process.pid, signal.SIGCONT)
+                continue  # sent if a member, but unconfirmed: retried on the next idle tick
+            if current is None or current.start != process.start:
+                del self.paused[identity]  # gone: nothing left to resume
+                continue
+            with contextlib.suppress(OSError):
+                self._signal(process.pid, signal.SIGCONT)
+            if self._stopped(process) is not True:
+                del self.paused[identity]
+        return len(self.paused)
+
+    def resume_with_retries(self) -> int:
+        left = self.resume_paused()
+        for _ in range(RESUME_RETRIES):
+            if not left:
+                break
+            time.sleep(FREEZE_RETRY)
+            left = self.resume_paused()
+        return left
+
+    async def retry_resume(self) -> None:
+        """Idle tick: retry a ledger an earlier REFUSED Stop could not empty; journal any change.
+        Serialized with the effects, and never while an exact Stop owns the ledger: what an
+        accepted Stop froze stays frozen until it is killed (Hermes on PR #1757 head a19fc823)."""
+        if not self.paused or self.stop_owner is not None:
+            return
+        async with self.effects:
+            if not self.paused or self.stop_owner is not None:
+                return
+            left = await asyncio.to_thread(self.resume_paused)
+            if left != self.unresumed:
+                self.unresumed = left
+                self.record(
+                    [
+                        native_protocol.NativeEvent(
+                            "stop_resumed", {"stop_operation": self.paused_by, "unresumed": left}
+                        )
+                    ]
+                )
+
+    async def exact_stop(self, request: dict, params: dict, ending: dict, receipt) -> dict:
+        """An EXACT Stop, claimed (#1724, operator decision on PR #1757): freeze the unit,
+        journal the ledger, revalidate, settle from the frozen set, accept, hand off, and kill
+        the frozen set. The Stop owns the ledger throughout. Every journal write it depends on
+        (the ledger, the settlement) is checked: a failure resumes the frozen set and refuses,
+        never accepted (Hermes on PR #1757). Any exception or cancellation before acceptance
+        resumes; after acceptance it kills what it froze."""
+        operation = params["operation_id"]
+        self.paused_by = self.stop_owner = operation
+        accepted = False
+        try:
+            freeze = asyncio.ensure_future(asyncio.to_thread(self.freeze_and_check, ending))
+            try:
+                verdict = await asyncio.shield(freeze)
+            except asyncio.CancelledError:
+                # The freeze thread runs on: wait for it (bounded) before anything resumes.
+                while not freeze.done():
+                    with contextlib.suppress(BaseException):
+                        await asyncio.wait({freeze})
+                raise
+            except Exception as exc:  # resumed inside; nothing was accepted or stopped
+                log.warning("exact Stop freeze failed: %s", type(exc).__name__)
+                return await self.refuse_stop(
+                    request,
+                    params,
+                    "unstable",
+                    self.error(request, "unavailable", "the Stop could not freeze the unit"),
+                )
+            try:
+                self.write_checked([self.paused_event(operation)])
+            except native_journal.JournalError as exc:
+                return await self.refuse_stop(
+                    request, params, "journal", self.journal_error(request, exc)
+                )
+            if verdict["problem"] is not None:
+                return await self.abort_stop(request, params, verdict)
+            frozen = dict(self.paused)
+            if not self.settled:
+                # The FINAL scan is the frozen set: what the confirmed jobs started meanwhile
+                # is marked so.
+                try:
+                    self.settle("stop", self.inventory(), confirmed=ending, checked=True)
+                except native_journal.JournalError as exc:
+                    return await self.refuse_stop(
+                        request, params, "journal", self.journal_error(request, exc)
+                    )
+            # Accepted only now, with its claim, ledger and settlement durable.
+            accepted = self.stop_accepted = True
+            self.report(stop_accepted_at=time.time())
+            handed = await self.handoff("stop", params, receipt=receipt)
+            # Stopped processes cannot act on SIGTERM: end the frozen set now (its children
+            # cannot have been born since — a stopped process does not fork).
+            await asyncio.to_thread(self.kill_frozen, frozen)
+            return self.receipt(request, handed)
+        except BaseException:
+            if accepted:
+                self.kill_frozen(dict(self.paused))
+            else:
+                self.unresumed = self.resume_with_retries()
+            raise
+        finally:
+            self.stop_owner = None
+
+    async def refuse_stop(self, request: dict, params: dict, reason: str, response: dict) -> dict:
+        """Refuse a claimed exact Stop with everything it froze resumed FIRST: then, as far as
+        the journal can be written, why (`stop_aborted`, how many could not be resumed) and the
+        claim settled `not_sent`. Never accepted."""
+        self.unresumed = await asyncio.to_thread(self.resume_with_retries)
+        aborted = {"stop_operation": params["operation_id"], "reason": reason}
+        with contextlib.suppress(native_journal.JournalError):
+            self.write_checked(
+                [
+                    native_protocol.NativeEvent(
+                        "stop_aborted", {**aborted, "unresumed": self.unresumed}
+                    )
+                ],
+            )
+        with contextlib.suppress(native_journal.JournalError):
+            await asyncio.to_thread(
+                native_journal.record_handoff,
+                self.journal_root,
+                self.binding,
+                params["operation_id"],
+                "not_sent",
+            )
+        return response
+
+    async def abort_stop(self, request: dict, params: dict, verdict: dict) -> dict:
+        """The frozen set is not what the operator confirmed, or could not be frozen: resume
+        everything that was stopped, record that this Stop's claim was not applied (`not_sent`,
+        final) and why (`stop_aborted`, with how many could not be resumed), journal the
+        current inventory, and refuse with it (409). A journal that cannot take the abort's
+        record refuses as the journal failure (the pane shows a refusal, nothing sent)."""
+        left = await asyncio.to_thread(self.resume_with_retries)
+        self.unresumed = left
+        if verdict["observed"] is not None and verdict["observed"].state == native_processes.OK:
+            self.floor = native_processes.floor(verdict["observed"], self.baseline)
+        aborted = native_protocol.NativeEvent(
+            "stop_aborted",
+            {
+                "stop_operation": params["operation_id"],
+                "reason": verdict["problem"],
+                "unresumed": left,
+            },
+        )
+        response = self.error(request, "stale", STOP_CHANGED, "inventory_changed")
+        try:
+            self.write_checked([aborted])
+            self.record_inventory(self.inventory(), force=True)
+            self.write_checked([])
+        except native_journal.JournalError as exc:
+            self.written = None  # the fresh inventory is not journaled: write it again later
+            response = self.journal_error(request, exc)
+        with contextlib.suppress(native_journal.JournalError):
+            await asyncio.to_thread(
+                native_journal.record_handoff,
+                self.journal_root,
+                self.binding,
+                params["operation_id"],
+                "not_sent",
+            )
+        return response
+
+    def paused_event(self, operation_id: str) -> native_protocol.NativeEvent:
+        """The ledger as a record (#1724): which (pid, start) this Stop paused. Bounded like an
+        inventory; `more` counts the rest."""
+        listed = sorted(self.paused.values())[: native_ipc.MAX_INVENTORY_PROCESSES]
+        return native_protocol.NativeEvent(
+            "stop_paused",
+            {
+                "stop_operation": operation_id,
+                "processes": [
+                    {
+                        "pid": p.pid,
+                        "start": p.start,
+                        "comm": p.comm,
+                        "started_at": native_processes.started_at(p),
+                    }
+                    for p in listed
+                ],
+                "more": len(self.paused) - len(listed),
+            },
+        )
+
+    def kill_frozen(self, frozen: dict) -> None:
+        """The accepted exact Stop ends its frozen set (stopped processes cannot act on SIGTERM;
+        a stopped process cannot have forked since). The ledger empties: nothing to resume."""
+        for process in frozen.values():
+            self._send(process, signal.SIGKILL)
+        self.paused.clear()
+
+    def on_signal(self) -> None:
+        self.signalled = True
+        self.stop_child()
 
     def _sent_now_cuts(self) -> bool:
         """Does the head, a message Send now selected, go now although the agent runs a turn of
@@ -871,9 +1451,17 @@ class Worker:
             )
 
     async def idle_watch(self) -> None:
-        """Exit when nothing is running; a later turn resumes the history in a new generation."""
+        """Exit when nothing is running; a later turn resumes the history in a new generation.
+        Each tick reads the process floor (#1724), bounded and read-only."""
         while not self.done.is_set():
-            await asyncio.sleep(min(30.0, max(0.05, self.idle_timeout / 4)))
+            await asyncio.sleep(self.tick)
+            before = set(getattr(self.codec, "terminals", ()))
+            with contextlib.suppress(OSError):
+                await asyncio.to_thread(self.observe_floor)
+            if self.done.is_set():
+                return
+            self.after_floor(before)
+            await self.retry_resume()
             if self.busy():
                 self.last_activity = time.monotonic()
                 continue
@@ -884,6 +1472,12 @@ class Worker:
                     continue
                 self.closing = True
                 self.report(idle_exit_at=time.time())
+                # Recorded first (#1724): the pane says how long it was idle, with nothing active.
+                self.settle(
+                    "idle",
+                    self.inventory(),
+                    idle_for=int(time.monotonic() - self.last_activity),
+                )
                 self.stop_child()
                 return
 
@@ -896,6 +1490,12 @@ class Worker:
 
     async def handle_events(self, events) -> None:
         self.last_activity = time.monotonic()
+        if not self.turn_seen and any(
+            e.kind in _TURN_KINDS
+            or (e.kind == "background" and (e.data.get("task_id") or e.data.get("background_turn")))
+            for e in events
+        ):
+            self.turn_seen = True  # the agent ran something: a missing baseline stays missing
         # Before this batch is journaled: a turn that starts or settles here closes the OOM
         # counter's window first (#1732).
         self.turn_transition()
@@ -929,6 +1529,7 @@ class Worker:
                 if waiter is not None and not waiter.done():
                     waiter.set_result(event)
         self.record([*events, *delivery_events])
+        self.note_engine()
         self.queue_wake.set()
         await self.report_send_now_state()
 
@@ -1370,6 +1971,35 @@ class Worker:
                 return self.error(request, "unavailable", "the native connection is not ready")
             if action == "stop" and params["target_worker_id"] != self.worker_id:
                 return self.error(request, "conflict", "stop targets another worker generation")
+            ending = None
+            if action == "stop":
+                # A Stop rescans the process floor first (#1724). An operator's confirms the exact
+                # background work it was shown: a changed set — a new process, an ended task, a
+                # scan that became unreadable or readable — refuses with nothing claimed and the
+                # fresh inventory journaled, so the pane asks again. Before readiness no turn ran.
+                if self.ready.is_set():
+                    with contextlib.suppress(OSError):
+                        await asyncio.to_thread(self.observe_floor)
+                    ending = self.inventory()
+                else:
+                    ending = self.inventory(native_processes.Floor(native_processes.OK))
+                confirmed = params.get("confirm_digest")
+                # Two kinds of confirmation (#1724, operator decision on PR #1757). EXACT: the
+                # digest of a COMPLETE inventory (the dialog listed every process and task), and
+                # what runs now is exactly that; any change refuses. EVERYTHING
+                # (`confirm_everything`): the operator was told it ends everything the agent
+                # started, listed or not; it is bound to this generation by its target and the
+                # runtime's pinned close, and takes no inventory check. A Stop already accepted
+                # for this generation (a double click, a second tab) answers as accepted.
+                if (
+                    confirmed is not None
+                    and not self.stop_accepted
+                    and not (confirmed == ending["digest"] and self.complete(ending))
+                ):
+                    if self.ready.is_set():
+                        self.record_inventory(ending, force=True)
+                        self.flush()
+                    return self.error(request, "stale", STOP_CHANGED, "inventory_changed")
             if action == "send_now":
                 return await self.send_now(request)
             if action == "withdraw":
@@ -1436,14 +2066,56 @@ class Worker:
                 # A direct turn's claim is its start: the OOM counter is read before it (#1732).
                 if self.oom_read(self._turn_key, ("operation_id", params["operation_id"])):
                     self.flush()
-            try:
-                fresh, receipt = await asyncio.to_thread(
-                    native_journal.claim, self.journal_root, request, queued=queued
-                )
-            except native_journal.JournalError as exc:
-                return self.journal_error(request, exc)
+            for attempt in range(STOP_CLAIM_TRIES):
+                try:
+                    fresh, receipt = await asyncio.to_thread(
+                        native_journal.claim, self.journal_root, request, queued=queued
+                    )
+                    break
+                except native_journal.JournalError as exc:
+                    if (
+                        action == "stop"
+                        and exc.code == "conflict"
+                        and exc.detail == native_journal.REVISION_CHANGED
+                        and attempt + 1 < STOP_CLAIM_TRIES
+                    ):
+                        # A Stop's identity does not depend on what the agent wrote meanwhile
+                        # (#1724): on a session that streams output, claim it at the current
+                        # revision instead of answering "conflict".
+                        journal = await asyncio.to_thread(
+                            native_journal.read, self.journal_root, self.session_id
+                        )
+                        request = {
+                            **request,
+                            "params": {**request["params"], "expected_revision": journal.revision},
+                        }
+                        continue
+                    return self.journal_error(request, exc)
+            if action == "submit":
+                self.turn_seen = True  # from here a missing process baseline is never taken
             if not fresh:
                 return self.receipt(request, receipt)
+            if (
+                action == "stop"
+                and params.get("confirm_digest") is not None
+                and not self.stop_accepted
+                and self.ready.is_set()
+                and self.floor.state == native_processes.OK
+            ):
+                # An EXACT Stop freezes the unit and revalidates (#1724, operator decision on PR
+                # #1757): nothing it was not confirmed for may be ended.
+                return await self.exact_stop(request, params, ending, receipt)
+            if action == "stop" and not self.stop_accepted:
+                # Accepted only now, with its claim durable (Hermes on PR #1757): a refused claim
+                # or exhausted retries leave no marker a later Stop could take for acceptance.
+                self.stop_accepted = True
+                self.report(stop_accepted_at=time.time())
+            if ending is not None and self.ready.is_set() and not self.settled:
+                # The FINAL scan, as late as the worker can. A failed scan settles `unknown`,
+                # never a list it cannot vouch for.
+                with contextlib.suppress(OSError):
+                    await asyncio.to_thread(self.observe_floor)
+                self.settle("stop", self.inventory(), confirmed=ending)
             if queued:
                 self.queued.append(params)
                 self.queue_wake.set()
@@ -1981,7 +2653,7 @@ class Worker:
     async def run(self) -> int:
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, self.stop_child)
+            loop.add_signal_handler(sig, self.on_signal)
         await asyncio.to_thread(self.admit)
         self.oom_baseline()
         await self.spawn()
@@ -1996,6 +2668,9 @@ class Worker:
             self.reason = self.reason or f"native initialization failed: {exc}"
             self.stop_child()
         else:
+            # The process floor's baseline (#1724), before any turn can be accepted.
+            await asyncio.to_thread(self.take_baseline)
+            self.record_inventory(self.inventory())
             self.flush()
             await self.listen()
             self.ready.set()
@@ -2018,6 +2693,9 @@ class Worker:
                 # writes `worker_ended` for an earlier generation only while the live worker
                 # says so, since an older reader refuses the field.
                 handoff_reasons=True,
+                # Checks an operator Stop's confirmed background inventory (#1724); absent on
+                # older workers, which the server then stops unconfirmed as before.
+                stop_confirm=True,
                 # Reads a segmented journal and the `journal_unwritable` reason code (#1733).
                 journal_segments=True,
             )
@@ -2033,6 +2711,16 @@ class Worker:
                     self.proc.kill()
                 await self.proc.wait()
         self.flush()
+        if self.ready.is_set() and not self.settled and not self.reason.startswith("journal"):
+            # An end the worker survives (#1724): SIGTERM (its unit is being stopped: what it last
+            # observed, since the group is being killed meanwhile), or the native connection
+            # ended (rescanned: what is still running ends when this worker exits).
+            if self.signalled:
+                self.settle("stop", self.inventory())
+            else:
+                with contextlib.suppress(OSError):
+                    await asyncio.to_thread(self.observe_floor)
+                self.settle("protocol", self.inventory())
         if self.server is not None:
             self.server.close()
         with contextlib.suppress(FileNotFoundError):

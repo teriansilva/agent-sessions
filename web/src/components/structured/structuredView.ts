@@ -5,6 +5,7 @@ import type {
   StructuredGrant,
   StructuredRequest,
   StructuredSnapshot,
+  StructuredStopInventory,
   StructuredTurn,
 } from "../../types/api";
 
@@ -89,7 +90,13 @@ export function backgroundWorking(snap: StructuredSnapshot | null): boolean {
     !!snap &&
     !snap.active_turn &&
     !!snap.native?.worker &&
-    !!snap.native.background_active &&
+    // An engine report, or a process the agent started (#1724, the process floor).
+    (!!snap.native.background_active ||
+      (snap.native.background_tasks ?? []).some((task) => task.source === "process") ||
+      // A process scan that can't be read keeps the worker alive: say so (#1724).
+      snap.native.stop_inventory?.scan === "unknown" ||
+      // Jobs an interrupted Stop could not resume (#1724).
+      (snap.native.paused_unresumed ?? 0) > 0) &&
     !runningAgentTurn(snap)
   );
 }
@@ -499,4 +506,18 @@ export function answerText(
 ): string {
   if (questions.length === 1) return picks[0] ?? "";
   return questions.map((q, i) => `${q.title}: ${picks[i] ?? ""}`).join("\n");
+}
+
+/** Does Stop end background work (#1724)? Agent tasks, processes, or a process scan that cannot
+ *  be read — never treated as an empty list. Then Stop asks first. */
+export function hasBackgroundWork(
+  inventory: StructuredStopInventory | null | undefined,
+): boolean {
+  return (
+    !!inventory &&
+    (inventory.tasks.length > 0 ||
+      inventory.processes.length > 0 ||
+      inventory.more > 0 ||
+      inventory.scan === "unknown")
+  );
 }

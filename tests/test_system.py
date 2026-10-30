@@ -272,6 +272,7 @@ def test_system_sessions_lists_socks_with_scope_fields(auth_cfg, fake_jsonl, tmp
 
     d = ptybridge.runtime_dir()
     (d / "claude-aaaa.sock").touch()
+    (d / "secrets-6e30fe614b.sock").touch()  # the secrets broker's: not a session
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     r = c.get("/api/system/sessions")
@@ -279,6 +280,7 @@ def test_system_sessions_lists_socks_with_scope_fields(auth_cfg, fake_jsonl, tmp
     rows = r.json()["sessions"]
     names = {row["sock"] for row in rows}
     assert "claude-aaaa.sock" in names
+    assert "secrets-6e30fe614b.sock" not in names
     row = next(x for x in rows if x["sock"] == "claude-aaaa.sock")
     assert row["pid"] is None and row["scope"] is None
 

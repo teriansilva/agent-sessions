@@ -1721,3 +1721,34 @@ test("the veil stays in its outage until a fresh snapshot is applied — a healt
   });
   expect(screen.queryByTestId("uplink-veil")).toBeNull();
 });
+
+test("work that ended after a steered turn renders after its group, not nowhere (#1724, Hermes)", async () => {
+  const main = turn({ turn_id: "11111111-1111-4111-8111-111111111111", text: "Build it", state: "completed", reply: "Built." });
+  const steer = turn({
+    turn_id: "22222222-2222-4222-8222-222222222222",
+    text: "Also run the tests",
+    state: "delivered",
+    delivery: "steered",
+    delivery_turn_id: main.turn_id,
+  } as Partial<StructuredTurn>);
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(
+    snap({
+      state: "idle",
+      active_turn: null,
+      turns: [main, steer],
+      native: {
+        native_id: "n",
+        worker: null,
+        background_active: false,
+        worker_ends: [{
+          worker: "w0", reason: "stop", at: Date.now() / 1000, settled: true,
+          after_turn: steer.turn_id, scan: "ok", tasks: [],
+          processes: [{ pid: 4121, start: 9, comm: "node", started_at: null }], more: 0,
+        }],
+      },
+    }),
+  );
+  renderPane();
+  const row = await screen.findByTestId("structured-worker-end");
+  expect(row).toHaveTextContent("node · pid 4121 · operator stop");
+});

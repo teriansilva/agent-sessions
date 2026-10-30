@@ -7,8 +7,8 @@ import uuid
 import pytest
 
 import test_native_journal as journal_tests
+from agent_sessions import native_ipc, native_runtime, structured_runtime
 from agent_sessions import native_journal as journal
-from agent_sessions import native_runtime, structured_runtime
 from test_native_agent_turns import T0, agent, operator, raw
 
 conversation = journal_tests.conversation
@@ -220,3 +220,86 @@ def test_only_native_clients_offer_history():
 class _Prov:
     def __init__(self, kind):
         self.manifest = type("M", (), {"api": type("A", (), {"kind": kind})()})()
+
+
+# --- worker ends travel with the turns they follow (#1724, Hermes on PR #1757) ----------------
+
+
+def _ended_generation(root, binding, pid):
+    """A generation of this session that ran ``pid`` and was killed before it could settle."""
+    import test_native_liveness as liveness
+
+    gen = native_ipc.Binding(
+        binding.session_key, str(uuid.uuid4()), str(uuid.uuid4()), binding.adapter
+    )
+    work = liveness.inventory(processes=[(pid, 1000 + pid, "node")], worker=gen.worker_id)
+    journal.append_events(root, gen, [{"kind": "background_inventory", "data": work}])
+    return gen.worker_id
+
+
+def _walk(root, sid, binding, limit):
+    """The snapshot's ends, then every history page's, newest page last-read: all in order."""
+    view = native_runtime.project(
+        journal.read(root, sid),
+        {"request": {"model": None}, "adapter": binding.adapter},
+        binding.worker_id,
+        max_turns=limit,
+    )
+    ends, cursor = [list(view["native"]["worker_ends"])], view["history_before"]
+    while cursor is not None:
+        older = page(root, sid, binding, cursor, limit)
+        ends.insert(0, older["native"]["worker_ends"])
+        cursor = older["history_before"]
+    return [end for chunk in ends for end in chunk], view
+
+
+def test_every_worker_end_is_reachable_through_the_snapshot_and_its_pages(
+    conversation, monkeypatch
+):
+    """Hermes' regression: past the 16th ended generation the oldest ENDED WITH WORKER rows were
+    on disk and unreachable (16 rows in the snapshot, none on any page). Each end now travels with
+    the turn it follows; one before the first turn rides on the first page."""
+    root, sid, binding = conversation
+    ended = [_ended_generation(root, binding, 100)]  # before any turn
+    for i in range(20):
+        operator(root, sid, binding, monkeypatch, T0 + i, f"op {i}")
+        ended.append(_ended_generation(root, binding, 200 + i))
+    walked, view = _walk(root, sid, binding, 3)
+    assert [end["worker"] for end in walked] == ended  # all 21, in order, each once
+    assert len(view["native"]["worker_ends"]) == 3  # the snapshot: its own window's
+    assert walked[0]["after_turn"] is None
+    assert [p["pid"] for end in walked for p in end["processes"]] == [100, *range(200, 220)]
+
+
+def test_a_page_boundary_between_an_ends_turn_and_the_next_turn(conversation, monkeypatch):
+    root, sid, binding = conversation
+    ids = [operator(root, sid, binding, monkeypatch, T0 + i, f"op {i}") for i in range(2)]
+    gone = _ended_generation(root, binding, 300)  # after turn 1, before turn 2
+    ids += [operator(root, sid, binding, monkeypatch, T0 + i, f"op {i}") for i in range(2, 4)]
+    window = raw(root, sid, binding, max_turns=2)
+    assert window["history_before"] == ids[2]
+    assert window["native"]["worker_ends"] == []  # its turn is on the page above
+    older = page(root, sid, binding, ids[2], 2)
+    (end,) = older["native"]["worker_ends"]
+    assert end["worker"] == gone and end["after_turn"] == ids[1]
+
+
+def test_a_history_page_carries_its_worker_ends_and_the_public_link_never_does(monkeypatch):
+    from agent_sessions import share_api
+
+    first = str(uuid.uuid4())
+    end = {"worker": str(uuid.uuid4()), "reason": "worker_ended", "after_turn": first}
+    adapter = _Pages([_operator_turn(first, "hi")], None)
+    adapter.release.set()
+    original = adapter.history
+
+    async def history(*args, **kwargs):
+        return {**(await original(*args, **kwargs)), "worker_ends": [end]}
+
+    adapter.history = history
+    _target(monkeypatch, adapter)
+    out = asyncio.run(structured_runtime.history("codex-api:s", before=str(uuid.uuid4()), limit=50))
+    assert out["worker_ends"] == [end]
+    snapshot = {"turns": [], "pending_requests": [], "native": {"worker_ends": [end]}}
+    public = share_api.project(snapshot, {}, share_api._Redactor([]), "link")
+    assert "worker_ends" not in public and end["worker"] not in str(public)

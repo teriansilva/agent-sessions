@@ -1826,12 +1826,65 @@ export interface StructuredModelList {
 export interface StructuredBackgroundTask {
   task_id: string;
   state: string;
+  /** #1724: an engine-reported task, or a process the agent started (the process floor). Two
+   *  kinds of observation, never merged into one job count. Absent on older servers (engine). */
+  source?: "engine" | "process";
   description?: string;
   task_type?: string;
   last_tool_name?: string;
   summary?: string;
-  started_at: number;
-  updated_at: number;
+  /** A process only: its pid and executable name (`/proc/<pid>/comm`), never argv. */
+  pid?: number;
+  comm?: string;
+  started_at: number | null;
+  updated_at: number | null;
+}
+
+/** A process the process floor observed (#1724): pid, start ticks and executable name only. */
+export interface StructuredProcess {
+  pid: number;
+  start: number;
+  comm: string;
+  started_at: number | null;
+  /** A settled Stop's process not in the confirmed list: it started while the Stop ran. */
+  started_during_stop?: boolean;
+}
+
+/** What an operator Stop ends (#1724), as the live worker last journaled it. The Stop sends back
+ *  `worker` + `digest`; the worker rechecks a fresh scan and refuses a changed set (409). */
+export interface StructuredStopInventory {
+  worker: string;
+  /** Null only on an unreachable worker's escape hatch, which confirms by `unreachable`. */
+  digest: string | null;
+  /** `unknown`: the process scan can't be read — never an empty list (Stop everything). */
+  scan: "ok" | "unknown";
+  tasks: { task_id: string; description?: string; task_type?: string; started_at?: number }[];
+  processes: StructuredProcess[];
+  /** Processes beyond the listed ones. */
+  more: number;
+  /** Agent tasks beyond the listed 128. Over either limit: only Stop everything, never exact. */
+  engine_more?: number;
+  observed_at: number | null;
+  /** A 503's escape hatch: the worker could not answer the check; this is what it last
+   *  journaled, and Stop everything (`{worker, everything: true}`) is the only confirm. */
+  reach?: "unreachable";
+}
+
+/** An earlier worker generation's end (#1724): work still running when it ended, or an idle
+ *  exit. Placed after `after_turn` (null: before the first shown turn). */
+export interface StructuredWorkerEnd {
+  worker: string;
+  reason: "idle" | "stop" | "oom" | "protocol" | "worker_ended";
+  /** When it was settled; for an end that could not settle, when its work was last observed. */
+  at: number;
+  settled: boolean;
+  after_turn: string | null;
+  idle_for?: number | null;
+  scan?: "ok" | "unknown";
+  tasks?: { task_id: string; description?: string; task_type?: string; started_at?: number }[];
+  processes?: StructuredProcess[];
+  more?: number;
+  engine_more?: number;
 }
 
 export interface StructuredLaunch {
@@ -1892,6 +1945,12 @@ export interface StructuredSnapshot {
     background_active: boolean;
     /** Active task observations scoped to this live worker; absent on older servers. */
     background_tasks?: StructuredBackgroundTask[];
+    /** What an operator Stop ends (#1724); null without a live worker. Absent on older servers. */
+    stop_inventory?: StructuredStopInventory | null;
+    /** Earlier generations that ended with work running, and idle exits (#1724). */
+    worker_ends?: StructuredWorkerEnd[];
+    /** Jobs an interrupted exact Stop paused and could not confirm resumed (#1724). */
+    paused_unresumed?: number;
     /** Advertised by this running worker, absent on older workers. */
     send_now?: "steer" | "interrupt";
     /** What Send now would do right now, as the live worker last reported it (#1644): a display
@@ -1923,6 +1982,9 @@ export interface StructuredHistoryPage {
   /** Where the next older page starts; null at the conversation's first turn. */
   before: string | null;
   has_more: boolean;
+  /** Work that ended with a worker after one of these turns, or before the first (#1724): each
+   *  end travels with the turn it follows. Absent on older servers. */
+  worker_ends?: StructuredWorkerEnd[];
 }
 
 export interface StructuredEventPage {

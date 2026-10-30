@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -45,6 +46,10 @@ from fastapi.responses import JSONResponse
 from .. import native_ipc, share_api, shares, structured_runtime
 
 log = logging.getLogger("agent_sessions.routes.structured")
+
+
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
+_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 
 async def _json(request: Request, allowed: set[str], required: set[str]) -> dict:
@@ -370,6 +375,48 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
 
     @app.post("/api/structured/sessions/{key}/stop")
     async def structured_stop(
-        key: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+        key: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
-        return JSONResponse(await _run(structured_runtime.stop(key)))
+        # The operator's Stop (#1724) names the background work it was confirmed for: the
+        # generation and digest of `native.stop_inventory`. An empty body (an older page)
+        # confirms that nothing runs. Either way the worker rechecks before anything stops.
+        # An exact Stop also ends anything those jobs start while it runs (the dialog says so; the
+        # settlement lists such processes as started during the stop).
+        # Or `{worker, everything: true}`: Stop everything of exactly that generation, the
+        # explicitly disclosed second kind of confirmation (#1724).
+        body = (
+            await _json(request, {"worker", "digest", "everything"}, set())
+            if await request.body()
+            else {}
+        )
+        confirmed = (
+            set(body) == {"worker", "digest"}
+            and isinstance(body["digest"], str)
+            and _DIGEST.fullmatch(body["digest"])
+        ) or (set(body) == {"worker", "everything"} and body["everything"] is True)
+        if body and not (
+            confirmed and isinstance(body["worker"], str) and _UUID.fullmatch(body["worker"])
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="a Stop confirms a worker and a digest, or everything of a worker",
+            )
+        try:
+            result = await structured_runtime.operator_stop(
+                key,
+                worker=body.get("worker"),
+                digest=body.get("digest"),
+                everything=body.get("everything") is True,
+            )
+        except structured_runtime.StructuredError as exc:
+            if exc.reason is None:
+                raise HTTPException(status_code=exc.status, detail=exc.detail) from None
+            # Refused before anything stopped (#1724): the work running now, to confirm again.
+            return JSONResponse(
+                {"detail": exc.detail, "reason": exc.reason, "inventory": exc.inventory},
+                status_code=exc.status,
+            )
+        return JSONResponse(result)

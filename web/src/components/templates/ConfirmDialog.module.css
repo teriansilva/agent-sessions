@@ -62,6 +62,10 @@
 .confirm {
   composes: go from "../HudDialog.module.css";
 }
+/* A second destructive action (#1724): outlined in the failure hue, never filled. */
+.secondary {
+  composes: danger from "../ui/actionButton.module.css";
+}
 /* A destructive confirm: filled red with `--on-danger` ink (AA in both modes). */
 .danger {
   composes: danger from "../HudDialog.module.css";
@@ -71,5 +75,12 @@
   .dialog {
     max-height: 100dvh;
     padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
+  }
+}
+/* #1724: a dialog whose safe action must stay first in reading order on the sheet as well. */
+@media (max-width: 800px) {
+  /* Doubled: wins over the composed HudDialog sheet's column-reverse whatever the CSS order. */
+  .actions.safeFirst {
+    flex-direction: column;
   }
 }

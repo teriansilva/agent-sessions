@@ -48,6 +48,26 @@ interface Server {
   reads: string[];
   /** An older turn the snapshot still shows ahead of its window, because it is live (queued). */
   pulled?: number;
+  /** #1724: a worker generation ended after every turn, and one before the first. */
+  ends?: boolean;
+}
+
+/** The ends anchored to turns [from, to), and the one before the first turn when from is 0. */
+function ends(s: Server, from: number, to: number) {
+  if (!s.ends) return undefined;
+  const end = (i: number | null) => ({
+    worker: `w${i ?? "start"}`,
+    reason: "worker_ended",
+    at: 1_790_000_045 + (i ?? -1) * 60,
+    settled: false,
+    after_turn: i === null ? null : tid(i),
+    scan: "ok",
+    tasks: [],
+    processes: [{ pid: 4000 + (i ?? 999), start: 1, comm: "node", started_at: 1_790_000_000,
+      source: "process", state: "ended_with_worker" }],
+    more: 0,
+  });
+  return [...(from === 0 ? [end(null)] : []), ...Array.from({ length: to - from }, (_, k) => end(from + k))];
 }
 
 function snapshot(s: Server) {
@@ -70,7 +90,7 @@ function snapshot(s: Server) {
     omitted_turns: first,
     history_before: first > 0 ? tid(first) : null,
     pending_requests: [],
-    native: { native_id: "n1", worker: "w1", background_active: false },
+    native: { native_id: "n1", worker: "w1", background_active: false, worker_ends: ends(s, first, s.total) },
     read_only: null,
   };
 }
@@ -133,6 +153,7 @@ async function setup(page: Page, theme: "dark" | "light", total = 120): Promise<
           turns,
           before: start > 0 ? tid(start) : null,
           has_more: start > 0,
+          worker_ends: ends(s, start, at),
         },
       });
     }
@@ -376,4 +397,30 @@ test("a live turn the snapshot shows ahead of its window stays above newer histo
   expect(await y(9)).toBeLessThan(await y(10));
   expect(await y(10)).toBeLessThan(await y(11));
   await noSidewaysScroll(page);
+});
+
+test("#1724: work that ended with a worker comes with the history page of the turn it follows", async ({
+  page,
+  isMobile,
+}) => {
+  // Hermes on PR #1757: past 16 ended generations the oldest rows were unreachable. Each end now
+  // travels with its turn: the snapshot carries its window's, a page those of its turns (the
+  // first page also the one before the first turn), rendered as the snapshot's and never animated.
+  const s = await setup(page, "dark", 70);
+  s.ends = true;
+  await page.goto(URL_PATH);
+  const rows = log(page).getByTestId("structured-worker-end");
+  await expect(rows).toHaveCount(50);
+  await toTop(page, isMobile);
+  await expect(rows).toHaveCount(71, { timeout: 20_000 });
+  const texts = await rows.allTextContents();
+  expect(texts.map((t) => Number(t.match(/pid (\d+)/)![1]))).toEqual([4999, ...Array.from({ length: 70 }, (_, i) => 4000 + i)]);
+  // History pages never arrive (#1747's rule): none of the loaded rows animates.
+  for (const i of [0, 1, 20]) await expect(rows.nth(i)).not.toHaveClass(/nj-arrive/);
+  // Each sits after its own turn, before the next.
+  const row5 = (await rows.nth(6).boundingBox())!;
+  expect(row5.y).toBeGreaterThan((await message(page, 5).boundingBox())!.y);
+  expect(row5.y).toBeLessThan((await message(page, 6).boundingBox())!.y);
+  const start = (await rows.first().boundingBox())!;
+  expect(start.y).toBeLessThan((await message(page, 0).boundingBox())!.y);
 });

@@ -79,6 +79,8 @@ def _reason(handoff, code) -> bool:
     return handoff == "not_sent" and type(code) is str and code in REASON_CODES
 
 
+#: A claim's expected revision is no longer the journal's (`claim`).
+REVISION_CHANGED = "native conversation revision changed"
 MAX_QUEUED = 32
 MAX_QUEUE_BYTES = 4 * 1024 * 1024
 
@@ -1670,7 +1672,7 @@ def claim(root: Path, request: dict, *, queued: bool = False) -> tuple[bool, dic
                 )
             return [], (False, dict(used["receipt"]))
         if params["expected_revision"] != journal.revision:
-            raise JournalError("conflict", "native conversation revision changed")
+            raise JournalError("conflict", REVISION_CHANGED)
         if "reply_to" in params and not _question_open(
             journal, params["reply_to"], checked["worker_id"]
         ):

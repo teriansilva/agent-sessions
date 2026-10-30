@@ -15,7 +15,8 @@ import { createContext, useContext, useState } from "react";
 import type { StructuredRequest, StructuredSnapshot } from "../../types/api";
 
 export interface Arrivals {
-  /** Whether the row with this key arrived (`turn:<id>`, `tool:<turn>:<id>`, `req:<key>`). */
+  /** Whether the row with this key arrived (`turn:<id>`, `tool:<turn>:<id>`, `req:<key>`,
+   *  `end:<worker>` — a worker generation's end rows, #1724). */
   has: (key: string) => boolean;
   /** Rows the latest snapshot added (0 for the first paint and for text-only changes). */
   added: number;
@@ -33,6 +34,9 @@ export function rowKeys(
     for (const tool of t.tools) keys.push(`tool:${t.turn_id}:${tool.id}`);
   }
   for (const r of snap.pending_requests) keys.push(`req:${requestKey(r)}`);
+  // Work that ended with a worker, or its idle exit (#1724): one group of transcript rows per
+  // ended generation, arriving together when that generation ends while the pane is open.
+  for (const end of snap.native?.worker_ends ?? []) keys.push(`end:${end.worker}`);
   return keys;
 }
 

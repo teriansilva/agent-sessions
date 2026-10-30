@@ -29,6 +29,8 @@ export function ConfirmDialog({
   role = "dialog",
   markers,
   fallbackFocusSelector,
+  safeFirst = false,
+  secondary,
 }: {
   /** The mono callsign above the title, e.g. `DELETE TEMPLATE`. */
   tag: string;
@@ -49,6 +51,11 @@ export function ConfirmDialog({
   markers?: { dialog?: Record<string, string>; confirm?: Record<string, string> };
   /** Where focus goes on close when `returnFocusTo` is gone (a git row leaves with its write). */
   fallbackFocusSelector?: string;
+  /** The safe action stays first on the ≤800px sheet too (#1724's Stop: Keep running on top). */
+  safeFirst?: boolean;
+  /** A second, outlined destructive action between cancel and confirm (#1724: Stop everything
+   *  beside an exact Stop). Disabled with the rest while busy. */
+  secondary?: { label: string; onClick: () => void; markers?: Record<string, string> };
 }) {
   const cancelRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -112,7 +119,7 @@ export function ConfirmDialog({
           {title}
         </h2>
         {children && <div className={styles.body}>{children}</div>}
-        <div className={styles.actions}>
+        <div className={safeFirst ? `${styles.actions} ${styles.safeFirst}` : styles.actions}>
           <button
             ref={cancelRef}
             type="button"
@@ -122,6 +129,17 @@ export function ConfirmDialog({
           >
             {cancelLabel}
           </button>
+          {secondary && (
+            <button
+              type="button"
+              className={styles.secondary}
+              onClick={secondary.onClick}
+              disabled={busy}
+              {...secondary.markers}
+            >
+              {secondary.label}
+            </button>
+          )}
           <button
             type="button"
             className={danger ? styles.danger : styles.confirm}

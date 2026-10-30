@@ -219,6 +219,12 @@ class Events(Sequence):
             "approval_cancelled",
             "turn_completed",
             "memory_pressure",
+            # The background inventory and its settlement (#1724), per generation.
+            "background_inventory",
+            "background_settled",
+            "stop_aborted",
+            "stop_paused",
+            "stop_resumed",
             # #1732: rare, bounded, and a session-level one belongs to no turn; the projection
             # attributes a turn-level one by its field, whatever window it reads.
             "memory_oom_kill",

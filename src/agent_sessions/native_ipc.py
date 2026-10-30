@@ -82,6 +82,40 @@ def tasks_digest(task_ids) -> str:
     return hashlib.sha256("\n".join(sorted(set(task_ids))).encode()).hexdigest()
 
 
+#: How a worker generation's process floor read (#1724): every agent process listed, the group
+#: unreadable (never proof of idle), or no unit of its own (a substituted service manager only).
+SCAN_STATES = frozenset({"ok", "unknown", "uncontained"})
+#: Why a generation that settled its own background inventory ended (#1724). The reader adds
+#: `worker_ended` and `oom` for a generation that could not settle.
+SETTLED_REASONS = frozenset({"stop", "idle", "protocol"})
+MAX_INVENTORY_TASKS = 128
+#: Processes an inventory lists; ``more`` counts the rest, and the digest covers all of them.
+MAX_INVENTORY_PROCESSES = 32
+
+
+def stop_digest(worker_id: str, engine_ids, identities, scan: str) -> str:
+    """The identity of the background work a Stop ends (#1724), as confirmed and as rechecked:
+    the worker generation, the engine's task ids and the process floor's (pid, start time)
+    identities. An unreadable scan has NO process list: its digest says so (``scan: unknown``),
+    which only a confirmation of that state matches. An uncontained worker (no unit of its own,
+    a test harness) has nothing observable, the same as an empty readable scan."""
+    if scan == "unknown":
+        processes = None
+    else:
+        processes = sorted({(int(pid), int(start)) for pid, start in identities})
+    body = json.dumps(
+        {
+            "w": worker_id,
+            "e": sorted(set(engine_ids)),
+            "p": processes,
+            "s": "unknown" if scan == "unknown" else "ok",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
 EFFECT_ACTIONS = frozenset({"submit", "decide", "interrupt", "send_now", "withdraw", "stop"})
 _ENGINE = re.compile(r"[a-z][a-z0-9-]{1,23}\Z", re.ASCII)
 _NATIVE = re.compile(r"[A-Za-z0-9_.:-]{1,258}\Z", re.ASCII)
@@ -345,12 +379,19 @@ def _params(action, value, *, immutable=False):
         | ({"grant", "answers"} if action == "decide" else set())
         # Stop all and send (#1644): what the operator confirmed, part of the request's identity.
         | ({"confirm_worker_id", "confirm_tasks"} if action == "send_now" else set())
+        # An operator Stop (#1724): the background work it was confirmed for (`stop_digest`).
+        # Or `confirm_everything` (#1724): Stop everything of this generation, disclosed as such.
+        | ({"confirm_digest", "confirm_everything"} if action == "stop" else set())
     )
     _object(value, required, optional)
     if action == "send_now" and (value.get("mode") == "stop_all") != (
         "confirm_worker_id" in value and "confirm_tasks" in value
     ):
         raise IPCError("a confirmation goes with Stop all and send, and only with it")
+    if action == "stop" and "confirm_digest" in value and "confirm_everything" in value:
+        raise IPCError("a Stop confirms an exact inventory or everything, not both")
+    if action == "stop" and value.get("confirm_everything", True) is not True:
+        raise IPCError("Stop everything is confirmed only explicitly")
     if action == "decide" and (value.get("decision") == "always") != ("grant" in value):
         raise IPCError("a standing grant goes with an always decision, and only with one")
     if action == "decide" and (value.get("decision") == "answer") != ("answers" in value):
@@ -383,7 +424,9 @@ def _params(action, value, *, immutable=False):
                 out[key] = normalize_context(item)
             except ValueError:
                 raise IPCError("invalid private IPC correlation") from None
-        elif key in {"payload_digest", "confirm_tasks"}:
+        elif key == "confirm_everything":
+            out[key] = True
+        elif key in {"payload_digest", "confirm_tasks", "confirm_digest"}:
             out[key] = _digest(item)
         elif key == "decision":
             out[key] = _choice(item, {"approve", "reject", "cancel", "always", "answer"})
@@ -541,6 +584,22 @@ _EVENT_FIELDS = {
         | TASK_METADATA_LIMITS.keys(),
     ),
     "response": (_RPC, set()),
+    # #1724: the generation's active background work whenever it changes — engine task ids and
+    # the process floor's agent processes (pid, start ticks, `comm`; never argv or environment).
+    # `engine_more` (#1724): engine tasks past the listed 128 (absent: none).
+    "background_inventory": ({"engine", "processes", "more", "scan", "digest"}, {"engine_more"}),
+    # #1724: an orderly end (Stop, idle, protocol end) settles what was still active with it.
+    "background_settled": (
+        {"reason", "engine", "processes", "more", "scan"},
+        {"idle_for", "engine_more"},
+    ),
+    # #1724: an exact Stop whose frozen set was not what the operator confirmed (or never
+    # stabilised) was not applied: everything resumed, its claim settled `not_sent`.
+    "stop_aborted": ({"stop_operation", "reason"}, {"unresumed"}),
+    # #1724: the paused ledger of an exact Stop's freeze (journaled with its claim), and an idle
+    # tick's later resume of what an abort could not confirm resumed.
+    "stop_paused": ({"stop_operation", "processes", "more"}, set()),
+    "stop_resumed": ({"stop_operation", "unresumed"}, set()),
     "error": ({"message"}, _COMMON | _RPC | {"native_will_retry"}),
     "disconnected": ({"state", "native_id", "native_turn_id", "operation_id"}, set()),
 }
@@ -554,6 +613,58 @@ def _memory_pressure(data: dict) -> dict:
     for key, allowed in (("scope", {"session", "shared"}), ("throttled", {"session", "shared"})):
         if key in data:
             out[key] = None if data[key] is None else _choice(data[key], allowed)
+    return out
+
+
+def _inventory(kind: str, data: dict) -> dict:
+    engine = data["engine"]
+    if type(engine) is not list or len(engine) > MAX_INVENTORY_TASKS:
+        raise IPCError("invalid private IPC background inventory")
+    processes = data["processes"]
+    if type(processes) is not list or len(processes) > MAX_INVENTORY_PROCESSES:
+        raise IPCError("invalid private IPC background inventory")
+    out = {
+        "engine": [_native(task) for task in engine],
+        "processes": [],
+        "more": _integer(data["more"]),
+        "scan": _choice(data["scan"], SCAN_STATES),
+    }
+    if "engine_more" in data:
+        out["engine_more"] = _integer(data["engine_more"])
+    if len(set(out["engine"])) != len(out["engine"]):
+        raise IPCError("duplicate private IPC background task")
+    for process in processes:
+        # `started_during_stop` (#1724): a settlement's process that was not in the confirmed
+        # inventory, found by the final scan just before the stop. Settlements only.
+        flagged = kind == "background_settled" and "started_during_stop" in process
+        _object(
+            process,
+            {"pid", "start", "comm", "started_at"},
+            {"started_during_stop"} if kind == "background_settled" else (),
+        )
+        entry = {
+            "pid": _integer(process["pid"], minimum=1),
+            "start": _integer(process["start"]),
+            "comm": _text(process["comm"], 16),
+            "started_at": None
+            if process["started_at"] is None
+            else _integer(process["started_at"]),
+        }
+        if flagged:
+            if process["started_during_stop"] is not True:
+                raise IPCError("started_during_stop is only ever true")
+            entry["started_during_stop"] = True
+        out["processes"].append(entry)
+    if out["scan"] == "unknown" and (out["processes"] or out["more"]):
+        raise IPCError("an unreadable scan lists no processes")
+    if kind == "background_inventory":
+        out["digest"] = _digest(data["digest"])
+    else:
+        out["reason"] = _choice(data["reason"], SETTLED_REASONS)
+        if "idle_for" in data:
+            if out["reason"] != "idle":
+                raise IPCError("only an idle exit says how long it was idle")
+            out["idle_for"] = _integer(data["idle_for"])
     return out
 
 
@@ -586,6 +697,28 @@ def _event(value):
     data = _object(value["data"], required, optional)
     if kind in {"memory_pressure", "memory_oom_kill"}:
         out = _memory_pressure(data) if kind == "memory_pressure" else _memory_oom_kill(data)
+        return {"cursor": _integer(value["cursor"], minimum=1), "kind": kind, "data": out}
+    if kind in {"background_inventory", "background_settled"}:
+        out = _inventory(kind, data)
+        return {"cursor": _integer(value["cursor"], minimum=1), "kind": kind, "data": out}
+    if kind in {"stop_aborted", "stop_paused", "stop_resumed"}:
+        out = {"stop_operation": _uuid(data["stop_operation"])}
+        if kind == "stop_aborted":
+            out["reason"] = _choice(data["reason"], {"changed", "unstable", "journal"})
+        if "unresumed" in data:
+            out["unresumed"] = _integer(data["unresumed"])
+        if kind == "stop_paused":
+            paused = _inventory(
+                "background_inventory",
+                {
+                    "engine": [],
+                    "processes": data["processes"],
+                    "more": data["more"],
+                    "scan": "ok",
+                    "digest": "0" * 64,
+                },
+            )
+            out["processes"], out["more"] = paused["processes"], paused["more"]
         return {"cursor": _integer(value["cursor"], minimum=1), "kind": kind, "data": out}
     out = {}
     for key, item in data.items():

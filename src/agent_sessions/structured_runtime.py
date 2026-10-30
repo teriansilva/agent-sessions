@@ -38,11 +38,18 @@ SNAPSHOT_TEXT_BUDGET = 200_000
 class StructuredError(Exception):
     """A safe refusal at the common client boundary."""
 
-    def __init__(self, status: int, detail: str, reason: str | None = None):
+    def __init__(
+        self,
+        status: int,
+        detail: str,
+        reason: str | None = None,
+        inventory: dict | None = None,
+    ):
         super().__init__(detail)
         self.status = status
         self.detail = detail
         self.reason = reason  # closed (#1644): `native_ipc.SEND_NOW_REFUSALS`
+        self.inventory = inventory  # a refused Stop's current background work (#1724)
 
 
 @dataclass(frozen=True)
@@ -216,7 +223,7 @@ async def _native(fn, *args, **kwargs):
     try:
         return await fn(*args, **kwargs)
     except native_runtime.NativeError as exc:
-        raise StructuredError(exc.status, exc.detail, exc.reason) from None
+        raise StructuredError(exc.status, exc.detail, exc.reason, exc.inventory) from None
     except native_journal.JournalError as exc:
         raise StructuredError(
             503, f"the conversation journal is unavailable: {exc.detail}"
@@ -988,6 +995,9 @@ async def history(
         "turns": turns,
         "before": raw["history_before"],
         "has_more": raw["history_before"] is not None,
+        # Work that ended with a worker after one of these turns (#1724): rendered as the snapshot
+        # renders its own. Operator-only: the public link has no history and no `native`.
+        "worker_ends": [dict(end) for end in raw.get("worker_ends") or ()],
     }
 
 
@@ -1116,9 +1126,36 @@ def model_facts(session_key: str) -> dict | None:
 
 
 async def stop(session_key: str) -> dict:
-    """Close the session's worker generation and report proved containment."""
+    """Close the session's worker generation and report proved containment. Unconfirmed: for
+    archive (`runtime_cleanup`) and internal callers, which keep their own containment path."""
     engine, native, adapter = _containment_target(session_key)
     result = await adapter.stop(engine, native)
+    return {"session_key": f"{engine}:{native}", **result}
+
+
+async def operator_stop(
+    session_key: str,
+    *,
+    worker: str | None = None,
+    digest: str | None = None,
+    everything: bool = False,
+) -> dict:
+    """The pane's Stop (#1724): it ends only the background work the operator was shown.
+    ``worker``/``digest`` name the generation and the inventory confirmed (`native.stop_inventory`);
+    none at all confirms that nothing runs. A changed set refuses 409 with the current inventory,
+    before anything is stopped. ``everything``: Stop everything of ``worker``'s generation, the
+    explicitly disclosed confirmation (#1724) offered when the list changed, exceeds the dialog,
+    or cannot be read or checked."""
+    engine, native, adapter = _containment_target(session_key)
+    if isinstance(adapter, _NativeAdapter):
+        result = await _native(
+            native_runtime.stop,
+            engine,
+            native,
+            confirm={"worker": worker, "digest": digest, "everything": everything},
+        )
+    else:
+        result = await adapter.stop(engine, native)
     return {"session_key": f"{engine}:{native}", **result}
 
 

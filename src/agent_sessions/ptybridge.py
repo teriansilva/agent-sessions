@@ -47,6 +47,9 @@ UNKNOWN = "unknown"
 # squashed so an engine id / session id can never escape the runtime dir or
 # inject argv. The real identity is still the full {engine}-{session_id}.
 _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
+# The secrets broker's socket shares this directory (`secrets_broker.socket_path`: an agent's
+# environment names it, so it stays here) but is no dtach master: never probe it as a session.
+_BROKER_SOCKET = re.compile(r"secrets-[0-9a-f]{10}\.sock")
 
 
 class PtyBridgeError(RuntimeError):
@@ -229,6 +232,11 @@ def unlink_if_stale(engine: str, session_id: str) -> bool:
     return True
 
 
+def is_broker_socket(name: str) -> bool:
+    """Is this runtime-directory entry the secrets broker's socket, not a session's?"""
+    return _BROKER_SOCKET.fullmatch(name) is not None
+
+
 def list_sessions() -> list[tuple[str, str]]:
     """Every live ``(engine, session_id)`` whose dtach master is accepting.
 
@@ -257,7 +265,7 @@ def list_sessions_checked() -> tuple[list[tuple[str, str]], bool]:
         return out, False
     complete = True
     for p in entries:
-        if p.suffix != ".sock" or not p.is_socket():
+        if p.suffix != ".sock" or is_broker_socket(p.name) or not p.is_socket():
             continue
         verdict = probe_master(p)
         if verdict is UNKNOWN:

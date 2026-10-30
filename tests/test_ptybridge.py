@@ -138,6 +138,35 @@ def test_list_sessions_filters_orphans(_runtime):
         srv.close()
 
 
+def test_the_secrets_broker_socket_is_not_a_session_and_is_not_probed(_runtime, monkeypatch):
+    """It shares the runtime directory and answers a connect: listed, it was a phantom live
+    session, and every scan's probe made the broker log an unhandled ConnectionResetError."""
+    alive = ptybridge.socket_path("claude", "alive")
+    broker = ptybridge.runtime_dir() / "secrets-6e30fe614b.sock"
+    servers = [_bind_listening_sock(alive), _bind_listening_sock(broker)]
+    probed = []
+    real_probe = ptybridge.probe_master
+
+    def probe(path):
+        probed.append(path.name)
+        return real_probe(path)
+
+    monkeypatch.setattr(ptybridge, "probe_master", probe)
+    try:
+        assert ptybridge.list_sessions_checked() == ([("claude", "alive")], True)
+        assert probed == [alive.name]
+    finally:
+        for srv in servers:
+            srv.close()
+
+
+def test_only_the_brokers_exact_name_is_excluded_from_the_scan():
+    assert ptybridge.is_broker_socket("secrets-6e30fe614b.sock")
+    # A session of an engine called `secrets` is still a session.
+    for name in ("secrets-abc.sock", "secrets-6e30fe614b0.sock", "claude-6e30fe614b.sock"):
+        assert not ptybridge.is_broker_socket(name)
+
+
 # ---- unlink_if_stale removes orphan socks under the caller's held lock (#165).
 
 

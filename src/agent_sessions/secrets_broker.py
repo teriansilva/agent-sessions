@@ -1128,6 +1128,8 @@ async def _client(reader, writer) -> None:
             line = await asyncio.wait_for(reader.readline(), timeout=10)
         except (TimeoutError, ValueError):
             return
+        if not line:
+            return  # hung up without asking (another broker's `_answers`): nobody to answer
         if len(line) > REQUEST_MAX:
             reply = {"ok": False, "error": "bad_request"}
         else:
@@ -1141,8 +1143,10 @@ async def _client(reader, writer) -> None:
                 reply = await asyncio.to_thread(
                     handle, req.get("token"), req.get("op"), req.get("name")
                 )
-        writer.write(json.dumps(reply).encode() + b"\n")
-        await writer.drain()
+        # A client that hung up after asking (its own timeout) has already reported the failure.
+        with contextlib.suppress(ConnectionError):
+            writer.write(json.dumps(reply).encode() + b"\n")
+            await writer.drain()
     finally:
         with contextlib.suppress(Exception):
             writer.close()

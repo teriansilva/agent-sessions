@@ -504,6 +504,8 @@ def register(
                         masters[sock_arg] = int(name)
             rows = []
             for sock in sorted(ptybridge.runtime_dir().glob("*.sock")):
+                if ptybridge.is_broker_socket(sock.name):
+                    continue
                 pid = masters.get(str(sock))
                 row: dict = {"sock": sock.name, "pid": pid, "scope": None}
                 if pid is not None:

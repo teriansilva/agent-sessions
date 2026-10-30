@@ -72,6 +72,7 @@ import type {
   StructuredAgentTurn,
   StructuredRisk,
   StructuredSnapshot,
+  StructuredStopInventory,
   StructuredTool,
   StructuredTurn,
 } from "../../types/api";
@@ -82,6 +83,8 @@ import { applyTextDeltas, streaming } from "./streamDeltas";
 import { useFollow } from "./useFollow";
 import { ArrivalContext, useArrivals, useArriveClass, usePrimed } from "./arrivals";
 import { BackgroundWork } from "./BackgroundWork";
+import { StopConfirmDialog } from "./StopConfirmDialog";
+import { WorkerEnds } from "./WorkerEnds";
 import { fold, interleave, type ReplyPart } from "./activityOrder";
 import { autoSendNowHead, useAlwaysSendNow } from "./alwaysSendNow";
 import { conversationGroups, type ConversationGroup } from "./conversationOrder";
@@ -122,6 +125,7 @@ import {
   sendNowTarget,
   turnStateLabel,
   waitingBehindOwnTurn,
+  hasBackgroundWork,
 } from "./structuredView";
 import { ChoiceQuestions } from "./Questions";
 import {
@@ -1568,6 +1572,13 @@ export function StructuredPane({
   const removeIds = useRef(new Map<string, string>());
   const [stopping, setStopping] = useState(false);
   const [containment, setContainment] = useState<Containment | null>(null);
+  // Stop while background work runs (#1724): what the operator is asked to confirm, and the
+  // list it replaced when the server answered that the work changed (409).
+  const [stopConfirm, setStopConfirm] = useState<{
+    key: string;
+    inventory: StructuredStopInventory;
+    previous: StructuredStopInventory | null;
+  } | null>(null);
   // Share publicly… (#1404 P4): a link anyone can open, made and revoked in its own dialog.
   const [sharePublic, setSharePublic] = useState<{ open: boolean; trigger: HTMLElement | null }>({
     open: false,
@@ -2319,7 +2330,8 @@ export function StructuredPane({
     if (!choice || !snap || sendNowBusy.current || readOnly) return;
     const sendTarget = sendNowTarget(snap);
     const worker = snap.native?.worker;
-    const tasks = snap.native?.background_tasks ?? [];
+    // Only the engine's tasks: a Stop-style Send now ends those, never a process (#1724).
+    const tasks = (snap.native?.background_tasks ?? []).filter((t) => t.source !== "process");
     if (!sendTarget || !worker || tasks.length === 0) return;
     sendNowBusy.current = true;
     setStoppingAll(true);
@@ -2406,7 +2418,7 @@ export function StructuredPane({
   const choiceQueued = choice && snap
     ? operatorTurns(snap).find((t) => t.turn_id === choice.queuedTurnId)?.state === "queued"
     : false;
-  const choiceTasks = snap?.native?.background_tasks ?? [];
+  const choiceTasks = (snap?.native?.background_tasks ?? []).filter((t) => t.source !== "process");
   // Which message the choice sends: it may have been rebound to a new head after a change.
   const choiceFull = choice && snap
     ? operatorTurns(snap).find((t) => t.turn_id === choice.queuedTurnId)?.text ?? ""
@@ -2544,14 +2556,48 @@ export function StructuredPane({
       },
     });
 
-  const stop = async () => {
+  /** Stop everything (#1724), asked for directly (jobs an interrupted Stop could not resume): the
+   *  dialog opens with Stop everything as its only confirm and its disclosure. */
+  const stopEverything = () => {
+    const shown = snap?.native?.stop_inventory;
+    if (shown) setStopConfirm({ key, inventory: { ...shown, digest: null }, previous: null });
+  };
+
+  /** Stop (#1724). With background work running it asks first, listing what Stop ends; the
+   *  request names that list (`stop_inventory`) and the worker rechecks it before stopping. A
+   *  changed list comes back as a 409 and the dialog shows the new one: nothing stopped. */
+  const stop = async (confirmed?: StructuredStopInventory, everything = false) => {
+    const shown = confirmed ?? snap?.native?.stop_inventory ?? null;
+    if (!confirmed && hasBackgroundWork(shown) && shown) {
+      setStopConfirm({ key, inventory: shown, previous: null });
+      return;
+    }
     setStopping(true);
     setActionError(null);
     try {
-      setContainment((await act(api.structuredStop(key))).containment);
+      const request = !shown
+        ? api.structuredStop(key)
+        : everything || shown.digest === null
+          ? api.structuredStop(key, { worker: shown.worker, everything: true })
+          : api.structuredStop(key, { worker: shown.worker, digest: shown.digest });
+      setContainment((await act(request)).containment);
+      setStopConfirm(null);
     } catch (e) {
-      setContainment("unknown");
-      setActionError(`Stop not confirmed: ${detail(e, "no answer")}`);
+      const record = e instanceof ApiError
+        ? (e.record as { reason?: string; inventory?: StructuredStopInventory | null } | undefined)
+        : undefined;
+      if (record?.reason === "inventory_changed" && record.inventory) {
+        // The work changed since it was shown: show the current list; confirm again.
+        const changed = confirmed && !everything && confirmed.reach !== "unreachable" ? shown : null;
+        setStopConfirm({ key, inventory: record.inventory, previous: changed });
+      } else if (record?.reason === "worker_unreachable" && record.inventory) {
+        // Nothing stopped: the worker could not answer. Offer Stop everything for that generation.
+        setStopConfirm({ key, inventory: record.inventory, previous: null });
+      } else {
+        setStopConfirm(null);
+        setContainment("unknown");
+        setActionError(`Stop not confirmed: ${detail(e, "no answer")}`);
+      }
     } finally {
       setStopping(false);
       await load();
@@ -3199,6 +3245,12 @@ export function StructuredPane({
   // carries no seam of its own).
   const seam = earlier.seam;
   if (backgroundAt >= 0) conversation.splice(backgroundAt, 0, null);
+  // Work that ended with an earlier worker, and idle exits (#1724): after the turn each follows,
+  // from the snapshot and from every history page held (each carries the ends of its turns).
+  const endsAfter = new Map<string | null, NonNullable<StructuredSnapshot["native"]>["worker_ends"]>();
+  for (const end of earlier.ends) {
+    endsAfter.set(end.after_turn, [...(endsAfter.get(end.after_turn) ?? []), end]);
+  }
   const pending = snap?.pending_requests ?? [];
   const operatorIds = new Map(operatorTurns(snap).map((t) => [t.turn_id, t.text ?? ""] as const));
   const pendingAnswerIds = new Set(
@@ -3478,10 +3530,13 @@ export function StructuredPane({
             </div>
           )}
           <HistoryTop status={earlier.status} onRetry={earlier.retry} />
+          <WorkerEnds ends={endsAfter.get(null)} />
           {!!snap?.oom_kills_start && <OomNotice count={snap.oom_kills_start} between />}
           {conversation.map((group) => {
             if (group === null) return (
-              <BackgroundWork key="background" native={snap?.native} />
+              <BackgroundWork key="background" native={snap?.native}
+                onStop={readOnly ? undefined : () => void stop()}
+                onStopEverything={readOnly ? undefined : stopEverything} />
             );
             const { turn: t, additions } = group;
             // Session-level OOM kills after this group, before the next turn (#1732).
@@ -3507,6 +3562,9 @@ export function StructuredPane({
                     question={questionFor(t)}
                   />
                 ) : renderTurn(t, additions.map((added) => renderTurn(added)))}
+                {/* Ends anchored to the group's turn OR a nested addition (a delivered steer): after
+                    the group, as the server placed them after that turn (#1724, Hermes). */}
+                <WorkerEnds ends={[t, ...additions].flatMap((x) => endsAfter.get(x.turn_id) ?? [])} />
                 {oomAfter > 0 && <OomNotice count={oomAfter} between />}
               </Fragment>
             );
@@ -3570,6 +3628,17 @@ export function StructuredPane({
       </div>
       </ArrivalContext.Provider>
       {stopChoiceView}
+      {stopConfirm?.key === key && (
+        <StopConfirmDialog
+          // A refreshed list is a new question: remounting puts focus back on Keep running.
+          key={`${stopConfirm.inventory.worker}:${stopConfirm.inventory.digest ?? "everything"}`}
+          inventory={stopConfirm.inventory}
+          previous={stopConfirm.previous}
+          busy={stopping}
+          onKeep={() => setStopConfirm(null)}
+          onStop={(everything) => void stop(stopConfirm.inventory, everything)}
+        />
+      )}
       {sendNowHint}
       {(sendError || actionError) && (
         <p className={chat.sendError} role="alert" data-testid="structured-error">

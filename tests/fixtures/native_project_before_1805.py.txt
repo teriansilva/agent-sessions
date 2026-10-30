@@ -1,8 +1,12 @@
-# The API-session projection exactly as it was before #1805, kept as the parity oracle for
+# The API-session projection exactly as it was before #1805 (with #1724's background
+# inventory), kept as the parity oracle for
 # `tests/test_native_heartbeats.py`. It reads every `background` record from the global index;
 # the test runs it over a copy of the journal whose index still holds the plain heartbeats.
 # Executed in `native_runtime`'s namespace (its helpers are the current ones). Never edit it to
 # follow a change: a deliberate change to the projection replaces this file in the same PR.
+
+WORKER_ENDS_SHOWN = 16  # the oracle's own cap (#1724 later pages worker ends with their turns)
+
 
 def _observe_task(tasks: dict, ended: set[str], data: dict, ts: float) -> None:
     """Merge one live worker's task observation (#1461), independently of execution state.
@@ -34,6 +38,93 @@ def _observe_task(tasks: dict, ended: set[str], data: dict, ts: float) -> None:
     for field in native_protocol.TASK_METADATA_LIMITS:
         if data.get(field):
             task[field] = data[field]
+
+
+
+def _task_fact(facts: dict, worker_id: str, data: dict, ts: float) -> None:
+    """What one generation's engine task was reported as (#1724), for its ended row."""
+    key = (worker_id, data["task_id"])
+    fact = facts.get(key)
+    if fact is None:
+        if len(facts) >= 4096:
+            return
+        fact = facts[key] = {"task_id": data["task_id"], "started_at": ts}
+    for field in ("description", "task_type"):
+        if data.get(field):
+            fact[field] = data[field]
+
+
+
+def _worker_ends(
+    inventories: dict,
+    settlements: dict,
+    facts: dict,
+    live_worker: str | None,
+    ended_reason: Callable[[str], str | None],
+    positions: list[tuple[int, str]],
+    *,
+    older: bool,
+) -> list[dict]:
+    """Each ended generation's last-observed active work, as rows (#1724). A generation that
+    settled itself (Stop, idle, protocol end) lists what it settled. One that could not (OOM,
+    SIGKILL, crash) is settled HERE, from its last journaled inventory, idempotently: the same
+    journal always yields the same rows, and nothing is written. Work started and ended between
+    two inventories was never recorded, and no row claims it. An idle exit is a row of its own;
+    an end with nothing active is none. Each row sits after the newest shown turn before it;
+    rows older than the shown window are left to history. Newest `WORKER_ENDS_SHOWN` only."""
+    ends = []
+    for worker_id in {*inventories, *settlements} - {live_worker}:
+        settled = settlements.get(worker_id)
+        item = settled or inventories[worker_id]
+        ends.append((item["cursor"], worker_id, item, settled is not None))
+    rows: list[dict] = []
+    for cursor, worker_id, item, settled in sorted(ends, reverse=True):
+        if len(rows) >= WORKER_ENDS_SHOWN or (older and positions and cursor < positions[0][0]):
+            break
+        data = item["event"]["data"]
+        if settled and data["reason"] == "idle":
+            row: dict = {"reason": "idle", "idle_for": data.get("idle_for")}
+        elif data["engine"] or data["processes"] or data["more"] or data["scan"] == "unknown":
+            # Precedence (#1724): oom > stop > protocol > worker_ended.
+            oom = ended_reason(worker_id) is not None
+            row = {
+                "reason": "oom" if oom else data["reason"] if settled else "worker_ended",
+                "scan": "unknown" if data["scan"] == "unknown" else "ok",
+                "tasks": [
+                    {
+                        "task_id": task_id,
+                        "source": "engine",
+                        "state": "ended_with_worker",
+                        **{
+                            key: value
+                            for key, value in facts.get((worker_id, task_id), {}).items()
+                            if key != "task_id"
+                        },
+                    }
+                    for task_id in data["engine"]
+                ],
+                "processes": [
+                    {**p, "source": "process", "state": "ended_with_worker"}
+                    for p in data["processes"]
+                ],
+                "more": data["more"],
+                "engine_more": data.get("engine_more", 0),
+            }
+        else:
+            continue
+        row.update(
+            worker=worker_id,
+            # When it was settled; for an abrupt end, when its work was last observed.
+            at=item["ts"],
+            settled=settled,
+            after_turn=next(
+                (turn for position, turn in reversed(positions) if position < cursor), None
+            ),
+        )
+        rows.append(row)
+    rows.reverse()
+    return rows
+
 
 
 def project(
@@ -91,8 +182,23 @@ def project(
     tasks, ended_tasks = {}, set()
     ended: set[str] = set()  # agent turns whose end (or a later start, or a new worker) was seen
     last: tuple[str, str] | None = None  # (agent turn, the worker that minted it)
+    # The background inventory (#1724), per generation: its newest inventory and its settlement,
+    # and what each engine task was reported as, for the rows of work that ended with a worker.
+    inventories: dict[str, dict] = {}
+    settlements: dict[str, dict] = {}
+    task_facts: dict[tuple[str, str], dict] = {}
+    unresumed: dict[str, int] = {}
     for item in journal.events.for_operations(set()):
         kind, data = item["event"]["kind"], item["event"]["data"]
+        if kind == "background" and data.get("task_id"):
+            _task_fact(task_facts, item["worker_id"], data, item["ts"])
+        elif kind == "background_inventory":
+            inventories[item["worker_id"]] = item
+        elif kind == "background_settled":
+            settlements.setdefault(item["worker_id"], item)
+        elif kind in {"stop_aborted", "stop_resumed"} and "unresumed" in data:
+            # Jobs an interrupted exact Stop paused and could not confirm resumed (#1724).
+            unresumed[item["worker_id"]] = data["unresumed"]
         if kind == "background" and data.get("task_id") and item["worker_id"] == live_worker:
             _observe_task(tasks, ended_tasks, data, item["ts"])
         if kind == "background" and "background_turn" in data:
@@ -494,6 +600,35 @@ def project(
     for turn_id, turn in turns.items():
         turn["position"] = journal.operations[turn_id].claimed_revision
     shown_turns = sorted([*turns.values(), *agents.values()], key=lambda t: t["position"])
+    worker_ends = (
+        _worker_ends(
+            inventories,
+            settlements,
+            task_facts,
+            live_worker,
+            ended_reason,
+            [(t["position"], t["turn_id"]) for t in shown_turns],
+            older=history_before is not None,
+        )
+        if before is None
+        else []
+    )
+    live_tasks = [{**task, "source": "engine"} for task in tasks.values()]
+    stop_inventory = None
+    if live_worker is not None:
+        stop_inventory = _stop_inventory(inventories.get(live_worker), live_worker, tasks)
+        live_tasks += [
+            {
+                "task_id": f"pid:{p['pid']}:{p['start']}",
+                "source": "process",
+                "state": "running",
+                "pid": p["pid"],
+                "comm": p["comm"],
+                "started_at": p["started_at"],
+                "updated_at": stop_inventory["observed_at"],
+            }
+            for p in stop_inventory["processes"]
+        ]
     oom_start = _place_oom_between(oom_between, journal, timeline, turns, agents)
     for turn in shown_turns:
         for key in (
@@ -558,7 +693,17 @@ def project(
             # Only the live worker's own report: an exited or replaced generation's task ended
             # with it, so its last `active` would show an idle replacement busy forever.
             "background_active": background and background_worker == live_worker,
-            "background_tasks": list(tasks.values()),
+            # Engine-reported tasks and the process floor's agent processes (#1724): two kinds
+            # of observation, never merged into one job count.
+            "background_tasks": live_tasks,
+            # What an operator Stop ends (#1724): the live worker's last inventory, with the
+            # digest its Stop is confirmed against. The worker rechecks it before stopping.
+            "stop_inventory": stop_inventory,
+            # Work still running when an earlier generation ended (#1724), and idle exits.
+            "worker_ends": worker_ends,
+            # Jobs an interrupted exact Stop paused and could not resume (#1724): the pane says
+            # so and offers Stop everything. Only the live worker's; 0 when none.
+            "paused_unresumed": unresumed.get(live_worker, 0) if live_worker else 0,
             # Only the live worker's own turn is a Send now target (#1427): a target minted by an
             # exited or replaced generation names a turn nothing can stop any more.
             "background_turn": background_turn[0]

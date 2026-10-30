@@ -951,3 +951,77 @@ def test_serve_binds_a_private_socket_without_touching_the_process_umask(broker,
 
     asyncio.run(run())
     assert seen == {"running": True, "mode": 0o600, "answers": True}
+
+
+def _unhandled_by_client(act):
+    """Serve `_client` on a real socket, run `act(path)`, and return what the event loop's
+    exception handler received (asyncio's "Unhandled exception in client_connected_cb")."""
+
+    async def run(path):
+        errors = []
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(lambda _loop, context: errors.append(context))
+        server = await asyncio.start_unix_server(secrets_broker._client, path=str(path))
+        async with server:
+            await act(path)
+            for _ in range(50):
+                await asyncio.sleep(0.02)
+                if errors:
+                    break
+        return errors
+
+    return run
+
+
+def test_a_bare_connect_is_not_answered_and_logs_nothing(broker, tmp_path):
+    """Connect and hang up, as a peer broker's `_answers` does: no reply, no unhandled error."""
+
+    async def act(path):
+        reader, writer = await asyncio.open_unix_connection(str(path))
+        writer.close()
+        await writer.wait_closed()
+
+    assert asyncio.run(_unhandled_by_client(act)(tmp_path / "b.sock")) == []
+
+
+def test_a_client_gone_before_its_reply_logs_nothing(broker, tmp_path, monkeypatch):
+    """Ask, then hang up before the answer (the client's own timeout): nobody to tell."""
+    gone = threading.Event()
+
+    def slow_handle(token, op, name=None):
+        gone.wait(5)
+        return {"ok": False, "error": "unknown_capability"}
+
+    monkeypatch.setattr(secrets_broker, "handle", slow_handle)
+
+    async def act(path):
+        reader, writer = await asyncio.open_unix_connection(str(path))
+        writer.write(b'{"token": "t", "op": "list"}\n')
+        await writer.drain()
+        await asyncio.sleep(0.05)
+        writer.close()
+        await writer.wait_closed()
+        gone.set()
+
+    assert asyncio.run(_unhandled_by_client(act)(tmp_path / "b.sock")) == []
+
+
+def test_a_real_request_is_still_answered(broker, tmp_path):
+    async def run(path):
+        server = await asyncio.start_unix_server(secrets_broker._client, path=str(path))
+        async with server:
+            reader, writer = await asyncio.open_unix_connection(str(path))
+            writer.write(b"not json\n")
+            await writer.drain()
+            reply = await asyncio.wait_for(reader.readline(), 5)
+            writer.close()
+            await writer.wait_closed()
+        return json.loads(reply)
+
+    assert asyncio.run(run(tmp_path / "b.sock")) == {"ok": False, "error": "bad_request"}
+
+
+def test_the_broker_socket_name_is_the_one_the_session_scan_excludes(broker):
+    from agent_sessions import ptybridge
+
+    assert ptybridge.is_broker_socket(secrets_broker.socket_path().name)

@@ -24,6 +24,20 @@ Behaviour is selected by the turn text, so a test drives it purely through the p
   notification (output ``notified``, a ``task-notification`` result). It is held open until
   ``release-notification`` while ``hold-notification`` (after its output) or
   ``hold-notification-start`` (before any output) exists (#1427).
+* ``SPAWN:<seconds>`` — (codex) start ``sleep <seconds>`` in a session of its own, as a
+  ``setsid``'d job (``fixtures/codex_detached_job.jsonl``): the tool call completes at once and
+  nothing reports the job, which keeps running in the unit (#1724). Its pid goes to
+  ``spawned-pid``.
+* ``LOOP`` — (codex) start a detached polling loop: a new short-lived ``sleep 0.35`` every
+  0.2 s, like a watcher or a retry loop (#1724). The children overlap, so a scan always finds one
+  the last inventory did not list (none lives a 0.5 s tick); its pid goes to ``loop-pid``.
+* ``TERMINAL:<seconds>`` — (codex) a background terminal as Codex 0.164.0 reports one
+  (``fixtures/codex_background_terminal.jsonl``): the command item stays ``inProgress`` past
+  ``turn/completed`` and completes, under the ended turn's id, when its ``sleep`` exits.
+* a ``start-fake-mcp`` file in the working directory — (codex) start one long-lived child at
+  startup, as a CLI starts an MCP server before it is ready. Once ``spawn-grandchild`` exists it
+  starts ``sleep 120`` as ITS child (agent work through an MCP server, #1724), pid in
+  ``grandchild-pid``.
 * OOM fixtures (#1732, `memory_turn`), every protocol; under a tiny `MemoryMax`:
   ``OOMCHILD:<n>`` runs n children one after another that each allocate until killed, and
   replies ``echo:children:<their return codes>``; ``OOMSELF`` allocates in the agent itself;
@@ -229,10 +243,45 @@ def _run_mcp_tool(server, tool, arguments):
     return "no-result" if result is None else result["content"][0]["text"]
 
 
+_FAKE_MCP = """
+import os, subprocess, time
+while not os.path.exists("spawn-grandchild"):
+    time.sleep(0.05)
+child = subprocess.Popen(["sleep", "120"], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+open("grandchild-pid.tmp", "w").write(str(child.pid))
+os.replace("grandchild-pid.tmp", "grandchild-pid")
+while True:
+    time.sleep(1)
+"""
+
+
+def _detached(seconds):
+    import subprocess
+
+    return subprocess.Popen(
+        ["sleep", str(seconds)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
 def codex():
     thread = None
     turn = None
     mcp_servers = {}
+    if os.path.exists("start-fake-mcp"):
+        import subprocess
+
+        # Its own stdio, like a real MCP server's: never the protocol pipe of the CLI.
+        subprocess.Popen(
+            [sys.executable, "-c", _FAKE_MCP],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     stream = frames()
     for frame in stream:
         method, rid = frame.get("method"), frame.get("id")
@@ -415,6 +464,70 @@ def codex():
                         "params": {"threadId": thread, "turnId": turn, "item": item},
                     }
                 )
+            if text.startswith("SPAWN:"):
+                job = _detached(int(text[len("SPAWN:") :]))
+                with open("spawned-pid.tmp", "w") as fh:
+                    fh.write(str(job.pid))
+                os.replace("spawned-pid.tmp", "spawned-pid")
+                item = {
+                    "id": "cmd-spawn",
+                    "type": "commandExecution",
+                    "status": "completed",
+                    "command": f"setsid {text[len('SPAWN:') :]} & echo started",
+                    "aggregatedOutput": "started\n",
+                    "exitCode": 0,
+                }
+                send(
+                    {
+                        "method": "item/completed",
+                        "params": {"threadId": thread, "turnId": turn, "item": item},
+                    }
+                )
+            if text == "LOOP":
+                import subprocess
+
+                loop = subprocess.Popen(
+                    ["sh", "-c", "while :; do sleep 0.35 & sleep 0.2; done"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                with open("loop-pid.tmp", "w") as fh:
+                    fh.write(str(loop.pid))
+                os.replace("loop-pid.tmp", "loop-pid")
+            if text.startswith("TERMINAL:"):
+                seconds = int(text[len("TERMINAL:") :])
+                job = _detached(seconds)
+                item = {
+                    "id": f"cmd-terminal-{job.pid}",
+                    "type": "commandExecution",
+                    "status": "inProgress",
+                    "command": f"/bin/bash -lc 'sleep {seconds}'",
+                    "processId": str(job.pid),
+                    "source": "unifiedExecStartup",
+                }
+                send(
+                    {
+                        "method": "item/started",
+                        "params": {"threadId": thread, "turnId": turn, "item": item},
+                    }
+                )
+
+                def finish_terminal(job=job, item=item, at=turn, where=thread):
+                    job.wait()
+                    send(
+                        {
+                            "method": "item/completed",
+                            "params": {
+                                "threadId": where,
+                                "turnId": at,
+                                "item": {**item, "status": "completed", "exitCode": 0},
+                            },
+                        }
+                    )
+
+                threading.Thread(target=finish_terminal, daemon=True).start()
             if text == "BIG":
                 item = {
                     "id": "cmd-1",

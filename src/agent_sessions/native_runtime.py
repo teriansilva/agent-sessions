@@ -106,12 +106,23 @@ _ERRORS = {
 
 
 class NativeError(Exception):
-    def __init__(self, status: int, detail: str, reason: str | None = None):
+    def __init__(
+        self,
+        status: int,
+        detail: str,
+        reason: str | None = None,
+        inventory: dict | None = None,
+    ):
         super().__init__(detail)
         self.status = status
         self.detail = detail
         # A closed refusal reason the pane acts on (#1644, `native_ipc.SEND_NOW_REFUSALS`).
         self.reason = reason
+        # A refused Stop (#1724): the background work running now, for the pane to confirm.
+        self.inventory = inventory
+        # The request may have reached the worker but no answer came back (a lost connection,
+        # a timeout): the only failure that says nothing about what the worker decided (#1724).
+        self.transport = False
 
 
 # --- systemd and the host: one seam so tests can substitute a fake service manager -------------
@@ -739,16 +750,20 @@ async def _call(gen: Generation, action: str, params: dict, *, timeout: float = 
         response = await asyncio.wait_for(exchange(), timeout)
     except (OSError, ConnectionError) as exc:
         if request_started:
-            raise NativeError(
+            lost = NativeError(
                 503, "the native worker connection was lost; the request may still be applied"
-            ) from None
+            )
+            lost.transport = True
+            raise lost from None
         raise _Unreachable(str(exc)) from None
     except native_ipc.IPCError:
         raise NativeError(503, "the native worker answered with an invalid frame") from None
     except TimeoutError:
-        raise NativeError(
+        silent = NativeError(
             503, "the native worker did not answer; the request may still be applied"
-        ) from None
+        )
+        silent.transport = True
+        raise silent from None
     if "error" in response:
         error = response["error"]
         raise NativeError(
@@ -2032,6 +2047,126 @@ def _journal(prov, session_id: str) -> native_journal.Journal:
         raise NativeError(404 if exc.code == "unavailable" else 503, exc.detail) from None
 
 
+#: Why work ended with its worker (#1724), strongest first: a kernel OOM kill names the end
+#: whatever else was in flight; then the operator's Stop; then the native connection ending.
+END_REASONS = ("oom", "stop", "protocol", "worker_ended")
+
+
+def _worker_ends(
+    inventories: dict,
+    settlements: dict,
+    tasks_of: Callable[[str], list[dict]],
+    live_worker: str | None,
+    ended_reason: Callable[[str], str | None],
+    timeline: list[tuple[int, str]],
+    window: set[str],
+    *,
+    first: bool,
+) -> list[dict]:
+    """Each ended generation's last-observed active work, as rows (#1724). A generation that
+    settled itself (Stop, idle, protocol end) lists what it settled. One that could not (OOM,
+    SIGKILL, crash) is settled HERE, from its last journaled inventory, idempotently: the same
+    journal always yields the same rows, and nothing is written. Work started and ended between
+    two inventories was never recorded, and no row claims it. An idle exit is a row of its own;
+    an end with nothing active is none.
+
+    Each end is ANCHORED to the newest turn of the whole conversation before it (``after_turn``;
+    None before the first turn) and travels with that turn (Hermes on PR #1757): a snapshot or a
+    history page carries exactly the ends anchored to the turns of its own window, and the window
+    that reaches the first turn (``first``) also those before it. Windows partition the turns, so
+    every recorded end is reachable through the snapshot and its pages, once. No count cap: a
+    generation is launched only by the session's creation or an operator message, so a window
+    holds at most about one end per turn it shows (plus the creation's)."""
+    ends = []
+    for worker_id in {*inventories, *settlements} - {live_worker}:
+        settled = settlements.get(worker_id)
+        item = settled or inventories[worker_id]
+        ends.append((item["cursor"], worker_id, item, settled is not None))
+    rows: list[dict] = []
+    positions = [position for position, _ in timeline]
+    for cursor, worker_id, item, settled in sorted(ends):
+        at = bisect.bisect_left(positions, cursor)
+        anchor = timeline[at - 1][1] if at else None
+        if not (anchor in window if anchor is not None else first):
+            continue  # another window's: the snapshot or the history page holding its turn
+        data = item["event"]["data"]
+        # What each engine task was reported as, folded at append (#1805): a task still running
+        # when its worker ended is one the fold kept.
+        facts = {task["task_id"]: task for task in tasks_of(worker_id)}
+        if settled and data["reason"] == "idle":
+            row: dict = {"reason": "idle", "idle_for": data.get("idle_for")}
+        elif data["engine"] or data["processes"] or data["more"] or data["scan"] == "unknown":
+            # Precedence (#1724): oom > stop > protocol > worker_ended.
+            oom = ended_reason(worker_id) is not None
+            row = {
+                "reason": "oom" if oom else data["reason"] if settled else "worker_ended",
+                "scan": "unknown" if data["scan"] == "unknown" else "ok",
+                "tasks": [
+                    {
+                        "task_id": task_id,
+                        "source": "engine",
+                        "state": "ended_with_worker",
+                        **{
+                            key: value
+                            for key, value in facts.get(task_id, {}).items()
+                            if key in ("description", "task_type", "started_at")
+                        },
+                    }
+                    for task_id in data["engine"]
+                ],
+                "processes": [
+                    {**p, "source": "process", "state": "ended_with_worker"}
+                    for p in data["processes"]
+                ],
+                "more": data["more"],
+                "engine_more": data.get("engine_more", 0),
+            }
+        else:
+            continue
+        row.update(
+            worker=worker_id,
+            # When it was settled; for an abrupt end, when its work was last observed.
+            at=item["ts"],
+            settled=settled,
+            after_turn=anchor,
+        )
+        rows.append(row)
+    return rows
+
+
+def _stop_inventory(item: dict | None, live_worker: str, tasks: dict) -> dict:
+    """The live worker's background work as its last inventory journaled it (#1724). No
+    inventory yet means nothing ran that it had to record: the empty set's digest."""
+    if item is None:
+        data = {"engine": [], "processes": [], "more": 0, "engine_more": 0, "scan": "ok"}
+        digest = native_ipc.stop_digest(live_worker, (), (), "ok")
+        observed = None
+    else:
+        data, digest, observed = item["event"]["data"], item["event"]["data"]["digest"], item["ts"]
+    return {
+        "worker": live_worker,
+        "digest": digest,
+        "scan": "unknown" if data["scan"] == "unknown" else "ok",
+        "tasks": [
+            {
+                "task_id": task_id,
+                **{
+                    key: tasks[task_id][key]
+                    for key in ("description", "task_type", "started_at")
+                    if key in tasks.get(task_id, {})
+                },
+            }
+            for task_id in data["engine"]
+        ],
+        "processes": [dict(p) for p in data["processes"]],
+        "more": data["more"],
+        # Tasks past the listed 128 (#1724): with `more`, an inventory over the display limits
+        # is never confirmed exactly, only by Stop everything.
+        "engine_more": data.get("engine_more", 0),
+        "observed_at": observed,
+    }
+
+
 def _show_open(turn: dict, streaming: bool) -> None:
     """The message an operator turn was streaming after its settled ones (#1727), handed to the
     snapshot SEPARATELY (``reply_open``, its message starts in ``reply_open_breaks``): the snapshot
@@ -2115,8 +2250,20 @@ def project(
     tasks = journal.events.tasks_of(live_worker) if live_worker is not None else []
     ended: set[str] = set()  # agent turns whose end (or a later start, or a new worker) was seen
     last: tuple[str, str] | None = None  # (agent turn, the worker that minted it)
+    # The background inventory (#1724), per generation: its newest inventory and its settlement,
+    # and what each engine task was reported as, for the rows of work that ended with a worker.
+    inventories: dict[str, dict] = {}
+    settlements: dict[str, dict] = {}
+    unresumed: dict[str, int] = {}
     for item in journal.events.for_operations(set()):
         kind, data = item["event"]["kind"], item["event"]["data"]
+        if kind == "background_inventory":
+            inventories[item["worker_id"]] = item
+        elif kind == "background_settled":
+            settlements.setdefault(item["worker_id"], item)
+        elif kind in {"stop_aborted", "stop_resumed"} and "unresumed" in data:
+            # Jobs an interrupted exact Stop paused and could not confirm resumed (#1724).
+            unresumed[item["worker_id"]] = data["unresumed"]
         if kind == "background" and "background_turn" in data:
             if last is not None:
                 ended.add(last[0])
@@ -2149,6 +2296,10 @@ def project(
     # The oldest turn of the window, when anything older exists. Only the window counts: a live
     # turn pulled forward below is shown, but it is not where history continues.
     history_before = shown[0][2] if shown and shown[0] != timeline[0] else None
+    # The window's own turns (before any live turn is pulled forward): the worker ends anchored to
+    # them travel with this view (#1724); a turn pulled forward carries its ends on its page.
+    window_turns = {entry[2] for entry in shown}
+    window_first = not timeline or (bool(shown) and shown[0] == timeline[0])
     # Live work is never cut (Hermes on #1439), however many turns the agent ran for itself since:
     # every message the live worker still holds queued, and the newest one it dispatched if it has
     # not completed (it may have waited behind those turns). Nothing else: an input that settles
@@ -2524,6 +2675,34 @@ def project(
     for turn_id, turn in turns.items():
         turn["position"] = journal.operations[turn_id].claimed_revision
     shown_turns = sorted([*turns.values(), *agents.values()], key=lambda t: t["position"])
+    worker_ends = _worker_ends(
+        inventories,
+        settlements,
+        journal.events.tasks_of,
+        live_worker,
+        ended_reason,
+        [(entry[0], entry[2]) for entry in timeline],
+        window_turns,
+        first=window_first,
+    )
+    live_tasks = [{**task, "source": "engine"} for task in tasks]
+    stop_inventory = None
+    if live_worker is not None:
+        stop_inventory = _stop_inventory(
+            inventories.get(live_worker), live_worker, {task["task_id"]: task for task in tasks}
+        )
+        live_tasks += [
+            {
+                "task_id": f"pid:{p['pid']}:{p['start']}",
+                "source": "process",
+                "state": "running",
+                "pid": p["pid"],
+                "comm": p["comm"],
+                "started_at": p["started_at"],
+                "updated_at": stop_inventory["observed_at"],
+            }
+            for p in stop_inventory["processes"]
+        ]
     oom_start = _place_oom_between(oom_between, journal, timeline, turns, agents)
     for turn in shown_turns:
         for key in (
@@ -2588,7 +2767,17 @@ def project(
             # Only the live worker's own report: an exited or replaced generation's task ended
             # with it, so its last `active` would show an idle replacement busy forever.
             "background_active": background and background_worker == live_worker,
-            "background_tasks": tasks,
+            # Engine-reported tasks and the process floor's agent processes (#1724): two kinds
+            # of observation, never merged into one job count.
+            "background_tasks": live_tasks,
+            # What an operator Stop ends (#1724): the live worker's last inventory, with the
+            # digest its Stop is confirmed against. The worker rechecks it before stopping.
+            "stop_inventory": stop_inventory,
+            # Work still running when an earlier generation ended (#1724), and idle exits.
+            "worker_ends": worker_ends,
+            # Jobs an interrupted exact Stop paused and could not resume (#1724): the pane says
+            # so and offers Stop everything. Only the live worker's; 0 when none.
+            "paused_unresumed": unresumed.get(live_worker, 0) if live_worker else 0,
             # Only the live worker's own turn is a Send now target (#1427): a target minted by an
             # exited or replaced generation names a turn nothing can stop any more.
             "background_turn": background_turn[0]
@@ -3027,7 +3216,12 @@ def _history_sync(
         ended_code=cache(_ended_code),
         live_text=live_text,
     )
-    return {"turns": view["turns"], "history_before": view["history_before"]}
+    return {
+        "turns": view["turns"],
+        "history_before": view["history_before"],
+        # The ends anchored to this page's turns (#1724, Hermes on PR #1757): history reaches them.
+        "worker_ends": view["native"]["worker_ends"],
+    }
 
 
 async def history(
@@ -3234,7 +3428,17 @@ async def submit(
 
 # `memory_pressure` (#1643): the successor's memory reading, journaled on its first sample — often
 # before the operator's first claim. A reading of its own unit, never conversation activity.
-_STARTUP_EVENTS = frozenset({"initialized", "session", "background", "response", "memory_pressure"})
+_STARTUP_EVENTS = frozenset(
+    {
+        "initialized",
+        "session",
+        "background",
+        "response",
+        "memory_pressure",
+        # The readiness inventory (#1724), journaled before the first turn when it is not empty.
+        "background_inventory",
+    }
+)
 
 
 def _nothing_to_review(
@@ -3264,7 +3468,10 @@ def _status_record(event: dict) -> bool:
     """A background task's progress or an activity heartbeat: an idle agent's running subagent
     writes one every few seconds, and an explicit expectation refused for it could never be met
     while the task runs. One carrying ``background_turn`` starts or ends a turn the agent runs
-    for itself (#1427): that is activity, and keeps the refusal."""
+    for itself (#1427): that is activity, and keeps the refusal. The background inventory and an
+    idle tick's resume report (#1724) are the same kind of report: what runs, not a turn."""
+    if event["kind"] in {"background_inventory", "stop_resumed"}:
+        return True
     return event["kind"] == "background" and "background_turn" not in (event.get("data") or {})
 
 
@@ -3740,8 +3947,268 @@ def _discard_start(session_id: str) -> None:
             native_state.write_session(session_id, record)
 
 
-async def stop(engine_id: str, session_id: str, *, discard: bool = True) -> dict:
-    await asyncio.to_thread(partial(_session, engine_id, session_id, retiring_ok=True))
+STOP_CHANGED = "The session's background work changed since you looked; confirm again"
+STOP_UNCHECKED = (
+    "Stop not applied: the worker did not answer the background-work check, so nothing was "
+    "stopped by BattleLab. If the worker did receive it, it ends only what you confirmed."
+)
+STOP_CHECK_TIMEOUT = 15.0
+STOP_UNREACHABLE = (
+    "BattleLab can't reach this session's worker to check its background work; nothing was "
+    "stopped. Stop everything ends everything the agent started."
+)
+
+
+def _stop_inventory_sync(engine_id: str, session_id: str) -> dict | None:
+    return _snapshot_sync(engine_id, session_id)["native"].get("stop_inventory")
+
+
+def _unreachable_inventory_sync(engine_id: str, session_id: str, gen: Generation) -> dict:
+    """The escape hatch of a Stop whose check failed (#1724): the generation it binds and what
+    that worker last journaled, marked unreachable. Its Stop everything names that generation."""
+    with contextlib.suppress(NativeError, native_journal.JournalError):
+        shown = _stop_inventory_sync(engine_id, session_id)
+        if shown is not None and shown.get("worker") == gen.worker_id:
+            return {**shown, "reach": "unreachable"}
+    return {
+        "worker": gen.worker_id,
+        "digest": None,
+        "scan": "unknown",
+        "tasks": [],
+        "processes": [],
+        "more": 0,
+        "engine_more": 0,
+        "observed_at": None,
+        "reach": "unreachable",
+    }
+
+
+def _unreachable_error(engine_id: str, session_id: str, gen: Generation) -> NativeError:
+    return NativeError(
+        503,
+        STOP_UNREACHABLE,
+        reason="worker_unreachable",
+        inventory=_unreachable_inventory_sync(engine_id, session_id, gen),
+    )
+
+
+def _settle_unreachable(prov, session_id: str, gen: Generation) -> None:
+    """A Stop everything ended a worker that could not settle itself (#1724): record its last
+    journaled work as ended by the operator's Stop, once, for that generation only, and only
+    after its containment was proved gone. Best effort: without it the reader still settles
+    the generation from its last inventory (`worker_ended`)."""
+    with contextlib.suppress(native_journal.JournalError, NativeError, OSError):
+        journal = _journal(prov, session_id)
+        last = None
+        for item in journal.events.for_operations(set()):
+            if item["worker_id"] != gen.worker_id:
+                continue
+            if item["event"]["kind"] == "background_settled":
+                return  # it settled itself (SIGTERM) before it went
+            if item["event"]["kind"] == "background_inventory":
+                last = item["event"]["data"]
+        data = (
+            {
+                key: last[key]
+                for key in ("engine", "processes", "more", "scan", "engine_more")
+                if key in last
+            }
+            if last is not None
+            else {"engine": [], "processes": [], "more": 0, "scan": "unknown"}
+        )
+        native_journal.append_events(
+            _journal_root(prov),
+            gen.binding,
+            [{"kind": "background_settled", "data": {**data, "reason": "stop"}}],
+        )
+
+
+def _stop_under_way(worker_id: str) -> bool:
+    """The worker accepted a Stop (#1724): a second one (double click, second tab) joins it."""
+    try:
+        return bool(native_state.read_lifecycle(worker_id).get("stop_accepted_at"))
+    except (native_state.StateError, OSError):
+        return False
+
+
+class _Superseded(Exception):
+    """A confirmed Stop's generation is no longer the session's current one (#1724)."""
+
+
+def _stop_confirmed_sync(engine_id: str, session_id: str, worker_id: str, discard: bool) -> str:
+    """The close/stop boundary of a confirmed Stop (#1724), revalidated under the lifecycle lock:
+    it closes the session only while ``worker_id`` (the generation the operator confirmed) is
+    still its current one, or it is closed already (another Stop). A successor that started in
+    between — the confirmed worker accepted, exited and a new send launched another — was never
+    confirmed: `_Superseded`, and nothing is stopped or closed."""
+    with native_state.session_lock(session_id, wait=STOP_TIMEOUT):
+        record = native_state.read_session(session_id)
+        if record is None:
+            raise NativeError(404, "no such native session")
+        if not record.get("closed") and record.get("current_worker") not in (None, worker_id):
+            raise _Superseded
+        if discard and "launch" in record:
+            del record["launch"]  # as `_discard_start` does: the operator's Stop drops the view
+        return _stop_locked(engine_id, session_id, record, discard)
+
+
+def _gone_locked(session_id: str, worker_id: str) -> bool:
+    with native_state.session_lock(session_id, wait=STOP_TIMEOUT):
+        return _gone(session_id, worker_id)
+
+
+def _needs_confirmation(session_id: str, gen: Generation) -> bool:
+    """A Stop is confirmed against the generation's background work only once it can have run
+    any (#1724): a started session whose worker checks confirmations (`stop_confirm`, from the
+    release that keeps work alive). Discarding a creation that never started, or a worker still
+    starting, ends nothing an operator turn began; an older worker keeps the unconfirmed Stop."""
+    record = native_state.read_session(session_id) or {}
+    if _start_state(record) in {PENDING, STARTING, FAILED, EXPIRED}:
+        return False
+    life = native_state.read_lifecycle(gen.worker_id)
+    return life.get("stop_confirm") is True and life.get("phase") == "ready"
+
+
+async def _confirm_stop(engine_id: str, session_id: str, gen: Generation, confirm: dict) -> bool:
+    """Ask the live worker to settle and stop ONLY if what the operator confirmed is what runs
+    (#1724). Returns True when the worker accepted (it settled and is stopping its child), False
+    when it was proved gone already. Every other outcome raises: a changed set is a 409 with the
+    current inventory, a failed check a 503 — never a fall-through to the unit stop."""
+    worker = confirm.get("worker")
+    if worker not in (None, gen.worker_id):
+        # The operator confirmed another generation's work: what runs now was never shown.
+        raise NativeError(
+            409,
+            STOP_CHANGED,
+            reason="inventory_changed",
+            inventory=await asyncio.to_thread(_stop_inventory_sync, engine_id, session_id),
+        )
+    digest = confirm.get("digest") or native_ipc.stop_digest(gen.worker_id, (), (), "ok")
+    journal = await asyncio.to_thread(
+        _journal, _api_provider(engine_id, retiring_ok=True), session_id
+    )
+    try:
+        await _call(
+            gen,
+            "stop",
+            {
+                "operation_id": str(uuid.uuid4()),
+                "expected_revision": journal.revision,
+                "target_worker_id": gen.worker_id,
+                "confirm_digest": digest,
+            },
+            timeout=STOP_CHECK_TIMEOUT,
+        )
+    except _Unreachable:
+        if await asyncio.to_thread(_gone_locked, session_id, gen.worker_id):
+            return False  # nothing left to confirm: the unit stop below proves it
+        if await asyncio.to_thread(_stop_under_way, gen.worker_id):
+            return True  # a Stop already accepted for it is ending it: join that one
+        raise await asyncio.to_thread(_unreachable_error, engine_id, session_id, gen) from None
+    except NativeError as exc:
+        if exc.reason != "inventory_changed" and await asyncio.to_thread(
+            _stop_under_way, gen.worker_id
+        ):
+            return True  # a Stop already accepted for it is ending it: join that one
+        if exc.reason == "inventory_changed":
+            raise NativeError(
+                409,
+                STOP_CHANGED,
+                reason="inventory_changed",
+                inventory=await asyncio.to_thread(_stop_inventory_sync, engine_id, session_id),
+            ) from None
+        if exc.transport:
+            # A refusal, never a fall-through: nothing stopped. The worker could not answer, so
+            # the pane offers Stop everything: never a dead end for a wedged worker (Hermes r3).
+            raise await asyncio.to_thread(_unreachable_error, engine_id, session_id, gen) from None
+        # The worker answered and refused: its own refusal, nothing stopped.
+        raise NativeError(exc.status, f"Stop not applied: {exc.detail}") from None
+    return True
+
+
+async def _confirm_everything(engine_id: str, session_id: str, gen: Generation) -> bool:
+    """Stop everything (#1724, the operator's second kind of confirmation): disclosed as ending
+    everything the agent started in this generation, listed or not, and bound to it (the caller
+    checked the generation and closes through the pinned, lifecycle-locked boundary). The worker
+    settles and stops on it: True. A worker that cannot answer — no socket, a lost connection, a
+    timeout — cannot settle, but the explicit confirmation still reaches the unit stop: False
+    (the runtime settles its last inventory). A worker that ANSWERS with a refusal did not
+    accept: its refusal, and nothing is stopped (Hermes on PR #1757)."""
+    journal = await asyncio.to_thread(
+        _journal, _api_provider(engine_id, retiring_ok=True), session_id
+    )
+    try:
+        await _call(
+            gen,
+            "stop",
+            {
+                "operation_id": str(uuid.uuid4()),
+                "expected_revision": journal.revision,
+                "target_worker_id": gen.worker_id,
+                "confirm_everything": True,
+            },
+            timeout=STOP_CHECK_TIMEOUT,
+        )
+    except _Unreachable:
+        return False
+    except NativeError as exc:
+        if exc.transport:
+            return False
+        if await asyncio.to_thread(_stop_under_way, gen.worker_id):
+            return True  # a Stop already accepted for it is ending it: join that one
+        raise NativeError(exc.status, f"Stop not applied: {exc.detail}") from None
+    return True
+
+
+async def stop(
+    engine_id: str, session_id: str, *, discard: bool = True, confirm: dict | None = None
+) -> dict:
+    """Close the session and prove containment. ``confirm`` (#1724, the operator's Stop), bound
+    to ``worker``: EXACT — ``digest`` of a complete inventory the pane showed, rechecked by the
+    live worker against a fresh scan before anything is stopped; or EVERYTHING —
+    ``everything: True``, disclosed as ending all the agent started in that generation. Either
+    closes only through the pinned, lifecycle-locked boundary. Without ``confirm`` (archive,
+    internal callers) the existing unconfirmed path runs."""
+    prov, _ = await asyncio.to_thread(partial(_session, engine_id, session_id, retiring_ok=True))
+    if confirm is not None:
+        gen = await asyncio.to_thread(_generation, session_id)
+        if gen is not None and confirm.get("worker") not in (None, gen.worker_id):
+            # The operator confirmed another generation's work (a Stop everything included); this
+            # one — a successor — was never shown: refresh, nothing stopped (Hermes on #1757).
+            raise NativeError(
+                409,
+                STOP_CHANGED,
+                reason="inventory_changed",
+                inventory=await asyncio.to_thread(_stop_inventory_sync, engine_id, session_id),
+            )
+        under_way = gen is not None and await asyncio.to_thread(_stop_under_way, gen.worker_id)
+        if under_way or (
+            gen is not None and await asyncio.to_thread(_needs_confirmation, session_id, gen)
+        ):
+            accepted = True
+            if under_way:
+                pass  # a Stop of THIS generation was accepted: join it at the pinned close below
+            elif confirm.get("everything"):
+                accepted = await _confirm_everything(engine_id, session_id, gen)
+            else:
+                await _confirm_stop(engine_id, session_id, gen, confirm)
+            try:
+                contained = await asyncio.to_thread(
+                    _stop_confirmed_sync, engine_id, session_id, gen.worker_id, discard
+                )
+            except _Superseded:
+                # The confirmed worker ended and a successor started before the close: nothing
+                # of the successor was confirmed, so nothing of it is stopped (Hermes, #1757).
+                raise NativeError(
+                    409,
+                    STOP_CHANGED,
+                    reason="inventory_changed",
+                    inventory=await asyncio.to_thread(_stop_inventory_sync, engine_id, session_id),
+                ) from None
+            if not accepted and contained == "gone":
+                # The worker could not settle itself: its last journaled work ended by Stop.
+                await asyncio.to_thread(_settle_unreachable, prov, session_id, gen)
+            return {"containment": contained}
     if discard:
         await asyncio.to_thread(_discard_start, session_id)
     gen = await asyncio.to_thread(_generation, session_id)

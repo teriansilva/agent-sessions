@@ -2,8 +2,21 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError, api } from "../../lib/api";
-import type { StructuredHistoryPage, StructuredSnapshot, StructuredTurn } from "../../types/api";
-import { appendGap, mergeHistory, prependPage, turnChars, useApiHistory } from "./useApiHistory";
+import type {
+  StructuredHistoryPage,
+  StructuredSnapshot,
+  StructuredTurn,
+  StructuredWorkerEnd,
+} from "../../types/api";
+import {
+  appendGap,
+  holdEnds,
+  mergeEnds,
+  mergeHistory,
+  prependPage,
+  turnChars,
+  useApiHistory,
+} from "./useApiHistory";
 
 const turn = (id: string, text = id): StructuredTurn =>
   ({ kind: "operator", turn_id: id, operation_id: id, state: "completed", text, reply: "" }) as StructuredTurn;
@@ -359,5 +372,48 @@ describe("useApiHistory", () => {
     const calls = spy.mock.calls.length;
     await up();
     expect(spy).toHaveBeenCalledTimes(calls);
+  });
+
+  // --- worker ends travel with the turns they follow (#1724, Hermes on PR #1757) ---------------
+
+  const end = (worker: string, after: string | null): StructuredWorkerEnd =>
+    ({ worker, reason: "worker_ended", at: 1, settled: false, after_turn: after }) as StructuredWorkerEnd;
+
+  it("holds a page's ends where they render, and merges the snapshot's copy last", () => {
+    const page = [end("w0", null), end("w1", "t1"), end("w9", "t9")];
+    // t9 is not held (cut by the cap), and the page did not reach the first turn: neither shows.
+    expect(holdEnds([], page, range(0, 3), false).map((e) => e.worker)).toEqual(["w1"]);
+    expect(holdEnds([], page, range(0, 3), true).map((e) => e.worker)).toEqual(["w0", "w1"]);
+    const merged = mergeEnds([end("w1", "t1"), end("w2", "t2")], [end("w2", "t2"), end("w3", "t5")]);
+    expect(merged.map((e) => e.worker)).toEqual(["w1", "w2", "w3"]);
+  });
+
+  it("every end is reachable: the snapshot's, then each page's as it loads (Hermes' 17 generations)", async () => {
+    // One generation ended after each of t0…t19, and one before t0: 21 ends.
+    const all = range(0, 20);
+    const ends = [end("w-start", null), ...all.map((t, i) => end(`w${i}`, t.turn_id))];
+    const anchored = (turns: StructuredTurn[], first: boolean) =>
+      ends.filter((e) => (e.after_turn === null ? first : turns.some((t) => t.turn_id === e.after_turn)));
+    vi.spyOn(api, "structuredHistory").mockImplementation((_k, before, limit = 50) => {
+      const at = all.findIndex((t) => t.turn_id === before);
+      const start = Math.max(0, at - limit);
+      const turns = all.slice(start, at);
+      return Promise.resolve({
+        session_key: "codex-api:s",
+        turns,
+        before: start > 0 ? turns[0].turn_id : null,
+        has_more: start > 0,
+        worker_ends: anchored(turns, start === 0),
+      });
+    });
+    const window = range(17, 20);
+    const snap = { ...snapshot(window, "t17"), native: { worker_ends: anchored(window, false) } };
+    const { result, up } = setup(snap as StructuredSnapshot);
+    expect(result.current.ends.map((e) => e.worker)).toEqual(["w17", "w18", "w19"]);
+    await up();
+    await waitFor(() => expect(result.current.status).toBe("end"));
+    const workers = result.current.ends.map((e) => e.worker);
+    expect(new Set(workers).size).toBe(workers.length); // no duplicates
+    expect([...workers].sort()).toEqual(ends.map((e) => e.worker).sort());
   });
 });

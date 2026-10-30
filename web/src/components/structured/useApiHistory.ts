@@ -5,7 +5,10 @@
  *  pages are prepended and the reading position is kept. What was loaded survives every snapshot
  *  refresh: when the window slides on (new turns), the turns it let go are read back so nothing
  *  between the loaded pages and the window goes missing. Merged by `turn_id`; the snapshot's
- *  copy of a turn wins. Nothing is fetched before a gesture, and one request runs at a time. */
+ *  copy of a turn wins. Nothing is fetched before a gesture, and one request runs at a time.
+ *
+ *  Worker ends (#1724) travel with the turn they follow: each page carries the ends anchored to
+ *  its own turns (and the first page those before the first turn), and they are held with them. */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent, RefObject, TouchEvent, WheelEvent } from "react";
 
@@ -15,12 +18,13 @@ import type {
   StructuredHistoryPage,
   StructuredSnapshot,
   StructuredTurn,
+  StructuredWorkerEnd,
 } from "../../types/api";
 
 type Turn = StructuredTurn | StructuredAgentTurn;
 /** Read-back progress after a window slide: turns read so far (contiguous, older than
  *  `boundary`) and the cursor to read on from. */
-type Chain = { boundary: string; cursor: string; read: Turn[] };
+type Chain = { boundary: string; cursor: string; read: Turn[]; ends: StructuredWorkerEnd[] };
 
 /** What one pane keeps, at most. Past it the top says so and nothing older loads. */
 export const HISTORY_CAP_TURNS = 1_000;
@@ -109,9 +113,39 @@ export function mergeHistory(
   return { turns: [...above, ...history, ...window], seam: window[0]?.turn_id };
 }
 
+/** Ends a page brought, kept only where they render: after a turn now held, or (`after_turn`
+ *  null) when the page reached the first turn with nothing cut. Merged by worker, the newer copy
+ *  winning; the order is the server's. */
+export function holdEnds(
+  held: StructuredWorkerEnd[],
+  page: StructuredWorkerEnd[] | undefined,
+  turns: Turn[],
+  reachedFirst: boolean,
+): StructuredWorkerEnd[] {
+  const ids = new Set(turns.map((t) => t.turn_id));
+  const kept = (page ?? []).filter((e) =>
+    e.after_turn === null ? reachedFirst : ids.has(e.after_turn),
+  );
+  if (!kept.length) return held;
+  const fresh = new Set(kept.map((e) => e.worker));
+  return [...kept, ...held.filter((e) => !fresh.has(e.worker))];
+}
+
+/** Every end to render: the held pages' and the snapshot's (whose copy of a worker wins). */
+export function mergeEnds(
+  held: StructuredWorkerEnd[],
+  snapEnds: StructuredWorkerEnd[] | undefined,
+): StructuredWorkerEnd[] {
+  const own = new Set((snapEnds ?? []).map((e) => e.worker));
+  return [...held.filter((e) => !own.has(e.worker)), ...(snapEnds ?? [])];
+}
+
 export interface ApiHistory {
   /** The conversation to render: held history merged with the snapshot, in journal order. */
   turns: Turn[];
+  /** Work that ended with a worker (#1724): the held pages' and the snapshot's, each placed by
+   *  its `after_turn`. History's never animate (they are not in any snapshot). */
+  ends: StructuredWorkerEnd[];
   /** The first window turn when history is held: where the "earlier turns" seam goes. */
   seam: string | undefined;
   /** The window slid on and the turns between it and the held history are still being read. */
@@ -137,6 +171,8 @@ export function useApiHistory(
   reload: () => Promise<StructuredSnapshot | null>,
 ): ApiHistory {
   const [held, setHeld] = useState<Turn[]>([]);
+  const [heldEnds, setHeldEnds] = useState<StructuredWorkerEnd[]>([]);
+  const heldEndsRef = useRef<StructuredWorkerEnd[]>([]);
   const [status, setStatus] = useState<HistoryStatus>("idle");
   const heldRef = useRef<Turn[]>([]);
   const statusRef = useRef<HistoryStatus>("idle");
@@ -158,6 +194,15 @@ export function useApiHistory(
     heldRef.current = next;
     setHeld(next);
   }, []);
+  const keepEnds = useCallback(
+    (page: StructuredWorkerEnd[] | undefined, turns: Turn[], reachedFirst: boolean) => {
+      const next = holdEnds(heldEndsRef.current, page, turns, reachedFirst);
+      if (next === heldEndsRef.current) return;
+      heldEndsRef.current = next;
+      setHeldEnds(next);
+    },
+    [],
+  );
   const setState = useCallback((next: HistoryStatus) => {
     statusRef.current = next;
     setStatus(next);
@@ -257,13 +302,14 @@ export function useApiHistory(
       lastInput.current = 0;
       holdPlace();
       setBoth(next);
+      keepEnds(result.worker_ends, next, !capped && !result.has_more);
       setState(capped ? "capped" : result.has_more ? "idle" : "end");
     } catch {
       if (gen === generation.current) setState("error");
     } finally {
       if (gen === generation.current) busy.current = false;
     }
-  }, [readOlder, holdPlace, setBoth, setState]);
+  }, [readOlder, holdPlace, setBoth, keepEnds, setState]);
 
   // The window slid on while pages are held: read back what it let go, down to a held turn,
   // in bounded batches (GAP_PAGES per snapshot) that RESUME across snapshots, so the held
@@ -295,6 +341,7 @@ export function useApiHistory(
           // The window moved on again mid-way: read the newer stretch down to the chain first.
           const chainIds = new Set(c.read.map((t) => t.turn_id));
           const newer: Turn[] = [];
+          const newerEnds: StructuredWorkerEnd[] = [];
           let cursor = boundary;
           let met = false;
           while (budget > 0) {
@@ -302,6 +349,7 @@ export function useApiHistory(
             if (gen !== generation.current) return;
             budget -= 1;
             newer.unshift(...result.turns);
+            newerEnds.unshift(...(result.worker_ends ?? []));
             if (
               !result.has_more ||
               !result.before ||
@@ -317,12 +365,13 @@ export function useApiHistory(
                 boundary,
                 cursor: c.cursor,
                 read: [...c.read, ...newer.filter((t) => !chainIds.has(t.turn_id))],
+                ends: [...c.ends, ...newerEnds],
               }
             : // A slide wider than a batch on top of a pending one: this stretch becomes the
               // chain (the held turns stay; only the older partial read is read again).
-              { boundary, cursor, read: newer };
+              { boundary, cursor, read: newer, ends: newerEnds };
         }
-        if (!c) c = { boundary, cursor: boundary, read: [] };
+        if (!c) c = { boundary, cursor: boundary, read: [], ends: [] };
         let joins = c.read.some((t) => heldIds.has(t.turn_id));
         while (!joins && budget > 0) {
           // The saved cursor may have been removed from the journal since the last batch
@@ -342,11 +391,15 @@ export function useApiHistory(
           if (gen !== generation.current) return;
           budget -= 1;
           if (!result) {
-            c = { boundary, cursor: boundary, read: [] };
+            c = { boundary, cursor: boundary, read: [], ends: [] };
             break;
           }
           const have: Set<string> = new Set(c.read.map((t: Turn) => t.turn_id));
-          c = { ...c, read: [...result.turns.filter((t) => !have.has(t.turn_id)), ...c.read] };
+          c = {
+            ...c,
+            read: [...result.turns.filter((t) => !have.has(t.turn_id)), ...c.read],
+            ends: [...(result.worker_ends ?? []), ...c.ends],
+          };
           if (
             !result.has_more ||
             !result.before ||
@@ -367,6 +420,7 @@ export function useApiHistory(
         const { held: next, capped } = appendGap(heldRef.current, c.read);
         holdPlace();
         setBoth(next);
+        keepEnds(c.ends, next, false);
         joined.current = boundary;
         if (capped) setState("capped");
       } catch {
@@ -375,7 +429,7 @@ export function useApiHistory(
         if (gen === generation.current) busy.current = false;
       }
     })();
-  }, [snap, page, holdPlace, setBoth, setState]);
+  }, [snap, page, holdPlace, setBoth, keepEnds, setState]);
 
   const nearTop = () => {
     const log = logRef.current;
@@ -429,5 +483,9 @@ export function useApiHistory(
     () => mergeHistory(held, snap?.turns ?? [], snap?.history_before),
     [held, snap?.turns, snap?.history_before],
   );
-  return { turns: merged.turns, seam: merged.seam, catchingUp, status, retry, handlers };
+  const ends = useMemo(
+    () => mergeEnds(heldEnds, snap?.native?.worker_ends),
+    [heldEnds, snap?.native?.worker_ends],
+  );
+  return { turns: merged.turns, seam: merged.seam, ends, catchingUp, status, retry, handlers };
 }

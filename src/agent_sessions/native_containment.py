@@ -204,7 +204,8 @@ def launch_argv(
         "--property=SendSIGKILL=yes",
         "--property=TimeoutStartSec=30",
         "--property=TimeoutStopSec=15",
-        "--property=RuntimeMaxSec=86400",
+        # No runtime cap (#1724): a worker lives while work runs (its idle rule, process floor
+        # included) and ends at the operator's Stop; memory and task budgets bound it.
         f"--property=TasksMax={tasks_max}",
         f"--property=MemoryMax={memory_gib}G",
         # Reclaim and throttle before the hard kill (#1643): the worker reads the pressure and

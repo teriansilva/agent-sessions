@@ -45,7 +45,10 @@ TASK_METADATA_LIMITS = {
     "last_tool_name": 128,
     "summary": 2000,
 }
-TERMINAL_TASK_STATES = frozenset({"completed", "failed", "stopped", "killed"})
+#: `ended` (#1724): the client's full task list no longer names the task, with no terminal frame
+#: of its own seen (Claude's `background_tasks_changed`; a Codex terminal no process can be
+#: running). It ended; how is not known.
+TERMINAL_TASK_STATES = frozenset({"completed", "failed", "stopped", "killed", "ended"})
 _ID = re.compile(r"[A-Za-z0-9_.:-]{1,256}\Z", re.ASCII)
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}\Z", re.ASCII)
 #: A reasoning level (#1407): the grammar `native_models` lists and a create admits.
@@ -376,10 +379,93 @@ class CodexCodec(_Codec):
         # and arguments. An `mcpServer/elicitation/request` names only the server and the
         # arguments; it is presented (and approvable) only when exactly one of these matches.
         self._mcp_calls: dict[str, dict[str, Any]] = {}
+        # Background terminals (#1724, measured on 0.164.0: `fixtures/codex_background_terminal`).
+        # A `commandExecution` item with a `processId` still in progress when its turn completes
+        # keeps running; its `item/completed` comes later under that ended turn's id. Item id →
+        # (turn id, command) while in progress, then → command once it outlived its turn.
+        self._commands: dict[str, tuple[str | None, str]] = {}
+        self.terminals: dict[str, str] = {}
 
     @staticmethod
     def argv(binary: str) -> list[str]:
         return [_path(binary), "app-server", "--listen", "stdio://"]
+
+    def _track_command(self, method: str, params: dict) -> list[NativeEvent]:
+        """Follow every command item of this thread, any turn: one that outlives its turn is an
+        engine-reported background task until its own `item/completed` (#1724). Bounded: past
+        `MAX_PENDING` a command is simply not tracked (the process floor still sees it)."""
+        item = params.get("item")
+        if not isinstance(item, dict) or item.get("type") != "commandExecution":
+            return []
+        item_id = _identity(item.get("id"))
+        if method == "item/started":
+            if (
+                item.get("status") == "inProgress"
+                and item.get("processId") is not None
+                and len(self._commands) < MAX_PENDING
+            ):
+                turn = params.get("turnId")
+                command = _text(item.get("command"), limit=TASK_METADATA_LIMITS["description"])
+                self._commands[item_id] = (turn if isinstance(turn, str) else None, command)
+            return []
+        self._commands.pop(item_id, None)
+        if item_id not in self.terminals:
+            return []
+        del self.terminals[item_id]
+        status = item.get("status")
+        state = {"completed": "completed", "failed": "failed", "declined": "stopped"}.get(
+            status if isinstance(status, str) else "", "ended"
+        )
+        return [
+            _event(
+                "background",
+                task_id=item_id,
+                state=state,
+                active=bool(self.terminals),
+                task_state=state,
+            )
+        ]
+
+    def _outlived(self, turn_id: str) -> list[NativeEvent]:
+        """The command items still running when ``turn_id`` completed: background terminals."""
+        out = []
+        for item_id, (turn, command) in list(self._commands.items()):
+            if turn != turn_id:
+                continue
+            del self._commands[item_id]
+            if len(self.terminals) >= MAX_PENDING:
+                continue
+            self.terminals[item_id] = command
+            out.append(
+                _event(
+                    "background",
+                    task_id=item_id,
+                    state="running",
+                    active=True,
+                    task_state="running",
+                    task_type="background_terminal",
+                    **({"description": command} if command else {}),
+                )
+            )
+        return out
+
+    def retire_terminals(self, item_ids) -> list[NativeEvent]:
+        """No process of the agent's runs any more (the process floor read its group), so none
+        of these terminals, all reported before that scan began, can: each ended unobserved
+        (#1724). A ghost never pins a worker."""
+        ended = sorted(set(item_ids) & self.terminals.keys())
+        for item_id in ended:
+            del self.terminals[item_id]
+        return [
+            _event(
+                "background",
+                task_id=item_id,
+                state="ended",
+                active=bool(self.terminals),
+                task_state="ended",
+            )
+            for item_id in ended
+        ]
 
     def _request(self, action: str, params: dict[str, Any], op: str | None = None) -> dict:
         return {"id": self._next(action, op), "method": action, "params": params}
@@ -1014,9 +1100,20 @@ class CodexCodec(_Codec):
             turn = params.get("turn")
             if not isinstance(turn, dict):
                 raise ProtocolError("native turn notification has no turn")
-            return self._turn(turn, completed=method == "turn/completed")
+            out = self._turn(turn, completed=method == "turn/completed")
+            if method == "turn/completed":
+                out += self._outlived(_identity(turn.get("id")))
+            return out
+        tracked = (
+            self._track_command(method, params)
+            if method in {"item/started", "item/completed"}
+            else []
+        )
         if params.get("turnId") != self.native_turn_id or self.operation_id is None:
-            return []
+            return tracked
+        return tracked + self._item(method, params)
+
+    def _item(self, method: str, params: dict) -> list[NativeEvent]:
         if method == "item/fileChange/patchUpdated":
             return self._patch(params)
         common = {"native_turn_id": self.native_turn_id, "operation_id": self.operation_id}
@@ -1106,7 +1203,15 @@ _LIFECYCLE_ENDED = frozenset({"completed", "cancelled"})
 # What may come between an input's `completed` and the result naming it without ending the wait
 # (#1644): bookkeeping that is no turn's output. Anything else ends the input without its result.
 _BETWEEN_END_AND_RESULT = frozenset(
-    {"task_started", "task_progress", "task_notification", "task_updated", "thinking_tokens"}
+    {
+        "task_started",
+        "task_progress",
+        "task_notification",
+        "task_updated",
+        # The full task list (#1724): a task ending with the turn sends it before the result.
+        "background_tasks_changed",
+        "thinking_tokens",
+    }
 )
 
 
@@ -1723,6 +1828,8 @@ class ClaudeCodec(_Codec):
                     **metadata,
                 )
             ]
+        if kind == "system" and subtype == "background_tasks_changed":
+            return self._tasks_changed(frame)
         if kind == "system" and subtype == "session_state_changed":
             state = frame.get("state")
             self._session_state = (
@@ -1827,6 +1934,44 @@ class ClaudeCodec(_Codec):
         if kind == "result":
             return self._result(frame)
         return self._output(frame, kind, common)
+
+    def _tasks_changed(self, frame: dict) -> list[NativeEvent]:
+        """The CLI's FULL list of running background tasks (#1724): the set is reconciled to it,
+        never just accumulated. A task the list no longer names ended (`ended`: its own terminal
+        frame was missed); one it names that was never started is added. An unchanged list
+        records nothing. Bounded like the task frames themselves."""
+        tasks = frame.get("tasks")
+        if not isinstance(tasks, list) or len(tasks) > MAX_PENDING:
+            raise ProtocolError("native background task list is malformed or exceeds its bound")
+        listed: dict[str, dict[str, str]] = {}
+        for task in tasks:
+            if not isinstance(task, dict):
+                raise ProtocolError("native background task list is malformed")
+            metadata = {}
+            for name in ("description", "task_type"):
+                value = task.get(name)
+                if isinstance(value, str) and value:
+                    limit = TASK_METADATA_LIMITS[name]
+                    metadata[name] = value if len(value) <= limit else value[: limit - 1] + "…"
+            listed[_identity(task.get("task_id"))] = metadata
+        ended = sorted(self._background - listed.keys())
+        started = sorted(listed.keys() - self._background)
+        self._background = set(listed)
+        active = bool(self._background)
+        return [
+            _event("background", task_id=task_id, state="ended", active=active, task_state="ended")
+            for task_id in ended
+        ] + [
+            _event(
+                "background",
+                task_id=task_id,
+                state="running",
+                active=active,
+                task_state="running",
+                **listed[task_id],
+            )
+            for task_id in started
+        ]
 
     def _result(self, frame: dict, *, proven: bool = False) -> list[NativeEvent]:
         """The operator turn's own result. Normally its `completed` follows and proves the fence

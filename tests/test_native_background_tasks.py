@@ -179,6 +179,7 @@ def test_task_snapshot_merges_sparse_progress_and_survives_bounded_reads_and_res
             "summary": "Waiting for deployment",
             "started_at": T0,
             "updated_at": T0 + 40,
+            "source": "engine",  # an engine report, beside the process floor's (#1724)
         }
     ]
     for max_turns in (None, 0, 1):
@@ -268,6 +269,7 @@ def test_old_metadata_free_task_events_remain_readable_without_inventing_activit
     (current,) = snapshot(root, sid, binding)["native"]["background_tasks"]
     assert current == {
         "task_id": "build-monitor",
+        "source": "engine",
         "state": "running",
         "started_at": T0,
         "updated_at": T0,
