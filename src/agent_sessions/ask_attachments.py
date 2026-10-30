@@ -30,10 +30,18 @@ sent); every refusal names the cap. A staged blob no user record claims is reape
 credential-shaped name or body **whole**; if the sanitizer cannot run, the model gets a fixed
 count/kind/size note with **no raw filename and no bytes** — never a partial or unscrubbed echo.
 The JSONL admission step never sees blob bytes and is never relied on for them.
+
+**Images reach the model as pixels (#1779)** — the one exception to "text only": the CURRENT
+turn's images, re-sniffed and bounded (:func:`read_image_bodies`: :data:`PROMPT_IMAGE_MAX` each,
+:data:`PROMPT_IMAGES_TOTAL_MAX` per turn), ride HQ's own request as OpenAI ``image_url`` data
+parts (:func:`image_part`). Nothing inspects pixels: a secret pictured in a screenshot goes to the
+configured endpoint as it is. Each image's note says whether it was shown on THAT request
+(:func:`prompt_block`); history replays the note only, never the image.
 """
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import fcntl
 import json
@@ -62,17 +70,22 @@ STAGED_TTL = 24 * 3600
 NAME_MAX = 200
 #: Bytes of a text blob read for the model, per file.
 PROMPT_TEXT_MAX = 6 * 1024
+#: An image larger than this is never shown to the model (#1779): the common provider ceiling.
+PROMPT_IMAGE_MAX = 5 * 1024 * 1024
+#: Raw image bytes shown per turn (#1779). Base64 grows it by a third on the wire (~16 MiB).
+PROMPT_IMAGES_TOTAL_MAX = 12 * 1024 * 1024
 
 AID_RE = re.compile(r"^[0-9a-f]{32}$")
 KINDS = frozenset({"image", "text", "other"})
 
-#: Sniffed signatures for the inline-preview kind. SUFFIXES AND CLIENT MIME ARE NEVER ASKED.
-_IMAGE_SIGS: tuple[tuple[bytes, bytes], ...] = (
-    (b"\x89PNG\r\n\x1a\n", b""),
-    (b"\xff\xd8\xff", b""),
-    (b"GIF87a", b""),
-    (b"GIF89a", b""),
-    (b"RIFF", b"WEBP"),  # RIFF....WEBP
+#: Sniffed signatures for the inline-preview kind, and the MIME each one is (the data URL a
+#: shown image rides in, #1779). SUFFIXES AND CLIENT MIME ARE NEVER ASKED.
+_IMAGE_SIGS: tuple[tuple[bytes, bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", b"", "image/png"),
+    (b"\xff\xd8\xff", b"", "image/jpeg"),
+    (b"GIF87a", b"", "image/gif"),
+    (b"GIF89a", b"", "image/gif"),
+    (b"RIFF", b"WEBP", "image/webp"),  # RIFF....WEBP
 )
 
 
@@ -104,6 +117,14 @@ def clean_name(value: object) -> str:
     return name[:NAME_MAX] or "file"
 
 
+def image_mime(data: bytes) -> str | None:
+    """The image MIME the BYTES' signature names, or None: not an image."""
+    for sig, tail, mime in _IMAGE_SIGS:
+        if data.startswith(sig) and (not tail or data[8:12] == tail):
+            return mime
+    return None
+
+
 def classify(data: bytes) -> str:
     """`image` / `text` / `other`, from ALL the BYTES alone — and ONLY here.
 
@@ -117,10 +138,8 @@ def classify(data: bytes) -> str:
     HTML-markup heads are the one thing never offered as a viewable text, so the only disposition
     they can ever earn is a download. A NUL **anywhere** means `other`, whatever the name.
     """
-    head = data[:16]
-    for sig, tail in _IMAGE_SIGS:
-        if head.startswith(sig) and (not tail or data[8:12] == tail):
-            return "image"
+    if image_mime(data) is not None:
+        return "image"
     if b"\x00" in data:
         return "other"
     # ONE decode of the whole bounded file. A prefix decode (`data[:256].decode`) rejected a
@@ -415,6 +434,53 @@ def read_text_bodies(cid: str, descriptors: list[dict]) -> dict[str, bytes]:
     return out
 
 
+def read_image_bodies(cid: str, descriptors: list[dict]) -> dict[str, tuple[str, bytes]]:
+    """The IMAGE bodies a turn may SHOW the model (#1779): id → (sniffed MIME, bytes).
+
+    Bounded: an image over :data:`PROMPT_IMAGE_MAX`, or one that would take the turn past
+    :data:`PROMPT_IMAGES_TOTAL_MAX`, is skipped whole — never cut (a cut image is not the image).
+    The persisted kind must say ``image`` AND the bytes read now must carry an image signature;
+    a missing, unreadable or mis-sniffed blob contributes nothing. A skipped image keeps its
+    descriptor, and the note says it was not shown (`prompt_block`)."""
+    out: dict[str, tuple[str, bytes]] = {}
+    total = 0
+    for a in descriptors:
+        if a.get("kind") != "image" or not valid_aid(a.get("id")):
+            continue
+        with contextlib.suppress(OSError, AttachmentRefused):
+            fd, size = open_blob(cid, a["id"])
+            try:
+                if size > PROMPT_IMAGE_MAX or total + size > PROMPT_IMAGES_TOTAL_MAX:
+                    continue
+                chunks: list[bytes] = []
+                got = 0
+                while got <= PROMPT_IMAGE_MAX:
+                    chunk = os.read(fd, 64 * 1024)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    got += len(chunk)
+            finally:
+                os.close(fd)
+            data = b"".join(chunks)
+            mime = image_mime(data)
+            # Sized again on what was READ: the blob may have changed since its fstat.
+            if mime is None or len(data) > PROMPT_IMAGE_MAX:
+                continue
+            if total + len(data) > PROMPT_IMAGES_TOTAL_MAX:
+                continue
+            out[a["id"]] = (mime, data)
+            total += len(data)
+    return out
+
+
+def image_part(mime: str, data: bytes) -> dict:
+    """One image as an OpenAI chat-completions content part (#1779) — the only wire dialect the
+    provider table speaks (`ai_providers`). The bytes ride as a data URL: nothing is fetched."""
+    url = f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
+    return {"type": "image_url", "image_url": {"url": url}}
+
+
 def open_blob(cid: str, aid: str) -> tuple[int, int]:
     """``(fd, size)`` on the blob, opened under the conversation's dir without following links.
 
@@ -649,16 +715,24 @@ def prompt_note(attachments: list[dict]) -> str:
         return f"[Shared {len(attachments)} files: {listed}, {_human(total)}]"
 
 
-def prompt_block(attachment: dict, body: bytes | None) -> str:
+#: What an image's note says about its pixels (#1779) — true for the request it rides on.
+IMAGE_SHOWN = " (attached below — you can see it)"
+IMAGE_NOT_SHOWN = " (not shown to you — only its name and size reached you)"
+
+
+def prompt_block(attachment: dict, body: bytes | None, *, image_shown: bool = False) -> str:
     """One attachment as the model reads it: the note line, and for a TEXT blob a bounded fenced
-    excerpt — both through the same fail-closed sanitizer. An image or `other` body is never
-    included (no vision; nothing unrenderable is quoted).
+    excerpt — both through the same fail-closed sanitizer. An image's note says whether its
+    pixels ride on THIS request (``image_shown``, #1779); its bytes never enter the text. An
+    `other` body is never included (nothing unrenderable is quoted).
 
     The sanitizer runs on the COMPLETE body BEFORE any truncation. Truncating first let a secret
     spanning the excerpt boundary keep its prefix in the prompt (its whole no longer matched the
     redactor, and the rest looked harmless) — a known-secret fragment reached the model. The
     order here is load-bearing: redact the full text, withhold on the full text, cut only after.
     """
+    if attachment.get("kind") == "image":
+        return prompt_note([attachment]) + (IMAGE_SHOWN if image_shown else IMAGE_NOT_SHOWN)
     if body is None or attachment.get("kind") != "text":
         return prompt_note([attachment])
     try:

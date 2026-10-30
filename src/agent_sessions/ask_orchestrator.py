@@ -52,6 +52,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from . import (
+    ai_providers,
     ask_attachments,
     ask_operations,
     ask_settings,
@@ -185,6 +186,9 @@ class _Turn:
     #: TEXT bodies read at begin — the model request boundary sanitizes them (fail-closed).
     attachments: list[dict] = field(default_factory=list)
     attachment_bodies: dict[str, bytes] = field(default_factory=dict)
+    #: The IMAGES this turn may show the model (#1779): id → (sniffed MIME, bytes), bounded at
+    #: begin (`ask_attachments.read_image_bodies`). Memory only — never stored, never replayed.
+    image_bodies: dict[str, tuple[str, bytes]] = field(default_factory=dict)
     #: The connectors THIS turn listed and the refs their reads minted (#1750): what a
     #: `connector_index` and an `item_ref` may name. Memory only, never stored.
     connectors: connector_hq.TurnConnectors = field(default_factory=connector_hq.TurnConnectors)
@@ -2198,7 +2202,7 @@ async def _append(cid: str, *records: dict) -> None:
     await asyncio.to_thread(ask_store.append, cid, *records)
 
 
-def _user_content(turn: _Turn) -> str:
+def _user_content(turn: _Turn, shown: frozenset[str] = frozenset()) -> str:
     base = turn.question
     if turn.answering is not None:
         base = f"Answering your question \"{turn.answering['question']}\": {turn.question}"
@@ -2207,14 +2211,129 @@ def _user_content(turn: _Turn) -> str:
     # Files shared with this question (#1707): every name and byte goes through the fail-closed
     # sanitizer at THIS model-request boundary (`ask_attachments.prompt_block`) — the JSONL
     # admission step never saw these bytes and is never relied on for them. A text file is inlined
-    # as a bounded fenced excerpt; an image is named but never claimed as seen (no vision).
+    # as a bounded fenced excerpt; an image's note says whether its pixels ride on THIS request
+    # (`shown`, #1779) — never claimed as seen when its pixels are not on the request.
     if turn.attachments:
         parts = [
-            ask_attachments.prompt_block(a, turn.attachment_bodies.get(a.get("id", "")))
+            ask_attachments.prompt_block(
+                a,
+                turn.attachment_bodies.get(a.get("id", "")),
+                image_shown=a.get("id") in shown,
+            )
             for a in turn.attachments
         ]
         return base + "\n\n" + "\n".join(parts)
     return base
+
+
+#: Endpoints (base URL, model, key fingerprint) that said they cannot take images (#1779): their
+#: later turns go note-only straight away. In-process; a restart probes once more.
+_IMAGES_REFUSED: set[tuple[str, str, str]] = set()
+#: An image refusal names images (`image_url` included)…
+_IMAGE_WORDS_RE = re.compile(r"image|vision|multi-?modal|mmproj")
+#: …and it is the endpoint's CAPABILITY only when it says so in a capability's own words.
+_IMAGES_UNSUPPORTED_RE = re.compile(
+    r"not support(?:s|ed)? (?:image|vision|multi-?modal)"
+    r"|(?:image|vision|multi-?modal)(?: input| inputs| content| parts?)? (?:is|are) not supported"
+    r"|image_url is only supported"
+    r"|only supported by (?:certain|some|multi-?modal|vision) models"
+    r"|unknown variant `?image_url"
+    r"|not a (?:multi-?modal|vision) model"
+    r"|mmproj"
+)
+#: Words of a refusal about ONE picture (its format, size, bytes): retried without it, never
+#: remembered — the next picture may be fine.
+_ONE_IMAGE_RE = re.compile(
+    r"format|corrupt|decod|too large|too big|dimension|resolution|unsupported image"
+    r"|invalid image|exceeds"
+)
+
+
+def _refusal_message(r, model: str) -> str:
+    """The endpoint's OWN error message, lowercased, with the model's name taken out.
+
+    Never the raw body: a validation error can echo the request back (its `image_url` parts
+    included), and a proxy names the model — `llama-3.2-11b-vision-instruct` would make every
+    error of a vision model read like an image refusal."""
+    try:
+        payload = r.json()
+    except ValueError:
+        payload = None
+    found: list[str] = []
+    if isinstance(payload, dict):
+        err = payload.get("error")
+        if isinstance(err, dict) and isinstance(err.get("message"), str):
+            found.append(err["message"])
+        elif isinstance(err, str):
+            found.append(err)
+        if isinstance(payload.get("message"), str):
+            found.append(payload["message"])
+        detail = payload.get("detail")
+        if isinstance(detail, str):
+            found.append(detail)
+        elif isinstance(detail, list):  # a validation error: its messages, never its inputs
+            found += [
+                d["msg"] for d in detail if isinstance(d, dict) and isinstance(d.get("msg"), str)
+            ]
+    elif payload is None:
+        found.append(r.text)
+    msg = " ".join(found).lower()[:4000]
+    model = model.lower()
+    for name in {model, model.rsplit("/", 1)[-1]}:
+        if name:
+            # As a whole token only: a model called `m` must not take every "m" with it.
+            msg = re.sub(rf"(?<![\w./:-]){re.escape(name)}(?![\w./-])", " ", msg)
+    return msg
+
+
+def _images_unsupported(r, model: str) -> bool:
+    """The endpoint says it cannot take images AT ALL: remembered, so later turns do not pay for
+    the refused attempt again. A refusal of one picture (its format, its size) is not this."""
+    if r.status_code not in (400, 415, 422, 500):
+        return False
+    msg = _refusal_message(r, model)
+    return bool(_IMAGES_UNSUPPORTED_RE.search(msg)) and not _ONE_IMAGE_RE.search(msg)
+
+
+def _images_refused(r, model: str) -> bool:
+    """The endpoint refused this request BECAUSE of its image parts (#1779): too large (413), a
+    400/415/422 whose own message names images, or a 500 that names the missing capability (a
+    500 merely mentioning an image is a server error, not this). Anything else — auth, rate
+    limits, a tools refusal, an unrelated error — is reported exactly as before."""
+    if r.status_code == 413:
+        return True
+    if r.status_code == 500:
+        return _images_unsupported(r, model)
+    if r.status_code not in (400, 415, 422):
+        return False
+    return bool(_IMAGE_WORDS_RE.search(_refusal_message(r, model)))
+
+
+def _vision_key(cfg: dict) -> tuple[str, str, str]:
+    """The memo key for the model ACTUALLY on the wire: under Auto the transport may resolve a
+    different model than the turn's snapshot named, so the provider's own listing decides."""
+    model = cfg["model"]
+    if ai_providers.is_auto(cfg):
+        model = ai_providers.auto_model(cfg, ai_providers.fingerprint(cfg.get("api_key")))
+    return review._capability_key(cfg, model)
+
+
+def _user_message(turn: _Turn, cfg: dict) -> tuple[dict, frozenset[str]]:
+    """The current question as HQ's own request carries it, and which images it shows.
+
+    With images the endpoint has not refused, the content is OpenAI content parts (#1779): the
+    text — its notes saying "attached below" — then one ``image_url`` part per shown image.
+    Otherwise it is the plain string, every image's note saying it was NOT shown. Only HQ's own
+    request is built here: the fallback find and the call-end judgement read `_user_content`."""
+    if not turn.image_bodies or _vision_key(cfg) in _IMAGES_REFUSED:
+        return {"role": "user", "content": _user_content(turn)}, frozenset()
+    shown = frozenset(turn.image_bodies)
+    parts: list[dict] = [{"type": "text", "text": _user_content(turn, shown)}]
+    for a in turn.attachments:
+        img = turn.image_bodies.get(a.get("id", ""))
+        if img is not None:
+            parts.append(ask_attachments.image_part(*img))
+    return {"role": "user", "content": parts}, shown
 
 
 def _asked_records(turn: _Turn) -> list[dict]:
@@ -2276,6 +2395,7 @@ async def run_turn(turn: _Turn) -> list[dict]:
         return fail("the AI endpoint is not configured", "unconfigured")
     records = await asyncio.to_thread(ask_store.read, turn.cid)
     history, switched = _history(records, turn.turn_id, turn.contact)
+    question, shown = _user_message(turn, cfg)
     convo: list[dict] = [
         # The persona first, the guarded prompt LAST of the system messages: its guard is then
         # the final instruction the model reads, whatever the voice says (`prompt-registry.md`).
@@ -2285,8 +2405,9 @@ async def run_turn(turn: _Turn) -> list[dict]:
         {"role": "system", "content": prompts.effective("ask_orchestrator")},
         # Stored user/assistant text only; the pinned sanitizer gates the role at the sink.
         *pulse_chat.bound_history(history),
-        {"role": "user", "content": _user_content(turn)},
+        question,
     ]
+    question_at = len(convo) - 1
     asked_again = False
     for round_no in range(MAX_TOOL_ROUNDS + 1):
         last = round_no == MAX_TOOL_ROUNDS
@@ -2303,6 +2424,17 @@ async def run_turn(turn: _Turn) -> list[dict]:
         try:
             with hq_usage.hq_call():  # the footer's HQ token count (#1531)
                 r = await review.post_chat_response(cfg, body)
+            if r.status_code != 200 and shown and _images_refused(r, cfg["model"]):
+                # The endpoint cannot take these images (#1779): asked ONCE more without them,
+                # every note now saying they were not shown — never a failed turn, and never a
+                # "shown" note without the pixels. Only a refusal of the CAPABILITY is
+                # remembered: a 413 or one bad picture says nothing about the next one.
+                if _images_unsupported(r, cfg["model"]):
+                    _IMAGES_REFUSED.add(_vision_key(cfg))
+                shown = frozenset()
+                convo[question_at] = {"role": "user", "content": _user_content(turn)}
+                with hq_usage.hq_call():
+                    r = await review.post_chat_response(cfg, body)
         except review.TransportTimeout as e:
             return fail(str(e), "timeout")
         except review.ReviewError as e:
@@ -2883,6 +3015,9 @@ async def begin(
             attachments=descriptors,
             attachment_bodies=await asyncio.to_thread(
                 ask_attachments.read_text_bodies, cid, descriptors
+            ),
+            image_bodies=await asyncio.to_thread(
+                ask_attachments.read_image_bodies, cid, descriptors
             ),
             progress=lambda ev: _broadcast(cid, ev),
             operator=operator,

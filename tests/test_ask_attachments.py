@@ -313,15 +313,18 @@ def test_a_shared_text_file_is_inlined_as_a_bounded_excerpt(app, ai):
     assert "```" in seen  # as a fenced block
 
 
-def test_a_shared_image_is_named_but_never_claimed_as_seen(app, ai):
+def test_a_shared_images_bytes_never_enter_the_text(app, ai):
+    # Since #1779 the pixels ride as an image part (`test_ask_images.py`); the TEXT names the
+    # image and never carries its bytes.
     script = ai(answer("ok"))
     d = app.new()
     desc = _publish(d, "shot.png", PNG)
     r = app.ask(d, "and this?", attachments=[desc["id"]])
     assert r.status_code == 200, r.text
-    seen = _text_of(script)
-    assert "shot.png" in seen and "image" in seen
-    assert "PNG" not in seen.split("shot.png")[1][:200]  # no bytes, ever
+    question = script.bodies[0]["messages"][-1]["content"]
+    text = "\n".join(p["text"] for p in question if p.get("type") == "text")
+    assert "shot.png" in text and "image" in text
+    assert "PNG" not in text and "base64" not in text  # no bytes in the text, ever
 
 
 def test_a_credential_shaped_body_is_withheld_whole(app, ai):

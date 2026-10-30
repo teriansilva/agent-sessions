@@ -215,10 +215,20 @@ nothing.
   Plain text — including SVG, which is only ever shown **as text** — is **viewable** (a bounded,
   scrollable excerpt) and downloadable. Everything else (PDF, zip, docx, binaries) is shareable as
   a **Download** card. Up to **4** files of **10 MB** each per message, **32 MB** per conversation.
-- **What HQ sees.** The model is told an image was shared and its name and size — it never sees
-  the pixels (there is no vision). A text file's contents are quoted into the answer as a bounded
-  excerpt, so "what does this log say?" works. Anything that looks like a password or a token is
-  **withheld** from the model whole, names included.
+- **What HQ sees.** An image shared with a question is **shown to the model** (#1779), so "what do
+  you see?" works, as long as the model behind Settings → AI can read images. It is shown with
+  the question it was shared with, up to **5 MB** per image and **12 MB** per question. Later
+  questions only know the image existed; it is not sent again. A text file's contents are quoted
+  in as a bounded excerpt, so "what does this log say?" works. Anything in text that looks like a
+  password or a token is **withheld** from the model whole, names included.
+- **When the model cannot see it.** If the endpoint refuses images, HQ asks again without the
+  image and remembers that this model refused, so later questions skip the refused attempt. A
+  larger image is never sent. In both cases the model is told the image was **not shown**: only
+  its name and size reach it, and it says so instead of guessing. An endpoint that silently drops
+  images cannot be detected, so pick a vision-capable model if you share screenshots.
+- **Images are not scrubbed.** The pixels go to your configured AI endpoint as they are, the same
+  place text excerpts go. Nothing reads the image for passwords or tokens, so don't share a
+  screenshot of a secret you would not paste.
 - **Send waits.** While a file is uploading — or one failed and is still listed — Send and Enter
   do nothing. A failure keeps its own named row until you remove it; removing it is what lets the
   rest send. Nothing is ever sent on its own.
@@ -227,7 +237,8 @@ nothing.
 - **What is kept.** Shared files live with their conversation on your BattleLab server and are
   removed with it — the same **30 days** / **50 conversations** retention as the chat itself, and
   the same Delete. A file staged but never sent is cleaned up after **24 hours**. Nothing is ever
-  uploaded anywhere else.
+  uploaded anywhere else, except what the model is shown, which goes to your configured AI
+  endpoint.
 
 ## HQ contacts
 
