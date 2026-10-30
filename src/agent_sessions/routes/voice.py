@@ -466,6 +466,7 @@ def register(
             call.fixed_language = call.language = block["language"]
         call.settings = block
         call.tts_takes_language = bool(block.get("tts_accepts_language"))
+        call.listen_languages = voice_calls.listen_languages(block)
         det = block.get("stt_detects_language")
         # Tri-state: True / False once tested, None (unknown: spoken confirmation fails closed).
         call.detects_language = det if isinstance(det, bool) else None

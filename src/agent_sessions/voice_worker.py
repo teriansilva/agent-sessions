@@ -103,6 +103,8 @@ class Bus:
         self.detect_language = False
         self.language_hint: str | None = None
         self.detected: str | None = None
+        #: The languages the call listens in (#1807): no other may become `detected`.
+        self.listen: frozenset | None = None
         self.segment_done = asyncio.Event()
 
     async def send(self, msg: dict) -> None:
@@ -324,7 +326,7 @@ class Bridge(FrameProcessor):
     def _detect(self, heard: str | None, text: str) -> str | None:
         """The call's language: only a turn heard in one language, of 3+ words, may change it.
         The turn's own language (`heard_language`, any length) gates spoken confirmation."""
-        self._bus.detected = call_language(self._bus.detected, heard, text)
+        self._bus.detected = call_language(self._bus.detected, heard, text, self._bus.listen)
         return self._bus.detected
 
     async def _when_transcribed(
@@ -453,6 +455,7 @@ async def run_call(websocket) -> None:
     tts.speed = float(sp) if isinstance(sp, int | float) and sp != 1.0 else None
     bus.detect_language = bool(cfg.get("detect_language"))
     bus.language_hint = cfg.get("language") or None
+    bus.listen = frozenset(cfg.get("listen_languages") or []) or None
     tts.language = bus.language_hint if cfg.get("tts_language_ok") else None
     bridge = Bridge(bus, tts)
     pipeline = Pipeline([transport.input(), vad, stt, turns, bridge, tts, transport.output()])

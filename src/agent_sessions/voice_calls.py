@@ -79,6 +79,14 @@ def asks_something(text: str) -> bool:
 TURN_STARTS_KEPT = 32
 #: How many recent say ids a call remembers to tell its own `played` acks from stale ones.
 SAY_IDS_KEPT = 64
+#: HQ's lines the echo check remembers (#1807): what HQ said that may still be coming out of the
+#: speaker.
+AUDIBLE_KEPT = 16
+#: A line counts as possibly audible from when HQ said it until the browser played it out, plus
+#: this tail (the room's reverberation, the transcript's word timing)…
+ECHO_TAIL_S = 1.5
+#: …or, never acked (muted, suspended, cut by a dropped socket), until this long after it was said.
+ECHO_UNACKED_S = 60.0
 #: A client audio frame: 20–100 ms of 16 kHz PCM16 is 640–3200 bytes; anything past this is refused.
 MAX_AUDIO_FRAME = 64 * 1024
 MAX_CONTROL_FRAME = 8 * 1024
@@ -225,12 +233,28 @@ class CallError(Exception):
 JUDGED_KINDS = frozenset({"nudge", "session", "operation", "suggest"})
 
 
+def listen_languages(settings: dict) -> frozenset | None:
+    """The languages a call listens in (#1807): those it can answer in — the speech server's
+    languages, and the operator's fixed one. An utterance heard in any other language was, on the
+    operator's calls, Whisper's reading of noise or someone else talking ("Ég æt brafnum…",
+    "Espero que siga en el Hotel Región."). ``None`` when the speech server lists no languages:
+    then nothing tells a foreign utterance from a real one, so none is dropped."""
+    langs = {x for x in settings.get("tts_languages") or [] if isinstance(x, str) and LANG.match(x)}
+    if not langs:
+        return None
+    fixed = settings.get("language", "auto")
+    if isinstance(fixed, str) and LANG.match(fixed):
+        langs.add(fixed)
+    return frozenset(langs)
+
+
 def _judged(cards: list[dict]) -> bool:
     return bool(cards) and all(c.get("kind") in JUDGED_KINDS for c in cards)
 
 
 from .voice_text import (  # noqa: E402,F401
     CHUNK_WORDS,
+    call_language,
     card_sentences,
     classify_confirmation,
     classify_decision,
@@ -241,6 +265,7 @@ from .voice_text import (  # noqa: E402,F401
     readback_screen_only,
     speakable,
     split_speech,
+    strip_echo,
     verbatim,
 )
 
@@ -307,6 +332,15 @@ class Call:
     #: `user_starts` at each worker turn's start (bounded): what an utterance of that turn was begun
     #: after, whenever its transcript lands.
     turn_starts: dict = field(default_factory=dict, repr=False)
+    #: When each worker turn STARTED (bounded, like `turn_starts`): the echo check asks which of
+    #: HQ's lines could have been audible since (#1807).
+    turn_started_at: dict = field(default_factory=dict, repr=False)
+    #: HQ's recent lines as said: ``{"id", "text", "start", "until"}`` — `until` is when it can no
+    #: longer be coming out of the speaker (#1807).
+    audible: list = field(default_factory=list, repr=False)
+    #: The languages HQ listens in (#1807): an utterance heard in any other is noise or someone
+    #: else in the room. ``None``: no filter (the speech server lists no languages).
+    listen_languages: frozenset | None = None
     #: The pending spoken confirmation (#1397 P2): `{cards, say_id, armed_at, expires_at}`. Server
     #: state only; armed when its read-back has played; one use; void on anything else.
     challenge: dict | None = None
@@ -418,6 +452,9 @@ class Call:
         if heard:
             self.say_ids.append(sid)
             del self.say_ids[:-SAY_IDS_KEPT]
+        now = time.monotonic()
+        self.audible.append({"id": sid, "text": text, "start": now, "until": now + ECHO_UNACKED_S})
+        del self.audible[:-AUDIBLE_KEPT]
         await self.client({"t": "caption", "who": "hq", "id": sid, "text": text, "kind": kind,
                            "turn_id": turn_id})  # fmt: skip
         lang = self.language if self.tts_takes_language else None
@@ -448,8 +485,11 @@ class Call:
                 self.user_turn = n
             if n is not None:
                 self.turn_starts[n] = self.user_starts
+                self.turn_started_at[n] = self.user_started_at
                 while len(self.turn_starts) > TURN_STARTS_KEPT:
                     self.turn_starts.pop(next(iter(self.turn_starts)))
+                while len(self.turn_started_at) > TURN_STARTS_KEPT:
+                    self.turn_started_at.pop(next(iter(self.turn_started_at)))
             ch = self.challenge
             if ch is not None and ch.get("armed_at") is None:
                 await self.void_challenge()  # talked over the read-back: never armed
@@ -477,6 +517,7 @@ class Call:
             # The browser flushes what it had queued: those says never play, so their late or
             # duplicate acks are not speech (#1668).
             self.say_ids.clear()
+            self._quiet_from(None)  # and nothing of HQ's is coming out of the speaker any more
             if self.work is not None:
                 self.work["unsaid"] = None  # flushed: it will never be said
             # Barge-in: the client drops what it has queued, at once — and a challenge whose
@@ -501,18 +542,17 @@ class Call:
             await self.client({"t": "speaking", "id": ev.get("id"), "on": False})
             if self.state == "speaking":
                 await self.set_state("thinking" if self._turn_running() else "listening")
-        elif t == "utterance" and is_no_speech_phrase(str(ev.get("text") or "")):
-            # Room noise Whisper turned into a stock phrase (#1667): dropped BEFORE anything else
-            # — no HQ turn, no language change, an armed confirmation keeps waiting.
-            log.debug("voice call %s: dropped a no-speech phrase", self.id)
+        elif t == "utterance" and (why := self._not_the_operator(ev)):
+            # Dropped BEFORE anything else (#1667, #1807): no HQ turn, no language change, and an
+            # armed confirmation keeps waiting for a real answer.
+            log.debug("voice call %s: dropped an utterance (%s)", self.id, why)
         elif t == "utterance":
             self.user_speaking = False
             heard = ev.get("heard_language")
             self.heard_language = heard if isinstance(heard, str) and LANG.match(heard) else None
-            lang = ev.get("language")
-            if self.fixed_language is None and isinstance(lang, str) and LANG.match(lang):
-                self.language = lang
-            text = str(ev.get("text") or "").strip()[: ask_orchestrator.QUERY_MAX]
+            text = self._without_echo(ev)[: ask_orchestrator.QUERY_MAX]
+            if self.fixed_language is None:
+                self.language = self._language_after(text)
             if text:
                 # `late`: its turn already went out; it began before anything now armed.
                 await self.on_utterance(
@@ -528,6 +568,66 @@ class Call:
     def _turn_running(self) -> bool:
         return self.turn_task is not None and not self.turn_task.done()
 
+    def _language_after(self, text: str) -> str | None:
+        """The call's language after an utterance it KEPT (#1807, Hermes 7438/7443). **The app owns
+        it**: only a kept utterance's own heard language can move it, by the worker's rule applied
+        here (`voice_text.call_language`: 3+ words, no stock phrase, a listened-in language) to the
+        words left after echo is cut. The worker's `language` tag is never adopted: it is a running
+        guess over every utterance, the ones the app drops (HQ's echo, other languages) included,
+        so even an utterance without a heard language of its own can carry a dropped one's guess.
+        No heard language: the call's language stays as it is."""
+        if self.heard_language is None:
+            return self.language
+        return call_language(self.language, self.heard_language, text, self.listen_languages)
+
+    def _not_the_operator(self, ev: dict) -> str | None:
+        """Why an utterance is not the operator speaking to HQ, or ``None`` (#1667, #1807). Every
+        check is made on the words that would be KEPT, after HQ's echo is cut (Hermes 7453: "Thank
+        you One moment, Commander." passed the stock-phrase check whole, and cutting the echo
+        left "Thank you" for HQ). An empty transcript is not judged here: nothing goes to HQ."""
+        raw = str(ev.get("text") or "")
+        if not raw.strip():
+            return None
+        if self._foreign(ev.get("heard_language")):
+            return "a language the call does not listen in"
+        kept = self._without_echo(ev)
+        if not kept:
+            return "HQ's own speech heard back"
+        if is_no_speech_phrase(raw) or is_no_speech_phrase(kept):
+            return "a stock no-speech phrase"
+        return None
+
+    def _foreign(self, heard: object) -> bool:
+        """An utterance the STT heard in a language HQ does not listen in (#1807)."""
+        langs = self.listen_languages
+        return (
+            bool(langs)
+            and isinstance(heard, str)
+            and bool(LANG.match(heard))
+            and (heard not in langs)
+        )
+
+    def _quiet_from(self, say_id: object) -> None:
+        """`say_id` (``None``: every line) has stopped coming out of the speaker."""
+        until = time.monotonic() + ECHO_TAIL_S
+        for line in self.audible:
+            if say_id is None or line["id"] == say_id:
+                line["until"] = min(line["until"], until)
+
+    def _without_echo(self, ev: dict) -> str:
+        """The utterance's text without HQ's own words heard back (#1807): only lines that could
+        still have been coming out of the speaker after its turn began, and only stretches of
+        `voice_text.ECHO_RUN_WORDS` or more of their words in a row. A late transcript, or one
+        whose turn start is unknown, is left as heard."""
+        text = str(ev.get("text") or "").strip()
+        n = None if ev.get("late") else _turn_number(ev.get("turn"))
+        began = self.turn_started_at.get(n) if n is not None else None
+        if began is None:
+            return text
+        now = time.monotonic()
+        said = [x["text"] for x in self.audible if x["start"] <= now and x["until"] >= began]
+        return strip_echo(text, said) if said else text
+
     async def greet(self) -> None:
         name = ""
         with contextlib.suppress(KeyError):
@@ -539,6 +639,8 @@ class Call:
         """The browser played a say out to its end (its playback queue reached the `said` marker).
         The ONLY thing that arms a challenge: an interrupted, flushed, muted or suspended playback
         never acks, so it never arms (#1397 P2)."""
+        if isinstance(say_id, str):
+            self._quiet_from(say_id)  # played out: from here it is only the room's echo tail
         if say_id in self.say_ids and self.state != "ended":
             self.say_ids.remove(say_id)  # heard ONCE: a duplicate or old ack is not new speech
             now = time.monotonic()
@@ -2423,6 +2525,9 @@ def worker_config(settings: dict, voice: str, profile: dict | None = None) -> di
         "language": None if detect or lang == "auto" else lang,
         # TTS gets a language only where the conformance probe proved the field is accepted.
         "tts_language_ok": bool(settings.get("tts_accepts_language")),
+        # The languages the call listens in (#1807): the worker never adopts another as the
+        # call's language, as the app never takes an utterance in one.
+        "listen_languages": sorted(listen_languages(settings) or ()),
         "in_rate": IN_RATE,
         "out_rate": OUT_RATE,
         # Silence after speech before the turn may end (VAD stop), per the turn-taking setting.

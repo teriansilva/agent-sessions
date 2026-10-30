@@ -51,10 +51,52 @@ def is_no_speech_phrase(said: str) -> bool:
     return text in NO_SPEECH_PHRASES or bool(_NO_SPEECH_CREDITS.match(text))
 
 
-def call_language(current: str | None, heard: str | None, text: str) -> str | None:
+#: How many consecutive words of HQ's own line make an echo (#1807). Three: HQ's shortest fixed
+#: line ("One moment, Commander.") is three words, and two common words in a row ("the session")
+#: are not evidence that the microphone heard the speaker.
+ECHO_RUN_WORDS = 3
+
+
+def _word(token: str) -> str:
+    return _PUNCT.sub("", token).casefold()
+
+
+def strip_echo(heard: str, said: list[str], *, run: int = ECHO_RUN_WORDS) -> str:
+    """`heard` without every stretch of `run` or more consecutive words that is also a stretch of
+    one of `said` — HQ's own lines, which the microphone picked up from the speaker (#1807: the
+    operator's "Hey, what's up" arrived as "Hey, what's up One moment, Commander."). Words are
+    compared without case or punctuation; what is kept is the operator's own text, untouched.
+    An utterance that was nothing but echo comes back empty."""
+    tokens = heard.split()
+    words = [_word(t) for t in tokens]
+    grams: set[tuple[str, ...]] = set()
+    for line in said:
+        w = [x for x in (_word(t) for t in line.split()) if x]
+        grams.update(tuple(w[i : i + run]) for i in range(len(w) - run + 1))
+    if not grams:
+        return heard
+    # Positions of the real words (punctuation-only tokens ride along with their neighbours).
+    idx = [i for i, w in enumerate(words) if w]
+    echoed: set[int] = set()
+    for k in range(len(idx) - run + 1):
+        span = idx[k : k + run]
+        if tuple(words[i] for i in span) in grams:
+            echoed.update(range(span[0], span[-1] + 1))
+    kept = [t for i, t in enumerate(tokens) if i not in echoed]
+    out = " ".join(kept).strip()
+    return out if any(_word(t) for t in kept) else ""
+
+
+def call_language(
+    current: str | None, heard: str | None, text: str, listen: frozenset | None = None
+) -> str | None:
     """The call's language after an utterance (#1397 P3): only a turn heard in one language, of
     3+ words, may change it — and never a stock no-speech phrase (#1667: "Thanks for watching"
-    is three words of room noise)."""
+    is three words of room noise), nor a language the call does not listen in (`listen`, #1807:
+    that utterance is dropped by the app, so it must not move the language either — the next
+    short "confirm" would otherwise be tagged with the noise's language)."""
+    if listen and heard not in listen:
+        return current
     if heard and len(text.split()) >= 3 and not is_no_speech_phrase(text):
         return heard
     return current

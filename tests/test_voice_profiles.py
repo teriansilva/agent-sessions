@@ -186,7 +186,9 @@ def test_a_detected_language_is_spoken_back(monkeypatch):
     call, sent = _call(monkeypatch)
 
     async def go():
-        await call.on_worker_event({"t": "utterance", "text": "Wie läuft es?", "language": "de"})
+        await call.on_worker_event(
+            {"t": "utterance", "text": "Wie läuft es?", "language": "de", "heard_language": "de"}
+        )
         await call.say("Gut, Kommandant.")
 
     asyncio.run(go())
@@ -198,7 +200,9 @@ def test_a_fixed_language_is_not_overridden(monkeypatch):
     call, sent = _call(monkeypatch, fixed="en")
 
     async def go():
-        await call.on_worker_event({"t": "utterance", "text": "Bonjour", "language": "fr"})
+        await call.on_worker_event(
+            {"t": "utterance", "text": "Bonjour", "language": "fr", "heard_language": "fr"}
+        )
         await call.say("Good morning, Commander.")
 
     asyncio.run(go())
@@ -238,7 +242,9 @@ def test_no_language_field_unless_the_server_accepted_one(monkeypatch):
     call, sent = _call(monkeypatch, tts_takes_language=False)
 
     async def go():
-        await call.on_worker_event({"t": "utterance", "text": "Wie läuft es?", "language": "de"})
+        await call.on_worker_event(
+            {"t": "utterance", "text": "Wie läuft es?", "language": "de", "heard_language": "de"}
+        )
         await call.say("Gut, Kommandant.")
 
     asyncio.run(go())
@@ -260,7 +266,12 @@ def test_a_voice_per_language(monkeypatch):
     async def go():
         await call.say("Good morning, Commander.")
         await call.on_worker_event(
-            {"t": "utterance", "text": "Wie läuft es heute?", "language": "de"}
+            {
+                "t": "utterance",
+                "text": "Wie läuft es heute?",
+                "language": "de",
+                "heard_language": "de",
+            }
         )
         await call.say("Gut, Kommandant.")
 
