@@ -688,10 +688,29 @@
 /* HQ's page (#1776): the list owns switching, so the head names the conversation instead. */
 .pageTitle {
   flex: 1 1 auto;
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+}
+
+/* THE HINT NEVER PAINTS OVER A PLATE (#1775). `.footHint` is `flex: none` + nowrap, and the
+ * lead may shrink below its content — at sidebar width (the box is ~460px even on a desktop)
+ * the hint overflowed its lead and covered Attach/Camera/Send. It now truncates, and the box's
+ * OWN container query (the composer is `container-type: inline-size`) drops the hint tail and
+ * then the hint as the four controls crowd one row. A viewport query cannot see this: the
+ * sidebar is narrow at every desktop width. */
+.hint {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--fs-meta);
-  color: var(--text-1);
+}
+@container (max-width: 560px) {
+  .hintMore {
+    display: none;
+  }
+}
+@container (max-width: 380px) {
+  .hint {
+    display: none;
+  }
 }

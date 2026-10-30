@@ -1,5 +1,6 @@
-/** Ask's field (#1171) — one box, used by the dashboard (where asking OPENS a conversation) and by
- *  the conversation page (where it continues one). Since #1707 it also stages shared files.
+/** Ask's field (#1171) — one box. Its only production mount is the HQ sidebar (`AskConsole` in
+ *  `AskSidebar`; the page mount it once had is gone — #1775), so its box never exceeds the
+ *  sidebar's 440px. Since #1707 it also stages shared files.
  *
  *  **Enter sends; Shift+Enter is a new line.** It is a chat, and the operator asked for the chat
  *  default. Ctrl/⌘+Enter still sends too, so a hand trained on the old shortcut is not surprised.
@@ -412,7 +413,7 @@ export function AskComposer({
           </button>
           {/* The shortcut, for the eye. The textarea's `aria-keyshortcuts` is its accessible
               form. */}
-          <span className={styles.footHint} aria-hidden="true">
+          <span className={`${styles.footHint} ${a.hint}`} aria-hidden="true" data-testid="composer-hint">
             Enter to send
             <span className={a.hintMore}> · Shift + Enter new line</span>
           </span>
