@@ -177,30 +177,59 @@ def _candidates(registry) -> list[tuple[str, object]]:
     attempted without a persisted result sorts by that attempt, behind anything not tried since —
     never-tried sessions, and reviewed sessions whose last review is older.
     """
+    ranked, live, _aliases = _rank([row.get("id") for row in registry.snapshot()])
+    _forget_gone(live)
+    return ranked
+
+
+def _rank(terminal_keys: list) -> tuple[list[tuple[str, object]], set[str], dict[str, str]]:
+    """:func:`_candidates`' ordering, every key it saw (for :func:`_forget_gone`), and the alias map
+    the sweep's gathers reuse — read here, so not even a cold sidecar parse runs on the event loop
+    (Hermes 7430). **Blocking:**
+    it scans every API client's store and reads the metadata sidecar, so the sweep runs it in a
+    worker thread, never on the event loop (#1802).
+
+    The sidecar is read and indexed ONCE per sweep, and every key resolves against that copy
+    (`metadata.resolve_in`). Reading it per key — ``metadata.get(metadata.resolve_key(key))`` — cost
+    two full index builds per session, 62 ms each on a real sidecar, for every session, and froze
+    the whole app for up to ~100 s a sweep. `_LAST_ATTEMPT` is only READ here (the ordering), while
+    the sweep awaits this; it is changed on the loop alone."""
+    # One alias-sidecar read per sweep, threaded through every gather (#611) rather than
+    # re-read per session per gather. Fail-soft: no aliases just means no placeholder→real
+    # resolution, i.e. the pre-#611 behaviour, never a failed sweep.
+    try:
+        aliases = metadata.load_aliases()
+    except Exception:
+        aliases = {}
+    try:
+        index = metadata.load()
+    except Exception:
+        log.debug("ai-review: metadata unreadable — skipping this sweep", exc_info=True)
+        return [], set(), aliases
+
+    def meta_of(key: str):
+        """The key's metadata, or ``None`` when it can't be resolved: that session is skipped."""
+        try:
+            return index.get(metadata.resolve_in(key, index, aliases)) or metadata.SessionMeta()
+        except Exception:
+            log.debug("ai-review: metadata read failed for %s — skipping", key, exc_info=True)
+            return None
+
     out: list[tuple[str, object]] = []
     live: set[str] = set()
-    for row in registry.snapshot():
-        key = row.get("id")
+    for key in terminal_keys:
         if not key:
             continue
         live.add(key)
-        try:
-            meta = metadata.get(metadata.resolve_key(key))
-        except Exception:
-            log.debug("ai-review: metadata read failed for %s — skipping", key, exc_info=True)
-            continue
-        if meta.review_excluded or meta.archived is True:
+        meta = meta_of(key)
+        if meta is None or meta.review_excluded or meta.archived is True:
             continue
         out.append((key, meta))
     for key, last_activity in _api_sessions():
         if key in live:
             continue
-        try:
-            meta = metadata.get(metadata.resolve_key(key))
-        except Exception:
-            log.debug("ai-review: metadata read failed for %s — skipping", key, exc_info=True)
-            continue
-        if meta.review_excluded or meta.archived is True:
+        meta = meta_of(key)
+        if meta is None or meta.review_excluded or meta.archived is True:
             continue
         live.add(key)
         # Activity since its last persisted review, or nothing to read: a failed review moves no
@@ -215,27 +244,29 @@ def _candidates(registry) -> list[tuple[str, object]]:
         ):
             continue
         out.append((key, meta))
-    for gone in _LAST_ATTEMPT.keys() - live:  # don't retain state for dead sessions
-        _LAST_ATTEMPT.pop(gone, None)
     out.sort(key=lambda km: _sort_key(km[0], km[1]))
-    return out
+    return out, live, aliases
+
+
+def _forget_gone(live: set[str]) -> None:
+    """Drop attempt times for sessions no longer seen: on the loop, like every other write."""
+    for gone in _LAST_ATTEMPT.keys() - live:
+        _LAST_ATTEMPT.pop(gone, None)
 
 
 async def _sweep(registry, cfg: dict) -> tuple[list[str], int]:
     """The actual review pass — called by :func:`sweep` only past its enable/configured gate."""
     max_chars = int(cfg["max_input_chars"])
     recap_chars = review.recap_input_chars(cfg)
-    # One alias-sidecar read per sweep, threaded through every gather (#611) rather than
-    # re-read per session per gather. Fail-soft: no aliases just means no placeholder→real
-    # resolution, i.e. the pre-#611 behaviour, never a failed sweep.
-    try:
-        aliases = metadata.load_aliases()
-    except Exception:
-        aliases = {}
     reviewed: list[str] = []
     failures = 0
     attempts = 0
-    for key, meta in _candidates(registry):
+    # The ranking runs off the loop (#1802): it scans API stores and reads the metadata sidecar,
+    # aliases included — the map every gather below reuses.
+    keys = [row.get("id") for row in registry.snapshot()]
+    ranked, live, aliases = await asyncio.to_thread(_rank, keys)
+    _forget_gone(live)
+    for key, meta in ranked:
         if attempts >= SWEEP_CAP:
             break
         # Change detection BEFORE any network I/O: gather_review_input is exactly what

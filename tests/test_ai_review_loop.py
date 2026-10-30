@@ -583,3 +583,59 @@ def test_last_attempt_is_pruned_for_sessions_that_leave_the_registry(ai_prefs, f
     ai_review_loop._LAST_ATTEMPT["claude:gone-forever"] = 1.0
     ai_review_loop._candidates(_FakeRegistry([_row(SID)]))
     assert "claude:gone-forever" not in ai_review_loop._LAST_ATTEMPT
+
+
+# ---- #1802: a sweep never freezes the event loop -------------------------------------------
+
+
+def test_a_sweep_reads_the_metadata_sidecar_once_not_per_session(ai_prefs, fake_jsonl, monkeypatch):
+    """Two full index builds per session (``metadata.get(metadata.resolve_key(key))``) froze the
+    live app for ~100 s a sweep: 62 ms each on a real sidecar, for every live session."""
+    loads = []
+    real = metadata.load
+    monkeypatch.setattr(metadata, "load", lambda *a, **k: loads.append(1) or real(*a, **k))
+    keys = [f"shell:{i}{i}{i}{i}{i}{i}{i}{i}-7777-7777-7777-777777777777" for i in range(1, 9)]
+    ai_review_loop._candidates(_FakeRegistry([_row(k) for k in keys]))
+    assert len(loads) == 1
+
+
+def test_the_sweeps_ranking_runs_in_a_worker_thread(ai_prefs, fake_jsonl, monkeypatch):
+    """The API-store scan and the sidecar read happen off the event loop."""
+    import threading
+
+    seen = []
+    real = metadata.load
+
+    def load(*a, **k):
+        seen.append(("load", threading.current_thread() is threading.main_thread()))
+        return real(*a, **k)
+
+    def api_sessions():
+        seen.append(("api", threading.current_thread() is threading.main_thread()))
+        return []
+
+    monkeypatch.setattr(metadata, "load", load)
+    monkeypatch.setattr(ai_review_loop, "_api_sessions", api_sessions)
+    _sweep(_FakeRegistry([]))  # nothing to review: every read is the ranking's
+    assert ("api", False) in seen and ("load", False) in seen
+    assert all(not on_loop for _, on_loop in seen), seen
+
+
+def test_a_cold_sidecar_is_never_read_on_the_event_loop(ai_prefs, fake_jsonl, monkeypatch):
+    """Hermes 7430: the alias read ran on the loop before the ranking went to a worker, so the
+    first sweep after a start or a metadata write parsed the whole sidecar there."""
+    import threading
+
+    metadata.patch(SID, title="t")  # a sidecar on disk
+    metadata.invalidate_raw_cache()  # cold: the next read opens and parses it
+    on_loop = []
+    real = metadata._load_raw
+
+    def load_raw(*a, **k):
+        on_loop.append(threading.current_thread() is threading.main_thread())
+        return real(*a, **k)
+
+    monkeypatch.setattr(metadata, "_load_raw", load_raw)
+    monkeypatch.setattr(ai_review_loop, "_api_sessions", lambda: [])
+    _sweep(_FakeRegistry([]))
+    assert on_loop and not any(on_loop), on_loop

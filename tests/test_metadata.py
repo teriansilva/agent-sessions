@@ -457,6 +457,21 @@ def test_patch_color_placeholder_reconcile_survives_resolve_key(tmp_home, tmp_pa
     assert real.startswith("opencode:ses_")
 
 
+def test_resolve_in_answers_as_resolve_key_from_one_read(tmp_home, tmp_path):
+    """#1802: a caller resolving many keys reads the sidecar once and resolves against it — with
+    exactly `resolve_key`'s answers: the logical entry, else the physical one, else the key."""
+    placeholder = "opencode:new-deadbeef-1111-2222-3333-444455556666"
+    real = "opencode:ses_cafef00d-1111-2222-3333-444455556666"
+    logical = "claude:11111111-1111-1111-1111-111111111111"
+    metadata.patch(placeholder, title="placeholder title")
+    metadata.set_alias(placeholder, real)
+    metadata.patch(logical, title="logical")
+    index, aliases = metadata.load(), metadata.load_aliases()
+    for key in (real, placeholder, logical, "claude:not-in-the-sidecar"):
+        assert metadata.resolve_in(key, index, aliases) == metadata.resolve_key(key)
+    assert metadata.resolve_in(real, index, aliases) == placeholder
+
+
 # --- #652 L2: single-parse sidecar cache ------------------------------------------------
 
 

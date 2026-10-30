@@ -923,11 +923,23 @@ def resolve_key(key: str, path: Path | None = None) -> str:
     index = load(path)
     if key in index:
         return key
+    return resolve_in(key, index, load_aliases(path))
+
+
+def resolve_in(key: str, index: dict[str, SessionMeta], aliases: dict[str, str]) -> str:
+    """:func:`resolve_key`'s rule against an index and alias map the caller already read.
+
+    For a caller resolving MANY keys in one pass: ``resolve_key`` reads and indexes the whole
+    sidecar every time, which is 30–60 ms on a real one (1,682 entries), and the AI-review sweep
+    did that twice per session, for every session, on the event loop (#1802).
+    """
+    if key in index:
+        return key
     # Lazy import: the engines package imports this module at init, so a top-level
     # import here would be circular. By call time both modules are loaded.
     from . import engines
 
-    phys = engines.physical_key(key, load_aliases(path))
+    phys = engines.physical_key(key, aliases)
     if phys != key and phys in index:
         return phys
     return key
