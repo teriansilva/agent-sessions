@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useBlocker, useLocation, useNavigate } from "react-router-dom";
-import { LockKeyhole, Plus, Search } from "lucide-react";
+import { FileKey, LockKeyhole, Plus, Search } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import { VARIABLES_PATH } from "../lib/routes";
 import type { CollectionInput, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
 import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import { VariableForm } from "../components/variables/VariableForm";
-import { draftFor, variablePayload, type VariableDraft } from "../components/variables/variableDraft";
+import { draftFor, isNoopUpdate, isSecret, variablePayload, type VariableDraft } from "../components/variables/variableDraft";
+import { formatSize } from "../components/variables/secretFile";
+import { SecretChannels } from "../components/variables/SecretChannels";
 import buttons from "../components/ui/actionButton.module.css";
 import styles from "./Variables.module.css";
 
@@ -36,6 +38,9 @@ export default function Variables() {
   const [discard, setDiscard] = useState(false);
   const [deleting, setDeleting] = useState<DeleteTarget | null>(null);
   const live = useRef(true);
+  // A chosen secret file stays in memory only, outside the draft, until Save uploads it (#1786).
+  const fileRef = useRef<File | null>(null);
+  const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
   const busyRef = useRef(false);
   const loadGeneration = useRef(0);
   const titleRef = useRef<HTMLHeadingElement>(null);
@@ -63,6 +68,9 @@ export default function Variables() {
     });
   }, []);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    api.projectPickerEntities().then(r => { if (live.current) setProjects(r.projects.map(p => ({ id: p.id, name: p.name }))); }).catch(() => {});
+  }, []);
   // Suggestions pass only a non-secret value. Consume the state once; never persist typed secrets.
   useEffect(() => {
     if (location.state) navigate(VARIABLES_PATH, { replace: true, state: null });
@@ -74,8 +82,9 @@ export default function Variables() {
     try { await action(); } catch (e) { if (live.current) setError(e); }
     finally { busyRef.current = false; if (live.current) setBusy(false); }
   };
-  const closeEditor = () => { setEditor(null); setError(null); setDiscard(false); requestAnimationFrame(() => titleRef.current?.focus()); };
-  const editVariable = (original?: SharedVariable, kind: "text" | "secret" = "text") => {
+  const closeEditor = () => { fileRef.current = null; setEditor(null); setError(null); setDiscard(false); requestAnimationFrame(() => titleRef.current?.focus()); };
+  const editVariable = (original?: SharedVariable, kind: "text" | "secret" | "secret_file" = "text") => {
+    fileRef.current = null;
     const draft = draftFor(original, kind);
     setEditor({ kind: "variable", original, draft, snapshot: JSON.stringify(draft) }); setError(null); setNote("");
   };
@@ -86,10 +95,28 @@ export default function Variables() {
   const save = () => perform(async () => {
     if (!editor) return;
     if (editor.kind === "variable") {
-      const payload = variablePayload(editor.draft, editor.original, library?.limits.secret_min);
-      const row = editor.original?.id
-        ? await api.updateVariable(editor.original.id, payload as SharedVariableUpdate, editor.original.updated_at)
+      const { draft, original } = editor;
+      // The file is taken with the draft it belongs to: nothing chosen after Save reaches this save.
+      const file = draft.kind === "secret_file" ? fileRef.current : null;
+      const payload = variablePayload(draft, original, library?.limits.secret_min);
+      let row = original?.id
+        ? isSecret(draft) && isNoopUpdate(payload as SharedVariableUpdate, original) ? original : await api.updateVariable(original.id, payload as SharedVariableUpdate, original.updated_at)
         : await api.createVariable(payload as SharedVariableInput);
+      // A secret's later steps chain on the newest revision. A step that fails leaves the editor
+      // on the saved row, so Save again continues as an edit instead of creating it twice.
+      try {
+        const id = row.id;
+        if (isSecret(draft) && id) {
+          if (file) { row = await api.putVariableFile(id, file, draft.fileName, row.updated_at); if (fileRef.current === file) fileRef.current = null; }
+          if (!original && draft.agentAccess) row = await api.updateVariable(id, { agent_access: true }, row.updated_at);
+          if (JSON.stringify(draft.projects) !== JSON.stringify([...(original?.projects ?? [])].sort())) row = await api.setVariableProjects(id, draft.projects, row.updated_at);
+        }
+      } catch (e) {
+        // A file already stored is no longer "ready to store".
+        const stored = !!file && fileRef.current !== file;
+        if (live.current) setEditor(current => current && current.kind === "variable" ? { ...current, original: row, draft: stored ? { ...current.draft, fileName: "", fileSize: 0 } : current.draft } : current);
+        throw e;
+      }
       if (!live.current) return;
       setLibrary(old => old && { ...old, variables: [...old.variables.filter(v => v.id !== row.id), row] });
       setSelected("all"); setNote(`Saved “${row.name}”.`);
@@ -148,7 +175,8 @@ export default function Variables() {
         <button className={buttons.primary} disabled={locked || !library || needsMigration || variables.length >= library.limits.variables_max} onClick={() => editVariable()}><Plus size={14} aria-hidden="true" /> New variable</button>
       </div>
     </header>
-    <p className={styles.notice}>Reusable definitions and optional global values. Collections organize variables; they do not grant access to secrets or run work.</p>
+    <p className={styles.notice}>Reusable definitions and optional global values. Collections organize variables; they do not grant access to secrets or run work. Secrets with <b>Agent access</b> can be requested by agents in the projects that bind them, through the BattleLab secrets tool.</p>
+    <SecretChannels />
     {note && <p className={styles.status} role="status">{note}</p>}
     {!deleting && errorView}
     {!library && !error && <p className={styles.empty}>Loading variables…</p>}
@@ -164,7 +192,7 @@ export default function Variables() {
       </aside>
       <section className={styles.content} aria-label={editor ? "Edit library item" : "Variables"}>
         {editor ? <form
-          aria-label={`${editor.original ? "Edit" : "New"} ${editor.kind === "collection" ? "collection" : editor.draft.kind === "secret" ? "secret" : "variable"}`}
+          aria-label={`${editor.original ? "Edit" : "New"} ${editor.kind === "collection" ? "collection" : isSecret(editor.draft) ? "secret" : "variable"}`}
           onSubmit={e => { e.preventDefault(); void save(); }}
           onKeyDown={e => {
             if (e.nativeEvent.isComposing) return;
@@ -179,12 +207,12 @@ export default function Variables() {
               if (dirty) setDiscard(true); else closeEditor();
             }
           }}>
-          <div className={styles.toolbar}><h2>{editor.original ? "Edit" : "New"} {editor.kind === "collection" ? "collection" : editor.draft.kind === "secret" ? "secret" : "variable"}</h2></div>
-          {editor.kind === "variable" ? <VariableForm draft={editor.draft} editing={!!editor.original} disabled={busy || needsMigration} onChange={draft => setEditor({ ...editor, draft })} /> : <fieldset disabled={busy || needsMigration} className={styles.fields}>
+          <div className={styles.toolbar}><h2>{editor.original ? "Edit" : "New"} {editor.kind === "collection" ? "collection" : isSecret(editor.draft) ? "secret" : "variable"}</h2></div>
+          {editor.kind === "variable" ? <VariableForm draft={editor.draft} editing={!!editor.original} original={editor.original} projects={projects} onFile={f => { fileRef.current = f; }} disabled={busy || needsMigration} onChange={draft => setEditor({ ...editor, draft })} /> : <fieldset disabled={busy || needsMigration} className={styles.fields}>
             <label className={styles.field}><span>Collection name</span><input autoFocus value={editor.draft.name} onChange={e => setEditor({ ...editor, draft: { ...editor.draft, name: e.target.value } })} /></label>
             <p className={styles.help}>Choose existing variables. A variable can belong to several collections.</p>
             {variables.length === 0 && <p className={styles.empty}>Create variables first, or save an empty collection.</p>}
-            {variables.filter(v => v.id !== null).map(v => <label key={v.id} className={styles.check}><input type="checkbox" checked={editor.draft.variable_ids.includes(v.id!)} onChange={e => setEditor({ ...editor, draft: { ...editor.draft, variable_ids: e.target.checked ? [...editor.draft.variable_ids, v.id!] : editor.draft.variable_ids.filter(id => id !== v.id) } })} /> {v.name}{v.kind === "secret" ? " · secret" : ""}</label>)}
+            {variables.filter(v => v.id !== null).map(v => <label key={v.id} className={styles.check}><input type="checkbox" checked={editor.draft.variable_ids.includes(v.id!)} onChange={e => setEditor({ ...editor, draft: { ...editor.draft, variable_ids: e.target.checked ? [...editor.draft.variable_ids, v.id!] : editor.draft.variable_ids.filter(id => id !== v.id) } })} /> {v.name}{v.kind !== "text" ? " · secret" : ""}</label>)}
           </fieldset>}
           <div className={styles.actions}>
             <button type="submit" className={buttons.primary} disabled={busy || needsMigration}>{busy ? "Saving…" : "Save"}</button>
@@ -195,9 +223,9 @@ export default function Variables() {
           <div className={styles.toolbar}><h2>{collection?.name ?? (selected === "uncollected" ? "Uncollected" : "All variables")}</h2>{collection && <button className={buttons.ghost} disabled={busy} onClick={() => editCollection(collection)}>Edit collection</button>}</div>
           <label className={styles.search}><Search size={16} aria-hidden="true" /><input aria-label="Search variables" placeholder="Search names and descriptions" value={query} onChange={e => setQuery(e.target.value)} /></label>
           {visible.map(v => <article className={styles.row} key={v.id ?? v.name} aria-label={v.name}>
-            <div><div className={styles.name}>{v.kind === "secret" && <LockKeyhole size={14} aria-hidden="true" />}<span>{v.name}</span></div><div className={styles.kind}>{v.kind === "secret" ? "Secret" : v.definition.value_type}{v.definition.label && v.definition.label !== v.name ? ` · ${v.definition.label}` : ""}</div></div>
-            <div className={styles.value}>{v.needs_reentry ? "Needs re-entry" : !v.set ? "No global value" : v.kind !== "text" ? "Stored · hidden" : String(v.value)}</div>
-            <button className={buttons.ghost} disabled={busy || !v.id || needsMigration || v.kind === "secret_file"} aria-label={`Edit ${v.name}`} onClick={() => editVariable(v)}>Edit</button>
+            <div><div className={styles.name}>{v.kind === "secret" && <LockKeyhole size={14} aria-hidden="true" />}{v.kind === "secret_file" && <FileKey size={14} aria-hidden="true" />}<span>{v.name}</span>{v.agent_access && <span className={styles.chip} title="Agents in the projects that bind it can request it">Agents</span>}</div><div className={styles.kind}>{v.kind === "secret" ? "Secret" : v.kind === "secret_file" ? <>Secret file{v.file ? <> · <span className={styles.fileCase}>{v.file.name}</span></> : null}</> : v.definition.value_type}{v.definition.label && v.definition.label !== v.name ? ` · ${v.definition.label}` : ""}</div></div>
+            <div className={styles.value}>{v.needs_reentry ? "Needs re-entry" : !v.set ? "No global value" : v.kind === "secret_file" && v.file ? `Stored · hidden · ${formatSize(v.file.size)}` : v.kind !== "text" ? "Stored · hidden" : String(v.value)}</div>
+            <button className={buttons.ghost} disabled={busy || !v.id || needsMigration} aria-label={`Edit ${v.name}`} onClick={() => editVariable(v)}>Edit</button>
           </article>)}
           {visible.length === 0 && <p className={styles.empty}>{query ? "No variables match this search." : collection ? "This collection is empty. Edit it to choose variables from the library." : "No variables here yet. Create a variable or a secret to get started."}</p>}
         </>}

@@ -201,6 +201,25 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         result = await _run(variables.put_file, vid, data, name, expected)
         return result if isinstance(result, Response) else _json(result)
 
+    @app.put("/api/variables/{vid}/projects")
+    async def put_projects(
+        vid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ):
+        payload = await _json_object(request)
+        expected = _expected(payload.pop("expected_updated_at", None))
+        if set(payload) != {"project_ids"}:
+            raise _err(422, "send project_ids and expected_updated_at")
+        result = await _run(variables.set_projects, vid, payload["project_ids"], expected)
+        return result if isinstance(result, Response) else _json(result)
+
+    @app.get("/api/variables/{vid}/access-log")
+    async def get_access_log(vid: str, _user: str = Depends(logged_in)):
+        result = await _run(variables.access_log, vid)
+        return result if isinstance(result, Response) else _json({"entries": result})
+
     @app.delete("/api/variables/{vid}", status_code=204)
     async def delete(
         vid: str,

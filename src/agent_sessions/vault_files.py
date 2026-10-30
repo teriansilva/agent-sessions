@@ -210,6 +210,22 @@ def _destroy(dfd: int, name: str) -> bool:
     return True
 
 
+def identity(vid: str, rev: int) -> str:
+    """One stored blob's identity (inode + modification time), or ``"absent"``. A blob published
+    again under the same name (a re-upload after a clear restarts at revision 1) differs, so a
+    copy keyed on it is never mistaken for the new bytes. A directory that is not ours raises."""
+    dfd = _open_dir(root(), create=False)
+    if dfd is None:
+        return "absent"
+    try:
+        st = os.stat(blob_name(vid, rev), dir_fd=dfd, follow_symlinks=False)
+    except FileNotFoundError:
+        return "absent"
+    finally:
+        os.close(dfd)
+    return f"{st.st_ino}.{st.st_mtime_ns}"
+
+
 def remove(vid: str, rev: int) -> None:
     """Truncate and unlink one blob. A missing blob or directory is already removed."""
     dfd = _open_dir(root(), create=False)

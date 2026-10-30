@@ -171,7 +171,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Variables library: list (secrets show only `set` / `needs re-entry`) | GET /api/variables | P3 R |
 | Variables: create / edit / delete a text variable; collections create / edit / delete; enable shared variables | POST/PATCH/DELETE /api/variables*, /api/variable-collections*, POST /api/variables/migrate | P3 W |
 | Secrets: create / replace (value typed on the card), delete | POST/PATCH/DELETE /api/variables (kind secret) | P3 W (secret_input) |
-| Secret files: upload / replace (file chosen on the card, or a Secret-shared chat attachment moved server-side); agent access on / off | PUT /api/variables/{vid}/file; PATCH /api/variables/{vid} (`agent_access`) | #1786 W (P4 of that issue; access on only by the operator's tap, never auto-confirmed) |
+| Secret files: upload / replace (file chosen on the card, or a Secret-shared chat attachment moved server-side); agent access on / off; the projects a secret is bound to; its access log | PUT /api/variables/{vid}/file; PATCH /api/variables/{vid} (`agent_access`); PUT /api/variables/{vid}/projects; GET /api/variables/{vid}/access-log | #1786 W (P4 of that issue; access on only by the operator's tap, never auto-confirmed) |
 | Legacy template-variables routes (API-only) | /api/template-variables* | P3 (via the same store) |
 | Memory: projects, notes, inbox, quarantine; export | GET /api/memory*, …/export | P3 R |
 | Memory: on/off, edit / delete note, clear all, quarantine rewrite / delete, import preview and import, ingest | PUT/PATCH/DELETE/POST /api/memory/{pid}/* | P3 W (clear is destructive) |
@@ -573,6 +573,8 @@ POST   /api/variables/migrate                                                   
 DELETE /api/variables/{vid}                                                       P3
 PATCH  /api/variables/{vid}                                                       P3
 PUT    /api/variables/{vid}/file                                                  #1786  # secret files (P4 of #1786)
+GET    /api/variables/{vid}/access-log                                            #1786  # secret access log (P4 of #1786)
+PUT    /api/variables/{vid}/projects                                              #1786  # bind a secret to projects (P4 of #1786)
 GET    /api/version                                                               n/a  # app shell read
 GET    /change-password                                                           never  # identity
 POST   /change-password                                                           never  # identity

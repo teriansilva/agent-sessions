@@ -22,7 +22,19 @@ class LibraryNotFound(LookupError):
     """No live global variable or collection has this ID."""
 
 
-def _public(rec: dict) -> dict:
+def _bound(records: list[dict], name: str) -> list[str]:
+    """The projects that bind the global variable ``name`` by explicit ``ref: global`` (#1786):
+    the projects whose agents a secret with agent access is offered to."""
+    return sorted(
+        r["project_id"]
+        for r in records
+        if r["scope"] == store.SCOPE_PROJECT
+        and r["name"] == name
+        and r.get("ref") == store.REF_GLOBAL
+    )
+
+
+def _public(rec: dict, records: list[dict] | None = None) -> dict:
     result = store.public(rec)
     result["id"] = rec.get("id")
     definition = variable_types.metadata(rec["name"], rec["kind"], rec.get("definition", {}))
@@ -40,12 +52,16 @@ def _public(rec: dict) -> dict:
         result["agent_access"] = rec.get("agent_access", False)
     if rec["kind"] == "secret_file" and "file" in rec:
         result["file"] = {"name": rec["file"]["name"], "size": rec["file"]["size"]}
+    if rec["kind"] in store.SECRET_KINDS and records is not None:
+        result["projects"] = _bound(records, rec["name"])
     return result
 
 
 def _snapshot(records: list[dict], collections: list[dict]) -> dict:
     return {
-        "variables": [_public(r) for r in sorted(records, key=store._key) if store._is_global(r)],
+        "variables": [
+            _public(r, records) for r in sorted(records, key=store._key) if store._is_global(r)
+        ],
         "collections": deepcopy(sorted(collections, key=lambda c: (c["name"].casefold(), c["id"]))),
     }
 
@@ -150,7 +166,7 @@ def create(payload: object) -> dict:
         record["id"] = variable_document.new_id()
         record["definition"] = definition
         records.append(record)
-        return _public(record)
+        return _public(record, records)
 
     return store._mutate_document(lambda records, collections: fn(records))  # type: ignore[return-value]
 
@@ -240,7 +256,7 @@ def update(vid: str, payload: object, expected: float) -> dict:
                 ) from None
         rec["definition"] = definition
         rec["updated_at"] = store._bumped(rec["updated_at"])
-        return _public(rec)
+        return _public(rec, records)
 
     return store._mutate_document(lambda records, collections: fn(records))  # type: ignore[return-value]
 
@@ -322,9 +338,109 @@ def put_file(vid: str, data: bytes, name: object, expected: float) -> dict:
         rec.pop("unset", None)
         rec["file"] = {"name": file_name, "size": len(data), "rev": rev}
         rec["updated_at"] = store._bumped(rec["updated_at"])
-        return _public(rec)
+        return _public(rec, records)
 
     return store._mutate_document(lambda records, collections: fn(records))  # type: ignore[return-value]
+
+
+def set_projects(vid: str, project_ids: object, expected: float) -> dict:
+    """Bind a global secret to exactly these projects (#1786 P3) by explicit ``ref: global``
+    records — the store's own rule for which projects' agents a secret may reach. Adds and
+    removes refs only: a project's own value under the name refuses, and a binding a playbook
+    deployment still holds is never removed here (it is that deployment's)."""
+    from . import projects as project_store
+    from . import variable_references
+
+    if not isinstance(project_ids, list) or len(project_ids) > 200:
+        raise store.VariableError("project_ids is a list of project ids")
+    wanted = {store.project_id(p) for p in project_ids}
+
+    def fn(records: list[dict]) -> dict:
+        rec = _find(records, vid)
+        if rec["kind"] not in store.SECRET_KINDS:
+            raise store.VariableError("only a secret or a secret file is bound to projects here")
+        if rec["updated_at"] != expected:
+            raise store.VariableConflict(_public(rec, records))
+        name = rec["name"]
+        current = set(_bound(records, name))
+        # Only ADDED ids must name a project that exists now (checked inside the fence). A
+        # binding whose project was since deleted stays removable, and keeping it is no change.
+        known = project_store.load()
+        unknown = sorted(p for p in wanted - current if p not in known)
+        if unknown:
+            raise store.VariableError(f"unknown projects: {unknown}")
+        for pid in sorted(wanted - current):
+            own = next(
+                (
+                    r
+                    for r in records
+                    if r["scope"] == store.SCOPE_PROJECT
+                    and r["project_id"] == pid
+                    and r["name"] == name
+                ),
+                None,
+            )
+            if own is not None:
+                raise store.VariableError(
+                    f"project {pid} has its own value for {name}; change it there first"
+                )
+            if sum(1 for r in records if r["project_id"] == pid) >= store.PROJECT_VARIABLES_MAX:
+                raise store.VariableError(
+                    f"project {pid} holds too many bindings (max {store.PROJECT_VARIABLES_MAX})"
+                )
+            now = time.time()
+            records.append(
+                {
+                    "name": name,
+                    "kind": rec["kind"],
+                    "scope": store.SCOPE_PROJECT,
+                    "project_id": pid,
+                    "ref": store.REF_GLOBAL,
+                    "id": variable_document.new_id(),
+                    "definition": {"value_type": "text"},
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+        removing = current - wanted
+        if removing:
+            held = sorted(removing & set(variable_references.deployment_projects(name)))
+            if held:
+                raise store.VariableError(
+                    f"a playbook deployment in {', '.join(held)} uses this binding; remove it there"
+                )
+            records[:] = [
+                r
+                for r in records
+                if not (
+                    r["scope"] == store.SCOPE_PROJECT
+                    and r["name"] == name
+                    and r.get("ref") == store.REF_GLOBAL
+                    and r["project_id"] in removing
+                )
+            ]
+        if wanted != current:
+            # The record's revision moves, so a second writer holding the old one conflicts
+            # instead of silently replacing this list. Copies are keyed on the VALUE's
+            # revision (`secrets_broker._marker`), so this bump never destroys one.
+            rec["updated_at"] = store._bumped(rec["updated_at"])
+        return _public(rec, records)
+
+    return store._mutate_document(lambda records, collections: fn(records))  # type: ignore[return-value]
+
+
+def access_log(vid: str, limit: int = 50) -> list[dict]:
+    """The newest agent requests for one secret (#1786): when, which project, engine and session,
+    and the outcome. Never a value or a path."""
+    from . import secrets_broker
+
+    records = store._read_strictly_full()
+    rec = _find(records, vid)
+    if rec["kind"] not in store.SECRET_KINDS:
+        raise store.VariableError("only a secret or a secret file has an access log")
+    if not secrets_broker.db_path().exists():
+        return []
+    return secrets_broker.access_log(rec["id"], limit)
 
 
 def delete(vid: str, expected: float) -> None:

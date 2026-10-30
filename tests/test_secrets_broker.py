@@ -822,3 +822,95 @@ def test_refusals_for_unknown_names_are_bounded_too(broker, monkeypatch):
     conn = sqlite3.connect(secrets_broker.db_path())
     assert conn.execute("SELECT COUNT(*) FROM audit WHERE var_id IS NULL").fetchone()[0] == 3
     conn.close()
+
+
+@pytest.fixture
+def atlas_beta(monkeypatch):
+    from agent_sessions import projects
+
+    monkeypatch.setattr(projects, "load", lambda path=None: {"atlas": object(), "beta": object()})
+
+
+def test_unbinding_a_project_destroys_its_copies_and_refuses_it(broker, atlas_beta):
+    row = _global_file()
+    row = variables.set_projects(row["id"], ["atlas"], row["updated_at"])
+    token = _launch()
+    path = secrets_broker.handle(token, "path", "asc_api_key")["path"]
+    variables.set_projects(row["id"], [], row["updated_at"])
+    assert not os.path.exists(path)
+    assert "error" in secrets_broker.handle(token, "path", "asc_api_key")
+
+
+def test_edits_that_leave_the_value_alone_keep_an_agents_copy(broker, atlas_beta):
+    row = _global_secret()
+    row = variables.set_projects(row["id"], ["atlas"], row["updated_at"])
+    token = _launch()
+    path = secrets_broker.handle(token, "path", "forgejo_token")["path"]
+    row = variables.set_projects(row["id"], ["atlas", "beta"], row["updated_at"])
+    row = variables.update(
+        row["id"],
+        {"definition": {**row["definition"], "label": "Forgejo token"}},
+        row["updated_at"],
+    )
+    assert open(path).read() == TOKEN_VALUE  # still there, untouched
+    variables.update(row["id"], {"value": "a-replaced-token-456"}, row["updated_at"])
+    assert not os.path.exists(path)  # a new value does destroy it
+    again = secrets_broker.handle(token, "path", "forgejo_token")["path"]
+    assert open(again).read() == "a-replaced-token-456"
+
+
+def test_a_project_that_does_not_bind_the_secret_shows_in_its_log(broker):
+    row = _global_secret()
+    reply = secrets_broker.handle(_launch("claude:b1"), "path", "forgejo_token")
+    assert "error" in reply
+    [entry] = variables.access_log(row["id"])
+    assert entry["outcome"] == "refused" and entry["project_id"] == "beta"
+
+
+def test_a_reupload_after_a_clear_is_never_taken_for_the_old_copy(broker, monkeypatch):
+    row = _global_file()
+    _bind("atlas", "asc_api_key", "secret_file")
+    token = _launch()
+    old = secrets_broker.handle(token, "path", "asc_api_key")["path"]
+    # The post-commit revoker is best-effort; with it lost, the next pass must still judge.
+    monkeypatch.setattr(secrets_broker, "after_store_commit", lambda: None)
+    row = variables.update(row["id"], {"clear_value": True}, row["updated_at"])
+    row = variables.put_file(row["id"], b"NEW-FILE-BYTES-1803", "AuthKey.p8", row["updated_at"])
+    assert row["file"]["size"] == len(b"NEW-FILE-BYTES-1803")  # revision 1 again
+    secrets_broker.reconcile(probe=False)
+    assert not os.path.exists(old)
+    again = secrets_broker.handle(token, "path", "asc_api_key")["path"]
+    assert open(again, "rb").read() == b"NEW-FILE-BYTES-1803"
+
+
+def test_refusals_from_any_project_never_evict_a_secrets_grants(broker, monkeypatch):
+    monkeypatch.setattr(secrets_broker, "AUDIT_PER_SECRET", 3)
+    row = _global_secret()
+    _bind("atlas", "forgejo_token", "secret")
+    secrets_broker.handle(_launch("claude:a1"), "path", "forgejo_token")
+    beta = _launch("claude:b1")
+    for _ in range(6):
+        assert "error" in secrets_broker.handle(beta, "path", "forgejo_token")
+    outcomes = [e["outcome"] for e in variables.access_log(row["id"])]
+    assert outcomes.count("refused") == 3 and "materialized" in outcomes
+
+
+def test_a_copy_whose_revision_cannot_be_checked_is_removed_and_the_pass_goes_on(
+    broker, monkeypatch
+):
+    _global_file("a_file")
+    _bind("atlas", "a_file", "secret_file")
+    tok = _global_secret("b_secret")
+    _bind("atlas", "b_secret", "secret")
+    token = _launch()
+    a = secrets_broker.handle(token, "path", "a_file")["path"]
+    b = secrets_broker.handle(token, "path", "b_secret")["path"]
+
+    def broken(vid, rev):
+        raise OSError("vault directory is not private")
+
+    monkeypatch.setattr(secrets_broker.vault_files, "identity", broken)
+    variables.update(tok["id"], {"agent_access": False}, tok["updated_at"])
+    secrets_broker.reconcile(probe=False)
+    assert not os.path.exists(a)  # unknowable: fail closed
+    assert not os.path.exists(b)  # and the copy after it is still judged

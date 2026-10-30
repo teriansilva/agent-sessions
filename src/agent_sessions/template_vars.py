@@ -712,6 +712,17 @@ def _read_strictly() -> list[dict]:
     return [legacy_record(rec) for rec in records]
 
 
+def _read_strictly_full() -> list[dict]:
+    """`_read_strictly` keeping the v4 identities and definitions (the shared library's view)."""
+    try:
+        records, damaged = _read(store_path())
+    except VariableStoreUnsupported as e:
+        raise ResolutionUnavailable(str(e)) from None
+    if damaged:
+        raise ResolutionUnavailable("the variables store could not be read in full")
+    return records
+
+
 def _find(
     records: list[dict], name: str, scope: str = SCOPE_GLOBAL, pid: str | None = None
 ) -> dict:

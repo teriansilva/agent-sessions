@@ -23,6 +23,8 @@ export interface SharedVariable {
   /** Secrets and secret files: whether agents may request it (#1786). */
   agent_access?: boolean;
   file?: { name: string; size: number };
+  /** Secrets: the projects that bind it by explicit reference — whose agents it may reach. */
+  projects?: string[];
   value?: VariableValue;
   created_at: number;
   updated_at: number;
@@ -42,7 +44,7 @@ export interface SharedVariablesResponse {
 }
 export interface SharedVariableInput {
   name: string;
-  kind: "text" | "secret";
+  kind: "text" | "secret" | "secret_file";
   definition: VariableDefinition;
   value?: VariableValue;
 }
@@ -50,5 +52,17 @@ export interface SharedVariableUpdate {
   definition?: VariableDefinition;
   value?: VariableValue;
   clear_value?: true;
+  /** Secrets (#1786): whether agents in the projects that bind it may request a private copy. */
+  agent_access?: boolean;
 }
 export type CollectionInput = Pick<VariableCollection, "name" | "variable_ids">;
+
+/** One agent request for a secret (#1786): never a value or a path. */
+export interface SecretAccessEntry {
+  at: number;
+  project_id: string | null;
+  engine: string | null;
+  session_key: string | null;
+  outcome: "pending" | "materialized" | "failed" | "refused" | "interrupted";
+  reason: string | null;
+}

@@ -34,7 +34,8 @@ then settles the row ``materialized`` (or ``failed``). A settlement that cannot 
 the copy it just published; startup settles leftover ``pending`` rows ``interrupted`` after
 removing their copies. No copy is published without a committed row; when the audit store cannot
 be written the request is refused and only the app log records it. Refusals are logged while the
-store is writable. The log keeps the newest ``AUDIT_PER_SECRET`` rows per secret.
+store is writable. The log keeps the newest ``AUDIT_PER_SECRET`` grant rows and, separately, the
+newest ``AUDIT_PER_SECRET`` refusals per secret.
 
 **Copies live on RAM-backed storage only**: ``$XDG_RUNTIME_DIR/agent-sessions/secrets/<launch>/``,
 directories 0700 and files 0600; the root must be tmpfs or ramfs (``statfs``), or nothing is
@@ -48,6 +49,7 @@ import contextlib
 import ctypes
 import ctypes.util
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -61,7 +63,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-from . import template_secrets
+from . import template_secrets, vault_files
 
 log = logging.getLogger(__name__)
 
@@ -291,10 +293,14 @@ def _audit(conn: sqlite3.Connection, cap: sqlite3.Row | None, **row) -> int:
                 (AUDIT_PER_SECRET,),
             )
         if row.get("var_id"):
+            # Refusals and grants are bounded separately: any project's agent can be refused
+            # a secret by name, and those rows must never evict its grant history.
+            refused = int(row.get("outcome") == "refused")
             conn.execute(
-                "DELETE FROM audit WHERE var_id = ? AND seq NOT IN (SELECT seq FROM audit"
-                " WHERE var_id = ? ORDER BY seq DESC LIMIT ?)",
-                (row["var_id"], row["var_id"], AUDIT_PER_SECRET),
+                "DELETE FROM audit WHERE var_id = ? AND (outcome = 'refused') = ? AND seq NOT IN"
+                " (SELECT seq FROM audit WHERE var_id = ? AND (outcome = 'refused') = ?"
+                " ORDER BY seq DESC LIMIT ?)",
+                (row["var_id"], refused, row["var_id"], refused, AUDIT_PER_SECRET),
             )
     return int(cur.lastrowid)
 
@@ -528,9 +534,27 @@ def _offered(pid: str) -> tuple[dict[str, dict], dict[str, str]]:
 
 
 def _marker(rec: dict) -> str:
-    """What makes a copy current: the holding record's identity and revision."""
-    rev = rec["file"]["rev"] if rec["kind"] == "secret_file" else 0
-    return f"{rec['id']}:{rec['updated_at']!r}:{rev}"
+    """What makes a copy current: the holding record's identity and its VALUE's revision — the
+    file's revision and blob identity, or a digest of the sealed envelope (a fresh nonce on every
+    seal). Never `updated_at`: a label, project or access edit bumps it without changing the
+    bytes, and must not destroy a copy an agent is using (independent review of #1803)."""
+    if rec["kind"] == "secret_file":
+        # The revision restarts at 1 after a clear, so the blob's own identity is part of it.
+        rev = f"{rec['file']['rev']}.{vault_files.identity(rec['id'], rec['file']['rev'])}"
+    else:
+        sealed = json.dumps(rec.get("secret"), sort_keys=True, separators=(",", ":"))
+        rev = hashlib.sha256(sealed.encode()).hexdigest()[:32]
+    return f"{rec['id']}:{rev}"
+
+
+def _still_current(rec: dict, marker: str) -> bool:
+    """Whether a copy's marker still matches; an unknowable one (a vault directory that is not
+    ours) is a mismatch, so the copy is destroyed and the rest of the pass goes on."""
+    try:
+        return _marker(rec) == marker
+    except Exception:  # noqa: BLE001 — fail closed
+        log.warning("secrets broker: a copy's revision could not be checked; it is removed")
+        return False
 
 
 def _describe(name: str, rec: dict, secrets_now: list[str]) -> dict:
@@ -833,7 +857,9 @@ def _log_refusal(conn: sqlite3.Connection, cap: sqlite3.Row, name: str, code: st
             (r for r in records if r["name"] == name and r["project_id"] == cap["project_id"]),
             None,
         )
-        if holder is not None and holder.get("ref") == store.REF_GLOBAL:
+        if holder is None or holder.get("ref") == store.REF_GLOBAL:
+            # A project that does not bind the name is logged against the library secret of
+            # that name, so its log shows the refusal too (bounded per secret like the rest).
             holder = next((r for r in records if store._is_global(r) and r["name"] == name), None)
         var_id = holder["id"] if holder is not None else None
     try:
@@ -843,11 +869,13 @@ def _log_refusal(conn: sqlite3.Connection, cap: sqlite3.Row, name: str, code: st
 
 
 def _grant(conn: sqlite3.Connection, cap: sqlite3.Row, name: str, rec: dict) -> dict:
+    # The marker first: a re-publish between the two then always reads as a mismatch, never as
+    # old bytes under the new blob's identity.
+    marker = _marker(rec)
     data = _value(rec)
     if data is None:
         _log_refusal(conn, cap, name, "needs_reentry")
         raise Refused("needs_reentry")
-    marker = _marker(rec)
     base = _copy_name(name, rec)
     target = str(_launch_dir(cap["id"]) / name / base)
     try:
@@ -1027,7 +1055,7 @@ def _reconcile_cap(
         same_project = False
     for copy in copies:
         rec = offered.get(copy["name"])
-        if same_project and rec is not None and _marker(rec) == copy["marker"]:
+        if same_project and rec is not None and _still_current(rec, copy["marker"]):
             continue
         _destroy_copy(cap["id"], copy["name"])
         with _txn(conn):

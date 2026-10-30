@@ -8,7 +8,7 @@ import type {
 import type { ApiLook } from "../theme/apiLook";
 import type { ShareCatalog, ShareImports, SharePreview, ShareResult } from "../types/share";
 import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, GalleryComparison, GalleryFiles, LocalSkill } from "../types/gallery";
-import type { CollectionInput, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
+import type { CollectionInput, SecretAccessEntry, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
 import type { Resources, ResourceSettings, ResourceValues } from "../types/resources";
 import type { CreatedShare, ShareList, ShareMode } from "./shareFormat";
 import type { DeploymentReceipt, DeploymentRemoval, DeploymentReview, DeploymentStatus, PlaybookInputs } from "../types/playbookDeployment";
@@ -348,16 +348,16 @@ async function postJson<T>(path: string, body?: unknown): Promise<T> {
  *  included, and setting it by hand produces a header whose boundary does not match the body.
  *  Through the Home Free tunnel this still works because `tunnel.fetch` normalizes the body via a
  *  `Request` and sends `await req.arrayBuffer()`, which preserves that generated header. */
-async function postForm<T>(path: string, form: FormData): Promise<T> {
+async function postForm<T>(path: string, form: FormData, method: "POST" | "PUT" = "POST"): Promise<T> {
   const r = await apiFetch(path, {
-    method: "POST",
+    method,
     credentials: "same-origin",
     headers: { "X-CSRF-Token": csrfToken },
     body: form,
   });
   if (r.status === 401 || r.status === 403) await authGate(r);
   if (!r.ok) {
-    let detail = `POST ${path} → ${r.status}`;
+    let detail = `${method} ${path} → ${r.status}`;
     try {
       const body = (await r.json()) as { detail?: string };
       if (body?.detail) detail = body.detail;
@@ -1340,6 +1340,17 @@ export const api = {
   createVariable: (input: SharedVariableInput) => mutateJson<SharedVariable>("POST", "/api/variables", input),
   updateVariable: (id: string, input: SharedVariableUpdate, expected: number) =>
     mutateJson<SharedVariable>("PATCH", `/api/variables/${enc(id)}`, { ...input, expected_updated_at: expected }),
+  /** A secret file's content (#1786): multipart, replace semantics; the answer is the masked row. */
+  putVariableFile: (id: string, file: Blob, fileName: string, expected: number) => {
+    const form = new FormData();
+    form.append("file", file, fileName);
+    return postForm<SharedVariable>(`/api/variables/${enc(id)}/file?expected_updated_at=${enc(String(expected))}`, form, "PUT");
+  },
+  /** Bind a secret to exactly these projects (#1786): whose agents it may reach. */
+  setVariableProjects: (id: string, projectIds: string[], expected: number) =>
+    mutateJson<SharedVariable>("PUT", `/api/variables/${enc(id)}/projects`, { project_ids: projectIds, expected_updated_at: expected }),
+  /** The newest agent requests for one secret (#1786). */
+  variableAccessLog: (id: string) => getJsonWithDetail<{ entries: SecretAccessEntry[] }>(`/api/variables/${enc(id)}/access-log`),
   deleteVariable: (id: string, expected: number) =>
     deleteVoid(`/api/variables/${enc(id)}?expected_updated_at=${enc(String(expected))}`),
   createVariableCollection: (input: CollectionInput) =>

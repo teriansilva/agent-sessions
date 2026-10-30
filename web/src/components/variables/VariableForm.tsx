@@ -1,13 +1,17 @@
 import { useEffect, useId, useRef } from "react";
-import type { VariableType } from "../../types/variables";
-import type { VariableDraft } from "./variableDraft";
+import type { SharedVariable, VariableType } from "../../types/variables";
+import { isSecret, type VariableDraft } from "./variableDraft";
+import { SecretSection } from "./SecretSection";
 import styles from "../../routes/Variables.module.css";
 
-export function VariableForm({ draft, editing, disabled, onChange }: {
+export function VariableForm({ draft, editing, disabled, onChange, original, projects = [], onFile = () => {} }: {
   draft: VariableDraft;
   editing: boolean;
   disabled: boolean;
   onChange: (draft: VariableDraft) => void;
+  original?: SharedVariable;
+  projects?: { id: string; name: string }[];
+  onFile?: (file: File | null) => void;
 }) {
   const nameRef = useRef<HTMLInputElement>(null);
   const nameId = useId();
@@ -17,7 +21,7 @@ export function VariableForm({ draft, editing, disabled, onChange }: {
   const choicesId = useId();
   useEffect(() => { nameRef.current?.focus(); }, []);
   const update = (patch: Partial<VariableDraft>) => onChange({ ...draft, ...patch });
-  const secret = draft.kind === "secret";
+  const secret = isSecret(draft);
   const valueControl = (key: "value" | "defaultValue" | "example", label: string) => (
     <label className={styles.field}>
       <span id={`${valueId}-${key}`}>{label}</span>
@@ -54,17 +58,16 @@ export function VariableForm({ draft, editing, disabled, onChange }: {
       <label className={styles.field}><span>Label</span><input value={draft.label} onChange={e => update({ label: e.target.value })} /></label>
       <label className={styles.field}><span id={helpId}>Help</span><textarea aria-labelledby={helpId} rows={2} value={draft.help} onChange={e => update({ help: e.target.value })} /></label>
       {!secret && draft.valueType === "enum" && <label className={styles.field}><span id={choicesId}>Choices, one per line</span><textarea aria-labelledby={choicesId} rows={4} value={draft.choices} onChange={e => update({ choices: e.target.value })} /></label>}
-      <label className={styles.check}><input type="checkbox" checked={draft.required} onChange={e => update({ required: e.target.checked })} /> Require a value when used</label>
-      <div className={styles.valueSection}>
+      {draft.kind !== "secret_file" && <label className={styles.check}><input type="checkbox" checked={draft.required} onChange={e => update({ required: e.target.checked })} /> Require a value when used</label>}
+      {secret ? <SecretSection draft={draft} original={original} editing={editing} disabled={disabled} projects={projects} onChange={update} onFile={onFile} /> : <div className={styles.valueSection}>
         <label className={styles.check}><input type="checkbox" checked={draft.storeValue} onChange={e => update({ storeValue: e.target.checked })} /> Store a global value</label>
         <p className={styles.help}>{draft.storeValue ? "Global values can be reused across projects through explicit bindings." : "Save the definition without a global value. Supply its value when binding it to a project."}</p>
         {draft.storeValue && valueControl("value", secret && editing ? "Replacement secret" : "Global value")}
-        {secret && editing && draft.storeValue && <p className={styles.help}>Leave blank to keep the stored secret. The current value is never displayed.</p>}
         {editing && !draft.storeValue && <p className={styles.help}>Saving removes the global value and keeps this definition and its collection memberships.</p>}
-      </div>
+      </div>}
       <details className={styles.advanced}>
         <summary>{secret ? "Validation" : "Validation, default & example"}</summary>
-        {(draft.valueType === "text" || draft.valueType === "path") && <label className={styles.field}><span>Pattern (regular expression)</span><input value={draft.pattern} spellCheck={false} onChange={e => update({ pattern: e.target.value })} /></label>}
+        {draft.kind !== "secret_file" && (draft.valueType === "text" || draft.valueType === "path") && <label className={styles.field}><span>Pattern (regular expression)</span><input value={draft.pattern} spellCheck={false} onChange={e => update({ pattern: e.target.value })} /></label>}
         {!secret && <><label className={styles.check}><input type="checkbox" checked={draft.hasDefault} onChange={e => update({ hasDefault: e.target.checked })} /> Define a default</label>
         {draft.hasDefault && valueControl("defaultValue", "Default")}
         <label className={styles.check}><input type="checkbox" checked={draft.hasExample} onChange={e => update({ hasExample: e.target.checked })} /> Add an example</label>
