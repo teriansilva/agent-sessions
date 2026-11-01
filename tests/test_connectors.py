@@ -622,7 +622,15 @@ def test_5c_search_repo_ci_dir_file_and_pr_head_ci(forge):
     t = _turn()
     listed, _ = run(hq.list_connectors(t))
     assert listed == {
-        "connectors": [{"connector_index": 0, "label": "Forgejo", "host": "git.example"}]
+        "connectors": [
+            {
+                "connector_index": 0,
+                "label": "Forgejo",
+                "host": "git.example",
+                "category": "versioning",
+                "search_kinds": ["repos", "issues", "pulls"],
+            }
+        ]
     }
     out, _ = run(hq.search(t, {"connector_index": 0, "query": "app", "kind": "repos"}))
     assert out["untrusted_connector_content"]["items"][0]["ref"] == "repo:ops/app"

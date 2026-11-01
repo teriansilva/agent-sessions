@@ -29,6 +29,8 @@ export type ConnectorInstance = {
   origin: string;
   status: ConnectorStatus;
   token_set: boolean;
+  /** A `basic` connector's account name (#1829); `null` for a token connector. Never secret. */
+  account?: string | null;
   generation: number;
   tested_generation: number | null;
   tested: { login: string; repos: number; at: number } | null;
@@ -67,6 +69,9 @@ const READS: Record<string, string> = {
   pulls: "pull requests",
   ci: "CI status",
   files: "files",
+  folders: "folders",
+  search: "search by name",
+  documents: "text files",
 };
 
 export function readsLabel(reads: string[]): string {

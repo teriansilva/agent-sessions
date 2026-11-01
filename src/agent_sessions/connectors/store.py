@@ -48,6 +48,9 @@ STORE_VERSION = 1
 INSTANCES_MAX = 32
 AUDIT_MAX = 200
 LOGIN_MAX = 80
+#: A `basic` connector's account name (#1829): plain text, never secret, never a ':' (it is the
+#: user part of a Basic credential), no leading or trailing space.
+ACCOUNT_RE = re.compile(r"[A-Za-z0-9_.@'-](?:[A-Za-z0-9_.@' -]{0,62}[A-Za-z0-9_.@'-])?")
 ID_RE = re.compile(r"c_[0-9a-f]{12}")
 CAPABILITIES = ("read",)
 #: The audit row's operations.
@@ -170,7 +173,15 @@ def _valid_last_test(t: object) -> bool:
 
 
 def _valid_instance(inst: object) -> bool:
-    if not isinstance(inst, dict) or set(inst) != _INSTANCE_KEYS:
+    # `account` (#1829) is present only on a `basic` connector, so a store holding none of them is
+    # byte-for-byte what an older build reads.
+    keys = set(inst) if isinstance(inst, dict) else None
+    if keys not in (_INSTANCE_KEYS, _INSTANCE_KEYS | {"account"}):
+        return False
+    if "account" in inst and not (
+        isinstance(inst["account"], str)
+        and (inst["account"] == "" or ACCOUNT_RE.fullmatch(inst["account"]))
+    ):
         return False
     if not isinstance(inst["id"], str) or not ID_RE.fullmatch(inst["id"]):
         return False
@@ -385,6 +396,7 @@ def public(inst: dict, bundled: dict[str, manifest_mod.Manifest]) -> dict:
         "origin": inst["origin"],
         "status": status(inst, bundled),
         "token_set": "token" in inst["envelopes"],
+        "account": inst.get("account"),
         "generation": inst["generation"],
         "tested_generation": t["generation"] if t is not None else None,
         "tested": (
@@ -423,6 +435,8 @@ def add(manifest_id: str) -> dict:
             "envelopes": {},
             "created_at": now,
         }
+        if m.auth_kind == "basic":
+            inst["account"] = ""
         doc["instances"].append(inst)
         _audit(doc, "added", inst, now)
         return dict(inst)
@@ -436,13 +450,20 @@ def _old_token(inst: dict) -> str | None:
 
 
 def patch(iid: str, body: dict) -> dict:
-    """Change the origin and/or the token. Validated, then applied INSIDE the lock against the
-    stored instance: an origin change without a new token (or ``token: null``) is refused there,
-    so a racing save cannot pair the old token with the new origin. A real change moves the
-    generation and the credential revision and clears ``tested``."""
-    if not isinstance(body, dict) or not body or not set(body) <= {"origin", "token"}:
-        raise Refused("send origin and/or token", "bad_body")
+    """Change the origin, the account (a `basic` connector, #1829) and/or the token. Validated,
+    then applied INSIDE the lock against the stored instance: an origin or account change without
+    a new token (or ``token: null``) is refused there, so a racing save cannot pair the old secret
+    with a new origin or a new account. A real change moves the generation and the credential
+    revision and clears ``tested``."""
+    if not isinstance(body, dict) or not body or not set(body) <= {"origin", "token", "account"}:
+        raise Refused("send origin, account and/or token", "bad_body")
     new_origin = normalize_origin(body["origin"]) if "origin" in body else None
+    new_account: str | None = None
+    if "account" in body:
+        raw = body["account"]
+        if not isinstance(raw, str) or not ACCOUNT_RE.fullmatch(raw.strip()):
+            raise Refused("the account must be a user name without ':'", "invalid_account")
+        new_account = raw.strip()
     cred_op = "keep"
     new_token = ""
     if "token" in body:
@@ -464,22 +485,37 @@ def patch(iid: str, body: dict) -> dict:
             raise Refused("this connector is no longer in the catalog", "unknown_manifest")
         if new_origin is not None and m.fixed_origin and new_origin != m.fixed_origin:
             raise Refused("this connector's origin is fixed", "fixed_origin")
+        if new_account is not None and m.auth_kind != "basic":
+            raise Refused("this connector has no account", "bad_body")
         has_token = "token" in inst["envelopes"]
         why = creds.origin_violation(inst["origin"], has_token, new_origin, body)
         if why is not None:
             raise Refused(why, "origin_needs_token")
+        old_account = inst.get("account", "")
+        account = new_account if new_account is not None else old_account
+        account_changed = account != old_account
+        if account_changed and has_token and old_account and cred_op == "keep":
+            raise Refused(
+                "enter the password for the new account, or clear it (token: null) — a stored "
+                "password is only sent for the account it was saved with",
+                "account_needs_token",
+            )
         origin = new_origin if new_origin is not None else inst["origin"]
         if cred_op == "set" and not origin:
             raise Refused("set the origin together with the token", "needs_origin")
+        if cred_op == "set" and m.auth_kind == "basic" and not account:
+            raise Refused("set the account together with the password", "needs_account")
         origin_changed = origin != inst["origin"]
-        if not origin_changed and cred_op == "keep":
+        if not origin_changed and not account_changed and cred_op == "keep":
             return dict(inst)  # nothing changed: no new generation
-        if cred_op == "clear" and not has_token and not origin_changed:
+        if cred_op == "clear" and not has_token and not origin_changed and not account_changed:
             return dict(inst)
         old = _old_token(inst)
-        if old is not None and (cred_op != "keep" or origin_changed):
+        if old is not None and (cred_op != "keep" or origin_changed or account_changed):
             template_secrets.retire([old])  # BEFORE the write (the redaction set keeps it)
         inst["origin"] = origin
+        if "account" in inst:
+            inst["account"] = account
         inst["generation"] += 1
         inst["credential_revision"] += 1
         inst["tested"] = None
@@ -488,8 +524,8 @@ def patch(iid: str, body: dict) -> dict:
                 "token": creds.seal(inst["id"], inst["credential_revision"], new_token)
             }
         else:
-            # cleared, or an origin move with `token: null`: the old envelope is dropped (and
-            # could not be opened under the new revision anyway).
+            # cleared, or an origin/account move with `token: null`: the old envelope is dropped
+            # (and could not be opened under the new revision anyway).
             inst["envelopes"] = {}
         _audit(doc, "changed", inst, now)
         return dict(inst)

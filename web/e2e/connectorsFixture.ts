@@ -40,6 +40,20 @@ export const GITHUB = {
 };
 /** A classic GitHub token that can also write: it passes, with the adapter's warning. */
 export const CLASSIC_TOKEN = "ghp_classic-with-repo-scope";
+export const NEXTCLOUD = {
+  id: "nextcloud",
+  label: "Nextcloud",
+  publisher: "battlelab",
+  version: "1",
+  category: "storage",
+  adapter: "nextcloud",
+  origin_mode: "operator",
+  fixed_origin: null,
+  auth: { kind: "basic", scopes: ["app-password"] },
+  capabilities: { read: ["folders", "search", "documents"] },
+  setup:
+    "Create an app password in Nextcloud under Personal settings → Security → Devices & sessions, named for BattleLab, so you can revoke it on its own. Nextcloud app passwords can't be limited to reading; HQ only ever reads.",
+};
 
 export const DISCLOSURE =
   "What HQ reads through a connector is sent to your AI endpoint (https://api.example.com) as part of " +
@@ -51,6 +65,8 @@ type Inst = {
   origin: string;
   generation: number;
   token: string | null;
+  /** A basic connector's account; absent on a token connector. */
+  account?: string;
   tested: { login: string; repos: number; at: number } | null;
   last_test: { generation: number; ok: boolean; code: string | null; at: number } | null;
   read: boolean;
@@ -82,6 +98,7 @@ function view(i: Inst) {
     origin: i.origin,
     status: status(i),
     token_set: !!i.token,
+    account: i.account ?? null,
     generation: i.generation,
     tested_generation: i.tested ? i.generation : null,
     tested: i.tested,
@@ -116,7 +133,7 @@ export async function mockConnectors(page: Page, instances: Inst[] = []): Promis
     const body = req.postData() ? JSON.parse(req.postData()!) : {};
     const find = (id: string) => srv.instances.find((i) => i.id === id);
     if (method === "GET" && path === "") {
-      const json = { catalog: [FORGEJO, GITHUB], instances: srv.instances.map(view), disclosure: DISCLOSURE };
+      const json = { catalog: [FORGEJO, GITHUB, NEXTCLOUD], instances: srv.instances.map(view), disclosure: DISCLOSURE };
       if (srv.holdList) {
         const hold = srv.holdList;
         srv.holdList = null;
@@ -128,6 +145,7 @@ export async function mockConnectors(page: Page, instances: Inst[] = []): Promis
       const i = instance({
         manifest_id: body.manifest_id,
         origin: body.manifest_id === "github" ? GITHUB.fixed_origin : "",
+        ...(body.manifest_id === "nextcloud" ? { account: "" } : {}),
       });
       srv.instances.push(i);
       return route.fulfill({ status: 201, json: view(i) });
@@ -142,8 +160,14 @@ export async function mockConnectors(page: Page, instances: Inst[] = []): Promis
       if (moved && i.token && !("token" in body)) {
         return route.fulfill(refuse("origin_needs_token", "a new address needs the token again"));
       }
-      if (!moved && !body.token) return route.fulfill({ json: view(i) });
+      const account = "account" in body ? String(body.account) : i.account;
+      const renamed = i.account !== undefined && account !== i.account;
+      if (renamed && i.token && i.account && !("token" in body)) {
+        return route.fulfill(refuse("account_needs_token", "a new account needs the password again"));
+      }
+      if (!moved && !renamed && !body.token) return route.fulfill({ json: view(i) });
       i.origin = origin;
+      if (i.account !== undefined) i.account = account;
       if (body.token) i.token = body.token;
       i.generation += 1;
       i.tested = null;
@@ -169,9 +193,10 @@ export async function mockConnectors(page: Page, instances: Inst[] = []): Promis
         });
       }
       if (i.token === GOOD_TOKEN && !srv.revoked) {
-        i.tested = { login: "commander", repos: 7, at: 2 };
+        const storage = i.manifest_id === "nextcloud";
+        i.tested = storage ? { login: "anna@example.com", repos: 4, at: 2 } : { login: "commander", repos: 7, at: 2 };
         i.last_test = { generation: gen, ok: true, code: null, at: 2 };
-        return route.fulfill({ json: { status: "ok", login: "commander", repos: 7, generation: gen } });
+        return route.fulfill({ json: { status: "ok", login: i.tested.login, repos: i.tested.repos, generation: gen } });
       }
       // A failed test of the current configuration withdraws an earlier pass (store.settle_test,
       // #1825), so a connector that was reading stops; the read choice comes back with a pass.

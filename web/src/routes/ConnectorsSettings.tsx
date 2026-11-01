@@ -93,10 +93,10 @@ export function ConnectorsSettings() {
       <h2 id="connectors-h">HQ connectors</h2>
       <p className={settings.hint}>
         Connectors let HQ read from your other services: ask it about an issue,
-        a pull request or a commit’s checks and it looks them up. They{" "}
-        <b>only read</b>. Nothing is sent, commented or merged through a
-        connector. You use your own account and its token, so HQ sees what that
-        account can see.
+        a pull request, a commit’s checks or a file in your cloud, and it looks
+        them up. They <b>only read</b>. Nothing is sent, commented, merged or
+        changed through a connector. You sign in with your own account, so HQ
+        sees what that account can see.
       </p>
       {loadError && (
         <p className={settings.err} role="alert">
@@ -173,6 +173,15 @@ function ConnectorCard({
 }) {
   const label = manifest?.label ?? inst.manifest_id;
   const fixed = !!manifest?.fixed_origin;
+  /** A `basic` connector (#1829) signs in with an account name and an app password. */
+  const basic = manifest?.auth.kind === "basic";
+  const secretName = basic ? "app password" : "token";
+  const [account, setAccount] = useState(inst.account ?? "");
+  const [baseAccount, setBaseAccount] = useState(inst.account ?? "");
+  if ((inst.account ?? "") !== baseAccount) {
+    setBaseAccount(inst.account ?? "");
+    if (account === baseAccount) setAccount(inst.account ?? "");
+  }
   const [origin, setOrigin] = useState(inst.origin);
   /** The server's address the draft was last taken from. A reload that moves it adopts the new
    *  value only while the draft is untouched: a stored change never overwrites typing. */
@@ -211,6 +220,7 @@ function ConnectorCard({
 
   const ids = {
     origin: `${inst.id}-origin`,
+    account: `${inst.id}-account`,
     token: `${inst.id}-token`,
     read: `${inst.id}-read`,
     head: `${inst.id}-h`,
@@ -218,14 +228,19 @@ function ConnectorCard({
   const draftOrigin = origin.trim();
   const typedToken = editingToken && token.trim() !== "" ? token : null;
   const originDirty = !fixed && draftOrigin !== inst.origin;
-  const dirty = originDirty || typedToken !== null;
-  /** The stored token stays bound to the stored address, so a move must bring a new one. */
-  const needsTokenAgain = originDirty && inst.token_set && typedToken === null;
+  const draftAccount = account.trim();
+  const accountDirty = basic && draftAccount !== (inst.account ?? "");
+  const dirty = originDirty || accountDirty || typedToken !== null;
+  /** The stored secret stays bound to the stored address (and account): a move brings a new one. */
+  const needsTokenAgain =
+    (originDirty || accountDirty) && inst.token_set && typedToken === null;
   const missing = !draftOrigin
     ? "address"
-    : !inst.token_set && typedToken === null
-      ? "token"
-      : null;
+    : basic && !draftAccount
+      ? "account"
+      : !inst.token_set && typedToken === null
+        ? "token"
+        : null;
   const canSave = busy === null && dirty && !needsTokenAgain && !missing;
   const canTest =
     busy === null && !dirty && inst.origin !== "" && inst.token_set;
@@ -267,8 +282,9 @@ function ConnectorCard({
 
   const saveAndTest = () =>
     run("save", async () => {
-      const body: { origin?: string; token?: string } = {};
+      const body: { origin?: string; token?: string; account?: string } = {};
       if (!fixed) body.origin = draftOrigin;
+      if (basic) body.account = draftAccount;
       if (typedToken !== null) body.token = typedToken;
       await api.updateConnector(inst.id, body);
       if (typedToken !== null && tokenRef.current === typedToken) {
@@ -354,12 +370,30 @@ function ConnectorCard({
             />
           </div>
 
+          {basic && (
+            <div className={settings.aiField}>
+              <label className={settings.aiFieldLabel} htmlFor={ids.account}>
+                Account
+              </label>
+              <input
+                id={ids.account}
+                className={settings.aiInput}
+                spellCheck={false}
+                autoComplete="off"
+                autoCapitalize="off"
+                placeholder="the name you sign in with"
+                value={account}
+                onChange={(e) => setAccount(e.target.value)}
+              />
+            </div>
+          )}
+
           <div className={settings.aiField}>
             <label
               className={settings.aiFieldLabel}
               {...(editingToken ? { htmlFor: ids.token } : {})}
             >
-              Access token
+              {basic ? "App password" : "Access token"}
               {inst.token_set && (
                 <span className={settings.aiKeyBadge}>saved</span>
               )}
@@ -386,7 +420,7 @@ function ConnectorCard({
                   className={settings.secBtnGhost}
                   onClick={() => setEditingToken(true)}
                 >
-                  Replace token
+                  Replace {secretName}
                 </button>
               )}
             </div>
@@ -407,8 +441,9 @@ function ConnectorCard({
                 className={`${settings.callout} ${settings.calloutWarn}`}
                 role="note"
               >
-                A new address needs the token again. The saved one is only ever
-                sent to {inst.origin}.
+                {accountDirty && !originDirty
+                  ? `A new account needs the app password again. The saved one is only ever sent for ${inst.account}.`
+                  : `A new address needs the ${secretName} again. The saved one is only ever sent to ${inst.origin}.`}
               </p>
             )}
           </div>
@@ -467,7 +502,9 @@ function ConnectorCard({
                 "Token accepted"
               )}{" "}
               · {repos}{" "}
-              {inst.tested.repos === 1 ? "repository" : "repositories"} visible
+              {manifest?.category === "storage"
+                ? `${inst.tested.repos === 1 ? "item" : "items"} in your files`
+                : `${inst.tested.repos === 1 ? "repository" : "repositories"} visible`}
             </p>
           )}
 

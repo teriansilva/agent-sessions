@@ -14,7 +14,9 @@ and attaches ``Authorization: <scheme> <token>`` itself.
 * a token travels over ``https`` only — ``http`` only when the origin resolves to loopback, where
   it never leaves this machine (``net_vetting.TOKEN_HTTPS_OR_LOOPBACK``);
 * no ambient proxies (``trust_env=False``), no redirects (one could carry the token elsewhere);
-* GET only, a path the adapter KIND allows (`PATHS`), built by the adapter from validated parts;
+* only methods that READ, per kind (`METHODS`: GET; WebDAV's PROPFIND for `nextcloud`, its body
+  fixed here in `PROPFIND_BODIES`), on a path the adapter KIND allows (`PATHS`), built by the
+  adapter from validated parts;
 * request headers fixed per kind (`HEADERS`), never supplied by an adapter;
 * a bounded body (``BODY_MAX``), identity encoding, connect / read / total deadlines;
 * errors are short codes with a content-free detail: never the token, never the reply body.
@@ -23,11 +25,14 @@ and attaches ``Authorization: <scheme> <token>`` itself.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import re
 import socket
+import xml.etree.ElementTree as ET  # noqa: S405 — parsed only after `_parse_xml` refuses DTDs
 from dataclasses import dataclass
 from urllib.parse import urlsplit
+from xml.parsers import expat  # noqa: S410 — used only to REFUSE declarations (`_parse_xml`)
 
 import httpx
 
@@ -38,18 +43,42 @@ CONNECT_TIMEOUT_S = 5.0
 READ_TIMEOUT_S = 10.0
 TOTAL_TIMEOUT_S = 20.0
 #: Which paths each adapter kind may request (#1826): anchored, and checked BEFORE the token is
-#: fetched. A kind with no row reads nothing. Writes stay impossible whatever the path: the
-#: transport sends GET only.
+#: fetched. A kind with no row reads nothing. Writes stay impossible whatever the path: every
+#: method in `METHODS` only reads.
 PATHS = {
     "forgejo-api": re.compile(r"/api/v1/[A-Za-z0-9._~%/-]*"),
     "github-rest": re.compile(r"/(?:user|search|repos)(?:/[A-Za-z0-9._~%/-]*)?"),
+    "nextcloud": re.compile(
+        r"/remote\.php/dav/files/[A-Za-z0-9._~%-]+(?:/[A-Za-z0-9._~%/-]*)?"
+        r"|/ocs/v2\.php/(?:cloud/user|search/providers/files/search)"
+    ),
 }
+#: The methods each kind may send (#1829). PUT, DELETE, MOVE, COPY, MKCOL, PROPPATCH, POST: never.
+METHODS = {
+    "forgejo-api": frozenset({"GET"}),
+    "github-rest": frozenset({"GET"}),
+    "nextcloud": frozenset({"GET", "PROPFIND"}),
+}
+#: The PROPFIND bodies, fixed per kind and named by the adapter; it never supplies one.
+PROPFIND_BODIES = {
+    "nextcloud": {
+        "entries": (
+            b'<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop>'
+            b"<d:resourcetype/><d:getcontentlength/><d:getlastmodified/><d:getcontenttype/>"
+            b"</d:prop></d:propfind>"
+        ),
+    },
+}
+#: Reply kinds `_request` returns: parsed JSON, a parsed XML element, or the raw bytes.
+REPLIES = frozenset({"json", "xml", "text"})
 #: Extra request headers per kind, fixed here (an adapter cannot add one).
 HEADERS = {
     "github-rest": {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     },
+    # Nextcloud's OCS routes refuse a request without it (CSRF protection); WebDAV ignores it.
+    "nextcloud": {"OCS-APIRequest": "true"},
 }
 #: Reply headers a caller may ask for (`_request(headers_out=…)`); everything else stays here.
 REPLY_HEADERS = frozenset({"x-oauth-scopes"})
@@ -79,6 +108,9 @@ class Bound:
     label: str
     #: The manifest's `adapter.kind`: selects the path rule and the fixed headers.
     adapter: str = "forgejo-api"
+    #: The account's id on the service where paths name it (Nextcloud's DAV user id, #1829):
+    #: taken from the instance's current test, never from model text.
+    principal: str = ""
     #: An HQ read (True) needs read to be enabled AT THE TOKEN FETCH, not only when the tool
     #: began; the connection test (False) runs before read can be enabled.
     for_read: bool = True
@@ -107,7 +139,74 @@ def _status_error(status: int, host: str, headers: httpx.Headers | None = None) 
     return ConnectorError("failed", f"{host} answered {status}", status=status)
 
 
-def _token(bound: Bound) -> str:
+def _credential(bound: Bound) -> str:
+    """The ``Authorization`` value for ``bound``, from the store at THIS generation."""
+    token, account = _token(bound)
+    if bound.auth_scheme != "Basic":
+        return f"{bound.auth_scheme} {token}"
+    if not account:
+        raise ConnectorError("needs_account", "the connector's account needs to be entered")
+    return "Basic " + base64.b64encode(f"{account}:{token}".encode()).decode("ascii")
+
+
+#: An XML declaration's encoding, if it names one.
+_XML_ENCODING_RE = re.compile(rb"""^\s*<\?xml[^>]*\bencoding\s*=\s*["']([A-Za-z0-9._-]+)["']""")
+
+
+class _Refused(Exception):
+    """Raised from inside the parser when a document type or entity is declared."""
+
+
+def _parse_xml(raw: bytes, host: str) -> ET.Element:
+    """A reply's XML: UTF-8 only, and no document type or entity declared at all, so nothing can
+    be expanded or fetched. Two layers (Hermes on #1834: a UTF-16 document hid its `<!ENTITY>`
+    from a byte scan):
+
+    1. the bytes must BE UTF-8 — no UTF-16/32 byte-order mark, no NUL byte, no declared encoding
+       other than UTF-8/ASCII, a strict decode — and the decoded text must hold no `<!DOCTYPE` /
+       `<!ENTITY`;
+    2. the parser itself refuses any document-type or entity declaration it meets, whatever the
+       encoding, so the first layer is not the only one."""
+    bad = ConnectorError("bad_reply", f"{host} answered XML with a document type")
+    if raw.startswith((b"\xfe\xff", b"\xff\xfe", b"\x00\x00\xfe\xff", b"\xff\xfe\x00\x00")):
+        raise bad
+    if b"\x00" in raw:
+        raise bad
+    declared = _XML_ENCODING_RE.match(raw)
+    if declared and declared.group(1).lower() not in (b"utf-8", b"utf8", b"us-ascii", b"ascii"):
+        raise bad
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ConnectorError("bad_reply", f"{host} did not answer UTF-8 XML") from None
+    upper = text.upper()
+    if "<!DOCTYPE" in upper or "<!ENTITY" in upper:
+        raise bad
+
+    def refuse(*_args) -> None:
+        raise _Refused()
+
+    # The second layer: a bare expat pass whose declaration handlers refuse, BEFORE ElementTree
+    # (whose C parser exposes no handlers) ever sees the bytes. Nothing is expanded on this pass:
+    # it stops at the first declaration.
+    scan = expat.ParserCreate()
+    scan.StartDoctypeDeclHandler = refuse
+    scan.EntityDeclHandler = refuse
+    scan.UnparsedEntityDeclHandler = refuse
+    scan.ExternalEntityRefHandler = refuse
+    try:
+        scan.Parse(raw, True)
+    except _Refused:
+        raise bad from None
+    except expat.ExpatError:
+        raise ConnectorError("bad_reply", f"{host} did not answer XML") from None
+    try:
+        return ET.fromstring(raw)  # noqa: S314 — no declaration got past both layers above
+    except ET.ParseError:
+        raise ConnectorError("bad_reply", f"{host} did not answer XML") from None
+
+
+def _token(bound: Bound) -> tuple[str, str]:
     from .connectors import store
 
     try:
@@ -120,7 +219,7 @@ def _token(bound: Bound) -> str:
         raise ConnectorError("store_unreadable", str(e)) from None
     if inst["origin"] != bound.origin:
         raise ConnectorError("stale", "the connector changed since this was asked")
-    return token
+    return token, inst.get("account") or ""
 
 
 async def _request(
@@ -130,13 +229,27 @@ async def _request(
     params: dict | None = None,
     *,
     headers_out: dict[str, str] | None = None,
+    propfind: str | None = None,
+    depth: str | None = None,
+    reply: str = "json",
 ) -> object:
-    """THE outbound call (inventoried). GET ``<origin><path>?<params>``; the parsed JSON reply.
+    """THE outbound call (inventoried). ``<method> <origin><path>?<params>``; the reply as asked
+    (`REPLIES`): parsed JSON (default), a parsed XML element, or the raw bytes.
 
     ``headers_out``, when given, receives the reply headers named in `REPLY_HEADERS` (lowercase
-    keys) and nothing else."""
-    if method != "GET":
+    keys) and nothing else. A ``PROPFIND`` names its body (``propfind``, from `PROPFIND_BODIES`)
+    and its ``depth`` (``"0"`` or ``"1"``); nothing else may carry either."""
+    if method not in METHODS.get(bound.adapter, ()):
         raise ConnectorError("refused", "connectors only read")
+    if reply not in REPLIES:
+        raise ConnectorError("refused", "not a reply this transport reads")
+    body: bytes | None = None
+    if method == "PROPFIND":
+        body = PROPFIND_BODIES.get(bound.adapter, {}).get(propfind or "")
+        if body is None or depth not in ("0", "1"):
+            raise ConnectorError("refused", "not a PROPFIND this connector sends")
+    elif propfind is not None or depth is not None:
+        raise ConnectorError("refused", "only a PROPFIND carries a body")
     rule = PATHS.get(bound.adapter)
     if (
         rule is None
@@ -165,14 +278,14 @@ async def _request(
             )
             # The token is fetched AFTER vetting and right before sending, under the read check:
             # a read disabled while the name was resolving sends nothing.
-            token = await asyncio.to_thread(_token, bound)
+            credential = await asyncio.to_thread(_credential, bound)
             host = dest.host_header
             # The kind's fixed headers first, so they can set `Accept` but never the credential,
             # the Host pin or the identity encoding, which are written after them.
             headers = {
                 "Accept": "application/json",
                 **HEADERS.get(bound.adapter, {}),
-                "Authorization": f"{bound.auth_scheme} {token}",
+                "Authorization": credential,
                 "Host": dest.host_header,
                 "Accept-Encoding": "identity",
             }
@@ -183,8 +296,16 @@ async def _request(
                 trust_env=False,
                 follow_redirects=False,
             ) as client:
+                if body is not None:
+                    headers["Depth"] = depth or "0"
+                    headers["Content-Type"] = "application/xml; charset=utf-8"
                 req = client.build_request(
-                    method, dest.url, params=clean, headers=headers, extensions=extensions
+                    method,
+                    dest.url,
+                    params=clean,
+                    headers=headers,
+                    content=body,
+                    extensions=extensions,
                 )
                 resp = await client.send(req, stream=True)
                 try:
@@ -212,6 +333,10 @@ async def _request(
         raise ConnectorError("timeout", f"{host} did not answer in time") from e
     except httpx.HTTPError as e:
         raise ConnectorError("unreachable", f"{host} could not be reached") from e
+    if reply == "text":
+        return bytes(buf)
+    if reply == "xml":
+        return _parse_xml(bytes(buf), host)
     try:
         return json.loads(bytes(buf))
     except (ValueError, UnicodeDecodeError, RecursionError):

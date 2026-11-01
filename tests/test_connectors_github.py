@@ -302,7 +302,13 @@ def test_hq_reads_github_end_to_end(gh):
         (hq.read, {"item_ref": "repo:ops/app"}),
     )
     assert listing["connectors"] == [
-        {"connector_index": 0, "label": "GitHub", "host": "api.github.com"}
+        {
+            "connector_index": 0,
+            "label": "GitHub",
+            "host": "api.github.com",
+            "category": "versioning",
+            "search_kinds": ["repos", "issues", "pulls"],
+        }
     ]
     assert repos["untrusted_connector_content"]["items"][0]["ref"] == "repo:ops/app"
     body = repo["untrusted_connector_content"]

@@ -55,12 +55,16 @@ def _bound(inst: dict) -> connector_http.Bound:
     )
 
 
-def _safe_login(login: object) -> str:
+def _safe_login(login: object, adapter: str = "forgejo-api") -> str:
     """The forge's account name as stored and shown: a plain username that the redaction guard
     leaves unchanged, or empty (Hermes on #1782: a forge can echo the token back as the login)."""
     from .. import ask_store, template_secrets
 
-    if not isinstance(login, str) or not common.NAME_RE.fullmatch(login):
+    # A forge login is a plain name; a Nextcloud user id may also hold '@', "'" and inner spaces
+    # (e-mail and LDAP ids, #1829), the store's account shape. It names the DAV root, so an id
+    # the guard would change is refused rather than shown or used.
+    name_re = store.ACCOUNT_RE if adapter == "nextcloud" else common.NAME_RE
+    if not isinstance(login, str) or not name_re.fullmatch(login):
         return ""
     try:
         guarded = ask_store.guard_text(
@@ -85,7 +89,16 @@ async def run_test(iid: str) -> dict:
         if not settled:
             return {"status": "stale", "generation": generation}
         return {"status": "failed", "code": e.code, "detail": e.detail, "generation": generation}
-    login = await asyncio.to_thread(_safe_login, found["login"])
+    login = await asyncio.to_thread(_safe_login, found["login"], m.adapter)
+    if m.adapter == "nextcloud" and not login:
+        # Every later read names its paths by this id: without it nothing could be read.
+        settled = await asyncio.to_thread(
+            store.settle_test, iid, generation, ok=False, code="bad_reply"
+        )
+        if not settled:
+            return {"status": "stale", "generation": generation}
+        return {"status": "failed", "code": "bad_reply", "generation": generation,
+                "detail": "Nextcloud named a user id this connector cannot use"}  # fmt: skip
     settled = await asyncio.to_thread(
         store.settle_test,
         iid,

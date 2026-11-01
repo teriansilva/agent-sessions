@@ -172,18 +172,23 @@ def validate(doc: object) -> Manifest:
     if auth_kind not in kinds.ADAPTER_AUTH[adapter]:
         raise ManifestError(f"auth.kind {auth_kind!r} is not one {adapter} speaks")
     scheme = _member(auth["scheme"], "auth.scheme", kinds.AUTH_SCHEMES)
+    if scheme not in kinds.AUTH_KIND_SCHEMES[auth_kind]:
+        raise ManifestError(f"auth.scheme {scheme!r} is not one {auth_kind} uses")
     scopes = _members(auth["scopes"], "auth.scopes", kinds.AUTH_SCOPES)
     reads = _members(tables["capabilities"]["read"], "capabilities.read", kinds.READ_OPS)
     beyond = set(reads) - kinds.ADAPTER_READS[adapter]
     if beyond:
         raise ManifestError(f"capabilities.read {sorted(beyond)[0]!r} is not one {adapter} does")
+    category = _member(ident["category"], "identity.category", kinds.CATEGORIES)
+    if category != kinds.ADAPTER_CATEGORY[adapter]:
+        raise ManifestError(f"identity.category {category!r} is not {adapter}'s")
     setup = tables["docs"].get("setup")
     return Manifest(
         id=mid,
         label=_text(ident["label"], "identity.label", LABEL_MAX),
         publisher=_member(ident["publisher"], "identity.publisher", kinds.PUBLISHERS),
         version=version,
-        category=_member(ident["category"], "identity.category", kinds.CATEGORIES),
+        category=category,
         adapter=adapter,
         origin_mode=mode,
         fixed_origin=fixed,

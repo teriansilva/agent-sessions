@@ -15,15 +15,24 @@ CONTRACT_CURRENT = 1
 
 #: `adapter.kind`: the reviewed code that talks to the service. `forgejo-api` (#1750) also serves
 #: Gitea and Codeberg, which speak the same `/api/v1`.
-#: `github-rest` (#1826) reads github.com's REST API.
-ADAPTER_KINDS = frozenset({"forgejo-api", "github-rest"})
+#: `github-rest` (#1826) reads github.com's REST API. `nextcloud` (#1829) reads a Nextcloud's files
+#: over WebDAV (`PROPFIND`, `GET`) and searches them through its unified search.
+ADAPTER_KINDS = frozenset({"forgejo-api", "github-rest", "nextcloud"})
 
 #: `auth.kind`. `token-header`: a personal access token, sent by `connector_http` only, as
-#: ``Authorization: <scheme> <token>``, only to the origin it was saved for.
-AUTH_KINDS = frozenset({"token-header"})
+#: ``Authorization: <scheme> <token>``, only to the origin it was saved for. `basic` (#1829): an
+#: ACCOUNT name (plain, stored on the instance) plus a secret (an app password, stored like a
+#: token), sent by `connector_http` only, as ``Authorization: Basic base64(account:secret)``.
+AUTH_KINDS = frozenset({"token-header", "basic"})
 
-#: `auth.scheme` for `token-header`. Forgejo's own scheme is `token`; GitHub's is `Bearer`.
-AUTH_SCHEMES = frozenset({"token", "Bearer"})
+#: `auth.scheme`. Forgejo's own scheme is `token`; GitHub's is `Bearer`; `basic` is always `Basic`.
+AUTH_SCHEMES = frozenset({"token", "Bearer", "Basic"})
+
+#: Which schemes each auth kind may name.
+AUTH_KIND_SCHEMES = {
+    "token-header": frozenset({"token", "Bearer"}),
+    "basic": frozenset({"Basic"}),
+}
 
 #: `auth.scopes`: what the Commander is told to grant the token (shown, never enforced here).
 #: GitHub's are the fine-grained token permissions, read-only (#1826).
@@ -36,14 +45,18 @@ AUTH_SCOPES = frozenset(
         "pull_requests:read",
         "commit_statuses:read",
         "actions:read",
+        "app-password",
     }
 )
 
-#: `identity.category` (the gallery's sections, #1746).
-CATEGORIES = frozenset({"versioning"})
+#: `identity.category` (the gallery's sections, #1746). `storage` (#1829): files and folders.
+CATEGORIES = frozenset({"versioning", "storage"})
 
-#: `capabilities.read`: what HQ may read through the adapter.
-READ_OPS = frozenset({"repos", "issues", "pulls", "ci", "files"})
+#: `capabilities.read`: what HQ may read through the adapter, per category. A forge's `files` are
+#: files in a repository at a commit; storage's `documents` are files in the Commander's own store.
+VERSIONING_READS = frozenset({"repos", "issues", "pulls", "ci", "files"})
+STORAGE_READS = frozenset({"folders", "search", "documents"})
+READ_OPS = VERSIONING_READS | STORAGE_READS
 
 #: `origin.mode`. `operator`: the Commander enters the origin (self-hosted Forgejo). `fixed`: the
 #: manifest names it (a hosted service: GitHub, #1826).
@@ -53,10 +66,22 @@ ORIGIN_MODES = frozenset({"operator", "fixed"})
 PUBLISHERS = frozenset({"battlelab"})
 
 #: Which adapter each read op needs: a manifest may not claim a read its adapter cannot do.
-ADAPTER_READS = {"forgejo-api": READ_OPS, "github-rest": READ_OPS}
+ADAPTER_READS = {
+    "forgejo-api": VERSIONING_READS,
+    "github-rest": VERSIONING_READS,
+    "nextcloud": STORAGE_READS,
+}
+
+#: Which category each adapter serves: a manifest's `identity.category` must be its adapter's.
+ADAPTER_CATEGORY = {
+    "forgejo-api": "versioning",
+    "github-rest": "versioning",
+    "nextcloud": "storage",
+}
 
 #: Which auth each adapter speaks.
 ADAPTER_AUTH = {
     "forgejo-api": frozenset({"token-header"}),
     "github-rest": frozenset({"token-header"}),
+    "nextcloud": frozenset({"basic"}),
 }

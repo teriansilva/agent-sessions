@@ -179,7 +179,8 @@ How [Calling HQ](/guide/calls) sounds and where its audio goes:
 ### HQ connectors · `ai-hq-connectors`
 
 The services [HQ reads from](/guide/hq#connectors). **Add a connector** lists the ones this
-BattleLab ships (Forgejo, for Gitea and Codeberg too, and GitHub, whose address is fixed). Each connector has its **Address**, a
+BattleLab ships (Forgejo, for Gitea and Codeberg too; GitHub, whose address is fixed; and
+Nextcloud, which also asks for your account and an app password). Each connector has its **Address**, a
 write-only **Access token**, **Save and test**, and **Let HQ read through this connector**, which
 turns on only after a passing test and says where what HQ reads is sent. A changed address asks for
 the token again. **Remove** deletes the connector and its token.

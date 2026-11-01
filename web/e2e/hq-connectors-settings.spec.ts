@@ -233,3 +233,36 @@ test("GitHub's address is fixed, and a classic token that can write passes with 
   if (PHONE(page)) await touchTargets(c);
   await noSideways(page);
 });
+
+test("a Nextcloud connector signs in with an account and an app password; a new account needs it again", async ({
+  page,
+}) => {
+  const srv = await mockConnectors(page);
+  await open(page);
+  await page.getByRole("button", { name: "Add Nextcloud" }).click();
+  const c = card(page);
+  await expect(c.getByLabel("Address")).toBeFocused();
+  await c.getByLabel("Address").fill("https://cloud.example.com");
+  const save = c.getByRole("button", { name: "Save and test" });
+  await c.getByLabel("App password").fill(GOOD_TOKEN);
+  await expect(save).toBeDisabled(); // no account yet
+  await c.getByLabel("Account").fill("anna");
+  await save.click();
+  await expect(c.getByTestId("connector-tested")).toHaveText(/Signed in as anna@example.com · 4 items in your files/);
+  expect(srv.patches).toEqual([{ origin: "https://cloud.example.com", account: "anna", token: GOOD_TOKEN }]);
+  await expect(c.getByLabel("App password")).toHaveCount(0);
+  expect(await page.content()).not.toContain(GOOD_TOKEN);
+
+  // A new account: the saved password is only ever sent for the account it was saved with.
+  await c.getByLabel("Account").fill("bob");
+  await expect(c.getByRole("note")).toContainText("A new account needs the app password again");
+  await expect(save).toBeDisabled();
+  await c.getByRole("button", { name: "Replace app password" }).click();
+  await c.getByLabel("App password").fill(GOOD_TOKEN);
+  await save.click();
+  await expect(c.getByTestId("connector-tested")).toBeVisible();
+  expect(srv.patches.at(-1)).toEqual({ origin: "https://cloud.example.com", account: "bob", token: GOOD_TOKEN });
+
+  if (PHONE(page)) await touchTargets(c);
+  await noSideways(page);
+});

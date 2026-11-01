@@ -13,9 +13,13 @@ is read. Which result mints which ref:
                                                 ``dir:<o>/<r>@<sha>:`` (root)
 ``connector_read(issue:…)`` of a PR             ``ci:`` and ``dir:`` at its head sha
 ``connector_list(dir:…)``                       ``dir:…@<sha>:<path>/``, ``file:…@<sha>:<path>``
+``list_connectors`` (a storage connector)       ``folder:`` (the root of the Commander's files)
+``connector_search(kind=files)``, and           ``folder:<path>/``, ``doc:<path>``
+``connector_list(folder:…)``
 ==============================================  ===============================================
 
-Every ``ci:``, ``dir:`` and ``file:`` ref pins a COMMIT SHA, never a branch name.
+Every ``ci:``, ``dir:`` and ``file:`` ref pins a COMMIT SHA, never a branch name. ``folder:`` and
+``doc:`` (#1829) name a path in a storage connector's own files, validated on every use.
 
 **At every call** the instance is read again: read must still be enabled, and its generation
 must be the one this turn listed. A disabled or changed connector is a tool error at once.
@@ -59,8 +63,12 @@ REF_RES = {
     "ci": re.compile(rf"ci:(?P<o>{_NAME})/(?P<r>{_NAME})@(?P<sha>{_SHA})"),
     "dir": re.compile(rf"dir:(?P<o>{_NAME})/(?P<r>{_NAME})@(?P<sha>{_SHA}):(?P<path>.*)", re.S),
     "file": re.compile(rf"file:(?P<o>{_NAME})/(?P<r>{_NAME})@(?P<sha>{_SHA}):(?P<path>.+)", re.S),
+    "folder": re.compile(r"folder:(?P<path>.*)", re.S),
+    "doc": re.compile(r"doc:(?P<path>.+)", re.S),
 }
-KINDS = ("repos", "issues", "pulls")
+KINDS = ("repos", "issues", "pulls", "files")
+#: Which search kinds each category answers.
+CATEGORY_KINDS = {"versioning": ("repos", "issues", "pulls"), "storage": ("files",)}
 
 
 class Refused(Exception):
@@ -137,6 +145,7 @@ def _bound_now(listed: dict) -> connector_http.Bound:
         auth_scheme=m.auth_scheme,
         label=m.label,
         adapter=m.adapter,
+        principal=(inst["tested"] or {}).get("login", ""),
     )
 
 
@@ -156,7 +165,7 @@ def _ref(turn: TurnConnectors, idx: int, args: dict, allowed: tuple[str, ...]) -
     parts = m.groupdict()
     if "path" in parts:
         path = parts["path"]
-        bare = path[:-1] if kind == "dir" and path.endswith("/") else path
+        bare = path[:-1] if kind in ("dir", "folder") and path.endswith("/") else path
         if not common.valid_path(bare):
             raise Refused("refused: not a repository path", "unknown_ref")
         parts["path"] = bare
@@ -245,6 +254,7 @@ async def list_connectors(turn: TurnConnectors) -> tuple[dict, dict]:
                 "generation": i["generation"],
                 "label": bundled[i["manifest_id"]].label,
                 "host": _host(i["origin"]),
+                "category": bundled[i["manifest_id"]].category,
             }
             for i in doc["instances"]
             if store.readable(i, bundled)
@@ -256,9 +266,14 @@ async def list_connectors(turn: TurnConnectors) -> tuple[dict, dict]:
         raise Refused("refused: the connector store cannot be read", "store_unreadable") from None
     turn.listed = listed
     turn.refs = {}
-    out = [
-        {"connector_index": n, "label": r["label"], "host": r["host"]} for n, r in enumerate(listed)
-    ]
+    out = []
+    for n, r in enumerate(listed):
+        row = {"connector_index": n, "label": r["label"], "host": r["host"]}
+        row["category"] = r["category"]
+        row["search_kinds"] = list(CATEGORY_KINDS[r["category"]])
+        if r["category"] == "storage":
+            row["root"] = turn.mint(n, "folder:")  # list it with connector_list
+        out.append(row)
     return {"connectors": out}, {"count": len(out)}
 
 
@@ -266,12 +281,17 @@ async def search(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
     idx, listed = _listed(turn, args)
     kind = args.get("kind")
     if kind not in KINDS:
-        raise Refused("kind must be repos, issues or pulls", "bad_arguments")
+        raise Refused("kind must be repos, issues, pulls or files", "bad_arguments")
     query = args.get("query")
     if not isinstance(query, str) or not query.strip() or len(query) > QUERY_MAX:
         raise Refused(f"query must be 1–{QUERY_MAX} characters", "bad_arguments")
+    if kind not in CATEGORY_KINDS[listed["category"]]:
+        allowed = " or ".join(CATEGORY_KINDS[listed["category"]])
+        raise Refused(f"this connector searches kind {allowed}", "bad_arguments")
     bound = await asyncio.to_thread(_bound_now, listed)
     secrets = await asyncio.to_thread(_secrets)
+    if kind == "files":
+        return await _search_files(turn, idx, listed, bound, secrets, query.strip())
     try:
         rows = await for_kind(bound.adapter).search(bound, kind, query.strip())
     except connector_http.ConnectorError as e:
@@ -312,7 +332,9 @@ async def search(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
 
 async def read(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
     idx, listed = _listed(turn, args)
-    kind, p = _ref(turn, idx, args, ("repo", "issue", "ci", "file"))
+    kind, p = _ref(turn, idx, args, ("repo", "issue", "ci", "file", "doc"))
+    if kind == "doc":
+        return await _read_doc(turn, idx, listed, p["path"])
     bound = await asyncio.to_thread(_bound_now, listed)
     secrets = await asyncio.to_thread(_secrets)
     o, r = p["o"], p["r"]
@@ -418,7 +440,9 @@ async def read(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
 
 async def list_dir(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
     idx, listed = _listed(turn, args)
-    _kind, p = _ref(turn, idx, args, ("dir",))
+    _kind, p = _ref(turn, idx, args, ("dir", "folder"))
+    if _kind == "folder":
+        return await _list_folder(turn, idx, listed, p["path"])
     bound = await asyncio.to_thread(_bound_now, listed)
     secrets = await asyncio.to_thread(_secrets)
     o, r, sha, path = p["o"], p["r"], p["sha"], p["path"]
@@ -450,3 +474,86 @@ async def list_dir(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
     await _settle(listed)
     turn.mint_shown(idx, items)
     return result, {"count": len(items)}
+
+
+# ---- storage (#1829) -----------------------------------------------------------------------------
+
+
+def _storage_items(entries: list[dict], secrets: list[str]) -> list[dict]:
+    """Entries as shown, each with the ref that reads it: a folder lists, a document reads."""
+    items = []
+    for e in entries:
+        if not _clean(e["path"], secrets):
+            items.append({"ref": None, "name": ask_store.WITHHELD, "type": e["type"]})
+            continue
+        ref = f"folder:{e['path']}/" if e["type"] == "dir" else f"doc:{e['path']}"
+        item = {"ref": ref, "name": _guard(e["name"], 255, secrets), "type": e["type"]}
+        for key in ("size", "modified"):
+            if key in e:
+                item[key] = e[key]
+        items.append(item)
+    return _guard_all(items, secrets)  # type: ignore[return-value]
+
+
+async def _search_files(
+    turn: TurnConnectors, idx: int, listed: dict, bound, secrets: list[str], query: str
+) -> tuple[dict, dict]:
+    try:
+        found = await for_kind(bound.adapter).search(bound, query)
+    except connector_http.ConnectorError as e:
+        raise _error(e) from None
+    items = _storage_items(found["entries"], secrets)
+    payload = {"kind": "files", "items": items}
+    if not found["complete"]:
+        payload["note"] = "showing the first results only; narrow the search for more"
+    result = _wrap(bound, payload)
+    while not _fits(result) and items:
+        items.pop()
+        payload["note"] = "showing the first results only; narrow the search for more"
+    await _settle(listed)
+    turn.mint_shown(idx, items)
+    return result, {"count": len(items)}
+
+
+async def _list_folder(
+    turn: TurnConnectors, idx: int, listed: dict, path: str
+) -> tuple[dict, dict]:
+    bound = await asyncio.to_thread(_bound_now, listed)
+    secrets = await asyncio.to_thread(_secrets)
+    try:
+        listing = await for_kind(bound.adapter).list_folder(bound, path)
+    except connector_http.ConnectorError as e:
+        raise _error(e) from None
+    items = _storage_items(listing["entries"], secrets)
+    payload = {"folder": f"/{path}", "entries": items}
+    if not listing["complete"]:
+        payload["note"] = "the folder holds more entries than are listed here"
+    result = _wrap(bound, payload)
+    while not _fits(result) and items:
+        items.pop()
+        payload["note"] = "the folder holds more entries than are listed here"
+    await _settle(listed)
+    turn.mint_shown(idx, items)
+    return result, {"count": len(items)}
+
+
+async def _read_doc(turn: TurnConnectors, idx: int, listed: dict, path: str) -> tuple[dict, dict]:
+    bound = await asyncio.to_thread(_bound_now, listed)
+    secrets = await asyncio.to_thread(_secrets)
+    try:
+        f = await for_kind(bound.adapter).read_file(bound, path)
+    except connector_http.ConnectorError as e:
+        raise _error(e) from None
+    payload = {
+        "document": f"/{f['path']}",
+        "size": f["size"],
+        "modified": f["modified"],
+        "content_type": f["content_type"],
+        "text": _guard(f["text"], FILE_TEXT_MAX, secrets),
+    }
+    payload = _guard_all(payload, secrets)  # type: ignore[assignment]
+    result = _wrap(bound, payload)
+    if not _fits(result):
+        payload["text"] = payload["text"][: BODY_MAX // 2] + " …[cut]"
+    await _settle(listed)
+    return result, {"count": 1, "length": len(f["text"])}

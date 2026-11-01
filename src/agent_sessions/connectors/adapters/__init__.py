@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from types import ModuleType
 
-from . import forgejo, github
+from . import forgejo, github, nextcloud
 
 #: Which module serves each adapter kind. A kind with no row has no code, so nothing reads it.
-ADAPTERS: dict[str, ModuleType] = {"forgejo-api": forgejo, "github-rest": github}
+ADAPTERS: dict[str, ModuleType] = {
+    "forgejo-api": forgejo,
+    "github-rest": github,
+    "nextcloud": nextcloud,
+}
 
 
 def for_kind(kind: str) -> ModuleType:

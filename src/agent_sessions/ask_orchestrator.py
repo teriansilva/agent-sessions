@@ -2054,10 +2054,11 @@ TOOLS: dict[str, Tool] = {
             "read",
             _spec(
                 "list_connectors",
-                "The services the Commander connected for you to read (e.g. their Forgejo or "
-                "GitHub), by "
-                "index: each one's name and host. Call it first; the other connector tools take "
-                "its connector_index.",
+                "The services the Commander connected for you to read (e.g. their Forgejo, "
+                "GitHub or Nextcloud), by "
+                "index: each one's name, host, category and the search kinds it answers. A "
+                "storage connector also gives a root folder ref to list. Call it first; the other "
+                "connector tools take its connector_index.",
                 {},
                 [],
             ),
@@ -2068,8 +2069,9 @@ TOOLS: dict[str, Tool] = {
             "read",
             _spec(
                 "connector_search",
-                "Search one connector: kind repos, issues or pulls. Returns titles and item refs "
-                "for connector_read. On GitHub the search covers all of GitHub, so narrow it with "
+                "Search one connector: kind repos, issues or pulls on a forge, files on a storage "
+                "connector (by name). Returns titles and item refs for connector_read or "
+                "connector_list. On GitHub the search covers all of GitHub, so narrow it with "
                 "repo:owner/name or org:name in the query.",
                 {
                     **_CONNECTOR_PROP,
@@ -2087,8 +2089,8 @@ TOOLS: dict[str, Tool] = {
                 "connector_read",
                 "Read one item a connector tool returned: a repo (the head of its default "
                 "branch, with refs to its CI and its files), an issue or PR (body and recent "
-                "comments; a PR also gives refs to its head's CI and files), a CI status, or a "
-                "text file.",
+                "comments; a PR also gives refs to its head's CI and files), a CI status, a "
+                "text file, or a document (doc:…) in the Commander's own files.",
                 {**_CONNECTOR_PROP, **_REF_PROP},
                 ["connector_index", "item_ref"],
             ),
@@ -2099,8 +2101,8 @@ TOOLS: dict[str, Tool] = {
             "read",
             _spec(
                 "connector_list",
-                "List a directory ref (dir:…) a connector tool returned: its entries, with refs "
-                "to read each file or list each subdirectory.",
+                "List a directory ref (dir:…) or a folder ref (folder:…) a connector tool "
+                "returned: its entries, with refs to read each file or list each subfolder.",
                 {**_CONNECTOR_PROP, **_REF_PROP},
                 ["connector_index", "item_ref"],
             ),

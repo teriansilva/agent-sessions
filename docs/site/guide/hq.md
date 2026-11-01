@@ -287,7 +287,7 @@ follows you to every device.
 ## Connectors
 
 HQ can also read from your other services. The forge connectors are **Forgejo** (and Gitea or
-Codeberg, which speak the same API) and **GitHub**: HQ can search your repositories, issues and
+Codeberg, which speak the same API) and **GitHub**, and there is a storage connector for **Nextcloud** files. Through a forge, HQ can search your repositories, issues and
 pull requests, read an issue or PR with its recent comments (a very long thread is read without
 its comments, and HQ says so), check a commit's CI status, and read text files at a commit. It **only reads**: there is no sending, commenting or merging through a connector.
 
@@ -310,6 +310,15 @@ GitHub reports CI in more than one place. HQ reads commit statuses and GitHub Ac
 commit, and check runs from other apps where the token may see them. A fine-grained token can't
 see other apps' check runs on a private repository, so there HQ calls the result **incomplete**
 rather than green, unless something it could see already failed.
+
+**Nextcloud** lets HQ read your own files: it lists folders, finds files by name, and reads a
+text file (Markdown, plain text, JSON, YAML and the like, up to 256 KiB; images and other binary
+files are never read). Enter your Nextcloud's address, your **account** (the name you sign in
+with) and an **app password**: create one in Nextcloud under *Personal settings → Security →
+Devices & sessions*, named for BattleLab, so you can revoke it on its own. Nextcloud app passwords
+can't be limited to reading, but HQ only ever reads: the connector can only list and fetch. A
+changed account, like a changed address, needs the app password again. A Nextcloud installed
+under a sub-path (`https://host/nextcloud/`) isn't supported yet.
 
 Then ask HQ something that needs it: "what's the CI status of PR 42?", "find open issues about
 the login page". **Remove** deletes a connector and its token.
