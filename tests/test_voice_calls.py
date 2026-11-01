@@ -1069,6 +1069,88 @@ def test_barge_in_stops_the_active_synthesis():
     asyncio.run(go())
 
 
+def test_the_real_worker_asks_for_a_lookahead_only_once_the_sentence_before_it_has_audio(
+    monkeypatch,
+):
+    """The real `EndpointTTS` + `_Synth`, down to the call into `speech_endpoints.synthesize`."""
+    pytest.importorskip("pipecat")
+    from agent_sessions import voice_worker
+
+    asked: list[str] = []
+
+    async def go():
+        release = asyncio.Event()
+
+        async def synthesize(ep, text, **kw):
+            asked.append(text)
+            await release.wait()
+            yield b"\0" * 4800
+
+        monkeypatch.setattr(voice_worker.se, "synthesize", synthesize)
+        tts = voice_worker.EndpointTTS(
+            speech_endpoints.Endpoint("http://x/v1"), "v", voice_worker.Bus()
+        )
+        tts._sample_rate = 24000
+        tts._synths.say(["first", "second"], tts.params())
+        await asyncio.sleep(0.01)
+        assert asked == ["first"]
+        release.set()
+        await asyncio.sleep(0.01)
+        assert asked == ["first", "second"]
+        tts.drop_prefetch()  # a barge-in, with nothing left running after it
+        tts._synths.say(["after"], tts.params())
+        await asyncio.sleep(0.01)
+        assert asked[-1] == "after"  # the next reply isn't stuck behind the cancelled sentences
+        tts.drop_prefetch()
+
+    asyncio.run(go())
+
+
+def test_a_barge_in_ends_a_sentence_still_waiting_its_turn(monkeypatch):
+    """Pipecat is already consuming the look-ahead when the Commander barges in, before the first
+    sentence has any audio. Its consumer must end, or the worker hangs on a queue nobody fills."""
+    pytest.importorskip("pipecat")
+    from agent_sessions import voice_worker
+
+    async def go():
+        async def synthesize(ep, text, **kw):
+            await asyncio.Event().wait()  # never any audio
+            yield b""
+
+        monkeypatch.setattr(voice_worker.se, "synthesize", synthesize)
+        tts = voice_worker.EndpointTTS(
+            speech_endpoints.Endpoint("http://x/v1"), "v", voice_worker.Bus()
+        )
+        tts._sample_rate = 24000
+        tts._synths.say(["first", "second"], tts.params())
+
+        async def consume(text):
+            return [frame async for frame in tts.run_tts(text, "ctx")]
+
+        second = asyncio.create_task(consume("second"))
+        await asyncio.sleep(0.01)
+        tts.drop_prefetch()
+        assert await asyncio.wait_for(second, 2) == []
+
+    asyncio.run(go())
+
+
+def test_a_sentence_cancelled_before_it_ever_ran_still_ends_its_consumer(monkeypatch):
+    pytest.importorskip("pipecat")
+    from agent_sessions import voice_worker
+
+    async def go():
+        tts = voice_worker.EndpointTTS(
+            speech_endpoints.Endpoint("http://x/v1"), "v", voice_worker.Bus()
+        )
+        tts._sample_rate = 24000
+        synth = voice_worker._Synth(tts, ("hello", tts.params()))
+        synth.task.cancel()
+        assert await asyncio.wait_for(synth.queue.get(), 2) is None
+
+    asyncio.run(go())
+
+
 def test_an_error_after_the_claim_still_frees_the_call(ready, monkeypatch):
     """Review 6846: the claim, the dialing send and the settings read sit inside the teardown
     scope — a failure there must not strand the one call slot."""

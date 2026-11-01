@@ -3,7 +3,7 @@ because Pipecat's interruption clears playback without closing the running TTS g
 
 import asyncio
 
-from agent_sessions.voice_synth import Synths
+from agent_sessions.voice_synth import SpeechOrder, Synths
 
 
 class _S:
@@ -73,5 +73,82 @@ def test_drop_forgets_the_queued_sentences_parameters():
         s.begin("one", "current")  # re-said after a barge-in: today's parameters
         assert made[-1] == ("one", "current")
         s.drop()
+
+    asyncio.run(go())
+
+
+# --- SpeechOrder -----------------------------------------------------------------------------
+
+
+def test_a_lookahead_asks_only_after_the_sentence_before_it_has_audio():
+    async def go():
+        order = SpeechOrder()
+        asked: list[str] = []
+        release: dict[str, asyncio.Event] = {"one": asyncio.Event(), "two": asyncio.Event()}
+
+        def sentence(name):
+            async def run(before, started):
+                if before is not None:
+                    await before.wait()
+                asked.append(name)
+                await release[name].wait()
+                started.set()
+
+            return lambda before, started: asyncio.create_task(run(before, started))
+
+        one = order.turn(sentence("one"))
+        two = order.turn(sentence("two"))
+        await asyncio.sleep(0.01)
+        assert asked == ["one"]  # not "two", however the requests would have raced
+        release["one"].set()
+        await asyncio.sleep(0.01)
+        assert asked == ["one", "two"]
+        release["two"].set()
+        await asyncio.gather(one, two)
+
+    asyncio.run(go())
+
+
+def test_a_failed_sentence_lets_the_next_one_through():
+    async def go():
+        order = SpeechOrder()
+        asked: list[str] = []
+
+        async def fails(before, started):
+            raise RuntimeError("the server refused it")
+
+        async def next_one(before, started):
+            await before.wait()
+            asked.append("next")
+
+        first = order.turn(lambda b, s: asyncio.create_task(fails(b, s)))
+        second = order.turn(lambda b, s: asyncio.create_task(next_one(b, s)))
+        await asyncio.wait_for(second, 1)
+        assert asked == ["next"]
+        assert isinstance(first.exception(), RuntimeError)
+
+    asyncio.run(go())
+
+
+def test_a_sentence_cancelled_before_it_ran_lets_the_next_one_through():
+    """The trap in a plain `finally`: a task cancelled before its first step never runs its body.
+    After a barge-in, the next reply would then wait for it forever and HQ would go silent."""
+
+    async def go():
+        order = SpeechOrder()
+        asked: list[str] = []
+
+        async def never(before, started):
+            raise AssertionError("cancelled before it ran")
+
+        async def next_one(before, started):
+            await before.wait()
+            asked.append("next")
+
+        first = order.turn(lambda b, s: asyncio.create_task(never(b, s)))
+        first.cancel()
+        second = order.turn(lambda b, s: asyncio.create_task(next_one(b, s)))
+        await asyncio.wait_for(second, 1)
+        assert asked == ["next"]
 
     asyncio.run(go())

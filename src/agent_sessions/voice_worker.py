@@ -77,7 +77,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
 from pipecat.workers.runner import WorkerRunner  # noqa: E402
 
 from . import speech_endpoints as se
-from .voice_synth import Synths
+from .voice_synth import SpeechOrder, Synths
 from .voice_text import call_language, split_speech
 from .voice_turns import Turns
 
@@ -199,9 +199,23 @@ class _Synth:
 
     def __init__(self, tts: EndpointTTS, key: tuple) -> None:
         self.queue: asyncio.Queue = asyncio.Queue()
-        self.task = asyncio.create_task(self._run(tts, *key))
+        self.task = tts.speech_order.turn(
+            lambda before, started: asyncio.create_task(self._run(tts, *key, before, started))
+        )
+        # Whatever becomes of the task, its consumer ends: one cancelled while waiting its turn, or
+        # before it ever ran, reaches none of `_run`'s own handlers.
+        self.task.add_done_callback(lambda _: self.queue.put_nowait(None))
 
-    async def _run(self, tts: EndpointTTS, text: str, p: SayParams) -> None:
+    async def _run(
+        self,
+        tts: EndpointTTS,
+        text: str,
+        p: SayParams,
+        before: asyncio.Event | None,
+        started: asyncio.Event,
+    ) -> None:
+        if before is not None:
+            await before.wait()  # the sentence before it asks first (`SpeechOrder`)
         if tts.plain:  # the server refused an optional field once this call: none are sent
             p = SayParams(p.voice, None, None, None)
         try:
@@ -214,6 +228,7 @@ class _Synth:
                 plain_fallback=tts.go_plain,
             )) as chunks:  # fmt: skip
                 async for chunk in chunks:
+                    started.set()
                     await self.queue.put(chunk)
             await self.queue.put(None)
         except se.SpeechError as e:
@@ -236,6 +251,7 @@ class EndpointTTS(TTSService):
         self._ep = ep
         self._voice = voice
         self._bus = bus
+        self.speech_order = SpeechOrder()
         self._synths = Synths(lambda key: _Synth(self, key), lookahead)
         #: P3: the contact's style (only when the server advertised it), speed and the language
         #: of the say being spoken.

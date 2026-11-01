@@ -11,7 +11,29 @@ reaches the sentences still queued from an earlier one (#1635 review).
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
+
+
+class SpeechOrder:
+    """Sentences ask the TTS server one first-audio at a time. A server with one model takes
+    whichever request reaches it first: a look-ahead sent together with the sentence before it won
+    that race in 5 of 9 replies, and then the reply's first words waited for its second sentence
+    (first audio 2.17 s on average, against 0.27 s in order). A look-ahead loses nothing by
+    waiting: that server couldn't have started it sooner anyway."""
+
+    def __init__(self) -> None:
+        self._last: asyncio.Event | None = None
+
+    def turn(self, task_of: Callable[[asyncio.Event | None, asyncio.Event], asyncio.Task]):
+        """Start the next sentence's task: `task_of(wait_for, set_at_first_audio)`. Whatever
+        becomes of that task, the sentence after it is let through: one cancelled before it ever
+        ran never reaches its own `finally`."""
+        before, started = self._last, asyncio.Event()
+        self._last = started
+        task = task_of(before, started)
+        task.add_done_callback(lambda _: started.set())
+        return task
 
 
 class Synths:
