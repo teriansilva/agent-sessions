@@ -74,6 +74,17 @@ SEND_NOW_REFUSALS = frozenset({"would_stop_background", "inventory_changed"})
 #: A refusal before any claim because the session's record could not be written (#1733): nothing
 #: was claimed or sent, so the pane keeps the draft and offers a NEW send, never a Retry.
 JOURNAL_UNWRITABLE = "journal_unwritable"
+#: A send refused because this connection's result ledger is full and something still runs, so it
+#: cannot retire yet (#1725). Nothing was claimed; the pane says what holds it.
+CONVERSATION_FULL = "conversation_full"
+#: The revision a send named has moved (#1420): the conversation may have changed under it. A closed
+#: reason so the pane can tell it from any other refusal, never by reading the words.
+REVISION_MOVED = "revision_changed"
+#: What a refusal's action is (#1725), machine-readable beside its reason, for the pane to offer as
+#: a button. Each only ever goes through a route that already exists, with all of its checks:
+#: `retry` the same operation id; `stop_resume` the confirmed Stop, then the same id;
+#: `resume_with_attachments` the same, for a worker older than a document it was sent.
+REMEDIES = frozenset({"stop_resume", "retry", "resume_with_attachments"})
 
 
 def tasks_digest(task_ids) -> str:
@@ -88,18 +99,21 @@ def tasks_digest(task_ids) -> str:
 SCAN_STATES = frozenset({"ok", "unknown", "uncontained"})
 #: Why a generation that settled its own background inventory ended (#1724). The reader adds
 #: `worker_ended` and `oom` for a generation that could not settle.
-SETTLED_REASONS = frozenset({"stop", "idle", "protocol"})
+#: `rollover` (#1725): its result ledger was full and nothing ran any more, so it retired between
+#: turns; the next Send resumes the history, as after an idle exit.
+SETTLED_REASONS = frozenset({"stop", "idle", "protocol", "rollover"})
 MAX_INVENTORY_TASKS = 128
 #: Processes an inventory lists; ``more`` counts the rest, and the digest covers all of them.
 MAX_INVENTORY_PROCESSES = 32
 
 
-def stop_digest(worker_id: str, engine_ids, identities, scan: str) -> str:
+def stop_digest(worker_id: str, engine_ids, identities, scan: str, *, overflow=False) -> str:
     """The identity of the background work a Stop ends (#1724), as confirmed and as rechecked:
     the worker generation, the engine's task ids and the process floor's (pid, start time)
     identities. An unreadable scan has NO process list: its digest says so (``scan: unknown``),
     which only a confirmation of that state matches. An uncontained worker (no unit of its own,
-    a test harness) has nothing observable, the same as an empty readable scan."""
+    a test harness) has nothing observable, the same as an empty readable scan. ``overflow``
+    (#1725): the engine reports more tasks than are tracked, so the set is not enumerated."""
     if scan == "unknown":
         processes = None
     else:
@@ -110,6 +124,7 @@ def stop_digest(worker_id: str, engine_ids, identities, scan: str) -> str:
             "e": sorted(set(engine_ids)),
             "p": processes,
             "s": "unknown" if scan == "unknown" else "ok",
+            **({"o": True} if overflow else {}),
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -567,7 +582,9 @@ _EVENT_FIELDS = {
             "connection_id",
         },
         # Whether `summary` presents EVERYTHING the request authorizes; approve needs it.
-        {"complete"},
+        # `background_task` (#1725): the request is a background task's, never an operator
+        # turn's: `operation_id` and `native_turn_id` are then null. Bound into the digest.
+        {"complete", "background_task"},
     ),
     "approval_cancelled": ({"request_id"}, set()),
     # #1643: the worker's memory pressure changed level. Byte counts, a closed level, scope and
@@ -599,11 +616,15 @@ _EVENT_FIELDS = {
     # #1724: the generation's active background work whenever it changes — engine task ids and
     # the process floor's agent processes (pid, start ticks, `comm`; never argv or environment).
     # `engine_more` (#1724): engine tasks past the listed 128 (absent: none).
-    "background_inventory": ({"engine", "processes", "more", "scan", "digest"}, {"engine_more"}),
+    # `overflow` (#1725): the engine reports more tasks than are tracked (absent: no such thing).
+    "background_inventory": (
+        {"engine", "processes", "more", "scan", "digest"},
+        {"engine_more", "overflow"},
+    ),
     # #1724: an orderly end (Stop, idle, protocol end) settles what was still active with it.
     "background_settled": (
         {"reason", "engine", "processes", "more", "scan"},
-        {"idle_for", "engine_more"},
+        {"idle_for", "engine_more", "overflow"},
     ),
     # #1724: an exact Stop whose frozen set was not what the operator confirmed (or never
     # stabilised) was not applied: everything resumed, its claim settled `not_sent`.
@@ -643,6 +664,10 @@ def _inventory(kind: str, data: dict) -> dict:
     }
     if "engine_more" in data:
         out["engine_more"] = _integer(data["engine_more"])
+    if "overflow" in data:
+        if data["overflow"] is not True:
+            raise IPCError("overflow is only ever true")
+        out["overflow"] = True
     if len(set(out["engine"])) != len(out["engine"]):
         raise IPCError("duplicate private IPC background task")
     for process in processes:
@@ -699,6 +724,26 @@ def _memory_oom_kill(data: dict) -> dict:
     for key in ("operation_id", "agent_turn"):
         if key in data:
             out[key] = _uuid(data[key])
+    return out
+
+
+_BACKGROUND_ORIGINS = frozenset({"task", "agent_turn"})
+
+
+def _background_origin(value) -> dict:
+    """What a background-origin request was presented for (#1725): its own turn id (never an
+    operator's), the generation, the task and the agent that asked, the task's epoch."""
+    _object(value, {"kind", "id", "task_id", "agent_id", "generation", "epoch"}, {"description"})
+    out = {
+        "kind": _choice(value["kind"], _BACKGROUND_ORIGINS),
+        "id": _uuid(value["id"]),
+        "task_id": _native(value["task_id"]),
+        "agent_id": _native(value["agent_id"]),
+        "generation": _uuid(value["generation"]),
+        "epoch": _integer(value["epoch"]),
+    }
+    if "description" in value:
+        out["description"] = _text(value["description"], TASK_METADATA_LIMITS["description"])
     return out
 
 
@@ -856,6 +901,8 @@ def _event(value):
                 raise IPCError("a question is answered, never approved")
             if len(set(out[key])) != len(out[key]):
                 raise IPCError("duplicate private IPC approval choices")
+        elif key == "background_task":
+            out[key] = _background_origin(item)
         elif key == "questions":
             try:
                 out[key] = native_questions.validate_async(item)
@@ -889,7 +936,10 @@ def _event(value):
         or ("operation_id" in out) != ("native_turn_id" in out)
     ):
         raise IPCError("native output names exactly one operator or agent turn")
-    if kind not in {"error", "disconnected"} and "operation_id" in out:
+    origin = kind == "approval" and "background_task" in out
+    if origin and (out["operation_id"] is not None or out["native_turn_id"] is not None):
+        raise IPCError("a background task's request belongs to no operator turn")
+    if kind not in {"error", "disconnected"} and "operation_id" in out and not origin:
         _uuid(out["operation_id"])
         _native(out["native_turn_id"])
     if kind == "turn_completed":
@@ -989,7 +1039,9 @@ def validate_response(value, *, expected: Binding | None = None):
         error = _object(value["error"], {"code", "message"}, {"reason"})
         if "reason" in error:
             # A closed refusal reason (#1644) the pane acts on; never free text.
-            out["error_reason"] = _choice(error["reason"], SEND_NOW_REFUSALS | {JOURNAL_UNWRITABLE})
+            out["error_reason"] = _choice(
+                error["reason"], SEND_NOW_REFUSALS | {JOURNAL_UNWRITABLE, CONVERSATION_FULL}
+            )
         out["error"] = {
             "code": _choice(
                 error["code"],

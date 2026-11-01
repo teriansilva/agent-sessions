@@ -204,3 +204,24 @@ test("jobs an interrupted Stop could not resume are said out loud, with Stop eve
   await userEvent.click(screen.getByRole("button", { name: "Stop everything…" }));
   expect(onStopEverything).toHaveBeenCalledTimes(1);
 });
+
+test("an inventory past what is tracked (#1725): Stop everything only, with the untracked warning", () => {
+  const { onStop } = open({ inventory: inventory({ overflow: true }) });
+  const dialog = screen.getByTestId("structured-stop-confirm");
+  expect(dialog.getAttribute("data-kind")).toBe("everything");
+  expect(screen.getByTestId("structured-stop-untracked").textContent).toContain("Untracked background work may also end.");
+  // The listed jobs are still listed: tracked, not everything.
+  expect(within(dialog).getByText(/pytest -x/)).toBeTruthy();
+  screen.getByTestId("structured-stop-confirm-go").click();
+  expect(onStop).toHaveBeenCalledWith(true);
+});
+
+test("a complete list carries no untracked warning, and asks as Stop and resume when it is one", () => {
+  open({ resuming: true });
+  expect(screen.queryByTestId("structured-stop-untracked")).toBeNull();
+  expect(screen.getByRole("heading", { name: "Stop and resume?" })).toBeTruthy();
+});
+
+test("overflow alone is background work: Stop asks first", () => {
+  expect(hasBackgroundWork(inventory({ tasks: [], processes: [], overflow: true }))).toBe(true);
+});

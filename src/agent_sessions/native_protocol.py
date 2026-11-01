@@ -36,7 +36,33 @@ MAX_WRITE_FRAME_BYTES = MAX_FRAME_BYTES + 4 * (-(-5 * 1024 * 1024 // 3) * 4 + 25
 MAX_TEXT = 20_000
 MAX_INPUT_TEXT = 200_000
 MAX_PENDING = 128
-MAX_RESULTS = 1024
+#: The Claude result ledger's bound, per connection (#1725). Non-evicting. Measured with
+#: tracemalloc over `feed` on CPython 3.11: 224 B per entry, 3.5 MiB at this size against the 4 MiB
+#: budget (the next dict resize is past it). `test_native_safety_table` pins the bytes.
+MAX_RESULTS = 16_384
+#: Room left above the high-water mark: at `MAX_RESULTS - RESULTS_RESERVE` a connection takes no new
+#: turn and retires between turns (`rollover`). What is already queued and the agent's own turns
+#: still fit, so the mark is reached well before the ledger stops recording.
+RESULTS_RESERVE = 1024
+#: Callbacks remembered as answered, for refusing a repeat of one. A long guarded turn answers more
+#: than `MAX_PENDING`, which used to end the generation. The oldest is forgotten past this bound:
+#: an ancient id asked again is only a new request for the operator, never an authorization.
+MAX_CONSUMED = 4096
+#: How much of each end of a frame too large to read is kept, to tell what was lost (#1725).
+LOST_FRAME_ENDS = 4096
+FRAME_SKIPPED = "A frame too large to read (over 1 MiB) was skipped"
+LOST_RESULT = (
+    "BattleLab couldn't read a frame this turn may have depended on (over 1 MiB), so its outcome "
+    "isn't known"
+)
+LOST_UNREADABLE = (
+    "A frame too large to read may have been a request, and it couldn't be read well enough to "
+    "answer, so the agent's connection was ended; this turn's outcome isn't known"
+)
+LOST_REQUEST = (
+    "A request too large to read (over 1 MiB) was refused; this turn went on without an answer "
+    "from you, so its outcome isn't known"
+)
 # Display observations (#1461), shared with the closed IPC schema. Native task payloads and
 # output-file paths never cross that boundary; a cut text value visibly ends with an ellipsis.
 TASK_METADATA_LIMITS = {
@@ -49,6 +75,9 @@ TASK_METADATA_LIMITS = {
 #: of its own seen (Claude's `background_tasks_changed`; a Codex terminal no process can be
 #: running). It ended; how is not known.
 TERMINAL_TASK_STATES = frozenset({"completed", "failed", "stopped", "killed", "ended"})
+#: A task whose latest report was too large to read (#1725): whether it runs isn't known, and the
+#: journal says so. Its requests are refused until a whole list names it.
+TASK_UNCERTAIN = "uncertain"
 # The agent's plan and the tools it works with (#1726), shared with the closed IPC schema. Display
 # text only: a plan entry's words and state, a proposed plan document, and the NAMES (with a
 # status) of MCP servers, skills and commands. Never a command line, URL, header, environment or
@@ -73,6 +102,15 @@ _EFFORT = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z", re.ASCII)
 
 class ProtocolError(ValueError):
     """Malformed, oversized or unsupported protocol operation."""
+
+
+class _Consumed(dict):
+    """Answered callback keys, in the order they were answered; bounded (`MAX_CONSUMED`)."""
+
+    def add(self, key: str) -> None:
+        self[key] = None
+        if len(self) > MAX_CONSUMED:
+            del self[next(iter(self))]
 
 
 @dataclass(frozen=True)
@@ -322,15 +360,264 @@ def _mcp_rows(rows: list[tuple[str, str]]) -> list[dict[str, str]]:
     return out
 
 
-def _approval_bound(frame: dict[str, Any]) -> None:
-    """Refuse a callback that cannot be presented completely within the preview bound.
+REQUEST_REFUSED = "A request too large to present was refused; the agent went on without it"
+REQUEST_ENDED_TASK = "A request from a background task that had already ended was refused"
+REQUEST_UNCERTAIN_TASK = (
+    "A request from a background task whose latest report could not be read was refused"
+)
 
-    A digest identifies the exact callback but is not an operator review of its contents.
-    The future approval UI must project the full consequential payload before offering a
-    decision. Until that projection exists, these events remain backend observations only.
+
+def _oversized(frame: dict[str, Any]) -> bool:
+    """A callback that cannot be presented completely within the preview bound (#1725: refused,
+    with a visible row, and the connection lives).
+
+    A digest identifies the exact callback but is not an operator review of its contents, so
+    what can't be shown whole is never pending.
     """
-    if len(json.dumps(frame, ensure_ascii=True, separators=(",", ":"))) > MAX_TEXT:
-        raise ProtocolError("permission request exceeds the full-payload presentation bound")
+    return len(json.dumps(frame, ensure_ascii=True, separators=(",", ":"))) > MAX_TEXT
+
+
+# --- reading a frame too large to read, from its two ends (#1725) ------------------------------
+#
+# A frame over the read bound is dropped, but a request in it still waits for its answer. Its id can
+# be on either side of its payload, so both ends are kept, and each is read the only safe way: as
+# JSON, from the frame's own first or last byte, one top-level field at a time, stepping over what
+# a string or a nested value holds. So a tool's output can never name a request. Whatever can't be
+# read that way stays unknown, and a request whose id stays unknown ends the connection: no guesses.
+
+_BODY = object()  # a nested value, or a string the kept end cuts off: there, and not read
+_BAD = object()  # a value that is no valid JSON token
+_INTEGER = re.compile(rb"-?(?:0|[1-9][0-9]*)\Z")
+_JSON_SPACE = b" \t\r\n"
+_SCALAR_END = _JSON_SPACE + b',:{}[]"'
+
+
+def _scalar(token: bytes) -> Any:
+    if _INTEGER.match(token):
+        return int(token)
+    return {b"true": True, b"false": False, b"null": None}.get(token, _BAD)
+
+
+def _string(token: bytes) -> Any:
+    try:
+        return json.loads(token.decode("utf-8", "strict"))
+    except ValueError:
+        return _BAD
+
+
+def _string_end(data: bytes, at: int) -> int | None:
+    """Past the string that opens at ``at``, or None if the kept end cuts it off."""
+    at += 1
+    while at < len(data):
+        if data[at] == 0x5C:  # a backslash takes the next byte with it
+            at += 2
+        elif data[at] == 0x22:
+            return at + 1
+        else:
+            at += 1
+    return None
+
+
+def _nested_end(data: bytes, at: int) -> int | None:
+    """Past the object or array that opens at ``at``, or None if the kept end cuts it off."""
+    depth = 0
+    while at < len(data):
+        byte = data[at]
+        if byte == 0x22:
+            end = _string_end(data, at)
+            if end is None:
+                return None
+            at = end
+            continue
+        if byte in b"{[":
+            depth += 1
+        elif byte in b"}]":
+            depth -= 1
+            if depth == 0:
+                return at + 1
+        at += 1
+    return None
+
+
+def _skip_space(data: bytes, at: int) -> int:
+    while at < len(data) and data[at] in _JSON_SPACE:
+        at += 1
+    return at
+
+
+def _fields_from_start(head: bytes) -> list[tuple[str, Any]]:
+    """The frame's top-level fields, from its first byte, until the kept end runs out."""
+    out: list[tuple[str, Any]] = []
+    at = _skip_space(head, 0)
+    if at >= len(head) or head[at] != 0x7B:
+        return out
+    at = _skip_space(head, at + 1)
+    while at < len(head) and head[at] == 0x22:
+        end = _string_end(head, at)
+        if end is None:
+            return out
+        key = _string(head[at:end])
+        at = _skip_space(head, end)
+        if not isinstance(key, str) or at >= len(head) or head[at] != 0x3A:
+            return out
+        at = _skip_space(head, at + 1)
+        if at >= len(head):
+            return out
+        if head[at] == 0x22:
+            end = _string_end(head, at)
+            if end is None:
+                out.append((key, _BODY))
+                return out
+            value = _string(head[at:end])
+        elif head[at] in b"{[":
+            end = _nested_end(head, at)
+            if end is None:
+                out.append((key, _BODY))
+                return out
+            value = _BODY
+        else:
+            end = at
+            while end < len(head) and head[end] not in _SCALAR_END:
+                end += 1
+            if end >= len(head):
+                return out  # cut off: not this token, never a shorter one
+            value = _scalar(head[at:end])
+        out.append((key, value))
+        at = _skip_space(head, end)
+        if at >= len(head) or head[at] != 0x2C:
+            return out
+        at = _skip_space(head, at + 1)
+    return out
+
+
+def _skip_space_back(data: bytes, at: int) -> int:
+    while at >= 0 and data[at] in _JSON_SPACE:
+        at -= 1
+    return at
+
+
+def _string_start(data: bytes, at: int) -> int | None:
+    """Where the string that closes at ``at`` opens, or None if the kept end cuts it off. No
+    unescaped quote can be inside a JSON string, so the nearest is its opening one. Backslashes
+    running back to the kept end's edge could be half of a pair: unknown."""
+    at -= 1
+    while at >= 0:
+        if data[at] == 0x22:
+            run = at - 1
+            while run >= 0 and data[run] == 0x5C:
+                run -= 1
+            if run < 0:
+                return None
+            if (at - run - 1) % 2 == 0:
+                return at
+        at -= 1
+    return None
+
+
+def _nested_start(data: bytes, at: int) -> int | None:
+    """Where the object or array closing at ``at`` opens, or None if the kept end cuts it off."""
+    depth = 0
+    while at >= 0:
+        byte = data[at]
+        if byte == 0x22:
+            start = _string_start(data, at)
+            if start is None:
+                return None
+            at = start - 1
+            continue
+        if byte in b"}]":
+            depth += 1
+        elif byte in b"{[":
+            depth -= 1
+            if depth == 0:
+                return at
+        at -= 1
+    return None
+
+
+def _fields_from_end(tail: bytes) -> list[tuple[str, Any]]:
+    """The frame's top-level fields, from its last byte back, until the kept end runs out."""
+    out: list[tuple[str, Any]] = []
+    at = _skip_space_back(tail, len(tail) - 1)
+    if at < 0 or tail[at] != 0x7D:
+        return out
+    at = _skip_space_back(tail, at - 1)
+    while at >= 0:
+        byte = tail[at]
+        if byte == 0x22:
+            start = _string_start(tail, at)
+            if start is None:
+                return out
+            value = _string(tail[start : at + 1])
+        elif byte in b"}]":
+            start = _nested_start(tail, at)
+            if start is None:
+                return out
+            value = _BODY
+        else:
+            start = at
+            while start >= 0 and tail[start] not in _SCALAR_END:
+                start -= 1
+            if start < 0:
+                return out  # cut off: not this token, never a shorter one
+            start += 1
+            value = _scalar(tail[start : at + 1])
+        at = _skip_space_back(tail, start - 1)
+        if at < 0 or tail[at] != 0x3A:
+            return out
+        at = _skip_space_back(tail, at - 1)
+        if at < 0 or tail[at] != 0x22:
+            return out
+        start = _string_start(tail, at)
+        if start is None:
+            return out
+        key = _string(tail[start : at + 1])
+        if not isinstance(key, str):
+            return out
+        out.append((key, value))
+        at = _skip_space_back(tail, start - 1)
+        if at < 0 or tail[at] != 0x2C:
+            return out
+        at = _skip_space_back(tail, at - 1)
+    return out
+
+
+def _frame_fields(head: bytes, tail: bytes) -> dict[str, Any] | None:
+    """The top-level fields both ends of a lost frame establish. None: the ends disagree (a field
+    twice, which a read frame is refused for): nothing about this frame can be trusted."""
+    fields: dict[str, Any] = {}
+    for key, value in [*_fields_from_start(head), *_fields_from_end(tail)]:
+        if key in fields and not (fields[key] is value or fields[key] == value):
+            return None
+        fields[key] = value
+    return fields
+
+
+def _lost_rpc(head: bytes, tail: bytes) -> tuple[str | None, str | int | None, bool, bool]:
+    """A lost JSON-RPC frame: (method, id, readable, replies). An id is its whole validated token,
+    or the frame isn't ``readable``: never another id. ``replies``: it carries a result or error."""
+    fields = _frame_fields(head, tail)
+    if fields is None:
+        return None, None, False, False
+    method, identity = fields.get("method"), None
+    readable = method is None or isinstance(method, str)
+    if "id" in fields:
+        try:
+            identity = _rpc_id(fields["id"]) if fields["id"] not in (_BAD, _BODY) else None
+        except ProtocolError:
+            identity = None
+        readable = readable and identity is not None
+    return (
+        method if isinstance(method, str) else None,
+        identity,
+        readable,
+        "result" in fields or "error" in fields,
+    )
+
+
+def _origin_public(origin: dict) -> dict:
+    """What the operator is shown of a request's origin (#1725)."""
+    return {"task_id": origin["task_id"], "description": origin.get("description") or ""}
 
 
 class _Codec:
@@ -351,12 +638,29 @@ class _Codec:
         self._serial = 0
         self._requests: dict[str, tuple[str, str | None]] = {}
         self._approvals: dict[str, dict[str, Any]] = {}
-        self._consumed: set[str] = set()
+        self._consumed = _Consumed()
+        # Background-origin callbacks answered (#1725): they outlive an operator turn, so a new
+        # turn's reset of `_consumed` never forgets them.
+        self._origin_consumed = _Consumed()
         self._expected_sessions: dict[str, str] = {}
         self.native_id: str | None = None
         self.operation_id: str | None = None
         self.native_turn_id: str | None = None
         self._closed = False
+        # This worker generation (#1725), part of what a background-origin request is bound to.
+        self.generation: str | None = None
+        # More background work than is tracked (#1725): the set is not fully enumerated, so it
+        # stays busy until the client reports its whole list again.
+        self.overflow = False
+        # A turn whose success BattleLab cannot claim: a request too large to read was refused
+        # while it ran, so the operator never saw it (#1725).
+        self.lost_turn: str | None = None
+        self._rows = 0
+        # Requests refused with no turn to carry their row (#1725): the pane says how many.
+        self.requests_refused = 0
+        # A frame too large to read that may be a request and can't be answered (#1725): it could
+        # leave the agent waiting for ever, so the worker ends the connection.
+        self.unread_frame = False
         self._last_plan: dict | None = None  # the newest checklist this connection journaled
 
     def _plan_once(self, **data: Any) -> list[NativeEvent]:
@@ -390,15 +694,155 @@ class _Codec:
 
     def _remember(self, request_id: Any, payload: dict[str, Any]) -> str:
         key = _approval_key(request_id)
-        if key in self._consumed:
+        if key in self._consumed or key in self._origin_consumed:
             raise ProtocolError("native permission request was already consumed")
-        if key in self._approvals:
-            if self._approvals[key] != payload:
-                raise ProtocolError("native permission request identity changed")
-        elif len(self._approvals) + len(self._consumed) >= MAX_PENDING:
-            raise ProtocolError("native permission capacity exceeded")
+        if key in self._approvals and self._approvals[key] != payload:
+            raise ProtocolError("native permission request identity changed")
         self._approvals[key] = payload
         return key
+
+    def _no_room(self, request_id: Any) -> bool:
+        """More requests open at once than an operator could be shown (#1725): the callback is
+        refused, the agent goes on without the tool, and the connection lives."""
+        return (
+            _approval_key(request_id) not in self._approvals and len(self._approvals) >= MAX_PENDING
+        )
+
+    def _row(self, summary: str) -> list[NativeEvent]:
+        """A visible activity row on the turn in flight (#1725). With no turn to carry it, it is
+        a diagnostic, and the worker's `frames_skipped` count says so in the pane."""
+        self._rows += 1
+        owner: dict[str, str]
+        if self.operation_id is not None and self.native_turn_id is not None:
+            owner = {"operation_id": self.operation_id, "native_turn_id": self.native_turn_id}
+        elif self.operation_id is None and self.background_turn is not None:
+            owner = {"agent_turn": self.background_turn}
+        else:
+            return [_event("error", message=summary)]
+        return [
+            _event(
+                "tool",
+                **owner,
+                item_id=f"battlelab-skipped-{self._rows}",
+                tool="battlelab",
+                state="skipped",
+                summary=summary,
+                completed=True,
+            )
+        ]
+
+    def _uncertain(self, operation_id: str, native_turn_id: str | None, why: str) -> list:
+        """The turn ended and BattleLab cannot say how (#1725): the two records every reader
+        already takes for an uncertain end. Never a claimed success, and no new journal shape."""
+        common = {"operation_id": operation_id, "native_turn_id": native_turn_id or operation_id}
+        if self.lost_turn == operation_id:
+            self.lost_turn = None
+        return [
+            _event("error", **common, message=why),
+            _event(
+                "turn_completed",
+                **common,
+                state="failed",
+                error=why,
+                background_active=bool(getattr(self, "_background", None)),
+            ),
+        ]
+
+    def settle_lost(self, events: list[NativeEvent]) -> list[NativeEvent]:
+        """A turn that had a request too large to read refused while it ran ends uncertain,
+        whatever the agent says of it (#1725): the operator was never asked. An Interrupt stays
+        an interrupt."""
+        if self.lost_turn is None:
+            return events
+        out: list[NativeEvent] = []
+        for event in events:
+            if event.kind == "turn_completed" and event.data.get("operation_id") == self.lost_turn:
+                self.lost_turn = None
+                if event.data.get("state") != "interrupted":
+                    common = {
+                        "operation_id": event.data["operation_id"],
+                        "native_turn_id": event.data["native_turn_id"],
+                    }
+                    out.append(_event("error", **common, message=LOST_REQUEST))
+                    event = _event(
+                        "turn_completed", **{**event.data, "state": "failed", "error": LOST_REQUEST}
+                    )
+            out.append(event)
+        return out
+
+    def _clear_turn_approvals(self) -> None:
+        """A turn ended: its requests went with it. A background-origin request did not belong
+        to it (#1725) and stays pending until its own task ends."""
+        self._approvals = {
+            key: item for key, item in self._approvals.items() if item.get("origin") is not None
+        }
+
+    def turn_approvals(self) -> bool:
+        """Is the operator's own turn waiting on a request? A background-origin one holds no
+        operator message back (#1725)."""
+        return any(item.get("origin") is None for item in self._approvals.values())
+
+    def origin_live(self, origin: dict) -> bool:
+        """Does the background task a request was presented for still run, as that same task?"""
+        return False
+
+    def _refusal(self, item: dict) -> dict:
+        """The answer to one held request that can no longer be decided: a refusal, never allow."""
+        raise NotImplementedError
+
+    def _retire_origins(self, stale) -> list[NativeEvent]:
+        """A background task ended, or its id now names another task (#1725): the requests it
+        made can no longer be decided. Each is refused and retracted, once."""
+        out: list[NativeEvent] = []
+        for key, item in list(self._approvals.items()):
+            origin = item.get("origin")
+            if origin is not None and stale(origin):
+                del self._approvals[key]
+                self._origin_consumed.add(key)
+                out.append(_event("send", frame=self._refusal(item)))
+                out.append(_event("approval_cancelled", request_id=key))
+        return out
+
+    def _invalidate_origins(self) -> list[NativeEvent]:
+        """A frame that ended a task or a request was lost, and which one can't be said (#1725). So
+        no background request is asserted still live: each is refused and retracted, and the set
+        reads unknown (`overflow`) until the client reports its whole list again."""
+        self.overflow = True
+        return self._retire_origins(lambda origin: True)
+
+    def _withdrawn(self, key: str) -> list[NativeEvent]:
+        """The agent took a request back. A background one stays answered across operator turns."""
+        item = self._approvals.pop(key, None)
+        if item is not None:
+            spent = self._origin_consumed if item.get("origin") is not None else self._consumed
+            spent.add(key)
+        return [_event("approval_cancelled", request_id=key)]
+
+    def _after_turn(self) -> None:
+        """What a client keeps per turn, dropped with it."""
+
+    def _ended_uncertain(self, why: str) -> list[NativeEvent]:
+        """End the turn in flight without claiming how it went (#1725)."""
+        operation, turn = self.operation_id, self.native_turn_id
+        self.operation_id = None
+        self.native_turn_id = None
+        self._clear_turn_approvals()
+        self._after_turn()
+        return self._uncertain(operation, turn, why)
+
+    def frame_lost(self, head: bytes = b"", tail: bytes = b"") -> list[NativeEvent]:
+        """A frame over the read bound was dropped (#1725): always a visible row. ``head`` and
+        ``tail`` are its two ends, enough to tell what was lost. Only frames that can't matter to
+        a turn are known by name; anything else may be what the turn was waiting for."""
+        return self._row(FRAME_SKIPPED)
+
+    def _unreadable(self, row: list[NativeEvent]) -> list[NativeEvent]:
+        """It may be a request, and nothing can answer it: the worker ends the connection, the
+        turn in flight reads uncertain, and the operator is told why. Fail closed, never silent."""
+        self.unread_frame = True
+        if self.operation_id is None:
+            return row
+        return [*row, *self._ended_uncertain(LOST_UNREADABLE)]
 
     #: The adapter kind ``native_grants`` derives standing grants for (#1339).
     ADAPTER = ""
@@ -406,12 +850,13 @@ class _Codec:
     def _always(self, request_id: str, grant: Any, cwd: str | None) -> Any:
         """The exact native grant for an ``always`` decision, re-derived from the request THIS
         connection holds (#1339): never trusted from the caller, refused unless the request itself
-        proposed it."""
+        proposed it. A background-origin request is one-shot only (#1725)."""
         from . import native_grants
 
         item = self._approvals.get(request_id)
         if (
             item is None
+            or item.get("origin") is not None
             or item.get("complete") is not True
             or item.get("kind") == native_questions.ASK_TOOL  # a question grants nothing (#1463)
             or not native_grants.valid_grant_id(grant)
@@ -438,15 +883,27 @@ class _Codec:
         }:
             raise ProtocolError("unsupported permission decision")
         item = self._approvals.get(request_id)
+        origin = item.get("origin") if item is not None else None
         if (
             item is None
             or self._closed
-            or item["operation_id"] != self.operation_id
-            or item["native_turn_id"] != self.native_turn_id
+            or (
+                origin is None
+                and (
+                    item["operation_id"] != self.operation_id
+                    or item["native_turn_id"] != self.native_turn_id
+                )
+            )
         ):
             raise ProtocolError("permission request is no longer pending for this turn")
+        if origin is not None:
+            # One-shot, and only while the task it was presented for runs (#1725).
+            if decision not in {"approve", "reject"}:
+                raise ProtocolError("a background task's request is approved once or declined")
+            if not self.origin_live(origin):
+                raise ProtocolError("that background task is no longer running")
         # Consumption is deliberate: failed/uncertain writes are never retried by a codec.
-        self._consumed.add(request_id)
+        (self._origin_consumed if origin is not None else self._consumed).add(request_id)
         return self._approvals.pop(request_id)
 
     def eof(self) -> NativeEvent:
@@ -480,6 +937,101 @@ _CODEX_MCP_STATE = {
 #: offered decision answers with (once only — see `CodexCodec.decide`).
 MCP_TOOL = "mcp_tool"
 _MCP_ACTIONS = {"approve": "accept", "reject": "decline"}
+
+
+#: What Codex sends with no id, so nothing waits on an answer: `ServerNotification.json` of
+#: `codex app-server generate-json-schema` (0.164.0), by exact name. Never inferred from a prefix:
+#: `item/tool/call` is a request. A method not on this list whose id can't be read may be one, so it
+#: ends the connection (#1725); a later Codex's new notification costs that only when over 1 MiB.
+CODEX_NOTIFICATIONS = frozenset(
+    {
+        "account/gatewayOAuth/changed",
+        "account/login/completed",
+        "account/rateLimits/updated",
+        "account/updated",
+        "app/list/updated",
+        "autoApprovalReview/strictReviewRequired",
+        "command/exec/outputDelta",
+        "configWarning",
+        "deprecationNotice",
+        "error",
+        "externalAgentConfig/import/completed",
+        "externalAgentConfig/import/progress",
+        "fs/changed",
+        "fuzzyFileSearch/sessionCompleted",
+        "fuzzyFileSearch/sessionUpdated",
+        "guardianWarning",
+        "hook/completed",
+        "hook/started",
+        "item/agentMessage/delta",
+        "item/autoApprovalReview/completed",
+        "item/autoApprovalReview/started",
+        "item/commandExecution/outputDelta",
+        "item/commandExecution/terminalInteraction",
+        "item/completed",
+        "item/fileChange/outputDelta",
+        "item/fileChange/patchUpdated",
+        "item/mcpToolCall/progress",
+        "item/plan/delta",
+        "item/reasoning/summaryPartAdded",
+        "item/reasoning/summaryTextDelta",
+        "item/reasoning/textDelta",
+        "item/started",
+        "mcpServer/event/stream/notification",
+        "mcpServer/oauthLogin/completed",
+        "mcpServer/startupStatus/updated",
+        "model/rerouted",
+        "model/safetyBuffering/updated",
+        "model/verification",
+        "modelProvider/authRecoveryCompleted",
+        "modelProvider/authRecoveryStarted",
+        "process/exited",
+        "process/outputDelta",
+        "project/changed",
+        "remoteControl/status/changed",
+        "serverRequest/resolved",
+        "skills/changed",
+        "thread/archived",
+        "thread/attachment/updated",
+        "thread/closed",
+        "thread/compacted",
+        "thread/deleted",
+        "thread/environment/connected",
+        "thread/environment/disconnected",
+        "thread/goal/cleared",
+        "thread/goal/updated",
+        "thread/name/updated",
+        "thread/prediction/updated",
+        "thread/project/updated",
+        "thread/queue/changed",
+        "thread/readState/changed",
+        "thread/realtime/closed",
+        "thread/realtime/error",
+        "thread/realtime/item/completed",
+        "thread/realtime/item/started",
+        "thread/realtime/item/transcript/delta",
+        "thread/realtime/itemAdded",
+        "thread/realtime/outputAudio/delta",
+        "thread/realtime/sdp",
+        "thread/realtime/started",
+        "thread/realtime/transcript/delta",
+        "thread/realtime/transcript/done",
+        "thread/reverted",
+        "thread/settings/updated",
+        "thread/started",
+        "thread/status/changed",
+        "thread/tokenUsage/updated",
+        "thread/unarchived",
+        "turn/completed",
+        "turn/diff/updated",
+        "turn/moderationMetadata",
+        "turn/plan/updated",
+        "turn/started",
+        "warning",
+        "windows/worldWritableWarning",
+        "windowsSandbox/setupCompleted",
+    }
+)
 
 
 class CodexCodec(_Codec):
@@ -535,11 +1087,10 @@ class CodexCodec(_Codec):
             return []
         item_id = _identity(item.get("id"))
         if method == "item/started":
-            if (
-                item.get("status") == "inProgress"
-                and item.get("processId") is not None
-                and len(self._commands) < MAX_PENDING
-            ):
+            if item.get("status") == "inProgress" and item.get("processId") is not None:
+                if len(self._commands) >= MAX_PENDING:
+                    self.overflow = True  # not tracked: the set is no longer complete (#1725)
+                    return []
                 turn = params.get("turnId")
                 command = _text(item.get("command"), limit=TASK_METADATA_LIMITS["description"])
                 self._commands[item_id] = (turn if isinstance(turn, str) else None, command)
@@ -570,6 +1121,7 @@ class CodexCodec(_Codec):
                 continue
             del self._commands[item_id]
             if len(self.terminals) >= MAX_PENDING:
+                self.overflow = True  # not tracked: the set is no longer complete (#1725)
                 continue
             self.terminals[item_id] = command
             out.append(
@@ -717,6 +1269,80 @@ class CodexCodec(_Codec):
             params["effort"] = self.effort
         return self._request("turn/start", params, self.operation_id)
 
+    def _after_turn(self) -> None:
+        self._patches.clear()
+        self._mcp_calls.clear()
+        self._early_frames, self._early_size = [], 0
+
+    def _early_fits(self, size: int) -> bool:
+        return len(self._early_frames) < MAX_PENDING and self._early_size + size <= MAX_FRAME_BYTES
+
+    def _evict_early_pieces(self, size: int) -> None:
+        """Streamed pieces go, oldest first, only as far as ``size`` needs."""
+        kept, count = [], len(self._early_frames)
+        for frame in self._early_frames:
+            full = count >= MAX_PENDING or self._early_size + size > MAX_FRAME_BYTES
+            if full and frame.get("method") == "item/agentMessage/delta":
+                self._early_size -= len(encode(frame))
+                count -= 1
+                continue
+            kept.append(frame)
+        self._early_frames = kept
+
+    def origin_live(self, origin: dict) -> bool:
+        """A request of a turn the agent started itself (#1725): only while that turn runs."""
+        return (
+            origin.get("kind") == "agent_turn"
+            and origin.get("generation") == self.generation
+            and origin.get("task_id") == self.background_turn
+            and origin.get("agent_id") == self._unsolicited
+        )
+
+    def _refusal(self, item: dict) -> dict:
+        return {"id": item["id"], "result": {"decision": "decline"}}
+
+    def frame_lost(self, head: bytes = b"", tail: bytes = b"") -> list[NativeEvent]:
+        method, request_id, readable, replies = _lost_rpc(head, tail)
+        row = self._row(FRAME_SKIPPED)
+        if not readable:
+            return self._unreadable(row)
+        if method is not None and request_id is not None:
+            # The agent asked something BattleLab can't read: refused, never answered blind. The
+            # turn goes on, and its end isn't claimed as a success (`settle_lost`).
+            if self.operation_id is not None:
+                self.lost_turn = self.operation_id
+            return [*row, *self._refuse(request_id)]
+        if method == "turn/completed":
+            out = [*row]
+            if self.operation_id is not None:
+                out += self._ended_uncertain(LOST_RESULT)
+            if self._unsolicited is not None:
+                # The agent's own turn may be the one that ended (it is, if it is the only one),
+                # how isn't known, and nothing of it is trusted past this.
+                out += self._turn({"id": self._unsolicited, "status": "failed"}, completed=True)
+            return out
+        if method == "serverRequest/resolved":
+            # Its request id is inside its params, out of reach: which request it ended can't be
+            # said, so none of the agent's own requests is asserted still open (#1725).
+            return [*row, *self._invalidate_origins()]
+        if method is not None:
+            # Named a notification: nothing waits on it. Anything else may be a request whose id
+            # couldn't be read.
+            return row if method in CODEX_NOTIFICATIONS else self._unreadable(row)
+        if request_id is not None:
+            pending = self._requests.get(request_id) if isinstance(request_id, str) else None
+            if pending is not None:
+                if pending[0] in _CODEX_DISCOVERY:
+                    # Best effort (#1726): as an error reply, so what waited for it goes on.
+                    return [*row, *self._reply({"id": request_id, "error": {"message": ""}})]
+                self._requests.pop(request_id, None)
+                if pending[0] == "turn/start" and pending[1] == self.operation_id:
+                    return [*row, *self._ended_uncertain(LOST_RESULT)]
+                return row
+            # Not a reply to anything asked, and it says no more: it may be a request.
+            return row if replies else self._unreadable(row)
+        return self._unreadable(row)
+
     @staticmethod
     def _input(text: str, images) -> list[dict]:
         items: list[dict] = [
@@ -827,6 +1453,8 @@ class CodexCodec(_Codec):
                 self._unsolicited = None
                 self.unowned_turn = False
                 self.background_turn = None
+                # Its requests can't be decided any more (#1725), whatever Codex says of them.
+                retired = self._retire_origins(lambda origin: origin.get("kind") == "agent_turn")
                 return [
                     _event(
                         "background",
@@ -834,7 +1462,8 @@ class CodexCodec(_Codec):
                         state=state,
                         active=False,
                         background_turn=None,
-                    )
+                    ),
+                    *retired,
                 ]
             return [_event("background", native_turn_id=turn_id, state=state)]
         already_started = self.native_turn_id == turn_id
@@ -848,7 +1477,7 @@ class CodexCodec(_Codec):
         error = turn.get("error")
         self.operation_id = None
         self.native_turn_id = None
-        self._approvals.clear()
+        self._clear_turn_approvals()
         self._patches.clear()
         self._mcp_calls.clear()
         return [
@@ -1081,6 +1710,8 @@ class CodexCodec(_Codec):
         ]
         if len(calls) != 1:
             return self._refuse(request_id)
+        if self._no_room(request_id):
+            return [*self._row(REQUEST_REFUSED), *self._refuse(request_id)]
         item_id, call = calls[0]
         # What the operator decides on: server, tool and the complete arguments. Shown in full
         # or not approvable — an over-long request stays declineable (decline needs no review).
@@ -1138,10 +1769,18 @@ class CodexCodec(_Codec):
             and params.get("threadId") == self.native_id
             and params.get("turnId") == self.native_turn_id
         )
+        # A command asked for inside a turn the agent started itself (#1725): the protocol names
+        # that turn, so it reaches the operator as that turn's own. File changes and MCP calls of
+        # such a turn stay refused: nothing presents their patch or call outside a running turn.
+        origin = (
+            self._turn_origin(request_id, params)
+            if method == "item/commandExecution/requestApproval" and not correlated
+            else None
+        )
         # grantRoot explicitly asks for a lasting filesystem grant, not one patch.
         if (
             not allowed
-            or not correlated
+            or not (correlated or origin is not None)
             or (method == "item/fileChange/requestApproval" and params.get("grantRoot"))
         ):
             return [
@@ -1157,8 +1796,11 @@ class CodexCodec(_Codec):
                 )
             ]
         item_id = _identity(params.get("itemId"))
-        _approval_bound(frame)
+        if _oversized(frame) or self._no_room(request_id):
+            return [*self._row(REQUEST_REFUSED), *self._refuse(request_id)]
         presented: dict[str, Any] = dict(params)
+        if origin is not None:
+            presented["background_task"] = _origin_public(origin)
         complete = True
         if method == "item/fileChange/requestApproval":
             # The proposed patch is shown so the operator sees what is being declined, but a
@@ -1169,15 +1811,21 @@ class CodexCodec(_Codec):
             changes = self._patches.get(item_id)
             if changes is not None:
                 presented["changes"] = changes
+        if origin is not None and len(_summary(presented)) >= MAX_TEXT:
+            # With the origin the operator must see, it can't be shown whole (#1725): never a cut
+            # summary presented as complete.
+            return [*self._row(REQUEST_REFUSED), *self._refuse(request_id)]
         if complete and len(_summary(presented)) >= MAX_TEXT:
             presented, complete = dict(params), False  # cannot be shown whole
-        digest = _digest({"frame": frame, "presented": presented})
+        digest = _digest(
+            {"frame": frame, "presented": presented, **({"origin": origin} if origin else {})}
+        )
         key = self._remember(
             request_id,
             {
                 "id": request_id,
-                "operation_id": self.operation_id,
-                "native_turn_id": self.native_turn_id,
+                "operation_id": None if origin else self.operation_id,
+                "native_turn_id": None if origin else self.native_turn_id,
                 "params": params,
                 "frame": frame,
                 "digest": digest,
@@ -1186,6 +1834,7 @@ class CodexCodec(_Codec):
                 "kind": "command"
                 if method == "item/commandExecution/requestApproval"
                 else "file_change",
+                **({"origin": origin} if origin else {}),
             },
         )
         return [
@@ -1193,8 +1842,8 @@ class CodexCodec(_Codec):
                 "approval",
                 request_id=key,
                 payload_digest=digest,
-                native_turn_id=self.native_turn_id,
-                operation_id=self.operation_id,
+                native_turn_id=None if origin else self.native_turn_id,
+                operation_id=None if origin else self.operation_id,
                 item_id=item_id,
                 tool="command"
                 if method == "item/commandExecution/requestApproval"
@@ -1204,9 +1853,36 @@ class CodexCodec(_Codec):
                 # everything a decision approves, and the digest binds exactly that.
                 summary=_summary(presented),
                 complete=complete,
-                choices=["approve", "reject", "cancel"],
+                choices=(["approve", "reject"] if complete else ["reject"])
+                if origin
+                else ["approve", "reject", "cancel"],
+                **({"background_task": origin} if origin else {}),
             )
         ]
+
+    def _turn_origin(self, request_id: Any, params: dict) -> dict | None:
+        """The origin of a command request inside a turn the agent started itself, if that is
+        what this names: its thread, and the very turn this connection saw start. A repeat of a
+        request keeps the origin it was presented with."""
+        if (
+            self._unsolicited is None
+            or self.background_turn is None
+            or params.get("threadId") != self.native_id
+            or params.get("turnId") != self._unsolicited
+        ):
+            return None
+        held = self._approvals.get(_approval_key(request_id))
+        if held is not None and held.get("origin") is not None:
+            return held["origin"]
+        return {
+            "kind": "agent_turn",
+            "id": str(uuid.uuid4()),
+            "task_id": self.background_turn,
+            "agent_id": self._unsolicited,
+            "generation": self.generation,
+            "epoch": 0,
+            "description": "A turn the agent started for itself",
+        }
 
     def _track_mcp_call(self, item_id: str, item: dict, *, done: bool) -> None:
         """Remember an in-progress MCP tool call of this turn (bounded), forget a finished one."""
@@ -1223,7 +1899,7 @@ class CodexCodec(_Codec):
         ):
             return  # never presentable: its elicitation is refused
         if item_id not in self._mcp_calls and len(self._mcp_calls) >= MAX_PENDING:
-            raise ProtocolError("native MCP call capacity exceeded")
+            return  # not retained (#1725): like an unreadable call, its elicitation is refused
         self._mcp_calls[item_id] = {
             "server": server,
             "tool": tool,
@@ -1252,7 +1928,9 @@ class CodexCodec(_Codec):
         ):
             raise ProtocolError("native file change patch is malformed")
         if item_id not in self._patches and len(self._patches) >= MAX_PENDING:
-            raise ProtocolError("native file change capacity exceeded")
+            # Not retained (#1725). It is only ever shown beside a decline, and its approval then
+            # says so by showing no patch.
+            return []
         latest = _copy_frame({"changes": changes})["changes"]
         unchanged = self._patches.get(item_id) == latest
         self._patches[item_id] = latest
@@ -1306,8 +1984,18 @@ class CodexCodec(_Codec):
             }
         ):
             size = len(encode(frame))
-            if len(self._early_frames) >= MAX_PENDING or self._early_size + size > MAX_FRAME_BYTES:
-                raise ProtocolError("uncorrelated native event buffer exceeded")
+            # A streamed piece of text is the one thing this can lose (#1725): its message's
+            # `item/completed` carries it whole. So a piece never takes room from anything else: it
+            # is dropped when there is none, and pieces already held give way for what matters. If
+            # what matters still doesn't fit, it may be a request or how the turn ended, and losing
+            # that could cost an effect: the connection ends.
+            droppable = method == "item/agentMessage/delta"
+            if not self._early_fits(size):
+                if droppable:
+                    return []
+                self._evict_early_pieces(size)
+                if not self._early_fits(size):
+                    raise ProtocolError("uncorrelated native event buffer exceeded")
             self._early_frames.append(frame)
             self._early_size += size
             return []
@@ -1344,10 +2032,7 @@ class CodexCodec(_Codec):
                 document = _plan_document(item.get("text"))
                 return [] if document is None else [_event("plan", document=document)]
         if method == "serverRequest/resolved":
-            key = _approval_key(params.get("requestId"))
-            if self._approvals.pop(key, None) is not None:
-                self._consumed.add(key)
-            return [_event("approval_cancelled", request_id=key)]
+            return self._withdrawn(_approval_key(params.get("requestId")))
         if method in {"turn/started", "turn/completed"}:
             turn = params.get("turn")
             if not isinstance(turn, dict):
@@ -1502,6 +2187,33 @@ def _between_end_and_result(frame: dict) -> bool:
 
 
 _DROPPED = frozenset({"cancelled", "discarded"})  # an input the CLI never ran
+#: How a task report says the task is over.
+_CLAUDE_TASK_ENDED = frozenset({"completed", "failed", "stopped", "killed"})
+#: The reports about one task, by their exact `subtype`.
+_CLAUDE_TASK_REPORTS = frozenset(
+    {"task_started", "task_progress", "task_notification", "task_updated"}
+)
+#: Frames nothing waits on an answer to and a turn's outcome does not hang on, by their exact `type`
+#: (Claude Code 2.1.314's own schema): output (its result repeats the reply), bookkeeping the full
+#: task list reconciles, replies to controls and a withdrawn request. Any other type too large to
+#: read may be a request nothing can answer, so it ends the connection (#1725).
+_CLAUDE_OBSERVED = frozenset(
+    {
+        "assistant",
+        "user",
+        "stream_event",
+        "system",
+        "rate_limit_event",
+        "command_lifecycle",
+        "control_response",
+        "tool_progress",
+        "tool_use_summary",
+        "control_cancel_request",
+        "auth_status",
+        "prompt_suggestion",
+        "keep_alive",
+    }
+)
 
 
 def _result_state(frame: dict) -> str:
@@ -1535,6 +2247,17 @@ class ClaudeCodec(_Codec):
         super().__init__()
         self.native_id = _uuid(session_id)
         self._background: set[str] = set()
+        # What each tracked task is (#1725): its description, and an epoch a request made by it
+        # is bound to. An id that ends and starts again is another task.
+        self._task_facts: dict[str, dict[str, Any]] = {}
+        self._epochs = 0
+        # Task ids that ended this generation. The journal's fold keeps such an id ended for good,
+        # so a request from one could never be shown: it is refused, never held.
+        self._ended_tasks: set[str] = set()
+        # Tasks a lost frame left in an unknown state (#1725), and ids it named that no task had.
+        # None is trusted until a whole list names it or (an id no task has) its own start.
+        self._quarantined: set[str] = set()
+        self._quarantine_spilled = False  # past its bound nothing is trusted, until a whole list
         self._session_state: str | None = None
         self._results: dict[str, str] = {}
         # The command lifecycle (#1427). The CLI frames every input it is given with
@@ -1560,7 +2283,7 @@ class ClaudeCodec(_Codec):
         # the WHOLE list: from task #1 of a fresh list, or from a `TaskList` answer.
         self._env = _Environment(skill_use=True)
         self._mcp_names: list[str] = []
-        self._tasks: dict[str, dict[str, str]] = {}
+        self._plan_tasks: dict[str, dict[str, str]] = {}
         self._tasks_whole = False
         self._stale_sent = False  # a `stale` marker went out since the list was last whole
         self._task_calls: dict[str, tuple[str, dict[str, Any]]] = {}
@@ -1624,6 +2347,12 @@ class ClaudeCodec(_Codec):
     def initialize(self) -> dict:
         return self._request("initialize", hooks=None)
 
+    def at_capacity(self) -> bool:
+        """The ledger reached its high-water mark (#1725): this connection takes no new turn and
+        retires between turns (`rollover`). Below the hard bound, so nothing already admitted
+        is refused and nothing running is cut."""
+        return len(self._results) >= MAX_RESULTS - RESULTS_RESERVE
+
     def submit(self, text: str, operation_id: str, images=()) -> dict:
         """``images``: ``(mime, base64)`` pairs, sent as base64 image blocks (#1332 Phase 3)."""
         if len(self._results) >= MAX_RESULTS:
@@ -1676,7 +2405,7 @@ class ClaudeCodec(_Codec):
 
     def send_now_would_stop_background(self) -> bool:
         """Would Send now's fallback, a plain interrupt (a Stop), end background work (#1526)?"""
-        return bool(self._background) and not self.send_now_ready()
+        return (bool(self._background) or self.overflow) and not self.send_now_ready()
 
     def submit_ahead(self, text: str, operation_id: str, images=()) -> dict:
         """Send now's message (#1526), written while the operator turn it cuts still runs. That
@@ -1787,7 +2516,7 @@ class ClaudeCodec(_Codec):
                 self._cycle = None
                 self.operation_id = None
                 self.native_turn_id = None
-                self._approvals.clear()
+                self._clear_turn_approvals()
                 return self._dropped(operation)
         elif command is not None and command == self._closing and state in _LIFECYCLE_ENDED:
             # `cancelled` is how the CLI ends an interrupted input (captured, #1427).
@@ -1811,13 +2540,23 @@ class ClaudeCodec(_Codec):
         self._tainted = True
         self._closing = None
 
+    def _ended_uncertain(self, why: str) -> list[NativeEvent]:
+        operation, turn = self.operation_id, self.native_turn_id
+        self._distrust()
+        self._cycle = None
+        self.operation_id = None
+        self.native_turn_id = None
+        self._clear_turn_approvals()
+        self._promote_ahead()
+        return self._uncertain(operation, turn, why)
+
     def _ended_without_result(self, state: str) -> list[NativeEvent]:
         common = {"operation_id": self.operation_id, "native_turn_id": self.native_turn_id}
         self._distrust()
         self._cycle = None
         self.operation_id = None
         self.native_turn_id = None
-        self._approvals.clear()
+        self._clear_turn_approvals()
         self._promote_ahead()
         interrupted = state == "cancelled"
         return [
@@ -1922,42 +2661,54 @@ class ClaudeCodec(_Codec):
         if not isinstance(request, dict):
             raise ProtocolError("native control request must be an object")
         subtype = request.get("subtype")
-        # A callback from a background/sub-agent (`agent_id`) cannot be proved to belong to the
-        # operator's turn, so it is refused rather than attributed to it (Hermes on #1278).
+        agent = request.get("agent_id")
+        ended = subtype == "can_use_tool" and self._ended_task(agent)
+        if ended or (subtype == "can_use_tool" and self._quarantined_task(agent)):
+            # Held, it would wait for ever behind a card nothing can show, with the session busy
+            # and a full ledger held (#1725). Fail closed, visibly, and let the agent go on.
+            row = self._row(REQUEST_ENDED_TASK if ended else REQUEST_UNCERTAIN_TASK)
+            if row[0].kind != "tool":
+                self.requests_refused += 1
+            return [*row, _event("send", frame=self._control_refusal(request_id))]
+        origin = self._task_origin(request_id, agent) if subtype == "can_use_tool" else None
+        # A callback from a background/sub-agent (`agent_id`) never belongs to the operator's turn
+        # (Hermes on #1278). One whose agent is a task this generation reports as BACKGROUNDED
+        # reaches the operator as that task's own (#1725). Any other is refused, as is one with no
+        # turn to ask for: a foreground sub-agent's is not "a background task, not your current
+        # turn", and it is strictly safer to keep refusing it than to present it as one.
         if (
             subtype != "can_use_tool"
-            or self.operation_id is None
-            or request.get("agent_id") is not None
+            or (agent is None and self.operation_id is None)
+            or (agent is not None and origin is None)
         ):
-            return [
-                _event(
-                    "send",
-                    frame={
-                        "type": "control_response",
-                        "response": {
-                            "subtype": "error",
-                            "request_id": request_id,
-                            "error": "Unsupported or uncorrelated control request",
-                        },
-                    },
-                )
-            ]
+            return [_event("send", frame=self._control_refusal(request_id))]
         original_input = request.get("input")
         if not isinstance(original_input, dict):
             raise ProtocolError("native permission input must be an object")
         tool_name = _identity(request.get("tool_name"))
         item_id = _identity(request.get("tool_use_id"))
-        _approval_bound(frame)
         # Everything the prompt carries (blocked_path, decision_reason, title, suggestions,
         # input …): the operator sees what the decision answers, not only the tool input.
         presented = {key: value for key, value in request.items() if key != "subtype"}
-        digest = _digest(frame)
+        if origin is not None:
+            presented["background_task"] = _origin_public(origin)
+        # The origin counts: it is part of what must be shown whole, never a cut summary.
+        if (
+            _oversized(frame)
+            or self._no_room(request_id)
+            or (origin is not None and len(_summary(presented)) >= MAX_TEXT)
+        ):
+            return [
+                *self._row(REQUEST_REFUSED),
+                _event("send", frame=self._control_refusal(request_id)),
+            ]
+        digest = _digest(frame) if origin is None else _digest({"frame": frame, "origin": origin})
         key = self._remember(
             request_id,
             {
                 "id": request_id,
-                "operation_id": self.operation_id,
-                "native_turn_id": self.native_turn_id,
+                "operation_id": None if origin else self.operation_id,
+                "native_turn_id": None if origin else self.native_turn_id,
                 "input": original_input,
                 "tool": tool_name,
                 "item_id": item_id,
@@ -1966,38 +2717,207 @@ class ClaudeCodec(_Codec):
                 "complete": True,
                 "presented": presented,
                 "kind": tool_name,
+                **({"origin": origin} if origin else {}),
             },
         )
+        asks = tool_name == native_questions.ASK_TOOL
         return [
             _event(
                 "approval",
                 request_id=key,
                 payload_digest=digest,
-                native_turn_id=self.native_turn_id,
-                operation_id=self.operation_id,
+                native_turn_id=None if origin else self.native_turn_id,
+                operation_id=None if origin else self.operation_id,
                 item_id=item_id,
                 tool=tool_name,
                 summary=_summary(presented),
                 complete=True,
                 # An agent question (#1463) is answered, skipped or stopped — never approved. One
                 # BattleLab can't answer exactly (malformed, repeated questions or labels) can
-                # still be skipped.
-                choices=(
+                # still be skipped. A background task's request is one-shot, and a question it
+                # asks can only be skipped: its answer has no turn to go to (#1725).
+                choices=(["reject"] if asks else ["approve", "reject"])
+                if origin
+                else (
                     ["answer", "reject", "cancel"]
                     if native_questions.claude_questions(original_input) is not None
                     else ["reject", "cancel"]
                 )
-                if tool_name == native_questions.ASK_TOOL
+                if asks
                 else ["approve", "reject", "cancel"],
+                **({"background_task": origin} if origin else {}),
             )
         ]
 
-    def frame_lost(self) -> list[NativeEvent]:
-        """A frame too large to read was dropped (the worker's bound): if it was the result an
-        ended input waits for, that input ends now rather than running for ever (#1644)."""
-        if self._cycle != "ended":
+    @staticmethod
+    def _control_refusal(request_id: str) -> dict:
+        return {
+            "type": "control_response",
+            "response": {
+                "subtype": "error",
+                "request_id": request_id,
+                "error": "Unsupported or uncorrelated control request",
+            },
+        }
+
+    def _refusal(self, item: dict) -> dict:
+        return self._response(
+            item["id"],
+            {"behavior": "deny", "message": "That background task ended", "interrupt": False},
+        )
+
+    def _task_origin(self, request_id: str, agent: Any) -> dict | None:
+        """A sub-agent's `agent_id` is the id of its task (`task_started.task_id`, the CLI's
+        `local_agent` task id; read from Claude Code 2.1.314): a request names a task of this
+        generation exactly, or it maps to nothing. A repeat keeps the origin it was shown with."""
+        task = self._task_facts.get(agent) if isinstance(agent, str) else None
+        if task is None or task.get("backgrounded") is not True:
+            return None  # only what is positively known as backgrounded
+        held = self._approvals.get(_approval_key(request_id))
+        if held is not None and held.get("origin") is not None:
+            return held["origin"]
+        return {
+            "kind": "task",
+            "id": str(uuid.uuid4()),
+            "task_id": agent,
+            "agent_id": agent,
+            "generation": self.generation,
+            "epoch": task["epoch"],
+            **({"description": task["description"]} if task.get("description") else {}),
+        }
+
+    def origin_live(self, origin: dict) -> bool:
+        task = self._task_facts.get(origin.get("task_id"))
+        return (
+            task is not None
+            and not self._quarantined_task(origin.get("task_id"))
+            and task.get("backgrounded") is True
+            and origin.get("kind") == "task"
+            and origin.get("generation") == self.generation
+            and origin.get("epoch") == task["epoch"]
+        )
+
+    def _track_task(
+        self, task_id: str, metadata: dict[str, str], backgrounded: Any = None
+    ) -> list[NativeEvent]:
+        """``backgrounded``: what the client said of it, if it did (`is_backgrounded`). A task it
+        says is in the foreground blocks a tool call of the operator's own turn."""
+        if task_id not in self._background:
+            self._epochs += 1
+            self._task_facts[task_id] = {"epoch": self._epochs}
+        self._background.add(task_id)
+        task = self._task_facts[task_id]
+        if metadata.get("description"):
+            task["description"] = metadata["description"]
+        if isinstance(backgrounded, bool):
+            task["backgrounded"] = backgrounded
+            if not backgrounded:  # no longer what its open requests were presented as
+                return self._retire_origins(lambda origin: origin.get("task_id") == task_id)
+        return []
+
+    def _ended_task(self, agent: Any) -> bool:
+        """Did this id end in this generation? Past its bound nothing more is remembered, so
+        nothing more is trusted: every agent id is refused, never one wrongly held."""
+        if not isinstance(agent, str):
+            return False
+        return agent in self._ended_tasks or len(self._ended_tasks) >= MAX_CONSUMED
+
+    def _quarantined_task(self, agent: Any) -> bool:
+        return isinstance(agent, str) and (agent in self._quarantined or self._quarantine_spilled)
+
+    def _quarantine(self, task_id: str) -> list[NativeEvent]:
+        """A lost frame may have ended this task or changed what it is (#1725). It keeps the worker
+        busy and stays in the inventory, since it may run; what it asked is refused, and so is
+        whatever it asks next. The journal says uncertain, never running."""
+        self.overflow = True
+        if len(self._quarantined) < MAX_PENDING or task_id in self._quarantined:
+            self._quarantined.add(task_id)
+        else:
+            self._quarantine_spilled = True
+        retired = self._retire_origins(lambda origin: origin.get("task_id") == task_id)
+        if task_id not in self._background:
+            return retired
+        said = {"state": TASK_UNCERTAIN, "task_state": TASK_UNCERTAIN}
+        return [_event("background", task_id=task_id, active=True, **said), *retired]
+
+    def _invalidate_origins(self) -> list[NativeEvent]:
+        """Which task a lost frame was about can't be said: none known now is vouched for."""
+        known = sorted(self._background | self._task_facts.keys())
+        quarantined = [event for task_id in known for event in self._quarantine(task_id)]
+        return [*quarantined, *super()._invalidate_origins()]
+
+    def _forget_task(self, task_id: str) -> list[NativeEvent]:
+        self._quarantined.discard(task_id)
+        self._background.discard(task_id)
+        self._task_facts.pop(task_id, None)
+        if len(self._ended_tasks) < MAX_CONSUMED:
+            self._ended_tasks.add(task_id)
+        return self._retire_origins(lambda origin: origin.get("task_id") == task_id)
+
+    def _lost_report(self, kind: str, fields: dict[str, Any]) -> list[NativeEvent]:
+        """What a lost frame ended (#1725). No request may be decidable for an origin whose end or
+        cancel was lost, so what its ends prove is applied, and anything else about a task
+        quarantines it (every task known, with no identity). An operator turn's own request stays
+        through a cancel it can't place: it holds that turn, and the CLI ignores an answer to one
+        it withdrew."""
+        if kind == "control_cancel_request":
+            try:
+                return self._withdrawn(_approval_key(fields.get("request_id")))
+            except ProtocolError:
+                return self._invalidate_origins()
+        if kind != "system":
             return []
-        return self._ended_without_result("completed")
+        subtype = fields.get("subtype")
+        if not isinstance(subtype, str) or subtype == "background_tasks_changed":
+            return self._invalidate_origins()
+        if subtype not in _CLAUDE_TASK_REPORTS:
+            return []
+        try:
+            task_id = _identity(fields.get("task_id"))
+        except ProtocolError:
+            return self._invalidate_origins()
+        # A `task_updated` says its state inside a patch, which is never in reach.
+        status = fields.get("status") if subtype == "task_notification" else None
+        if isinstance(status, str) and status in _CLAUDE_TASK_ENDED:
+            retired = self._forget_task(task_id)
+            active = bool(self._background)
+            ended = {"task_id": task_id, "state": status, "task_state": status}
+            return [_event("background", active=active, **ended), *retired]
+        # Any other report, `task_progress` too, can carry what the frame's middle hides.
+        return self._quarantine(task_id)
+
+    def frame_lost(self, head: bytes = b"", tail: bytes = b"") -> list[NativeEvent]:
+        fields = _frame_fields(head, tail)
+        kind = fields.get("type") if fields is not None else None
+        row = self._row(FRAME_SKIPPED)
+        # With no type named, it may be a request nothing can answer.
+        if not isinstance(kind, str):
+            return self._unreadable(row)
+        if kind == "control_request":
+            try:
+                asked = _identity(fields.get("request_id"))
+            except ProtocolError:
+                return self._unreadable(row)
+            # The agent asked something BattleLab can't read: refused, never answered blind. The
+            # turn goes on, and its end isn't claimed as a success (`settle_lost`).
+            refused = [_event("send", frame=self._control_refusal(asked))]
+            if self.operation_id is not None:
+                self.lost_turn = self.operation_id
+            if self._cycle == "ended":
+                return [*row, *refused, *self._ended_uncertain(LOST_RESULT)]
+            return [*row, *refused]
+        row += self._lost_report(kind, fields)
+        if self._cycle == "ended":
+            # It may be the result this input waits for (#1644): it ends now, never running for
+            # ever, and never as a success nothing proved.
+            return [*row, *self._ended_uncertain(LOST_RESULT)]
+        if kind in _CLAUDE_OBSERVED:
+            return row
+        if kind != "result":
+            return self._unreadable(row)
+        if self._owned():
+            return [*row, *self._ended_uncertain(LOST_RESULT)]
+        return [*row, *self._agent_turn(False, "failed")]
 
     def _awaited_result(self, frame: dict) -> bool:
         return (
@@ -2025,10 +2945,7 @@ class ClaudeCodec(_Codec):
         if kind == "control_request":
             return self._control(frame)
         if kind == "control_cancel_request":
-            key = _approval_key(frame.get("request_id"))
-            if self._approvals.pop(key, None) is not None:
-                self._consumed.add(key)
-            return [_event("approval_cancelled", request_id=key)]
+            return self._withdrawn(_approval_key(frame.get("request_id")))
         if kind == "control_response":
             response = frame.get("response")
             if not isinstance(response, dict):
@@ -2074,12 +2991,7 @@ class ClaudeCodec(_Codec):
                 ),
                 *self._init_environment(frame),
             ]
-        if kind == "system" and subtype in {
-            "task_started",
-            "task_progress",
-            "task_notification",
-            "task_updated",
-        }:
+        if kind == "system" and subtype in _CLAUDE_TASK_REPORTS:
             task_id = _identity(frame.get("task_id"))
             patch = frame.get("patch")
             status = (
@@ -2088,17 +3000,6 @@ class ClaudeCodec(_Codec):
                 else frame.get("status")
             )
             state = _text(status, limit=64)
-            if subtype in {"task_notification", "task_updated"} and state in {
-                "completed",
-                "failed",
-                "stopped",
-                "killed",
-            }:
-                self._background.discard(task_id)
-            else:
-                if len(self._background) >= MAX_PENDING and task_id not in self._background:
-                    raise ProtocolError("native background task capacity exceeded")
-                self._background.add(task_id)
             # A task_updated patch is sparse: without status it says nothing about a paused
             # task's state. Keep the existing state/active semantics for dispatch, and carry the
             # explicit display state separately. Never copy an arbitrary patch or output path.
@@ -2108,15 +3009,33 @@ class ClaudeCodec(_Codec):
                 value = source.get(field)
                 if isinstance(value, str) and value:
                     metadata[field] = value if len(value) <= limit else value[: limit - 1] + "…"
+            retired: list[NativeEvent] = []
+            if subtype in {"task_notification", "task_updated"} and state in _CLAUDE_TASK_ENDED:
+                retired = self._forget_task(task_id)
+            elif task_id not in self._background and len(self._background) >= MAX_PENDING:
+                # More tasks than are tracked (#1725): this one is not, and the set is no longer
+                # complete. Busy and said so, until the client reports its whole list again.
+                self.overflow = True
+                return [_event("background", state="activity", active=True)]
+            else:
+                if subtype == "task_started" and task_id in self._background:
+                    # The same id started again is another task: what the old one asked is over.
+                    retired = self._forget_task(task_id)
+                if subtype == "task_started":
+                    self._quarantined.discard(task_id)  # its own epoch, from here on
+                retired += self._track_task(task_id, metadata, source.get("is_backgrounded"))
+            reported = state or ("running" if subtype == "task_started" else "")
             return [
                 _event(
                     "background",
                     task_id=task_id,
                     state=state or "running",
                     active=bool(self._background),
-                    task_state=state or ("running" if subtype == "task_started" else ""),
+                    # One report isn't what settles a quarantined task: a whole list is.
+                    task_state=TASK_UNCERTAIN if task_id in self._quarantined else reported,
                     **metadata,
-                )
+                ),
+                *retired,
             ]
         if kind == "system" and subtype == "background_tasks_changed":
             return self._tasks_changed(frame)
@@ -2164,6 +3083,7 @@ class ClaudeCodec(_Codec):
             not isinstance(origin, dict) or not isinstance(origin.get("kind"), str)
         ):
             raise ProtocolError("native message origin is malformed")
+        unrecorded = False
         if kind == "result":
             result_id = _uuid(frame.get("uuid"))
             if type(frame.get("is_error")) is not bool:
@@ -2174,11 +3094,13 @@ class ClaudeCodec(_Codec):
                 if previous != digest:
                     raise ProtocolError("native result identity changed")
                 return []
-            if len(self._results) >= MAX_RESULTS:
-                raise ProtocolError("native result replay capacity exceeded")
             # Retain idle and background results too: observing them before submission is
-            # not permission to attribute a later replay to the next operator turn.
-            self._results[result_id] = digest
+            # not permission to attribute a later replay to the next operator turn. Past the bound
+            # nothing more is retained (#1725): the high-water mark stopped new turns long before
+            # this, so a replay of what goes unrecorded has no later turn to complete.
+            unrecorded = len(self._results) >= MAX_RESULTS
+            if not unrecorded:
+                self._results[result_id] = digest
         if self._awaited_result(frame):
             # The result naming an input whose lifecycle already completed (#1644): it ends that
             # input whatever origin the turn it ran in had. A clean, correlated cycle proves the
@@ -2190,6 +3112,17 @@ class ClaudeCodec(_Codec):
         if kind == "result" and frame.get("user_message_uuid") not in (None, self.operation_id):
             background = True  # another input's result can never complete this turn
             self._distrust()  # nor can a stream that carried one prove the fence
+        if (
+            kind == "result"
+            and unrecorded
+            and not background
+            and self.operation_id is not None
+            and frame.get("user_message_uuid") != self.operation_id
+        ):
+            # Unrecorded, so a repeat of it would not be caught (#1725): only the result naming
+            # this input can complete it now. The input still ends, by that or its lifecycle.
+            self._distrust()
+            return [_event("background", state="activity", active=True)]
         if (
             kind == "result"
             and not background
@@ -2236,8 +3169,8 @@ class ClaudeCodec(_Codec):
         frame was missed); one it names that was never started is added. An unchanged list
         records nothing. Bounded like the task frames themselves."""
         tasks = frame.get("tasks")
-        if not isinstance(tasks, list) or len(tasks) > MAX_PENDING:
-            raise ProtocolError("native background task list is malformed or exceeds its bound")
+        if not isinstance(tasks, list):
+            raise ProtocolError("native background task list is malformed")
         listed: dict[str, dict[str, str]] = {}
         for task in tasks:
             if not isinstance(task, dict):
@@ -2249,24 +3182,61 @@ class ClaudeCodec(_Codec):
                     limit = TASK_METADATA_LIMITS[name]
                     metadata[name] = value if len(value) <= limit else value[: limit - 1] + "…"
             listed[_identity(task.get("task_id"))] = metadata
-        ended = sorted(self._background - listed.keys())
-        started = sorted(listed.keys() - self._background)
-        self._background = set(listed)
+        # The list names background tasks only (#1725): one the client said runs in the foreground
+        # was never on it, and leaving it is no end. Its own terminal frame is, unless a lost frame
+        # may have been that: then, like any quarantined task, leaving it is the end.
+        foreground = {
+            task_id
+            for task_id, task in self._task_facts.items()
+            if task.get("backgrounded") is False
+            and task_id not in listed
+            and task_id not in self._quarantined
+        }
+        # A whole list settles whether the set is complete (#1725). One over the bound keeps what
+        # is already tracked first, and says the rest isn't.
+        room = MAX_PENDING - len(foreground)
+        self.overflow = len(listed) > room
+        if self.overflow:
+            ordered = sorted(listed, key=lambda task_id: (task_id not in self._background, task_id))
+            listed = {task_id: listed[task_id] for task_id in ordered[:room]}
+        ended = sorted(self._background - listed.keys() - foreground)
+        # A whole list settles every quarantined task (#1725): named, it runs, and it may not be
+        # the task its open requests were for, which is why they stay refused (a new epoch); not
+        # named, it is over.
+        lifted = self._quarantined & listed.keys()
+        started = sorted((listed.keys() - self._background) | lifted)
+        retired = [event for task_id in ended for event in self._forget_task(task_id)]
+        for task_id in sorted(self._quarantined - listed.keys()):
+            retired += self._forget_task(task_id)
+        self._quarantined.clear()
+        self._quarantine_spilled = False
+        for task_id in listed:
+            # Being on it is the client saying so: a foreground task moved to the background too.
+            self._track_task(task_id, listed[task_id], True)
+        for task_id in lifted:
+            self._epochs += 1
+            self._task_facts[task_id]["epoch"] = self._epochs
         active = bool(self._background)
-        return [
-            _event("background", task_id=task_id, state="ended", active=active, task_state="ended")
-            for task_id in ended
-        ] + [
-            _event(
-                "background",
-                task_id=task_id,
-                state="running",
-                active=active,
-                task_state="running",
-                **listed[task_id],
-            )
-            for task_id in started
-        ]
+        return (
+            retired
+            + [
+                _event(
+                    "background", task_id=task_id, state="ended", active=active, task_state="ended"
+                )
+                for task_id in ended
+            ]
+            + [
+                _event(
+                    "background",
+                    task_id=task_id,
+                    state="running",
+                    active=active,
+                    task_state="running",
+                    **listed[task_id],
+                )
+                for task_id in started
+            ]
+        )
 
     # --- the plan and the tools (#1726) ---------------------------------------------------------
 
@@ -2362,7 +3332,7 @@ class ClaudeCodec(_Codec):
             return [] if entries is None else self._plan_once(entries=entries)
         if not ok or not isinstance(result, dict):
             return self._stale()  # refused, or a result this frame does not let us read
-        tasks = self._tasks
+        tasks = self._plan_tasks
         if name == "TaskList":
             listed = result.get("tasks")
             if not isinstance(listed, list):
@@ -2418,7 +3388,7 @@ class ClaudeCodec(_Codec):
         self._cycle = None
         self.operation_id = None
         self.native_turn_id = None
-        self._approvals.clear()
+        self._clear_turn_approvals()
         self._promote_ahead()
         return [
             _event(
@@ -2559,6 +3529,43 @@ _OPENCODE_SESSION = re.compile(r"ses_[A-Za-z0-9]{1,250}\Z", re.ASCII)
 _ACP_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 #: Native choices retained verbatim; standing grants are separately bound and labelled.
 _ONCE = {"approve": "allow_once", "reject": "reject_once"}
+
+
+def _acp_frame_lost(codec, head: bytes, tail: bytes) -> list[NativeEvent]:
+    """A frame too large to read on an ACP connection (#1725), told by its two ends. A request is
+    refused, never answered blind; a turn's own reply lost ends that turn uncertain; a request
+    that can't be answered ends the connection."""
+    method, request_id, readable, replies = _lost_rpc(head, tail)
+    row = codec._row(FRAME_SKIPPED)
+    if not readable:
+        return codec._unreadable(row)
+    if method is not None and request_id is not None:
+        asked = method == "session/request_permission"
+        if asked and codec.operation_id is not None:
+            codec.lost_turn = codec.operation_id
+        answer = (
+            {"result": {"outcome": {"outcome": "cancelled"}}}
+            if asked
+            else {"error": {"code": -32601, "message": "Unsupported client method"}}
+        )
+        return [
+            *row,
+            _event("send", frame={"jsonrpc": "2.0", "id": request_id, **answer}),
+        ]
+    if method is not None:
+        # The one thing ACP sends without an id. Anything else may be a request whose id couldn't
+        # be read.
+        return row if method == "session/update" else codec._unreadable(row)
+    if request_id is not None:
+        pending = codec._requests.get(request_id) if isinstance(request_id, str) else None
+        if pending is not None:
+            codec._requests.pop(request_id, None)
+            if pending[0] == "session/prompt" and pending[1] == codec.operation_id:
+                return [*row, *codec._ended_uncertain(LOST_RESULT)]
+            return row
+        # Not a reply to anything asked, and it says no more: it may be a request.
+        return row if replies else codec._unreadable(row)
+    return codec._unreadable(row)
 
 
 def opencode_session_id(value: Any) -> str:
@@ -2902,6 +3909,12 @@ class OpencodeAcpCodec(_Codec):
 
     # --- observations -----------------------------------------------------------------------
 
+    def _after_turn(self) -> None:
+        self._tool_calls.clear()
+
+    def frame_lost(self, head: bytes = b"", tail: bytes = b"") -> list[NativeEvent]:
+        return _acp_frame_lost(self, head, tail)
+
     def _mode_check(self, config: dict[str, str]) -> None:
         mode = config.get("mode")
         if self._pinned and mode is not None and mode != self.agent:
@@ -3119,6 +4132,19 @@ class OpencodeAcpCodec(_Codec):
             if len(_summary(presented)) >= MAX_TEXT:
                 presented = {"omitted": "the request is too large to present"}
             complete = False
+        if self._no_room(frame["id"]):
+            # More open at once than can be shown (#1725): refused, and the connection lives.
+            return [
+                *self._row(REQUEST_REFUSED),
+                _event(
+                    "send",
+                    frame={
+                        "jsonrpc": "2.0",
+                        "id": frame["id"],
+                        "result": {"outcome": {"outcome": "cancelled"}},
+                    },
+                ),
+            ]
         digest = _digest({"frame": frame, "presented": presented})
         key = self._remember(
             frame["id"],
@@ -3559,6 +4585,12 @@ class CopilotAcpCodec(_Codec):
 
     # --- observations -----------------------------------------------------------------------
 
+    def _after_turn(self) -> None:
+        self._tool_calls.clear()
+
+    def frame_lost(self, head: bytes = b"", tail: bytes = b"") -> list[NativeEvent]:
+        return _acp_frame_lost(self, head, tail)
+
     def _mode_check(self, config: dict[str, str]) -> None:
         mode = config.get("mode")
         if self._pinned and mode is not None and mode != COPILOT_MODE:
@@ -3755,6 +4787,19 @@ class CopilotAcpCodec(_Codec):
             if len(_summary(presented)) >= MAX_TEXT:
                 presented = {"omitted": "the request is too large to present"}
             complete = False
+        if self._no_room(frame["id"]):
+            # More open at once than can be shown (#1725): refused, and the connection lives.
+            return [
+                *self._row(REQUEST_REFUSED),
+                _event(
+                    "send",
+                    frame={
+                        "jsonrpc": "2.0",
+                        "id": frame["id"],
+                        "result": {"outcome": {"outcome": "cancelled"}},
+                    },
+                ),
+            ]
         digest = _digest({"frame": frame, "presented": presented})
         key = self._remember(
             frame["id"],

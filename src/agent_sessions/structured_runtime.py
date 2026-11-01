@@ -44,12 +44,15 @@ class StructuredError(Exception):
         detail: str,
         reason: str | None = None,
         inventory: dict | None = None,
+        *,
+        remedy: str | None = None,
     ):
         super().__init__(detail)
         self.status = status
         self.detail = detail
         self.reason = reason  # closed (#1644): `native_ipc.SEND_NOW_REFUSALS`
         self.inventory = inventory  # a refused Stop's current background work (#1724)
+        self.remedy = remedy  # the action a refusal names (#1725): `native_ipc.REMEDIES`
 
 
 @dataclass(frozen=True)
@@ -223,7 +226,9 @@ async def _native(fn, *args, **kwargs):
     try:
         return await fn(*args, **kwargs)
     except native_runtime.NativeError as exc:
-        raise StructuredError(exc.status, exc.detail, exc.reason, exc.inventory) from None
+        raise StructuredError(
+            exc.status, exc.detail, exc.reason, exc.inventory, remedy=exc.remedy
+        ) from None
     except native_journal.JournalError as exc:
         raise StructuredError(
             503, f"the conversation journal is unavailable: {exc.detail}"

@@ -74,6 +74,11 @@ INVENTORY_CHANGED = (
 STOP_CHANGED = (
     "the session's background work changed since you confirmed; review it and confirm again"
 )
+#: A send refused while a full connection can't retire yet (#1725): nothing was claimed.
+CONVERSATION_FULL = (
+    "this conversation's connection is full and can't start another turn until what's running "
+    "finishes; nothing was sent"
+)
 #: Attempts at the readiness baseline of the process floor (#1724); later idle ticks retry it
 #: while no turn has run.
 BASELINE_TRIES = 3
@@ -467,6 +472,7 @@ class Worker:
             self.codec = native_protocol.CopilotAcpCodec(self.native_id)
         else:
             self.codec = native_protocol.ClaudeCodec(self.native_id)
+        self.codec.generation = self.worker_id
         # Minted by this process for this generation only; see `child_environment`.
         self._server_password = secrets.token_urlsafe(32) if self.adapter == OPENCODE else None
         self.locks: list = []
@@ -519,6 +525,12 @@ class Worker:
         # ledger, and nothing else (an idle tick) may resume a process it froze.
         self.stop_owner: str | None = None
         self.settled = False  # an orderly end wrote its `background_settled`
+        # Frames too large to read (#1725): the two ends of the one being dropped, how many so far.
+        self.lost_head = b""
+        self.lost_tail = b""
+        self.frames_skipped = 0
+        self.reported_held = False  # the full-conversation hold, as the lifecycle last said
+        self.reported_refused = 0  # requests refused with no turn to carry a row (#1725)
         self.signalled = False  # SIGTERM/SIGINT: the unit is being stopped
         # OOM kills in this worker's unit (#1732). `_oom_base`: the hierarchical counter when the
         # worker started; `_oom_seen`: the last count journaled (kills since the base);
@@ -762,14 +774,20 @@ class Worker:
             codec.operation_id is not None
             or bool(self.priority_requests)
             or bool(getattr(codec, "_steers", None))
-            or bool(codec._approvals)
+            or codec.turn_approvals()
             or getattr(codec, "_session_state", None) in {"running", "requires_action"}
             or getattr(codec, "unowned_turn", False)
         )
 
     def native_busy(self) -> bool:
-        """Anything running at all, background tasks included: the worker must stay alive."""
-        return self._turn_busy() or bool(getattr(self.codec, "_background", None))
+        """Anything running at all, background tasks included: the worker must stay alive. A
+        background task's open request (#1725) or more tasks than are tracked count too."""
+        return (
+            self._turn_busy()
+            or bool(getattr(self.codec, "_background", None))
+            or bool(self.codec._approvals)
+            or self.codec.overflow
+        )
 
     def dispatch_busy(self) -> bool:
         """May an operator message go to the agent now (#1427)?
@@ -838,6 +856,38 @@ class Worker:
         self.floor = native_processes.floor(self._observe(), self.baseline)
         return self.floor
 
+    def rollover_due(self) -> bool:
+        """This connection's result ledger reached its high-water mark (#1725): it takes no new
+        turn, and retires as soon as nothing runs. Only Claude has such a ledger."""
+        at_capacity = getattr(self.codec, "at_capacity", None)
+        return at_capacity is not None and at_capacity()
+
+    async def _nothing_runs_now(self) -> bool:
+        """Is nothing running, by a process scan made now? A failed scan can't say so."""
+        try:
+            await asyncio.to_thread(self.observe_floor)
+        except OSError:
+            return False
+        return not self.busy()
+
+    def retire(self) -> None:
+        """The between-turns end of a full connection (#1725). Held under the effect lock with
+        nothing running, like an idle exit: nothing is cut, nothing of the history is lost, and
+        the next Send resumes it in a new generation, exactly as after one."""
+        self.closing = True
+        self.report(rollover_at=time.time(), rollover_held=False)
+        self.settle("rollover", self.inventory())
+        self.stop_child()
+
+    async def report_rollover(self) -> None:
+        """What the pane says while a full connection waits for what still runs (#1725): a display
+        hint. With nothing running it is about to retire, and a send is decided at its own
+        admission either way."""
+        held = self.rollover_due() and self.busy()
+        if held != self.reported_held:
+            self.reported_held = held
+            await asyncio.to_thread(self.report, rollover_held=held)
+
     def engine_ids(self) -> list[str]:
         return sorted(
             set(getattr(self.codec, "_background", ())) | set(getattr(self.codec, "terminals", ()))
@@ -861,6 +911,7 @@ class Worker:
         processes = self._aged(floor) if aged else floor.processes
         listed = processes[: native_ipc.MAX_INVENTORY_PROCESSES]
         identities = frozenset(p.identity for p in processes)
+        overflow = self.codec.overflow
         return {
             "engine": engine[: native_ipc.MAX_INVENTORY_TASKS],
             "engine_more": max(0, len(engine) - native_ipc.MAX_INVENTORY_TASKS),
@@ -875,7 +926,10 @@ class Worker:
             ],
             "more": len(processes) - len(listed),
             "scan": floor.state,
-            "digest": native_ipc.stop_digest(self.worker_id, engine, identities, floor.state),
+            "digest": native_ipc.stop_digest(
+                self.worker_id, engine, identities, floor.state, overflow=overflow
+            ),
+            **({"overflow": True} if overflow else {}),
         }
 
     def record_inventory(self, data: dict, *, force: bool = False) -> None:
@@ -893,18 +947,24 @@ class Worker:
     @staticmethod
     def complete(inventory: dict) -> bool:
         """May this inventory be confirmed EXACTLY (#1724)? Only when the dialog can list all of
-        it: every process and every task named (none past the display limits) and a readable
-        scan. Anything else is confirmed only by Stop everything."""
+        it: every process and every task named (none past the display limits, no task the engine
+        reported past what is tracked, #1725) and a readable scan. Anything else is confirmed only
+        by Stop everything."""
         return (
             inventory["more"] == 0
             and inventory.get("engine_more", 0) == 0
+            and not inventory.get("overflow")
             and inventory["scan"] != native_processes.UNKNOWN
         )
 
     def note_engine(self) -> None:
-        """An engine task started or ended: journal the set with it, in the same batch."""
-        written = self.written["engine"] if self.written is not None else []
-        if self.ready.is_set() and written != self.engine_ids():
+        """An engine task started or ended, or the set stopped or started being complete (#1725):
+        journal the set with it, in the same batch."""
+        written = self.written or {}
+        if self.ready.is_set() and (
+            written.get("engine", []) != self.engine_ids()
+            or bool(written.get("overflow")) != self.codec.overflow
+        ):
             self.record_inventory(self.inventory(aged=True))
 
     def after_floor(self, terminals_before: set[str]) -> None:
@@ -922,11 +982,18 @@ class Worker:
             ended = terminals_before & set(self.codec.terminals)
             if ended:
                 self.record(retire(ended))
+            # A Codex terminal is a process, so an empty readable floor also settles the ones past
+            # what is tracked (#1725).
+            self.codec.overflow = False
         data = self.inventory(aged=True)
         last = self.written
         if last is not None and last["digest"] == data["digest"]:
             return
-        urgent = last is None or last["engine"] != data["engine"]
+        urgent = (
+            last is None
+            or last["engine"] != data["engine"]
+            or bool(last.get("overflow")) != bool(data.get("overflow"))
+        )
         if urgent or time.monotonic() - self.written_at >= self.inventory_interval:
             self.record_inventory(data)
 
@@ -943,10 +1010,14 @@ class Worker:
         Durable before the child is stopped; a crash before it leaves the last inventory.
         ``confirmed``: the inventory a Stop was confirmed against; a process of ``data`` (the
         final scan) not in it started while the Stop ran, and is marked so. ``checked``: the
-        exact Stop's settlement raises `JournalError` instead (it fails that Stop closed)."""
+        exact Stop's settlement raises `JournalError` instead (it fails that Stop closed). A
+        generation settles once: a second caller (the watch's next tick after a send retired it,
+        #1725) has nothing to add."""
+        if self.settled:
+            return
         settled = {
             key: data[key]
-            for key in ("engine", "processes", "more", "scan", "engine_more")
+            for key in ("engine", "processes", "more", "scan", "engine_more", "overflow")
             if key in data
         }
         if confirmed is not None:
@@ -1477,6 +1548,8 @@ class Worker:
         Each tick reads the process floor (#1724), bounded and read-only."""
         while not self.done.is_set():
             await asyncio.sleep(self.tick)
+            if self.closing:
+                return  # ending already: a send retired it (#1725), or the agent's output ended
             before = set(getattr(self.codec, "terminals", ()))
             with contextlib.suppress(OSError):
                 await asyncio.to_thread(self.observe_floor)
@@ -1484,8 +1557,16 @@ class Worker:
                 return
             self.after_floor(before)
             await self.retry_resume()
+            await self.report_rollover()
             if self.busy():
                 self.last_activity = time.monotonic()
+                continue
+            if self.rollover_due():
+                # Full, and nothing runs (#1725): this connection retires now, between turns.
+                async with self.effects:
+                    if await self._nothing_runs_now():
+                        self.retire()
+                        return
                 continue
             if time.monotonic() - self.last_activity < self.idle_timeout:
                 continue
@@ -1554,6 +1635,10 @@ class Worker:
         self.note_engine()
         self.queue_wake.set()
         await self.report_send_now_state()
+        await self.report_rollover()
+        if self.codec.requests_refused != self.reported_refused:
+            self.reported_refused = self.codec.requests_refused
+            await asyncio.to_thread(self.report, requests_refused=self.reported_refused)
 
     def send_now_state(self) -> str:
         """What Send now would do right now (#1644), for the composer: ``ready`` (nothing in the
@@ -1647,20 +1732,23 @@ class Worker:
         """Complete native lines, bounded. An oversized line is DROPPED, not fatal.
 
         One huge tool output must not end the generation (and a frame that can never be read
-        must not make a session unresumable). The drop is recorded as an observation; a dropped
-        permission request simply stays unanswered and the turn can still be interrupted.
+        must not make a session unresumable). The drop reaches the codec once the frame has ended,
+        with its two ends, bounded (`frame_lost`, #1725): a request's id can be on either side of
+        its payload. A visible row, a request refused, and a turn that may have depended on it
+        never claimed as a success.
         """
         assert self.proc is not None and self.proc.stdout is not None
         stream, buffer, dropping = self.proc.stdout, bytearray(), False
-        limit = native_protocol.MAX_FRAME_BYTES
+        limit, ends = native_protocol.MAX_FRAME_BYTES, native_protocol.LOST_FRAME_ENDS
         while chunk := await stream.read(65536):
             buffer += chunk
             while True:
                 index = buffer.find(b"\n")
                 if index < 0:
-                    if len(buffer) > limit:
+                    if dropping or len(buffer) > limit:
                         if not dropping:
-                            self.dropped_frame()
+                            self.lost_head, self.lost_tail = bytes(buffer[:ends]), b""
+                        self.lost_tail = (self.lost_tail + bytes(buffer))[-ends:]
                         dropping = True
                         buffer.clear()
                     break
@@ -1668,7 +1756,8 @@ class Worker:
                 del buffer[: index + 1]
                 if dropping or len(line) > limit:
                     if not dropping:
-                        self.dropped_frame()
+                        self.lost_head, self.lost_tail = line[:ends], b""
+                    self.lost_tail = (self.lost_tail + line)[-ends:]
                     dropping = False
                     yield b""  # the dropped frame has ended: the codec may be waiting for it
                     continue
@@ -1684,14 +1773,16 @@ class Worker:
                 ]
             )
 
-    def dropped_frame(self) -> None:
-        self.record(
-            [
-                native_protocol.NativeEvent(
-                    "error", {"message": "a native frame exceeded its size bound and was omitted"}
-                )
-            ]
-        )
+    async def dropped_frame(self) -> None:
+        """A frame too large to read has ended (#1725). What it was is the codec's to say; that
+        it happened reaches the pane even when no turn carries a row for it."""
+        head, tail = self.lost_head, self.lost_tail
+        self.lost_head, self.lost_tail = b"", b""
+        events = self.codec.settle_lost(self.codec.frame_lost(head, tail))
+        await self.handle_events(events)
+        if self.ready.is_set() and not any(event.kind == "tool" for event in events):
+            self.frames_skipped += 1
+            await asyncio.to_thread(self.report, frames_skipped=self.frames_skipped)
 
     async def reader(self) -> None:
         assert self.proc is not None and self.proc.stdout is not None
@@ -1699,12 +1790,22 @@ class Worker:
         try:
             async for line in self.lines():
                 if not line:
-                    # A frame was dropped (#1644): an input waiting for its result ends now.
-                    lost = getattr(self.codec, "frame_lost", None)
-                    await self.handle_events(lost() if lost is not None else [])
+                    await self.dropped_frame()
+                    if self.codec.unread_frame:
+                        # It may be a request nothing can answer: left, the agent could wait on it
+                        # for ever. A lost effect-bearing frame fails closed (#1725).
+                        self.record(
+                            [
+                                native_protocol.NativeEvent(
+                                    "error", {"message": "protocol: an unreadable frame"}
+                                )
+                            ]
+                        )
+                        self.reason = "native protocol violation: an unreadable frame"
+                        break
                     continue
                 try:
-                    events = self.codec.feed(native_protocol.decode(line))
+                    events = self.codec.settle_lost(self.codec.feed(native_protocol.decode(line)))
                 except native_protocol.ProtocolError as exc:
                     self.record(
                         [native_protocol.NativeEvent("error", {"message": f"protocol: {exc}"})]
@@ -1967,13 +2068,19 @@ class Worker:
             },
         }
 
+    @staticmethod
+    def _approval_turn(approval: dict):
+        """The turn a request is decided under: the operator's, or a background task's own."""
+        origin = approval.get("origin")
+        return approval["operation_id"] if origin is None else origin["id"]
+
     def _pending(self, params: dict):
         approval = self.codec._approvals.get(params["request_id"])
         if (
             approval is None
             or params["approval_worker_id"] != self.worker_id
             or params["approval_connection_id"] != self.binding.connection_id
-            or approval["operation_id"] != params["turn_id"]
+            or self._approval_turn(approval) != params["turn_id"]
             or approval.get("digest", native_protocol._digest(approval["frame"]))
             != params["payload_digest"]
             or (approval.get("item_id") or approval["params"].get("itemId")) != params["item_id"]
@@ -2032,6 +2139,18 @@ class Worker:
                 pending = self._pending(params)
                 if pending is None:
                     return self.error(request, "stale", "that approval is no longer pending")
+                origin = pending.get("origin")
+                if origin is not None:
+                    # Rechecked HERE too (#1725), independently of the server: the task it was
+                    # presented for still runs as that task, and the decision is one-shot.
+                    if not self.codec.origin_live(origin):
+                        return self.error(request, "stale", "that background task has ended")
+                    if params["decision"] not in {"approve", "reject"}:
+                        return self.error(
+                            request,
+                            "unsupported",
+                            "a background task's request is approved once or declined",
+                        )
                 if params["decision"] == "always":
                     # A standing grant (#1339) is re-derived HERE from the request this
                     # connection holds — only what the client itself proposed — independently of
@@ -2083,6 +2202,21 @@ class Worker:
                         request, "unsupported", "this agent can't interrupt a turn of its own"
                     )
                 return self.error(request, "stale", "that turn is not active")
+            if action == "submit" and self.rollover_due():
+                # A full connection takes no new turn (#1725). Replays still observe; with nothing
+                # running it retires at once and the send resumes in a successor (the same answer
+                # as an idle exit that raced it); otherwise the send is refused, nothing claimed.
+                replayed = await self._replayed(request)
+                if replayed is not None:
+                    return replayed
+                # The floor is up to a tick old: a server a tool just left running is only in a
+                # scan made now (#1725). One that fails can't say nothing runs, so nothing retires.
+                if await self._nothing_runs_now():
+                    self.retire()
+                    return self.error(request, "unavailable", SHUTTING_DOWN)
+                return self.error(
+                    request, "conflict", CONVERSATION_FULL, native_ipc.CONVERSATION_FULL
+                )
             queued = action == "submit" and (bool(self.queued) or self.dispatch_busy())
             if action == "submit" and not queued:
                 # A direct turn's claim is its start: the OOM counter is read before it (#1732).

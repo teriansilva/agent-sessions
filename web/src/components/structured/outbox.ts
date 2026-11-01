@@ -1,6 +1,11 @@
 import type { StructuredSnapshot } from "../../types/api";
 import { isActive } from "./structuredView";
 
+/** What a refusal names as its way on (#1725), from the server's closed `remedy`. `retry`: the same
+ *  operation id goes again. `stop_resume`, `resume_with_attachments`: the confirmed Stop first,
+ *  then the same id. No new route: each goes through the checks that route already has. */
+export type Remedy = "retry" | "stop_resume" | "resume_with_attachments";
+
 /** The composer's outbox (#1465). Send moves the composer's message here at once, as ONE frozen
  *  request with its own operation id, so the composer is free for the next message. Entries go
  *  out FIFO, only the head in flight, and each leaves the outbox the moment a snapshot shows its
@@ -38,6 +43,14 @@ export type OutboxEntry = Readonly<{
    *  `journal_unwritable`). Known: nothing was claimed. The draft stays here; Send again is a NEW
    *  send (a new operation id), never a Retry. */
   unwritable?: boolean;
+  /** The action its refusal names (#1725), offered as a button. */
+  remedy?: Remedy;
+  /** #1420: it already went again once by itself, after a revision that moved under nothing the
+   *  operator could see. Never twice: a second refusal is the operator's to read. */
+  resent?: boolean;
+  /** #1420: the conversation shown when that resend was scheduled. It goes out only over exactly
+   *  this: anything newer on screen is the operator's to read first. */
+  resendFence?: string;
 }>;
 
 export function outboxEntry(request: Omit<OutboxRequest, "attachments"> & {
@@ -81,7 +94,137 @@ export function updateEntry(
 /** Retry an unknown entry: back to waiting with the SAME request (id, text, uploads), so the server
  *  replays it if it has it; the pump posts it under the client's admission rule. */
 export function retried(list: readonly OutboxEntry[], id: string): OutboxEntry[] {
-  return updateEntry(list, id, (e) => (e.phase === "unknown" ? { ...e, phase: "waiting" } : e));
+  return updateEntry(list, id, (e) =>
+    e.phase === "unknown" ? { ...e, phase: "waiting", resendFence: undefined } : e,
+  );
+}
+
+/** A refusal's way on (#1725): back to waiting with the SAME request, so the server replays it if it
+ *  has it. Only the operator's press or the remedy's own Stop gets here, never the queue itself. */
+export function recovered(list: readonly OutboxEntry[], id: string): OutboxEntry[] {
+  return updateEntry(list, id, (e) =>
+    e.phase === "refused" || e.phase === "unknown"
+      ? { ...e, phase: "waiting", reason: undefined, remedy: undefined, resendFence: undefined }
+      : e,
+  );
+}
+
+/** Stop and resume, once Stop has proved the worker gone (#1725): back to waiting, the same id, and
+ *  fenced to the read the pane accepted after it, like the automatic resend. */
+export function recoveredOver(
+  list: readonly OutboxEntry[],
+  id: string,
+  shown: StructuredSnapshot,
+): OutboxEntry[] {
+  const fence = conversationReading(shown);
+  return updateEntry(list, id, (e) =>
+    e.phase === "refused" || e.phase === "unknown"
+      ? { ...e, phase: "waiting", reason: undefined, remedy: undefined, resendFence: fence }
+      : e,
+  );
+}
+
+/** Stop and resume when Stop did its part and the conversation can't be vouched for (it changed,
+ *  or the read after it failed or lost a race): the operator's to read, then to Retry. */
+export function leftForRetry(list: readonly OutboxEntry[], id: string): OutboxEntry[] {
+  return updateEntry(list, id, (e) =>
+    e.phase === "refused" || e.phase === "unknown"
+      ? {
+          ...e,
+          reason: "the session stopped, but the conversation changed or couldn’t be read, so this wasn’t sent",
+          remedy: "retry",
+        }
+      : e,
+  );
+}
+
+/** Is what the operator was looking at still what the conversation holds (#1420)? A worker's last
+ *  records (a stop, an idle exit, a crash) move the revision and change nothing here. A completed
+ *  turn, a new request, an agent turn or another message does: that is a real conflict, however
+ *  idle the session is now. Everything the operator reads of a turn counts. */
+export function sameConversation(seen: StructuredSnapshot, now: StructuredSnapshot): boolean {
+  return conversationReading(seen) === conversationReading(now);
+}
+
+export function conversationReading(s: StructuredSnapshot): string {
+  // The plan is what the agent says it will do, so the operator may be answering it (#1726). When
+  // it was recorded, and being marked out of date, say nothing new: the server's own rule.
+  const plan = s.native?.plan;
+  return JSON.stringify([
+    s.turns,
+    s.pending_requests,
+    s.active_turn,
+    s.native?.background_turn ?? null,
+    plan?.entries ?? null,
+    plan?.explanation ?? null,
+    plan?.document ?? null,
+  ]);
+}
+
+/** What Stop and resume was pressed over (#1725). */
+export interface StopCapture {
+  worker: string | null;
+  requests: string[];
+  reading: string;
+}
+
+const requestKeys = (rows: { turn_id: string; request_id: string }[]) =>
+  rows.map((row) => JSON.stringify([row.turn_id, row.request_id])).sort();
+
+/** The conversation apart from what is attributed one by one: a Stop always ends the agent's own
+ *  turn target, and a request it ended is compared by identity. A turn it cut reads differently,
+ *  and the operator reads that first. */
+const readingAcrossStop = (s: StructuredSnapshot) =>
+  conversationReading({
+    ...s,
+    pending_requests: [],
+    native: s.native ? { ...s.native, background_turn: null } : s.native,
+  });
+
+export function stopCapture(s: StructuredSnapshot): StopCapture {
+  return {
+    worker: s.native?.worker ?? null,
+    requests: requestKeys(s.pending_requests),
+    reading: readingAcrossStop(s),
+  };
+}
+
+/** May the held message go by itself after its Stop? Only if every request is attributable: those
+ *  the Stop retired are exactly those open when it was pressed, for the generation it ended, and
+ *  none is open now. A request another tab decided and one the Stop ended both leave
+ *  `pending_requests`, so that alone proves nothing; one arriving by itself mustn't be masked. */
+export function stopStands(captured: StopCapture, after: StructuredSnapshot): boolean {
+  const ended = (after.native?.ended_requests ?? []).filter((row) => row.worker === captured.worker);
+  return (
+    captured.reading === readingAcrossStop(after) &&
+    after.pending_requests.length === 0 &&
+    (after.native?.worker ?? null) !== captured.worker &&
+    JSON.stringify(requestKeys(ended)) === JSON.stringify(captured.requests)
+  );
+}
+
+/** A scheduled resend at the moment it would post (#1420): does the pane still show what it was
+ *  scheduled over? An ordinary send, or the operator's own Retry, has no fence. */
+export function resendStands(entry: OutboxEntry, shown: StructuredSnapshot): boolean {
+  return entry.resendFence === undefined || entry.resendFence === conversationReading(shown);
+}
+
+/** May a message refused for a moved revision go again by itself (#1420)? Once, only with nothing
+ *  running or asked and the conversation unchanged. The same operation id, so the server replays it
+ *  if it has it; it can only re-send what the operator already pressed Send on. ``now`` must be
+ *  what the pane ACCEPTED as current: a read older than one already shown proves nothing. */
+export function mayResend(
+  entry: OutboxEntry,
+  seen: StructuredSnapshot,
+  now: StructuredSnapshot | null,
+): boolean {
+  return (
+    !entry.resent &&
+    !!now &&
+    !isActive(now) &&
+    now.pending_requests.length === 0 &&
+    sameConversation(seen, now)
+  );
 }
 
 /** Send again after a KNOWN refusal (#1733: the session's record could not be written, and nothing

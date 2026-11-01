@@ -48,6 +48,20 @@ Behaviour is selected by the turn text, so a test drives it purely through the p
   Each child's return code is appended to ``hog-codes.txt``. A ``report-oom-adj`` file in the
   working directory makes the agent fork a child first thing, which records its own and its
   parent's ``oom_score_adj`` (and the parent's environment) in ``oom-adj.jsonl``.
+* ``FLOOD:<n>`` — (claude) n results of a sub-agent, one per frame, then the reply: fills the
+  connection's result ledger (#1725).
+* ``MANYTASKS:<n>`` — (claude) start n background tasks, more than are tracked past 128 (#1725).
+* ``BIGFRAME:output`` / ``BIGFRAME:result`` / ``BIGFRAME:request`` — (claude) a frame over the read
+  bound (#1725): a tool's output, then the reply; the turn's own result, and nothing after it; a
+  permission request, whose answer is logged, then the reply ``refused:<subtype>``.
+  ``BIGFRAME:request-last`` is that request with its id after its payload. ``BIGFRAME:unreadable``
+  is one whose fields are all between two huge values, so nothing can answer it; it stays alive
+  waiting, as an agent would. ``BIG`` is Codex's output frame.
+* ``BGASK`` — (claude) start the task ``agent-bg`` and reply ``started``. Once ``ask-bg`` exists
+  that task asks one permission (#1725), with no operator turn to belong to; once ``end-bg`` exists
+  it completes. Its answer is logged like every other frame. ``lose-bg`` sends a report of it too
+  large to read, ``ask-again`` and ``ask-third`` two more requests, ``list-bg`` a whole list naming
+  it.
 * anything else — stream a reply ``echo:<text>`` and complete.
 
 Every frame received is appended to ``$PWD/native-frames.jsonl`` so tests can prove a frame
@@ -1074,6 +1088,170 @@ def claude_turn(frame, stream, session, notification_turn):
         send({"type": "system", "subtype": "task_started", "task_id": "bg1", "session_id": session})
         TASKS.add("bg1")
         threading.Thread(target=notification_turn, daemon=True).start()
+        answer = "started"
+    if text.startswith("FLOOD:"):
+        for _ in range(int(text[len("FLOOD:") :])):
+            send(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "uuid": str(uuid.uuid4()),
+                    "is_error": False,
+                    "result": "",
+                    "parent_tool_use_id": "toolu_sub",
+                    "session_id": session,
+                }
+            )
+        answer = "flooded"
+    if text.startswith("MANYTASKS:"):
+        for n in range(int(text[len("MANYTASKS:") :])):
+            send(
+                {
+                    "type": "system",
+                    "subtype": "task_started",
+                    "task_id": f"bg{n}",
+                    "description": f"job {n}",
+                    "session_id": session,
+                }
+            )
+        answer = "started"
+    if text == "BIGFRAME:output":
+        sys.stdout.flush()
+        send(
+            {
+                "type": "user",
+                "session_id": session,
+                "message": {"role": "user", "content": "x" * (2 * 1024 * 1024)},
+            }
+        )
+    if text == "BIGFRAME:result":
+        send(
+            {
+                "type": "result",
+                "subtype": "success",
+                "uuid": str(uuid.uuid4()),
+                "is_error": False,
+                "result": "x" * (2 * 1024 * 1024),
+                "session_id": session,
+            }
+        )
+        return False
+    big_request = {
+        "subtype": "can_use_tool",
+        "tool_name": "Bash",
+        "tool_use_id": "toolu_big",
+        "input": {"command": "x" * (2 * 1024 * 1024)},
+    }
+    if text in {"BIGFRAME:request", "BIGFRAME:request-last"}:
+        asked = {"type": "control_request", "request_id": "perm-big", "request": big_request}
+        if text == "BIGFRAME:request-last":
+            asked = {"request": big_request, "type": "control_request", "request_id": "perm-big"}
+        send({**asked, "session_id": session})
+        answer = "refused:" + next(stream)["response"]["subtype"]
+    if text == "BIGFRAME:unreadable":
+        send(
+            {
+                "request": big_request,
+                "type": "control_request",
+                "request_id": "perm-big",
+                "session_id": session,
+                "padding": "x" * (2 * 1024 * 1024),
+            }
+        )
+        next(stream)  # waits for an answer that can't come: only the end of the connection frees it
+        return False
+    if text == "BGASK":
+        send(
+            {
+                "type": "system",
+                "subtype": "task_started",
+                "task_id": "agent-bg",
+                "description": "test-runner sub-agent",
+                "is_backgrounded": True,
+                "session_id": session,
+            }
+        )
+        TASKS.add("agent-bg")
+
+        def background_ask(request_id):
+            send(
+                {
+                    "type": "control_request",
+                    "request_id": request_id,
+                    "request": {
+                        "subtype": "can_use_tool",
+                        "tool_name": "Bash",
+                        "tool_use_id": f"toolu_{request_id.replace('-', '_')}",
+                        "input": {"command": "pytest -x tests/"},
+                        "agent_id": "agent-bg",
+                    },
+                    "session_id": session,
+                }
+            )
+
+        def lost_report():
+            # A report of the task too large to read, its end outside what is kept (#1725).
+            _wait_file("lose-bg", seconds=120)
+            send(
+                {
+                    "type": "system",
+                    "subtype": "task_updated",
+                    "task_id": "agent-bg",
+                    "patch": {"status": "completed", "padding": "x" * (1024 * 1024 + 10)},
+                    "session_id": session,
+                }
+            )
+            _wait_file("ask-again", seconds=120)
+            background_ask("perm-again")
+            _wait_file("list-bg", seconds=120)
+            send(
+                {
+                    "type": "system",
+                    "subtype": "background_tasks_changed",
+                    "tasks": [
+                        {
+                            "task_id": "agent-bg",
+                            "task_type": "local_agent",
+                            "description": "test-runner sub-agent",
+                        }
+                    ],
+                    "session_id": session,
+                }
+            )
+            _wait_file("ask-third", seconds=120)
+            background_ask("perm-third")
+
+        threading.Thread(target=lost_report, daemon=True).start()
+
+        def background_agent():
+            _wait_file("ask-bg", seconds=120)
+            send(
+                {
+                    "type": "control_request",
+                    "request_id": "perm-bg",
+                    "request": {
+                        "subtype": "can_use_tool",
+                        "tool_name": "Bash",
+                        "tool_use_id": "toolu_bg",
+                        "input": {"command": "pytest -x tests/"},
+                        "agent_id": "agent-bg",
+                    },
+                    "session_id": session,
+                }
+            )
+            _wait_file("end-bg", seconds=120)
+            TASKS.discard("agent-bg")
+            send(
+                {
+                    "type": "system",
+                    "subtype": "task_notification",
+                    "task_id": "agent-bg",
+                    "status": "completed",
+                    "session_id": session,
+                }
+            )
+
+        threading.Thread(target=background_agent, daemon=True).start()
         answer = "started"
     if text == "APPROVE":
         send(

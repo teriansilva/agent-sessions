@@ -6,6 +6,8 @@ import type {
   StructuredTurn,
 } from "../../types/api";
 import {
+  heldSentence,
+  remedyWarning,
   answerText,
   answerWire,
   backgroundWorking,
@@ -358,5 +360,57 @@ describe("Claude's AskUserQuestion (#1463)", () => {
     expect(answerWire({ selected: ["C"] })).toEqual({ selected: ["C"] });
     expect(answerWire({ selected: [], other: "mine" })).toEqual({ other: "mine" });
     expect(answerWire({ selected: ["C"], other: "  " })).toEqual({ selected: ["C"] });
+  });
+});
+
+describe("a full conversation says what holds it (#1725)", () => {
+  const inv = (over = {}) => ({
+    worker: "w", digest: "d", scan: "ok" as const, tasks: [], processes: [], more: 0, observed_at: 1, ...over,
+  });
+  const task = (id: string) => ({ task_id: id, description: id });
+  const proc = (pid: number) => ({ pid, start: pid, comm: "cargo", started_at: 1 });
+
+  test("an exact count only when the set is enumerated", () => {
+    expect(heldSentence(inv({ tasks: [task("a"), task("b")], processes: [proc(9)] }))).toBe(
+      "Conversation full — it continues once 3 background jobs finish.",
+    );
+    expect(heldSentence(inv({ tasks: [task("a")] }))).toBe(
+      "Conversation full — it continues once its background job finishes.",
+    );
+  });
+
+  test("tracked plus what isn't, when it isn't all of it, never an exact number", () => {
+    const over = heldSentence(inv({ tasks: [task("a"), task("b")], processes: [proc(9)], overflow: true }));
+    expect(over).toContain("3 tracked jobs, plus more work that isn’t tracked");
+    expect(over).not.toContain("once 3");
+    expect(heldSentence(inv({ scan: "unknown" }))).toContain("work that isn’t tracked");
+    expect(heldSentence(inv({ scan: "unknown", tasks: [task("a")] }))).toContain("1 tracked job, plus");
+  });
+
+  test("with nothing listed it is the turn it waits for", () => {
+    expect(heldSentence(inv())).toContain("when this turn ends");
+    expect(heldSentence(null)).toContain("when this turn ends");
+  });
+
+  test("what Stop and resume would end, named by what the list holds, never argv", () => {
+    expect(remedyWarning(inv())).toBeNull();
+    expect(remedyWarning(null)).toBeNull();
+    expect(remedyWarning(inv({ tasks: [task("npm run dev")] }))).toBe("Ends 1 background job: npm run dev");
+    expect(remedyWarning(inv({ processes: [proc(48211)] }))).toBe("Ends 1 background job: cargo · pid 48211");
+    expect(remedyWarning(inv({ tasks: [task("a")], overflow: true }))).toBe(
+      "Ends 1 background job: a, plus more work that isn’t tracked",
+    );
+    expect(remedyWarning(inv({ scan: "unknown" }))).toBe("Ends background work that can’t be listed.");
+    expect(remedyWarning(inv({ tasks: [task("a"), task("b"), task("c"), task("d")] }))).toBe(
+      "Ends 4 background jobs: a, b, c, and more",
+    );
+  });
+
+  test("a background task's request reads one-shot, whatever its tool", () => {
+    const req = { request_id: "r", turn_id: "t", kind: "Bash", choices: ["approve", "reject"],
+      background_task: { task_id: "a", description: "d" } };
+    expect(choiceLabel("approve", req)).toBe("Approve once");
+    expect(choiceLabel("reject", req)).toBe("Decline");
+    expect(choiceLabel("approve", { ...req, background_task: undefined })).toBe("Allow once");
   });
 });

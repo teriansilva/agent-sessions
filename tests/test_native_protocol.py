@@ -840,10 +840,17 @@ def test_early_event_buffer_is_bounded_before_turn_identity_is_known():
         "method": "item/agentMessage/delta",
         "params": {"threadId": SESSION, "turnId": TURN, "itemId": "item-1", "delta": "x" * 100_000},
     }
-    for _ in range(10):
+    for _ in range(11):  # a streamed piece past the bound is dropped: its item repeats it (#1725)
         assert codec.feed(frame) == []
+    assert len(codec._early_frames) == 10
+    # Anything else may be a request or how the turn ended, and that can't be lost: the pieces give
+    # way for it, and only frames that matter filling it by themselves end the connection.
+    other = {**frame, "method": "item/completed"}
+    for _ in range(10):
+        assert codec.feed(other) == []
+    assert all(f["method"] == "item/completed" for f in codec._early_frames)
     with pytest.raises(ProtocolError, match="event buffer"):
-        codec.feed(frame)
+        codec.feed(other)
 
 
 def test_claude_result_does_not_override_native_running_state():
@@ -1065,6 +1072,7 @@ def test_claude_result_ledger_never_evicts_a_completed_identity(monkeypatch):
     from agent_sessions import native_protocol
 
     monkeypatch.setattr(native_protocol, "MAX_RESULTS", 2)
+    monkeypatch.setattr(native_protocol, "RESULTS_RESERVE", 0)
     codec = claude_running()
     first = result_frame()
     codec.feed(first)
@@ -1073,8 +1081,10 @@ def test_claude_result_ledger_never_evicts_a_completed_identity(monkeypatch):
     assert codec.feed(first) == []
     with pytest.raises(ProtocolError, match="capacity"):
         codec.submit("Requires a fresh native connection", str(uuid.uuid4()))
-    with pytest.raises(ProtocolError, match="capacity"):
-        codec.feed(result_frame())
+    # Past the bound nothing more is retained, and the connection lives (#1725).
+    assert len(codec._results) == 2
+    codec.feed(result_frame())
+    assert len(codec._results) == 2
     assert codec.operation_id is None
 
 
@@ -1088,11 +1098,17 @@ def test_claude_result_ledger_never_evicts_a_completed_identity(monkeypatch):
     ],
 )
 def test_approval_cannot_hide_consequential_payload_beyond_presentation_bound(factory, frame):
+    """Refused, never pending: a request that can't be shown whole. Since #1725 that costs the
+    connection nothing: the agent goes on without the tool, and a row says what happened."""
     codec = factory()
-    with pytest.raises(ProtocolError, match="presentation bound"):
-        codec.feed(frame)
+    row, refusal = codec.feed(frame)
     assert codec._approvals == {}
     assert codec.operation_id == OPERATION
+    assert row.kind == "tool" and row.data["state"] == "skipped"
+    assert row.data["operation_id"] == OPERATION
+    assert refusal.kind == "send"
+    answer = refusal.data["frame"]
+    assert "error" in answer or answer["response"]["subtype"] == "error"
 
 
 def _file_change(request_id=5):
@@ -1233,8 +1249,9 @@ def test_in_progress_file_changes_stay_bounded():
     codec = codex_running()
     for n in range(MAX_PENDING):
         codec.feed(_edit_item(n, "item/started"))
-    with pytest.raises(ProtocolError, match="file change capacity"):
-        codec.feed(_edit_item(MAX_PENDING, "item/started"))
+    # Not retained, and it costs nothing else (#1725): a patch is only ever shown beside a decline.
+    codec.feed(_edit_item(MAX_PENDING, "item/started"))
+    assert len(codec._patches) == MAX_PENDING
 
 
 def test_a_completed_change_keeps_the_patch_its_pending_approval_presents():

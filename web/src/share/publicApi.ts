@@ -64,7 +64,8 @@ export interface PublicTurn {
 export interface PublicRequest {
   request_id: string;
   turn_id: string;
-  kind: string;
+  /** Absent on a background task's request (#1725): a visitor reads only that one is waiting. */
+  kind?: string;
   summary: string;
 }
 

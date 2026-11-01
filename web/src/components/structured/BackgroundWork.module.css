@@ -145,3 +145,32 @@
   cursor: pointer;
 }
 .scanUnknownStop:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* #1725: a full conversation held by what still runs. A state, not a failure: grey with its word. */
+.held {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+  margin: 6px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--status-unknown);
+  background: var(--panel);
+  min-width: 0;
+}
+.heldTag {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font: 600 var(--fs-meta) var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.heldSentence { margin: 0; color: var(--text-1); font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.heldNote { margin: 0 0 4px; color: var(--text-2); line-height: 1.5; }
+@media (max-width: 480px) {
+  .held { justify-items: stretch; }
+  .held > button { width: 100%; }
+}

@@ -95,7 +95,8 @@
   gap: var(--sp-1);
   padding: var(--sp-1) var(--sp-3);
 }
-.notices > div {
+.notices > div,
+.notices > section {
   margin: 0;
 }
 .generic {

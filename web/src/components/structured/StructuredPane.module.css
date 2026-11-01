@@ -413,6 +413,50 @@
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
+/* A background task's request (#1725): the usual card under its origin, which is part of what the
+ * operator decides on. A request waiting is a state: the warning status colour, with its words. */
+.backgroundRequests {
+  display: grid;
+  gap: 12px;
+  margin: 6px 0;
+  min-width: 0;
+}
+.backgroundRequest {
+  display: grid;
+  gap: 0;
+  min-width: 0;
+  border-left: 3px solid var(--status-degraded);
+}
+.originHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-bottom: 1px dashed var(--line-strong);
+  background: var(--panel);
+  font: 600 calc(11px * var(--api-scale, 1)) var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.originName {
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+}
+.originNote {
+  margin: 0 12px 8px;
+  padding-left: 8px;
+  border-left: 2px solid var(--line-strong);
+  font-size: calc(12px * var(--api-scale, 1));
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.backgroundRequest .card { border-top: 0; border-left-width: 1px; }
 .card {
   border: 1px solid var(--line-strong);
   border-left: 3px solid var(--status-degraded);

@@ -70,6 +70,9 @@ export function TaskRow({ task, now }: { task: StructuredBackgroundTask; now: nu
         Since first observed {humanDuration(Math.max(0, now - task.started_at))}
         {last && task.updated_at !== null && ` · Updated ${humanDuration(Math.max(0, now - task.updated_at))} ago`}
       </p>}
+      {task.state === "uncertain" && <p className={styles.report}>
+        A report of this task was too large to read, so it may have ended, and its requests are refused until the agent lists it again.
+      </p>}
       {report && <p className={styles.report}>
         <span className={styles.label}>Latest report</span>
         <span>{report}</span>
@@ -123,5 +126,69 @@ export function PausedUnresumed({ count, onStopEverything }: { count: number; on
         </button>
       )}
     </div>
+  );
+}
+
+/** Frames this worker couldn't read, outside any turn (#1725): those a turn carried are rows on that
+ *  turn; this is the rest, and it is never silence. A fact, not a failure. */
+export function FramesSkipped({ count }: { count: number }) {
+  return (
+    <div className={styles.scanUnknown} role="status" data-testid="structured-frames-skipped">
+      <span className={`${pane.led} ${pane.ledIdle}`} aria-hidden="true" />
+      <span className={styles.scanUnknownText}>
+        {count === 1 ? "1 frame" : `${count} frames`} too large to read (over 1 MiB) {count === 1 ? "was" : "were"} skipped.
+      </span>
+    </div>
+  );
+}
+
+/** Requests refused because their task id had already ended (#1725), with no turn to carry a row:
+ *  never silence, and nothing for the operator to answer. */
+export function RequestsRefused({ count }: { count: number }) {
+  return (
+    <div className={styles.scanUnknown} role="status" data-testid="structured-requests-refused">
+      <span className={`${pane.led} ${pane.ledIdle}`} aria-hidden="true" />
+      <span className={styles.scanUnknownText}>
+        {count === 1 ? "1 request" : `${count} requests`} from a background task that had already
+        ended {count === 1 ? "was" : "were"} refused.
+      </span>
+    </div>
+  );
+}
+
+/** A background task's request is waiting in the conversation (#1725). The card itself stays there,
+ *  with what it asks and its decision; this is what says so while reading further up. */
+export function BackgroundRequestsWaiting({ count }: { count: number }) {
+  return (
+    <div className={styles.scanUnknown} role="status" data-testid="structured-background-waiting">
+      <span className={`${pane.led} ${pane.ledWarn}`} aria-hidden="true" />
+      <span className={styles.scanUnknownText}>
+        {count === 1 ? "1 background request is" : `${count} background requests are`} waiting for you in the conversation.
+      </span>
+    </div>
+  );
+}
+
+/** A full conversation waiting for what still runs (#1725): held, not ended. A state in grey with
+ *  its word, the count as honest as the list, and the way out now. Nothing is lost. */
+export function RolloverHeld({ sentence, onStopResume }: { sentence: string; onStopResume?: () => void }) {
+  return (
+    <section className={styles.held} role="status" aria-label="Conversation held"
+      data-testid="structured-rollover-held">
+      <p className={styles.heldTag}>
+        <span className={`${pane.led} ${pane.ledIdle}`} aria-hidden="true" />
+        Held
+      </p>
+      <p className={styles.heldSentence}>{sentence}</p>
+      <p className={styles.heldNote}>
+        Nothing is lost: the next message starts a fresh connection. Or stop now and resume.
+      </p>
+      {onStopResume && (
+        <button type="button" className={styles.scanUnknownStop} onClick={onStopResume}
+          data-testid="structured-rollover-stop">
+          Stop and resume
+        </button>
+      )}
+    </section>
   );
 }

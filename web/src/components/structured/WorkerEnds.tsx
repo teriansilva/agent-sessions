@@ -60,6 +60,7 @@ export function WorkerEnds({ ends }: { ends: StructuredWorkerEnd[] | undefined }
       })),
       ...(end.more ? [{ id: "more", name: `${end.more} more ${end.more === 1 ? "process" : "processes"}` }] : []),
       ...(end.scan === "unknown" ? [{ id: "unknown", name: "processes that couldn’t be listed" }] : []),
+      ...(end.overflow ? [{ id: "untracked", name: "background work that wasn’t tracked" }] : []),
     ];
     return names.map(({ id, name }) => (
       <p key={`${end.worker}:${id}`} className={`${styles.end}${arrive(`end:${end.worker}`)}`}

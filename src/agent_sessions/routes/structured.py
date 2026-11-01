@@ -277,12 +277,19 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                 reply_to=body.get("reply_to"),
             )
         except structured_runtime.StructuredError as exc:
-            if exc.reason != native_ipc.JOURNAL_UNWRITABLE:
+            if exc.remedy is None and exc.reason != native_ipc.JOURNAL_UNWRITABLE:
                 raise HTTPException(status_code=exc.status, detail=exc.detail) from None
             # A known refusal before any claim (#1733): the pane keeps the draft and offers a NEW
-            # send, never a Retry of an uncertain one. A closed reason, never free text.
+            # send, never a Retry of an uncertain one. Or one that names its action (#1725): the
+            # pane offers that action, through the route that already exists. Closed values,
+            # never free text.
             return JSONResponse(
-                {"detail": exc.detail, "reason": exc.reason}, status_code=exc.status
+                {
+                    "detail": exc.detail,
+                    **({"reason": exc.reason} if exc.reason else {}),
+                    **({"remedy": exc.remedy} if exc.remedy else {}),
+                },
+                status_code=exc.status,
             )
         return JSONResponse(out, status_code=202 if out.get("state") == "running" else 200)
 

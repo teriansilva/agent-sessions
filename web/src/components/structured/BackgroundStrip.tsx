@@ -15,8 +15,17 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from
 import { humanDuration } from "../../lib/format";
 import type { StructuredBackgroundTask, StructuredSnapshot } from "../../types/api";
 import { Disclosure } from "../hud/Controls";
-import { PausedUnresumed, ProcessRow, ScanUnknown, TaskRow } from "./BackgroundWork";
-import { backgroundWorking } from "./structuredView";
+import {
+  BackgroundRequestsWaiting,
+  FramesSkipped,
+  PausedUnresumed,
+  ProcessRow,
+  RequestsRefused,
+  RolloverHeld,
+  ScanUnknown,
+  TaskRow,
+} from "./BackgroundWork";
+import { backgroundWorking, heldSentence } from "./structuredView";
 import styles from "./BackgroundStrip.module.css";
 
 const described = (t: StructuredBackgroundTask) =>
@@ -64,12 +73,20 @@ export function BackgroundStrip({
   const rootRef = useRef<HTMLDivElement>(null);
   const [cap, setCap] = useState<number | null>(null);
   const jobs = hasBackgroundJobs(snap);
-  // The notices of #1724 apply whatever else runs, so either one renders the strip by itself:
-  // an unreadable process scan (never idle, so it won't idle out) and jobs an interrupted Stop
-  // could not resume. Always visible, outside the collapsible list.
-  const unknown = !!snap?.native?.worker && snap.native.stop_inventory?.scan === "unknown";
-  const paused = snap?.native?.worker ? (snap.native.paused_unresumed ?? 0) : 0;
-  const shown = jobs || unknown || paused > 0;
+  // The notices of #1724 and #1725 apply whatever else runs, so any one renders the strip by
+  // itself: an unreadable process scan (never idle, so it won't idle out), jobs an interrupted
+  // Stop could not resume, a full conversation held by what still runs, frames too large to read
+  // and requests refused with no turn to carry their row, and a background task's request waiting
+  // in the conversation. Always visible, outside the collapsible list.
+  const native = snap?.native?.worker ? snap.native : null;
+  const unknown = native?.stop_inventory?.scan === "unknown";
+  const paused = native?.paused_unresumed ?? 0;
+  const held = !!native?.rollover_held;
+  const skipped = native?.frames_skipped ?? 0;
+  const refused = native?.requests_refused ?? 0;
+  const waiting = native ? (snap?.pending_requests ?? []).filter((r) => r.background_task).length : 0;
+  const notices = paused > 0 || unknown || held || skipped > 0 || refused > 0 || waiting > 0;
+  const shown = jobs || notices;
   // A minute-resolution clock for the one-line summary; the open rows re-render with it too.
   useEffect(() => {
     if (!shown) return;
@@ -94,14 +111,22 @@ export function BackgroundStrip({
   const named = tasks.some(described);
   const engine = tasks.filter((t) => t.source !== "process");
   const processes = tasks.filter((t) => t.source === "process");
-  const count = named
+  // A task whose report was too large to read (#1725) may have ended: never counted as running.
+  const unconfirmed = engine.filter((t) => t.state === "uncertain").length;
+  const confirmed = engine.length - unconfirmed;
+  const counted = named
     ? [
-        engine.length ? plural(engine.length, "agent task", "agent tasks") : null,
+        confirmed ? plural(confirmed, "agent task", "agent tasks") : null,
         processes.length ? plural(processes.length, "process", "processes") : null,
       ]
         .filter(Boolean)
         .join(" · ")
-    : "Background task";
+    : confirmed || processes.length
+      ? "Background task"
+      : "";
+  const count = [counted && `${counted} running`, unconfirmed && `${unconfirmed} unconfirmed`]
+    .filter(Boolean)
+    .join(" · ");
   const lead = named ? tasks.find(described) : undefined;
   const leadSince = lead ? since(lead, now) : null;
   return (
@@ -112,10 +137,14 @@ export function BackgroundStrip({
       data-open={open ? "" : undefined}
       style={cap ? ({ "--strip-cap": `${cap}px` } as CSSProperties) : undefined}
     >
-      {(paused > 0 || unknown) && (
+      {notices && (
         <div className={styles.notices}>
+          {held && <RolloverHeld sentence={heldSentence(snap.native.stop_inventory)} onStopResume={onStop} />}
+          {waiting > 0 && <BackgroundRequestsWaiting count={waiting} />}
           {paused > 0 && <PausedUnresumed count={paused} onStopEverything={onStopEverything} />}
           {unknown && <ScanUnknown onStop={onStop} />}
+          {skipped > 0 && <FramesSkipped count={skipped} />}
+          {refused > 0 && <RequestsRefused count={refused} />}
         </div>
       )}
       {jobs && (
@@ -128,7 +157,7 @@ export function BackgroundStrip({
             <span className={styles.summary}>
               <span className={`${styles.led} ${styles.ledUp}`} aria-hidden="true" />
               <span className={styles.count} role="status">
-                {count} running
+                {count}
               </span>
               {lead && (
                 <span className={styles.lead} aria-hidden="true">
@@ -163,7 +192,7 @@ export function BackgroundStrip({
               </>
             ) : (
               <p className={styles.generic}>
-                A background task is running.{" "}
+                {unconfirmed && !confirmed ? "A background task may be running." : "A background task is running."}{" "}
                 <span>Not a turn: there is nothing to interrupt. Stop ends the worker.</span>
               </p>
             )}

@@ -345,7 +345,9 @@ class Events(Sequence):
             # #1732: rare, bounded, and a session-level one belongs to no turn; the projection
             # attributes a turn-level one by its field, whatever window it reads.
             "memory_oom_kill",
-        }:
+        } or (event["kind"] == "approval" and "background_task" in event["data"]):
+            # A background task's request (#1725) belongs to no turn: it is pending whichever
+            # turns the window shows.
             self._global.append(index)
         else:
             # An own turn's output (#1438) is indexed by its agent turn, so one bounded read

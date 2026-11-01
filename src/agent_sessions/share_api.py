@@ -215,7 +215,18 @@ def _turn(t: dict, authors: dict[str, dict], r: _Redactor, share_id: str) -> dic
     }
 
 
+#: What a visitor reads of a background task's request (#1725): that one is waiting, nothing of
+#: which task asked or what for. Its summary is the JSON of what the operator is shown, origin and
+#: agent id included, so no part of it goes out.
+BACKGROUND_REQUEST_SUMMARY = "A background task is waiting for a decision"
+
+
 def _request(q: dict, r: _Redactor) -> dict:
+    if q.get("background_task"):
+        # The generic line and nothing else: no tool kind, no risk, and for an id only the one
+        # BattleLab minted for its origin, never the agent's own (#1725).
+        minted = q.get("turn_id")
+        return {"request_id": minted, "turn_id": minted, "summary": BACKGROUND_REQUEST_SUMMARY}
     # Redact the WHOLE summary first, then take the line and cut it: cutting first could split a
     # secret and leave its start outside the redactor's reach (#1423 review).
     lines = r(q.get("summary") or "").strip().splitlines()

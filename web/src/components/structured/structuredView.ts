@@ -390,6 +390,11 @@ export function reviewOnly(req: StructuredRequest): boolean {
 /** The button text for one server-offered choice. "Approve always" (#1339) offers only the
  *  snapshot's own `always` grants, as buttons or a list (`inlineGrants`); the view invents none. */
 export function choiceLabel(choice: string, req: StructuredRequest): string {
+  // A background task's request is one-shot (#1725): the words say so, whatever its tool.
+  if (req.background_task && !isQuestion(req)) {
+    if (choice === "approve") return "Approve once";
+    if (choice === "reject") return "Decline";
+  }
   if (isQuestion(req)) {
     if (choice === "answer") return "Send answer";
     if (choice === "reject") return "Skip question";
@@ -508,6 +513,56 @@ export function answerText(
   return questions.map((q, i) => `${q.title}: ${picks[i] ?? ""}`).join("\n");
 }
 
+function jobs(n: number): string {
+  return `${n} ${n === 1 ? "job" : "jobs"}`;
+}
+
+/** Is the background set fully enumerated (#1725)? Not when the agent reported more tasks than
+ *  are tracked, or the process scan can't be read: the count is then only what is tracked. */
+function untracked(inventory: StructuredStopInventory): boolean {
+  return !!inventory.overflow || inventory.scan === "unknown";
+}
+
+function tracked(inventory: StructuredStopInventory): number {
+  return (
+    inventory.tasks.length +
+    (inventory.engine_more ?? 0) +
+    inventory.processes.length +
+    inventory.more
+  );
+}
+
+/** What a full conversation is waiting for (#1725), counted honestly: an exact number only when
+ *  the set is enumerated, tracked plus "more that isn't tracked" otherwise. */
+export function heldSentence(inventory: StructuredStopInventory | null | undefined): string {
+  if (!inventory || (tracked(inventory) === 0 && !untracked(inventory))) {
+    return "Conversation full — it continues when this turn ends.";
+  }
+  if (untracked(inventory)) {
+    const count = tracked(inventory);
+    return count > 0
+      ? `Conversation full — it continues once its background work finishes: ${jobs(count).replace(/^(\d+) /, "$1 tracked ")}, plus more work that isn’t tracked.`
+      : "Conversation full — it continues once its background work finishes: work that isn’t tracked.";
+  }
+  const count = tracked(inventory);
+  return `Conversation full — it continues once ${count === 1 ? "its background job finishes" : `${count} background jobs finish`}.`;
+}
+
+/** What Stop and resume would end (#1725), said before it is pressed. Names only what the
+ *  inventory holds (a process by program and pid, never argv). Null: nothing to warn of. */
+export function remedyWarning(inventory: StructuredStopInventory | null | undefined): string | null {
+  if (!hasBackgroundWork(inventory) || !inventory) return null;
+  const names = [
+    ...inventory.tasks.map((t) => t.description || t.task_type || t.task_id),
+    ...inventory.processes.map((p) => `${p.comm} · pid ${p.pid}`),
+  ];
+  const count = tracked(inventory);
+  const shown = names.slice(0, 3).join(", ");
+  const rest = untracked(inventory) ? ", plus more work that isn’t tracked" : count > 3 ? ", and more" : "";
+  if (count === 0) return "Ends background work that can’t be listed.";
+  return `Ends ${count} background ${count === 1 ? "job" : "jobs"}: ${shown}${rest}`;
+}
+
 /** Does Stop end background work (#1724)? Agent tasks, processes, or a process scan that cannot
  *  be read — never treated as an empty list. Then Stop asks first. */
 export function hasBackgroundWork(
@@ -518,6 +573,7 @@ export function hasBackgroundWork(
     (inventory.tasks.length > 0 ||
       inventory.processes.length > 0 ||
       inventory.more > 0 ||
+      !!inventory.overflow ||
       inventory.scan === "unknown")
   );
 }

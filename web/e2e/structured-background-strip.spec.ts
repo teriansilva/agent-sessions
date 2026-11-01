@@ -274,3 +274,19 @@ for (const motion of ["full", "reduced", "off"] as const) {
     await expect(page.getByTestId("structured-background-task")).toBeVisible();
   });
 }
+
+test("#1725: a task whose report couldn't be read isn't counted as running", async ({ page }) => {
+  await session(page, [agentTask(1), agentTask(2, { state: "uncertain", description: "a lost report" })]);
+  await expect(toggle(page)).toContainText("1 agent task running · 1 unconfirmed");
+  await toggle(page).click();
+  const row = page.getByTestId("structured-background-task").filter({ hasText: "a lost report" });
+  await expect(row).toHaveAttribute("data-state", "uncertain");
+  await expect(row).toContainText("Uncertain");
+  await expect(row).toContainText("its requests are refused");
+});
+
+test("#1725: with only such a task, nothing says running", async ({ page }) => {
+  await session(page, [agentTask(1, { state: "uncertain", description: "a lost report" })]);
+  await expect(toggle(page)).toContainText("1 unconfirmed");
+  await expect(toggle(page)).not.toContainText("running");
+});

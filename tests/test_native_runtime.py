@@ -34,6 +34,7 @@ from agent_sessions import (
     native_ipc,
     native_journal,
     native_ownership,
+    native_protocol,
     native_runtime,
     native_state,
     prefs,
@@ -870,6 +871,9 @@ def test_only_a_successors_startup_records_keep_an_explicit_expectation(tmp_path
     reading = ("new", "memory_pressure", {"level": "normal", "working_set": 1, "max": 8})
     assert ok(journal(("new", "initialized"), reading, ("new", "session")), 10, None, "new")
     assert not ok(journal(("old", "memory_pressure", {"level": "high"})), 10, None, "new")
+    # Its own reading stays no activity once it is the live one too (#1420): a pane's resend after
+    # a relaunch re-reads, then the first sample lands, then it claims.
+    assert ok(journal(("new", "memory_pressure", {"level": "normal"})), 10, "new", "new")
     # Conversation content is never startup, whoever wrote it.
     assert not ok(journal(("new", "text")), 10, None, "new")
     assert not ok(journal(("new", "approval")), 10, None, "new")
@@ -1393,10 +1397,10 @@ async def test_an_oversized_native_frame_is_omitted_not_fatal(host, project):
     await runtime.submit_turn(key, operation_id=turn, text="BIG")
     _, settled = await settle(key, turn)
     assert settled["state"] == "completed" and settled["reply"] == "echo:BIG"
-    page = await runtime.events(key, after=0)
-    assert any(
-        e["kind"] == "error" and "size bound" in e["data"]["message"] for e in page["events"]
-    )
+    # A visible row on the turn, not silence (#1725): tool output is nothing a turn hangs on.
+    assert [t["summary"] for t in settled["tools"] if t["name"] == "battlelab"] == [
+        native_protocol.FRAME_SKIPPED
+    ]
     assert len(host.launches) == 1  # the same generation survived
 
 

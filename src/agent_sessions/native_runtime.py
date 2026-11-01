@@ -113,12 +113,16 @@ class NativeError(Exception):
         detail: str,
         reason: str | None = None,
         inventory: dict | None = None,
+        *,
+        remedy: str | None = None,
     ):
         super().__init__(detail)
         self.status = status
         self.detail = detail
         # A closed refusal reason the pane acts on (#1644, `native_ipc.SEND_NOW_REFUSALS`).
         self.reason = reason
+        # The action this refusal names (#1725, `native_ipc.REMEDIES`), for the pane's button.
+        self.remedy = remedy
         # A refused Stop (#1724): the background work running now, for the pane to confirm.
         self.inventory = inventory
         # The request may have reached the worker but no answer came back (a lost connection,
@@ -646,12 +650,16 @@ def _launch_generation(
     observation = HOST.show(worker)
     if observation is None or observation.load_state != "loaded" or not observation.invocation_id:
         native_state.update_lifecycle(worker.worker_id, phase="launch_unknown", launched=launched)
-        raise NativeError(503, "the native worker could not be started; stop the session")
+        raise NativeError(
+            503, "the native worker could not be started; stop the session", remedy="stop_resume"
+        )
     try:
         identity = native_containment.capture(worker, observation)
     except native_containment.ContainmentError:
         native_state.update_lifecycle(worker.worker_id, phase="launch_unknown", launched=launched)
-        raise NativeError(503, "the native worker could not be started; stop the session") from None
+        raise NativeError(
+            503, "the native worker could not be started; stop the session", remedy="stop_resume"
+        ) from None
     native_state.update_lifecycle(
         worker.worker_id,
         invocation_id=identity.invocation_id,
@@ -767,8 +775,13 @@ async def _call(gen: Generation, action: str, params: dict, *, timeout: float = 
         raise silent from None
     if "error" in response:
         error = response["error"]
+        reason = error.get("reason")
         raise NativeError(
-            _ERRORS.get(error["code"], 503), error["message"], reason=error.get("reason")
+            _ERRORS.get(error["code"], 503),
+            error["message"],
+            reason=reason,
+            # Held by what still runs (#1725): the way out now is Stop, which asks first.
+            remedy="stop_resume" if reason == native_ipc.CONVERSATION_FULL else None,
         )
     return response["result"]
 
@@ -1888,7 +1901,9 @@ def _relaunch_sync(engine_id: str, session_id: str, permission_operation: str | 
         _, record = _session(engine_id, session_id)
         if _permission_change(record).get("operation_id") != permission_operation:
             raise NativeError(
-                409, "permissions changed while sending; review the session and send again"
+                409,
+                "permissions changed while sending; review the session and send again",
+                remedy="retry",
             )
         if _start_state(record) not in (None, STARTED):
             # Refuse BEFORE touching the record: a turn must neither launch a skip creation that
@@ -1910,7 +1925,9 @@ def _relaunch_sync(engine_id: str, session_id: str, permission_operation: str | 
         native_state.write_session(session_id, record)
         if _settle_generations(session_id, record):
             raise NativeError(
-                409, "a previous native worker's state is unknown; stop the session first"
+                409,
+                "a previous native worker's state is unknown; stop the session first",
+                remedy="stop_resume",
             )
         if record.get("native_id") is None:
             # A worker may have committed ownership and died before recording it here.
@@ -1919,7 +1936,11 @@ def _relaunch_sync(engine_id: str, session_id: str, permission_operation: str | 
                 record["native_id"] = intent.native_id
                 native_state.write_session(session_id, record)
         if record.get("native_id") is None:
-            raise NativeError(409, "this session's native history was never created; stop it")
+            raise NativeError(
+                409,
+                "this session's native history was never created; stop it",
+                remedy="stop_resume",
+            )
         ready, reason = readiness(prov)
         if not ready:
             raise NativeError(409, reason or "native client is not ready")
@@ -1942,7 +1963,9 @@ async def _live_generation(
         raise NativeError(409, "finish enabling Skip permissions before sending another message")
     if _permission_change(record or {}).get("operation_id") != permission_operation:
         raise NativeError(
-            409, "permissions changed while sending; review the session and send again"
+            409,
+            "permissions changed while sending; review the session and send again",
+            remedy="retry",
         )
     gen = await asyncio.to_thread(_generation, session_id)
     if gen is not None:
@@ -1960,7 +1983,7 @@ async def _live_generation(
         await _wait_ready(worker_id)
     gen = await asyncio.to_thread(_generation, session_id)
     if gen is None:
-        raise NativeError(503, "the native worker is unavailable")
+        raise NativeError(503, "the native worker is unavailable", remedy="retry")
     return gen
 
 
@@ -1976,7 +1999,9 @@ async def _effect(
         current = await asyncio.to_thread(native_state.read_session, session_id)
         if _permission_change(current or {}).get("operation_id") != permission_operation:
             raise NativeError(
-                409, "permissions changed while sending; review the session and send again"
+                409,
+                "permissions changed while sending; review the session and send again",
+                remedy="retry",
             )
         try:
             if action == "submit" and any(
@@ -1987,7 +2012,11 @@ async def _effect(
                     worker = native_containment.WorkerIdentity(gen.worker_id)
                     if not await asyncio.to_thread(HOST.worker_running, worker, life.get("pid")):
                         raise _Unreachable("the old worker exited")
-                    raise NativeError(409, "to attach documents, stop and resume this session")
+                    raise NativeError(
+                        409,
+                        "to attach documents, stop and resume this session",
+                        remedy="resume_with_attachments",
+                    )
             return await _call(gen, action, params)
         except _Unreachable:
             # The socket is gone. Nothing was claimed by THIS call (no connection), and the
@@ -2001,7 +2030,7 @@ async def _effect(
             await _wait_exited(gen)  # an idle exit raced this request; resume in a successor
         if attempt == 2:
             break
-    raise NativeError(503, "the native worker is unreachable")
+    raise NativeError(503, "the native worker is unreachable", remedy="retry")
 
 
 async def _wait_exited(gen: Generation) -> None:
@@ -2161,6 +2190,8 @@ def _worker_ends(
                 ],
                 "more": data["more"],
                 "engine_more": data.get("engine_more", 0),
+                # More tasks ran than were tracked (#1725): the row can't list them all.
+                **({"overflow": True} if data.get("overflow") else {}),
             }
         else:
             continue
@@ -2204,6 +2235,9 @@ def _stop_inventory(item: dict | None, live_worker: str, tasks: dict) -> dict:
         # Tasks past the listed 128 (#1724): with `more`, an inventory over the display limits
         # is never confirmed exactly, only by Stop everything.
         "engine_more": data.get("engine_more", 0),
+        # The engine reported more tasks than are tracked (#1725): the same, and the dialog warns
+        # that untracked work may also end. Absent otherwise.
+        **({"overflow": True} if data.get("overflow") else {}),
         "observed_at": observed,
     }
 
@@ -2232,6 +2266,10 @@ def _show_open(turn: dict, streaming: bool) -> None:
     turn["reply_open_breaks"] = [s - cut for s in turn.get("open_starts", []) if s >= cut]
     if streaming:
         turn["stream"] = {"item": turn["open_item"]}
+
+
+#: The newest of them kept in a snapshot; one past it reads as not retired, and stays on Retry.
+MAX_ENDED_REQUESTS = 128
 
 
 def project(
@@ -2465,6 +2503,11 @@ def project(
                         turn["oom_kills"] = turn.get("oom_kills", 0) + killed
                 else:
                     oom_between.append((item["cursor"], killed))
+        elif kind == "approval" and "background_task" in data:
+            # A background task's request (#1725): its own, keyed by its own turn id, never an
+            # operator turn's. Pending whatever the operator's turns are doing.
+            exact = (item["worker_id"], data["background_task"]["id"], data["request_id"])
+            pending[exact] = {**data, "worker_id": item["worker_id"]}
         elif kind == "approval" and turn is not None:
             exact = (item["worker_id"], data["operation_id"], data["request_id"])
             pending[exact] = {**data, "worker_id": item["worker_id"]}
@@ -2664,9 +2707,24 @@ def project(
                 turn.pop("delivery_turn_id", None)
             turn.pop("delivery", None)
             turn.pop("delivery_reason", None)
+    # What an ended generation left open (#1725): no one decided or retracted these, so its end is
+    # what retired them. How Stop and resume tells a request the Stop ended from one another tab
+    # decided a moment before: both are gone from `pending_requests`.
+    ended_requests = [
+        {"worker": exact[0], "turn_id": exact[1], "request_id": exact[2]}
+        for exact, approval in pending.items()
+        if exact not in decided
+        and approval["worker_id"] != live_worker
+        and "background_task" in approval
+    ][-MAX_ENDED_REQUESTS:]
     for exact, approval in pending.items():
         request_id = exact[2]
         if exact in decided or approval["worker_id"] != live_worker:
+            continue
+        origin = approval.get("background_task")
+        if origin is not None:
+            if _origin_running(origin, live_worker, tasks, background_turn):
+                requests.append(_background_request(record.get("adapter"), approval, cwd))
             continue
         turn = turns.get(approval["operation_id"])
         if turn is None or turn["turn_id"] != in_flight:
@@ -2830,6 +2888,7 @@ def project(
             "plan": journal.events.plan(live_worker),
             "environment": journal.events.environment_of(live_worker),
             "counts": journal.events.counts.view(),
+            **({"ended_requests": ended_requests} if ended_requests else {}),
         },
     }
 
@@ -2920,6 +2979,55 @@ def _settle_agent(agent: dict | None, state: str, reason: str | None = None) -> 
         agent["status"], agent["reason"] = "failed", "the agent reported an error"
     else:
         agent["status"] = "done"
+
+
+def _origin_running(
+    origin: dict, live_worker: str | None, tasks: list[dict], background_turn: tuple | None
+) -> bool:
+    """Is the task a background request was presented for still this generation's, and running,
+    as the journal says (#1725)? The server's half of the recheck: the worker holds the epoch, and
+    an id that ended stays ended in this fold, so a reused one is not this task either."""
+    if origin["generation"] != live_worker:
+        return False
+    if origin["kind"] == "agent_turn":
+        return background_turn == (origin["task_id"], live_worker)
+    # A quarantined task (a report of it was too large to read) isn't known to run: the worker
+    # refuses its requests, and a pending one its retraction never reached is not offered.
+    return any(
+        task["task_id"] == origin["task_id"] and task["state"] != native_protocol.TASK_UNCERTAIN
+        for task in tasks
+    )
+
+
+def _background_request(adapter: str | None, approval: dict, cwd: str | None) -> dict:
+    """A background task's pending request (#1725): the same complete, digest-bound request as
+    any other, under its task and its own turn id. One-shot: no standing grant is offered for a
+    background origin, whatever the request itself proposed."""
+    origin = approval["background_task"]
+    return {
+        "request_id": approval["request_id"],
+        "turn_id": origin["id"],
+        "kind": approval["tool"],
+        "item_id": approval["item_id"],
+        "summary": approval["summary"],
+        "payload": _payload(approval["summary"]),
+        "payload_digest": approval["payload_digest"],
+        "choices": [
+            c
+            for c in approval["choices"]
+            if c != "approve"
+            or (approval.get("complete") is True and approval["tool"] != native_questions.ASK_TOOL)
+        ],
+        "complete": approval.get("complete") is True,
+        "always": [],
+        "risk": _offered(adapter, approval, cwd)["risk"],
+        "operator_only": True,
+        "context": {},
+        "background_task": {
+            "task_id": origin["task_id"],
+            "description": origin.get("description") or "",
+        },
+    }
 
 
 def _offered(adapter: str | None, approval: dict, cwd: str | None) -> dict:
@@ -3231,6 +3339,19 @@ def _snapshot_sync(engine_id: str, session_id: str, live_text: bool = False) -> 
     # Remove a queued message (#1447): only a live worker that says it can.
     if life.get("withdraw") is True:
         view["native"]["withdraw"] = True
+    # A full connection waiting for what still runs (#1725): a display hint, never authority. A
+    # send is decided at the worker's own admission.
+    if live and life.get("rollover_held") is True:
+        view["native"]["rollover_held"] = True
+    # Frames too large to read this generation skipped (#1725). Those a turn carried are rows on
+    # that turn; this is the rest of what would otherwise be silence.
+    skipped = life.get("frames_skipped")
+    if live and type(skipped) is int and skipped > 0:
+        view["native"]["frames_skipped"] = skipped
+    # Requests from an ended task's id refused with no turn to carry their row (#1725).
+    refused = life.get("requests_refused")
+    if live and type(refused) is int and refused > 0:
+        view["native"]["requests_refused"] = refused
     return view
 
 
@@ -3485,9 +3606,12 @@ async def submit(
             ):
                 expected_revision = after.revision
                 continue
+            # A closed reason (#1420, #1725): the pane decides from it, never from the words. The
+            # way on is the same operation id, once the operator has seen what changed.
+            exc.reason, exc.remedy = native_ipc.REVISION_MOVED, "retry"
             raise
     else:
-        raise NativeError(409, "the conversation kept changing; retry")
+        raise NativeError(409, "the conversation kept changing; retry", remedy="retry")
     if receipt["handoff"] == "not_sent":
         raise NativeError(
             409,
@@ -3535,6 +3659,9 @@ def _nothing_to_review(
     return len(newer) == journal.revision - after and all(
         _status_record(event["event"])
         or (fresh and event["worker_id"] == successor and _startup_record(event["event"]))
+        # The current generation reading its own unit: its first sample lands just after readiness,
+        # so between a pane's re-read and its resend (#1420, measured on a real relaunch).
+        or (event["worker_id"] == successor and event["event"]["kind"] == "memory_pressure")
         for event in newer
     )
 
@@ -3593,6 +3720,12 @@ async def _revisioned(prov, session_id, operation_id, immutable, expected_revisi
                 continue
             raise
     raise NativeError(409, "the conversation kept changing; retry")
+
+
+def _approval_turn(data: dict) -> str | None:
+    """The turn a journaled request is decided under: the operator's, or a background task's own."""
+    origin = data.get("background_task")
+    return data["operation_id"] if origin is None else origin["id"]
 
 
 async def decide(
@@ -3664,6 +3797,10 @@ async def decide(
     )
     if approval is None:
         raise NativeError(409, "that approval is no longer pending")
+    if approval.get("background_task") is not None and decision not in {"approve", "reject"}:
+        # One-shot (#1725), refused HERE as well as by the worker, whatever a client sends: no
+        # standing grant, no answer and no interrupt for a request of a background task.
+        raise NativeError(409, "a background task's request is approved once or declined")
     if decision in {"approve", "always"} and approval["kind"] == native_questions.ASK_TOOL:
         # Independently of the offered choices: a worker launched before #1463 still offers
         # approve for a question, and would send Claude the input without answers.
@@ -3698,7 +3835,7 @@ async def decide(
         for e in reversed(first.events)
         if e["event"]["kind"] == "approval"
         and e["event"]["data"]["request_id"] == request_id
-        and e["event"]["data"]["operation_id"] == turn_id
+        and _approval_turn(e["event"]["data"]) == turn_id
         and e["worker_id"] == live
     )
     params = {

@@ -617,6 +617,10 @@ def _observe_live(live: _Live, operation, worker_id: str, event: dict, cursor: i
                     live.approvals.pop(key)
     if kind == "approval" and operation is not None:
         live.approvals[(worker_id, data["request_id"], operation.operation_id)] = cursor
+    elif kind == "approval" and "background_task" in data:
+        # A background task's request (#1725): keyed by its own turn id, carried like any other
+        # until it is decided or cancelled.
+        live.approvals[(worker_id, data["request_id"], data["background_task"]["id"])] = cursor
     elif kind == "approval_cancelled":
         for key in [k for k in live.approvals if k[0] == worker_id and k[1] == data["request_id"]]:
             live.approvals.pop(key)
@@ -1232,7 +1236,14 @@ def _carry(journal: Journal, record_at: Callable[[int], dict]) -> dict:
         if op.request["action"] == "decide"
     }
     for (worker, request_id, operation_id), cursor in journal.live.approvals.items():
-        if operation_id in ids and (worker, operation_id, request_id) not in decided:
+        # A background task's own request (#1725): the newest generation's is live whatever turns
+        # have ended since.
+        origin = (
+            worker == writer
+            and operation_id not in ids
+            and "background_task" in record_at(cursor)["event"]["data"]
+        )
+        if (operation_id in ids or origin) and (worker, operation_id, request_id) not in decided:
             cursors.add(cursor)
     if writer is not None and journal.live.background_worker == writer:
         cursors.update(journal.live.background.values())

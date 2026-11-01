@@ -1801,6 +1801,9 @@ export interface StructuredRequest {
    *  covers, where it is saved and the request's risk; empty when it proposed none. */
   always?: StructuredGrant[];
   risk?: StructuredRisk | null;
+  /** A background task's own request (#1725), never an operator turn's: `turn_id` is its own, it
+   *  stays pending whatever the operator's turns do, and it is approved once or declined. */
+  background_task?: { task_id: string; description: string };
 }
 
 /** One model a native API client's own CLI reports (#1313). */
@@ -1868,6 +1871,9 @@ export interface StructuredStopInventory {
   more: number;
   /** Agent tasks beyond the listed 128. Over either limit: only Stop everything, never exact. */
   engine_more?: number;
+  /** The agent reported more tasks than are tracked (#1725): the list isn't all of it, so only
+   *  Stop everything, and the dialog warns untracked work may also end. */
+  overflow?: boolean;
   observed_at: number | null;
   /** A 503's escape hatch: the worker could not answer the check; this is what it last
    *  journaled, and Stop everything (`{worker, everything: true}`) is the only confirm. */
@@ -1877,6 +1883,8 @@ export interface StructuredStopInventory {
 /** An earlier worker generation's end (#1724): work still running when it ended, or an idle
  *  exit. Placed after `after_turn` (null: before the first shown turn). */
 export interface StructuredWorkerEnd {
+  /** More tasks ran than were tracked (#1725): this row can't list them all. */
+  overflow?: boolean;
   worker: string;
   reason: "idle" | "stop" | "oom" | "protocol" | "worker_ended";
   /** When it was settled; for an end that could not settle, when its work was last observed. */
@@ -1995,6 +2003,13 @@ export interface StructuredSnapshot {
     worker_ends?: StructuredWorkerEnd[];
     /** Jobs an interrupted exact Stop paused and could not confirm resumed (#1724). */
     paused_unresumed?: number;
+    /** This connection is full and can't retire while work runs (#1725). A display hint: a send
+     *  is decided at the worker's own admission. */
+    rollover_held?: boolean;
+    /** Frames too large to read this generation skipped (#1725). */
+    frames_skipped?: number;
+    /** Requests from a task id that had already ended, refused with no turn to carry a row (#1725). */
+    requests_refused?: number;
     /** Advertised by this running worker, absent on older workers. */
     send_now?: "steer" | "interrupt";
     /** What Send now would do right now, as the live worker last reported it (#1644): a display
@@ -2003,6 +2018,9 @@ export interface StructuredSnapshot {
     /** A turn the agent runs for itself (a task notification) that Send now can interrupt
      *  (#1427), or null. Only from a worker advertising `send_now_background`. */
     background_turn?: string | null;
+    /** Background requests an ended generation left open: its end retired them (#1725). Decided
+     *  or retracted ones are never here. Absent when there are none, and on older servers. */
+    ended_requests?: { worker: string; turn_id: string; request_id: string }[];
     send_now_background?: "interrupt";
     /** The live worker can remove a still-queued message (#1447). */
     withdraw?: boolean;

@@ -308,8 +308,6 @@ def test_a_ghost_task_cannot_keep_the_worker_alive(conversation):
 def test_a_malformed_task_list_is_a_protocol_error(bad):
     with pytest.raises(native_protocol.ProtocolError):
         ClaudeCodec(SESSION).feed({"type": "system", "subtype": "background_tasks_changed", **bad})
-    with pytest.raises(native_protocol.ProtocolError):
-        ClaudeCodec(SESSION).feed(_tasks_changed(*[f"t{i}" for i in range(129)]))
 
 
 def test_the_task_list_between_completed_and_the_result_does_not_lose_the_result():

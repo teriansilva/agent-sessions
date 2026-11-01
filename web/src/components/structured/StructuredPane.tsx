@@ -130,11 +130,21 @@ import {
   turnStateLabel,
   waitingBehindOwnTurn,
   hasBackgroundWork,
+  remedyWarning,
 } from "./structuredView";
 import { ChoiceQuestions } from "./Questions";
 import {
   nextToPost,
+  conversationReading,
+  leftForRetry,
+  mayResend,
   outboxEntry,
+  recovered,
+  recoveredOver,
+  resendStands,
+  stopCapture,
+  type StopCapture,
+  stopStands,
   reconcile,
   renewed,
   retried,
@@ -143,6 +153,7 @@ import {
   updateEntry,
   withoutEntry,
   type OutboxEntry,
+  type Remedy,
 } from "./outbox";
 import { OutboxBlock } from "./Outbox";
 import { NotSentRow } from "./NotSent";
@@ -219,6 +230,24 @@ function taskLabel(task: StructuredBackgroundTask): string {
   return task.description || task.summary || task.task_type || task.task_id;
 }
 
+/** The action a refused send names (#1725), from the server's closed set; anything else is none. */
+function remedyOf(e: unknown): Remedy | undefined {
+  const remedy = e instanceof ApiError ? (e.record as { remedy?: unknown } | undefined)?.remedy : null;
+  return remedy === "retry" || remedy === "stop_resume" || remedy === "resume_with_attachments"
+    ? remedy
+    : undefined;
+}
+
+/** The server refused a send because its revision moved (#1420): its closed reason, never the words.
+ *  Whether that was a real change is for the fresh read to say. */
+function revisionMoved(e: unknown): boolean {
+  return (
+    e instanceof ApiError &&
+    e.status === 409 &&
+    (e.record as { reason?: unknown } | undefined)?.reason === "revision_changed"
+  );
+}
+
 /** A server answer (4xx) means the request was NOT taken; anything else may have been. */
 function definite(e: unknown): boolean {
   return e instanceof ApiError && e.status < 500;
@@ -272,6 +301,8 @@ type HeldAnswer = {
   text: string;
   phase: "sending" | "unknown" | "refused";
   message?: string;
+  /** The action its refusal names (#1725). */
+  remedy?: Remedy;
 };
 
 function Patch({ files }: { files: { path: string; diff: string }[] }) {
@@ -469,6 +500,7 @@ function RequestCard({
   folder,
   onInterrupt,
   interrupting,
+  note,
 }: {
   req: StructuredRequest;
   folder?: string;
@@ -478,6 +510,8 @@ function RequestCard({
   deciding: Deciding | null;
   readOnly: boolean;
   onDecide: OnDecide;
+  /** A line above the decision: who is asking, when it isn't the operator's turn (#1725). */
+  note?: string;
 }) {
   const mine = deciding?.key === requestKey(req) ? deciding : null;
   const always = req.choices.includes("approve") ? (req.always ?? []) : [];
@@ -523,9 +557,9 @@ function RequestCard({
       {preview ? (
         <div className={styles.actionSummary} data-testid="structured-question-preview">
           <p className={styles.why}>
-            {agent} asked this, but BattleLab can’t offer it as choices: it carries no options it
-            can read. Stop the turn and answer in a message, or skip it and {agent} carries on with
-            its own judgement.
+            {req.background_task
+              ? "A background task asked this, and it can’t be answered here. Skip it, and the task carries on with its own judgement."
+              : `${agent} asked this, but BattleLab can’t offer it as choices: it carries no options it can read. Stop the turn and answer in a message, or skip it and ${agent} carries on with its own judgement.`}
           </p>
           {preview.map((q, i) => (
             <div key={i} className={styles.previewQuestion}>
@@ -561,6 +595,7 @@ function RequestCard({
           session. Decline it and {agent} continues without the edit, or stop the turn.
         </p>
       )}
+      {note && <p className={styles.originNote}>{note}</p>}
       {mine && (
         <p className={styles.pendingDecision} role="status" data-testid="structured-deciding">
           {mine.phase === "sending"
@@ -632,7 +667,8 @@ function RequestCard({
             ];
           })
         )}
-        {!req.choices.includes("cancel") && (
+        {/* A background task's request has no turn to stop (#1725): approve once or decline. */}
+        {!req.choices.includes("cancel") && !req.background_task && (
           <button type="button" className={chat.ghost} disabled={readOnly || interrupting}
             onClick={onInterrupt}>Reject and stop the turn</button>
         )}
@@ -722,6 +758,31 @@ function RequestCard({
         </ul>
       )}
     </section>
+  );
+}
+
+/** A background task's permission request (#1725): the usual request card under its origin, shown
+ *  on its own, whether or not a turn of the operator's runs. Attributed to the task, never to a
+ *  turn; approved once or declined, and it stays decidable after the operator's turn ends. */
+function BackgroundRequest({ req, folder, agent, deciding, readOnly, onDecide }: {
+  req: StructuredRequest;
+  folder?: string;
+  agent: string;
+  deciding: Deciding | null;
+  readOnly: boolean;
+  onDecide: OnDecide;
+}) {
+  const origin = req.background_task!;
+  return (
+    <div className={styles.backgroundRequest} data-testid="structured-background-request">
+      <p className={styles.originHead} data-testid="structured-request-origin">
+        <span className={styles.ledAsk} aria-hidden="true" />
+        Background task · <span className={styles.originName}>{origin.description || origin.task_id}</span>
+      </p>
+      <RequestCard req={req} folder={folder} agent={agent} deciding={deciding} readOnly={readOnly}
+        onDecide={onDecide} onInterrupt={() => {}} interrupting={false}
+        note="Requested by a background task, not your current turn." />
+    </div>
   );
 }
 
@@ -2015,9 +2076,24 @@ export function StructuredPane({
   /** POST one entry: exactly its frozen request. The outcome only ever updates THAT entry, and
    *  only while it is still in the outbox (a snapshot may have settled it first). */
   const post = async (entry: OutboxEntry) => {
-    const s = snapRef.current;
+    // What the pane shows right now (decided synchronously, a render ahead of `snap`).
+    const s = held.current ?? snapRef.current;
     if (!s) return;
     const { id, text, attachments: files, history } = entry.request;
+    // A resend goes only over the conversation it was scheduled over (#1420): anything newer on
+    // screen is the operator's to read, and this stays on Retry.
+    if (!resendStands(entry, s)) {
+      setOutbox((list) =>
+        updateEntry(list, id, (e) => ({
+          ...e,
+          phase: "refused",
+          reason: "the conversation changed",
+          remedy: "retry",
+          resendFence: undefined,
+        })),
+      );
+      return;
+    }
     setOutbox((list) => updateEntry(list, id, (e) => ({ ...e, phase: "sending" })));
     try {
       // Sequenced (#1505): no snapshot read sent before this settles can overwrite what follows it.
@@ -2043,6 +2119,20 @@ export function StructuredPane({
       // A send to an idled session starts its worker (#1819): at the limit it is refused, the
       // message stays in the outbox, and the way out opens. It is a definite refusal (below).
       if (isSessionLimit(e)) openSessionLimit();
+      // #1420: a worker's last records move the revision and change nothing the operator could
+      // have been answering. The conversation as this pane showed it and as it is now say which:
+      // the same, nothing running → the same message goes once more, the same operation id, at
+      // the revision just read. The server's own check still decides. A real change stays here.
+      // Only a read the pane ACCEPTED counts: one older than a poll already shown (`apply` refused
+      // it) says nothing of what the operator is looking at, and it stays on Retry.
+      const shown = held.current;
+      if (revisionMoved(e) && latest !== null && shown === latest && mayResend(entry, s, shown)) {
+        const fence = conversationReading(shown);
+        setOutbox((list) =>
+          updateEntry(list, id, (x) => ({ ...x, phase: "waiting", resent: true, resendFence: fence })),
+        );
+        return;
+      }
       setOutbox((list) =>
         updateEntry(list, id, (x) =>
           definite(e)
@@ -2053,8 +2143,9 @@ export function StructuredPane({
                 // #1733: a KNOWN refusal before any claim — the session's record could not be
                 // written. Only the server's closed reason says so, never a status alone.
                 unwritable: journalUnwritable(e),
+                remedy: remedyOf(e),
               }
-            : { ...x, phase: "unknown" },
+            : { ...x, phase: "unknown", remedy: remedyOf(e) },
         ),
       );
     }
@@ -2079,6 +2170,20 @@ export function StructuredPane({
   useLeaveGuard(unrecorded(outbox));
 
   const retryEntry = (id: string) => setOutbox((list) => retried(list, id));
+  /** The action a refusal names (#1725). Retry: the same id, now. Stop and resume: the pane's own
+   *  Stop, which asks first when work is running, and the same id once it has really stopped. No
+   *  route of its own, so nothing here can skip what those routes check. */
+  const resumeAfterStop = useRef<{ id: string; key: string; over: StopCapture | null } | null>(null);
+  const remedyEntry = (id: string, remedy: Remedy) => {
+    if (remedy === "retry") {
+      setOutbox((list) => recovered(list, id));
+      return;
+    }
+    // The conversation it was pressed over: what comes back after Stop must still be that.
+    const shown = held.current;
+    resumeAfterStop.current = { id, key, over: shown ? stopCapture(shown) : null };
+    void stop();
+  };
   /** Send again after the record could not be written (#1733): nothing was claimed, so the same
    *  words go out as a NEW operation (a new id), in place, once the pump admits it. */
   const sendAgainEntry = (id: string) => {
@@ -2164,7 +2269,7 @@ export function StructuredPane({
       if (operatorTurns(s ?? null).some((t) => t.turn_id === attempt.id)) {
         setAnswer(null);
       } else if (definite(e)) {
-        setAnswer({ session: key, ...attempt, phase: "refused", message: detail(e, "refused") });
+        setAnswer({ session: key, ...attempt, phase: "refused", message: detail(e, "refused"), remedy: remedyOf(e) });
       } else {
         setAnswer({ session: key, ...attempt, phase: "unknown" });
       }
@@ -2612,14 +2717,18 @@ export function StructuredPane({
     }
     setStopping(true);
     setActionError(null);
+    let stopped = false;
     try {
       const request = !shown
         ? api.structuredStop(key)
         : everything || shown.digest === null
           ? api.structuredStop(key, { worker: shown.worker, everything: true })
           : api.structuredStop(key, { worker: shown.worker, digest: shown.digest });
-      setContainment((await act(request)).containment);
+      const outcome = (await act(request)).containment;
+      setContainment(outcome);
       setStopConfirm(null);
+      stopped = outcome === "gone";
+      if (!stopped) resumeAfterStop.current = null; // not proved gone: the message stays as it is
     } catch (e) {
       const record = e instanceof ApiError
         ? (e.record as { reason?: string; inventory?: StructuredStopInventory | null } | undefined)
@@ -2632,13 +2741,33 @@ export function StructuredPane({
         // Nothing stopped: the worker could not answer. Offer Stop everything for that generation.
         setStopConfirm({ key, inventory: record.inventory, previous: null });
       } else {
+        resumeAfterStop.current = null;
         setStopConfirm(null);
         setContainment("unknown");
         setActionError(`Stop not confirmed: ${detail(e, "no answer")}`);
       }
     } finally {
       setStopping(false);
-      await load();
+      const latest = await load();
+      // Stop and resume (#1725): only once it really stopped, only the message it was for, and
+      // only over a read the pane ACCEPTED that shows the conversation it was pressed over, every
+      // request accounted for. A turn from another tab, a request decided elsewhere or arriving
+      // by itself, a failed read or one that lost a race stays on Retry: the operator's to read.
+      // A dialog still open keeps it waiting.
+      const resume = resumeAfterStop.current;
+      if (stopped && resume) {
+        resumeAfterStop.current = null;
+        const shown = held.current;
+        const stands =
+          resume.key === key &&
+          latest !== null &&
+          shown === latest &&
+          resume.over !== null &&
+          stopStands(resume.over, shown);
+        setOutbox((list) =>
+          stands ? recoveredOver(list, resume.id, shown) : leftForRetry(list, resume.id),
+        );
+      }
     }
   };
 
@@ -3290,6 +3419,24 @@ export function StructuredPane({
                   Retry answer
                 </button>
               )}
+              {/* The action its refusal names (#1725). Stop asks first when work is running, and
+                  an answer's question is the operator's to read again once the session has
+                  stopped: it is never re-sent behind that. */}
+              {mine.phase === "refused" && mine.remedy && (
+                <button
+                  type="button"
+                  className={`${chat.ghost} ${styles.inline}`}
+                  disabled={readOnly || permissionPending || busy}
+                  data-testid="structured-question-remedy"
+                  onClick={() =>
+                    mine.remedy === "retry"
+                      ? void sendAnswer({ question: mine.question, id: mine.id, text: mine.text })
+                      : void stop()
+                  }
+                >
+                  {mine.remedy === "retry" ? "Retry answer" : "Stop and resume"}
+                </button>
+              )}
             </>
           )
         }
@@ -3632,6 +3779,24 @@ export function StructuredPane({
               </Fragment>
             );
           })}
+          {pending.some((r) => r.background_task) && (
+            <div className={styles.backgroundRequests} data-testid="structured-background-requests">
+              <RequestQueue
+                requests={pending.filter((r) => r.background_task)}
+                render={(r) => (
+                  <BackgroundRequest
+                    key={requestKey(r)}
+                    req={r}
+                    folder={snap?.cwd}
+                    agent={agent}
+                    deciding={deciding[requestKey(r)] ?? null}
+                    readOnly={readOnly || permissionPending}
+                    onDecide={(q, c) => void decide(q, c)}
+                  />
+                )}
+              />
+            </div>
+          )}
           <OutboxBlock
             arrive
             entries={outbox}
@@ -3648,6 +3813,8 @@ export function StructuredPane({
             onEdit={editEntry}
             onDrop={dropEntry}
             onSendAgain={sendAgainEntry}
+            onRemedy={readOnly ? undefined : remedyEntry}
+            remedyWarning={remedyWarning(snap?.native?.stop_inventory)}
             onHandOff={isAgent(engine) && !placeholder
               ? (trigger) => setHandoff({ open: true, trigger })
               : undefined}
@@ -3704,8 +3871,12 @@ export function StructuredPane({
           inventory={stopConfirm.inventory}
           previous={stopConfirm.previous}
           busy={stopping}
-          onKeep={() => setStopConfirm(null)}
+          onKeep={() => {
+            resumeAfterStop.current = null;
+            setStopConfirm(null);
+          }}
           onStop={(everything) => void stop(stopConfirm.inventory, everything)}
+          resuming={!!resumeAfterStop.current}
         />
       )}
       {sendNowHint}

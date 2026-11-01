@@ -40,6 +40,7 @@ export function StopConfirmDialog({
   onKeep,
   onStop,
   returnFocusTo,
+  resuming = false,
 }: {
   inventory: StructuredStopInventory;
   /** The list the operator was looking at when the server refused (409): this one changed. */
@@ -49,6 +50,8 @@ export function StopConfirmDialog({
   /** `everything`: the Stop everything confirmation, else the exact one. */
   onStop: (everything: boolean) => void;
   returnFocusTo?: HTMLElement | null;
+  /** Stop and resume (#1725): the same confirmation, under what it is for. */
+  resuming?: boolean;
 }) {
   const [now, setNow] = useState(() => Date.now() / 1000);
   useEffect(() => {
@@ -58,7 +61,8 @@ export function StopConfirmDialog({
   const unreachable = inventory.reach === "unreachable";
   const unknown = unreachable || inventory.scan === "unknown";
   const moreTasks = inventory.engine_more ?? 0;
-  const over = inventory.more > 0 || moreTasks > 0;
+  // Past what the dialog can show, or past what is tracked at all (#1725): never confirmed exactly.
+  const over = inventory.more > 0 || moreTasks > 0 || !!inventory.overflow;
   // The exact confirmation needs a list the dialog can show in full.
   const exact = !unknown && !over && inventory.digest !== null;
   const seen = new Set((previous?.processes ?? []).map(identity));
@@ -69,7 +73,7 @@ export function StopConfirmDialog({
   return (
     <ConfirmDialog
       tag="STOP SESSION"
-      title="Stop this session?"
+      title={resuming ? "Stop and resume?" : "Stop this session?"}
       cancelLabel="Keep running"
       confirmLabel={busy ? "Stopping…" : exact ? "Stop and end jobs" : "Stop everything"}
       danger
@@ -189,6 +193,13 @@ export function StopConfirmDialog({
           <p className={styles.stopMeta}>None running.</p>
         )}
       </section>
+      {inventory.overflow && (
+        <p className={`${styles.notice} ${styles.noticeChanged}`} role="status"
+          data-testid="structured-stop-untracked">
+          <span className={`${pane.led} ${pane.ledWarn}`} aria-hidden="true" />
+          Untracked background work may also end.
+        </p>
+      )}
       {(!exact || previous) && (
         <p className={`${styles.notice} ${styles.noticeChanged}`}
           data-testid="structured-stop-everything-disclosure">

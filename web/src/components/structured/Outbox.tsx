@@ -3,7 +3,7 @@ import chat from "../chat/ChatPane.module.css";
 import compose from "../terminal/Compose.module.css";
 import styles from "./Outbox.module.css";
 import { ARRIVE_CLASS } from "./arrivals";
-import { leavingNote, type OutboxEntry } from "./outbox";
+import { leavingNote, type OutboxEntry, type Remedy } from "./outbox";
 import { ordinal } from "./structuredView";
 
 /** Why BattleLab could not write the session's record (#1733), from the server's closed error
@@ -16,6 +16,52 @@ function unwritableCause(reason: string | undefined): { label: string; sentence:
     return { label: "I/O error", sentence: "The disk reported an I/O error." };
   }
   return { label: "record not writable", sentence: "The session’s record could not be written." };
+}
+
+const REMEDY_LABEL: Record<Remedy, string> = {
+  retry: "Retry",
+  stop_resume: "Stop and resume",
+  resume_with_attachments: "Resume with attachments",
+};
+
+/** The action a refusal names (#1725), inline: the notice keeps its reason and gains its one way
+ *  on. One that ends a job says so before it is pressed. The refusal stays a state in grey (nothing
+ *  failed yet); a remedy that ends work is outlined in danger, and it asks first. */
+function RemedyPanel({ entry, warning, onRemedy }: {
+  entry: OutboxEntry;
+  warning: string | null;
+  onRemedy: (id: string, remedy: Remedy) => void;
+}) {
+  const remedy = entry.remedy!;
+  const stops = remedy !== "retry";
+  return (
+    <section className={styles.remedy} role="group" aria-label="What you can do about this"
+      data-testid="structured-remedy" data-remedy={remedy}>
+      <p className={styles.remedyTag}>
+        <span className={styles.idleLed} aria-hidden="true" />
+        {entry.phase === "refused" ? "Refused" : "Unknown"}
+      </p>
+      <p className={styles.remedyReason} data-testid="structured-pending-state">
+        {entry.phase === "refused"
+          ? `Not sent: ${entry.reason ?? "refused"}`
+          : "May not have reached BattleLab. Retrying sends the same message; it won’t be duplicated."}
+      </p>
+      {stops && warning && (
+        <p className={styles.remedyWarning} data-testid="structured-remedy-warning">
+          <span className={styles.warnLed} aria-hidden="true" />
+          {warning}
+        </p>
+      )}
+      <button type="button" className={stops ? styles.remedyStop : styles.primary}
+        data-testid="structured-remedy-action"
+        title={stops
+          ? "Stops this session’s worker, asking first if work is running, then sends this message again"
+          : "Sends the same message again; BattleLab keeps it once"}
+        onClick={() => onRemedy(entry.request.id, remedy)}>
+        {REMEDY_LABEL[remedy]}
+      </button>
+    </section>
+  );
 }
 
 /** The pending block (#1465): sent messages the conversation does not show yet, after its turns,
@@ -38,6 +84,8 @@ export function OutboxBlock({
   onDrop,
   onSendAgain,
   onHandOff,
+  onRemedy,
+  remedyWarning = null,
   arrive = false,
 }: {
   entries: readonly OutboxEntry[];
@@ -54,6 +102,11 @@ export function OutboxBlock({
   onSendAgain?: (id: string) => void;
   /** #1733: open Hand off for this session; its own dialog reports a failure. */
   onHandOff?: (trigger: HTMLElement) => void;
+  /** #1725: the action a refusal names. Without it (a client whose refusals name none) an entry
+   *  reads as any other refusal. */
+  onRemedy?: (id: string, remedy: Remedy) => void;
+  /** #1725: what a Stop would end right now, said before the button that does it. */
+  remedyWarning?: string | null;
   /** Each entry enters with the arrival motion (#1727): the operator's own message arrives here,
    *  at Send, and the turn that later replaces it does not arrive a second time. */
   arrive?: boolean;
@@ -147,24 +200,28 @@ export function OutboxBlock({
               )}
               {!!text && <div className={`${chat.txt} ${styles.text}`}>{text}</div>}
             </div>
-            <p className={
-              e.phase === "refused"
-                ? `${styles.state} ${styles.refused}`
-                : e.phase === "unknown"
-                  ? `${styles.state} ${styles.unknown}`
-                  : styles.state
-            } data-testid="structured-pending-state">
-              {e.phase === "sending"
-                ? e.recorded ? "Recorded by BattleLab · updating the conversation…" : "Sending to BattleLab…"
-                : e.phase === "waiting"
-                  ? i === 0 ? headHold ?? "Goes out next." : "Goes out after the message above."
-                  : e.phase === "refused"
-                    ? `Not sent: ${e.reason ?? "refused"}`
-                    : "May not have reached BattleLab. Retrying sends the same message; it won’t be duplicated."}
-            </p>
+            {e.remedy && onRemedy && (e.phase === "refused" || e.phase === "unknown") ? (
+              <RemedyPanel entry={e} warning={remedyWarning} onRemedy={onRemedy} />
+            ) : (
+              <p className={
+                e.phase === "refused"
+                  ? `${styles.state} ${styles.refused}`
+                  : e.phase === "unknown"
+                    ? `${styles.state} ${styles.unknown}`
+                    : styles.state
+              } data-testid="structured-pending-state">
+                {e.phase === "sending"
+                  ? e.recorded ? "Recorded by BattleLab · updating the conversation…" : "Sending to BattleLab…"
+                  : e.phase === "waiting"
+                    ? i === 0 ? headHold ?? "Goes out next." : "Goes out after the message above."
+                    : e.phase === "refused"
+                      ? `Not sent: ${e.reason ?? "refused"}`
+                      : "May not have reached BattleLab. Retrying sends the same message; it won’t be duplicated."}
+              </p>
+            )}
             {e.phase !== "sending" && (
               <div className={styles.actions}>
-                {e.phase === "unknown" && (
+                {e.phase === "unknown" && e.remedy !== "retry" && (
                   <button type="button" className={styles.primary} onClick={() => onRetry(id)}
                     title="Sends the same message again; BattleLab keeps it once">
                     Retry

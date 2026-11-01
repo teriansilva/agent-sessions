@@ -215,9 +215,12 @@ def test_task_bookkeeping_between_completed_and_its_result_keeps_the_wait():
 
 def test_a_dropped_frame_ends_a_waiting_input():
     codec = _ended()
-    (failed,) = codec.frame_lost()
+    # Never a success nothing proved (#1725): uncertain, the two records every reader takes for it.
+    _row, uncertain, failed = codec.frame_lost()
+    assert uncertain.kind == "error" and uncertain.data["operation_id"] == OPERATION
     assert failed.data["operation_id"] == OPERATION and failed.data["state"] == "failed"
-    assert codec.frame_lost() == []  # nothing waits any more
+    assert codec.operation_id is None  # nothing waits any more
+    assert [event.kind for event in codec.frame_lost()] == ["error"]  # a diagnostic only
 
 
 def test_cancelled_still_ends_the_input_at_once():
@@ -245,13 +248,16 @@ class _Stub:
         self.recorded: list = []
         self.waiters: dict = {}
         self.done = asyncio.Event()
+        self.ready = asyncio.Event()  # not ready: a drop is told only to the codec
+        self.lost_head = self.lost_tail = b""
+        self.reason = ""
         self.terminated = self.closing = False
 
     async def reap_window(self):  # the agent's own end (#1732): pinned in test_native_oom.py
         pass
 
     def dropped_frame(self):
-        self.recorded.append("dropped")
+        return native_worker.Worker.dropped_frame(self)
 
     def record(self, events):
         self.recorded.extend(events)
@@ -277,6 +283,8 @@ def test_a_dropped_frame_reaches_the_codec(monkeypatch):
         return stub
 
     stub = asyncio.run(run())
-    assert "dropped" in stub.recorded
+    # Its start reached the codec, which said what the frame was: the result this input waits for.
+    assert stub.lost_head == stub.lost_tail == b""
+    assert [e.kind for e in stub.handled][:2] == ["tool", "error"]
     (failed,) = [e for e in stub.handled if e.kind == "turn_completed"]
     assert failed.data["operation_id"] == OPERATION and failed.data["state"] == "failed"
