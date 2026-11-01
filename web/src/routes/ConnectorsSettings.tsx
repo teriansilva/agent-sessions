@@ -26,6 +26,7 @@ import {
   type ConnectorManifest,
 } from "../lib/connectors";
 
+import { ConnectorRecipients } from "./ConnectorRecipients";
 import styles from "./ConnectorsSettings.module.css";
 import settings from "./Settings.module.css";
 
@@ -94,9 +95,10 @@ export function ConnectorsSettings() {
       <p className={settings.hint}>
         Connectors let HQ read from your other services: ask it about an issue,
         a pull request, a commit’s checks or a file in your cloud, and it looks
-        them up. They <b>only read</b>. Nothing is sent, commented, merged or
-        changed through a connector. You sign in with your own account, so HQ
-        sees what that account can see.
+        them up. Those connectors <b>only read</b>. A messenger connector can
+        let HQ <b>propose</b> a message to a recipient you allowed, and nothing
+        is sent until you tap it. You sign in with your own accounts, so HQ sees
+        what those accounts can see.
       </p>
       {loadError && (
         <p className={settings.err} role="alert">
@@ -137,8 +139,10 @@ export function ConnectorsSettings() {
             <div className={styles.entryText}>
               <b className={styles.name}>{m.label}</b>
               <span className={styles.meta}>
-                by {m.publisher === "battlelab" ? "BattleLab" : m.publisher} ·
-                reads {readsLabel(m.capabilities.read)}
+                by {m.publisher === "battlelab" ? "BattleLab" : m.publisher} ·{" "}
+                {m.capabilities.read.length
+                  ? `reads ${readsLabel(m.capabilities.read)}`
+                  : "proposes messages you approve"}
               </span>
             </div>
             <button
@@ -296,7 +300,7 @@ function ConnectorCard({
       await test();
     });
 
-  const shown = statusLine(inst);
+  const shown = statusLine(inst, manifest?.category);
   const failedText =
     failure && failure.generation === inst.generation
       ? failure.text
@@ -492,7 +496,13 @@ function ConnectorCard({
               {warning.text}
             </p>
           )}
-          {ready && inst.tested && (
+
+          {ready && inst.tested && manifest?.category === "messenger" && (
+            <p className={settings.ok} data-testid="connector-tested">
+              Signed in as <b>{inst.tested.login}</b>
+            </p>
+          )}
+          {ready && inst.tested && manifest?.category !== "messenger" && (
             <p className={settings.ok} data-testid="connector-tested">
               {inst.tested.login ? (
                 <>
@@ -508,37 +518,48 @@ function ConnectorCard({
             </p>
           )}
 
-          <div className={styles.read}>
-            <label className={settings.aiToggle} htmlFor={ids.read}>
-              <input
-                id={ids.read}
-                type="checkbox"
-                checked={pendingRead ?? inst.enabled.read}
-                disabled={busy !== null || (!ready && !inst.enabled.read)}
-                onChange={(e) => {
-                  const on = e.target.checked;
-                  setPendingRead(on);
-                  void run("read", async () => {
-                    await api.setConnectorRead(inst.id, on);
-                  }).finally(() => setPendingRead(null));
-                }}
-              />
-              <span>Let HQ read through this connector</span>
-            </label>
-            {!ready && (
-              <p className={settings.hint}>
-                HQ can’t read through it until a test passes.
-              </p>
-            )}
-            {ready && disclosure && (
-              <p
-                className={settings.aiEgress}
-                data-testid="connector-disclosure"
-              >
-                {disclosure}
-              </p>
-            )}
-          </div>
+          {(manifest?.capabilities.send?.length ?? 0) > 0 && (
+            <ConnectorRecipients
+              inst={inst}
+              busy={busy !== null}
+              onChanged={onChanged}
+              matrix={manifest?.adapter === "matrix-cs"}
+            />
+          )}
+
+          {(manifest?.capabilities.read.length ?? 1) > 0 && (
+            <div className={styles.read}>
+              <label className={settings.aiToggle} htmlFor={ids.read}>
+                <input
+                  id={ids.read}
+                  type="checkbox"
+                  checked={pendingRead ?? inst.enabled.read}
+                  disabled={busy !== null || (!ready && !inst.enabled.read)}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setPendingRead(on);
+                    void run("read", async () => {
+                      await api.setConnectorRead(inst.id, on);
+                    }).finally(() => setPendingRead(null));
+                  }}
+                />
+                <span>Let HQ read through this connector</span>
+              </label>
+              {!ready && (
+                <p className={settings.hint}>
+                  HQ can’t read through it until a test passes.
+                </p>
+              )}
+              {ready && disclosure && (
+                <p
+                  className={settings.aiEgress}
+                  data-testid="connector-disclosure"
+                >
+                  {disclosure}
+                </p>
+              )}
+            </div>
+          )}
         </>
       )}
 

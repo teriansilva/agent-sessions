@@ -97,3 +97,15 @@
     flex: 1 1 100%;
   }
 }
+
+/* A messenger connector's recipients (#1746 P2a). */
+.recipients {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-1);
+}
+.recipient label {
+  min-height: 44px;
+}

@@ -36,7 +36,7 @@ _TABLES = {
     "adapter": (frozenset({"kind"}), None),
     "origin": (frozenset({"mode"}), frozenset({"fixed"})),
     "auth": (frozenset({"kind", "scheme", "scopes"}), None),
-    "capabilities": (frozenset({"read"}), None),
+    "capabilities": (frozenset({"read"}), frozenset({"send"})),
     "docs": (frozenset(), frozenset({"setup"})),
 }
 
@@ -60,6 +60,8 @@ class Manifest:
     scopes: tuple[str, ...]
     reads: tuple[str, ...]
     setup: str
+    #: What HQ may propose sending (#1832); empty for every reading connector.
+    sends: tuple[str, ...] = ()
 
     def public(self) -> dict:
         """The catalog view (no secret exists in a manifest; this is its whole description)."""
@@ -73,7 +75,7 @@ class Manifest:
             "origin_mode": self.origin_mode,
             "fixed_origin": self.fixed_origin,
             "auth": {"kind": self.auth_kind, "scopes": list(self.scopes)},
-            "capabilities": {"read": list(self.reads)},
+            "capabilities": {"read": list(self.reads), "send": list(self.sends)},
             "setup": self.setup,
         }
 
@@ -175,7 +177,22 @@ def validate(doc: object) -> Manifest:
     if scheme not in kinds.AUTH_KIND_SCHEMES[auth_kind]:
         raise ManifestError(f"auth.scheme {scheme!r} is not one {auth_kind} uses")
     scopes = _members(auth["scopes"], "auth.scopes", kinds.AUTH_SCOPES)
-    reads = _members(tables["capabilities"]["read"], "capabilities.read", kinds.READ_OPS)
+    caps = tables["capabilities"]
+    # A send-only connector (a messenger, #1832) lists no reads; every other manifest must. The
+    # list itself is still required and still strict, so a missing or malformed one is refused.
+    sends: tuple[str, ...] = ()
+    if "send" in caps:
+        sends = _members(caps["send"], "capabilities.send", kinds.SEND_OPS)
+        allowed_sends = kinds.ADAPTER_SENDS.get(adapter, frozenset())
+        beyond_send = set(sends) - allowed_sends
+        if beyond_send:
+            raise ManifestError(
+                f"capabilities.send {sorted(beyond_send)[0]!r} is not one {adapter} does"
+            )
+    if sends and caps["read"] == []:
+        reads: tuple[str, ...] = ()
+    else:
+        reads = _members(caps["read"], "capabilities.read", kinds.READ_OPS)
     beyond = set(reads) - kinds.ADAPTER_READS[adapter]
     if beyond:
         raise ManifestError(f"capabilities.read {sorted(beyond)[0]!r} is not one {adapter} does")
@@ -196,6 +213,7 @@ def validate(doc: object) -> Manifest:
         auth_scheme=scheme,
         scopes=scopes,
         reads=reads,
+        sends=sends,
         setup="" if setup is None else _text(setup, "docs.setup", SETUP_MAX),
     )
 

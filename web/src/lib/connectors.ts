@@ -19,7 +19,7 @@ export type ConnectorManifest = {
   origin_mode: "operator" | "fixed" | string;
   fixed_origin: string | null;
   auth: { kind: string; scopes: string[] };
-  capabilities: { read: string[] };
+  capabilities: { read: string[]; send?: string[] };
   setup: string;
 };
 
@@ -41,6 +41,21 @@ export type ConnectorInstance = {
     at: number;
   } | null;
   enabled: { read: boolean };
+  /** A messenger's (#1832): who it may message, set only from server-listed candidates. */
+  recipients?: ConnectorRecipient[];
+  /** The recipients were chosen for THIS bot and origin (a different one needs a re-save). */
+  recipients_bound?: boolean;
+  /** The bot identity the saved recipients were chosen for. */
+  recipients_chosen_for?: string | null;
+  /** Whether HQ may propose messages now (the switch, and everything it needs). */
+  send?: boolean;
+  /** Why sending was last switched off by a change of bot or origin. */
+  send_off?: {
+    reason: "identity_changed" | "origin_changed";
+    was: string;
+    now: string;
+    at: number;
+  } | null;
   created_at: number;
 };
 
@@ -117,10 +132,10 @@ export type ConnectorTone = "up" | "idle" | "draft" | "down";
  *  (`docs/design.md` §3: status colour is load-bearing). Only a connector HQ reads through is
  *  `up`; one still being set up is `draft` (steady, not the blinking `attention`: an unfinished
  *  setup is not something that needs you), a tested one with reading off is `idle`. */
-export function statusLine(inst: ConnectorInstance): {
-  tone: ConnectorTone;
-  text: string;
-} {
+export function statusLine(
+  inst: ConnectorInstance,
+  category = "versioning",
+): { tone: ConnectorTone; text: string } {
   if (inst.status === "unavailable")
     return { tone: "down", text: "No longer in the catalog" };
   if (failedNow(inst)) return { tone: "down", text: "Test failed" };
@@ -132,8 +147,21 @@ export function statusLine(inst: ConnectorInstance): {
     case "needs_test":
       return { tone: "draft", text: "Needs a test" };
     default:
+      if (category === "messenger")
+        return inst.send
+          ? { tone: "up", text: "HQ may propose messages" }
+          : { tone: "idle", text: "Tested · sending is off" };
       return inst.enabled.read
         ? { tone: "up", text: "HQ reads through it" }
         : { tone: "idle", text: "Tested · reading is off" };
   }
 }
+
+export type ConnectorRecipient = { id: string; label: string; kind: string };
+export type RecipientCandidate = ConnectorRecipient & {
+  allowed: boolean;
+  /** Why it can't be allowed (an encrypted Matrix room), or absent. */
+  unavailable?: string;
+  /** How many people are in it (shown so the Commander sees who would read). */
+  members?: number;
+};

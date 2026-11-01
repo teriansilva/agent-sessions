@@ -65,3 +65,19 @@ describe("readsLabel", () => {
     expect(readsLabel(["repos", "pulls", "ci", "wiki"])).toBe("repositories · pull requests · CI status · wiki");
   });
 });
+
+describe("statusLine for a messenger (#1832)", () => {
+  it("speaks of sending, not reading", () => {
+    expect(statusLine(inst({ send: true }), "messenger")).toEqual({
+      tone: "up",
+      text: "HQ may propose messages",
+    });
+    expect(statusLine(inst({ send: false }), "messenger")).toEqual({
+      tone: "idle",
+      text: "Tested · sending is off",
+    });
+    // A failed test still wins, whatever the category.
+    const failed = { generation: 3, ok: false, code: "rejected", at: 2 };
+    expect(statusLine(inst({ status: "needs_test", last_test: failed }), "messenger").tone).toBe("down");
+  });
+});

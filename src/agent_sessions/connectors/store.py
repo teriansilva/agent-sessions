@@ -53,6 +53,17 @@ LOGIN_MAX = 80
 ACCOUNT_RE = re.compile(r"[A-Za-z0-9_.@'-](?:[A-Za-z0-9_.@' -]{0,62}[A-Za-z0-9_.@'-])?")
 ID_RE = re.compile(r"c_[0-9a-f]{12}")
 CAPABILITIES = ("read",)
+#: A send-capable (messenger) connector's capabilities (#1832). A connector's record has exactly
+#: its manifest's: a read-only record stays `{"read"}` and is never rewritten with `send`.
+SEND_CAPABILITIES = ("read", "send")
+#: The keys only a messenger instance has (#1832), all together: who it may reach, which bot and
+#: origin that choice was made for, and why sending was last switched off by a change of either.
+MESSENGER_KEYS = frozenset({"recipients", "bound", "send_off"})
+RECIPIENTS_MAX = 20
+RECIPIENT_ID_RE = re.compile(r"[!A-Za-z0-9:._=+/-]{1,255}")
+RECIPIENT_KINDS = frozenset({"private chat", "group", "supergroup", "channel", "room"})
+LABEL_MAX = 100
+SEND_OFF_REASONS = frozenset({"identity_changed", "origin_changed"})
 #: The audit row's operations.
 AUDIT_OPS = frozenset({"added", "changed", "tested", "enabled", "disabled", "removed"})
 CODE_RE = re.compile(r"[a-z_]{1,40}")
@@ -172,11 +183,69 @@ def _valid_last_test(t: object) -> bool:
     )
 
 
+def _valid_recipient(r: object) -> bool:
+    return (
+        isinstance(r, dict)
+        and set(r) == {"id", "label", "kind"}
+        and isinstance(r["id"], str)
+        and RECIPIENT_ID_RE.fullmatch(r["id"]) is not None
+        and isinstance(r["label"], str)
+        and 0 < len(r["label"]) <= LABEL_MAX
+        and r["label"].isprintable()
+        and r["kind"] in RECIPIENT_KINDS
+    )
+
+
+def fit_recipient(rid: object, label: object, kind: object) -> dict | None:
+    """An adapter's candidate in the stored shape, or None when it can't be one.
+
+    The label is the server's own reading, made to fit: stripped, the id when empty or not
+    printable, and cut to `LABEL_MAX` with an ellipsis. An id or kind the store can't hold is
+    no candidate at all, so the page never offers what a save would refuse (#1832, Hermes 7603)."""
+    if not isinstance(rid, str) or RECIPIENT_ID_RE.fullmatch(rid) is None:
+        return None
+    if kind not in RECIPIENT_KINDS:
+        return None
+    text = label.strip() if isinstance(label, str) else ""
+    if not text or not text.isprintable():
+        text = rid
+    if len(text) > LABEL_MAX:
+        text = text[: LABEL_MAX - 1] + "…"
+    return {"id": rid, "label": text, "kind": kind}
+
+
+def _valid_messenger(inst: dict) -> bool:
+    rs = inst["recipients"]
+    if not isinstance(rs, list) or len(rs) > RECIPIENTS_MAX or not all(map(_valid_recipient, rs)):
+        return False
+    if len({r["id"] for r in rs}) != len(rs):
+        return False
+    b = inst["bound"]
+    if b is not None and not (
+        isinstance(b, dict)
+        and set(b) == {"origin", "identity"}
+        and all(isinstance(v, str) and len(v) <= 300 for v in b.values())
+    ):
+        return False
+    off = inst["send_off"]
+    return off is None or (
+        isinstance(off, dict)
+        and set(off) == {"reason", "was", "now", "at"}
+        and off["reason"] in SEND_OFF_REASONS
+        and isinstance(off["was"], str)
+        and isinstance(off["now"], str)
+        and isinstance(off["at"], int | float)
+    )
+
+
 def _valid_instance(inst: object) -> bool:
     # `account` (#1829) is present only on a `basic` connector, so a store holding none of them is
     # byte-for-byte what an older build reads.
     keys = set(inst) if isinstance(inst, dict) else None
-    if keys not in (_INSTANCE_KEYS, _INSTANCE_KEYS | {"account"}):
+    if keys not in (_INSTANCE_KEYS, _INSTANCE_KEYS | {"account"}, _INSTANCE_KEYS | MESSENGER_KEYS):
+        return False
+    messenger = MESSENGER_KEYS <= keys
+    if messenger and not _valid_messenger(inst):
         return False
     if "account" in inst and not (
         isinstance(inst["account"], str)
@@ -205,7 +274,9 @@ def _valid_instance(inst: object) -> bool:
     if not (_valid_tested(inst["tested"]) and _valid_last_test(inst["last_test"])):
         return False
     enabled = inst["enabled"]
-    if not isinstance(enabled, dict) or set(enabled) != set(CAPABILITIES):
+    if not isinstance(enabled, dict) or set(enabled) != set(
+        SEND_CAPABILITIES if messenger else CAPABILITIES
+    ):
         return False
     if not all(isinstance(v, bool) for v in enabled.values()):
         return False
@@ -343,6 +414,11 @@ def _mutate(fn: Callable[[dict, float], object]) -> object:
         _reconcile_manifests(doc)
         now = time.time()
         out = fn(doc, now)
+        # NEVER WRITE WHAT THE STRICT READ REFUSES (#1832, Hermes 7603). A record the reader
+        # rejects makes the whole store unreadable, and every connector with it, until someone
+        # repairs the file by hand. A mutation that would produce one is refused instead.
+        if not all(_valid_instance(i) for i in doc["instances"]):
+            raise Refused("that change can't be stored", "invalid_record")
         _write(path, doc)
         return out
 
@@ -363,14 +439,51 @@ def tested_current(inst: dict, bundled: dict[str, manifest_mod.Manifest] | None 
     )
 
 
+def has_reads(inst: dict, bundled: dict[str, manifest_mod.Manifest] | None = None) -> bool:
+    """Whether this instance's manifest declares anything to read. A send-only messenger does
+    not, and read can never be switched on for it (#1832, Hermes 7603)."""
+    bundled = _bundled() if bundled is None else bundled
+    m = bundled.get(inst["manifest_id"])
+    return m is not None and bool(m.reads)
+
+
 def readable(inst: dict, bundled: dict[str, manifest_mod.Manifest] | None = None) -> bool:
-    """Whether HQ may read through this instance now: read enabled, a token and an origin, and
-    the last successful test is of THIS generation and manifest version."""
+    """Whether HQ may read through this instance now: its manifest reads, read enabled, a token
+    and an origin, and the last successful test is of THIS generation and manifest version."""
     return (
-        inst["enabled"]["read"]
+        has_reads(inst, bundled)
+        and inst["enabled"]["read"]
         and bool(inst["origin"])
         and "token" in inst["envelopes"]
         and tested_current(inst, bundled)
+    )
+
+
+def binding_current(inst: dict, bundled: dict[str, manifest_mod.Manifest] | None = None) -> bool:
+    """The saved recipients were chosen for THIS bot at THIS origin (#1832): `bound` equals the
+    current origin and the identity the current test named. A rotation of the same bot's token
+    keeps it; a different bot or a moved origin does not."""
+    b = inst.get("bound")
+    t = inst["tested"]
+    return (
+        b is not None
+        and t is not None
+        and tested_current(inst, bundled)
+        and b == {"origin": inst["origin"], "identity": t["login"]}
+    )
+
+
+def sendable(inst: dict, bundled: dict[str, manifest_mod.Manifest] | None = None) -> bool:
+    """Whether HQ may propose (and, #1833, a tap may send) through this instance now: send
+    switched on, a current test, at least one recipient, and the recipients bound to this bot and
+    origin. A read-only connector is never sendable."""
+    return (
+        MESSENGER_KEYS <= set(inst)
+        and bool(inst["enabled"].get("send"))
+        and bool(inst["origin"])
+        and "token" in inst["envelopes"]
+        and bool(inst["recipients"])
+        and binding_current(inst, bundled)
     )
 
 
@@ -384,6 +497,19 @@ def status(inst: dict, bundled: dict[str, manifest_mod.Manifest]) -> str:
     if not tested_current(inst, bundled):
         return "needs_test"
     return "ready"
+
+
+def _public_messenger(inst: dict, bundled: dict[str, manifest_mod.Manifest]) -> dict:
+    """A messenger's recipients, whether they are still bound to this bot, the effective send
+    switch, and why sending was last switched off by a change of bot or origin."""
+    current = binding_current(inst, bundled)
+    return {
+        "recipients": [dict(r) for r in inst["recipients"]],
+        "recipients_bound": current,
+        "recipients_chosen_for": (inst["bound"] or {}).get("identity"),
+        "send": bool(sendable(inst, bundled)),
+        "send_off": dict(inst["send_off"]) if inst["send_off"] else None,
+    }
 
 
 def public(inst: dict, bundled: dict[str, manifest_mod.Manifest]) -> dict:
@@ -406,6 +532,7 @@ def public(inst: dict, bundled: dict[str, manifest_mod.Manifest]) -> dict:
         ),
         "last_test": inst["last_test"],
         "enabled": {"read": bool(inst["enabled"]["read"] and current)},
+        **(_public_messenger(inst, bundled) if MESSENGER_KEYS <= set(inst) else {}),
         "created_at": inst["created_at"],
     }
 
@@ -437,6 +564,9 @@ def add(manifest_id: str) -> dict:
         }
         if m.auth_kind == "basic":
             inst["account"] = ""
+        if m.sends:
+            inst["enabled"] = {"read": False, "send": False}
+            inst.update({"recipients": [], "bound": None, "send_off": None})
         doc["instances"].append(inst)
         _audit(doc, "added", inst, now)
         return dict(inst)
@@ -554,6 +684,25 @@ def snapshot_for_test(iid: str) -> dict:
     return inst
 
 
+def _rebind_check(doc: dict, inst: dict, now: float) -> None:
+    """After a passing test of a messenger (#1832): recipients chosen for another bot or origin
+    are no consent for this one. Sending is switched OFF in this same locked write, the reason is
+    kept on the instance, and only a fresh save of recipients re-binds them. The audit row is the
+    ordinary `disabled` one, so the store's audit trail keeps the shape older builds read."""
+    if not MESSENGER_KEYS <= set(inst) or inst["bound"] is None:
+        return
+    b, identity = inst["bound"], inst["tested"]["login"]
+    if b == {"origin": inst["origin"], "identity": identity}:
+        return  # the same bot at the same origin: a token rotation keeps the consent
+    reason = "origin_changed" if b["origin"] != inst["origin"] else "identity_changed"
+    was = b["origin"] if reason == "origin_changed" else b["identity"]
+    is_now = inst["origin"] if reason == "origin_changed" else identity
+    inst["send_off"] = {"reason": reason, "was": was[:300], "now": is_now[:300], "at": now}
+    if inst["enabled"]["send"]:
+        inst["enabled"]["send"] = False
+        _audit(doc, "disabled", inst, now)
+
+
 def settle_test(
     iid: str, generation: int, *, ok: bool, code: str | None, login: str = "", repos: int = 0
 ) -> bool:
@@ -579,6 +728,7 @@ def settle_test(
                 "repos": max(0, int(repos)),
                 "at": now,
             }
+            _rebind_check(doc, inst, now)
         else:
             inst["tested"] = None
         _audit(doc, "tested", inst, now)
@@ -604,12 +754,97 @@ def set_capability(iid: str, read: bool) -> dict:
     def apply(doc: dict, now: float) -> dict:
         inst = _find(doc, iid)
         if read:
+            if not has_reads(inst):
+                raise Refused("this connector has nothing to read", "no_reads")
             if not tested_current(inst):
                 raise Refused("test this connector before enabling it", "needs_test")
             if not inst["origin"] or "token" not in inst["envelopes"]:
                 raise Refused("set the origin and token first", "needs_token")
         inst["enabled"]["read"] = read
         _audit(doc, "enabled" if read else "disabled", inst, now)
+        return dict(inst)
+
+    return _mutate(apply)  # type: ignore[return-value]
+
+
+def set_send(iid: str, send: bool) -> dict:
+    """Switch sending on or off (#1832). Off always succeeds, at once. On needs everything
+    `sendable` needs except the switch itself: a current test, recipients, and recipients bound
+    to this bot and origin (a re-binding save after any change of either)."""
+    if not isinstance(send, bool):
+        raise Refused("send must be true or false", "bad_body")
+
+    def apply(doc: dict, now: float) -> dict:
+        inst = _find(doc, iid)
+        if not MESSENGER_KEYS <= set(inst):
+            raise Refused("this connector does not send", "bad_body")
+        if send:
+            if not tested_current(inst):
+                raise Refused("test this connector before enabling it", "needs_test")
+            if not inst["recipients"]:
+                raise Refused("save at least one recipient first", "needs_recipients")
+            if not binding_current(inst):
+                raise Refused(
+                    "the recipients were chosen for another bot or address; list and save them "
+                    "again first",
+                    "recipients_unbound",
+                )
+        if inst["enabled"]["send"] != send:
+            inst["enabled"]["send"] = send
+            _audit(doc, "enabled" if send else "disabled", inst, now)
+        return dict(inst)
+
+    return _mutate(apply)  # type: ignore[return-value]
+
+
+def set_recipients(iid: str, ids: list[str], snapshot: dict) -> dict:
+    """Save the allowlist (#1832) from a candidate SNAPSHOT the server took without this lock
+    (`connectors.candidates`): ``{"generation", "candidates": {id: {label, kind, eligible}}}``.
+
+    Under the lock, the instance must still be at the snapshot's generation (else
+    `stale_candidates`), tested, and every id must be an ELIGIBLE candidate in it, or already
+    allowed and not listed ineligible now. Labels and kinds come from the snapshot (or the saved
+    entry), never from the client. The whole list is written, bound to this bot and origin, and
+    any `send_off` reason is cleared; or nothing is."""
+    if (
+        not isinstance(ids, list)
+        or len(ids) > RECIPIENTS_MAX
+        or not all(isinstance(i, str) for i in ids)
+        or len(set(ids)) != len(ids)
+    ):
+        raise Refused(f"send at most {RECIPIENTS_MAX} distinct recipient ids", "bad_body")
+
+    def apply(doc: dict, now: float) -> dict:
+        inst = _find(doc, iid)
+        if not MESSENGER_KEYS <= set(inst):
+            raise Refused("this connector has no recipients", "bad_body")
+        if inst["generation"] != snapshot.get("generation"):
+            raise Refused("the connector changed; list the chats again", "stale_candidates")
+        if not tested_current(inst):
+            raise Refused("test this connector first", "needs_test")
+        listed = snapshot.get("candidates", {})
+        saved = {r["id"]: r for r in inst["recipients"]}
+        out = []
+        for rid in ids:
+            c = listed.get(rid)
+            if c is not None:
+                if not c["eligible"]:
+                    raise Refused("that chat can't be used", "unknown_recipient")
+                out.append({"id": rid, "label": c["label"], "kind": c["kind"]})
+            elif rid in saved and binding_current(inst):
+                # Kept without being listed only by the SAME bot at the same origin (a chat
+                # that went quiet). After a change of either, consent is re-given only from
+                # what the new bot itself lists (#1832, Hermes 7603).
+                out.append(dict(saved[rid]))
+            else:
+                raise Refused("that is not a chat the bot can see", "unknown_recipient")
+        inst["recipients"] = out
+        inst["bound"] = {"origin": inst["origin"], "identity": inst["tested"]["login"]}
+        inst["send_off"] = None
+        if not out and inst["enabled"]["send"]:
+            inst["enabled"]["send"] = False
+            _audit(doc, "disabled", inst, now)
+        _audit(doc, "changed", inst, now)
         return dict(inst)
 
     return _mutate(apply)  # type: ignore[return-value]

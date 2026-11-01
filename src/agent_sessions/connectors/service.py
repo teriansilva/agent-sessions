@@ -15,7 +15,7 @@ import asyncio
 from .. import connector_http, prefs
 from . import manifest as manifest_mod
 from . import store
-from .adapters import ADAPTERS, common
+from .adapters import ADAPTERS, common, matrix
 
 
 def disclosure() -> str:
@@ -63,7 +63,13 @@ def _safe_login(login: object, adapter: str = "forgejo-api") -> str:
     # A forge login is a plain name; a Nextcloud user id may also hold '@', "'" and inner spaces
     # (e-mail and LDAP ids, #1829), the store's account shape. It names the DAV root, so an id
     # the guard would change is refused rather than shown or used.
-    name_re = store.ACCOUNT_RE if adapter == "nextcloud" else common.NAME_RE
+    name_re = (
+        store.ACCOUNT_RE
+        if adapter == "nextcloud"
+        else matrix.USER_ID_RE
+        if adapter == "matrix-cs"
+        else common.NAME_RE
+    )
     if not isinstance(login, str) or not name_re.fullmatch(login):
         return ""
     try:
@@ -90,7 +96,7 @@ async def run_test(iid: str) -> dict:
             return {"status": "stale", "generation": generation}
         return {"status": "failed", "code": e.code, "detail": e.detail, "generation": generation}
     login = await asyncio.to_thread(_safe_login, found["login"], m.adapter)
-    if m.adapter == "nextcloud" and not login:
+    if m.adapter in ("nextcloud", "telegram-bot", "matrix-cs") and not login:
         # Every later read names its paths by this id: without it nothing could be read.
         settled = await asyncio.to_thread(
             store.settle_test, iid, generation, ok=False, code="bad_reply"
@@ -98,7 +104,7 @@ async def run_test(iid: str) -> dict:
         if not settled:
             return {"status": "stale", "generation": generation}
         return {"status": "failed", "code": "bad_reply", "generation": generation,
-                "detail": "Nextcloud named a user id this connector cannot use"}  # fmt: skip
+                "detail": f"{m.label} named an account this connector cannot use"}  # fmt: skip
     settled = await asyncio.to_thread(
         store.settle_test,
         iid,

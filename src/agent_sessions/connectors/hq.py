@@ -270,7 +270,7 @@ async def list_connectors(turn: TurnConnectors) -> tuple[dict, dict]:
     for n, r in enumerate(listed):
         row = {"connector_index": n, "label": r["label"], "host": r["host"]}
         row["category"] = r["category"]
-        row["search_kinds"] = list(CATEGORY_KINDS[r["category"]])
+        row["search_kinds"] = list(CATEGORY_KINDS.get(r["category"], ()))
         if r["category"] == "storage":
             row["root"] = turn.mint(n, "folder:")  # list it with connector_list
         out.append(row)
@@ -285,8 +285,10 @@ async def search(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
     query = args.get("query")
     if not isinstance(query, str) or not query.strip() or len(query) > QUERY_MAX:
         raise Refused(f"query must be 1–{QUERY_MAX} characters", "bad_arguments")
-    if kind not in CATEGORY_KINDS[listed["category"]]:
-        allowed = " or ".join(CATEGORY_KINDS[listed["category"]])
+    if kind not in CATEGORY_KINDS.get(listed["category"], ()):
+        allowed = " or ".join(CATEGORY_KINDS.get(listed["category"], ()))
+        if not allowed:
+            raise Refused("this connector can't be searched", "bad_arguments")
         raise Refused(f"this connector searches kind {allowed}", "bad_arguments")
     bound = await asyncio.to_thread(_bound_now, listed)
     secrets = await asyncio.to_thread(_secrets)

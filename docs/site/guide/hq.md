@@ -335,6 +335,30 @@ CSRF token, like every other change):
 
 `GET /api/connectors` lists your connectors and their state, and `DELETE` on an instance removes it.
 
+### Messengers: Telegram and Matrix
+
+A messenger connector lets HQ **propose** a message to someone you allowed; nothing is sent until
+you tap it (sending arrives in the next release step). It reads nothing.
+
+- **Telegram:** create a bot for BattleLab with @BotFather (`/newbot`) and paste its token. Use a
+  bot of its own: a bot with a webhook can't list its chats here.
+- **Matrix:** create an account for the bot on your homeserver, sign it in once to get an access
+  token, and paste it with the homeserver's address. Invite the bot to the rooms HQ may post in.
+  Encrypted rooms can't be used yet, and neither can a room whose members the bot can't list:
+  who would read a message is part of what you agree to.
+
+Then, under **Recipients HQ may message**, press **Refresh**. For Telegram, send any message to
+your bot first from each chat you want; BattleLab reads only who the chats are (never the
+messages) and acknowledges nothing, so the bot's other uses still see every update. Tick the chats
+or rooms HQ may message, **Save recipients**, and switch on **Let HQ propose messages**. You can
+only pick from what the bot itself lists, and a room that is encrypted, or whose encryption can't
+be checked, can't be picked.
+
+Recipients belong to the bot they were chosen for. If the connector later signs in as a different
+bot, or a Matrix connector moves to another homeserver, sending switches off and the card says why;
+check the recipients and save them again to switch it back on. A new token for the **same** bot
+keeps everything.
+
 **What happens to the token.** It is stored encrypted, never shown again, and sent only to the
 address you saved it for, over HTTPS (plain HTTP only to this machine itself). Changing the
 address needs the token again. A changed address or token needs a new test before HQ reads

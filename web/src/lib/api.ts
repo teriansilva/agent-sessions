@@ -11,7 +11,7 @@ import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, Ga
 import type { CollectionInput, SecretAccessEntry, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
 import type { SessionCapacity, Resources, ResourceSettings, ResourceValues } from "../types/resources";
 import type { CreatedShare, ShareList, ShareMode } from "./shareFormat";
-import type { ConnectorCatalog, ConnectorInstance, ConnectorTestResult } from "./connectors";
+import type { ConnectorCatalog, ConnectorInstance, ConnectorTestResult, RecipientCandidate } from "./connectors";
 import type { DeploymentReceipt, DeploymentRemoval, DeploymentReview, DeploymentStatus, PlaybookInputs } from "../types/playbookDeployment";
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
@@ -936,6 +936,15 @@ export const api = {
     mutateJson<ConnectorTestResult>("POST", `/api/connectors/instances/${enc(id)}/test`),
   setConnectorRead: (id: string, read: boolean) =>
     mutateJson<ConnectorInstance>("POST", `/api/connectors/instances/${enc(id)}/capabilities`, { read }),
+  // A messenger's recipients and send switch (#1832): ids only; the server lists, labels and binds.
+  connectorCandidates: (id: string) =>
+    getJsonWithDetail<{ candidates: RecipientCandidate[] }>(
+      `/api/connectors/instances/${enc(id)}/recipients/candidates`,
+    ),
+  setConnectorRecipients: (id: string, ids: string[]) =>
+    mutateJson<ConnectorInstance>("PUT", `/api/connectors/instances/${enc(id)}/recipients`, { ids }),
+  setConnectorSend: (id: string, send: boolean) =>
+    mutateJson<ConnectorInstance>("POST", `/api/connectors/instances/${enc(id)}/capabilities`, { send }),
   removeConnector: (id: string) =>
     mutateJson<{ removed: string }>("DELETE", `/api/connectors/instances/${enc(id)}`),
   publicGallery: () => getJsonWithDetail<GalleryIndex>("/api/gallery"),

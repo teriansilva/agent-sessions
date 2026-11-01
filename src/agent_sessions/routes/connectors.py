@@ -15,8 +15,8 @@ from collections.abc import Callable
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .. import template_secrets
-from ..connectors import service, store
+from .. import connector_http, template_secrets
+from ..connectors import candidates, service, store
 
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 PREFIX = "/api/connectors"
@@ -143,9 +143,42 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         _csrf: None = Depends(csrf_guard),
     ):
         body = await _body(request)
-        if set(body) != {"read"} or not isinstance(body["read"], bool):
-            raise _BadRequest("send exactly {read: true|false}")
-        inst = await _run(store.set_capability, iid, body["read"])
+        if set(body) == {"read"} and isinstance(body["read"], bool):
+            inst = await _run(store.set_capability, iid, body["read"])
+        elif set(body) == {"send"} and isinstance(body["send"], bool):
+            # A messenger's send switch (#1832): on needs a test and recipients bound to this
+            # bot and origin; off always succeeds, at once.
+            inst = await _run(store.set_send, iid, body["send"])
+        else:
+            raise _BadRequest("send exactly {read: true|false} or {send: true|false}")
+        return _json(_public_one(inst))
+
+    @app.get(PREFIX + "/instances/{iid}/recipients/candidates")
+    async def recipient_candidates(iid: str, _user: str = Depends(logged_in)):
+        """What the bot can reach now (#1832): read from the service WITHOUT the store lock, and
+        kept as the snapshot a save is checked against."""
+        try:
+            return _json(await candidates.list_candidates(iid))
+        except store.NotFound:
+            raise _BadRequest("no such connector", 404, "not_found") from None
+        except store.Refused as e:
+            raise _BadRequest(str(e), 409, e.code) from None
+        except connector_http.ConnectorError as e:
+            raise _BadRequest(e.detail, 502, e.code) from None
+
+    @app.put(PREFIX + "/instances/{iid}/recipients")
+    async def put_recipients(
+        iid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ):
+        """The allowlist (#1832): ids only. Each must be an eligible candidate of the snapshot
+        the server took, at the instance's current generation; labels are the server's."""
+        body = await _body(request)
+        if set(body) != {"ids"}:
+            raise _BadRequest("send exactly {ids: [...]}")
+        inst = await _run(store.set_recipients, iid, body["ids"], candidates.snapshot(iid))
         return _json(_public_one(inst))
 
     @app.delete(PREFIX + "/instances/{iid}")

@@ -1,4 +1,4 @@
-# refuse: unknown field capabilities.send
+# refuse: capabilities.send 'message' is not one forgejo-api does
 contract = 1
 
 [identity]
@@ -20,5 +20,5 @@ scheme = "token"
 scopes = ["read:issue", "read:repository"]
 
 [capabilities]
-send = ["comment"]
+send = ["message"]
 read = ["repos", "issues", "pulls", "ci", "files"]

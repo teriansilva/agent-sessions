@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import re
 import socket
 import xml.etree.ElementTree as ET  # noqa: S405 — parsed only after `_parse_xml` refuses DTDs
@@ -52,12 +53,21 @@ PATHS = {
         r"/remote\.php/dav/files/[A-Za-z0-9._~%-]+(?:/[A-Za-z0-9._~%/-]*)?"
         r"|/ocs/v2\.php/(?:cloud/user|search/providers/files/search)"
     ),
+    # Telegram (#1832): the method only; the transport prefixes `/bot<token>` after vetting.
+    "telegram-bot": re.compile(r"/(?:getMe|getUpdates)"),
+    # Matrix (#1832): who the bot is, its rooms, and per room its name, encryption and members.
+    "matrix-cs": re.compile(
+        r"/_matrix/client/v3/(?:account/whoami|joined_rooms"
+        r"|rooms/[A-Za-z0-9._~%-]+/(?:state/m\.room\.(?:name|encryption)|joined_members))"
+    ),
 }
 #: The methods each kind may send (#1829). PUT, DELETE, MOVE, COPY, MKCOL, PROPPATCH, POST: never.
 METHODS = {
     "forgejo-api": frozenset({"GET"}),
     "github-rest": frozenset({"GET"}),
     "nextcloud": frozenset({"GET", "PROPFIND"}),
+    "telegram-bot": frozenset({"GET"}),
+    "matrix-cs": frozenset({"GET"}),
 }
 #: The PROPFIND bodies, fixed per kind and named by the adapter; it never supplies one.
 PROPFIND_BODIES = {
@@ -82,6 +92,29 @@ HEADERS = {
 }
 #: Reply headers a caller may ask for (`_request(headers_out=…)`); everything else stays here.
 REPLY_HEADERS = frozenset({"x-oauth-scopes"})
+
+#: A Telegram token as it appears in a request URL (#1832).
+_BOT_PATH_RE = re.compile(r"/bot[0-9]{1,20}:[A-Za-z0-9_-]+")
+
+
+class _RedactBotPaths(logging.Filter):
+    """httpx logs every request's URL at INFO (``HTTP Request: GET https://…/bot<token>/getMe``),
+    and a Telegram URL holds the bot token. This filter, on httpx's own logger, rewrites the token
+    out of the record before any handler sees it, whatever level the app logs at (#1832: a test
+    caught the token in the captured log)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:  # noqa: BLE001 — a malformed record is not ours to fix
+            return True
+        if "/bot" in msg:
+            record.msg = _BOT_PATH_RE.sub("/bot<redacted>", msg)
+            record.args = ()
+        return True
+
+
+logging.getLogger("httpx").addFilter(_RedactBotPaths())
 
 #: Test seams: tests mount an `httpx.MockTransport` and pin resolution.
 _TRANSPORT: httpx.AsyncBaseTransport | None = None
@@ -139,14 +172,26 @@ def _status_error(status: int, host: str, headers: httpx.Headers | None = None) 
     return ConnectorError("failed", f"{host} answered {status}", status=status)
 
 
-def _credential(bound: Bound) -> str:
-    """The ``Authorization`` value for ``bound``, from the store at THIS generation."""
+#: A Telegram bot token as it may stand in a URL path (`<digits>:<base64url>`): anything else is
+#: refused before it can change what the path means.
+_PATH_TOKEN_RE = re.compile(r"[0-9]{1,20}:[A-Za-z0-9_-]{20,100}")
+
+
+def _credential(bound: Bound) -> tuple[str | None, str]:
+    """``(Authorization value, path prefix)`` for ``bound``, from the store at THIS generation.
+    A `path-token` (Telegram, #1832) has no header: its token is the URL's first path segment,
+    `/bot<token>`, so the returned prefix is a secret and must never reach an error or a log."""
     token, account = _token(bound)
+    if bound.auth_scheme == "bot":
+        if not _PATH_TOKEN_RE.fullmatch(token):
+            raise ConnectorError("invalid_token", "that is not a Telegram bot token")
+        return None, f"/bot{token}"
     if bound.auth_scheme != "Basic":
-        return f"{bound.auth_scheme} {token}"
+        return f"{bound.auth_scheme} {token}", ""
     if not account:
         raise ConnectorError("needs_account", "the connector's account needs to be entered")
-    return "Basic " + base64.b64encode(f"{account}:{token}".encode()).decode("ascii")
+    basic = base64.b64encode(f"{account}:{token}".encode()).decode("ascii")
+    return f"Basic {basic}", ""
 
 
 #: An XML declaration's encoding, if it names one.
@@ -278,14 +323,14 @@ async def _request(
             )
             # The token is fetched AFTER vetting and right before sending, under the read check:
             # a read disabled while the name was resolving sends nothing.
-            credential = await asyncio.to_thread(_credential, bound)
+            credential, prefix = await asyncio.to_thread(_credential, bound)
             host = dest.host_header
             # The kind's fixed headers first, so they can set `Accept` but never the credential,
             # the Host pin or the identity encoding, which are written after them.
             headers = {
                 "Accept": "application/json",
                 **HEADERS.get(bound.adapter, {}),
-                "Authorization": credential,
+                **({"Authorization": credential} if credential else {}),
                 "Host": dest.host_header,
                 "Accept-Encoding": "identity",
             }
@@ -299,9 +344,13 @@ async def _request(
                 if body is not None:
                     headers["Depth"] = depth or "0"
                     headers["Content-Type"] = "application/xml; charset=utf-8"
+                target = dest.url
+                if prefix:
+                    parts = urlsplit(dest.url)
+                    target = parts._replace(path=prefix + parts.path).geturl()
                 req = client.build_request(
                     method,
-                    dest.url,
+                    target,
                     params=clean,
                     headers=headers,
                     content=body,
@@ -327,12 +376,14 @@ async def _request(
                     await resp.aclose()
     except ConnectorError:
         raise
-    except TimeoutError as e:
-        raise ConnectorError("timeout", f"{host} did not answer in time") from e
-    except httpx.TimeoutException as e:
-        raise ConnectorError("timeout", f"{host} did not answer in time") from e
-    except httpx.HTTPError as e:
-        raise ConnectorError("unreachable", f"{host} could not be reached") from e
+    except TimeoutError:
+        raise ConnectorError("timeout", f"{host} did not answer in time") from None
+    except httpx.TimeoutException:
+        # `from None` everywhere here: an httpx error can carry the request URL, and a Telegram
+        # URL holds the bot token (#1832). The short code is all a caller ever needs.
+        raise ConnectorError("timeout", f"{host} did not answer in time") from None
+    except httpx.HTTPError:
+        raise ConnectorError("unreachable", f"{host} could not be reached") from None
     if reply == "text":
         return bytes(buf)
     if reply == "xml":
