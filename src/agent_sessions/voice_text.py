@@ -52,7 +52,7 @@ def is_no_speech_phrase(said: str) -> bool:
 
 
 #: How many consecutive words of HQ's own line make an echo (#1807). Three: HQ's shortest fixed
-#: line ("One moment, Commander.") is three words, and two common words in a row ("the session")
+#: line ("Take care, Commander.") is three words, and two common words in a row ("the session")
 #: are not evidence that the microphone heard the speaker.
 ECHO_RUN_WORDS = 3
 
@@ -64,7 +64,7 @@ def _word(token: str) -> str:
 def strip_echo(heard: str, said: list[str], *, run: int = ECHO_RUN_WORDS) -> str:
     """`heard` without every stretch of `run` or more consecutive words that is also a stretch of
     one of `said` — HQ's own lines, which the microphone picked up from the speaker (#1807: the
-    operator's "Hey, what's up" arrived as "Hey, what's up One moment, Commander."). Words are
+    operator's "Hey, what's up" arrived as "Hey, what's up" plus HQ's line). Words are
     compared without case or punctuation; what is kept is the operator's own text, untouched.
     An utterance that was nothing but echo comes back empty."""
     tokens = heard.split()

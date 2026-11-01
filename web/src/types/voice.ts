@@ -178,7 +178,7 @@ export type CallServerMessage =
       who: "you" | "hq";
       id: string;
       text: string;
-      kind?: "greeting" | "answer" | "ack" | "progress" | "error" | "readback" | "outcome";
+      kind?: "greeting" | "answer" | "progress" | "error" | "readback" | "outcome";
       turn_id?: string | null;
     }
   | { t: "turn"; turn: { turn_id?: string; status?: string; [k: string]: unknown } }

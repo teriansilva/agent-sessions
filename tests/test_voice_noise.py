@@ -176,7 +176,7 @@ def test_strip_echo_removes_only_runs_of_hqs_own_words(heard, said, kept):
 
 
 async def _hq_says_then_operator(r, line: str, heard: str, *, played_first: bool = False):
-    sid = await r.call.say(line, kind="ack")
+    sid = await r.call.say(line, kind="answer")
     if played_first:
         await r.call.on_played(sid)
     r.turn += 1
@@ -206,7 +206,7 @@ def test_a_line_long_played_out_is_no_echo(monkeypatch):
     monkeypatch.setattr(voice_calls.time, "monotonic", lambda: clock[0])
 
     async def go():
-        sid = await r.call.say("Checking now, Commander.", kind="ack")
+        sid = await r.call.say("Checking now, Commander.", kind="answer")
         await r.call.on_played(sid)
         clock[0] += voice_calls.ECHO_TAIL_S + 5
         r.turn += 1
@@ -224,7 +224,7 @@ def test_a_late_transcript_is_left_as_heard(monkeypatch):
     r = Rig(monkeypatch)
 
     async def go():
-        await r.call.say("One moment, Commander.", kind="ack")
+        await r.call.say("One moment, Commander.", kind="answer")
         await r.ev(t="utterance", text=HQ_HEARD_BACK, late=True, heard_language="en")
         if r.call.turn_task is not None:
             await r.call.turn_task
@@ -390,7 +390,7 @@ def test_hqs_echo_misheard_in_another_listened_language_never_moves_the_call(mon
     async def go():
         await say("Rerun the tests on api-rebase", "en")
         await r.readback_played()
-        await r.call.say("One moment, Commander.", kind="ack")  # still coming out of the speaker
+        await r.call.say("One moment, Commander.", kind="answer")  # still coming out of the speaker
         await say("One moment, Commander.", "de")  # its echo, misheard as German: dropped
         assert worker_lang[0] == "de"  # the worker's running guess WAS moved …
         await say("confirm", "en")
@@ -436,7 +436,7 @@ def test_a_dropped_echo_then_an_untagged_word_never_moves_the_call(monkeypatch):
             await r.call.turn_task
 
     async def go():
-        await r.call.say("One moment, Commander.", kind="ack")
+        await r.call.say("One moment, Commander.", kind="answer")
         await say("One moment, Commander.", "de")  # its echo, misheard as German: dropped
         assert (worker_lang[0], r.call.language) == ("de", "en")
         await say("well", None)  # untagged: carries the worker's stale `de`

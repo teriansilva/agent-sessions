@@ -107,15 +107,6 @@ NEEDS_YOU_ASK = re.compile(
     r"\b(what|who|anything)\b.*\bneeds?\b.*\b(me|you|my attention|attention)\b"
 )
 LANG = re.compile(r"^[a-z]{2}\Z")  # `$` would also match "de\n"
-#: Say something if HQ has not answered by then, so silence never reads as a dropped call.
-ACK_AFTER_S = 1.2
-
-#: Fixed acknowledgements while HQ works. Not model output: picked in rotation.
-ACKS = (
-    "One moment, Commander.",
-    "Checking now, Commander.",
-    "Stand by, Commander.",
-)
 #: What each HQ tool is doing, as a fixed phrase (#1702): keyed by the tool's NAME only — never
 #: its arguments or result. Every HQ tool but `end_call` has one (a test ratchets it).
 TOOL_ACTIVITY = {
@@ -151,22 +142,9 @@ TOOL_ACTIVITY = {
     "propose_library": "preparing a card for you",
     "propose_secret": "preparing a card for you",
 }
-#: Said once per turn as a tool starts (the lookups worth naming at once).
-PROGRESS_LINES = {
-    name: TOOL_ACTIVITY[name].capitalize() + "."
-    for name in (
-        "find_sessions",
-        "list_sessions",
-        "session_status",
-        "session_brief",
-        "list_missions",
-        "mission_status",
-        "fleet_status",
-        "agent_usage",
-    )
-}
 #: While an HQ turn runs on a call, HQ never goes quiet for long (#1702): a fixed status line once
-#: HQ has been quiet this long (counted from when its last line had time to play)…
+#: HQ has been quiet this long within the turn (counted from the later of the turn's start and
+#: when its last line had time to play). A turn that answers sooner says only its answer (#1827)…
 FIRST_PROGRESS_S = 12.0
 #: …then after every this much quiet…
 PROGRESS_EVERY_S = 25.0
@@ -386,7 +364,6 @@ class Call:
     user_turn: int = 0
     _to_client: Callable[[dict | bytes], Awaitable[None]] | None = None
     _to_worker: Callable[[dict | bytes], Awaitable[None]] | None = None
-    _ack_i: int = 0
     #: The HQ turn in flight on this call (#1702): ``{"since", "phase", "phase_since", "tool",
     #: "steps" (started), "done" (returned), "updates", "stalled", "unsaid" (the status line whose
     #: audio has not gone out yet)}`` from its own progress events; None between turns.
@@ -832,7 +809,7 @@ class Call:
         now = time.monotonic()
         self.work = {"since": now, "phase": None, "phase_since": now, "tool": None, "steps": 0,
                      "done": 0, "updates": 0}  # fmt: skip
-        ack_task = asyncio.create_task(self._report_progress(gen))
+        progress = asyncio.create_task(self._report_progress())
         try:
             view = await self._run_turn(turn_id, text, answers, option, replying_to=replying_to)
         except ask_orchestrator.TurnError as e:
@@ -843,7 +820,7 @@ class Call:
             log.warning("voice call turn failed", exc_info=True)
             view = {"status": "failed", "detail": ""}
         finally:
-            ack_task.cancel()
+            progress.cancel()
             self.work = None
         if self.state == "ended":
             return
@@ -1340,15 +1317,9 @@ class Call:
                 # ONE row per challenge (#1681 P2): a reply can only name something of THAT row.
                 await self.offer(cards[:1], gen=gen, queue=cards[1:])
 
-    async def _report_progress(self, gen: int) -> None:
-        """While HQ's turn runs: the ack, then a fixed status line whenever HQ has been quiet too
-        long (#1702), so a slow model never reads as a dropped call. Cancelled as the turn
-        settles."""
-        await asyncio.sleep(ACK_AFTER_S)
-        if gen == self.generation and self.state == "thinking":
-            line = ACKS[self._ack_i % len(ACKS)]
-            self._ack_i += 1
-            await self.say(line, kind="ack")
+    async def _report_progress(self) -> None:
+        """While HQ's turn runs: a fixed status line whenever HQ has been quiet too long (#1702),
+        so a slow model never reads as a dropped call. Cancelled as the turn settles."""
         while self.state != "ended":
             await asyncio.sleep(PROGRESS_TICK_S)
             await self.progress_tick()
@@ -1391,7 +1362,8 @@ class Call:
         else:
             # The stall line comes at the usual pace; only the lines after it slow down.
             need = STALL_EVERY_S if work.get("stalled") else PROGRESS_EVERY_S
-        if now - self.hq_quiet_at < need:
+        # Quiet from before this turn doesn't count: the question was just asked (#1827).
+        if now - max(self.hq_quiet_at, work["since"]) < need:
             return
         work["updates"] += 1
         work["stalled"] = work["phase"] == "model" and now - work["phase_since"] >= STALL_S
@@ -1423,7 +1395,6 @@ class Call:
         if task is None:
             return view
         queue = ask_orchestrator.listen(self.cid, task)
-        said: set[str] = set()
         try:
             while not task.done():
                 get = asyncio.ensure_future(queue.get())
@@ -1432,10 +1403,6 @@ class Call:
                     ev = get.result()
                     self._track(ev)
                     step = ev.get("tool") or ev.get("step")
-                    line = PROGRESS_LINES.get(str(step))
-                    if line and line not in said and self.state == "thinking":
-                        said.add(line)
-                        await self.say(line, kind="progress")
                     await self.client({"t": "progress", "step": str(step)[:40]})
                 else:
                     get.cancel()

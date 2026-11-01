@@ -20,14 +20,13 @@ from test_voice_confirm import Rig, run
 
 
 def progress_says(r: Rig) -> list[dict]:
-    """The status lines said (not the tool-start lines, which share the caption kind)."""
-    starts = set(voice_calls.PROGRESS_LINES.values())
+    """The status lines said."""
     ids = {
         m["id"]
         for m in r.to_client
         if isinstance(m, dict) and m.get("t") == "caption" and m.get("kind") == "progress"
     }
-    return [s for s in r.says() if s["id"] in ids and s["text"] not in starts]
+    return [s for s in r.says() if s["id"] in ids]
 
 
 def thinking(r: Rig, clock: Clock, **work) -> dict:
@@ -54,13 +53,6 @@ def test_every_hq_tool_has_a_fixed_activity():
     """A new HQ tool must say what it is doing; `end_call` never runs long enough to report."""
     assert set(ask_orchestrator.TOOLS) - {"end_call"} <= set(voice_calls.TOOL_ACTIVITY)
     assert set(voice_calls.TOOL_ACTIVITY) <= set(ask_orchestrator.TOOLS)
-
-
-def test_the_tool_start_lines_keep_their_words():
-    assert voice_calls.PROGRESS_LINES["find_sessions"] == "Looking through your sessions."
-    assert voice_calls.PROGRESS_LINES["session_status"] == "Checking that session."
-    assert voice_calls.PROGRESS_LINES["fleet_status"] == "Checking the fleet."
-    assert "propose_nudge" not in voice_calls.PROGRESS_LINES
 
 
 @pytest.mark.parametrize(
@@ -136,17 +128,36 @@ def test_the_first_status_line_comes_after_12_s_of_quiet_and_not_before(monkeypa
     run(go())
 
 
+def test_quiet_from_before_the_turn_does_not_count(monkeypatch):
+    """#1827: nothing resets the quiet as a turn starts any more, so a question asked after a long
+    silence must still wait the full FIRST_PROGRESS_S, not get a status line at the first tick."""
+    clock = Clock(monkeypatch)
+    r = Rig(monkeypatch)
+    thinking(r, clock)
+    r.call.hq_quiet_at = clock.now - 300  # HQ last spoke minutes before this question
+
+    async def go():
+        clock.now += voice_calls.FIRST_PROGRESS_S - 0.5
+        await r.call.progress_tick()
+        assert progress_says(r) == []
+        clock.now += 0.5
+        await r.call.progress_tick()
+        assert len(progress_says(r)) == 1
+
+    run(go())
+
+
 def test_quiet_counts_from_when_hq_last_line_had_time_to_play(monkeypatch):
-    """A line HQ just said (an ack, a tool's start line) restarts the quiet: no status line
-    talks over it or follows it at once."""
+    """A line HQ just said restarts the quiet: no status line talks over it or follows it at
+    once."""
     clock = Clock(monkeypatch)
     r = Rig(monkeypatch)
     thinking(r, clock)
 
     async def go():
         clock.now += 10
-        await r.call.say("Checking that session.", kind="progress")
-        played_by = clock.now + voice_calls.speech_seconds("Checking that session.")
+        await r.call.say("One thing first, Commander.", kind="answer")
+        played_by = clock.now + voice_calls.speech_seconds("One thing first, Commander.")
         clock.now = played_by + voice_calls.FIRST_PROGRESS_S - 0.5
         await r.call.progress_tick()
         assert progress_says(r) == []
@@ -393,6 +404,34 @@ def test_a_status_line_is_no_sign_of_the_operator(monkeypatch):
     run(go())
 
 
+def test_a_long_turn_with_nobody_there_is_still_asked_on_time(monkeypatch):
+    """#1827: only status lines speak during a long turn now, and none of their `played` acks
+    counts, so the still-there question comes 30 min after the operator's last sign, not later."""
+    clock = Clock(monkeypatch)
+    r = Rig(monkeypatch)
+    thinking(r, clock)
+    start = r.call.last_speech = clock.now
+
+    def asked() -> int:
+        return r.said_text().count(voice_calls.STILL_THERE_LINE)
+
+    async def go():
+        while clock.now - start < voice_calls.SILENCE_ASK_S - 60:
+            clock.now += 60
+            await r.call.progress_tick()
+            sid = progress_says(r)[-1]["id"]
+            await r.ev(t="said", id=sid)
+            await r.call.on_played(sid)
+            await r.call.check_silence()
+            assert asked() == 0
+        assert len(progress_says(r)) > 10
+        clock.now = start + voice_calls.SILENCE_ASK_S
+        await r.call.check_silence()
+        assert asked() == 1
+
+    run(go())
+
+
 # --- through a real call turn --------------------------------------------------------------------
 
 
@@ -408,7 +447,6 @@ def age(r: Rig, seconds: float) -> None:
 def test_a_slow_turn_reports_its_real_steps_then_stops_when_it_answers(monkeypatch):
     r = Rig(monkeypatch)
     monkeypatch.setattr(voice_calls, "PROGRESS_TICK_S", 0.001)
-    monkeypatch.setattr(voice_calls, "ACK_AFTER_S", 0.001)
     events: asyncio.Queue = asyncio.Queue()
     release = asyncio.Event()
 
@@ -431,11 +469,10 @@ def test_a_slow_turn_reports_its_real_steps_then_stops_when_it_answers(monkeypat
         await r.ev(t="user_started")
         await r.ev(t="utterance", text="How is api-rebase doing?")
         events.put_nowait({"type": "progress", "step": "thinking", "round": 0})
-        await settle()  # the ack
-        assert r.said_text()[-1] in voice_calls.ACKS
+        await settle()
         events.put_nowait({"type": "progress", "step": "tool", "tool": "session_status"})
         await settle()
-        assert r.said_text()[-1] == "Checking that session."
+        assert r.said_text() == []  # nothing yet: no stock line, no tool-start line (#1827)
         age(r, 20)
         await settle()
         assert progress_says(r)[-1]["text"] == "Still checking that session, 20 seconds so far."
@@ -459,6 +496,42 @@ def test_a_slow_turn_reports_its_real_steps_then_stops_when_it_answers(monkeypat
     run(go())
 
 
+@pytest.mark.parametrize("tools", [["session_status"], []], ids=["a tool", "no tool"])
+def test_a_fast_turn_says_only_its_answer(monkeypatch, tools):
+    """#1827: no stock line and no tool-start line, on a turn that outlasts the 1.2 s the stock
+    line used to wait. The screen still gets the turn's progress."""
+    r = Rig(monkeypatch)
+    monkeypatch.setattr(voice_calls, "PROGRESS_TICK_S", 0.001)
+    events: asyncio.Queue = asyncio.Queue()
+    release = asyncio.Event()
+
+    async def turn_body():
+        await release.wait()
+        return {"turn_id": "t1", "status": "done", "answer": "All green, Commander."}
+
+    async def fake_begin(cid, turn_id, text, **kw):
+        return asyncio.create_task(turn_body()), None
+
+    monkeypatch.setattr(ask_orchestrator, "begin", fake_begin)
+    monkeypatch.setattr(ask_orchestrator, "listen", lambda cid, task: events)
+    monkeypatch.setattr(ask_orchestrator, "unlisten", lambda cid, q: None)
+
+    async def go():
+        r.call.hq_quiet_at -= 300  # HQ has been quiet a while: the question comes out of silence
+        await r.ev(t="user_started")
+        await r.ev(t="utterance", text="How is api-rebase doing?")
+        for tool in tools:
+            events.put_nowait({"type": "progress", "step": "tool", "tool": tool})
+        await asyncio.sleep(1.4)
+        release.set()
+        await r.call.turn_task
+        assert r.said_text() == ["All green, Commander."]
+        steps = [m["step"] for m in r.to_client if isinstance(m, dict) and m.get("t") == "progress"]
+        assert steps == tools
+
+    run(go())
+
+
 def test_a_barge_in_over_a_status_line_does_not_silence_the_rest_of_the_turn(monkeypatch):
     """Independent review of #1704: the Commander (or room noise) talks over a status line —
     `interrupt` while HQ speaks. The turn is still running, so the call goes back to `thinking`
@@ -466,7 +539,6 @@ def test_a_barge_in_over_a_status_line_does_not_silence_the_rest_of_the_turn(mon
     model answers."""
     r = Rig(monkeypatch)
     monkeypatch.setattr(voice_calls, "PROGRESS_TICK_S", 0.001)
-    monkeypatch.setattr(voice_calls, "ACK_AFTER_S", 0.001)
     events: asyncio.Queue = asyncio.Queue()
     release = asyncio.Event()
 
