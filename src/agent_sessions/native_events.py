@@ -133,6 +133,95 @@ def observe_task(tasks: dict, ended: set[str], data: dict, ts: float) -> None:
             task[field] = data[field]
 
 
+#: The counter index's bounds (#1726): distinct names kept per map; the rest are `other`.
+MAX_COUNTED_TOOLS = 256
+MAX_COUNTED_SERVERS = 64
+MAX_COUNTED_SKILLS = 256
+#: How many recent calls' skill uses the counter remembers, to count each one once.
+SKILLED_SEEN = 1024
+
+
+class Counts:
+    """How many calls this conversation made, per built-in tool, per MCP server and per skill
+    used (#1726). Derived from the authoritative journal events alone, like the spool beside it,
+    and disposable: every fold rebuilds it, so it is never a second source of truth. It reads
+    every `tool` event of the journal, never the snapshot's windowed and truncated rows.
+
+    Only an event marked ``call`` (the codec's "this call starts here") is a call, so a call
+    observed many times counts once. An MCP call is counted under its server and not as a
+    built-in tool; one whose server could not be attributed (``mcp_server: ""``) is
+    ``unattributed``. A skill counts only from a REPORTED use (``skill``), never from its being
+    available — on whichever event of the call reports it (opencode names the skill on a later
+    update than the call's start), once per call item. Each map keeps at most its bound of
+    distinct names; calls past it are ``other``."""
+
+    __slots__ = ("tools", "servers", "skills", "other", "unattributed", "_skilled")
+
+    def __init__(self) -> None:
+        self.tools: dict[str, int] = {}
+        self.servers: dict[str, int] = {}
+        self.skills: dict[str, int] = {}
+        self.other = {"tools": 0, "servers": 0, "skills": 0}
+        self.unattributed = 0
+        # (turn, item) of the recent calls whose skill use was counted: one use per call, however
+        # many observations repeat it. Bounded: a call's reports arrive close together.
+        self._skilled: dict[tuple, None] = {}
+
+    def copy(self) -> Counts:
+        result = Counts()
+        result.tools, result.servers, result.skills = (
+            dict(self.tools),
+            dict(self.servers),
+            dict(self.skills),
+        )
+        result.other, result.unattributed = dict(self.other), self.unattributed
+        result._skilled = dict(self._skilled)
+        return result
+
+    def _bump(self, key: str, counts: dict[str, int], name: str, limit: int) -> None:
+        if name in counts:
+            counts[name] += 1
+        elif len(counts) < limit:
+            counts[name] = 1
+        else:
+            self.other[key] += 1
+
+    def observe(self, data: dict) -> None:
+        if data.get("skill"):
+            key = (data.get("operation_id") or data.get("agent_turn"), data.get("item_id"))
+            if key not in self._skilled:
+                if len(self._skilled) >= SKILLED_SEEN:
+                    self._skilled.pop(next(iter(self._skilled)))
+                self._skilled[key] = None
+                self._bump("skills", self.skills, data["skill"], MAX_COUNTED_SKILLS)
+        if data.get("call") is not True:
+            return
+        if "mcp_server" in data:
+            if data["mcp_server"]:
+                self._bump("servers", self.servers, data["mcp_server"], MAX_COUNTED_SERVERS)
+            else:
+                self.unattributed += 1
+        elif data.get("tool_name") or data.get("tool"):
+            # The tool's own name where the protocol only reports a kind (ACP's `other`).
+            name = data.get("tool_name") or data["tool"]
+            self._bump("tools", self.tools, name, MAX_COUNTED_TOOLS)
+
+    def view(self) -> dict:
+        def rows(counts: dict[str, int]) -> list[dict]:
+            ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+            return [{"name": name, "calls": calls} for name, calls in ranked]
+
+        return {
+            "tools": rows(self.tools),
+            "tools_other": self.other["tools"],
+            "servers": rows(self.servers),
+            "servers_other": self.other["servers"],
+            "unattributed": self.unattributed,
+            "skills": rows(self.skills),
+            "skills_other": self.other["skills"],
+        }
+
+
 class Events(Sequence):
     def __init__(self, directory: Path | None = None, *, limit: int = SPOOL_BYTES):
         self._spool = _Spool(directory, limit)
@@ -149,6 +238,14 @@ class Events(Sequence):
         # (cursor, item id) of the newest settled question the agent asked (#1463): what an
         # answer's `reply_to` must still name when it is claimed.
         self.last_question: tuple[int, str] | None = None
+        # #1726: the newest plan checklist, the newest plan document (each an index), the newest
+        # environment report with the worker that made it, and the call counts. The plan is the
+        # conversation's, whatever page of history is shown; the environment its generation's.
+        self.plan_entries: int | None = None
+        self.plan_document: int | None = None
+        self.plan_stale: int | None = None
+        self.environment: tuple[int, str] | None = None
+        self.counts = Counts()
 
     def __len__(self):
         return len(self.cursors)
@@ -183,6 +280,11 @@ class Events(Sequence):
             for worker, (tasks, ended) in self._tasks.items()
         }
         result.last_question = self.last_question
+        result.plan_entries = self.plan_entries
+        result.plan_document = self.plan_document
+        result.plan_stale = self.plan_stale
+        result.environment = self.environment
+        result.counts = self.counts.copy()
         return result
 
     def append(self, item: dict):
@@ -204,6 +306,21 @@ class Events(Sequence):
             and event["data"].get("item_id")
         ):
             self.last_question = (item["cursor"], event["data"]["item_id"])
+        if event["kind"] == "tool":
+            self.counts.observe(event["data"])
+        if event["kind"] in {"plan", "environment"}:
+            # Read by index only (`plan()`, `environment_of()`): a long session's many plan
+            # updates are never re-read by every snapshot.
+            if event["kind"] == "environment":
+                self.environment = (index, item["worker_id"])
+            else:
+                if "entries" in event["data"]:
+                    self.plan_entries = index
+                if "document" in event["data"]:
+                    self.plan_document = index
+                if event["data"].get("stale"):
+                    self.plan_stale = index
+            return
         if event["kind"] == "background" and event["data"].get("task_id"):
             tasks, ended = self._tasks.setdefault(item["worker_id"], ({}, set()))
             observe_task(tasks, ended, event["data"], item["ts"])
@@ -257,6 +374,36 @@ class Events(Sequence):
         non-blank settled text)? Scoped to ``agent_turn`` so a colliding ``operation_id`` or an
         empty text block never counts."""
         return agent_turn in self._agent_turns
+
+    def plan(self, live_worker: str | None = None) -> dict | None:
+        """The conversation's current plan (#1726): the newest checklist (with its explanation)
+        and the newest proposed document, each with when it was recorded, or None.
+
+        ``stale`` (review on #1811): the checklist may be out of date — its client said so
+        later, or a later generation is live and has not re-confirmed it."""
+        out: dict = {}
+        if self.plan_entries is not None:
+            item = self[self.plan_entries]
+            data = item["event"]["data"]
+            out["entries"] = data["entries"]
+            if data.get("explanation"):
+                out["explanation"] = data["explanation"]
+            out["entries_at"] = item.get("ts")
+            out["stale"] = (
+                self.plan_stale is not None and self.plan_stale > self.plan_entries
+            ) or (live_worker is not None and item["worker_id"] != live_worker)
+        if self.plan_document is not None:
+            item = self[self.plan_document]
+            out["document"] = item["event"]["data"]["document"]
+            out["document_at"] = item.get("ts")
+        return out or None
+
+    def environment_of(self, worker_id: str | None) -> dict | None:
+        """What ``worker_id``'s client last reported it works with, or None: a report by an
+        earlier generation ended with it."""
+        if worker_id is None or self.environment is None or self.environment[1] != worker_id:
+            return None
+        return dict(self[self.environment[0]]["event"]["data"])
 
     def heartbeat_of(self, worker_id: str) -> tuple[int, bool] | None:
         """(cursor, active) of ``worker_id``'s newest plain heartbeat, if it wrote one."""

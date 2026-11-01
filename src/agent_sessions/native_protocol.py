@@ -49,6 +49,22 @@ TASK_METADATA_LIMITS = {
 #: of its own seen (Claude's `background_tasks_changed`; a Codex terminal no process can be
 #: running). It ended; how is not known.
 TERMINAL_TASK_STATES = frozenset({"completed", "failed", "stopped", "killed", "ended"})
+# The agent's plan and the tools it works with (#1726), shared with the closed IPC schema. Display
+# text only: a plan entry's words and state, a proposed plan document, and the NAMES (with a
+# status) of MCP servers, skills and commands. Never a command line, URL, header, environment or
+# path from the client's configuration. A cut text visibly ends with an ellipsis.
+PLAN_ENTRIES = 100
+PLAN_TEXT = 500
+PLAN_EXPLANATION = 2000
+PLAN_DOCUMENT = 64 * 1024
+PLAN_STATES = ("pending", "in_progress", "completed")
+ENV_NAME = 128
+ENV_MCP = 64
+ENV_SKILLS = 256
+ENV_COMMANDS = 256
+#: Measured states are the client's own report; `configured` is a name from the client's
+#: resolved configuration that nothing measured (opencode's probe), so it never reads as healthy.
+MCP_STATES = ("connected", "failed", "pending", "needs_auth", "disabled", "configured")
 _ID = re.compile(r"[A-Za-z0-9_.:-]{1,256}\Z", re.ASCII)
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}\Z", re.ASCII)
 #: A reasoning level (#1407): the grammar `native_models` lists and a create admits.
@@ -219,6 +235,93 @@ def _summary(value: Any) -> str:
     return _text(json.dumps(value, ensure_ascii=True, separators=(",", ":")))
 
 
+def _cut(value: str, limit: int) -> str:
+    return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+#: A plan entry's state as each client spells it (#1726). Anything else reads as pending: a step
+#: is never shown done (or under way) on a word BattleLab does not know.
+_PLAN_STATE = {
+    "pending": "pending",
+    "in_progress": "in_progress",
+    "inProgress": "in_progress",
+    "completed": "completed",
+    "done": "completed",
+}
+
+
+def _plan_entries(items: Any, text_key: str) -> list[dict[str, str]] | None:
+    """A client's checklist as bounded ``{text, status}`` rows, or None when it is not a list.
+    A row without words is skipped; past `PLAN_ENTRIES` the list is cut."""
+    if not isinstance(items, list):
+        return None
+    out = []
+    for item in items:
+        if len(out) >= PLAN_ENTRIES:
+            break
+        if not isinstance(item, dict):
+            continue
+        text = item.get(text_key)
+        if not isinstance(text, str) or not text.strip():
+            continue
+        status = item.get("status")
+        known = _PLAN_STATE.get(status, "pending") if isinstance(status, str) else "pending"
+        out.append({"text": _cut(text.strip(), PLAN_TEXT), "status": known})
+    return out
+
+
+def _plan_document(value: Any) -> str | None:
+    return _cut(value, PLAN_DOCUMENT) if isinstance(value, str) and value.strip() else None
+
+
+def _names(values: Any, limit: int) -> list[str]:
+    """Distinct, bounded display names from a client's list (strings, or objects with `name`)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values if isinstance(values, list) else ():
+        if len(out) >= limit:
+            break
+        name = value.get("name") if isinstance(value, dict) else value
+        if not isinstance(name, str) or not name.strip():
+            continue
+        name = _cut(name.strip(), ENV_NAME)
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+class _Environment:
+    """What the client reports it works with (#1726): MCP servers with a status, skills and
+    commands, by NAME only. One `environment` event carries the whole current state, and only
+    when it changed: a client that repeats its report every turn (claude's `system/init`) costs
+    one journal record, not one per turn. A list the client never reported stays absent."""
+
+    def __init__(self, *, skill_use: bool) -> None:
+        self.state: dict[str, Any] = {"skill_use": skill_use}
+        self._sent: dict[str, Any] | None = None
+
+    def update(self, **fields: Any) -> list[NativeEvent]:
+        for key, value in fields.items():
+            if value is not None:
+                self.state[key] = value
+        if self.state == self._sent or not ({"mcp", "skills", "commands"} & self.state.keys()):
+            return []
+        self._sent = json.loads(json.dumps(self.state))
+        return [_event("environment", **json.loads(json.dumps(self.state)))]
+
+
+def _mcp_rows(rows: list[tuple[str, str]]) -> list[dict[str, str]]:
+    out, seen = [], set()
+    for name, status in rows:
+        name = _cut(name.strip(), ENV_NAME) if isinstance(name, str) else ""
+        if not name or name in seen or len(out) >= ENV_MCP:
+            continue
+        seen.add(name)
+        out.append({"name": name, "status": status if status in MCP_STATES else "pending"})
+    return out
+
+
 def _approval_bound(frame: dict[str, Any]) -> None:
     """Refuse a callback that cannot be presented completely within the preview bound.
 
@@ -254,6 +357,15 @@ class _Codec:
         self.operation_id: str | None = None
         self.native_turn_id: str | None = None
         self._closed = False
+        self._last_plan: dict | None = None  # the newest checklist this connection journaled
+
+    def _plan_once(self, **data: Any) -> list[NativeEvent]:
+        """A checklist, journaled only when it differs from the last one this connection sent
+        (review on #1811: one call's repeated reports are one plan)."""
+        if data == self._last_plan:
+            return []
+        self._last_plan = json.loads(json.dumps(data))
+        return [_event("plan", **data)]
 
     def _next(self, action: str, operation_id: str | None = None) -> str:
         if self._closed or len(self._requests) >= MAX_PENDING:
@@ -351,6 +463,19 @@ class _Codec:
         )
 
 
+#: Read-only discovery requests (#1726) and Codex's MCP connection states for them. An unknown
+#: state is `pending`: never shown healthy on a word BattleLab does not know.
+_CODEX_DISCOVERY = frozenset({"mcpServerStatus/list", "skills/list"})
+_CODEX_MCP_STATE = {
+    "connected": "connected",
+    "starting": "pending",
+    "notStarted": "pending",
+    "authenticationRequired": "needs_auth",
+    "failed": "failed",
+    "cancelled": "failed",
+    "disabled": "disabled",
+}
+
 #: The approval kind of an MCP tool call Codex asks about (#1506), and the elicitation action each
 #: offered decision answers with (once only — see `CodexCodec.decide`).
 MCP_TOOL = "mcp_tool"
@@ -379,6 +504,17 @@ class CodexCodec(_Codec):
         # and arguments. An `mcpServer/elicitation/request` names only the server and the
         # arguments; it is presented (and approvable) only when exactly one of these matches.
         self._mcp_calls: dict[str, dict[str, Any]] = {}
+        # The tools (#1726): MCP servers from the CLI's own startup reports and `mcpServerStatus/
+        # list`, and its skills from `skills/list`, both asked once the thread is bound. Codex
+        # reports no use of a skill (BattleLab sends text input only), so none is ever counted.
+        self._env = _Environment(skill_use=False)
+        self._mcp: dict[str, str] = {}
+        self._mcp_pages = 0
+        self._cwd: str | None = None
+        # One `skills/list` in flight; a change meanwhile asks again once it answers (review on
+        # #1811: an unthrottled ask per `skills/changed` could fill the request table).
+        self._skills_inflight = False
+        self._skills_dirty = False
         # Background terminals (#1724, measured on 0.164.0: `fixtures/codex_background_terminal`).
         # A `commandExecution` item with a `processId` still in progress when its turn completes
         # keeps running; its `item/completed` comes later under that ended turn's id. Item id →
@@ -495,6 +631,7 @@ class CodexCodec(_Codec):
         params = self.create_params(
             cwd, model, bypass=bypass, session=session, shell_env=shell_env, mcp_config=mcp_config
         )
+        self._cwd = params["cwd"]
         return self._request("thread/start", params)
 
     def read(self, thread_id: str) -> dict:
@@ -519,6 +656,7 @@ class CodexCodec(_Codec):
             cwd, model, bypass=bypass, session=session, shell_env=shell_env, mcp_config=mcp_config
         )
         params["threadId"] = _identity(thread_id)
+        self._cwd = params["cwd"]
         # Never hydrate the full history into one frame: a long thread exceeds the frame bound
         # and could then never be resumed. BattleLab's own journal already holds what it saw.
         params["excludeTurns"] = True
@@ -730,6 +868,15 @@ class CodexCodec(_Codec):
         action, op = pending
         steered_turn = self._steers.pop(request_id, None)
         expected_session = self._expected_sessions.pop(request_id, None)
+        if action in _CODEX_DISCOVERY:
+            # Best effort (#1726): a client that cannot answer leaves that list unreported.
+            out = self._discovered(action, frame.get("result")) if "error" not in frame else []
+            if action == "skills/list":
+                self._skills_inflight = False
+                if self._skills_dirty:
+                    self._skills_dirty = False
+                    out.extend(self._skills_request())
+            return out
         if "error" in frame:
             error = frame["error"]
             if action == "turn/start" and op is not None and op == self.operation_id:
@@ -792,7 +939,8 @@ class CodexCodec(_Codec):
                     model_effective=None,
                     turns=observed,
                     omitted_turns=max(0, len(turns) - 50),
-                )
+                ),
+                *(self._discover() if action in {"thread/start", "thread/resume"} else ()),
             ]
         if action == "turn/start":
             turn = result.get("turn")
@@ -809,6 +957,82 @@ class CodexCodec(_Codec):
                 output.extend(self.feed(observed_frame))
             return output
         return [_event("response", request_id=request_id, action=action)]
+
+    # --- the plan and the tools (#1726) ---------------------------------------------------------
+
+    def _discover(self) -> list[NativeEvent]:
+        """Ask the bound thread for its MCP servers (one per page: a page carries that server's
+        tool inventory, which must stay far below the frame bound) and its skills. Read-only."""
+        self._mcp_pages = 0
+        return [*self._mcp_page(None), *self._skills_request()]
+
+    def _ask(self, action: str, params: dict[str, Any]) -> list[NativeEvent]:
+        """A discovery request, or nothing: discovery never fails the connection."""
+        try:
+            return [_event("send", frame=self._request(action, params))]
+        except ProtocolError:
+            return []
+
+    def _mcp_page(self, cursor: str | None) -> list[NativeEvent]:
+        params: dict[str, Any] = {
+            "threadId": self.native_id,
+            "detail": "toolsAndAuthOnly",
+            "limit": 1,
+        }
+        if cursor is not None:
+            params["cursor"] = cursor
+        self._mcp_pages += 1
+        return self._ask("mcpServerStatus/list", params)
+
+    def _skills_request(self) -> list[NativeEvent]:
+        if self._skills_inflight:
+            self._skills_dirty = True
+            return []
+        out = self._ask("skills/list", {"cwds": [self._cwd]} if self._cwd else {})
+        self._skills_inflight = bool(out)
+        return out
+
+    def _mcp_report(self, name: Any, status: str) -> list[NativeEvent]:
+        if not isinstance(name, str) or not name.strip():
+            return []
+        name = _cut(name.strip(), ENV_NAME)
+        if name not in self._mcp and len(self._mcp) >= ENV_MCP:
+            return []
+        self._mcp[name] = status
+        return self._env.update(mcp=_mcp_rows(list(self._mcp.items())))
+
+    def _discovered(self, action: str, result: Any) -> list[NativeEvent]:
+        if not isinstance(result, dict):
+            return []
+        if action == "skills/list":
+            names = []
+            for entry in result.get("data") or []:
+                if isinstance(entry, dict) and isinstance(entry.get("skills"), list):
+                    names.extend(
+                        skill
+                        for skill in entry["skills"]
+                        if isinstance(skill, dict) and skill.get("enabled") is not False
+                    )
+            return self._env.update(skills=[{"name": n} for n in _names(names, ENV_SKILLS)])
+        out = []
+        for server in result.get("data") or []:
+            if isinstance(server, dict):
+                status = _CODEX_MCP_STATE.get(server.get("runtimeStatus"), "pending")
+                out.extend(self._mcp_report(server.get("name"), status))
+        # A thread with no servers says so: an empty list, not "not reported".
+        out.extend(self._env.update(mcp=_mcp_rows(list(self._mcp.items()))))
+        cursor = result.get("nextCursor")
+        if isinstance(cursor, str) and cursor and self._mcp_pages < ENV_MCP:
+            out.extend(self._mcp_page(cursor))
+        return out
+
+    def _startup_status(self, params: dict) -> list[NativeEvent]:
+        status = params.get("status")
+        if status == "failed" and params.get("failureReason") == "reauthenticationRequired":
+            state = "needs_auth"
+        else:
+            state = {"starting": "pending", "ready": "connected"}.get(status, "failed")
+        return self._mcp_report(params.get("name"), state)
 
     def _refuse(self, request_id: Any) -> list[NativeEvent]:
         return [
@@ -1089,8 +1313,36 @@ class CodexCodec(_Codec):
             return []
         if "id" in frame:
             return self._approval(frame, params)
+        if self.native_id is not None and method == "mcpServer/startupStatus/updated":
+            # A thread-less report is the CLI's own startup of a server this thread uses.
+            if params.get("threadId") in (None, self.native_id):
+                return self._startup_status(params)
+            return []
+        if self.native_id is not None and method == "skills/changed":
+            return self._skills_request()
         if params.get("threadId") != self.native_id or self.native_id is None:
             return []
+        if method == "turn/plan/updated":
+            # The plan belongs to the conversation, whichever turn (or own turn) updated it.
+            entries = _plan_entries(params.get("plan"), "step")
+            if entries is None:
+                return []
+            explanation = params.get("explanation")
+            return self._plan_once(
+                entries=entries,
+                **(
+                    {"explanation": _cut(explanation, PLAN_EXPLANATION)}
+                    if isinstance(explanation, str) and explanation.strip()
+                    else {}
+                ),
+            )
+        if method == "item/completed" and isinstance(params.get("item"), dict):
+            item = params["item"]
+            if item.get("type") == "plan":
+                # The proposed plan document, from the settled item: its streamed deltas are
+                # explicitly not promised to add up to it.
+                document = _plan_document(item.get("text"))
+                return [] if document is None else [_event("plan", document=document)]
         if method == "serverRequest/resolved":
             key = _approval_key(params.get("requestId"))
             if self._approvals.pop(key, None) is not None:
@@ -1183,6 +1435,18 @@ class CodexCodec(_Codec):
                     self._forget_patch(item_id)
                 if kind == "mcpToolCall":
                     self._track_mcp_call(item_id, item, done=method == "item/completed")
+                # `call` (#1726): `item/started` starts the call; the MCP server it names is the
+                # CLI's own (`""` when it named none: counted unattributed, never guessed).
+                extra: dict[str, Any] = {}
+                if method == "item/started":
+                    extra["call"] = True
+                    if kind == "mcpToolCall":
+                        server = item.get("server")
+                        extra["mcp_server"] = (
+                            _cut(server.strip(), ENV_NAME)
+                            if isinstance(server, str) and server.strip()
+                            else ""
+                        )
                 return prior + [
                     _event(
                         "tool",
@@ -1193,6 +1457,7 @@ class CodexCodec(_Codec):
                         summary=_text(item.get("command") or item.get("tool") or item.get("query")),
                         output=_text(item.get("aggregatedOutput")),
                         completed=method == "item/completed",
+                        **extra,
                     )
                 ]
         return []
@@ -1213,6 +1478,20 @@ _BETWEEN_END_AND_RESULT = frozenset(
         "thinking_tokens",
     }
 )
+
+
+#: Claude's task-list tools (#1726): the ones that change it, and the one that reads it whole.
+_TASK_EDITS = frozenset({"TaskCreate", "TaskUpdate"})
+_TASK_TOOLS = _TASK_EDITS | {"TaskList"}
+
+#: Claude's MCP server states in `system/init` (#1726). An unknown word is `pending`, never healthy.
+_CLAUDE_MCP_STATE = {
+    "connected": "connected",
+    "failed": "failed",
+    "pending": "pending",
+    "needs-auth": "needs_auth",
+    "disabled": "disabled",
+}
 
 
 def _between_end_and_result(frame: dict) -> bool:
@@ -1275,6 +1554,16 @@ class ClaudeCodec(_Codec):
         # operation when that turn ends. Its lifecycle state: written | queued.
         self._ahead: str | None = None
         self._ahead_cycle: str | None = None
+        # The plan and the tools (#1726). `system/init` names MCP servers, skills and slash
+        # commands; a `Skill` call is a REPORTED use. The task list is built from the Task tools'
+        # own structured results (`tool_use_result`), and shown only while this connection knows
+        # the WHOLE list: from task #1 of a fresh list, or from a `TaskList` answer.
+        self._env = _Environment(skill_use=True)
+        self._mcp_names: list[str] = []
+        self._tasks: dict[str, dict[str, str]] = {}
+        self._tasks_whole = False
+        self._stale_sent = False  # a `stale` marker went out since the list was last whole
+        self._task_calls: dict[str, tuple[str, dict[str, Any]]] = {}
 
     @staticmethod
     def argv(
@@ -1782,7 +2071,8 @@ class ClaudeCodec(_Codec):
                     # `system/init` names no reasoning level (#1511): no report, never a guess.
                     effort_configured=None,
                     model_effective=None,
-                )
+                ),
+                *self._init_environment(frame),
             ]
         if kind == "system" and subtype in {
             "task_started",
@@ -1919,7 +2209,12 @@ class ClaudeCodec(_Codec):
                 ended = self._agent_turn(False, _result_state(frame))
             elif not self._owned():
                 ended = self._own_output(frame, kind)
-            return ended or [_event("background", state="activity", active=True)]
+            stale = (
+                self._subagent_tasks(frame, kind)
+                if frame.get("parent_tool_use_id") is not None
+                else []
+            )
+            return [*(ended or [_event("background", state="activity", active=True)]), *stale]
         if not self._owned():
             # Output no operator turn owns: a turn the agent runs for itself. Before the
             # operator's `started`, this is the turn that was already running when it wrote.
@@ -1972,6 +2267,144 @@ class ClaudeCodec(_Codec):
             )
             for task_id in started
         ]
+
+    # --- the plan and the tools (#1726) ---------------------------------------------------------
+
+    def _init_environment(self, frame: dict) -> list[NativeEvent]:
+        """`system/init`'s MCP servers (name + the CLI's own status), skills and slash commands.
+        Names only: a server's `source`, the tool list and every path stay behind."""
+        servers = frame.get("mcp_servers")
+        rows = []
+        for server in servers if isinstance(servers, list) else ():
+            if isinstance(server, dict) and isinstance(server.get("name"), str):
+                status = server.get("status")
+                rows.append((server["name"], _CLAUDE_MCP_STATE.get(status, "pending")))
+        mcp = _mcp_rows(rows) if isinstance(servers, list) else None
+        if mcp is not None:
+            self._mcp_names = [row["name"] for row in mcp]
+        skills = frame.get("skills")
+        commands = frame.get("slash_commands")
+        return self._env.update(
+            mcp=mcp,
+            skills=[{"name": n} for n in _names(skills, ENV_SKILLS)]
+            if isinstance(skills, list)
+            else None,
+            commands=[{"name": n} for n in _names(commands, ENV_COMMANDS)]
+            if isinstance(commands, list)
+            else None,
+        )
+
+    def _mcp_server(self, tool: str) -> str | None:
+        """The server an `mcp__<server>__<tool>` call went to: the longest server `system/init`
+        named whose normalized name prefixes the tool. An MCP-shaped name no known server
+        matches is `""` — counted as unattributed, never guessed onto a server. None: no MCP."""
+        if not tool.startswith("mcp__"):
+            return None
+        best = ""
+        for name in self._mcp_names:
+            normalized = re.sub(r"[^A-Za-z0-9_-]", "_", name)
+            if tool.startswith(f"mcp__{normalized}__") and len(name) > len(best):
+                best = name
+        return best
+
+    def _plan_call(self, item_id: str, name: str, tool_input: Any) -> list[NativeEvent]:
+        if not isinstance(tool_input, dict):
+            return []
+        if name == "ExitPlanMode":
+            document = _plan_document(tool_input.get("plan"))
+            return [] if document is None else [_event("plan", document=document)]
+        if name in {"TodoWrite", *_TASK_TOOLS}:
+            # A checklist counts only once its call came back clean (review on #1811: 2.1.312
+            # refuses TodoWrite, and a refused list must never replace the real one).
+            out = []
+            if len(self._task_calls) >= MAX_PENDING:
+                evicted, _ = self._task_calls.pop(next(iter(self._task_calls)))
+                if evicted in _TASK_TOOLS:
+                    out = self._stale()  # its result can no longer be read: list unknown
+            self._task_calls[item_id] = (name, tool_input)
+            return out
+        return []
+
+    def _stale(self) -> list[NativeEvent]:
+        """The task list can no longer be reconciled (a result lost, refused or unreadable, a
+        task never seen, a sub-agent's change): not whole until a `TaskList` answer, and the
+        shown list is marked possibly out of date — once."""
+        self._tasks_whole = False
+        if self._stale_sent:
+            return []
+        self._stale_sent = True
+        self._last_plan = None
+        return [_event("plan", stale=True)]
+
+    def _subagent_tasks(self, frame: dict, kind: str) -> list[NativeEvent]:
+        """A sub-agent's Task call changes the shared list where this connection cannot follow."""
+        msg = frame.get("message")
+        if (
+            kind != "assistant"
+            or not isinstance(msg, dict)
+            or not isinstance(msg.get("content"), list)
+        ):
+            return []
+        if any(
+            isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") in _TASK_EDITS
+            for b in msg["content"][:128]
+        ):
+            return self._stale()
+        return []
+
+    def _plan_result(self, item_id: Any, result: Any, ok: bool) -> list[NativeEvent]:
+        call = self._task_calls.pop(item_id, None) if isinstance(item_id, str) else None
+        if call is None:
+            return []
+        name, tool_input = call
+        if name == "TodoWrite":
+            entries = _plan_entries(tool_input.get("todos"), "content") if ok else None
+            return [] if entries is None else self._plan_once(entries=entries)
+        if not ok or not isinstance(result, dict):
+            return self._stale()  # refused, or a result this frame does not let us read
+        tasks = self._tasks
+        if name == "TaskList":
+            listed = result.get("tasks")
+            if not isinstance(listed, list):
+                return []
+            tasks.clear()
+            for task in listed[:PLAN_ENTRIES]:
+                if isinstance(task, dict) and isinstance(task.get("id"), str):
+                    tasks[task["id"]] = {
+                        "text": task.get("subject") if isinstance(task.get("subject"), str) else "",
+                        "status": task.get("status") if isinstance(task.get("status"), str) else "",
+                    }
+            self._tasks_whole = True
+        elif name == "TaskCreate":
+            task = result.get("task")
+            if not isinstance(task, dict) or not isinstance(task.get("id"), str):
+                return self._stale()
+            if not tasks and task["id"] == "1":
+                self._tasks_whole = True  # a fresh list: this connection sees all of it
+            subject = task.get("subject", tool_input.get("subject"))
+            if len(tasks) < PLAN_ENTRIES:
+                tasks[task["id"]] = {
+                    "text": subject if isinstance(subject, str) else "",
+                    "status": "pending",
+                }
+        else:  # TaskUpdate
+            task_id = tool_input.get("taskId")
+            if result.get("success") is not True or not isinstance(task_id, str):
+                return self._stale()
+            if task_id not in tasks:
+                return self._stale()  # a task this connection never saw: list unknown
+            if tool_input.get("status") == "deleted":
+                tasks.pop(task_id)
+            else:
+                if isinstance(tool_input.get("status"), str):
+                    tasks[task_id]["status"] = tool_input["status"]
+                if isinstance(tool_input.get("subject"), str):
+                    tasks[task_id]["text"] = tool_input["subject"]
+        if not self._tasks_whole:
+            return []
+        self._stale_sent = False
+        entries = _plan_entries(list(tasks.values()), "text")
+        return self._plan_once(entries=entries or [])
 
     def _result(self, frame: dict, *, proven: bool = False) -> list[NativeEvent]:
         """The operator turn's own result. Normally its `completed` follows and proves the fence
@@ -2041,21 +2474,43 @@ class ClaudeCodec(_Codec):
                         )
                     )
                 elif block.get("type") == "tool_use":
+                    item_id, name = _identity(block.get("id")), _identity(block.get("name"))
+                    tool_input = block.get("input")
+                    # `call` (#1726): this event STARTS the call, so a derived count reads each
+                    # call once however many observations it gets.
+                    extra: dict[str, Any] = {"call": True}
+                    server = self._mcp_server(name)
+                    if server is not None:
+                        extra["mcp_server"] = server
+                    if (
+                        name == "Skill"
+                        and isinstance(tool_input, dict)
+                        and isinstance(tool_input.get("skill"), str)
+                        and tool_input["skill"].strip()
+                    ):
+                        extra["skill"] = _cut(tool_input["skill"].strip(), ENV_NAME)
                     output.append(
                         _event(
                             "tool",
                             **common,
-                            item_id=_identity(block.get("id")),
-                            tool=_identity(block.get("name")),
+                            item_id=item_id,
+                            tool=name,
                             state="running",
-                            summary=_summary(block.get("input")),
+                            summary=_summary(tool_input),
+                            **extra,
                         )
                     )
+                    output.extend(self._plan_call(item_id, name, tool_input))
             return output
         if kind == "user" and isinstance(frame.get("message"), dict):
             content = frame["message"].get("content")
             if isinstance(content, list):
-                return [
+                results = [
+                    block
+                    for block in content[:128]
+                    if isinstance(block, dict) and block.get("type") == "tool_result"
+                ]
+                out = [
                     _event(
                         "tool",
                         **common,
@@ -2063,9 +2518,14 @@ class ClaudeCodec(_Codec):
                         state="failed" if block.get("is_error") else "completed",
                         output=_summary(block.get("content")),
                     )
-                    for block in content[:128]
-                    if isinstance(block, dict) and block.get("type") == "tool_result"
+                    for block in results
                 ]
+                for block in results:
+                    # The structured result belongs to the frame's ONE tool result, if it worked.
+                    ok = not block.get("is_error")
+                    structured = frame.get("tool_use_result") if len(results) == 1 and ok else None
+                    out.extend(self._plan_result(block.get("tool_use_id"), structured, ok))
+                return out
         if kind == "stream_event" and not own:
             event = frame.get("event")
             if isinstance(event, dict) and event.get("type") == "content_block_delta":
@@ -2191,6 +2651,40 @@ def _acp_unpresentable(tool_call: dict) -> str | None:
     return None if check(tool_call) else reason
 
 
+def _acp_inert(codec: _Codec, env: _Environment, update: dict) -> list[NativeEvent] | None:
+    """The two ACP updates read OUTSIDE an operator turn too (#1726): the agent's commands and
+    its plan. Both are inert display state of the conversation, never a turn's output, so the
+    no-turn filter (a replay or idle chatter is never attributed) is relaxed for exactly these.
+    A `plan` replayed while `session/load` is pending is history BattleLab already journaled.
+    None: not one of them."""
+    kind = update.get("sessionUpdate")
+    if kind == "available_commands_update":
+        commands = update.get("availableCommands")
+        if not isinstance(commands, list):
+            return []
+        return env.update(commands=[{"name": n} for n in _names(commands, ENV_COMMANDS)])
+    if kind == "plan":
+        if any(action == "session/load" for action, _ in codec._requests.values()):
+            return []
+        entries = _plan_entries(update.get("entries"), "content")
+        return [] if entries is None else codec._plan_once(entries=entries)
+    return None
+
+
+def _acp_server(title: Any, names: dict[str, str]) -> str | None:
+    """The configured MCP server an opencode tool call's name (`<server>_<tool>`) starts with,
+    the longest match by its FULL name, reported under its shown (cut) name; None when none
+    does (then it is not known to be an MCP call at all)."""
+    if not isinstance(title, str):
+        return None
+    best: tuple[str, str] | None = None
+    for full, shown in names.items():
+        normalized = re.sub(r"[^A-Za-z0-9_-]", "_", full)
+        if title.startswith(f"{normalized}_") and (best is None or len(full) > len(best[0])):
+            best = (full, shown)
+    return None if best is None else best[1]
+
+
 class OpencodeAcpCodec(_Codec):
     """One `opencode acp` connection: one session, one prompt turn at a time.
 
@@ -2215,6 +2709,42 @@ class OpencodeAcpCodec(_Codec):
         # ACP permissions carry metadata, not necessarily the tool's input (MCP metadata is
         # empty in 1.18.35). Retain bounded, same-turn tool observations for that exact call.
         self._tool_calls: dict[str, dict] = {}
+        # The tools (#1726). opencode reports its commands (skills among them) over ACP; its MCP
+        # servers are only NAMES from the spawn-time configuration probe and the servers this
+        # generation was given, so their status is `configured` — never measured. A `skill`
+        # call is a reported use; the plan is its `todowrite` input (1.18.35 sends no `plan`).
+        self._env = _Environment(skill_use=True)
+        self._configured: list[tuple[str, str]] | None = None  # None: no probe, nothing given
+        self._server_names: dict[str, str] = {}  # full name (a call's prefix) -> shown name
+        # Per call: the tool's NAME (the title it started with; later updates retitle it) and a
+        # `todowrite` checklist, journaled when that call completes (review on #1811).
+        self._call_names: dict[str, str] = {}
+        self._todos: dict[str, list[dict[str, str]]] = {}
+
+    def configured_mcp(self, servers: list[tuple[str, str]]) -> None:
+        """The probe's MCP servers, ``(name, "configured" | "disabled")``, reported with the
+        session once it is bound."""
+        self._configured = []
+        for name, state in servers:
+            if state in {"configured", "disabled"}:
+                self._configure(name, state)
+
+    def _configure(self, name: Any, state: str) -> None:
+        """One configured server, its name stripped and cut ONCE (review on #1811): the listed
+        name, the name a call is counted under and the journal's bound always agree."""
+        if not isinstance(name, str) or not name.strip():
+            return
+        full = name.strip()
+        name = _cut(full, ENV_NAME)
+        configured = self._configured if self._configured is not None else []
+        if name not in {n for n, _ in configured} and len(configured) < ENV_MCP:
+            configured.append((name, state))
+            self._server_names[full] = name
+        self._configured = configured
+
+    def _add_given(self, mcp_servers: list[dict] | None) -> None:
+        for server in mcp_servers or ():
+            self._configure(server.get("name") if isinstance(server, dict) else None, "configured")
 
     @staticmethod
     def argv(binary: str) -> list[str]:
@@ -2251,6 +2781,7 @@ class OpencodeAcpCodec(_Codec):
             raise ProtocolError("native session is already bound")
         # `mcpServers`: the memory tool (#1506, `agent_tools.acp_servers`) when this generation
         # was given memory, else none — on `session/load` exactly as on `session/new`.
+        self._add_given(mcp_servers)
         return self._request(
             "session/new", {"cwd": _path(cwd), "mcpServers": list(mcp_servers or [])}
         )
@@ -2259,6 +2790,7 @@ class OpencodeAcpCodec(_Codec):
         session_id = opencode_session_id(session_id)
         if self.native_id not in (None, session_id):
             raise ProtocolError("native session identity changed")
+        self._add_given(mcp_servers)
         self.native_id = session_id
         frame = self._request(
             "session/load",
@@ -2449,7 +2981,10 @@ class OpencodeAcpCodec(_Codec):
                     model_configured=_observed_model(config.get("model")),
                     effort_configured=_observed_effort(config.get("effort")),
                     model_effective=None,
-                )
+                ),
+                *self._env.update(
+                    mcp=None if self._configured is None else _mcp_rows(self._configured)
+                ),
             ]
         if action == "session/set_config_option" and config_request is not None:
             option, value = config_request
@@ -2623,6 +3158,9 @@ class OpencodeAcpCodec(_Codec):
         if kind == "config_option_update":
             self._mode_check(_acp_config(update.get("configOptions", [])))
             return []
+        inert = _acp_inert(self, self._env, update)
+        if inert is not None:
+            return inert
         if self.operation_id is None:
             # Replayed history (`session/load`) and idle chatter: BattleLab's own journal already
             # holds what it observed; a replay is never attributed to a turn.
@@ -2651,6 +3189,7 @@ class OpencodeAcpCodec(_Codec):
             status = _text(update.get("status"), limit=64)
             previous = self._tool_calls.get(item_id, {})
             context = {**previous, **{k: v for k, v in update.items() if k != "sessionUpdate"}}
+            extra, plan = self._call_facts(kind, update, previous)
             cancellations = []
             for key, approval in list(self._approvals.items()):
                 bound = approval.get("presented", {}).get("toolContext")
@@ -2703,8 +3242,53 @@ class OpencodeAcpCodec(_Codec):
                 if texts:
                     data["output"] = _text("\n".join(texts))
             data["completed"] = status in {"completed", "failed"}
-            return [*cancellations, _event("tool", **common, **data)]
+            return [*cancellations, _event("tool", **common, **data, **extra), *plan]
         return []
+
+    def _call_facts(
+        self, kind: str, update: dict, previous: dict
+    ) -> tuple[dict[str, Any], list[NativeEvent]]:
+        """A call's start (with the tool's name, so counts read `todowrite`, not ACP's `other`),
+        the configured MCP server it names, a skill it loads, and the checklist a successful
+        `todowrite` carries (#1726, review on #1811)."""
+        item_id = _safe_id(update.get("toolCallId"), "tool") or ""
+        title = update.get("title")
+        if kind == "tool_call" and isinstance(title, str) and title.strip():
+            if item_id not in self._call_names and len(self._call_names) >= MAX_PENDING:
+                self._call_names.pop(next(iter(self._call_names)))
+            self._call_names[item_id] = _cut(title.strip(), ENV_NAME)
+        name = self._call_names.get(item_id)
+        raw = update.get("rawInput")
+        extra: dict[str, Any] = {}
+        if kind == "tool_call":
+            extra["call"] = True
+            if name is not None:
+                extra["tool_name"] = name
+            # Matched on the uncut title: a long server name's prefix outlives the name's cut.
+            server = _acp_server(
+                title.strip() if isinstance(title, str) else None, self._server_names
+            )
+            if server is not None:
+                extra["mcp_server"] = server
+        plan: list[NativeEvent] = []
+        if isinstance(raw, dict):
+            if name == "skill" and isinstance(raw.get("name"), str) and raw["name"].strip():
+                before = previous.get("rawInput") if previous else None
+                if not (isinstance(before, dict) and before.get("name") == raw["name"]):
+                    extra["skill"] = _cut(raw["name"].strip(), ENV_NAME)
+            if name == "todowrite":
+                entries = _plan_entries(raw.get("todos"), "content")
+                if entries is not None:
+                    if item_id not in self._todos and len(self._todos) >= MAX_PENDING:
+                        self._todos.pop(next(iter(self._todos)))
+                    self._todos[item_id] = entries
+        status = update.get("status")
+        if status in {"completed", "failed"}:
+            entries = self._todos.pop(item_id, None)
+            self._call_names.pop(item_id, None)
+            if status == "completed" and entries is not None:
+                plan = self._plan_once(entries=entries)
+        return extra, plan
 
     def feed(self, message: dict[str, Any]) -> list[NativeEvent]:
         if self._closed:
@@ -2807,6 +3391,9 @@ class CopilotAcpCodec(_Codec):
         # Bounded same-turn tool observations, merged across a call's updates (display only:
         # nothing fills a permission request's empty input from them).
         self._tool_calls: dict[str, dict] = {}
+        # The tools and the plan (#1726): copilot's commands and its ACP `plan` updates. It names
+        # no MCP server status and reports no skill use over ACP.
+        self._env = _Environment(skill_use=False)
 
     @staticmethod
     def argv(binary: str, mcp_config: str | None = None) -> list[str]:
@@ -3207,6 +3794,9 @@ class CopilotAcpCodec(_Codec):
         if kind == "config_option_update":
             self._mode_check(_acp_config(update.get("configOptions", [])))
             return []
+        inert = _acp_inert(self, self._env, update)
+        if inert is not None:
+            return inert
         if self.operation_id is None:
             # Replayed history (`session/load`) and idle chatter: BattleLab's own journal already
             # holds what it observed; a replay is never attributed to a turn.
@@ -3264,6 +3854,8 @@ class CopilotAcpCodec(_Codec):
                 if texts:
                     data["output"] = _text("\n".join(texts))
             data["completed"] = status in {"completed", "failed"}
+            if kind == "tool_call":
+                data["call"] = True  # the call starts here (#1726)
             return [_event("tool", **common, **data)]
         return []
 

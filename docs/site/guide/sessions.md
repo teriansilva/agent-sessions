@@ -48,8 +48,8 @@ Sometimes the agent works without a message from you — a scheduled wake-up, or
 task reporting back. That turn appears as **‹agent› · on its own**: its activity is collapsed,
 with the latest command in the summary, and what it says is kept as its reply. While it runs,
 **Interrupt** stops that turn (not the worker), as it does for your own running turn. A
-background task with no turn running shows a plain status row; there is nothing to interrupt
-there, and **Stop** in the header ends the worker. Workers started before an application update
+background task with no turn running shows in the background strip above the message box; there
+is nothing to interrupt there, and **Stop** in the header ends the worker. Workers started before an application update
 may not offer Interrupt on the agent's own turn until the next worker starts. With Claude, an
 interrupt pressed at the very moment a turn finishes may stop the agent's next turn instead,
 because Claude's interrupt applies to whatever it is running when it arrives; each turn shows how
@@ -68,6 +68,36 @@ recorded response text, so it stays fixed as the response grows and after you re
 the timestamp for seconds and timezone; screen readers receive the same detail. Existing recorded
 conversations show their original times after updating. If the server has no usable timestamp,
 the message appears without one.
+
+## Plan, tools and background jobs in API sessions
+
+**Plan & tools** in the session header (in a map window, in its **⋯** menu) opens a side rail
+with two tabs. It docks beside the conversation when there is room and opens as a sheet over it
+otherwise, the same way the Files drawer does. Files and the rail share that place, so opening
+one closes the other.
+
+- **Plan** shows the agent's current checklist: each step is done, in progress or pending, with
+  the word beside its mark. When the agent proposes a plan document, it is under **Plan
+  document**. The plan stays after the turn ends, after a reload and after the session's worker is
+  replaced, and it is the same whichever part of the history you have scrolled to. Until the agent
+  shares one, the tab says so.
+- **Tools** lists what the running agent reports it works with: its MCP servers and their
+  status, its skills and its commands. A server only named in the agent's configuration says
+  **Configured**, without a status light, because nothing checked that it works. Beside each
+  server, and under **Tools used**, are the calls this whole conversation made, counted from the
+  session's record rather than from what the view shows. A skill counts as used only when the agent
+  reports using it; some agents never report that, and the tab says so. The tools belong to the
+  running worker: when it stops, the list clears until the next one reports.
+
+Claude, Codex and opencode each report a different part of this. opencode, for example, names
+its commands and configured servers but no status for them, and Codex reports no skill use.
+Shared links never show the plan or the tools.
+
+While the agent has background work running, a one-line strip above the message box says how
+many agent tasks and processes run and names the first. **Show** opens the list: each job's state,
+description, latest report and when it started. A long list scrolls inside the strip and never
+covers the message box. Work that ended with a worker is part of the conversation instead, and
+the strip goes away when nothing runs.
 
 ## Close the tab, keep the work
 

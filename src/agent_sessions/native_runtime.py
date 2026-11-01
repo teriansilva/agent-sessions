@@ -2824,6 +2824,12 @@ def project(
             "background_turn": background_turn[0]
             if background_turn is not None and background_turn[1] == live_worker
             else None,
+            # #1726: the conversation's newest plan (any generation, whatever page of history is
+            # read), what the LIVE generation's client reports it works with (None once it
+            # ended, or before it reported), and the conversation's call counts.
+            "plan": journal.events.plan(live_worker),
+            "environment": journal.events.environment_of(live_worker),
+            "counts": journal.events.counts.view(),
         },
     }
 
@@ -3493,6 +3499,8 @@ async def submit(
 
 # `memory_pressure` (#1643): the successor's memory reading, journaled on its first sample — often
 # before the operator's first claim. A reading of its own unit, never conversation activity.
+# `environment` / `plan` (#1726): what a new generation's client reports at startup — its tools,
+# and a plan update replayed or sent before any turn. Display state, never a turn's output.
 _STARTUP_EVENTS = frozenset(
     {
         "initialized",
@@ -3502,6 +3510,8 @@ _STARTUP_EVENTS = frozenset(
         "memory_pressure",
         # The readiness inventory (#1724), journaled before the first turn when it is not empty.
         "background_inventory",
+        "environment",
+        "plan",
     }
 )
 
@@ -3534,10 +3544,17 @@ def _status_record(event: dict) -> bool:
     writes one every few seconds, and an explicit expectation refused for it could never be met
     while the task runs. One carrying ``background_turn`` starts or ends a turn the agent runs
     for itself (#1427): that is activity, and keeps the refusal. The background inventory and an
-    idle tick's resume report (#1724) are the same kind of report: what runs, not a turn."""
-    if event["kind"] in {"background_inventory", "stop_resumed"}:
+    idle tick's resume report (#1724) are the same kind of report: what runs, not a turn. So is
+    what a client reports it works with, and the marker that its task list may be out of date
+    (#1726; a sub-agent's Task call sets it while the agent is idle). A plan's own checklist or
+    document is what the agent says it will do: the operator may be answering it, so it keeps the
+    refusal (outside a new generation's startup, `_startup_record`)."""
+    if event["kind"] in {"background_inventory", "stop_resumed", "environment"}:
         return True
-    return event["kind"] == "background" and "background_turn" not in (event.get("data") or {})
+    data = event.get("data") or {}
+    if event["kind"] == "plan":
+        return data.get("stale") is True
+    return event["kind"] == "background" and "background_turn" not in data
 
 
 def _startup_record(event: dict) -> bool:

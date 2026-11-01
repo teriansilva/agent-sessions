@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { StructuredStopInventory, StructuredWorkerEnd } from "../../types/api";
+import type { StructuredSnapshot, StructuredStopInventory, StructuredWorkerEnd } from "../../types/api";
 import { StopConfirmDialog } from "./StopConfirmDialog";
 import { hasBackgroundWork } from "./structuredView";
 import { WorkerEnds } from "./WorkerEnds";
@@ -143,13 +143,17 @@ test("a worker that could not answer is disclosed, keeps its known tasks, and of
   expect(document.activeElement?.textContent).toBe("Keep running");
 });
 
+/** The strip reads the snapshot; these rows need only its `native`. */
+const snapOf = (native: NonNullable<StructuredSnapshot["native"]>) =>
+  ({ active_turn: null, turns: [], native }) as unknown as StructuredSnapshot;
+
 test("an unreadable scan is a visible row that offers Stop", async () => {
-  const { BackgroundWork } = await import("./BackgroundWork");
+  const { BackgroundStrip } = await import("./BackgroundStrip");
   const onStop = vi.fn();
   render(
-    <BackgroundWork
-      native={{ native_id: "n", worker: "w1", background_active: false, background_tasks: [],
-        stop_inventory: inventory({ scan: "unknown", tasks: [], processes: [] }) }}
+    <BackgroundStrip
+      snap={snapOf({ native_id: "n", worker: "w1", background_active: false, background_tasks: [],
+        stop_inventory: inventory({ scan: "unknown", tasks: [], processes: [] }) })}
       onStop={onStop}
     />,
     { container: root },
@@ -184,12 +188,12 @@ test("a process that started while stopping is named so in its ended row", () =>
 });
 
 test("jobs an interrupted Stop could not resume are said out loud, with Stop everything", async () => {
-  const { BackgroundWork } = await import("./BackgroundWork");
+  const { BackgroundStrip } = await import("./BackgroundStrip");
   const onStopEverything = vi.fn();
   render(
-    <BackgroundWork
-      native={{ native_id: "n", worker: "w1", background_active: false, background_tasks: [],
-        stop_inventory: inventory(), paused_unresumed: 2 }}
+    <BackgroundStrip
+      snap={snapOf({ native_id: "n", worker: "w1", background_active: false, background_tasks: [],
+        stop_inventory: inventory(), paused_unresumed: 2 })}
       onStopEverything={onStopEverything}
     />,
     { container: root },

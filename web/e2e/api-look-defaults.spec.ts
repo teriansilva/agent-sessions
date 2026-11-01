@@ -13,7 +13,12 @@
 // uplink veil on API sessions): the log moved into a conversation-area wrapper (`.logArea`, which the
 // veil overlays) — one inserted element per case at the log's old position, and every one of the
 // existing elements (24 chat, 87–124 structured) computes exactly the recorded styles, checked by
-// mapping each old path under the wrapper. Re-record only on purpose:
+// mapping each old path under the wrapper. A fifth time for #1726: the desktop structured head
+// gained ONE action, Plan & tools, after Files — eight inserted elements per desktop structured case
+// (the button, its icon's svg and five paths, its label span); every existing element computes
+// exactly the recorded styles at its shifted path, the mobile cases (one Actions menu) and the chat
+// pane are unchanged, and the strip and the rail render nothing in a default pane (no background
+// job, rail closed). Re-record only on purpose:
 //   API_LOOK_BASELINE_WRITE=1 npx playwright test e2e/api-look-defaults.spec.ts --workers=1
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";

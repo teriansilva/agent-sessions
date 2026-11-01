@@ -307,6 +307,20 @@ def mcp_password_overrides(resolved: object) -> dict:
     return out
 
 
+def mcp_server_states(resolved: object) -> list[tuple[str, str]]:
+    """The NAMES of a resolved config's MCP servers (#1726), each ``configured`` — named by the
+    configuration, never measured — or ``disabled`` when the config says so. Nothing else of an
+    entry (command line, URL, headers, environment) is read. Malformed input names nothing."""
+    servers = resolved.get("mcp") if isinstance(resolved, dict) else None
+    if not isinstance(servers, dict):
+        return []
+    return [
+        (name, "disabled" if entry.get("enabled") is False else "configured")
+        for name, entry in servers.items()
+        if isinstance(name, str) and name.strip() and isinstance(entry, dict)
+    ]
+
+
 def api_config_content(agent: str, mcp: dict | None = None, *, bypass: bool = False) -> str:
     """`OPENCODE_CONFIG_CONTENT` for an `opencode-api` child: its immutable guarded or bypass agent,
     built exactly like the unattended one (`_agent_config_content`), plus the per-server MCP

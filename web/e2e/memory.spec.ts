@@ -2,7 +2,7 @@
  *  `/api/memory`: the graph and list show notes with their writers, the inspector edits and
  *  deletes, clear and the toggle go through their confirm/switch, a quarantined item shows only
  *  its masked text, and the phone layout keeps every control a real touch target. */
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { MEMORY_PATH } from "../src/lib/routes";
 import { CONFIG, commonMocks } from "./mission-directions";
 import { mockRoster, ROSTER } from "./roster";
@@ -244,10 +244,12 @@ async function accessRows(card: ReturnType<Page["getByRole"]>) {
 
 for (const theme of ["dark", "light"] as const) {
   test(`${theme} theme: Agent access lists every agent's way to memory from the roster; the paragraph opens and copies`, async ({ page, context, isMobile }, testInfo) => {
-    // A card screenshot plus a whole-page contrast scan per theme: ~2 s here, but on a loaded CI
-    // runner the default 30 s TEST budget ran out just before the last step (#1737/#1744 e2e (1),
-    // twice each, both retries) while every assertion was passing. Its own budget, like #1159.
-    test.setTimeout(90_000);
+    // The screenshot is LAST, on purpose (#1726). While an element screenshot is taken a loaded
+    // runner's page can see a 1×1 viewport (measured; a page screenshot did not do it): the Memory
+    // page reads a phone width, unmounts this column and mounts it back, so the disclosure is closed
+    // again. Copy paragraph then no longer exists and its click waits out the whole test budget:
+    // on main and on the branch the test reached that click in about 7 s and spent the rest waiting,
+    // so #1758's longer budget only moved the failure. Nothing may depend on this card after it.
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     await page.addInitScript(t => localStorage.setItem("tr-theme", t), theme);
     await mockMemory(page);
@@ -290,14 +292,15 @@ for (const theme of ["dark", "light"] as const) {
       return { out, scroll: el.scrollWidth - el.clientWidth, page: document.documentElement.scrollWidth - document.documentElement.clientWidth };
     });
     expect(spill).toEqual({ out: [], scroll: 0, page: 0 });
+    await card.getByRole("button", { name: "Copy paragraph" }).click();
+    await expect(page.getByRole("status")).toContainText("Copied");
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toContain("$BATTLELAB_MEMORY_INBOX");
+    // This card, with its disclosure open. The whole page is the "captured" and import tests' scan.
+    expect(await contrastFailures(page, card)).toEqual([]);
     const vp = isMobile ? "mobile" : "desktop";
     const shot = testInfo.outputPath(`memory-agent-access-${theme}-${vp}.png`);
     await card.screenshot({ path: shot });
     await testInfo.attach(`memory-agent-access-${theme}-${vp}`, { path: shot, contentType: "image/png" });
-    expect(await contrastFailures(page)).toEqual([]);
-    await card.getByRole("button", { name: "Copy paragraph" }).click();
-    await expect(page.getByRole("status")).toContainText("Copied");
-    expect(await page.evaluate(() => navigator.clipboard.readText())).toContain("$BATTLELAB_MEMORY_INBOX");
   });
 }
 
@@ -413,10 +416,11 @@ test("mobile: every control is a real touch target and nothing scrolls sideways"
 });
 
 
-/** WCAG relative-luminance contrast of every visible text element on the page, measured against
- *  the background it is actually composited over. Disabled controls are exempt (WCAG 1.4.3). */
-async function contrastFailures(page: Page) {
-  return page.evaluate(() => {
+/** WCAG relative-luminance contrast of every visible text element on the page (or inside
+ *  ``scope``), measured against the background it is actually composited over. Disabled controls
+ *  are exempt (WCAG 1.4.3). */
+async function contrastFailures(page: Page, scope?: Locator) {
+  const scan = (scoped?: Element) => {
     const parse = (c: string): [number, number, number, number] | null => {
       let m = c.match(/^rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?\)$/);
       if (m) return [+m[1] / 255, +m[2] / 255, +m[3] / 255, m[4] === undefined ? 1 : +m[4]];
@@ -449,7 +453,7 @@ async function contrastFailures(page: Page) {
       return 0.2126 * r + 0.7152 * g + 0.0722 * b;
     };
     const fails: { text: string; ratio: number; need: number }[] = [];
-    const root = document.querySelector("main")?.parentElement ?? document.body;
+    const root = scoped ?? document.querySelector("main")?.parentElement ?? document.body;
     for (const el of root.querySelectorAll("*")) {
       const own = [...el.childNodes].filter(n => n.nodeType === 3 && n.textContent!.trim()).map(n => n.textContent!.trim()).join(" ");
       if (!own || el.closest("option, svg, [aria-hidden=true]")) continue;
@@ -467,7 +471,8 @@ async function contrastFailures(page: Page) {
       if (ratio < need) fails.push({ text: own.slice(0, 40), ratio: Math.round(ratio * 100) / 100, need });
     }
     return fails;
-  });
+  };
+  return scope ? scope.evaluate(scan) : page.evaluate(scan);
 }
 
 for (const theme of ["dark", "light"] as const) {

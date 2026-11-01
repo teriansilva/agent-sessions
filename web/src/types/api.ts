@@ -1899,6 +1899,46 @@ export interface StructuredLaunch {
   since: number | null;
 }
 
+/** The agent's plan (#1726): the newest checklist and the newest proposed document of the
+ *  conversation, across generations, each with when it was recorded. */
+export interface StructuredPlanEntry {
+  text: string;
+  status: "pending" | "in_progress" | "completed";
+}
+export interface StructuredPlan {
+  entries?: StructuredPlanEntry[];
+  explanation?: string;
+  entries_at?: number | null;
+  document?: string;
+  document_at?: number | null;
+  /** The checklist may be out of date: its client said so, or an earlier generation wrote it
+   *  and the live one has not re-confirmed it. */
+  stale?: boolean;
+}
+
+/** What the LIVE generation's client reports it works with (#1726). A list the client never
+ *  reported is absent. `configured`: named by its configuration, never measured. */
+export interface StructuredEnvironment {
+  skill_use?: boolean;
+  mcp?: {
+    name: string;
+    status: "connected" | "failed" | "pending" | "needs_auth" | "disabled" | "configured";
+  }[];
+  skills?: { name: string }[];
+  commands?: { name: string }[];
+}
+
+/** Calls this conversation made (#1726), from the journal — never the windowed rows. */
+export interface StructuredCounts {
+  tools: { name: string; calls: number }[];
+  tools_other: number;
+  servers: { name: string; calls: number }[];
+  servers_other: number;
+  unattributed: number;
+  skills: { name: string; calls: number }[];
+  skills_other: number;
+}
+
 export interface StructuredSnapshot {
   session_key: string;
   revision: number;
@@ -1970,6 +2010,11 @@ export interface StructuredSnapshot {
     interrupt_own?: boolean;
     /** The live generation's memory warning (#1643), or null. Absent on older servers. */
     memory_pressure?: MemoryPressure | null;
+    /** #1726: the plan (null: none shared yet), the live generation's tools (null: not
+     *  reported, or no live worker) and the conversation's call counts. Absent on older servers. */
+    plan?: StructuredPlan | null;
+    environment?: StructuredEnvironment | null;
+    counts?: StructuredCounts;
   };
   /** Why this conversation takes no new work (its client is retiring), or null. */
   read_only?: string | null;

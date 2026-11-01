@@ -48,10 +48,17 @@ async function backgroundTasks(page: Page, theme = "dark", tasks?: BackgroundTas
 
 const activity = (page: Page) => page.getByTestId("structured-background-work");
 const taskRow = (page: Page) => page.getByTestId("structured-background-task");
+// #1726: the rows live in the background strip above the composer, which starts collapsed.
+async function openStrip(page: Page) {
+  const toggle = page.getByTestId("structured-background-strip").locator("> button");
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+}
 
 for (const theme of ["dark", "light"]) {
   test(`#1461: named background task shows its reported wait while its state stays Running (${theme})`, async ({ page }, testInfo) => {
     await backgroundTasks(page, theme);
+    await openStrip(page);
     // This also records the old bare row when run against the pre-feature build.
     await page.screenshot({ path: testInfo.outputPath(`background-observed-${theme}.png`) });
     const task = taskRow(page);
@@ -71,6 +78,7 @@ for (const theme of ["dark", "light"]) {
 
 test("#1461: reported task progress updates live and keyboard-open details survive snapshot reads", async ({ page }, testInfo) => {
   const fixture = await backgroundTasks(page);
+  await openStrip(page);
   const task = taskRow(page);
   await expect(task).toHaveCount(1);
   const details = task.locator("details");
@@ -105,7 +113,7 @@ test("#1461: reported task progress updates live and keyboard-open details survi
   await expect(task.getByText(TASK_ID, { exact: true })).toBeHidden();
 });
 
-test("#1461: background task activity appears once before the first queued message", async ({ page }) => {
+test("#1726: background tasks are one strip above the composer, never a transcript row", async ({ page }) => {
   const fixture = await backgroundTasks(page);
   fixture.state.turns.push({ ...fixture.state.turns[1],
     turn_id: "33333333-2222-4333-8444-666666666666",
@@ -115,14 +123,15 @@ test("#1461: background task activity appears once before the first queued messa
   fixture.state.revision++;
   await expect(page.getByTestId("structured-turn")).toHaveCount(3);
   await expect(activity(page)).toHaveCount(1);
+  // Not in the log, whatever is queued: between the log and the composer.
+  await expect(page.getByTestId("api-log").getByTestId("structured-background-work")).toHaveCount(0);
+  const log = (await page.getByTestId("api-log").boundingBox())!;
+  const strip = (await activity(page).boundingBox())!;
+  const composer = (await page.getByRole("form", { name: "Compose message" }).boundingBox())!;
+  expect(strip.y).toBeGreaterThanOrEqual(log.y + log.height - 1);
+  expect(strip.y + strip.height).toBeLessThanOrEqual(composer.y + 1);
+  await openStrip(page);
   await expect(taskRow(page)).toHaveCount(1);
-  const previous = page.getByTestId("structured-turn").filter({ hasText: "Check startup." });
-  const firstQueued = page.getByTestId("structured-turn").filter({ hasText: "Only inspect the files." });
-  const previousBox = (await previous.boundingBox())!;
-  const activityBox = (await activity(page).boundingBox())!;
-  const queuedBox = (await firstQueued.boundingBox())!;
-  expect(activityBox.y).toBeGreaterThanOrEqual(previousBox.y + previousBox.height - 1);
-  expect(activityBox.y + activityBox.height).toBeLessThanOrEqual(queuedBox.y + 1);
 });
 
 test("#1461: background task details and focus survive first queued message insertion and removal", async ({ page }, testInfo) => {
@@ -131,6 +140,7 @@ test("#1461: background task details and focus survive first queued message inse
   fixture.state.turns = [fixture.state.turns[0]];
   fixture.state.revision++;
   await expect(page.getByTestId("structured-turn")).toHaveCount(1);
+  await openStrip(page);
   const details = taskRow(page).locator("details");
   const disclosure = details.locator("summary");
   await disclosure.focus();
@@ -165,6 +175,7 @@ test("#1461: long task descriptions and expanded reports fit the viewport", asyn
     task_type: "local_bash", last_tool_name: "Bash",
     started_at: now - 72, updated_at: now - 4,
   }]);
+  await openStrip(page);
   const task = taskRow(page);
   await expect(task).toHaveCount(1);
   await task.locator("details > summary").click();
@@ -185,6 +196,7 @@ test("#1461: long task descriptions and expanded reports fit the viewport", asyn
 
 test("#1461: worker exit removes live task activity even when its last journal flag remains active", async ({ page }) => {
   const fixture = await backgroundTasks(page);
+  await openStrip(page);
   await expect(taskRow(page)).toHaveCount(1);
   // Worker exit writes no new journal event: lifecycle polling must re-read equal revisions.
   fixture.state.native.worker = "";
@@ -207,6 +219,7 @@ test("#1461: simultaneous tasks keep their own reported state and progress", asy
       summary: pausedSummary, started_at: now - 30, updated_at: now - 8,
     },
   ]);
+  await openStrip(page);
   await expect(taskRow(page)).toHaveCount(2);
   const running = taskRow(page).filter({ hasText: TITLE });
   const paused = taskRow(page).filter({ hasText: pausedTitle });
@@ -250,6 +263,7 @@ test("#1461: an unnamed task alongside named work keeps its native state inspect
       started_at: now - 20, updated_at: now - 5,
     },
   ]);
+  await openStrip(page);
   await expect(taskRow(page)).toHaveCount(2);
   await expect(taskRow(page).first().getByText(TITLE, { exact: true })).toBeVisible();
   const unnamed = taskRow(page).nth(1);
@@ -264,6 +278,7 @@ test("#1461: faster background polling preserves the idle Send snapshot revision
   fixture.state.turns = [fixture.state.turns[0]];
   fixture.tasks[0].summary = "Background poll received; RTM deployment is still running";
   fixture.state.revision++;
+  await openStrip(page);
   // Observing changed task text proves the pane read this revision during background-only work.
   await expect(taskRow(page).getByText(fixture.tasks[0].summary, { exact: true })).toBeVisible();
   await expect(page.getByTestId("structured-turn")).toHaveCount(1);

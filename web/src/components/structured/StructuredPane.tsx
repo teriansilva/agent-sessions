@@ -6,6 +6,7 @@ import {
   BookMarked,
   Globe,
   History,
+  ListChecks,
   Mic,
   PanelRight,
   Paperclip,
@@ -83,7 +84,9 @@ import { LiveReply } from "./LiveReply";
 import { applyTextDeltas, streaming } from "./streamDeltas";
 import { useFollow } from "./useFollow";
 import { ArrivalContext, useArrivals, useArriveClass, usePrimed } from "./arrivals";
-import { BackgroundWork } from "./BackgroundWork";
+import { BackgroundStrip } from "./BackgroundStrip";
+import { ApiRail, type RailTab } from "./ApiRail";
+import { DEFAULT_W as RAIL_DEFAULT_W, clampW, panelMode } from "../files/filePanelLayout";
 import { StopConfirmDialog } from "./StopConfirmDialog";
 import { WorkerEnds } from "./WorkerEnds";
 import { fold, interleave, type ReplyPart } from "./activityOrder";
@@ -1448,6 +1451,36 @@ export function StructuredPane({
   const key = `${engine}:${id}`;
   // Actions act on the id the URL settled on (#867), the same split the terminal keeps.
   const actionKey = host.rowKey || key;
+  // #1726: the rail's open state, its tab, and the pane's measured box (the dock/sheet rule).
+  const [rail, setRail] = useState<{ open: boolean; trigger: HTMLElement | null }>({
+    open: false,
+    trigger: null,
+  });
+  const [railTab, setRailTab] = useState<RailTab>("plan");
+  const paneRef = useRef<HTMLDivElement>(null);
+  const [paneBox, setPaneBox] = useState({ w: 0, h: 0 });
+  useLayoutEffect(() => {
+    const el = paneRef.current;
+    if (!el) return;
+    const measure = () =>
+      setPaneBox((b) =>
+        b.w === el.clientWidth && b.h === el.clientHeight
+          ? b
+          : { w: el.clientWidth, h: el.clientHeight },
+      );
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  // Files opening takes the shared dock slot: the rail gives way.
+  const filesNowOpen = !!host.filesOpen;
+  const [filesSeen, setFilesSeen] = useState(filesNowOpen);
+  if (filesSeen !== filesNowOpen) {
+    setFilesSeen(filesNowOpen);
+    if (filesNowOpen && rail.open) setRail({ open: false, trigger: null });
+  }
   const { row, phase: rowPhase } = useSessionLookup(key, host.rowKey);
   const isMobile = useIsMobile();
   // The in-pane head folds on touch tablets too (#1589); the window chrome keeps `isMobile`.
@@ -2871,6 +2904,24 @@ export function StructuredPane({
     );
   }, [onTermStatus, statusKind, statusReason]);
 
+  // The plan & tools rail (#1726). Where it goes follows the Files drawer's measured-width rule
+  // (`filePanelLayout`): docked on the pane's right edge when the pane can spare the column,
+  // else a sheet over the pane. It shares the dock slot with Files: one open at a time.
+  const railOpen = rail.open;
+  const railMode = panelMode(paneBox.w);
+  const railWidth = clampW(RAIL_DEFAULT_W, paneBox.w);
+  const closeRail = () => {
+    const trigger = rail.trigger;
+    setRail({ open: false, trigger: null });
+    // After the sheet unmounts and gives the pane back (it was inert behind the sheet).
+    if (trigger) window.setTimeout(() => document.contains(trigger) && trigger.focus(), 0);
+  };
+  const toggleRail = (trigger?: HTMLElement | null) => {
+    if (rail.open) return closeRail();
+    if (host.filesOpen) host.onToggleFiles?.(null);
+    setRail({ open: true, trigger: trigger ?? null });
+  };
+
   // The pane head (#1332): the terminal's actions, in the terminal's order, wherever they work
   // for an API session. Recap and Hand off read the session's journal (#1311's transcript fold);
   // Adopt to mission is NOT offered — a mission cannot drive a structured session yet (#1273
@@ -2907,6 +2958,17 @@ export function StructuredPane({
           },
         ]
       : []),
+    // The plan & tools rail (#1726): pressed while open. In a map window it folds into the
+    // chrome's one ⋯ like every other pane action (#1109).
+    {
+      id: "plan-tools",
+      label: "Plan & tools",
+      aria: railOpen ? "Hide plan and tools" : "Show plan and tools",
+      title: "Plan & tools: the agent's plan, its tools and the calls this session made",
+      icon: <ListChecks size={13} aria-hidden="true" />,
+      active: railOpen,
+      run: (trigger?: HTMLElement | null) => toggleRail(trigger),
+    },
     {
       id: "recap",
       label: "Recap",
@@ -3240,16 +3302,11 @@ export function StructuredPane({
       />
     );
   };
-  // Where the background-task row goes: above the first queued message, else last (-1: none).
-  const firstQueued = groups.findIndex(({ turn: t }) => !isAgentTurn(t) && t.state === "queued");
-  const backgroundAt = !backgroundWorking(snap) ? -1 : firstQueued === -1 ? groups.length : firstQueued;
-  // One keyed list keeps the task panel's DOM (including focus and open Details) when a
-  // queued message moves it from the transcript tail to before the queue (#1461).
-  const conversation: (ConversationGroup | null)[] = [...groups];
+  // Background jobs are the strip above the composer (#1726), never a transcript row.
+  const conversation: ConversationGroup[] = groups;
   // Where loaded history meets the window (a steering addition grouped under an older turn
   // carries no seam of its own).
   const seam = earlier.seam;
-  if (backgroundAt >= 0) conversation.splice(backgroundAt, 0, null);
   // Work that ended with an earlier worker, and idle exits (#1724): after the turn each follows,
   // from the snapshot and from every history page held (each carries the ends of its turns).
   const endsAfter = new Map<string | null, NonNullable<StructuredSnapshot["native"]>["worker_ends"]>();
@@ -3310,7 +3367,13 @@ export function StructuredPane({
     />
   );
   return (
-    <div className={`${chat.pane} ${styles.pane}`} data-testid="structured-pane" onKeyDown={onPaneKey}>
+    <div
+      ref={paneRef}
+      className={`${chat.pane} ${styles.pane}`}
+      data-testid="structured-pane"
+      onKeyDown={onPaneKey}
+      style={railOpen && railMode === "dock" ? { paddingRight: railWidth } : undefined}
+    >
       {header}
       {overlays}
       {snap?.permission_change?.state === "stopping" && !enablingPermissions && (
@@ -3538,11 +3601,6 @@ export function StructuredPane({
           <WorkerEnds ends={endsAfter.get(null)} />
           {!!snap?.oom_kills_start && <OomNotice count={snap.oom_kills_start} between />}
           {conversation.map((group) => {
-            if (group === null) return (
-              <BackgroundWork key="background" native={snap?.native}
-                onStop={readOnly ? undefined : () => void stop()}
-                onStopEverything={readOnly ? undefined : stopEverything} />
-            );
             const { turn: t, additions } = group;
             // Session-level OOM kills after this group, before the next turn (#1732).
             const oomAfter = [t, ...additions].reduce((n, x) => n + (x.oom_kills_after ?? 0), 0);
@@ -3632,6 +3690,12 @@ export function StructuredPane({
         {veil && <TermUplinkVeil veil={veil} title={row?.title} input="outbox" />}
       </div>
       </ArrivalContext.Provider>
+      {/* Live background jobs (#1726): one line glued above the composer, never in the log. */}
+      <BackgroundStrip
+        snap={snap}
+        onStop={readOnly ? undefined : () => void stop()}
+        onStopEverything={readOnly ? undefined : stopEverything}
+      />
       {stopChoiceView}
       {stopConfirm?.key === key && (
         <StopConfirmDialog
@@ -3826,6 +3890,17 @@ export function StructuredPane({
           insertTarget="message"
           onClose={() => setTemplatesOpen(null)}
           returnFocusTo={templatesOpen}
+        />
+      )}
+      {/* The plan & tools rail (#1726), after the composer in the tab order. */}
+      {railOpen && (
+        <ApiRail
+          snap={snap}
+          mode={railMode}
+          width={railWidth}
+          tab={railTab}
+          onTab={setRailTab}
+          onClose={closeRail}
         />
       )}
     </div>

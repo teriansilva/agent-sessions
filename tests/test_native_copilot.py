@@ -506,7 +506,6 @@ def test_load_replay_is_never_attributed_to_a_turn():
         {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "old"}},
         {"sessionUpdate": "tool_call", "toolCallId": "c", "status": "pending", "kind": "execute"},
         {"sessionUpdate": "current_mode_update", "currentModeId": AUTOPILOT},  # before the pin
-        {"sessionUpdate": "available_commands_update", "availableCommands": []},
     ]
     for update in replay:
         assert (
@@ -519,6 +518,19 @@ def test_load_replay_is_never_attributed_to_a_turn():
             )
             == []
         )
+    # The command list is the session's current display state, never a turn's output (#1726):
+    # one `environment` report, attributed to nothing.
+    [env] = codec.feed(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": SES,
+                "update": {"sessionUpdate": "available_commands_update", "availableCommands": []},
+            },
+        }
+    )
+    assert env.kind == "environment" and env.data == {"skill_use": False, "commands": []}
     # A hostile replayed permission request is cancelled on the wire, never presented.
     [send] = _ask(codec, 11)
     assert send.kind == "send"

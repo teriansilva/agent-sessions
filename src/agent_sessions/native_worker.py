@@ -91,6 +91,21 @@ FREEZE_RETRY = 0.02
 RESUME_RETRIES = 5
 FLUSH_INTERVAL = 0.2
 STDERR_TAIL = 4096
+
+
+def _journalable(item: dict) -> dict:
+    """``item``, or a bounded diagnostic when the journal's closed schema would refuse it."""
+    try:
+        native_ipc.normalize_event(item)
+    except native_ipc.IPCError:
+        kind = str(item.get("kind", "native"))[:64]
+        return {
+            "kind": "error",
+            "data": {"message": f"a {kind} observation outside its bounds was dropped"},
+        }
+    return item
+
+
 _URGENT = frozenset(
     {
         "approval",
@@ -635,9 +650,13 @@ class Worker:
         if code != 0 or len(out) > PROBE_LIMIT:
             raise WorkerError("the opencode configuration probe failed")
         try:
-            return opencode.mcp_password_overrides(json.loads(out))
+            resolved = json.loads(out)
+            overrides = opencode.mcp_password_overrides(resolved)
         except (ValueError, UnicodeError) as exc:
             raise WorkerError(f"the opencode configuration could not be used: {exc}") from None
+        # The servers' names only (#1726), `configured`: reported with the session once bound.
+        self.codec.configured_mcp(opencode.mcp_server_states(resolved))
+        return overrides
 
     def store_admission(self):
         """opencode's shared SQLite store: take the SAME shared admission a console launch takes
@@ -701,6 +720,9 @@ class Worker:
                 self.pending[: native_ipc.MAX_EVENTS],
                 self.pending[native_ipc.MAX_EVENTS :],
             )
+            # One observation the journal's schema refuses must never cost the batch (or stop
+            # flushing): it is replaced by a bounded diagnostic, the rest is journaled (#1811).
+            batch = [_journalable(item) for item in batch]
             try:
                 native_journal.append_events(self.journal_root, self.binding, batch)
             except native_journal.JournalError as exc:

@@ -292,6 +292,8 @@ export const SessionWindow = memo(function SessionWindow({
         ariaLabel: a.aria,
         icon: a.icon,
         disabled: a.disabled,
+        // A pressed pane toggle (Files, Plan & tools) says so in the menu too (#1726).
+        hint: a.active ? "Shown" : undefined,
         onSelect: () => a.run(opener),
       })),
     [],

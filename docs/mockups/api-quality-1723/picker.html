@@ -1,0 +1,167 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>#1728 API first — mockup</title>
+<link rel="stylesheet" href="base.css">
+<script src="icons.js"></script>
+<style>
+.t-dark { --engine-amber: #d98a5c; --engine-teal: #4fd1c5; --engine-green: #7ee787; }
+.t-light { --engine-amber: #a8591f; --engine-teal: #0f7c73; --engine-green: #1f7a33; }
+.page { background: var(--bg-0); padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+.ph { display: flex; align-items: center; gap: 10px; }
+.ph h1 { font-kerning: none; margin: 0; font: 600 18px/1.2 var(--font-display); letter-spacing: .06em; text-transform: uppercase; color: var(--hud-text); }
+.panel { background: var(--bg-1); border: 1px solid var(--hud-dim); border-top: 2px solid var(--hud); padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 12px;
+  clip-path: polygon(14px 0,100% 0,100% calc(100% - 14px),calc(100% - 14px) 100%,0 100%,0 14px); }
+.gh { font: 500 10px/1.4 var(--font-mono); letter-spacing: .18em; text-transform: uppercase; color: var(--text-3); }
+.fam { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px; align-items: center; }
+.fam .fn { font: 600 13px var(--font-display); letter-spacing: .1em; text-transform: uppercase; color: var(--text-1); display: flex; align-items: center; gap: 8px; }
+.fam .fn i { width: 3px; height: 18px; background: var(--eng); }
+.tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.tile { --face: var(--bg-1); --edge: var(--line-strong); --rail: var(--eng); min-height: 52px; padding: 8px 16px 8px 12px; display: flex; flex-direction: column; justify-content: center; gap: 3px; }
+.tile .tn { font: 600 13px/1.25 var(--font-display); letter-spacing: .08em; text-transform: uppercase; color: var(--text-1); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tile .ts { font: 10px/1.35 var(--font-mono); letter-spacing: .06em; color: var(--text-2); }
+.tile.sel { --edge: var(--hud); --face: color-mix(in srgb, var(--hud) 10%, var(--bg-1)); }
+.tile.sel::before { background: linear-gradient(var(--rail) 0 2px, var(--hud) 2px); }
+.tile.sel .mark6 { position: absolute; top: 8px; right: 8px; width: 6px; height: 6px; background: var(--hud); }
+.tile.dim { --edge: var(--line); --rail: var(--line); }
+.tile.dim .tn { color: var(--text-3); }
+.tile.dim .ts { color: var(--text-2); }
+.tile.pref { --edge: var(--text-3); }
+.tile.pref .mark6 { position: absolute; top: 8px; right: 8px; width: 6px; height: 6px; border: 1px solid var(--text-2); }
+.bdg { display: inline-flex; padding: 2px 5px; border: 1px solid currentColor; font: 600 10px/1 var(--font-mono); letter-spacing: .16em; color: var(--text-2); }
+.bdg.hud { color: var(--hud-text); }
+.sqm { display: inline-block; flex: none; width: 7px; height: 7px; border: 1px solid var(--text-3); }
+.unav { display: flex; align-items: center; gap: 6px; font: 600 10px var(--font-mono); letter-spacing: .14em; color: var(--text-2); }
+.hint { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 10px; border: 1px dashed var(--line-strong); font-size: 13px; color: var(--text-2); }
+.hint b { color: var(--text-1); font-weight: 600; }
+.hint .lnk { margin-left: auto; min-height: 44px; display: inline-flex; align-items: center; font: 600 11px var(--font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field .in { min-height: 44px; border: 1px solid var(--border); background: var(--bg-2); padding: 11px 12px; font: 13px var(--font-mono); color: var(--text-1); }
+.phone .fam { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.phone .page { padding: 12px; }
+.phone .tiles { grid-template-columns: minmax(0, 1fr); }
+/* automations */
+.alist { display: flex; flex-direction: column; }
+.arow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 14px; padding: 12px 4px; border-bottom: 1px solid var(--line); align-items: center; }
+.arow .an { font-weight: 600; font-size: 14px; color: var(--text-1); }
+.arow .am { font: 12px var(--font-mono); color: var(--text-2); margin-top: 3px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.arow .lab { grid-column: 1 / -1; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.arow .state { display: inline-flex; gap: 6px; align-items: center; }
+.btn.ghost.sm { min-height: 44px; }
+.sheet2 { position: absolute; left: 0; right: 0; bottom: 0; z-index: 9; background: var(--bg-1); border-top: 2px solid var(--hud); padding: 0 16px 16px; display: flex; flex-direction: column; gap: 12px; }
+.sheet2 h2 { margin: 6px 0 0; font: 600 15px/1.3 var(--font-display); letter-spacing: .06em; text-transform: uppercase; display: flex; gap: 10px; align-items: center; }
+.sheet2 p { margin: 0; font-size: 14px; line-height: 1.5; }
+.chg { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 6px 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 10px 0; font-size: 13px; }
+.chg dt { font: 11px var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); padding-top: 2px; }
+.chg dd { margin: 0; font-family: var(--font-mono); font-size: 12.5px; color: var(--text-1); }
+.chg s { color: var(--text-3); }
+.sheet2 .acts { display: flex; flex-direction: column-reverse; gap: 10px; }
+.sheet2 .acts .btn { width: 100%; }
+.focus { outline: 2px solid var(--accent-text); outline-offset: -3px; }
+.noteline { font-size: 12px; color: var(--text-2); border-left: 2px solid var(--line-strong); padding-left: 8px; }
+</style></head>
+<body><div id="root"></div>
+<script>
+const famClaude = `
+<div class="fam" style="--eng:var(--engine-amber)"><span class="fn"><i></i>Claude</span>
+  <div class="tiles">
+    <div class="tile plate sel"><span class="mark6"></span><span class="tn">API · structured <span class="bdg hud">default</span></span><span class="ts">transcript pane · approvals inline</span></div>
+    <div class="tile plate"><span class="tn">Terminal · console</span><span class="ts">the CLI in a terminal · one tap away</span></div>
+  </div></div>`;
+const famCodex = `
+<div class="fam" style="--eng:var(--engine-teal)"><span class="fn"><i></i>Codex</span>
+  <div class="tiles">
+    <div class="tile plate dim"><span class="tn">API · structured</span><span class="unav"><span class="sqm"></span>UNAVAILABLE</span><span class="ts">API client not ready — codex app-server 0.164 not admitted</span></div>
+    <div class="tile plate pref"><span class="mark6"></span><span class="tn">Terminal · console <span class="bdg">default here</span></span><span class="ts">used because the API client is unavailable</span></div>
+  </div></div>`;
+const famOpen = `
+<div class="fam" style="--eng:var(--engine-green)"><span class="fn"><i></i>opencode</span>
+  <div class="tiles">
+    <div class="tile plate"><span class="tn">API · structured</span><span class="ts">ready</span></div>
+    <div class="tile plate pref"><span class="mark6"></span><span class="tn">Terminal · console <span class="bdg">remembered</span></span><span class="ts">your last explicit choice on this device</span></div>
+  </div></div>
+<div class="hint">${I('cr', 'style="width:12px;height:12px;flex:none"')}<span>Remembered: you last chose <b>Terminal</b> for opencode.</span><span class="lnk">Use API</span></div>`;
+
+const picker = (phone) => `
+<div class="page">
+  <div class="ph"><span class="notch"></span><h1>New session</h1></div>
+  <div class="panel"><div class="gh">Agent · client</div>${famClaude}${famCodex}${famOpen}</div>
+  <div class="field"><span class="gh">Folder</span><div class="in">~/agentwork/agent-sessions/paging</div></div>
+  <div style="display:flex;gap:10px;${phone ? 'flex-direction:column' : ''}"><span class="btn plate primary" ${phone ? 'style="width:100%"' : ''}>Start Claude · API</span>${phone ? '' : '<span class="btn plate ghost">Cancel</span>'}</div>
+</div>`;
+
+const b1 = `
+<section class="board t-dark board-grid" id="k1">
+  <p class="cap"><b>#1728 · board 1</b> new session picker · desktop dark + phone light <span>an engine family with a ready API client preselects it; Terminal stays one tap away</span></p>
+  <div class="row">
+    <div class="col t-dark"><p class="lbl">Desktop · dark</p><div style="width:780px;border:1px solid var(--line)">${picker(false)}</div></div>
+    <div class="col"><p class="lbl">Phone 390 px · light</p><div class="phone t-light" style="height:auto;min-height:844px"><div class="ptop"><span class="ibtn lg">${I('menu')}</span><span class="mark">BATTLELAB</span></div>${picker(true)}</div></div>
+    <div class="col" style="width:250px;margin-top:22px">
+      <div class="note"><b>Preselected API</b>: the chosen tile has the <i>--hud</i> edge, a tinted face and the 6 px mark, plus the word DEFAULT. Selection is chrome, never a status colour. The rail on top is the agent's identity colour.</div>
+      <div class="note"><b>Unavailable API</b> (Codex): a dimmed tile with a neutral hollow square, the word UNAVAILABLE and the resolver's reason. Terminal is the default for that family, marked with a hollow mark and the words "default here".</div>
+      <div class="note"><b>Remembered override</b>: the last explicit choice per family is kept per device. The hint row says so and offers "Use API" (44 px).</div>
+      <div class="note">One resolver (<i>engines.default_client</i>) answers it; the SPA reads it from <i>engineRoster.ts</i> and never names an engine.</div>
+    </div>
+  </div>
+</section>`;
+
+const listRows = (phone) => `
+<div class="alist">
+  <div class="arow"><div><div class="an">Morning triage</div><div class="am"><span>weekdays 07:30</span><span class="sep">·</span><span>start session · Claude terminal</span></div></div>
+    <span class="state"><span class="led up"></span><span class="word w-ok">Enabled</span></span>
+    <div class="lab"><span class="stamp">TERMINAL · UNRELIABLE UNATTENDED</span>${phone ? '' : '<span class="btn plate ghost sm">Switch to API client</span>'}</div>
+    ${phone ? '<div class="lab"><span class="btn plate ghost sm" style="width:100%">Switch to API client</span></div>' : ''}
+  </div>
+  <div class="arow"><div><div class="an">Nightly dependency check</div><div class="am"><span>daily 02:00</span><span class="sep">·</span><span>start session · Claude API</span></div></div>
+    <span class="state"><span class="led up"></span><span class="word w-ok">Enabled</span></span></div>
+  <div class="arow"><div><div class="an">Release notes draft</div><div class="am"><span>on tag v*</span><span class="sep">·</span><span>start session · opencode API</span></div></div>
+    <span class="state"><span class="led idle"></span><span class="word w-mute">Paused</span></span></div>
+</div>`;
+
+const editor = `
+<div class="panel"><div class="cs"><span class="notch"></span><span class="t">New automation</span><span>// action</span></div>
+  <div class="field"><span class="gh">Action</span><div class="in">Start a session</div></div>
+  <div class="gh">Agent · API clients only</div>
+  <div class="tiles">
+    <div class="tile plate sel" style="--eng:var(--engine-amber)"><span class="mark6"></span><span class="tn">Claude · API</span><span class="ts">structured · unattended ready</span></div>
+    <div class="tile plate" style="--eng:var(--engine-green)"><span class="tn">opencode · API</span><span class="ts">structured · unattended ready</span></div>
+    <div class="tile plate dim" style="--eng:var(--engine-teal)"><span class="tn">Codex · API</span><span class="unav"><span class="sqm"></span>UNAVAILABLE</span><span class="ts">codex app-server 0.164 not admitted</span></div>
+  </div>
+  <p class="noteline">Terminal clients can't be chosen for new unattended work.</p>
+  <div class="field"><span class="gh">Model · permissions</span><div class="in">sonnet · ask</div></div>
+</div>`;
+
+const confirmSheet = `
+<div class="scrim"></div>
+<div class="sheet2"><div class="grab"></div>
+  <h2><span class="notch"></span>Switch to API client?</h2>
+  <p>Switching changes what this automation runs: <b>Claude API · model sonnet · permissions: ask</b>. Confirm to re-consent.</p>
+  <dl class="chg"><dt>Runs</dt><dd><s>Claude terminal</s> → Claude API</dd><dt>Model</dt><dd>sonnet</dd><dt>Permissions</dt><dd>ask</dd></dl>
+  <div class="acts"><span class="btn plate ghost focus">Cancel</span><span class="btn plate primary">Switch and confirm</span></div>
+</div>`;
+
+const b2 = `
+<section class="board t-dark board-grid" id="k2">
+  <p class="cap"><b>#1728 · board 2</b> automations list + editor · desktop light + phone dark <span>terminal automations keep running, labelled legacy; new unattended work offers API clients only</span></p>
+  <div class="row">
+    <div class="col t-light"><p class="lbl">Desktop · light</p>
+      <div class="page" style="width:900px;border:1px solid var(--line)">
+        <div class="ph"><span class="notch"></span><h1>Automations</h1></div>
+        <div style="display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:14px;align-items:start">
+          <div class="panel"><div class="cs"><span class="notch"></span><span class="t">Automations</span><span>// <span class="v">3</span></span></div>${listRows(false)}</div>
+          ${editor}
+        </div></div></div>
+    <div class="col"><p class="lbl">Phone · dark · Switch tapped</p>
+      <div class="phone t-dark" style="height:700px"><div class="ptop"><span class="ibtn lg">${I('menu')}</span><span class="mark">BATTLELAB</span></div>
+        <div class="page" style="flex:1"><div class="ph"><span class="notch"></span><h1>Automations</h1></div>${listRows(true)}</div>${confirmSheet}</div></div>
+    <div class="col"><p class="lbl">Phone · dark · new automation</p>
+      <div class="phone t-dark" style="height:700px"><div class="ptop"><span class="ibtn lg">${I('menu')}</span><span class="mark">BATTLELAB</span></div>
+        <div class="page" style="flex:1">${editor}</div></div></div>
+  </div>
+  <div class="row" style="margin-top:16px">
+    <div class="note" style="max-width:420px"><b>TERMINAL · UNRELIABLE UNATTENDED</b> is a neutral stamp (text-2 border), not <i>--status-degraded</i>: it classifies what the action targets, not a live state. The automation's state stays its own LED + word (ENABLED).</div>
+    <div class="note" style="max-width:420px"><b>Switch to API client</b> (44 px) appears only when an API client exists for the family. It opens a confirm sheet (a dialog on desktop) listing what changes. Focus starts on Cancel. Confirming re-consents and saves through the existing validated automation save.</div>
+    <div class="note" style="max-width:360px"><b>New automation</b>: the engine picker lists API clients only. An unready one shows its reason, never a terminal fallback.</div>
+  </div>
+</section>`;
+document.getElementById('root').innerHTML = b1 + b2;
+</script></body></html>

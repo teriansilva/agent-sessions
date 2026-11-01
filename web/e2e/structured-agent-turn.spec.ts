@@ -225,7 +225,8 @@ test("#1438: only a background task — a generic row, distinct from a turn, not
   const row = page.getByTestId("structured-background-work");
   await expect(row).toContainText("A background task is running");
   await expect(row).toContainText("nothing to interrupt");
-  await expect(row.getByRole("button")).toHaveCount(0);
+  // #1726: it is the background strip; its only control expands it — nothing interrupts.
+  await expect(row.getByRole("button", { name: /interrupt|stop/i })).toHaveCount(0);
   await expect(button(page)).toHaveCount(0);
 });
 

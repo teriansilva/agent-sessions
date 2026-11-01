@@ -192,11 +192,13 @@ for (const theme of ["dark", "light"]) {
       await expect(row).toHaveCount(1);
       // A turn the agent runs for itself shows as that turn (#1438); this row is a task's.
       await expect(row).toContainText("A background task is running");
-      const top = async (text: string) =>
-        (await page.getByTestId("structured-turn").filter({ hasText: text }).boundingBox())!.y;
-      const at = (await row.boundingBox())!.y;
-      expect(at).toBeGreaterThan(await top("Check startup."));
-      expect(at).toBeLessThan(await top("Only inspect the files."));
+      // #1726: the background strip above the composer, never a transcript row.
+      await expect(page.getByTestId("api-log").getByTestId("structured-background-work")).toHaveCount(0);
+      const log = (await page.getByTestId("api-log").boundingBox())!;
+      const form = (await page.getByRole("form", { name: "Compose message" }).boundingBox())!;
+      const at = (await row.boundingBox())!;
+      expect(at.y).toBeGreaterThanOrEqual(log.y + log.height - 1);
+      expect(at.y + at.height).toBeLessThanOrEqual(form.y + 1);
       await page.screenshot({ path: testInfo.outputPath(`background-${theme}.png`) });
     });
   }
@@ -213,7 +215,8 @@ test("#1430: with nothing queued the row ends the conversation, and holds still 
   await expect(row).toHaveCount(1);
   const last = (await page.getByTestId("structured-turn").last().boundingBox())!;
   expect((await row.boundingBox())!.y).toBeGreaterThanOrEqual(last.y + last.height - 1);
-  const motion = await row.locator("span[aria-hidden] span").first()
+  // #1726: the strip's LED holds still for reduced motion.
+  const motion = await row.locator("[class*='led']").first()
     .evaluate((el) => getComputedStyle(el).animationName);
   expect(motion).toBe("none");
 });

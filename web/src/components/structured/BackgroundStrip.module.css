@@ -1,0 +1,121 @@
+/* The background strip (#1726): one 44 px line glued above the composer, expanding with the
+ * shared <Disclosure> (grid rows 0fr → 1fr, 180 ms; Reduced fades; Off is instant). The open list
+ * is height-capped at 40 % of the pane (`--strip-cap`, measured) and scrolls inside, so many jobs
+ * never push the composer or the newest transcript row out of view. No radius, no gradient:
+ * status colour on the LED only, always beside its words. */
+.strip {
+  flex: none;
+  min-width: 0;
+  border-top: 1px solid var(--line-strong);
+  background: var(--bg-1);
+  color: var(--text-2);
+}
+.disclosure {
+  min-width: 0;
+}
+.disclosure > button {
+  padding: 0 var(--sp-3);
+  min-height: 44px;
+  gap: var(--sp-2);
+  letter-spacing: 0.08em;
+}
+.summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.count {
+  flex: none;
+  color: var(--text);
+  font: 600 var(--fs-label) / 1 var(--font-mono);
+}
+.lead {
+  display: inline-flex;
+  gap: var(--sp-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font: 400 var(--fs-meta) / 1 var(--font-mono);
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-2);
+}
+.lead::before {
+  content: "·";
+  color: var(--text-2);
+}
+.leadName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.leadSince {
+  flex: none;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.toggle {
+  flex: none;
+  margin-left: auto;
+  color: var(--text-2);
+  font: 500 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.16em;
+}
+.led {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%; /* LEDs are the one round thing (design §3) */
+  flex: none;
+}
+.ledUp {
+  background: var(--status-up);
+}
+.list {
+  max-height: var(--strip-cap, 40vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-top: 1px solid var(--line-strong);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.list:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+/* #1461's task rows, unchanged; only their separators come from here. */
+.list > article + article {
+  border-top: 1px solid var(--line-strong);
+}
+/* #1724's notices: always visible, above the collapsible line; their rows carry their own edge. */
+.notices {
+  display: grid;
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-3);
+}
+.notices > div {
+  margin: 0;
+}
+.generic {
+  margin: 0;
+  padding: var(--sp-3);
+  color: var(--text);
+}
+.generic > span {
+  display: block;
+  margin-top: var(--sp-1);
+  color: var(--text-2);
+}
+.note {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--line-strong);
+  font: 400 var(--fs-label) / 1.5 var(--font-mono);
+  color: var(--text-2);
+}
+/* Reduced: the open list fades in 120 ms; the height does not slide. */
+:root[data-motion="reduced"] .disclosure > div {
+  transition: none;
+}

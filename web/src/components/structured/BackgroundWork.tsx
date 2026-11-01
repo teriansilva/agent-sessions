@@ -1,9 +1,8 @@
-/** Background task observations (#1461), separate from an interruptible agent-owned turn.
+/** Background task observations (#1461), separate from an interruptible agent-owned turn: the
+ *  rows and notices the background strip (#1726, `BackgroundStrip.tsx`) shows.
  *  Native reports are inert text. Clocks mean time since observation, never measured work. */
-import { useEffect, useState } from "react";
 import { humanDuration } from "../../lib/format";
-import type { StructuredBackgroundTask, StructuredSnapshot } from "../../types/api";
-import chat from "../chat/ChatPane.module.css";
+import type { StructuredBackgroundTask } from "../../types/api";
 import pane from "./StructuredPane.module.css";
 import styles from "./BackgroundWork.module.css";
 
@@ -24,7 +23,7 @@ function statusLabel(state: string) {
 
 /** A process the agent started (#1724, the process floor): program name and pid, and when it
  *  started. Never its command line. */
-function ProcessRow({ task, now }: { task: StructuredBackgroundTask; now: number }) {
+export function ProcessRow({ task, now }: { task: StructuredBackgroundTask; now: number }) {
   const started = observedTime(task.started_at);
   return (
     <article className={`${styles.task} ${styles.process}`} data-testid="structured-background-process"
@@ -51,7 +50,8 @@ function ProcessRow({ task, now }: { task: StructuredBackgroundTask; now: number
   );
 }
 
-function TaskRow({ task, now }: { task: StructuredBackgroundTask; now: number }) {
+/** One engine-reported task (#1461), shared with the background strip (#1726). */
+export function TaskRow({ task, now }: { task: StructuredBackgroundTask; now: number }) {
   const first = observedTime(task.started_at);
   const last = observedTime(task.updated_at);
   const report = task.summary || (task.last_tool_name ? `Last tool: ${task.last_tool_name}` : null);
@@ -88,34 +88,10 @@ function TaskRow({ task, now }: { task: StructuredBackgroundTask; now: number })
   );
 }
 
-function TaskActivity({ tasks, worker }: { tasks: StructuredBackgroundTask[]; worker: string }) {
-  const [now, setNow] = useState(() => Date.now() / 1000);
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  // Two kinds of observation (#1724), counted apart: an agent task and the process it runs
-  // cannot be reliably matched, so they are never added up into one job count.
-  const engine = tasks.filter((task) => task.source !== "process");
-  const processes = tasks.filter((task) => task.source === "process");
-  const head = [
-    engine.length ? `${engine.length} ${engine.length === 1 ? "agent task" : "agent tasks"}` : null,
-    processes.length ? `${processes.length} ${processes.length === 1 ? "process" : "processes"}` : null,
-  ].filter(Boolean).join(" · ");
-  return (
-    <section className={styles.activity} data-testid="structured-background-work" aria-label="Background activity">
-      <p className={styles.head} role="status">Background · {head} active</p>
-      {engine.map((task) => <TaskRow key={`${worker}:${task.task_id}`} task={task} now={now} />)}
-      {processes.map((task) => <ProcessRow key={`${worker}:${task.task_id}`} task={task} now={now} />)}
-      <p className={styles.note}>Runs outside a conversation turn. Stop ends the session’s worker and these jobs.</p>
-    </section>
-  );
-}
-
 /** The live worker's process scan can't be read (#1724): an unknown scan is never idle, so this
  *  session won't idle out. Said out loud, with the way to end it: Stop, which asks first and
  *  offers Stop everything for exactly this state. */
-function ScanUnknown({ onStop }: { onStop?: () => void }) {
+export function ScanUnknown({ onStop }: { onStop?: () => void }) {
   return (
     <div className={styles.scanUnknown} role="status" data-testid="structured-scan-unknown">
       <span className={`${pane.led} ${pane.ledIdle}`} aria-hidden="true" />
@@ -133,7 +109,7 @@ function ScanUnknown({ onStop }: { onStop?: () => void }) {
 
 /** Jobs an interrupted exact Stop paused and could not resume (#1724): never left silently
  *  suspended. Said out loud, with Stop everything, which ends them. */
-function PausedUnresumed({ count, onStopEverything }: { count: number; onStopEverything?: () => void }) {
+export function PausedUnresumed({ count, onStopEverything }: { count: number; onStopEverything?: () => void }) {
   return (
     <div className={styles.scanUnknown} role="alert" data-testid="structured-paused-unresumed">
       <span className={`${pane.led} ${pane.ledWarn}`} aria-hidden="true" />
@@ -146,42 +122,6 @@ function PausedUnresumed({ count, onStopEverything }: { count: number; onStopEve
           Stop everything…
         </button>
       )}
-    </div>
-  );
-}
-
-/** Older workers report only the aggregate activity flag, sometimes with bare task identities.
- *  Keep the existing fallback when no descriptive metadata is known. */
-export function BackgroundWork({ native, onStop, onStopEverything }: {
-  native: StructuredSnapshot["native"];
-  /** The pane's Stop (#1724), offered beside an unreadable process scan. */
-  onStop?: () => void;
-  /** The pane's Stop everything (#1724), offered beside jobs that could not be resumed. */
-  onStopEverything?: () => void;
-}) {
-  const unknown = !!native?.worker && native.stop_inventory?.scan === "unknown";
-  const paused = native?.worker ? native.paused_unresumed ?? 0 : 0;
-  const activity = backgroundActivity(native);
-  return (
-    <>
-      {paused > 0 && <PausedUnresumed count={paused} onStopEverything={onStopEverything} />}
-      {unknown && <ScanUnknown onStop={onStop} />}
-      {activity}
-    </>
-  );
-}
-
-function backgroundActivity(native: StructuredSnapshot["native"]) {
-  const tasks = native?.background_tasks ?? [];
-  if (native?.worker && tasks.some((task) =>
-    task.source === "process" || task.description || task.task_type || task.last_tool_name || task.summary,
-  )) return <TaskActivity tasks={tasks} worker={native.worker} />;
-  if (!native?.background_active && native?.stop_inventory?.scan === "unknown") return null;
-  return (
-    <div className={`${chat.wait} ${pane.taskRow}`} role="status" data-testid="structured-background-work">
-      <span className={chat.bars} aria-hidden="true"><span /><span /><span /></span>
-      A background task is running
-      <span className={pane.ownNote}>Not a turn: there is nothing to interrupt. Stop ends the worker.</span>
     </div>
   );
 }

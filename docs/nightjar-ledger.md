@@ -104,6 +104,8 @@ the same list.
 | `components/slideshow/Slideshow.module.css` | css | 4 | done | popup:tour popup:whats-new | none (static dots) |
 | `components/specialists/specialists.module.css` | css | 10 | todo |  |  |
 | `components/structured/BackgroundWork.module.css` | css | 6 | todo |  |  |
+| `components/structured/ApiRail.module.css` | css | 6 | todo |  |  |
+| `components/structured/BackgroundStrip.module.css` | css | 6 | todo |  |  |
 | `components/structured/Markdown.module.css` | css | 6 | todo |  |  |
 | `components/structured/NotSent.module.css` | css | 6 | todo |  |  |
 | `components/structured/Outbox.module.css` | css | 6 | todo |  |  |
@@ -182,6 +184,7 @@ the same list.
 | `components/shares/SharePubliclyModal.tsx` | popup | 3 | done | popup:share-publicly | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/sidebar/MoveToProjectModal.tsx` | popup | 3 | done | popup:move-to-project | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/sidebar/RowMenu.tsx` | popup | 3 | done | popup:session-row-menu popup:objective-menu | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
+| `components/structured/ApiRail.tsx` | popup | 6 | todo |  |  |
 | `components/structured/PermissionsDialog.tsx` | popup | 3 | done | popup:permissions | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/structured/StructuredPane.tsx` | popup | 6 | todo |  |  |
 | `components/templates/ConfirmDialog.tsx` | popup | 3 | done | popup:confirm popup:git-confirm | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |

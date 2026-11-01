@@ -26,6 +26,7 @@ import uuid
 from dataclasses import dataclass
 
 from . import native_attachments, native_questions
+from . import native_protocol as _np
 from .native_protocol import TASK_METADATA_LIMITS, ProtocolError, validate_text
 from .structured_types import normalize_context
 
@@ -544,9 +545,14 @@ _EVENT_FIELDS = {
     # `questions` (#1463): an async question's options, as display text. Optional, so a journal
     # written before it reads unchanged.
     "text": ({"text", "partial", "truncated"}, _COMMON | {"item_id", "agent_turn", "questions"}),
+    # `call` / `mcp_server` / `skill` (#1726): the event that STARTS a call, the MCP server it
+    # went to (`""`: an MCP call no server could be attributed to) and a skill it reported using.
+    # Optional, so a journal written before them reads unchanged.
     "tool": (
         {"item_id"},
-        _COMMON | {"agent_turn", "tool", "state", "summary", "output", "completed"},
+        _COMMON
+        | {"agent_turn", "tool", "state", "summary", "output", "completed"}
+        | {"call", "mcp_server", "skill", "tool_name"},
     ),
     "approval": (
         _COMMON
@@ -583,6 +589,12 @@ _EVENT_FIELDS = {
         {"native_turn_id", "task_id", "active", "native_state", "background_turn", "task_state"}
         | TASK_METADATA_LIMITS.keys(),
     ),
+    # #1726: the agent's plan (a checklist and/or a proposed document) and the tools its client
+    # reports (MCP servers with a status, skills, commands). Names and display text only, bounded
+    # per `native_protocol.PLAN_*` / `ENV_*`; never part of a turn.
+    # `stale` (review on #1811): the client's list can no longer be reconciled — a marker alone.
+    "plan": (set(), {"entries", "explanation", "document", "stale"}),
+    "environment": (set(), {"mcp", "skills", "commands", "skill_use"}),
     "response": (_RPC, set()),
     # #1724: the generation's active background work whenever it changes — engine task ids and
     # the process floor's agent processes (pid, start ticks, `comm`; never argv or environment).
@@ -690,13 +702,81 @@ def _memory_oom_kill(data: dict) -> dict:
     return out
 
 
+def _name(value, limit=_np.ENV_NAME):
+    if not _text(value, limit).strip():
+        raise IPCError("invalid private IPC name")
+    return value
+
+
+def _rows(value, limit, fields):
+    if type(value) is not list or len(value) > limit:
+        raise IPCError("private IPC list exceeds its bound")
+    out, names = [], set()
+    for row in value:
+        _object(row, fields)
+        if "name" in fields:
+            if row["name"] in names:
+                raise IPCError("duplicate private IPC name")
+            names.add(row["name"])
+        out.append(row)
+    return out
+
+
+def _plan(data: dict) -> dict:
+    if "stale" in data:
+        if data != {"stale": True}:
+            raise IPCError("a stale plan marker carries nothing else")
+        return {"stale": True}
+    if "entries" not in data and "document" not in data:
+        raise IPCError("a plan carries entries or a document")
+    if "explanation" in data and "entries" not in data:
+        raise IPCError("a plan explanation belongs to its entries")
+    out = {}
+    if "entries" in data:
+        rows = _rows(data["entries"], _np.PLAN_ENTRIES, {"text", "status"})
+        out["entries"] = [
+            {
+                "text": _name(r["text"], _np.PLAN_TEXT),
+                "status": _choice(r["status"], _np.PLAN_STATES),
+            }
+            for r in rows
+        ]
+    if "explanation" in data:
+        out["explanation"] = _text(data["explanation"], _np.PLAN_EXPLANATION)
+    if "document" in data:
+        out["document"] = _text(data["document"], _np.PLAN_DOCUMENT)
+    return out
+
+
+def _environment(data: dict) -> dict:
+    if not {"mcp", "skills", "commands"} & data.keys():
+        raise IPCError("an environment report names something")
+    out = {}
+    if "mcp" in data:
+        out["mcp"] = [
+            {"name": _name(r["name"]), "status": _choice(r["status"], _np.MCP_STATES)}
+            for r in _rows(data["mcp"], _np.ENV_MCP, {"name", "status"})
+        ]
+    for key, limit in (("skills", _np.ENV_SKILLS), ("commands", _np.ENV_COMMANDS)):
+        if key in data:
+            out[key] = [{"name": _name(r["name"])} for r in _rows(data[key], limit, {"name"})]
+    if "skill_use" in data:
+        out["skill_use"] = _boolean(data["skill_use"])
+    return out
+
+
 def _event(value):
     _object(value, {"cursor", "kind", "data"})
     kind = _choice(value["kind"], _EVENT_FIELDS)
     required, optional = _EVENT_FIELDS[kind]
     data = _object(value["data"], required, optional)
-    if kind in {"memory_pressure", "memory_oom_kill"}:
-        out = _memory_pressure(data) if kind == "memory_pressure" else _memory_oom_kill(data)
+    if kind in {"memory_pressure", "memory_oom_kill", "plan", "environment"}:
+        out = {
+            "memory_pressure": _memory_pressure,
+            "memory_oom_kill": _memory_oom_kill,
+            "plan": _plan,
+            "environment": _environment,
+        }[kind](data)
         return {"cursor": _integer(value["cursor"], minimum=1), "kind": kind, "data": out}
     if kind in {"background_inventory", "background_settled"}:
         out = _inventory(kind, data)
@@ -752,8 +832,13 @@ def _event(value):
             "active",
             "native_will_retry",
             "complete",
+            "call",
         }:
             out[key] = _boolean(item)
+        elif kind == "tool" and key == "mcp_server":
+            out[key] = _text(item, _np.ENV_NAME)  # "" = an MCP call with no attributable server
+        elif kind == "tool" and key in {"skill", "tool_name"}:
+            out[key] = _name(item)
         elif key in {"payload_digest", "confirm_tasks"}:
             out[key] = _digest(item)
         elif kind == "background" and key in TASK_METADATA_LIMITS:

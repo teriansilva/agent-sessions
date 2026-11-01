@@ -709,5 +709,10 @@ def project(
             "background_turn": background_turn[0]
             if background_turn is not None and background_turn[1] == live_worker
             else None,
+            # #1726 (a deliberate projection change): the plan, the live generation's tools and
+            # the call counts, read from the journal's own indexes exactly as `project` does.
+            "plan": journal.events.plan(live_worker),
+            "environment": journal.events.environment_of(live_worker),
+            "counts": journal.events.counts.view(),
         },
     }

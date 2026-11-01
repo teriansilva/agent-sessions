@@ -630,6 +630,7 @@ test("the head carries the terminal's actions that work for an API session — n
   );
   expect(ids).toEqual([
     "Browse session files",
+    "Show plan and tools",
     "Open session brief",
     "Hand off session to another engine",
     "Open this session as a window on the map",
@@ -679,7 +680,15 @@ test("at ≤800px every action lives in ONE Actions menu", async () => {
     expect(document.querySelectorAll("[data-head-action]")).toHaveLength(0);
     await userEvent.click(screen.getByRole("button", { name: /actions/i }));
     const items = screen.getAllByRole("menuitem").map((m) => m.textContent);
-    expect(items).toEqual(["Files", "Recap", "Hand off", "Share link", "Share publicly…", "Stop"]);
+    expect(items).toEqual([
+      "Files",
+      "Plan & tools",
+      "Recap",
+      "Hand off",
+      "Share link",
+      "Share publicly…",
+      "Stop",
+    ]);
   } finally {
     window.matchMedia = original;
   }

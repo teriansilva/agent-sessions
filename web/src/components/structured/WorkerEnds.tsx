@@ -1,5 +1,5 @@
-/** Work that ended with its worker, and idle exits (#1724): transcript rows, inline until the
- *  background strip (#1726) lands. One row per task or process still active when the generation
+/** Work that ended with its worker, and idle exits (#1724): transcript rows, never rows of the
+ *  background strip (#1726), which shows live work only. One row per task or process still active when the generation
  *  ended — ENDED WITH WORKER · name · why · when — or IDLE EXIT with how long it was idle. A row
  *  is what BattleLab last OBSERVED: work that started and ended between two observations of a
  *  worker that was killed is not listed, and no row claims it. Processes show their program
