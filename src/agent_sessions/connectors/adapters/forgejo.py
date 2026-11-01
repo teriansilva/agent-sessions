@@ -17,48 +17,41 @@ the HQ layer (`connectors.hq`) guards and labels it before the model sees any of
 
 from __future__ import annotations
 
-import base64
-import binascii
-import re
-from urllib.parse import quote
-
 from ... import connector_http
 from ...connector_http import Bound, ConnectorError
+from .common import (
+    BRANCH_MAX,
+    CHECKS_KEPT,
+    COMMENTS_MAX,
+    DIR_MAX,
+    FILE_MAX_BYTES,
+    NAME_RE,
+    PATH_MAX,
+    SEARCH_LIMIT,
+    SEGMENT_MAX,
+    SHA_RE,
+    STATUS_SEVERITY,
+    ci_result,
+    contents_path,
+    dir_entries,
+    file_text,
+    valid_name,
+    valid_path,
+)
+from .common import count as _int
+from .common import login as _login
+from .common import seg as _seg
+from .common import sha as _sha
+from .common import text as _str
 
-NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}")
-SHA_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
-BRANCH_MAX = 250
-PATH_MAX = 1000
-SEGMENT_MAX = 255
-SEARCH_LIMIT = 20
-COMMENTS_MAX = 50
-CHECKS_KEPT = 50
 #: Forgejo's maximum page size for the commit-status route, and how many pages a count may read.
 STATUS_PAGE_SIZE = 50
 STATUS_PAGES_MAX = 6
-DIR_MAX = 200
-FILE_MAX_BYTES = 256 * 1024
 
-
-def _seg(part: str) -> str:
-    return quote(part, safe="")
-
-
-def valid_name(v: object) -> bool:
-    return isinstance(v, str) and NAME_RE.fullmatch(v) is not None and not v.endswith(".git")
-
-
-def valid_path(p: object) -> bool:
-    """A repository-relative path: segments, no empty, ``.`` or ``..`` segment, no leading
-    slash, no control characters, bounded."""
-    if not isinstance(p, str) or len(p) > PATH_MAX:
-        return False
-    if p == "":
-        return True
-    if p.startswith("/") or "\\" in p or not p.isprintable():
-        return False
-    parts = p.split("/")
-    return all(s not in ("", ".", "..") and len(s) <= SEGMENT_MAX for s in parts)
+__all__ = [  # re-exported: `hq` and `service` read these through this module
+    "BRANCH_MAX", "CHECKS_KEPT", "COMMENTS_MAX", "DIR_MAX", "FILE_MAX_BYTES", "NAME_RE",
+    "PATH_MAX", "SEGMENT_MAX", "SHA_RE", "STATUS_SEVERITY", "valid_name", "valid_path",
+]  # fmt: skip
 
 
 def _repo_path(o: str, r: str) -> str:
@@ -69,24 +62,6 @@ def _repo_path(o: str, r: str) -> str:
 
 async def _get(bound: Bound, path: str, params: dict | None = None) -> object:
     return await connector_http._request(bound, "GET", path, params)
-
-
-def _str(v: object, cap: int = 100_000) -> str:
-    return v[:cap] if isinstance(v, str) else ""
-
-
-def _int(v: object) -> int:
-    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else 0
-
-
-def _login(user: object) -> str:
-    return _str(user.get("login"), 100) if isinstance(user, dict) else ""
-
-
-def _sha(v: object) -> str:
-    if not isinstance(v, str) or not SHA_RE.fullmatch(v):
-        raise ConnectorError("bad_reply", "the forge answered without a commit sha")
-    return v
 
 
 async def probe(bound: Bound) -> dict:
@@ -220,19 +195,6 @@ async def read_issue(bound: Bound, o: str, r: str, n: int) -> dict:
     return out
 
 
-#: Forgejo's commit-status severity, worst first: the combined state is the worst of every
-#: context's latest state. A state this build does not know counts as `pending` (never green).
-STATUS_SEVERITY = ("error", "failure", "warning", "pending", "success")
-
-
-def _severity(state: str) -> int:
-    return (
-        STATUS_SEVERITY.index(state)
-        if state in STATUS_SEVERITY
-        else STATUS_SEVERITY.index("pending")
-    )
-
-
 async def read_ci(bound: Bound, o: str, r: str, sha: str) -> dict:
     """The combined state over ALL contexts, the ``CHECKS_KEPT`` worst checks, and how many
     there are.
@@ -277,67 +239,20 @@ async def read_ci(bound: Bound, o: str, r: str, sha: str) -> dict:
         if not rows or fresh == 0 or len(rows) < page_size:
             capped = False  # reached the end
             break
-    if latest:
-        worst = min(latest.values(), key=_severity)
-        state = worst if worst in STATUS_SEVERITY else "pending"
-    else:
-        state = ""  # no statuses at all: Forgejo answers an empty state with zero contexts
-    if capped and state not in ("error", "failure"):
-        state = "incomplete"
-    ordered = sorted(latest.items(), key=lambda kv: _severity(kv[1]))  # stable: worst first
-    return {
-        "sha": sha,
-        "state": state,
-        "checks": [{"context": c[:200], "state": st} for c, st in ordered[:CHECKS_KEPT]],
-        "checks_total": len(latest),
-        "checks_total_capped": capped,
-    }
+    return ci_result(sha, latest, capped)
 
 
 def _contents_path(o: str, r: str, path: str) -> str:
-    if not valid_path(path):
-        raise ConnectorError("refused", "not a repository path")
-    base = f"{_repo_path(o, r)}/contents"
-    return base if path == "" else base + "/" + "/".join(_seg(s) for s in path.split("/"))
+    return contents_path(_repo_path(o, r), path)
 
 
 async def list_dir(bound: Bound, o: str, r: str, sha: str, path: str) -> list[dict]:
     sha = _sha(sha)
-    rows = await _get(bound, _contents_path(o, r, path), {"ref": sha})
-    if not isinstance(rows, list):
-        raise ConnectorError("refused", "that path is not a directory")
-    out = []
-    for e in rows[:DIR_MAX]:
-        if not isinstance(e, dict):
-            continue
-        name, kind = e.get("name"), e.get("type")
-        child = f"{path}{name}" if path == "" or path.endswith("/") else f"{path}/{name}"
-        if isinstance(name, str) and kind in ("dir", "file") and valid_path(child):
-            out.append({"name": name, "type": kind, "path": child, "size": _int(e.get("size"))})
-    return out
+    return dir_entries(await _get(bound, _contents_path(o, r, path), {"ref": sha}), path)
 
 
 async def read_file(bound: Bound, o: str, r: str, sha: str, path: str) -> dict:
     sha = _sha(sha)
     if path == "":
         raise ConnectorError("refused", "not a file path")
-    f = await _get(bound, _contents_path(o, r, path), {"ref": sha})
-    if not isinstance(f, dict) or f.get("type") != "file":
-        raise ConnectorError("refused", "that path is not a file")
-    if _int(f.get("size")) > FILE_MAX_BYTES or f.get("content") is None:
-        raise ConnectorError("too_large", "that file is too large to read here")
-    if f.get("encoding") != "base64" or not isinstance(f.get("content"), str):
-        raise ConnectorError("bad_reply", "the forge answered the file in an unknown encoding")
-    try:
-        raw = base64.b64decode(f["content"], validate=False)
-    except (binascii.Error, ValueError):
-        raise ConnectorError("bad_reply", "the file's content could not be decoded") from None
-    if len(raw) > FILE_MAX_BYTES:
-        raise ConnectorError("too_large", "that file is too large to read here")
-    if b"\x00" in raw:
-        raise ConnectorError("binary", "that file is binary; only text is read")
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        raise ConnectorError("binary", "that file is not UTF-8 text; only text is read") from None
-    return {"path": path, "sha": sha, "size": len(raw), "text": text}
+    return file_text(await _get(bound, _contents_path(o, r, path), {"ref": sha}), path, sha)

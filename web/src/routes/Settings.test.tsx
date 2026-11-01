@@ -43,6 +43,8 @@ vi.mock("../lib/api", async () => {
       updateApply: vi.fn(),
       // #1085: the Updates card reads the installer's progress record.
       updateProgress: vi.fn().mockResolvedValue({ state: "idle", steps: 7 }),
+      // #1825: the HQ connectors page reads the catalog on mount.
+      connectors: vi.fn().mockResolvedValue({ catalog: [], instances: [], disclosure: "" }),
       updateSettings: vi.fn(),
       setUpdateSettings: vi.fn(),
       config: vi.fn(),
@@ -440,6 +442,7 @@ test.each([
   ["ai-session-review", ["Session review"]],
   ["ai-auto-sort", ["Auto-sort projects"]],
   ["ai-mission-control", ["Orchestrator", "Session scan", "Forge connection"]],
+  ["ai-hq-connectors", ["HQ connectors"]],
   ["ai-prompts", ["Prompts"]],
   ["ai-activity", ["AI activity"]],
   ["agents", ["Agents"]],
@@ -463,8 +466,9 @@ test.each([
 
 test("the registry and the pages agree: every section id renders something", () => {
   // A registry entry with no body in Settings.tsx would be a nav link to a blank page.
-  // Resources has its own submenu, separate from Host (#1386). HQ calls joined the AI group (#1397).
-  expect(SETTINGS_SECTIONS).toHaveLength(22);
+  // Resources has its own submenu, separate from Host (#1386). HQ calls joined the AI group (#1397),
+  // then HQ connectors (#1825).
+  expect(SETTINGS_SECTIONS).toHaveLength(23);
 });
 
 // ---- Usage analytics (#1009) ----------------------------------------------------------------

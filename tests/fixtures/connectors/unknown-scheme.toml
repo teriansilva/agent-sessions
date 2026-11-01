@@ -16,7 +16,7 @@ mode = "operator"
 
 [auth]
 kind = "token-header"
-scheme = "Bearer"
+scheme = "Digest"
 scopes = ["read:issue", "read:repository"]
 
 [capabilities]

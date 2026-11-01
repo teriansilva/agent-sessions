@@ -11,6 +11,7 @@ import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, Ga
 import type { CollectionInput, SecretAccessEntry, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
 import type { SessionCapacity, Resources, ResourceSettings, ResourceValues } from "../types/resources";
 import type { CreatedShare, ShareList, ShareMode } from "./shareFormat";
+import type { ConnectorCatalog, ConnectorInstance, ConnectorTestResult } from "./connectors";
 import type { DeploymentReceipt, DeploymentRemoval, DeploymentReview, DeploymentStatus, PlaybookInputs } from "../types/playbookDeployment";
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
@@ -924,6 +925,19 @@ export const api = {
   revokeShare: (shareId: string) =>
     mutateJson<{ revoked: boolean }>("DELETE", `/api/shares/${encodeURIComponent(shareId)}`),
   revokeAllShares: () => mutateJson<{ revoked: number }>("POST", "/api/shares/revoke-all"),
+  // HQ connectors (#1746). The token goes up in `updateConnector` and never comes back: an
+  // instance carries `token_set` only. Every mutation answers the instance as the store now holds it.
+  connectors: () => getJsonWithDetail<ConnectorCatalog>("/api/connectors"),
+  addConnector: (manifestId: string) =>
+    mutateJson<ConnectorInstance>("POST", "/api/connectors/instances", { manifest_id: manifestId }),
+  updateConnector: (id: string, body: { origin?: string; token?: string | null }) =>
+    mutateJson<ConnectorInstance>("PATCH", `/api/connectors/instances/${enc(id)}`, body),
+  testConnector: (id: string) =>
+    mutateJson<ConnectorTestResult>("POST", `/api/connectors/instances/${enc(id)}/test`),
+  setConnectorRead: (id: string, read: boolean) =>
+    mutateJson<ConnectorInstance>("POST", `/api/connectors/instances/${enc(id)}/capabilities`, { read }),
+  removeConnector: (id: string) =>
+    mutateJson<{ removed: string }>("DELETE", `/api/connectors/instances/${enc(id)}`),
   publicGallery: () => getJsonWithDetail<GalleryIndex>("/api/gallery"),
   refreshGallery: () => mutateJson<GalleryIndex>("POST", "/api/gallery/refresh"),
   inspectGallery: (digest: string, localId: string) => getJsonWithDetail<GalleryInspection>(`/api/gallery/content/${encodeURIComponent(digest)}?local_id=${encodeURIComponent(localId)}`),

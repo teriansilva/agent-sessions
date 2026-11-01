@@ -14,7 +14,8 @@ and attaches ``Authorization: <scheme> <token>`` itself.
 * a token travels over ``https`` only — ``http`` only when the origin resolves to loopback, where
   it never leaves this machine (``net_vetting.TOKEN_HTTPS_OR_LOOPBACK``);
 * no ambient proxies (``trust_env=False``), no redirects (one could carry the token elsewhere);
-* GET only, a path under ``/api/v1/`` built by the adapter from validated parts;
+* GET only, a path the adapter KIND allows (`PATHS`), built by the adapter from validated parts;
+* request headers fixed per kind (`HEADERS`), never supplied by an adapter;
 * a bounded body (``BODY_MAX``), identity encoding, connect / read / total deadlines;
 * errors are short codes with a content-free detail: never the token, never the reply body.
 """
@@ -36,7 +37,22 @@ BODY_MAX = 1024 * 1024
 CONNECT_TIMEOUT_S = 5.0
 READ_TIMEOUT_S = 10.0
 TOTAL_TIMEOUT_S = 20.0
-_PATH_RE = re.compile(r"/api/v1/[A-Za-z0-9._~%/-]*")
+#: Which paths each adapter kind may request (#1826): anchored, and checked BEFORE the token is
+#: fetched. A kind with no row reads nothing. Writes stay impossible whatever the path: the
+#: transport sends GET only.
+PATHS = {
+    "forgejo-api": re.compile(r"/api/v1/[A-Za-z0-9._~%/-]*"),
+    "github-rest": re.compile(r"/(?:user|search|repos)(?:/[A-Za-z0-9._~%/-]*)?"),
+}
+#: Extra request headers per kind, fixed here (an adapter cannot add one).
+HEADERS = {
+    "github-rest": {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    },
+}
+#: Reply headers a caller may ask for (`_request(headers_out=…)`); everything else stays here.
+REPLY_HEADERS = frozenset({"x-oauth-scopes"})
 
 #: Test seams: tests mount an `httpx.MockTransport` and pin resolution.
 _TRANSPORT: httpx.AsyncBaseTransport | None = None
@@ -61,6 +77,8 @@ class Bound:
     origin: str
     auth_scheme: str
     label: str
+    #: The manifest's `adapter.kind`: selects the path rule and the fixed headers.
+    adapter: str = "forgejo-api"
     #: An HQ read (True) needs read to be enabled AT THE TOKEN FETCH, not only when the tool
     #: began; the connection test (False) runs before read can be enabled.
     for_read: bool = True
@@ -71,7 +89,13 @@ async def _resolve(host: str, port: int) -> list[str]:
     return [str(info[4][0]) for info in infos]
 
 
-def _status_error(status: int, host: str) -> ConnectorError:
+def _status_error(status: int, host: str, headers: httpx.Headers | None = None) -> ConnectorError:
+    remaining = (headers or {}).get("x-ratelimit-remaining")
+    if status in (403, 429) and (remaining == "0" or status == 429):
+        # GitHub answers an exhausted rate limit with 403 (or 429): not a bad token (#1826).
+        return ConnectorError(
+            "rate_limited", f"{host} says this token's rate limit is used up for now", status=status
+        )
     if status in (401, 403):
         return ConnectorError("rejected", f"{host} rejected the token ({status})", status=status)
     if status == 404:
@@ -99,11 +123,28 @@ def _token(bound: Bound) -> str:
     return token
 
 
-async def _request(bound: Bound, method: str, path: str, params: dict | None = None) -> object:
-    """THE outbound call (inventoried). GET ``<origin><path>?<params>``; the parsed JSON reply."""
+async def _request(
+    bound: Bound,
+    method: str,
+    path: str,
+    params: dict | None = None,
+    *,
+    headers_out: dict[str, str] | None = None,
+) -> object:
+    """THE outbound call (inventoried). GET ``<origin><path>?<params>``; the parsed JSON reply.
+
+    ``headers_out``, when given, receives the reply headers named in `REPLY_HEADERS` (lowercase
+    keys) and nothing else."""
     if method != "GET":
         raise ConnectorError("refused", "connectors only read")
-    if not _PATH_RE.fullmatch(path) or "//" in path or "/../" in f"{path}/" or "/./" in path:
+    rule = PATHS.get(bound.adapter)
+    if (
+        rule is None
+        or not rule.fullmatch(path)
+        or "//" in path
+        or "/../" in f"{path}/"
+        or "/./" in path
+    ):
         raise ConnectorError("refused", "not a path this connector reads")
     clean: dict[str, str] = {}
     for k, v in (params or {}).items():
@@ -126,10 +167,13 @@ async def _request(bound: Bound, method: str, path: str, params: dict | None = N
             # a read disabled while the name was resolving sends nothing.
             token = await asyncio.to_thread(_token, bound)
             host = dest.host_header
+            # The kind's fixed headers first, so they can set `Accept` but never the credential,
+            # the Host pin or the identity encoding, which are written after them.
             headers = {
+                "Accept": "application/json",
+                **HEADERS.get(bound.adapter, {}),
                 "Authorization": f"{bound.auth_scheme} {token}",
                 "Host": dest.host_header,
-                "Accept": "application/json",
                 "Accept-Encoding": "identity",
             }
             extensions = {"sni_hostname": dest.sni} if dest.sni else None
@@ -145,7 +189,11 @@ async def _request(bound: Bound, method: str, path: str, params: dict | None = N
                 resp = await client.send(req, stream=True)
                 try:
                     if not 200 <= resp.status_code < 300:
-                        raise _status_error(resp.status_code, host)
+                        raise _status_error(resp.status_code, host, resp.headers)
+                    if headers_out is not None:
+                        for name in REPLY_HEADERS:
+                            if name in resp.headers:
+                                headers_out[name] = resp.headers[name][:500]
                     encoding = resp.headers.get("content-encoding", "identity").strip().lower()
                     if encoding not in ("", "identity"):
                         raise ConnectorError("bad_reply", f"{host} answered compressed")

@@ -15,9 +15,7 @@ import asyncio
 from .. import connector_http, prefs
 from . import manifest as manifest_mod
 from . import store
-from .adapters import forgejo
-
-ADAPTERS = {"forgejo-api": forgejo}
+from .adapters import ADAPTERS, common
 
 
 def disclosure() -> str:
@@ -52,6 +50,7 @@ def _bound(inst: dict) -> connector_http.Bound:
         origin=inst["origin"],
         auth_scheme=m.auth_scheme,
         label=m.label,
+        adapter=m.adapter,
         for_read=False,
     )
 
@@ -61,7 +60,7 @@ def _safe_login(login: object) -> str:
     leaves unchanged, or empty (Hermes on #1782: a forge can echo the token back as the login)."""
     from .. import ask_store, template_secrets
 
-    if not isinstance(login, str) or not forgejo.NAME_RE.fullmatch(login):
+    if not isinstance(login, str) or not common.NAME_RE.fullmatch(login):
         return ""
     try:
         guarded = ask_store.guard_text(
@@ -98,5 +97,7 @@ async def run_test(iid: str) -> dict:
     )
     if not settled:
         return {"status": "stale", "generation": generation}
-    return {"status": "ok", "login": login, "repos": found["repos"],
-            "generation": generation}  # fmt: skip
+    out = {"status": "ok", "login": login, "repos": found["repos"], "generation": generation}
+    if isinstance(found.get("warning"), str):
+        out["warning"] = found["warning"][:300]  # adapter-written text, never the forge's
+    return out

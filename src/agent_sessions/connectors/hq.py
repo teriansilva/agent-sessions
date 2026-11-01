@@ -37,7 +37,7 @@ from urllib.parse import urlsplit
 from .. import ask_store, connector_http, template_secrets
 from . import manifest as manifest_mod
 from . import store
-from .adapters import forgejo
+from .adapters import common, for_kind
 
 QUERY_MAX = 200
 TITLE_MAX = 200
@@ -136,6 +136,7 @@ def _bound_now(listed: dict) -> connector_http.Bound:
         origin=inst["origin"],
         auth_scheme=m.auth_scheme,
         label=m.label,
+        adapter=m.adapter,
     )
 
 
@@ -156,7 +157,7 @@ def _ref(turn: TurnConnectors, idx: int, args: dict, allowed: tuple[str, ...]) -
     if "path" in parts:
         path = parts["path"]
         bare = path[:-1] if kind == "dir" and path.endswith("/") else path
-        if not forgejo.valid_path(bare):
+        if not common.valid_path(bare):
             raise Refused("refused: not a repository path", "unknown_ref")
         parts["path"] = bare
     return kind, parts
@@ -272,7 +273,7 @@ async def search(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
     bound = await asyncio.to_thread(_bound_now, listed)
     secrets = await asyncio.to_thread(_secrets)
     try:
-        rows = await forgejo.search(bound, kind, query.strip())
+        rows = await for_kind(bound.adapter).search(bound, kind, query.strip())
     except connector_http.ConnectorError as e:
         raise _error(e) from None
     items = []
@@ -317,7 +318,7 @@ async def read(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
     o, r = p["o"], p["r"]
     try:
         if kind == "repo":
-            repo = await forgejo.read_repo(bound, o, r)
+            repo = await for_kind(bound.adapter).read_repo(bound, o, r)
             sha = repo["head_sha"]
             payload = {
                 "repo": f"{o}/{r}",
@@ -331,7 +332,7 @@ async def read(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
             }
             length = 0
         elif kind == "issue":
-            issue = await forgejo.read_issue(bound, o, r, int(p["n"]))
+            issue = await for_kind(bound.adapter).read_issue(bound, o, r, int(p["n"]))
             comments = [
                 {
                     "author": _guard(c["author"], 100, secrets),
@@ -362,7 +363,7 @@ async def read(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
                 payload["refs"] = [f"ci:{o}/{r}@{sha}", f"dir:{o}/{r}@{sha}:"]
             length = len(issue["body"]) + sum(len(c["body"]) for c in issue["comments"])
         elif kind == "ci":
-            ci = await forgejo.read_ci(bound, o, r, p["sha"])
+            ci = await for_kind(bound.adapter).read_ci(bound, o, r, p["sha"])
             payload = {
                 "commit": f"{o}/{r}@{ci['sha']}",
                 "state": ci["state"],
@@ -372,6 +373,8 @@ async def read(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
                 ],
                 "checks_total": ci["checks_total"],
             }
+            if isinstance(ci.get("note"), str):
+                payload["sources_note"] = ci["note"]  # adapter-written, never the forge's text
             more = "+" if ci["checks_total_capped"] else ""
             if ci["checks_total_capped"]:
                 payload["checks_total_is_lower_bound"] = True
@@ -381,7 +384,7 @@ async def read(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
                 )
             length = 0
         else:  # file
-            f = await forgejo.read_file(bound, o, r, p["sha"], p["path"])
+            f = await for_kind(bound.adapter).read_file(bound, o, r, p["sha"], p["path"])
             payload = {
                 "file": f"{o}/{r}@{f['sha']}:{f['path']}",
                 "size": f["size"],
@@ -420,7 +423,7 @@ async def list_dir(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
     secrets = await asyncio.to_thread(_secrets)
     o, r, sha, path = p["o"], p["r"], p["sha"], p["path"]
     try:
-        entries = await forgejo.list_dir(bound, o, r, sha, path)
+        entries = await for_kind(bound.adapter).list_dir(bound, o, r, sha, path)
     except connector_http.ConnectorError as e:
         raise _error(e) from None
     items = []

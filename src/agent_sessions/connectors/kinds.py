@@ -15,17 +15,29 @@ CONTRACT_CURRENT = 1
 
 #: `adapter.kind`: the reviewed code that talks to the service. `forgejo-api` (#1750) also serves
 #: Gitea and Codeberg, which speak the same `/api/v1`.
-ADAPTER_KINDS = frozenset({"forgejo-api"})
+#: `github-rest` (#1826) reads github.com's REST API.
+ADAPTER_KINDS = frozenset({"forgejo-api", "github-rest"})
 
 #: `auth.kind`. `token-header`: a personal access token, sent by `connector_http` only, as
 #: ``Authorization: <scheme> <token>``, only to the origin it was saved for.
 AUTH_KINDS = frozenset({"token-header"})
 
-#: `auth.scheme` for `token-header`. Forgejo's own scheme is `token`.
-AUTH_SCHEMES = frozenset({"token"})
+#: `auth.scheme` for `token-header`. Forgejo's own scheme is `token`; GitHub's is `Bearer`.
+AUTH_SCHEMES = frozenset({"token", "Bearer"})
 
 #: `auth.scopes`: what the Commander is told to grant the token (shown, never enforced here).
-AUTH_SCOPES = frozenset({"read:issue", "read:repository"})
+#: GitHub's are the fine-grained token permissions, read-only (#1826).
+AUTH_SCOPES = frozenset(
+    {
+        "read:issue",
+        "read:repository",
+        "contents:read",
+        "issues:read",
+        "pull_requests:read",
+        "commit_statuses:read",
+        "actions:read",
+    }
+)
 
 #: `identity.category` (the gallery's sections, #1746).
 CATEGORIES = frozenset({"versioning"})
@@ -34,14 +46,17 @@ CATEGORIES = frozenset({"versioning"})
 READ_OPS = frozenset({"repos", "issues", "pulls", "ci", "files"})
 
 #: `origin.mode`. `operator`: the Commander enters the origin (self-hosted Forgejo). `fixed`: the
-#: manifest names it (a hosted service); P1a ships no fixed-origin manifest.
+#: manifest names it (a hosted service: GitHub, #1826).
 ORIGIN_MODES = frozenset({"operator", "fixed"})
 
 #: `identity.publisher`. P1a ships first-party manifests only.
 PUBLISHERS = frozenset({"battlelab"})
 
 #: Which adapter each read op needs: a manifest may not claim a read its adapter cannot do.
-ADAPTER_READS = {"forgejo-api": READ_OPS}
+ADAPTER_READS = {"forgejo-api": READ_OPS, "github-rest": READ_OPS}
 
 #: Which auth each adapter speaks.
-ADAPTER_AUTH = {"forgejo-api": frozenset({"token-header"})}
+ADAPTER_AUTH = {
+    "forgejo-api": frozenset({"token-header"}),
+    "github-rest": frozenset({"token-header"}),
+}

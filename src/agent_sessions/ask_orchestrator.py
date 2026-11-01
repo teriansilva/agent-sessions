@@ -2054,7 +2054,8 @@ TOOLS: dict[str, Tool] = {
             "read",
             _spec(
                 "list_connectors",
-                "The services the Commander connected for you to read (e.g. their Forgejo), by "
+                "The services the Commander connected for you to read (e.g. their Forgejo or "
+                "GitHub), by "
                 "index: each one's name and host. Call it first; the other connector tools take "
                 "its connector_index.",
                 {},
@@ -2068,7 +2069,8 @@ TOOLS: dict[str, Tool] = {
             _spec(
                 "connector_search",
                 "Search one connector: kind repos, issues or pulls. Returns titles and item refs "
-                "for connector_read.",
+                "for connector_read. On GitHub the search covers all of GitHub, so narrow it with "
+                "repo:owner/name or org:name in the query.",
                 {
                     **_CONNECTOR_PROP,
                     "query": {"type": "string", "description": "what to look for, in words"},
@@ -2285,7 +2287,7 @@ async def _append(cid: str, *records: dict) -> None:
 def _user_content(turn: _Turn, shown: frozenset[str] = frozenset()) -> str:
     base = turn.question
     if turn.answering is not None:
-        base = f"Answering your question \"{turn.answering['question']}\": {turn.question}"
+        base = f'Answering your question "{turn.answering["question"]}": {turn.question}'
     elif turn.replying_to:
         base = f'Answering your question "{turn.replying_to}": {turn.question}'
     # Files shared with this question (#1707): every name and byte goes through the fail-closed

@@ -1,0 +1,28 @@
+# The bundled GitHub connector (#1826): github.com's REST API, read-only. Every value is a member of
+# a set in connectors/kinds.py; an unknown field anywhere refuses the manifest.
+contract = 1
+
+[identity]
+id = "github"
+label = "GitHub"
+publisher = "battlelab"
+version = "1"
+category = "versioning"
+
+[adapter]
+kind = "github-rest"
+
+[origin]
+mode = "fixed"
+fixed = "https://api.github.com"
+
+[auth]
+kind = "token-header"
+scheme = "Bearer"
+scopes = ["contents:read", "issues:read", "pull_requests:read", "commit_statuses:read", "actions:read"]
+
+[capabilities]
+read = ["repos", "issues", "pulls", "ci", "files"]
+
+[docs]
+setup = "Create a fine-grained token on GitHub under Settings → Developer settings → Personal access tokens, for the repositories HQ may read, with read-only access to Contents, Issues, Pull requests, Commit statuses and Actions."

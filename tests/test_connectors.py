@@ -422,6 +422,44 @@ def test_3_a_rebinding_name_connects_only_to_the_vetted_address(forge, monkeypat
     assert lookups == ["git.example"]
 
 
+def test_a_failed_retest_stops_reading_until_a_test_passes(forge):
+    """#1825 (Hermes): a connector that was reading and then fails a re-test (here: the token was
+    revoked on the forge) is no longer ready, so HQ stops reading through it at once. The read
+    choice is kept and applies again after a passing test."""
+    inst = _ready()
+    assert store.readable(store.read()["instances"][0])
+    forge.token = "rotated-on-the-forge"
+    out = run(service.run_test(inst["id"]))
+    assert out["status"] == "failed" and out["code"] == "rejected"
+    stored = store.read()["instances"][0]
+    assert not store.readable(stored)
+    view = service.catalog()["instances"][0]
+    assert view["status"] == "needs_test" and view["enabled"] == {"read": False}
+    assert view["last_test"]["ok"] is False and view["tested"] is None
+    turn = _turn()
+    run(hq.list_connectors(turn))
+    assert turn.listed == []  # HQ no longer sees it
+    forge.token = TOKEN
+    assert run(service.run_test(inst["id"]))["status"] == "ok"
+    view = service.catalog()["instances"][0]
+    assert view["status"] == "ready" and view["enabled"] == {"read": True}
+
+
+def test_a_stale_failed_probe_never_revokes_a_newer_pass(forge):
+    """#1825 (Hermes): only a failure of the CURRENT generation withdraws the pass. A probe of an
+    older generation that fails after the connector moved on records nothing at all."""
+    inst = _ready()
+    old = store.read()["instances"][0]["generation"]
+    store.patch(inst["id"], {"origin": ORIGIN, "token": TOKEN2})  # a newer generation
+    forge.token = TOKEN2
+    assert run(service.run_test(inst["id"]))["status"] == "ok"
+    before = store.read()["instances"][0]
+    assert store.settle_test(inst["id"], old, ok=False, code="rejected") is False
+    after = store.read()["instances"][0]
+    assert after["tested"] == before["tested"] and after["last_test"] == before["last_test"]
+    assert store.readable(after)
+
+
 def test_3_a_redirect_is_not_followed(forge, monkeypatch):
     def redirect(request):
         forge.requests.append(request)
@@ -799,7 +837,7 @@ def test_the_api_requires_login_csrf_and_origin_and_strict_bodies(auth_cfg):
         == 422
     )
     assert (
-        c.post("/api/connectors/instances", json={"manifest_id": "github"}, headers=hdr).status_code
+        c.post("/api/connectors/instances", json={"manifest_id": "gitlab"}, headers=hdr).status_code
         == 422
     )
     iid = c.post("/api/connectors/instances", json={"manifest_id": "forgejo"}, headers=hdr).json()[

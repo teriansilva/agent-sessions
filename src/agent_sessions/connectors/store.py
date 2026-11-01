@@ -522,7 +522,13 @@ def settle_test(
     iid: str, generation: int, *, ok: bool, code: str | None, login: str = "", repos: int = 0
 ) -> bool:
     """Record a probe of ``generation``. Only if the instance is STILL at that generation: else
-    nothing is recorded and the answer is False (``stale``)."""
+    nothing is recorded and the answer is False (``stale``).
+
+    A FAILED probe of the current generation withdraws an earlier pass (#1825, Hermes): a token
+    revoked on the forge, or an address that stopped answering as this API, must not stay
+    "ready" and keep being read through because it once passed. Reading stops at once (`readable`
+    needs a current pass); the stored read choice is kept, so it applies again once a test
+    passes, as after any edit (#1746 D4)."""
 
     def apply(doc: dict, now: float) -> bool:
         inst = _find(doc, iid)
@@ -537,6 +543,8 @@ def settle_test(
                 "repos": max(0, int(repos)),
                 "at": now,
             }
+        else:
+            inst["tested"] = None
         _audit(doc, "tested", inst, now)
         return True
 

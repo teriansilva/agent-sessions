@@ -286,26 +286,45 @@ follows you to every device.
 
 ## Connectors
 
-HQ can also read from your other services. The first connector is **Forgejo** (and Gitea or
-Codeberg, which speak the same API): HQ can search your repositories, issues and pull requests,
-read an issue or PR with its recent comments (a very long thread is read without its comments,
-and HQ says so), check a commit's CI status, and read text files at a commit. It **only reads**: there is no sending, commenting or merging through a connector.
+HQ can also read from your other services. The forge connectors are **Forgejo** (and Gitea or
+Codeberg, which speak the same API) and **GitHub**: HQ can search your repositories, issues and
+pull requests, read an issue or PR with its recent comments (a very long thread is read without
+its comments, and HQ says so), check a commit's CI status, and read text files at a commit. It **only reads**: there is no sending, commenting or merging through a connector.
 
-For now a connector is set up through the API only; a settings page follows. You use your own
-account: create a personal access token in Forgejo under *Settings → Applications* with
-`read:issue` and `read:repository`, then:
+Set one up in **Settings → AI → HQ connectors**. You use your own account: create a personal
+access token in Forgejo under *Settings → Applications* with `read:issue` and `read:repository`, then:
 
-1. `POST /api/connectors/instances` with `{"manifest_id": "forgejo"}` adds a connector, switched
-   off.
-2. `PATCH /api/connectors/instances/<id>` with `{"origin": "https://git.example.com", "token":
-   "…"}` saves where it is and the token.
-3. `POST /api/connectors/instances/<id>/test` checks the token and names the account it belongs
-   to.
-4. `POST /api/connectors/instances/<id>/capabilities` with `{"read": true}` lets HQ read through
-   it. `{"read": false}` stops it at once, even in the middle of an answer.
+1. **Add Forgejo** from the list of available connectors.
+2. Enter its **address** (for example `https://git.example.com`) and the **access token**, then
+   **Save and test**. The test signs in and names the account the token belongs to.
+3. Tick **Let HQ read through this connector**. Untick it to stop HQ reading at once, even in the
+   middle of an answer.
 
-`GET /api/connectors` lists your connectors and their state. `DELETE` removes one. These are
-ordinary signed-in requests and need the CSRF token, like every other change.
+**GitHub** always talks to `api.github.com`, so it only needs a token. Create a
+**fine-grained** token on GitHub (*Settings → Developer settings → Personal access tokens*) for
+the repositories HQ may read, with read-only **Contents**, **Issues**, **Pull requests**, **Commit
+statuses** and **Actions**. A classic token works too, but if it can also write, the test says so:
+HQ only reads, and a read-only token is safer.
+
+GitHub reports CI in more than one place. HQ reads commit statuses and GitHub Actions runs for the
+commit, and check runs from other apps where the token may see them. A fine-grained token can't
+see other apps' check runs on a private repository, so there HQ calls the result **incomplete**
+rather than green, unless something it could see already failed.
+
+Then ask HQ something that needs it: "what's the CI status of PR 42?", "find open issues about
+the login page". **Remove** deletes a connector and its token.
+
+The page drives an ordinary signed-in API, which you can also call yourself (each change needs the
+CSRF token, like every other change):
+
+- `POST /api/connectors/instances` with `{"manifest_id": "forgejo"}` adds a connector, switched off.
+- `PATCH /api/connectors/instances/<id>` with `{"origin": "https://git.example.com", "token": "…"}`
+  saves where it is and the token.
+- `POST /api/connectors/instances/<id>/test` checks the token and names the account it belongs to.
+- `POST /api/connectors/instances/<id>/capabilities` with `{"read": true}` lets HQ read through it;
+  `{"read": false}` stops it.
+
+`GET /api/connectors` lists your connectors and their state, and `DELETE` on an instance removes it.
 
 **What happens to the token.** It is stored encrypted, never shown again, and sent only to the
 address you saved it for, over HTTPS (plain HTTP only to this machine itself). Changing the

@@ -50,6 +50,7 @@ import { AppearanceTerminal } from "./AppearanceTerminal";
 import { AgentDefaultsPage, AgentDetail, AgentsRoster } from "./AgentsSettings";
 import { AiEndpointSetup } from "./AiEndpointSetup";
 import { AiReviewSettings } from "./AiReviewSettings";
+import { ConnectorsSettings } from "./ConnectorsSettings";
 import { ForgeSettings } from "./ForgeSettings";
 import { AutoSortSettings } from "./AutoSortSettings";
 import { HqCallsSettings } from "./HqCallsSettings";
@@ -2126,6 +2127,7 @@ export function Settings() {
         )}
         {/* Every system prompt, in one catalog (#824). */}
         {section === "ai-hq-calls" && <HqCallsSettings />}
+        {section === "ai-hq-connectors" && <ConnectorsSettings />}
         {section === "ai-prompts" && <PromptsSettings />}
         {section === "ai-activity" && <AiActivityPanel />}
 

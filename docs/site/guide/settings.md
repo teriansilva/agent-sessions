@@ -176,6 +176,14 @@ How [Calling HQ](/guide/calls) sounds and where its audio goes:
 - **Each General's voice:** voice, style, speed and a voice per language, with **Preview**.
 - **Call language**, **Turn-taking**, **Interrupt HQ**, **Captions**, and **Where your call goes**.
 
+### HQ connectors · `ai-hq-connectors`
+
+The services [HQ reads from](/guide/hq#connectors). **Add a connector** lists the ones this
+BattleLab ships (Forgejo, for Gitea and Codeberg too, and GitHub, whose address is fixed). Each connector has its **Address**, a
+write-only **Access token**, **Save and test**, and **Let HQ read through this connector**, which
+turns on only after a passing test and says where what HQ reads is sent. A changed address asks for
+the token again. **Remove** deletes the connector and its token.
+
 ### Prompts · `ai-prompts`
 
 Every system prompt BattleLab sends, with the JSON shape each one must return and **Reset to

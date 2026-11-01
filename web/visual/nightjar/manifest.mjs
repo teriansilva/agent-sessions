@@ -939,6 +939,14 @@ export const SWEEP = [
   { id: "route:settings-session-defaults", path: "/settings/session-defaults" },
   { id: "route:settings-endpoint", path: "/settings/ai-endpoint" },
   {
+    id: "route:settings-hq-connectors",
+    path: "/settings/ai-hq-connectors",
+    // One connector HQ reads through (#1825): the card, its tested line, the switch and the
+    // egress disclosure, above the catalog.
+    api: {"/api/connectors": {"catalog": [{"id": "forgejo", "label": "Forgejo", "publisher": "battlelab", "version": "1", "category": "versioning", "adapter": "forgejo-api", "origin_mode": "operator", "fixed_origin": null, "auth": {"kind": "token-header", "scopes": ["read:issue", "read:repository"]}, "capabilities": {"read": ["repos", "issues", "pulls", "ci", "files"]}, "setup": "Create a token in Forgejo under Settings → Applications with read:issue and read:repository."}], "instances": [{"id": "c_0123456789ab", "manifest_id": "forgejo", "origin": "https://git.example.com", "status": "ready", "token_set": true, "generation": 2, "tested_generation": 2, "tested": {"login": "commander", "repos": 7, "at": 1}, "last_test": {"generation": 2, "ok": true, "code": null, "at": 1}, "enabled": {"read": true}, "created_at": 1}], "disclosure": "What HQ reads through a connector is sent to your AI endpoint (https://llm.lan) as part of HQ's conversation. Read stays off until you enable it."}},
+    present: "[data-testid='connector-card']",
+  },
+  {
     id: "route:settings-hq-calls",
     path: "/settings/ai-hq-calls",
     api: {
