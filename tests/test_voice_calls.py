@@ -785,7 +785,10 @@ def test_any_turn_error_is_spoken_and_the_queue_runs(monkeypatch):
 
     asyncio.run(go())
     assert asked == ["first", "second"]
-    assert any(s.startswith("Sorry, Commander") for s in said) and "Second answer." in said
+    assert (
+        any(s.startswith("Sorry, I couldn't answer that") for s in said)
+        and "Second answer." in said
+    )
     assert call.state == "listening" and call.queued is None
 
 

@@ -136,19 +136,19 @@ EXPECTED_DEFAULT_SHA = {
     # #1750: the connector read tools, and connector text named as data like agents' screens.
     "ask_orchestrator": "49bbcfd1e8c63d6d",
     # #1525: the HQ contacts; #1634: each a character, not an archetype, with the rules in each.
-    "hq_persona_asia_woman": "376c34c3cf99c0c4",
-    "hq_persona_asia_man": "35dddc73b8ca9e3c",
-    "hq_persona_europe_woman": "eb3e01fd6f7d2474",
-    "hq_persona_europe_man": "9b6c4b692b461423",
-    "hq_persona_russia_woman": "ace874edae1cad98",
-    "hq_persona_russia_man": "83faafc1ee1f473c",
-    "hq_persona_us_woman": "c379f96c1867c4e5",
-    "hq_persona_us_man": "540afe49981cba02",
-    "hq_persona_africa_woman": "ecefeaae40e545bd",
-    "hq_persona_africa_man": "846028eb6ece73f5",
-    "hq_persona_southamerica_woman": "0a0d2b9278d9cf9b",
-    "hq_persona_southamerica_man": "965ffa5b9e0e0e84",
-    "hq_persona_romania_woman": "e87849be173ee7b0",
+    "hq_persona_asia_woman": "e34bfd7e81807815",
+    "hq_persona_asia_man": "eba5c28d6ff47fe6",
+    "hq_persona_europe_woman": "ec972d038369a259",
+    "hq_persona_europe_man": "63930b6fba172cbd",
+    "hq_persona_russia_woman": "1aa32e238d1c5c97",
+    "hq_persona_russia_man": "49aedbd5feef72d7",
+    "hq_persona_us_woman": "5c29fa5a043215ae",
+    "hq_persona_us_man": "c27fa33f4e6c5802",
+    "hq_persona_africa_woman": "456a64a8a4a4475f",
+    "hq_persona_africa_man": "e34977154b6c8a47",
+    "hq_persona_southamerica_woman": "bdf45f54ce29ec33",
+    "hq_persona_southamerica_man": "17073866ed4ba72d",
+    "hq_persona_romania_woman": "6713e8f713ddc052",
     "hq_call": "ba7a61d7d1e836f6",  # #1397; #1668: end_call; #1681: readable proposal text
     "hq_call_detailed": "c47168a87e1751e2",  # #1397 (#1626 review); #1668: end_call; #1681: same
     "hq_call_end": "4af567dd1abae1eb",  # #1668: on a call, do the words and HQ's answer end it?

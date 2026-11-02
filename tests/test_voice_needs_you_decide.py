@@ -220,9 +220,7 @@ def test_without_a_single_use_allow_only_refuse_is_offered(monkeypatch):
         assert r.said_text()[-1].endswith("Say refuse it, or skip.")
         await r.readback_played()
         await r.ask("Allow it.")  # not on offer: HQ says so, and nothing is chosen
-        assert r.said_text()[-1] == (
-            "I can't allow this one by voice, Commander. Say refuse it, or skip."
-        )
+        assert r.said_text()[-1] == ("I can't allow this one by voice. Say refuse it, or skip.")
         assert r.call.challenge["armed_at"] is None  # re-arms only once that line has played
         await r.readback_played()
         await r.ask("Refuse it.")
@@ -273,8 +271,7 @@ def test_a_route_refusal_is_read_as_the_route_gave_it(monkeypatch):
     run(go())
     # a FIXED sentence: the route's detail can quote the agent's own label (#1683 review)
     assert r.said_text()[-1] == (
-        "Nothing was sent, Commander. The session changed, or it was already decided. It's on"
-        " your screen."
+        "Nothing was sent. The session changed, or it was already decided. It's on" " your screen."
     )
     settled = [m for m in r.to_client if isinstance(m, dict) and m.get("t") == "settled"]
     assert settled[-1]["ok"] is False
@@ -291,7 +288,7 @@ def test_a_200_without_a_delivered_choice_is_not_success(monkeypatch):
         await r.ask("Refuse it.")
 
     run(go())
-    assert r.said_text()[-1] == "It wasn't sent, Commander. Check the session."
+    assert r.said_text()[-1] == "It wasn't sent. Check the session."
 
 
 # --- menus and questions -----------------------------------------------------------------------
@@ -393,7 +390,7 @@ def test_skip_moves_on_and_a_settled_row_moves_on(monkeypatch):
     assert _posts(r) == [
         (f"/api/pulse/actions/act-{M_SID}/choose", {"option": 2, "label": "release 2.0"})
     ]
-    assert r.said_text()[-1] == "Okay. That was the last one, Commander."
+    assert r.said_text()[-1] == "Okay. That was the last one."
     assert r.call.challenge is None
 
 
@@ -557,7 +554,7 @@ def test_a_changed_dialog_under_the_same_labels_is_refused_at_the_route(live):
     card = _card_for(OC_SID)
     run(call.settle({**card, "choice": card["allow"]}))
     assert typed(OC_SID) == b""
-    assert said[-1].startswith("Nothing was sent, Commander.")
+    assert said[-1].startswith("Nothing was sent.")
     assert ledger.get("esc-p")["state"] == "escalated"  # still open for the screen
 
 
@@ -646,7 +643,7 @@ def test_a_choice_that_may_have_landed_is_never_said_as_failed(monkeypatch):
 
     run(go())
     assert r.said_text()[-1] == (
-        "I can't tell whether that reached the session, Commander. Check it before deciding again."
+        "I can't tell whether that reached the session. Check it before deciding again."
     )
 
 
@@ -658,7 +655,7 @@ def test_a_broader_grant_is_said_back_as_screen_only_and_decides_nothing(monkeyp
         await r.readback_played()
         await r.ask("Allow it always.")
         assert r.said_text()[-1] == (
-            "By voice I can only allow it once, Commander. Anything broader stays on your screen."
+            "By voice I can only allow it once. Anything broader stays on your screen."
         )
 
     run(go())

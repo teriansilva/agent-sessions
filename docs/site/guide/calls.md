@@ -85,7 +85,7 @@ enter that server's key again or remove it.
   instead). If HQ's answer asks you something, or you start speaking again before it hangs up,
   the call goes on.
 - **There is no time limit.** After 30 minutes without a sign of you (your words, or typing on
-  the call) HQ asks "Are you still there, Commander?"; only no answer within about a
+  the call) HQ asks "Are you still there?"; only no answer within about a
   minute ends the call.
 - A call also ends when you sign out or when a speech service fails (the reason is shown).
 - **The screen stays on during a call**, where the browser allows it. A phone stops listening

@@ -60,7 +60,7 @@ PLAYBACK_FALLBACK_S = 10.0
 #: How fast speech is assumed to go when estimating how long a say takes to play (deliberately
 #: slow: a longer estimate only ends an unacked call later).
 SPEECH_CHARS_PER_S = 10.0
-STILL_THERE_LINE = "Are you still there, Commander?"
+STILL_THERE_LINE = "Are you still there?"
 
 
 def speech_seconds(text: str) -> float:
@@ -179,7 +179,7 @@ def progress_line(work: dict, now: float) -> str:
     if phase == "model":
         if waited >= STALL_S:
             return (
-                "The model hasn't answered yet, Commander. "
+                "The model hasn't answered yet. "
                 f"{spoken_duration(waited).capitalize()} so far, still waiting."
             )
         steps = int(work.get("done") or 0)
@@ -886,8 +886,7 @@ class Call:
                 await self.offer(cards, turn_id=view.get("turn_id"), gen=gen)
         else:
             await self.say(
-                "Sorry, Commander, I couldn't answer that. "
-                + (str(view.get("detail") or "")[:160]),
+                "Sorry, I couldn't answer that. " + (str(view.get("detail") or "")[:160]),
                 kind="error",
             )
         nxt, self.queued = self.queued, None
@@ -1045,7 +1044,7 @@ class Call:
             # or replaced it, "it's on your screen" would be false.
             if self.challenge is ch:
                 await self.void_challenge()
-                await self.say("I couldn't tell, Commander. It's on your screen.", kind="outcome")
+                await self.say("I couldn't tell. It's on your screen.", kind="outcome")
             return
         # Not an answer: the words go on as a new question, as an unmatched reply always did. The
         # challenge is retired WITHOUT an await, so nothing newer can be asked before these words
@@ -1113,7 +1112,7 @@ class Call:
             await caption()
             await self.client({"t": "challenge", "cards": []})
             if not await self._offer_next(ch["queue"], ch["gen"]):
-                await self.say("Okay. That was the last one, Commander.", kind="outcome")
+                await self.say("Okay. That was the last one.", kind="outcome")
             return True
         await caption()
         if verdict == "cancel":
@@ -1129,11 +1128,11 @@ class Call:
         # THAT line to have played before it arms again — so its own echo can never be taken
         # for a confirmation.
         line = {
-            "all": "I can only confirm one at a time, Commander.",
-            "broader": "By voice I can only allow it once, Commander. Anything broader stays on"
+            "all": "I can only confirm one at a time.",
+            "broader": "By voice I can only allow it once. Anything broader stays on"
             " your screen.",
-            "no_allow": "I can't allow this one by voice, Commander. Say refuse it, or skip.",
-        }.get(verdict, "Which one, Commander? Say confirm and the number.")
+            "no_allow": "I can't allow this one by voice. Say refuse it, or skip.",
+        }.get(verdict, "Which one? Say confirm and the number.")
         sid = uuid.uuid4().hex[:12]
         # Disarmed BEFORE the line is sent; it re-arms only once THIS line has played.
         ch.update(say_id=sid, sent=False, armed_at=None, expires_at=None)
@@ -1297,11 +1296,11 @@ class Call:
         if gen != self.generation or self.state == "ended":
             return  # superseded while reading: a newer question owns the call now
         if resp is None or resp.status != 200 or not isinstance(resp.body, dict):
-            await self.say("I couldn't read what needs you just now, Commander.", kind="outcome")
+            await self.say("I couldn't read what needs you just now.", kind="outcome")
             return
         rows = [r for r in resp.body.get("rows") or [] if isinstance(r, dict)]
         if not rows:
-            await self.say("Nothing needs you right now, Commander.", kind="outcome")
+            await self.say("Nothing needs you right now.", kind="outcome")
             return
         total = resp.body.get("total")
         if not isinstance(total, int) or isinstance(total, bool) or total < len(rows):
@@ -2186,7 +2185,7 @@ def settled_ok(card: dict, resp) -> bool:
 def outcome_sentence(card: dict, resp) -> str:
     """What happened, from the route's own status AND result — never model prose."""
     if resp is None:
-        return "That didn't go through, Commander. It's still on your screen."
+        return "That didn't go through. It's still on your screen."
     if resp.status == 202:
         return "Accepted. It's starting now."  # not finished: `final_sentence` says the end
     if 200 <= resp.status < 300:
@@ -2194,10 +2193,10 @@ def outcome_sentence(card: dict, resp) -> str:
         if card["kind"] in ("nudge", "needs_you"):
             if _result_state(card, body) == "delivered":
                 return "Sent."
-            return "It wasn't sent, Commander. The card has the reason."
+            return "It wasn't sent. The card has the reason."
         if card["kind"] in ("permission", "menu"):
             if _result_state(card, body) != "delivered":
-                return "It wasn't sent, Commander. Check the session."
+                return "It wasn't sent. Check the session."
             choice = card.get("choice") or {}
             if choice.get("as") == "allow":
                 return "Allowed, once."
@@ -2211,12 +2210,11 @@ def outcome_sentence(card: dict, resp) -> str:
         body = resp.body if isinstance(resp.body, dict) else {}
         if body.get("state") == "indeterminate":
             return (
-                "I can't tell whether that reached the session, Commander. Check it before "
-                "deciding again."
+                "I can't tell whether that reached the session. Check it before " "deciding again."
             )
         if resp.status in (404, 409):
             return (
-                "Nothing was sent, Commander. The session changed, or it was already decided. "
+                "Nothing was sent. The session changed, or it was already decided. "
                 "It's on your screen."
             )
     if resp.status == 409:

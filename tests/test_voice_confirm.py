@@ -233,10 +233,10 @@ def test_everything_is_refused_and_ordinals_pick_one(monkeypatch):
         await r.ask("do both")
         await r.readback_played()
         await r.ask("approve everything")
-        assert r.said_text()[-1] == "I can only confirm one at a time, Commander."
+        assert r.said_text()[-1] == "I can only confirm one at a time."
         await r.readback_played()  # the clarification must PLAY before the challenge re-arms
         await r.ask("confirm")
-        assert r.said_text()[-1] == "Which one, Commander? Say confirm and the number."
+        assert r.said_text()[-1] == "Which one? Say confirm and the number."
         await r.readback_played()
         await r.ask("confirm the second")
 
@@ -559,7 +559,7 @@ def test_a_delivery_that_failed_is_not_reported_as_sent(monkeypatch):
         await r.ask("confirm")
 
     run(go())
-    assert r.said_text()[-1] == "It wasn't sent, Commander. The card has the reason."
+    assert r.said_text()[-1] == "It wasn't sent. The card has the reason."
     settled = [m for m in r.to_client if isinstance(m, dict) and m.get("t") == "settled"]
     assert settled and settled[-1]["ok"] is False
 
@@ -1215,7 +1215,7 @@ def test_no_verdict_decides_nothing_and_asks_nothing(monkeypatch):
     run(go())
     assert not any(m == "POST" for m, _, _ in r.routes)
     assert r.asked == ["Rerun the tests"]  # not passed on as a question either
-    assert r.said_text()[-1] == "I couldn't tell, Commander. It's on your screen."
+    assert r.said_text()[-1] == "I couldn't tell. It's on your screen."
     assert r.call.challenge is None
 
 
@@ -1261,7 +1261,7 @@ def test_a_judged_ambiguous_reply_asks_which_and_rearms(monkeypatch):
         await _armed(r)
         await _reply(r, "ja, mach")
         await r.side()
-        assert r.said_text()[-1] == "Which one, Commander? Say confirm and the number."
+        assert r.said_text()[-1] == "Which one? Say confirm and the number."
         ch = r.call.challenge
         assert ch is not None and ch["armed_at"] is None  # re-arms once that line has played
         await r.readback_played()
@@ -1645,7 +1645,7 @@ def test_a_bare_turn_start_during_the_judgement_never_swallows_the_words(monkeyp
     assert not any(p.endswith("/approve") for _, p, _ in r.routes)
     if verdict is None:
         assert r.call.challenge is None
-        assert r.said_text()[-1] == "I couldn't tell, Commander. It's on your screen."
+        assert r.said_text()[-1] == "I couldn't tell. It's on your screen."
         assert "Wie viele Sitzungen laufen?" not in r.asked
     else:
         # Asked as a question (HQ's answer offers its card afresh: a NEW, unarmed challenge).
@@ -1801,7 +1801,7 @@ def test_no_verdict_after_a_newer_confirm_says_nothing_false(monkeypatch):
 
     run(go())
     assert any(p.endswith("/approve") for _, p, _ in r.routes)
-    assert "I couldn't tell, Commander. It's on your screen." not in r.said_text()
+    assert "I couldn't tell. It's on your screen." not in r.said_text()
 
 
 def test_judged_words_take_their_place_before_a_newer_question(monkeypatch):

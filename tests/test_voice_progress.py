@@ -86,7 +86,7 @@ def test_durations_are_said_plainly(seconds, said):
         ({"phase": "model", "steps": 3, "done": 3}, 40,
          "3 steps done, waiting on the model, 40 seconds so far."),
         ({"phase": "model", "steps": 2, "done": 2}, 135,
-         "The model hasn't answered yet, Commander. Over 2 minutes so far, still waiting."),
+         "The model hasn't answered yet. Over 2 minutes so far, still waiting."),
         ({"phase": None}, 25, "Still working on it, 25 seconds so far."),
     ],
 )  # fmt: skip
@@ -189,10 +189,10 @@ def test_then_every_25_s_and_every_45_s_once_the_model_stalls(monkeypatch):
         lines = [await due_after(voice_calls.FIRST_PROGRESS_S)]
         while clock.now - r.call.work["phase_since"] < voice_calls.STALL_S:
             lines.append(await due_after(voice_calls.PROGRESS_EVERY_S))
-        assert lines[-1].startswith("The model hasn't answered yet, Commander.")
+        assert lines[-1].startswith("The model hasn't answered yet.")
         assert all(line.startswith("Still waiting on the model") for line in lines[:-1])
         stalled = await due_after(voice_calls.STALL_EVERY_S)
-        assert stalled.startswith("The model hasn't answered yet, Commander. Over 2 minutes")
+        assert stalled.startswith("The model hasn't answered yet. Over 2 minutes")
 
     run(go())
 

@@ -66,7 +66,9 @@ def test_each_character_is_its_own_registered_prompt(contact):
     # #1634: a person, not an archetype played as a tone — in every one of the 13.
     assert "You are this person, not a voice laid over an assistant" in text
     assert "archetype" not in text.lower() and "tone only" not in text.lower()
-    assert "Address the operator as Commander." in text
+    # Commander now and then, not in every reply (the operator: "it's too much").
+    assert "not in every reply; most answers need no form of address at all." in text
+    assert "Address the operator as Commander." not in text
     assert "If the Commander sincerely asks whether you are an AI, say plainly that you are." in (
         text
     )
