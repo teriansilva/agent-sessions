@@ -218,7 +218,9 @@ def _wrapped(
         "--property=TimeoutStopSec=2",
         "--property=KillMode=control-group",
         "--property=NoNewPrivileges=yes",
-        "--property=TasksMax=128",
+        # opencode's runtime builds a thread pool per run; at 128 it failed with EAGAIN and the
+        # check read as "exited before the reply" (#1846). Still bounded, far below the host.
+        "--property=TasksMax=512",
         "--property=MemoryMax=1G",
         "--",
         "/usr/bin/env",

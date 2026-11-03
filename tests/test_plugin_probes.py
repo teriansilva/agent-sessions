@@ -41,6 +41,10 @@ def candidate(tmp_path, monkeypatch):
             rows = []
             for file in root.glob("*.json"):
                 doc = json.loads(file.read_text())
+                if doc.get("headless"):
+                    # Like claude's scanner: a `--print` one-shot is no attachable session, so the
+                    # session list hides it. The probe must still find its own reply.
+                    continue
                 rows.append(
                     Session(
                         engine="fixture",
@@ -74,7 +78,7 @@ flag='--resume' if '--resume' in sys.argv else '--session-id'
 sid=sys.argv[sys.argv.index(flag)+1]
 path=root/(sid+'.json')
 data=(json.loads(path.read_text()) if path.exists() else
-      {{'id':sid,'cwd':str(Path.cwd()),'turns':[]}})
+      {{'id':sid,'cwd':str(Path.cwd()),'turns':[],'headless':{headless!r}}})
 print('READY',flush=True)
 message=sys.argv[-1] if {headless!r} else sys.stdin.readline()
 marker=re.search(r'BATTLELAB_PROBE_[A-Za-z0-9_]+',message)[0]
@@ -290,3 +294,17 @@ async def test_required_usage_reporter_runs_in_verification_worker(
     else:
         with pytest.raises(manager.ManagerError, match="verification"):
             manager.activate(request_id(), "fixture", gen)
+
+
+def test_a_stopped_check_names_only_battlelabs_own_reason():
+    """#1846: a failed check says why it stopped, but never carries vendor or arbitrary text."""
+    from agent_sessions.plugins import admission, probes, process
+
+    assert (
+        probes._stop_reason(process.ProcessError("the agent exited before the verification reply"))
+        == "the agent exited before the verification reply"
+    )
+    assert probes._stop_reason(admission.Refused("agent removed")) == "agent removed"
+    assert probes._stop_reason(TimeoutError()) == "the agent did not answer in time"
+    assert probes._stop_reason(RuntimeError("vendor said: secret-token")) is None
+    assert probes._stop_reason(OSError("/home/x/.claude")) is None

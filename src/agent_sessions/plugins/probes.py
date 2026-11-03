@@ -52,7 +52,9 @@ async def _conversation(prov, item, cwd: Path, *, native: str | None = None) -> 
     purpose = "resume" if native is not None else "new"
     placeholder = native or (("new-" if prov.new_session_reconciles else "") + str(uuid.uuid4()))
     existing = (
-        {row.uuid for row in await asyncio.to_thread(_rows, prov, cwd)} if native is None else set()
+        {row.uuid for row in await asyncio.to_thread(_rows, prov, cwd)}
+        if native is None and prov.new_session_reconciles
+        else set()
     )
     marker = process.probe_marker(item["id"], purpose)
     async with process.spawn(
@@ -78,19 +80,25 @@ async def _conversation(prov, item, cwd: Path, *, native: str | None = None) -> 
                 if ended:
                     reader.result()
                 try:
-                    rows = await asyncio.to_thread(_rows, prov, cwd)
                     expected = native or (None if prov.new_session_reconciles else placeholder)
-                    matches = [
-                        row
-                        for row in rows
-                        if (row.uuid == expected if expected else row.uuid not in existing)
-                    ]
-                    if len(matches) > 1:
-                        raise process.ProcessError("the verification session identity is ambiguous")
-                    if matches and await asyncio.to_thread(
-                        _answered, prov, matches[0].uuid, marker
-                    ):
-                        return matches[0].uuid
+                    if expected:
+                        # BattleLab minted (or the new check proved) this identity, so the
+                        # transcript is read by it directly. A session list may rightly hide a
+                        # one-shot probe (claude's `--print` writes `entrypoint: "sdk-cli"`, which
+                        # the scanner drops as unattachable), and that must not fail the check.
+                        if await asyncio.to_thread(_answered, prov, expected, marker):
+                            return expected
+                    else:
+                        rows = await asyncio.to_thread(_rows, prov, cwd)
+                        matches = [row for row in rows if row.uuid not in existing]
+                        if len(matches) > 1:
+                            raise process.ProcessError(
+                                "the verification session identity is ambiguous"
+                            )
+                        if matches and await asyncio.to_thread(
+                            _answered, prov, matches[0].uuid, marker
+                        ):
+                            return matches[0].uuid
                 except process.ProcessError:
                     raise
                 except (OSError, ValueError, KeyError):
@@ -170,6 +178,18 @@ async def _endpoint(plugin_id: str, generation_id: str) -> dict:
         if passed
         else "The endpoint did not return the required test reply.",
     }
+
+
+def _stop_reason(exc: BaseException) -> str | None:
+    """BattleLab's own reason a check stopped, never vendor output. ProcessError and admission
+    refusals carry server-authored literals only; a timeout is named, anything else is not."""
+    from . import admission
+
+    if isinstance(exc, TimeoutError):
+        return "the agent did not answer in time"
+    if isinstance(exc, process.ProcessError | admission.Refused):
+        return str(exc)[:160] or None
+    return None
 
 
 async def run(item: dict) -> None:
@@ -254,9 +274,14 @@ async def run(item: dict) -> None:
                         }
     except process.CleanupError:
         raise
-    except Exception:
-        # No vendor error, model response, key, path or terminal bytes enter this record.
+    except Exception as exc:
+        # No vendor error, model response, key, path or terminal bytes enter this record. Only
+        # BattleLab's own fixed refusal text does: without it every stop reads the same, and a
+        # verification that cannot pass looks like a missing sign-in.
+        reason = _stop_reason(exc)
         for result in results.values():
             if not result["passed"]:
-                result["detail"] = "Verification stopped before this check could pass."
+                result["detail"] = "Verification stopped before this check could pass" + (
+                    f": {reason}." if reason else "."
+                )
     await asyncio.to_thread(manager.finish_verification, item["id"], list(results.values()))
