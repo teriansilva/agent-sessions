@@ -78,6 +78,11 @@ TERMINAL_TASK_STATES = frozenset({"completed", "failed", "stopped", "killed", "e
 #: A task whose latest report was too large to read (#1725): whether it runs isn't known, and the
 #: journal says so. Its requests are refused until a whole list names it.
 TASK_UNCERTAIN = "uncertain"
+#: What the operator can do about a FAILED turn, when its client says so in a structured field
+#: (never read from the failure's words), shared with the closed IPC schema. ``signin``: the
+#: agent's vendor login is missing or expired; signing in again is the remedy. Absent: no remedy
+#: is known. Adapter-neutral; Claude's stream-json is the first adapter that reports one.
+TURN_REMEDIES = frozenset({"signin"})
 # The agent's plan and the tools it works with (#1726), shared with the closed IPC schema. Display
 # text only: a plan entry's words and state, a proposed plan document, and the NAMES (with a
 # status) of MCP servers, skills and commands. Never a command line, URL, header, environment or
@@ -2287,6 +2292,9 @@ class ClaudeCodec(_Codec):
         self._tasks_whole = False
         self._stale_sent = False  # a `stale` marker went out since the list was last whole
         self._task_calls: dict[str, tuple[str, dict[str, Any]]] = {}
+        # The operator turn's own output said its vendor login failed (`error:
+        # authentication_failed` on an assistant frame): a failed end offers Sign in.
+        self._signin = False
 
     @staticmethod
     def argv(
@@ -2363,6 +2371,7 @@ class ClaudeCodec(_Codec):
         self.native_turn_id = self.operation_id
         self._cycle = "written"
         self._tainted = False
+        self._signin = False
         return self._user_frame(text, self.operation_id, images)
 
     def _user_frame(self, text: str, operation_id: str, images=()) -> dict:
@@ -2442,6 +2451,7 @@ class ClaudeCodec(_Codec):
         self.operation_id = self.native_turn_id = self._ahead
         self._cycle = self._ahead_cycle
         self._tainted = False
+        self._signin = False
         self._consumed.clear()
         self._ahead = self._ahead_cycle = None
 
@@ -2550,15 +2560,22 @@ class ClaudeCodec(_Codec):
         self._promote_ahead()
         return self._uncertain(operation, turn, why)
 
+    def _remedy(self, state: str) -> dict[str, str]:
+        """The ending operator turn's remedy (`TURN_REMEDIES`), consumed: only a failed turn
+        carries one, and the next turn starts without it."""
+        signin, self._signin = self._signin, False
+        return {"remedy": "signin"} if signin and state == "failed" else {}
+
     def _ended_without_result(self, state: str) -> list[NativeEvent]:
         common = {"operation_id": self.operation_id, "native_turn_id": self.native_turn_id}
+        interrupted = state == "cancelled"
+        remedy = self._remedy("interrupted" if interrupted else "failed")
         self._distrust()
         self._cycle = None
         self.operation_id = None
         self.native_turn_id = None
         self._clear_turn_approvals()
         self._promote_ahead()
-        interrupted = state == "cancelled"
         return [
             _event(
                 "turn_completed",
@@ -2568,6 +2585,7 @@ class ClaudeCodec(_Codec):
                 background_active=bool(self._background),
                 native_state=self._session_state,
                 error="" if interrupted else "the agent ended this turn without its result",
+                **remedy,
             )
         ]
 
@@ -3381,6 +3399,7 @@ class ClaudeCodec(_Codec):
         (`_closing`); ``proven``: that `completed` already came, cleanly (#1644)."""
         common = {"operation_id": self.operation_id, "native_turn_id": self.native_turn_id}
         state = _result_state(frame)
+        remedy = self._remedy(state)
         clean = self._cycle == "started" and not self._tainted
         self._closing = self.operation_id if clean else None
         if proven:
@@ -3400,6 +3419,7 @@ class ClaudeCodec(_Codec):
                 or self._session_state in {"running", "requires_action", "unknown"},
                 native_state=self._session_state,
                 error="" if state == "interrupted" else _summary(frame.get("errors")),
+                **remedy,
             )
         ]
 
@@ -3424,6 +3444,11 @@ class ClaudeCodec(_Codec):
             if not isinstance(msg, dict) or not isinstance(msg.get("content"), list):
                 raise ProtocolError("native assistant message has no content")
             item = {"item_id": _identity(msg["id"])} if "id" in msg else {}
+            if not own and frame.get("error") == "authentication_failed":
+                # The CLI's own marker on the synthetic message it writes when its vendor login is
+                # missing or expired (captured: `"error": "authentication_failed"`, model
+                # `<synthetic>`). Keyed on the field, never on the message's words.
+                self._signin = True
             output = []
             model = _observed_model(msg.get("model"))
             if model is not None and not own:

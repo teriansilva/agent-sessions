@@ -157,6 +157,7 @@ import {
 } from "./outbox";
 import { OutboxBlock } from "./Outbox";
 import { NotSentRow } from "./NotSent";
+import { SigninLink } from "./SigninLink";
 import {
   type Attachment as NotSentAttachment,
   discardNotSent,
@@ -1158,6 +1159,7 @@ function TurnView({
   waiting,
   question,
   notSent,
+  signinAgent,
 }: {
   folder?: string;
   turn: StructuredTurn;
@@ -1195,6 +1197,9 @@ function TurnView({
   /** A queued message proven never sent (#1538): its reason and Send again, in place of the
    *  generic failure line. */
   notSent?: ReactNode;
+  /** The agent a `signin` failure signs in to (the session's console agent), or null while the
+   *  roster cannot say which. */
+  signinAgent?: string | null;
 }) {
   const active = turn.state === "running" || turn.state === "awaiting_approval";
   const failed = ["failed", "interrupted", "uncertain", "unavailable"].includes(turn.state);
@@ -1440,6 +1445,9 @@ function TurnView({
             {turn.state === "uncertain" &&
               " BattleLab will not send it again by itself; check the folder before you repeat it."}
           </div>
+          {turn.state === "failed" && turn.remedy === "signin" && !readOnly && signinAgent && (
+            <SigninLink agent={signinAgent} label={agent} />
+          )}
         </div>
       )}
     </div>
@@ -1549,6 +1557,8 @@ export function StructuredPane({
   // The agent is the console agent this client drives (`api.source`), named by its own label.
   const source = engineInfo(engine)?.api?.source;
   const agent = source ? engineLabel(source) : engineLabel(engine);
+  // Whose login a `signin` failure needs (that same console agent), once the roster can say.
+  const signinAgent = engineInfo(engine) ? (source ?? engine) : null;
   const [snap, setSnap] = useState<StructuredSnapshot | null>(null);
   // A skip start's own outcome (#1505): handed over by New session, or this pane's Start. A
   // refusal shows its reason; a lost answer says the start may not have reached BattleLab.
@@ -3497,6 +3507,7 @@ export function StructuredPane({
       // would leave the question pending with its answer gone.
       canRemove={!!snap?.native?.withdraw && !pendingAnswerIds.has(t.turn_id)}
       question={questionFor(t)}
+      signinAgent={signinAgent}
       notSent={t.not_sent && (
         <NotSentRow
           turn={t}

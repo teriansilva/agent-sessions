@@ -2610,6 +2610,8 @@ def project(
                 turn["code"] = "interrupted"
             if data.get("error"):
                 turn["reason"] = data["error"][:2000]
+            if data.get("remedy") and data["state"] == "failed":
+                turn["remedy"] = data["remedy"]
             if data.get("text") and not turn["reply"]:
                 turn["reply"] = data["text"]
                 if turn["reply_ts"] is None:

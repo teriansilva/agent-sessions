@@ -1712,6 +1712,10 @@ export interface StructuredTurn {
   /** What this view left out before `reply` (#1643): whole messages and characters, or null. */
   reply_omitted?: { messages: number; chars: number } | null;
   reason: string | null;
+  /** What the operator can do about this FAILED turn, as its client reported it in a structured
+   *  field (never read from `reason`'s words). `signin`: the agent's login is missing or expired,
+   *  and the turn offers Sign in. Absent on every other turn and from older servers. */
+  remedy?: "signin";
   /** A queued message proved never sent, and why (#1538): a closed code, shown as fixed text.
    *  Only on a queued operator message — never a Send now control or an uncertain handoff. */
   not_sent?: {

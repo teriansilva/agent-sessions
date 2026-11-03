@@ -93,6 +93,17 @@ function installStatus(id: string, data: PluginCatalog | null): Status | null {
   return null;
 }
 
+/** Where the operator signs in to agent `id` again (a failed turn's Sign in): setup's sign-in
+ *  step for its candidate generation when one waits that is not the active one (sign-in only ever
+ *  runs on an inactive generation), else setup for the agent, which reviews a new generation to
+ *  sign in with. Without the catalog, the agent's setup. */
+export function signinPath(id: string, data: PluginCatalog | null): string {
+  const row = data?.plugins.find((p) => p.id === id);
+  const waiting = row?.candidate && row.candidate !== row.active ? row.candidate : null;
+  const candidate = waiting ? row?.generations?.find((g) => g.id === waiting) : undefined;
+  return candidate ? setupPath({ plugin: id, generation: candidate.id }) : setupPath({ plugin: id });
+}
+
 /** One LIVE engine's status. */
 export function engineStatus(e: EngineInfo, data: PluginCatalog | null): Status {
   if (!isActive(e)) {

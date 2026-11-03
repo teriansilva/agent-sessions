@@ -517,6 +517,9 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
         "reply_truncated": reply_cut or bool(turn.get("truncated")),
         **shape,
         "reason": turn.get("reason"),
+        # What the operator can do about this failure (`native_protocol.TURN_REMEDIES`), as its
+        # client reported it: `signin` offers Sign in. Absent on every other turn.
+        **({"remedy": turn["remedy"]} if turn.get("remedy") and _outcome(turn) == "failed" else {}),
         # A queued message proved never sent, and why (#1538): a closed code the pane turns into
         # fixed text and offers Send again on. Absent on every other turn.
         **({"not_sent": dict(turn["not_sent"])} if turn.get("not_sent") else {}),

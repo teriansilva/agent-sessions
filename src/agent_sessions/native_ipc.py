@@ -595,9 +595,12 @@ _EVENT_FIELDS = {
     # only when that same turn was in flight at both counter reads (else a session-level notice).
     "memory_oom_kill": ({"count", "invocation_id"}, {"operation_id", "agent_turn"}),
     "model": (_COMMON | {"model_effective"}, set()),
+    # `remedy` (`native_protocol.TURN_REMEDIES`): what the operator can do about a failed turn,
+    # when its client said so in a structured field. Optional: absent, no remedy is known, and a
+    # journal written before it reads unchanged.
     "turn_completed": (
         _COMMON | {"state", "error"},
-        _RPC | {"text", "background_active", "native_state"},
+        _RPC | {"text", "background_active", "native_state", "remedy"},
     ),
     # `background_turn` (#1427): the Send now target of a turn the agent runs for itself; null
     # once it has ended.
@@ -903,6 +906,8 @@ def _event(value):
                 raise IPCError("duplicate private IPC approval choices")
         elif key == "background_task":
             out[key] = _background_origin(item)
+        elif kind == "turn_completed" and key == "remedy":
+            out[key] = _choice(item, _np.TURN_REMEDIES)
         elif key == "questions":
             try:
                 out[key] = native_questions.validate_async(item)
@@ -944,6 +949,8 @@ def _event(value):
         _native(out["native_turn_id"])
     if kind == "turn_completed":
         _choice(out["state"], {"completed", "failed", "interrupted"})
+        if "remedy" in out and out["state"] != "failed":
+            raise IPCError("only a failed turn carries a remedy")
     if kind == "disconnected":
         _choice(out["state"], {"uncertain"})
     if kind == "model" and out["model_effective"] is None:
