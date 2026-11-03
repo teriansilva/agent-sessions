@@ -103,3 +103,23 @@ def test_two_turns_whose_results_arrive_before_the_first_flush_keep_their_langua
     t.transcript("how are the tests", "en")
     assert t.flush(first) == "confirm" and t.flushed_language == "de"
     assert t.flush(second) == "how are the tests" and t.flushed_language == "en"
+
+
+def test_a_late_transcript_names_the_turn_it_belongs_to():
+    """Hermes 7641: a late result is traced to its own turn, so the app can hold a slow first
+    part for the rest like an on-time one."""
+    t = Turns()
+    t.segment_sent()
+    first = t.target()
+    assert t.flush(first, 1) == ""  # the grace ran out before its words came back
+    t.segment_sent()
+    second = t.target()
+    assert t.transcript("check the fleet") == "check the fleet" and t.late_turn == 1
+    assert t.transcript("and the missions") is None
+    assert t.flush(second, 2) == "and the missions"
+    t.segment_sent()
+    t.segment_sent()
+    third = t.target()
+    assert t.transcript("one") is None
+    assert t.flush(third, 3) == "one"
+    assert t.transcript("two") == "two" and t.late_turn == 3

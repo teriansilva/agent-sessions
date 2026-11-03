@@ -300,6 +300,16 @@ class Call:
     #: The latest utterance heard while HQ was still answering the previous one, with what it was
     #: heard after (``(text, heard)``, see `on_utterance`).
     queued: tuple | None = None
+    #: The first part of a request, held because the Commander was already speaking again when
+    #: it arrived (#1842): ``(text, heard)``. The rest joins it, and the whole is asked once.
+    held: tuple | None = None
+    #: When the Commander last stopped speaking (`user_stopped`).
+    user_stopped_at: float = 0.0
+    #: Utterances being handled right now: a held first part is never released past one.
+    in_flight: int = 0
+    #: The newest worker turn whose transcript is all in (its `turn_end`, #1842): a held first part
+    #: waits until every turn begun so far has delivered its words, or said it had none.
+    turn_ended: int = 0
     #: Bumped by every new utterance: an answer from an older generation is not spoken.
     generation: int = 0
     turn_task: asyncio.Task | None = None
@@ -489,8 +499,16 @@ class Call:
                 if pending is not None and ev.get("id") == pending["say_id"]:
                     pending["said_at"] = time.monotonic()
             await self.client({"t": "said", "id": ev.get("id")})
+        elif t == "turn_end":
+            # That turn's words are all in (#1842): the worker sends this after its utterance, or
+            # alone when it had none. In order, on the same stream: nothing of it is still unread.
+            n = _turn_number(ev.get("turn"))
+            if n is not None and n > self.turn_ended:
+                self.turn_ended = n
+            self._release_if_complete()
         elif t == "user_stopped":
             self.user_speaking = False
+            self.user_stopped_at = time.monotonic()
             await self.client({"t": "user", "speaking": False})
         elif t == "interrupt":
             # The browser flushes what it had queued: those says never play, so their late or
@@ -526,7 +544,11 @@ class Call:
             # armed confirmation keeps waiting for a real answer.
             log.debug("voice call %s: dropped an utterance (%s)", self.id, why)
         elif t == "utterance":
-            self.user_speaking = False
+            n = _turn_number(ev.get("turn"))
+            if n is None or n >= self.user_turn:
+                # Only the newest turn's words mean the Commander stopped: an older turn's
+                # transcript can land while they are already speaking again (#1842).
+                self.user_speaking = False
             heard = ev.get("heard_language")
             self.heard_language = heard if isinstance(heard, str) and LANG.match(heard) else None
             text = self._without_echo(ev)[: ask_orchestrator.QUERY_MAX]
@@ -690,11 +712,26 @@ class Call:
     async def on_utterance(
         self, text: str, *, late: bool = False, turn: int | None = None, captioned: bool = False
     ) -> None:
+        # Claimed before the first await (Hermes 7631): while any utterance is still being
+        # handled, a held first part waits for it, so its rest can never be asked separately.
+        self.in_flight += 1
+        try:
+            await self._on_utterance(text, late=late, turn=turn, captioned=captioned)
+        finally:
+            self.in_flight -= 1
+            self._release_if_complete()
+
+    async def _on_utterance(
+        self, text: str, *, late: bool = False, turn: int | None = None, captioned: bool = False
+    ) -> None:
         if self.muted:
             return
         # Answering HQ's still-there question (#1668): HQ is told what the words answer, and an
         # older HQ question is no longer what they reply to.
-        began = None if late or turn is None else self.turn_starts.get(turn)
+        # When these words BEGAN: their own turn's start, LATE words too (the worker tags them with
+        # their turn), so a late answer to HQ's question, or to the still-there one, is bound to it
+        # exactly as an on-time one is (Hermes 7642, 7643). Unknown or evicted: no start, as before.
+        began = None if turn is None else self.turn_starts.get(turn)
         replying_to = (
             STILL_THERE_LINE
             if self.replying_still_there and began is not None and began > self.still_there_since
@@ -715,12 +752,10 @@ class Call:
             await self.client(
                 {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text}
             )
-        if NEEDS_YOU_ASK.search(text.lower()) and not self._turn_running():
-            self._side(self.read_needs_you(gen))
-            return
         # What these words were heard after (#1668): how often the Commander had started speaking
         # and typed, the worker's turn they belong to (none for a LATE transcript, whose turn is
-        # gone), when that turn BEGAN, and the HQ line they answer.
+        # gone: it never ends the call nor counts as the newest words), when that turn BEGAN, and
+        # the HQ line they answer.
         heard = {
             "starts": self.user_starts,
             "typed": self.typed_turns,
@@ -728,6 +763,68 @@ class Call:
             "began": began,
             "replying_to": replying_to,
         }
+        joined = self.held is not None
+        if joined:
+            # The rest of a request whose first part was held (#1842): one question, asked once.
+            first, first_heard = self.held
+            self.held = None
+            text = f"{first} {text}"[: ask_orchestrator.QUERY_MAX]
+            heard = {
+                **heard,
+                "began": first_heard["began"],
+                "replying_to": first_heard["replying_to"],
+            }
+        # A joined request stays held while any begun turn has not ended: more of it (a late
+        # result of the same turn, say) may still come (Hermes 7639).
+        if not captioned and (
+            self._continues(heard, late, turn) or (joined and self.turn_ended < self.user_turn)
+        ):
+            self.held = (text, heard)  # released by `_release_if_complete`, never by a timer
+            return
+        self._dispatch(text, heard, gen)
+
+    def _continues(self, heard: dict, late: bool, owner: int | None = None) -> bool:
+        """The Commander was already speaking again when these words arrived (#1842): a pause long
+        enough to end the turn was a breath before the rest. Decided now, before anything awaits,
+        and never for words HQ is already working on, nor for an answer to HQ's own question. A
+        judged reply re-entering as a question (`captioned`) was decided already: never held.
+        LATE words count by the turn they belong to (`owner`, Hermes 7641): a slow transcript of
+        the first part is held for the rest like an on-time one."""
+        turn = owner if late else heard.get("turn")
+        if turn is None or self.user_turn <= turn or self._turn_running():
+            return False
+        began = heard.get("began")  # a late transcript's too (Hermes 7642, 7643)
+        answering = (
+            self.ask is not None
+            and heard.get("replying_to") is None
+            and began is not None
+            and began > self.ask_since
+        )
+        return not answering and heard.get("replying_to") is None
+
+    def _release_if_complete(self) -> None:
+        """Ask a held first part on its own once no rest can still come (#1842): every worker turn
+        begun so far has ended and delivered its words (`turn_end`), nobody is speaking, and no
+        utterance is being handled. Decided on the worker's own markers, read in order on its one
+        stream — never on a timer, which could fire while the rest is still unread behind a slow
+        send (Hermes 7633, 7636, 7637). A newer turn that brought no words was a breath or noise."""
+        if (
+            self.held is None
+            or self.state == "ended"
+            or self.in_flight
+            or self.user_speaking
+            or self.turn_ended < self.user_turn
+        ):
+            return
+        text, heard = self.held
+        self.held = None
+        if not self.muted:
+            self._dispatch(text, heard, self.generation)
+
+    def _dispatch(self, text: str, heard: dict, gen: int) -> None:
+        if NEEDS_YOU_ASK.search(text.lower()) and not self._turn_running():
+            self._side(self.read_needs_you(gen))
+            return
         if self._turn_running():
             # HQ is still answering the previous question: keep only the newest one and ask it
             # when the running turn settles; that turn's answer is no longer spoken.
@@ -793,8 +890,9 @@ class Call:
         option = None
         answers = None
         # HQ's open question, if these words were BEGUN after it was presented (#1668): words begun
-        # while HQ was still answering, or a late transcript, are a new request. Never for a reply
-        # to the still-there question.
+        # while HQ was still answering are a new request. A late transcript counts by its own
+        # turn's start (Hermes 7643); one whose start is unknown is a new request. Never for a
+        # reply to the still-there question.
         ask = None
         began = heard.get("began")
         if self.ask and replying_to is None and began is not None and began > self.ask_since:
@@ -2500,7 +2598,11 @@ def worker_config(settings: dict, voice: str, profile: dict | None = None) -> di
         "in_rate": IN_RATE,
         "out_rate": OUT_RATE,
         # Silence after speech before the turn may end (VAD stop), per the turn-taking setting.
-        "stop_secs": {"quick": 0.2, "natural": 0.35, "patient": 0.6}[tt],
+        # Smart Turn ends a turn on a complete-sounding clause, so only this keeps a mid-thought
+        # pause inside the turn (#1842, measured on the real models: at 0.35 s every pause of
+        # 0.5 s or more split the turn; 1.0 s holds 0.5 s pauses and costs 0.85 s before HQ
+        # replies).
+        "stop_secs": {"quick": 0.35, "natural": 1.0, "patient": 1.5}[tt],
         "interrupt": bool(settings["interrupt"]),
     }
 

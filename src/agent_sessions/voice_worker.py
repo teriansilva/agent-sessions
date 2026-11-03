@@ -12,7 +12,9 @@ Protocol with the app (JSON text + binary PCM16 mono):
   ``{"t":"stop"}``.
 - worker → app: ``{"t":"ready"}``, ``{"t":"user_started","turn"}``, ``{"t":"user_stopped"}``,
   ``{"t":"utterance","text","turn"}`` (``turn``: the number of the user turn it was heard in; a
-  LATE transcript is ``{"t":"utterance","text","late":true}``), ``{"t":"interrupt"}`` (barge-in:
+  LATE transcript is ``{"t":"utterance","text","late":true,"turn"}``, still with its own turn),
+  ``{"t":"turn_end","turn"}`` (once every STT result of that turn is back: after its utterance and
+  any late one, or alone for a turn with no words), ``{"t":"interrupt"}`` (barge-in:
   the client flushes playback; Pipecat sends it at every user turn start),
   ``{"t":"bot_started"}``, ``{"t":"bot_stopped"}``, ``{"t":"error","endpoint","code","detail"}``;
   and speech audio (binary, ``out_rate``).
@@ -81,8 +83,12 @@ from .voice_synth import SpeechOrder, Synths
 from .voice_text import call_language, split_speech
 from .voice_turns import Turns
 
-#: How long after the end of a turn we wait for its last transcript before giving up on it.
-TRANSCRIPT_GRACE_S = 3.0
+#: How long a turn waits for its transcripts with NO result coming back at all (#1842, Hermes 7657,
+#: 7659). A turn goes to the app WHOLE: sending part of it early, and the rest LATE, split one
+#: request into two. STT runs one segment at a time and each request has its own timeout, so every
+#: result (words, empty or failed) comes back within this of the one before: the clock restarts on
+#: each, and only a service that stopped transcribing at all runs it out.
+TRANSCRIPT_WAIT_S = se.TRANSCRIBE_TIMEOUT_S + 5.0
 #: Synthesis look-ahead: sentences synthesized ahead of the one playing. Two hides most of a
 #: slower-than-real-time TTS (measured on VoxCPM2: RTF 1.0–2.1) without flooding the server.
 LOOKAHEAD = 1
@@ -331,7 +337,7 @@ class Bridge(FrameProcessor):
         self._turn = 0
 
     async def _flush(self, target: int, turn: int) -> None:
-        text = self._bus.turns.flush(target)
+        text = self._bus.turns.flush(target, turn)
         if text and not self.muted:
             heard = self._bus.turns.flushed_language
             await self._bus.send(
@@ -348,20 +354,51 @@ class Bridge(FrameProcessor):
     async def _when_transcribed(
         self, target: int, previous: asyncio.Task | None, turn: int
     ) -> None:
-        """Flush THIS turn (its segments up to `target`) once they are back from STT, or after a
-        grace; turns go out in order, each with only its own words."""
-        deadline = time.monotonic() + TRANSCRIPT_GRACE_S
+        """Flush THIS turn (its segments up to `target`) once ALL of them are back from STT, then
+        its `turn_end` (#1842); turns go out in order, each with only its own words. One message
+        for the whole turn, the marker after it, on the same stream: the app holds a first part
+        until every turn begun has ended, so the marker means no word of that turn can still come
+        (Hermes 7639, 7657). Only a service that stopped transcribing reaches `TRANSCRIPT_WAIT_S`;
+        a result after that is still delivered, LATE and tagged with its turn."""
         if previous is not None:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await previous
+        await self._settle(target)
+        await self._flush(target, turn)
+        await self._bus.send({"t": "turn_end", "turn": turn})
+
+    async def _settle(self, target: int) -> None:
+        """Until the segments up to `target` are all back, or no STT result at all has come back for
+        `TRANSCRIPT_WAIT_S` — counted again from every result, this turn's or an earlier one's
+        still ahead of it in the queue (Hermes 7659)."""
+        done = self._bus.turns.done
+        deadline = time.monotonic() + TRANSCRIPT_WAIT_S
         while not self._bus.turns.settled(target):
+            if self._bus.turns.done != done:
+                done = self._bus.turns.done
+                deadline = time.monotonic() + TRANSCRIPT_WAIT_S
             left = deadline - time.monotonic()
             if left <= 0:
-                break
+                return
             self._bus.segment_done.clear()
+            if self._bus.turns.settled(target):
+                return  # came back between the check and the clear: never wait for it again
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._bus.segment_done.wait(), timeout=left)
-        await self._flush(target, turn)
+
+    async def _transcribed(self, text: str, lang: str | None) -> None:
+        """One STT result. A LATE one (its turn already went out, past `TRANSCRIPT_WAIT_S`) is sent
+        on its own, tagged with its turn."""
+        late = self._bus.turns.transcript(text, lang)
+        if late and not self.muted:
+            heard = self._bus.turns.late_language
+            # With its own turn (Hermes 7641): the app holds late words like on-time ones while
+            # a newer turn may still bring the rest.
+            await self._bus.send(
+                {"t": "utterance", "text": late, "late": True, "turn": self._bus.turns.late_turn,
+                 "language": self._detect(heard, late), "heard_language": heard}
+            )  # fmt: skip
+        self._bus.segment_done.set()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -370,14 +407,7 @@ class Bridge(FrameProcessor):
         if isinstance(frame, TranscriptionFrame):
             res = frame.result if isinstance(frame.result, dict) else {}
             lang = res.get("language") if isinstance(res.get("language"), str) else None
-            late = self._bus.turns.transcript(frame.text, lang)
-            self._bus.segment_done.set()
-            if late and not self.muted:
-                heard = self._bus.turns.late_language
-                await self._bus.send(
-                    {"t": "utterance", "text": late, "late": True,
-                     "language": self._detect(heard, late), "heard_language": heard}
-                )  # fmt: skip
+            await self._transcribed(frame.text, lang)
             return  # transcripts go to the app, not to TTS
         if isinstance(frame, UserStartedSpeakingFrame):
             self._turn += 1

@@ -902,6 +902,12 @@ def test_a_late_goodbye_transcript_never_hangs_up_on_the_next_sentence(monkeypat
         await r.ev(t="user_started")  # turn 1
         await r.ev(t="user_started")  # turn 2 begins: "actually wait, before you go…"
         await r.ev(t="utterance", text="Okay, bye.", turn=1)  # turn 1's words, late
+        # Held for the rest (#1842); turn 2 brings no words, so it goes out on its own.
+        await r.ev(t="turn_end", turn=1)
+        await r.ev(t="user_stopped")
+        await r.ev(t="turn_end", turn=2)
+        while r.call.held is not None:
+            await asyncio.sleep(0)
         if r.call.turn_task is not None:
             await r.call.turn_task
         farewell = last_say(r)
