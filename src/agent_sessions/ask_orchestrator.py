@@ -139,6 +139,23 @@ class Tool:
 
 
 @dataclass
+class _Draft:
+    """A turn started before the Commander has surely finished (#1845). Until `commit`, it writes
+    nothing (`head` and the tool records wait here), shows nothing (progress waits too), and runs
+    only `DRAFT_READ_TOOLS`. `discard` cancels it and nothing of it remains."""
+
+    head: tuple[dict, ...]
+    committed: asyncio.Event = field(default_factory=asyncio.Event)
+    committing: bool = False
+    records: list[dict] = field(default_factory=list)
+    events: list[dict] = field(default_factory=list)
+
+    def open(self) -> bool:
+        """Still a draft: neither committed nor being committed."""
+        return not self.committing and not self.committed.is_set()
+
+
+@dataclass
 class _Turn:
     """What one turn's tools have returned so far — the only ids the model may use."""
 
@@ -195,6 +212,8 @@ class _Turn:
     #: The connectors THIS turn listed and the refs their reads minted (#1750): what a
     #: `connector_index` and an `item_ref` may name. Memory only, never stored.
     connectors: connector_hq.TurnConnectors = field(default_factory=connector_hq.TurnConnectors)
+    #: A call's DRAFT turn (#1845): nothing stored, shown or done with an effect until committed.
+    draft: _Draft | None = None
     _catalog: list[dict] | None = None
 
     async def catalog(self) -> list[dict]:
@@ -2114,6 +2133,19 @@ TOOLS: dict[str, Tool] = {
 
 #: Tools a turn is offered only when the question was spoken on a call (#1668).
 CALL_ONLY_TOOLS = frozenset({"end_call"})
+#: The tools a call's DRAFT turn may run before it is committed (#1845): reads with no effect,
+#: listed one by one. Every other tool, today every `propose_*`, `ask_operator` and `end_call`,
+#: waits for commit before its handler runs. Fail-closed: a new tool is gated until it is added
+#: here on purpose (a test ratchets this list against the registry).
+DRAFT_READ_TOOLS = frozenset(
+    {
+        "find_sessions", "session_status", "list_sessions", "session_brief", "list_missions",
+        "mission_status", "list_projects", "list_agents", "list_folders", "list_playbooks",
+        "playbook_detail", "playbook_schema", "list_skills", "skill_detail", "list_automations",
+        "automation_detail", "list_secrets", "agent_usage", "fleet_status", "read_settings",
+        "list_connectors", "connector_search", "connector_read", "connector_list",
+    }
+)  # fmt: skip
 
 
 def tool_specs(via: str | None = None) -> list[dict]:
@@ -2134,6 +2166,10 @@ async def _call(turn: _Turn, name: str, raw_args: str) -> tuple[str, dict, dict]
     if not isinstance(args, dict):
         refusal = json.dumps({"error": "arguments are not a JSON object"})
         return refusal, {}, {"error": "bad_arguments"}
+    if turn.draft is not None and name not in DRAFT_READ_TOOLS:
+        # A draft runs no tool with an effect before it is committed (#1845): this one waits
+        # here, with nothing of it done, and runs only once the Commander has finished.
+        await turn.draft.committed.wait()
     declared = tool.spec["function"]["parameters"]["properties"]
     # Declared STRING arguments only; the store guards each one. Nothing else the model sent is
     # kept, whatever its type.
@@ -2284,6 +2320,27 @@ def _status(turn: _Turn, status: str, detail: str = "", code: str | None = None)
 
 async def _append(cid: str, *records: dict) -> None:
     await asyncio.to_thread(ask_store.append, cid, *records)
+
+
+async def _turn_append(turn: _Turn, *records: dict) -> None:
+    """A turn's own records: a draft keeps them until it is committed (#1845). One that is being
+    committed right now waits for the commit's write, so the records keep their order."""
+    draft = turn.draft
+    if draft is not None and not draft.committed.is_set():
+        if draft.open():
+            draft.records.extend(records)
+            return
+        await draft.committed.wait()
+    await _append(turn.cid, *records)
+
+
+def _emit(turn: _Turn, ev: dict) -> None:
+    """A turn's progress: a draft shows none of it until it is committed (#1845)."""
+    if turn.draft is not None and not turn.draft.committed.is_set():
+        if len(turn.draft.events) < PROGRESS_QUEUE_MAX:
+            turn.draft.events.append(ev)
+        return
+    _broadcast(turn.cid, ev)
 
 
 def _user_content(turn: _Turn, shown: frozenset[str] = frozenset()) -> str:
@@ -2571,8 +2628,8 @@ async def run_turn(turn: _Turn) -> list[dict]:
                     break
                 result, stored, meta = await _call(turn, name, args)
                 convo.append({"role": "tool", "tool_call_id": cid, "content": result})
-                await _append(
-                    turn.cid,
+                await _turn_append(
+                    turn,
                     {
                         "type": "tool",
                         "turn_id": turn.turn_id,
@@ -2664,6 +2721,7 @@ class _Running:
     turn_id: str
     task: asyncio.Task
     listeners: set[asyncio.Queue] = field(default_factory=set)
+    turn: _Turn | None = None
 
 
 _RUNNING: dict[str, _Running] = {}
@@ -2885,6 +2943,9 @@ async def _settle(turn: _Turn, lock_fd: int) -> dict:
         except Exception as e:  # noqa: BLE001 — a turn must always settle
             log.warning("ask turn failed (%s)", type(e).__name__)
             records = [_status(turn, "failed", f"internal error ({type(e).__name__})")]
+        if turn.draft is not None:
+            # An answer the model finished early waits until the Commander has finished (#1845).
+            await turn.draft.committed.wait()
         try:
             await _append(turn.cid, *records)
         except ask_store.StoreRefused as e:
@@ -2989,6 +3050,7 @@ async def begin(
     attachments: list[str] | None = None,
     operator=None,
     app=None,
+    draft: bool = False,
 ) -> tuple[asyncio.Task | None, dict | None]:
     """Start a turn, or find the one this ``turn_id`` already names.
 
@@ -3008,6 +3070,12 @@ async def begin(
     contact = hq_contacts.resolve(contact)
     if via is not None and via not in ask_store.VIAS:
         raise TurnError(422, "unknown channel")
+    if draft and (via != "call" or attachments or answers is not None or option is not None):
+        # Only a call's plain spoken question is drafted (#1845).
+        raise TurnError(422, "only a call's plain question can be drafted")
+    if not draft:
+        # A call's draft never keeps another turn out: whatever arrives next is the newer intent.
+        await _discard_open_draft(cid)
     answering = None
     if answers is not None or option is not None:
         # A question record never changes once written, so resolving outside the lock is exact.
@@ -3079,9 +3147,9 @@ async def begin(
                         raise TurnError(422, e.detail) from None
                 if descriptors:
                     user["attachments"] = descriptors
-                await _append(
-                    cid, user, {"type": "status", "turn_id": turn_id, "status": "pending"}
-                )
+                head = (user, {"type": "status", "turn_id": turn_id, "status": "pending"})
+                if not draft:
+                    await _append(cid, *head)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.close(lock_fd)
@@ -3104,12 +3172,14 @@ async def begin(
             image_bodies=await asyncio.to_thread(
                 ask_attachments.read_image_bodies, cid, descriptors
             ),
-            progress=lambda ev: _broadcast(cid, ev),
+            progress=lambda ev: None,
             operator=operator,
             app=app,
+            draft=_Draft(head) if draft else None,
         )
+        turn.progress = lambda ev: _emit(turn, ev)
         task = asyncio.get_running_loop().create_task(_settle(turn, lock_fd), name=f"ask:{cid}")
-        _RUNNING[cid] = _Running(turn_id, task)
+        _RUNNING[cid] = _Running(turn_id, task, turn=turn)
 
         def _done(t: asyncio.Task) -> None:
             if not t.cancelled() and t.exception() is not None:
@@ -3137,12 +3207,73 @@ def unlisten(cid: str, queue: asyncio.Queue | None) -> None:
 
 
 def running(cid: str) -> bool:
-    return cid in _RUNNING
+    """A turn is running and visible: an uncommitted draft is neither (#1845)."""
+    r = _RUNNING.get(cid)
+    return r is not None and not (
+        r.turn is not None and r.turn.draft is not None and not r.turn.draft.committed.is_set()
+    )
+
+
+async def commit(cid: str, turn_id: str) -> bool:
+    """The Commander has finished: the draft `turn_id` becomes a normal turn (#1845). Its question,
+    `pending` status and held tool records are written in normal-turn order, its held progress is
+    shown, and any tool waiting on commit runs. False when it is no longer this conversation's
+    open draft (discarded, superseded, settled)."""
+    async with _lock(cid):
+        r = _RUNNING.get(cid)
+        if r is None or r.turn_id != turn_id or r.turn is None or r.turn.draft is None:
+            return False
+        draft = r.turn.draft
+        if not draft.open():
+            return True
+        draft.committing = True  # a record arriving during the write waits for it (`_turn_append`)
+        held, draft.records = draft.records, []
+        try:
+            await _append(cid, *draft.head, *held)
+        except BaseException:
+            r.task.cancel()  # never a half-written turn: the draft goes, as if discarded
+            raise
+        finally:
+            draft.committing = False
+        draft.committed.set()
+        events, draft.events = draft.events, []
+    for ev in events:
+        _broadcast(cid, ev)
+    return True
+
+
+async def discard(cid: str, turn_id: str) -> bool:
+    """Drop the open draft `turn_id` (#1845): its task is cancelled, and this returns only once it
+    has ended, its slot is free and the turn lock released. Nothing of it was written or shown, and
+    nothing it computed can publish afterwards. False when it isn't an open draft."""
+    async with _lock(cid):
+        r = _RUNNING.get(cid)
+        if (
+            r is None
+            or r.turn_id != turn_id
+            or r.turn is None
+            or r.turn.draft is None
+            or not r.turn.draft.open()
+        ):
+            return False
+        task = r.task
+        task.cancel()
+    await asyncio.wait({task})  # its own `finally` frees the slot and closes the lock
+    return True
+
+
+async def _discard_open_draft(cid: str) -> None:
+    r = _RUNNING.get(cid)
+    if r is not None and r.turn is not None and r.turn.draft is not None and r.turn.draft.open():
+        await discard(cid, r.turn_id)
 
 
 async def drain_turns(timeout: float = TURN_SHUTDOWN_WAIT_S) -> None:
     """Let running turns settle before the app goes away: a turn whose reader left belongs to no
-    request, so the server's wait for requests in flight does not cover it."""
+    request, so the server's wait for requests in flight does not cover it. A call's open draft
+    would wait for a commit that can no longer come: it is discarded (#1845)."""
+    for cid in list(_RUNNING):
+        await _discard_open_draft(cid)
     pending = {r.task for r in _RUNNING.values()}
     if pending:
         log.info("waiting for %d Ask turn(s) to settle", len(pending))

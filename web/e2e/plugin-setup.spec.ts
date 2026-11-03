@@ -248,7 +248,7 @@ test("a failed sign-in keeps the vendor's last screen, opens its link and sends 
         ws.send(Buffer.from("Login failed: Request failed with status code 400\r\n"));
         current.state = "failed";
         current.error = "the sign-in command exited without success";
-        void ws.close();
+        void ws.close({ code: 4409 }); // the server always names its verdict (plugins/signin.py)
       }
     });
   });
@@ -265,6 +265,102 @@ test("a failed sign-in keeps the vendor's last screen, opens its link and sends 
   await expect(page.getByRole("status").filter({ hasText: "The sign-in command ended" })).toBeVisible();
   await expect(terminal).toContainText("Login failed: Request failed with status code 400");
   await expect(page.getByRole("button", { name: "Start sign-in", exact: true })).toBeEnabled();
+});
+
+test("a sign-in survives a lost connection: the terminal reattaches and keeps its screen (#1846)", async ({ page }) => {
+  const m = await fixture(page, true);
+  const received: string[][] = [];
+  await page.routeWebSocket(/\/ws\/plugins\/signin\//, ws => {
+    const current = m.data.operations.find(o => ws.url().endsWith(o.id))!;
+    current.state = "running";
+    const own: string[] = [];
+    received.push(own);
+    if (received.length === 1) {
+      ws.send(Buffer.from("Open the link, then paste the code > "));
+      // The phone backgrounds the page while the operator approves on the vendor's site.
+      setTimeout(() => void ws.close({ code: 1001, reason: "going away" }), 300);
+    } else {
+      ws.send(Buffer.from("\r\nPrinted while you were away.\r\n"));
+    }
+    ws.onMessage(msg => { if (typeof msg !== "string") own.push(new TextDecoder().decode(msg as ArrayBuffer)); });
+  });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
+  const terminal = page.getByLabel("Temporary vendor sign-in terminal");
+  // xterm pauses rendering (and its accessible rows) while off-screen.
+  await terminal.scrollIntoViewIfNeeded();
+  await expect(terminal).toContainText("paste the code");
+  await expect(terminal).toContainText("Printed while you were away.");
+  expect(received).toHaveLength(2);
+  // Same screen, no "ended": the first attempt's text is still there and the code field is live.
+  await expect(terminal).toContainText("Open the link");
+  await expect(terminal).not.toContainText("sign-in ended");
+  await expect(page.getByRole("status").filter({ hasText: "The sign-in command ended" })).toHaveCount(0);
+  await expect(page.getByTestId("signin-reconnecting")).toHaveCount(0);
+  await page.getByLabel("Code from the sign-in page").fill("code-after-return");
+  await page.getByRole("button", { name: "Send to sign-in" }).click();
+  await expect.poll(() => received[1].join("")).toBe("code-after-return\r");
+  expect(received[0].join("")).toBe("");
+});
+
+test("closing the sign-in terminal while it reconnects ends the sign-in on the server (#1846)", async ({ page }) => {
+  const m = await fixture(page, true);
+  let n = 0;
+  await page.routeWebSocket(/\/ws\/plugins\/signin\//, ws => {
+    const current = m.data.operations.find(o => ws.url().endsWith(o.id))!;
+    current.state = "running";
+    if (n++ === 0) {
+      ws.send(Buffer.from("Paste code here if prompted > "));
+      setTimeout(() => void ws.close({ code: 1001, reason: "going away" }), 300);
+    } else void ws.close({ code: 4423 }); // still held elsewhere: the terminal stays between sockets
+  });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
+  await expect(page.getByTestId("signin-reconnecting")).toBeVisible();
+  const op = m.data.operations.find(o => o.kind === "signin")!;
+  expect(posts(m, "/cancel")).toHaveLength(0);
+  await page.getByRole("button", { name: "Close sign-in terminal" }).click();
+  await expect.poll(() => posts(m, "/cancel").map(w => w.path)).toEqual([`/api/plugins/operations/${op.id}/cancel`]);
+});
+
+test("closing the sign-in terminal while a reconnect is still being refused ends the sign-in (#1846)", async ({ page }) => {
+  const m = await fixture(page, true);
+  let n = 0;
+  await page.routeWebSocket(/\/ws\/plugins\/signin\//, ws => {
+    const current = m.data.operations.find(o => ws.url().endsWith(o.id))!;
+    current.state = "running";
+    if (n++ === 0) {
+      ws.send(Buffer.from("Paste code here if prompted > "));
+      setTimeout(() => void ws.close({ code: 1001, reason: "going away" }), 300);
+    } else setTimeout(() => void ws.close({ code: 4423 }), 10_000); // open, not the owner yet
+  });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
+  await expect.poll(() => n).toBe(2); // the reconnect's socket exists and is not the owner
+  const op = m.data.operations.find(o => o.kind === "signin")!;
+  expect(posts(m, "/cancel")).toHaveLength(0);
+  await page.getByRole("button", { name: "Close sign-in terminal" }).click();
+  await expect.poll(() => posts(m, "/cancel").map(w => w.path)).toEqual([`/api/plugins/operations/${op.id}/cancel`]);
+});
+
+test("a sign-in that ended sends no cancel when its terminal is closed", async ({ page }) => {
+  const m = await fixture(page, true);
+  await page.routeWebSocket(/\/ws\/plugins\/signin\//, ws => {
+    const current = m.data.operations.find(o => ws.url().endsWith(o.id))!;
+    current.state = "running";
+    ws.send(Buffer.from("Login successful\r\n"));
+    current.state = "complete";
+    setTimeout(() => void ws.close({ code: 1000 }), 200);
+  });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
+  // A completed sign-in moves setup on to verification, which unmounts the terminal; closing it,
+  // where it is still shown, is the same unmount. Neither may cancel a finished operation.
+  await page.waitForTimeout(1500);
+  const close = page.getByRole("button", { name: "Close sign-in terminal" });
+  if (await close.isVisible()) await close.click();
+  await page.waitForTimeout(500);
+  expect(posts(m, "/cancel")).toHaveLength(0);
 });
 
 test("remove confirmation preserves data and Escape returns focus", async ({ page }) => {

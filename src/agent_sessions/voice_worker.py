@@ -10,12 +10,13 @@ Protocol with the app (JSON text + binary PCM16 mono):
 - app → worker: first ``{"t":"config", stt, tts, in_rate, out_rate, stop_secs, interrupt}``;
   then mic audio (binary, ``in_rate``), ``{"t":"say","id","text"}``, ``{"t":"mute","on"}``,
   ``{"t":"stop"}``.
-- worker → app: ``{"t":"ready"}``, ``{"t":"user_started","turn"}``, ``{"t":"user_stopped"}``,
-  ``{"t":"utterance","text","turn"}`` (``turn``: the number of the user turn it was heard in; a
-  LATE transcript is ``{"t":"utterance","text","late":true,"turn"}``, still with its own turn),
-  ``{"t":"turn_end","turn"}`` (once every STT result of that turn is back: after its utterance and
-  any late one, or alone for a turn with no words), ``{"t":"interrupt"}`` (barge-in:
-  the client flushes playback; Pipecat sends it at every user turn start),
+- worker → app: ``{"t":"ready"}``, ``{"t":"user_started","turn"}``,
+  ``{"t":"user_stopped","turn","at"}`` (``at``: the stop's own ``time.monotonic()``, the app's
+  clock too), ``{"t":"utterance","text","turn"}`` (``turn``: the number of the user turn it was
+  heard in; a LATE transcript is ``{"t":"utterance","text","late":true,"turn"}``, still with its
+  own turn), ``{"t":"turn_end","turn"}`` (once every STT result of that turn is back: after its
+  utterance and any late one, or alone for a turn with no words), ``{"t":"interrupt"}``
+  (barge-in: the client flushes playback; Pipecat sends it at every user turn start),
   ``{"t":"bot_started"}``, ``{"t":"bot_stopped"}``, ``{"t":"error","endpoint","code","detail"}``;
   and speech audio (binary, ``out_rate``).
 
@@ -413,7 +414,9 @@ class Bridge(FrameProcessor):
             self._turn += 1
             await self._bus.send({"t": "user_started", "turn": self._turn})
         elif isinstance(frame, UserStoppedSpeakingFrame):
-            await self._bus.send({"t": "user_stopped"})
+            # Its turn and its own instant (#1845): the app times HQ's commit pause from HERE, not
+            # from the transcript, which can trail it by the grace.
+            await self._bus.send({"t": "user_stopped", "turn": self._turn, "at": time.monotonic()})
             self._grace = asyncio.create_task(
                 self._when_transcribed(self._bus.turns.target(), self._grace, self._turn)
             )

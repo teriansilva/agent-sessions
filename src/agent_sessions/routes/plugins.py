@@ -221,6 +221,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, cfg, must_change) -> None:
     @app.post("/api/plugins/operations/{operation_id}/cancel", dependencies=write)
     async def plugin_cancel(operation_id: str, request: Request):
         await _body(request, required=set())
+        # A running sign-in this process holds ends now (#1846): its terminal may have lost the
+        # socket that would have closed it. Same authenticated, CSRF-checked route as before.
+        if await signin.close(operation_id):
+            return _operation(await _call(manager.operation, operation_id))
         return _operation(await _call(manager.cancel_ready, operation_id))
 
     @app.post("/api/plugins/recover", dependencies=write)

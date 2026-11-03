@@ -1,6 +1,7 @@
 """Public installer boundaries and the real, capture-free sign-in socket (#1259)."""
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import subprocess
@@ -17,7 +18,7 @@ import test_plugin_artifacts
 import test_plugin_manager
 import test_plugin_process
 from agent_sessions import auth
-from agent_sessions.plugins import manager, process, storage
+from agent_sessions.plugins import manager, process, signin, storage
 from agent_sessions.routes import chat, plugins
 from test_plugin_manager import installed, request_id
 
@@ -219,6 +220,116 @@ def test_signin_auth_single_owner_disconnect_and_secret_exclusion(
         if path.is_file():
             assert secret not in path.read_bytes(), path
     assert secret.decode() not in json.dumps(client.get("/api/plugins", headers=headers).json())
+
+
+def _start_signin(client, headers, generation):
+    rid = request_id()
+    body = {"request_id": rid, "plugin_id": "fixture", "generation_id": generation}
+    assert client.post("/api/plugins/signin", json=body, headers=headers).status_code == 200
+    return rid, "/ws/plugins/signin/" + rid
+
+
+def _read_until(ws, needle):
+    output = b""
+    while needle not in output:
+        output += ws.receive_bytes()
+    return output
+
+
+@contextlib.contextmanager
+def _lost(client, url, headers, code):
+    """A socket the browser loses. Uvicorn only queues the disconnect and leaves the handler
+    running; TestClient's context exit would CANCEL it instead, so that exit is held until the
+    test is done with the sign-in."""
+    session = client.websocket_connect(url, headers=headers)
+    ws = session.__enter__()
+    _read_until(ws, b"READY")
+    ws.close(code=code)
+    try:
+        yield
+    finally:
+        with contextlib.suppress(Exception):
+            session.__exit__(None, None, None)
+
+
+def _state_becomes(rid, wanted, seconds=15):
+    deadline = time.monotonic() + seconds
+    while manager.operation(rid)["state"] != wanted:
+        assert time.monotonic() < deadline, manager.operation(rid)
+        time.sleep(0.05)
+
+
+def test_a_lost_signin_socket_reattaches_within_grace(api, signin_candidate, user_manager):
+    """#1846: a phone drops the socket while the operator approves on the vendor's site. The
+    vendor command keeps running; the same operator attaches again and finishes the sign-in."""
+    client, headers, _ = api
+    # One portal: uvicorn serves every socket on ONE event loop, as the handoff needs.
+    with client:
+        rid, url = _start_signin(client, headers, signin_candidate)
+        # 1001 going away: the browser backgrounded the page.
+        with _lost(client, url, headers, 1001):
+            time.sleep(0.3)
+            assert manager.operation(rid)["state"] == "running"
+            with client.websocket_connect(url, headers=headers) as again:
+                # Only one socket at a time, as before: a second one while attached is refused.
+                with client.websocket_connect(url, headers=headers) as third:
+                    with pytest.raises(WebSocketDisconnect) as busy:
+                        third.receive_bytes()
+                    assert busy.value.code == signin.BUSY
+                again.send_bytes(b"code-from-the-vendor\n")
+                _read_until(again, b"GOT:code-from-the-vendor")
+                again.close(code=1000)
+                _state_becomes(rid, "interrupted")  # a deliberate close still ends it at once
+
+
+def test_a_lost_signin_socket_ends_when_the_grace_window_passes(
+    api, signin_candidate, user_manager, monkeypatch
+):
+    client, headers, _ = api
+    # One portal: uvicorn serves every socket on ONE event loop, as the handoff needs.
+    with client:
+        monkeypatch.setattr(signin, "GRACE_SECONDS", 0.5)
+        rid, url = _start_signin(client, headers, signin_candidate)
+        with _lost(client, url, headers, 1006):
+            _state_becomes(rid, "interrupted")
+            assert manager.operation(rid)["error"] == "sign-in disconnected; start a new attempt"
+            with client.websocket_connect(url, headers=headers) as late:
+                with pytest.raises(WebSocketDisconnect):
+                    late.receive_bytes()
+        state = subprocess.run(
+            ["/usr/bin/systemctl", "--user", "is-active", process.unit_name(rid)],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        assert state.stdout.strip() in (b"inactive", b"failed", b"unknown")
+
+
+def test_closing_the_signin_terminal_ends_it_without_grace(api, signin_candidate, user_manager):
+    client, headers, _ = api
+    # One portal: uvicorn serves every socket on ONE event loop, as the handoff needs.
+    with client:
+        rid, url = _start_signin(client, headers, signin_candidate)
+        with _lost(client, url, headers, signin.CLOSED_BY_OPERATOR):
+            _state_becomes(rid, "interrupted", seconds=5)
+        assert manager.operation(rid)["error"] == "sign-in closed; start a new attempt"
+
+
+def test_cancel_ends_a_signin_whose_terminal_lost_its_socket(api, signin_candidate, user_manager):
+    """Hermes on #1849: a terminal closed while reconnecting has no socket to send 4000 on; the
+    authenticated cancel route ends the live sign-in now instead of after the grace window."""
+    client, headers, _ = api
+    with client:
+        rid, url = _start_signin(client, headers, signin_candidate)
+        with _lost(client, url, headers, 1001):
+            time.sleep(0.3)
+            assert manager.operation(rid)["state"] == "running"
+            started = time.monotonic()
+            res = client.post(f"/api/plugins/operations/{rid}/cancel", json={}, headers=headers)
+            assert res.status_code == 200, res.text
+            assert res.json()["state"] == "interrupted"
+            assert time.monotonic() - started < 10
+            assert manager.operation(rid)["error"] == "sign-in closed; start a new attempt"
 
 
 def test_cancel_ready_and_recovery_never_claim_success(api, signin_candidate, monkeypatch):

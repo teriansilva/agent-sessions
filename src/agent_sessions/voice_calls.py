@@ -97,6 +97,13 @@ OUT_RATE = 24_000
 WORKER_START_S = 30.0
 #: A call that no socket of its session joins within this ends ("not_connected").
 DIAL_TIMEOUT_S = 30.0
+#: The worker ends a segment at this pause, whatever the setting (#1845): HQ starts a DRAFT of its
+#: answer at once, and the turn-taking setting decides when it is committed instead.
+WORKER_STOP_S = 0.35
+#: The silence after the Commander's last word before HQ's draft is committed (#1845), per
+#: turn-taking setting. Quick drafts nothing: it commits at the worker's own stop.
+COMMIT_PAUSE_S = {"quick": 0.0, "natural": 1.5, "patient": 2.5}
+DRAFT_TICK_S = 0.05
 #: A spoken confirmation's window, from the moment its read-back finished playing (#1397 P2).
 CHALLENGE_S = 20.0
 #: How long a 202 (a session starting, an operation running) is followed to its end state.
@@ -303,8 +310,13 @@ class Call:
     #: The first part of a request, held because the Commander was already speaking again when
     #: it arrived (#1842): ``(text, heard)``. The rest joins it, and the whole is asked once.
     held: tuple | None = None
-    #: When the Commander last stopped speaking (`user_stopped`).
+    #: When the Commander last stopped speaking (`user_stopped`'s own instant, #1845).
     user_stopped_at: float = 0.0
+    #: The silence HQ waits for before a draft is committed (#1845, `COMMIT_PAUSE_S`); 0: no drafts.
+    commit_pause: float = 0.0
+    #: HQ's answer started before the Commander has surely finished (#1845), until it is committed
+    #: or dropped. Only `_take_draft` clears it, so a commit and a discard never both act on it.
+    draft: _CallDraft | None = None
     #: Utterances being handled right now: a held first part is never released past one.
     in_flight: int = 0
     #: The newest worker turn whose transcript is all in (its `turn_end`, #1842): a held first part
@@ -508,7 +520,7 @@ class Call:
             self._release_if_complete()
         elif t == "user_stopped":
             self.user_speaking = False
-            self.user_stopped_at = time.monotonic()
+            self.user_stopped_at = _stop_instant(ev.get("at"))
             await self.client({"t": "user", "speaking": False})
         elif t == "interrupt":
             # The browser flushes what it had queued: those says never play, so their late or
@@ -763,6 +775,19 @@ class Call:
             "began": began,
             "replying_to": replying_to,
         }
+        d = self.draft
+        if d is not None and not captioned:
+            # More words before HQ's draft was committed (#1845): the same request goes on. The
+            # draft is dropped — nothing of it was stored, shown or said — and the whole is asked.
+            if await self._drop_draft(d):
+                text = f"{d.text} {text}"[: ask_orchestrator.QUERY_MAX]
+                heard = {
+                    **heard,
+                    # A LATE transcript is the tail of the draft's own turn: timed from it too.
+                    "turn": d.turn if heard["turn"] is None else heard["turn"],
+                    "began": d.heard["began"],
+                    "replying_to": d.heard["replying_to"],
+                }
         joined = self.held is not None
         if joined:
             # The rest of a request whose first part was held (#1842): one question, asked once.
@@ -830,7 +855,64 @@ class Call:
             # when the running turn settles; that turn's answer is no longer spoken.
             self.queued = (text, heard)
             return
-        self.turn_task = asyncio.create_task(self._ask(text, gen, heard))
+        # Drafted (#1845) where the setting waits at all and the words have a turn to time from.
+        draft = self.commit_pause > 0 and heard.get("turn") is not None
+        self.turn_task = asyncio.create_task(self._ask(text, gen, heard, draft=draft))
+
+    def _take_draft(self, d: _CallDraft) -> bool:
+        """Claim `d` for ONE commit or discard, before anything awaits: whichever path claims it
+        first acts, and the other finds it gone."""
+        if self.draft is not d:
+            return False
+        self.draft = None
+        return True
+
+    async def _drop_draft(self, d: _CallDraft) -> bool:
+        """Discard the open draft `d` and wait until its turn has ended and the conversation is
+        free (#1845). False when it was already committed or gone: its turn runs on as normal."""
+        if not self._take_draft(d):
+            return False
+        d.dropped = True  # a draft still being begun is discarded by `_run_turn` itself
+        await ask_orchestrator.discard(self.cid, d.turn_id)
+        task = self.turn_task
+        if task is not None and task is not asyncio.current_task():
+            await asyncio.wait({task})  # its `_ask` ends quietly: nothing said, nothing queued
+        return True
+
+    async def _commit_draft(self, d: _CallDraft) -> None:
+        """The Commander has finished: the draft `d` becomes HQ's turn (#1845)."""
+        if self._take_draft(d) and await ask_orchestrator.commit(self.cid, d.turn_id):
+            d.committed.set()
+
+    async def drop_draft(self) -> None:
+        """The call is going (#1845): an open draft is discarded, never left holding the
+        conversation."""
+        if self.draft is not None:
+            await self._drop_draft(self.draft)
+
+    async def commit_draft(self) -> None:
+        """Muted (#1845): the Commander will say no more, so what they said is asked now."""
+        if self.draft is not None:
+            await self._commit_draft(self.draft)
+
+    async def _commit_when_quiet(self, d: _CallDraft) -> None:
+        """Commit `d` once the Commander has finished (#1845): every worker turn begun has ended
+        and delivered its words (`turn_end`, as #1842's held part), nobody is speaking, no
+        utterance is being handled, and the commit pause has passed since the last stop — timed
+        from the worker's own stop instant, never from the transcript. A turn begun after the
+        draft's postpones it: its words join the draft (`_on_utterance`); a turn that brings none
+        was a breath or noise, and the same draft commits after the pause from ITS stop."""
+        wait = max(0.0, self.commit_pause - WORKER_STOP_S)
+        while self.draft is d and self.state != "ended":
+            if (
+                not self.in_flight
+                and not self.user_speaking
+                and self.turn_ended >= self.user_turn
+                and time.monotonic() - self.user_stopped_at >= wait
+            ):
+                await self._commit_draft(d)
+                return
+            await asyncio.sleep(DRAFT_TICK_S)
 
     def on_typed_turn(self, task: object = None) -> bool:
         """The Commander typed a turn on this call's conversation and it was ACCEPTED (#1668): they
@@ -880,13 +962,15 @@ class Call:
     def _ending_holds(self, end: dict) -> bool:
         return end["gen"] == self.generation and self._still_heard(end["heard"])
 
-    async def _ask(self, text: str, gen: int, heard: dict | None = None) -> None:
-        """`heard`: what these words were heard after (`on_utterance`)."""
+    async def _ask(
+        self, text: str, gen: int, heard: dict | None = None, *, draft: bool = False
+    ) -> None:
+        """`heard`: what these words were heard after (`on_utterance`). `draft`: start HQ's turn as
+        a draft, committed once the Commander has surely finished (#1845)."""
         if heard is None:
             heard = {"starts": self.user_starts, "typed": self.typed_turns, "turn": None,
                      "began": None, "replying_to": None}  # fmt: skip
         replying_to = heard["replying_to"]
-        await self.set_state("thinking")
         option = None
         answers = None
         # HQ's open question, if these words were BEGUN after it was presented (#1668): words begun
@@ -904,12 +988,23 @@ class Call:
             elif ask.get("allow_text"):
                 answers = ask["question_id"]
         turn_id = str(uuid.uuid4())
+        # An answer to HQ's own question is never drafted: it runs as typed (#1845).
+        d = None
+        if draft and answers is None and option is None:
+            d = _CallDraft(turn_id, gen, heard["turn"], text, heard, time.monotonic())
+            self.draft = d  # its commit timer starts once the orchestrator holds it (`_run_turn`)
+        else:
+            await self.set_state("thinking")
         now = time.monotonic()
         self.work = {"since": now, "phase": None, "phase_since": now, "tool": None, "steps": 0,
                      "done": 0, "updates": 0}  # fmt: skip
-        progress = asyncio.create_task(self._report_progress())
+        progress = asyncio.create_task(self._report_progress(d))
         try:
-            view = await self._run_turn(turn_id, text, answers, option, replying_to=replying_to)
+            view = await self._run_turn(
+                turn_id, text, answers, option, replying_to=replying_to, draft=d
+            )
+        except _DraftDropped:
+            return  # nothing of it was stored, shown or said; the words went on elsewhere
         except ask_orchestrator.TurnError as e:
             view = {"status": "failed", "detail": e.detail}
         except ask_store.StoreRefused:
@@ -920,7 +1015,9 @@ class Call:
         finally:
             progress.cancel()
             self.work = None
-        if self.state == "ended":
+            if d is not None and self.draft is d:
+                self.draft = None  # a draft that failed before its commit is gone too
+        if self.state == "ended" or (d is not None and d.dropped):
             return
         await self.client({"t": "turn", "turn": view})
         # New Library drafts are offered with a spoken summary of their BOUND draft (#1681): read
@@ -1414,9 +1511,15 @@ class Call:
                 # ONE row per challenge (#1681 P2): a reply can only name something of THAT row.
                 await self.offer(cards[:1], gen=gen, queue=cards[1:])
 
-    async def _report_progress(self) -> None:
+    async def _report_progress(self, d: _CallDraft | None = None) -> None:
         """While HQ's turn runs: a fixed status line whenever HQ has been quiet too long (#1702),
-        so a slow model never reads as a dropped call. Cancelled as the turn settles."""
+        so a slow model never reads as a dropped call. Cancelled as the turn settles. A draft's
+        turn shows nothing until it is committed (#1845): then HQ is thinking, from now."""
+        if d is not None:
+            await d.committed.wait()
+            await self.set_state("thinking")
+            if self.work is not None:
+                self.work["since"] = time.monotonic()
         while self.state != "ended":
             await asyncio.sleep(PROGRESS_TICK_S)
             await self.progress_tick()
@@ -1470,7 +1573,14 @@ class Call:
             work["unsaid"] = None
 
     async def _run_turn(
-        self, turn_id: str, text: str, answers, option, *, replying_to: str | None = None
+        self,
+        turn_id: str,
+        text: str,
+        answers,
+        option,
+        *,
+        replying_to: str | None = None,
+        draft: _CallDraft | None = None,
     ) -> dict:
         from . import actuator  # the same snapshot the HQ route takes
 
@@ -1488,9 +1598,15 @@ class Call:
             replying_to=replying_to,
             operator=self.operator,
             app=self.app,
+            draft=draft is not None,
         )
         if task is None:
             return view
+        if draft is not None:
+            if draft.dropped:  # more words arrived while it was being begun
+                await ask_orchestrator.discard(self.cid, turn_id)
+                raise _DraftDropped
+            self._side(self._commit_when_quiet(draft))
         queue = ask_orchestrator.listen(self.cid, task)
         try:
             while not task.done():
@@ -1503,6 +1619,8 @@ class Call:
                     await self.client({"t": "progress", "step": str(step)[:40]})
                 else:
                     get.cancel()
+            if draft is not None and task.cancelled():
+                raise _DraftDropped  # discarded (#1845), by more words or a typed turn
             return await asyncio.shield(task)
         finally:
             ask_orchestrator.unlisten(self.cid, queue)
@@ -1567,6 +1685,10 @@ class Call:
             return
         self.challenge = None  # a dropped call settles nothing
         self.state = "ended"
+        # A draft the Commander had not finished is dropped, never left holding the conversation
+        # (#1845). Bounded like the sends below.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(self.drop_draft(), SEND_BUDGET_S)
         # Side tasks are NOT cancelled: a settlement checks the call before it starts, and one
         # already inside its card's route must finish that route, never stop half way.
         self.ended_reason = reason
@@ -1598,6 +1720,34 @@ class Call:
 
     async def wait_ended(self) -> None:
         await self._ended.wait()
+
+
+class _DraftDropped(Exception):
+    """A call's draft turn was discarded before its commit (#1845)."""
+
+
+@dataclass
+class _CallDraft:
+    """HQ's turn for the words `text`, heard in worker turn `turn`, begun as a draft (#1845)."""
+
+    turn_id: str
+    gen: int
+    turn: int
+    text: str
+    heard: dict
+    started: float
+    committed: asyncio.Event = field(default_factory=asyncio.Event)
+    #: Claimed for a discard (`Call._drop_draft`): it is never committed, said or shown.
+    dropped: bool = False
+
+
+def _stop_instant(at: object) -> float:
+    """The worker's `user_stopped` instant on this clock, or now when it sent none or one that
+    cannot be right (in the future, or older than a transcript could trail it)."""
+    now = time.monotonic()
+    if isinstance(at, int | float) and not isinstance(at, bool) and 0 <= now - at <= 5.0:
+        return float(at)
+    return now
 
 
 def _turn_number(v: object) -> int | None:
@@ -2570,9 +2720,13 @@ async def start_worker(settings: dict) -> Worker:
     return Worker(proc, sock, d)
 
 
+def commit_pause(settings: dict) -> float:
+    """The silence before a call's draft is committed, for the turn-taking setting (#1845)."""
+    return COMMIT_PAUSE_S.get(str(settings.get("turn_taking")), COMMIT_PAUSE_S["natural"])
+
+
 def worker_config(settings: dict, voice: str, profile: dict | None = None) -> dict:
     """What the worker is told at start: endpoints WITHOUT tokens (those are in its env)."""
-    tt = settings["turn_taking"]
     lang = settings.get("language", "auto")
     detect = settings.get("stt_detects_language") is True and lang in ("auto", "en")
     return {
@@ -2597,12 +2751,11 @@ def worker_config(settings: dict, voice: str, profile: dict | None = None) -> di
         "listen_languages": sorted(listen_languages(settings) or ()),
         "in_rate": IN_RATE,
         "out_rate": OUT_RATE,
-        # Silence after speech before the turn may end (VAD stop), per the turn-taking setting.
-        # Smart Turn ends a turn on a complete-sounding clause, so only this keeps a mid-thought
-        # pause inside the turn (#1842, measured on the real models: at 0.35 s every pause of
-        # 0.5 s or more split the turn; 1.0 s holds 0.5 s pauses and costs 0.85 s before HQ
-        # replies).
-        "stop_secs": {"quick": 0.35, "natural": 1.0, "patient": 1.5}[tt],
+        # Silence after speech before a segment ends (VAD stop): short for every setting. At
+        # 0.35 s a pause of 0.5 s or more splits the turn (#1842, measured on the real models);
+        # the split no longer cuts the Commander off, because HQ's answer is only a draft until
+        # the setting's own pause has passed (`COMMIT_PAUSE_S`, #1845), and the rest joins it.
+        "stop_secs": WORKER_STOP_S,
         "interrupt": bool(settings["interrupt"]),
     }
 

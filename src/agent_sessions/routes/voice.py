@@ -601,6 +601,8 @@ def register(
                         call.muted = bool(ev.get("on"))
                         if call.muted:
                             await call.void_challenge()
+                            # Their words came before the mute: what they said is asked (#1845).
+                            await call.commit_draft()
                         await call.worker({"t": "mute", "on": call.muted})
                         await call.client({"t": "muted", "on": call.muted})
                     if ev.get("t") == "played":
@@ -655,6 +657,7 @@ def register(
                     str(worker.sock), "ws://worker/call", max_size=voice_calls.MAX_AUDIO_FRAME * 2
                 )
                 call._to_worker = to_worker
+                call.commit_pause = voice_calls.commit_pause(block)  # before any utterance
                 await to_worker(voice_calls.worker_config(block, call.voice, call.profile))
             except Exception as e:  # noqa: BLE001 — ANY failure here ends the call
                 detail = e.detail if isinstance(e, voice_calls.CallError) else type(e).__name__

@@ -305,14 +305,6 @@ def test_an_answer_to_hqs_question_is_never_held(monkeypatch):
     run(go())
 
 
-@pytest.mark.parametrize(("setting", "secs"), [("quick", 0.35), ("natural", 1.0), ("patient", 1.5)])
-def test_turn_taking_gives_a_pause_room_before_the_turn_may_end(setting, secs):
-    """Measured with the real Silero VAD and Smart Turn (#1842): at 0.35 s every mid-thought pause
-    of 0.5 s or more split the turn. Natural (the default) must hold a 0.5 s pause."""
-    settings = {**voice_calls.hq_calls_settings.get(), "turn_taking": setting}
-    assert voice_calls.worker_config(settings, "aria")["stop_secs"] == secs
-
-
 def test_a_result_after_the_grace_joins_before_its_turn_ends(monkeypatch):
     """Hermes 7639: turn 2's words came back from STT after the worker's grace, as a LATE
     utterance — and its `turn_end` only after them. The held first part waits for that marker,

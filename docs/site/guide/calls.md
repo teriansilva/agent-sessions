@@ -74,8 +74,9 @@ enter that server's key again or remove it.
 ## On a call
 
 - **Talk normally.** HQ waits until you've finished a thought before it answers; **Turn-taking**
-  (Quick / Natural / Patient) sets how long a pause it allows: about 0.35, 1 and 1.5 seconds. If
-  you pick up again right after a pause, the rest joins the same question. Start talking while HQ speaks and it stops
+  (Quick / Natural / Patient) sets how long a pause it allows: none, about 1.5 and 2.5 seconds.
+  HQ already starts working on your words during that pause, so a longer setting rarely makes it
+  answer later. If you pick up again before the pause is over, the rest joins the same question. Start talking while HQ speaks and it stops
   (turn **Interrupt HQ** off if your room is noisy).
 - **Mute**, **Type** (say something by keyboard), **Captions** and **End** are on the call panel.
   The call bar follows you across the app.
