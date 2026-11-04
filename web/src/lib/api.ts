@@ -98,6 +98,7 @@ import type {
   AskSessionDecision,
   AskLibraryContent,
   AskOperationDecision,
+  AskMessageDecision,
   AskConversationSummary,
   AskConversationTurn,
   AskAttachment,
@@ -1965,6 +1966,14 @@ export const api = {
    *  the draft no longer matches its card. */
   askProposalContent: (id: string) =>
     getJsonWithDetail<AskLibraryContent>(`/api/ask/proposals/${enc(id)}/content`),
+  /** A message card (#1833): exactly `{decision}` — the server sends its stored entry, so
+   *  nothing else is ever carried. */
+  decideAskMessage: (id: string, decision: "send" | "dismiss") =>
+    mutateJson<{ proposal: AskMessageDecision }>(
+      "POST",
+      `/api/ask/proposals/${enc(id)}/decide`,
+      { decision },
+    ),
   decideAskProposal: (id: string, decision: "start" | "dismiss", bypass = false) =>
     mutateJson<{ proposal: AskSessionDecision }>(
       "POST",

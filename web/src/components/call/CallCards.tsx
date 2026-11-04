@@ -14,7 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { announceActionResolved } from "../../lib/actionEvents";
 import { api, ApiError } from "../../lib/api";
 import type { AskConversationTurn, AskProposalCard, NeedsYouRow } from "../../types/api";
-import { NudgeCard, OperationCard, SessionCard } from "../ask/AskCards";
+import { MessageCard, NudgeCard, OperationCard, SessionCard } from "../ask/AskCards";
 import b from "../ui/actionButton.module.css";
 import { confirmPhrase, settledWord } from "./cardVoice";
 import { useCall } from "./callContext";
@@ -145,6 +145,7 @@ function NeedsYouCallCard({
 function actionable(p: AskProposalCard): boolean {
   if (p.kind === "nudge") return p.can_approve || p.can_reject;
   if (p.kind === "session") return p.can_start || p.can_dismiss;
+  if (p.kind === "message") return !!(p.can_send || p.can_dismiss);
   return p.can_confirm || p.can_dismiss;
 }
 
@@ -283,6 +284,14 @@ export function CallCards({ cid, seq }: { cid: string | null; seq: number }) {
                 void run(p.action_id, () => api.decideAskProposal(p.action_id, "start", bypass))
               }
               onDismiss={() => void run(p.action_id, () => api.decideAskProposal(p.action_id, "dismiss"))}
+            />
+          ) : p.kind === "message" ? (
+            <MessageCard
+              p={p}
+              deciding={deciding.has(p.action_id)}
+              error={errors.get(p.action_id) ?? null}
+              onSend={() => void run(p.action_id, () => api.decideAskMessage(p.action_id, "send"))}
+              onDismiss={() => void run(p.action_id, () => api.decideAskMessage(p.action_id, "dismiss"))}
             />
           ) : p.kind === "operation" ? (
             <OperationCard

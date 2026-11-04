@@ -298,6 +298,9 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "connector_search": "read",
         "connector_read": "read",
         "connector_list": "read",
+        # #1833: a messenger's allowed recipients, and a message the Commander's tap sends.
+        "list_recipients": "read",
+        "propose_message": "proposal",
     }
     # A call turn is offered every tool; a typed turn all but the call-only ones (#1668).
     on_call = [s["function"]["name"] for s in ask_orchestrator.tool_specs("call")]

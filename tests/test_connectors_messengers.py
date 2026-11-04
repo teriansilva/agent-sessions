@@ -86,6 +86,7 @@ class Matrix:
             "!sec:example.org": {"name": "Security", "encrypted": True, "members": 3},
         }
         self.encryption_status: dict[str, int] = {}  # room → forced status for its encryption read
+        self.members_status: dict[str, int] = {}  # room → forced status for its member list
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -111,6 +112,8 @@ class Matrix:
                     return httpx.Response(200, json={"algorithm": "m.megolm.v1.aes-sha2"})
                 return httpx.Response(404, json={"errcode": "M_NOT_FOUND"})
             if path == f"rooms/{rid}/joined_members":
+                if rid in self.members_status:
+                    return httpx.Response(self.members_status[rid], json={})
                 return httpx.Response(
                     200, json={"joined": {f"@u{i}:example.org": {} for i in range(room["members"])}}
                 )

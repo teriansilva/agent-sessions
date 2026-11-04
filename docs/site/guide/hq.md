@@ -338,7 +338,17 @@ CSRF token, like every other change):
 ### Messengers: Telegram and Matrix
 
 A messenger connector lets HQ **propose** a message to someone you allowed; nothing is sent until
-you tap it (sending arrives in the next release step). It reads nothing.
+you tap it. It reads nothing. Ask HQ to "tell Marcus on Telegram the deploy is done" and it shows a
+card with the exact text, the connector and the recipient. **Send** sends exactly that, once;
+**Dismiss** sends nothing.
+
+The card then says what happened, in the provider's own terms: **Sent**; **Not sent** (the
+provider refused it, or it couldn't be reached at all, so nothing went out); **Out of date**
+(something changed since HQ proposed it, such as the recipient being removed, the connector's
+token replaced, or a Matrix room becoming encrypted, so nothing was sent); or **May have been
+sent**, when the message went out but no clear answer came back, or BattleLab stopped mid-send.
+A message that may have been sent is **never sent again** on its own: check the chat, and ask HQ
+for a new card if it didn't arrive. At most 20 messages an hour go through one connector.
 
 - **Telegram:** create a bot for BattleLab with @BotFather (`/newbot`) and paste its token. Use a
   bot of its own: a bot with a webhook can't list its chats here.

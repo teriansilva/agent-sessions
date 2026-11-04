@@ -88,6 +88,14 @@ ADAPTER_READS = {
 #: Which adapters may send, and what.
 ADAPTER_SENDS = {"telegram-bot": SEND_OPS, "matrix-cs": SEND_OPS}
 
+#: The longest message each sending adapter takes (#1833), in characters: Telegram's own limit;
+#: Matrix has no per-message limit below its 64 KiB event cap, so a conservative bound.
+SEND_MAX_CHARS = {"telegram-bot": 4096, "matrix-cs": 32000}
+
+#: Adapters whose provider deduplicates a repeated send (#1833, #1746 D7): Matrix keys a send by
+#: its txnId, so one claim may repeat it once after an ambiguous end. Never after an interruption.
+IDEMPOTENT_SENDS = frozenset({"matrix-cs"})
+
 #: Which category each adapter serves: a manifest's `identity.category` must be its adapter's.
 ADAPTER_CATEGORY = {
     "forgejo-api": "versioning",

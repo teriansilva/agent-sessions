@@ -233,6 +233,10 @@ def recover(cid: str) -> None:
             for r in rows:
                 if r.get("state") == DECIDING:
                     reason = INTERRUPTED_REASON
+                    if r.get("kind") == "message":
+                        from . import ask_messages
+
+                        reason = ask_messages.INTERRUPTED_REASON
                     if r.get("kind") == "operation":
                         from . import ask_operations
 
@@ -279,13 +283,17 @@ def views(cid: str) -> tuple[str, dict[str, dict]]:
         rows = ask_store.read_proposals(cid)
     except (ask_store.SidecarUnreadable, ask_store.ConversationNotFound):
         return "unknown", {}
-    from . import ask_operations
+    return "ok", {r["id"]: _any_view(r) for r in rows if isinstance(r.get("id"), str)}
 
-    return "ok", {
-        r["id"]: ask_operations.view(r) if r.get("kind") == "operation" else view(r)
-        for r in rows
-        if isinstance(r.get("id"), str)
-    }
+
+def _any_view(row: dict) -> dict:
+    from . import ask_messages, ask_operations
+
+    if row.get("kind") == "operation":
+        return ask_operations.view(row)
+    if row.get("kind") == "message":
+        return ask_messages.view(row)
+    return view(row)
 
 
 # ---- the decision ------------------------------------------------------------------------------
@@ -316,7 +324,15 @@ def _states(cid: str) -> set[str]:
 
 
 async def decide(
-    pid: str, decision: str, *, bypass: bool, registry, operator=None, app=None, inputs=None
+    pid: str,
+    decision: str,
+    *,
+    bypass: bool,
+    registry,
+    operator=None,
+    app=None,
+    inputs=None,
+    bare: bool = True,
 ) -> tuple[int, dict]:
     """Decide one proposal. Returns ``(HTTP status, view)``; raises ProposalError.
 
@@ -324,8 +340,8 @@ async def decide(
     lock, the tapping ``operator`` (``asgi_call.Operator``) and the ``app`` it runs through."""
     from . import ask_operations
 
-    if decision not in ("start", "dismiss", "confirm"):
-        raise ProposalError(422, "decision must be start, confirm or dismiss")
+    if decision not in ("start", "dismiss", "confirm", "send"):
+        raise ProposalError(422, "decision must be start, confirm, send or dismiss")
     cid = await asyncio.to_thread(locate, pid)
     if cid is None:
         raise ProposalError(404, "no such proposal")
@@ -336,7 +352,7 @@ async def decide(
             raise ProposalError(404, "no such proposal")
         if row.get("state") != PENDING and not _resumes(row, decision):
             # The same tap again, while it runs or after.
-            return 200, ask_operations.view(row) if row.get("kind") == "operation" else view(row)
+            return 200, _any_view(row)
         raise ProposalError(
             409, "another session from this conversation is still starting — try again shortly"
         )
@@ -345,6 +361,17 @@ async def decide(
         row = await asyncio.to_thread(_row, cid, pid)
         if row is None:
             raise ProposalError(404, "no such proposal")
+        if row.get("kind") == "message":
+            # A message (#1833) is decided by exactly `{"decision": "send" | "dismiss"}`: the
+            # stored entry is what is sent, so nothing else a request carries is read.
+            if not bare or decision not in ("send", "dismiss"):
+                raise ProposalError(422, 'a message takes exactly {"decision": "send" | "dismiss"}')
+            from . import ask_messages
+
+            handed = True  # `decide_locked` owns the lock from here, whatever happens
+            return await ask_messages.decide_locked(cid, row, fd, decision)
+        if decision == "send":
+            raise ProposalError(422, "only a message is sent")
         if row.get("kind") == "operation":
             if row.get("state") != PENDING and not _resumes(row, decision):
                 return 200, ask_operations.view(row)

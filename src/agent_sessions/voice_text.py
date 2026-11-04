@@ -204,6 +204,15 @@ def card_sentences(view: dict, *, skip: set[str] | frozenset = frozenset()) -> l
         elif kind == "operation":
             label = (p.get("label") or p.get("verb") or "change").strip()[:60]
             out.append(f"I've drafted this: {label}, for {title}. Confirm it on your screen.")
+        elif kind == "message":
+            # Reached only when the card is not confirmable by voice (#1833, Hermes 7610/7612): it
+            # can't be read out word for word (too long, or not plain speech), so it's sent from the
+            # screen.
+            to = (p.get("recipient") or "").strip()[:80] or "your recipient"
+            out.append(
+                f"I've drafted a message to {to}. It can't be read out word for word; "
+                "tap it on your screen to send it."
+            )
     ask = view.get("ask")
     if isinstance(ask, dict) and ask.get("question"):
         opts = [o for o in ask.get("options") or [] if isinstance(o, str)]

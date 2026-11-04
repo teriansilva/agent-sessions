@@ -68,7 +68,11 @@ REF_RES = {
 }
 KINDS = ("repos", "issues", "pulls", "files")
 #: Which search kinds each category answers.
-CATEGORY_KINDS = {"versioning": ("repos", "issues", "pulls"), "storage": ("files",)}
+CATEGORY_KINDS = {
+    "versioning": ("repos", "issues", "pulls"),
+    "storage": ("files",),
+    "messenger": (),
+}
 
 
 class Refused(Exception):
@@ -84,6 +88,9 @@ class TurnConnectors:
 
     listed: list[dict] | None = None
     refs: dict[int, set[str]] = field(default_factory=dict)
+    #: Per connector index, the recipients `list_recipients` showed THIS turn (#1833), in order:
+    #: `propose_message` names one by its index here, never by an id.
+    recipients: dict[int, list[dict]] = field(default_factory=dict)
 
     def mint(self, index: int, ref: str) -> str | None:
         """Register ``ref`` as usable, and return it — or None once the cap is reached, so a ref
@@ -255,9 +262,11 @@ async def list_connectors(turn: TurnConnectors) -> tuple[dict, dict]:
                 "label": bundled[i["manifest_id"]].label,
                 "host": _host(i["origin"]),
                 "category": bundled[i["manifest_id"]].category,
+                "can_send": store.sendable(i, bundled),
             }
             for i in doc["instances"]
-            if store.readable(i, bundled)
+            # A messenger reads nothing: it is listed when HQ may propose through it (#1833).
+            if store.readable(i, bundled) or store.sendable(i, bundled)
         ]
 
     try:
@@ -266,6 +275,7 @@ async def list_connectors(turn: TurnConnectors) -> tuple[dict, dict]:
         raise Refused("refused: the connector store cannot be read", "store_unreadable") from None
     turn.listed = listed
     turn.refs = {}
+    turn.recipients = {}
     out = []
     for n, r in enumerate(listed):
         row = {"connector_index": n, "label": r["label"], "host": r["host"]}
@@ -273,6 +283,8 @@ async def list_connectors(turn: TurnConnectors) -> tuple[dict, dict]:
         row["search_kinds"] = list(CATEGORY_KINDS.get(r["category"], ()))
         if r["category"] == "storage":
             row["root"] = turn.mint(n, "folder:")  # list it with connector_list
+        if r["can_send"]:
+            row["can_propose_messages"] = True  # list_recipients, then propose_message
         out.append(row)
     return {"connectors": out}, {"count": len(out)}
 
@@ -559,3 +571,37 @@ async def _read_doc(turn: TurnConnectors, idx: int, listed: dict, path: str) -> 
         payload["text"] = payload["text"][: BODY_MAX // 2] + " …[cut]"
     await _settle(listed)
     return result, {"count": 1, "length": len(f["text"])}
+
+
+# ---- messengers (#1833) --------------------------------------------------------------------------
+
+
+def sendable_now(listed: dict) -> dict:
+    """The instance as it is NOW, for a send: still sendable, still the listed generation."""
+    try:
+        doc = store.read()
+    except store.StoreUnreadable:
+        raise Refused("refused: the connector store cannot be read", "store_unreadable") from None
+    bundled = manifest_mod.bundled()
+    inst = next((i for i in doc["instances"] if i["id"] == listed["id"]), None)
+    if inst is None or not store.sendable(inst, bundled):
+        raise Refused("refused: that connector may not propose messages now", "send_disabled")
+    if inst["generation"] != listed["generation"]:
+        raise Refused(
+            "refused: that connector changed since list_connectors; list again", "connector_changed"
+        )
+    return inst
+
+
+async def list_recipients(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
+    """The recipients the Commander allowed on one messenger, by index, for `propose_message`."""
+    idx, listed = _listed(turn, args)
+    inst = await asyncio.to_thread(sendable_now, listed)
+    secrets = await asyncio.to_thread(_secrets)
+    rows = [dict(r) for r in inst["recipients"]]
+    turn.recipients[idx] = rows
+    shown = [
+        {"recipient_index": n, "label": _guard(r["label"], 100, secrets), "kind": r["kind"]}
+        for n, r in enumerate(rows)
+    ]
+    return {"connector_index": idx, "recipients": shown}, {"count": len(shown)}

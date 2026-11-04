@@ -20,6 +20,7 @@ import { Eye, FolderOpen, Play, Send } from "lucide-react";
 import { openSessionLimit } from "../../lib/sessionLimit";
 import { type ReactNode, useCallback, useId, useRef, useState } from "react";
 
+import type { AskMessageCard } from "../../types/api";
 import type {
   AskNudgeCard,
   AskOperationCard,
@@ -896,6 +897,137 @@ export function OperationCard({
           returnFocusTo={picking}
         />
       ) : null}
+    </div>
+  );
+}
+
+
+function messageOutcome(p: AskMessageCard): { word: string; tone: Tone; detail: string } | null {
+  switch (p.state) {
+    case "pending":
+      return null;
+    case "deciding":
+      return { word: "Sending", tone: "neutral", detail: "Being sent now. It is sent once." };
+    case "sent":
+      return { word: "Sent", tone: "ok", detail: `${p.connector} accepted it.` };
+    case "failed":
+      return { word: "Not sent", tone: "bad", detail: p.reason || "Nothing was sent." };
+    case "unconfirmed":
+    case "interrupted":
+      return {
+        word: "May have been sent",
+        tone: "bad",
+        detail:
+          p.reason ||
+          "No clear answer came back after it went out. It is not sent again; check the chat.",
+      };
+    case "stale":
+      return {
+        word: "Out of date",
+        tone: "warn",
+        detail: p.reason || "Something changed since HQ proposed it; nothing was sent.",
+      };
+    case "dismissed":
+      return { word: "Dismissed", tone: "neutral", detail: "Nothing was sent." };
+    case "unknown":
+      return {
+        word: "Status unavailable",
+        tone: "warn",
+        detail: "It could not be read just now; this updates on its own.",
+      };
+    default:
+      return { word: "No longer here", tone: "neutral", detail: "This card has nothing to decide." };
+  }
+}
+
+/** A message HQ proposed through a messenger connector (#1833). The text block is the EXACT text a
+ *  tap sends — shown as typed, never re-rendered as Markdown. Send and Dismiss carry nothing but
+ *  the decision; the server sends its own stored entry. */
+export function MessageCard({
+  p,
+  deciding,
+  error = null,
+  onSend,
+  onDismiss,
+}: {
+  p: AskMessageCard;
+  deciding: boolean;
+  error?: string | null;
+  onSend: () => void;
+  onDismiss: () => void;
+}) {
+  const out = messageOutcome(p);
+  const edge = out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
+  return (
+    <div className={`${c.card} ${edge}`} data-testid="ask-message" data-state={p.state}>
+      <div className={c.head}>
+        <span className={c.k}>Proposal</span>
+        Message
+        <span className={c.st}>{out ? out.word : "Waiting for you"}</span>
+      </div>
+      <div className={`${c.body} ${out ? c.muted : ""}`}>
+        <dl className={c.kv}>
+          <dt>Through</dt>
+          <dd>{p.connector}</dd>
+          <dt>To</dt>
+          <dd>
+            {p.recipient}{" "}
+            <span className={c.muted}>
+              · {p.recipient_kind}
+              {typeof p.recipient_members === "number"
+                ? ` · ${p.recipient_members} ${p.recipient_members === 1 ? "person" : "people"}`
+                : ""}
+            </span>
+          </dd>
+        </dl>
+        <div className={c.blockLabel}>Text to send, verbatim</div>
+        <div className={c.verbatim} data-testid="ask-message-text">
+          {p.text}
+        </div>
+        {error ? (
+          <div className={c.note} role="alert" data-testid="ask-message-error">
+            <span>{error}</span>
+          </div>
+        ) : null}
+        {!out ? (
+          <div className={c.note}>
+            <Eye size={14} aria-hidden="true" />
+            <span>
+              Sent once, only to this recipient, and only if it is still allowed when you tap.
+              Leaves BattleLab for {p.connector}.
+            </span>
+          </div>
+        ) : null}
+      </div>
+      {!out ? (
+        <div className={c.actions}>
+          <button
+            type="button"
+            className={c.cta}
+            disabled={deciding || p.can_send === false}
+            onClick={onSend}
+            data-testid="ask-message-send"
+          >
+            <Send size={15} aria-hidden="true" />
+            Send to {p.recipient}
+          </button>
+          <button
+            type="button"
+            className={c.ghost}
+            disabled={deciding || p.can_dismiss === false}
+            onClick={onDismiss}
+            data-testid="ask-message-dismiss"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : (
+        <div className={c.outcome} role="status" data-testid="ask-message-outcome">
+          <Led tone={LED[out.tone]} />
+          <span className={`${c.ow} ${c[`ow_${out.tone}`]}`}>{out.word}</span>
+          <span className={c.od}>{out.detail}</span>
+        </div>
+      )}
     </div>
   );
 }

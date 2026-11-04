@@ -129,6 +129,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Connectors (#1750): list them and their state | GET /api/connectors | have (`list_connectors` reads the enabled ones; the store, not this route) |
 | Connectors: add, set origin and token, test, enable or disable read, remove | POST/PATCH/DELETE /api/connectors/instances* | **never** (a connector token is a credential, and its origin decides where HQ's requests go; #1746 out of scope) |
 | Connectors: a messenger's recipients and its send switch (#1832) | GET …/recipients/candidates, PUT …/recipients, POST …/capabilities `{send}` | **never** (who HQ may message is the Commander's consent, and so is the switch) |
+| Send a message through a messenger connector (#1833) | the proposal decide route, `{decision: "send"}` | have (`propose_message` stages a card; only the Commander's tap sends) |
 | AI model (Auto or specific), thinking level, request timeout; list models; the provider table | POST /api/prefs `ai_review.model`, `ai_review.model_mode`, `ai_review.thinking`, GET /api/ai-review/models, GET /api/ai-review/providers | P2 W/R (model from the server's own list only) |
 | Session review: enable, interval, depth, notify, rename sessions | POST /api/prefs `ai_review.enabled`, `session_review` | P2 W |
 | Auto-sort settings | POST /api/prefs `auto_sort` | P2 W |

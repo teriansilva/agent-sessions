@@ -192,6 +192,10 @@ POST_SITES = {
     # redirects, no ambient proxy, a bounded body. It carries no prompt: the adapter supplies a
     # fixed `/api/v1/` path built from validated parts, never model text.
     ("connector_http", "_request"): 1,
+    # #1833 a messenger send: one provider request per call, built from the kind's fixed SENDS
+    # table (no chat-shaped payload, no model text beyond the tapped message), token by the
+    # transport after vetting, fenced on SENDING at the token fetch.
+    ("connector_http", "_send_once"): 1,
 }
 
 # Layer 3 — a module that never imports a client can still be handed one. `.post(` / `.request(`

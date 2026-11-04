@@ -1594,6 +1594,37 @@ async def _list_connectors(turn: _Turn, args: dict) -> tuple[dict, dict]:
     return await _connector(connector_hq.list_connectors, turn)
 
 
+async def _list_recipients(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    return await _connector(connector_hq.list_recipients, turn, args)
+
+
+async def _propose_message(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """Stage a message card (#1833): nothing is sent until the Commander taps Send on it."""
+    from . import ask_messages
+
+    try:
+        staged = await ask_messages.stage(
+            cid=turn.cid,
+            turn_id=turn.turn_id,
+            turn=turn.connectors,
+            args=args,
+            append_card=_append,
+        )
+    except (ask_messages.Refused, connector_hq.Refused) as e:
+        raise _ToolRefused(str(e), e.code) from None
+    said = await asyncio.to_thread(ask_store.guard_text, staged["recipient"], 120)
+    return (
+        {
+            "proposed": True,
+            "to": said,
+            "through": staged["connector"],
+            "characters": staged["characters"],
+            "note": "a card now waits for the Commander's tap; nothing has been sent",
+        },
+        {"count": 1},
+    )
+
+
 async def _connector_search(turn: _Turn, args: dict) -> tuple[dict, dict]:
     return await _connector(connector_hq.search, turn, args)
 
@@ -2127,6 +2158,39 @@ TOOLS: dict[str, Tool] = {
             ),
             _connector_list,
         ),
+        Tool(
+            "list_recipients",
+            "read",
+            _spec(
+                "list_recipients",
+                "The recipients the Commander allowed on one messenger connector (one "
+                "list_connectors marked can_propose_messages), by recipient_index: each one's "
+                "name and kind. Call it before propose_message.",
+                {**_CONNECTOR_PROP},
+                ["connector_index"],
+            ),
+            _list_recipients,
+        ),
+        Tool(
+            "propose_message",
+            "proposal",
+            _spec(
+                "propose_message",
+                "Propose a message to one allowed recipient: it becomes a card the Commander "
+                "taps to send, showing the exact text. Nothing is sent unless they tap Send. Write "
+                "the whole message; it is sent exactly as written.",
+                {
+                    **_CONNECTOR_PROP,
+                    "recipient_index": {
+                        "type": "integer",
+                        "description": "a recipient_index list_recipients returned this turn",
+                    },
+                    "text": {"type": "string", "description": "the message, exactly as sent"},
+                },
+                ["connector_index", "recipient_index", "text"],
+            ),
+            _propose_message,
+        ),
     )
 }
 
@@ -2144,6 +2208,7 @@ DRAFT_READ_TOOLS = frozenset(
         "playbook_detail", "playbook_schema", "list_skills", "skill_detail", "list_automations",
         "automation_detail", "list_secrets", "agent_usage", "fleet_status", "read_settings",
         "list_connectors", "connector_search", "connector_read", "connector_list",
+        "list_recipients",
     }
 )  # fmt: skip
 
@@ -2267,7 +2332,16 @@ def _sanitize(calls: list) -> list[dict] | None:
     # A library draft (#1611) is a whole playbook bundle in one call: its cap is the draft
     # store's own, which refuses anything larger at staging. A cut draft is invalid JSON, which
     # the tool refuses — never a truncated save.
-    return _sanitize_calls(calls, arg_caps={"propose_library": ask_store.DRAFT_MAX_BYTES})
+    # A message (#1833) is sent exactly as written, so its call carries the whole text: the cap
+    # fits the longest message a provider takes (JSON-escaped, up to 6 bytes a character), and
+    # the tool itself refuses one over that provider's limit, in words.
+    return _sanitize_calls(
+        calls,
+        arg_caps={
+            "propose_library": ask_store.DRAFT_MAX_BYTES,
+            "propose_message": ask_store.MESSAGE_MAX * 6 + 1024,
+        },
+    )
 
 
 async def _fallback_find(turn: _Turn, history: list[dict]) -> list[dict]:
@@ -2856,6 +2930,13 @@ def turn_views(records: list[dict]) -> list[dict]:
                         if r.get("kind") == "operation"
                         else {}
                     ),
+                    # A message card's Matrix member count, counted live at staging (#1833).
+                    **(
+                        {"recipient_members": r["recipient_members"]}
+                        if r.get("kind") == "message"
+                        and isinstance(r.get("recipient_members"), int)
+                        else {}
+                    ),
                 }
             )
     out = [turns[t] for t in order]
@@ -2869,7 +2950,7 @@ def turn_views(records: list[dict]) -> list[dict]:
 
 
 #: Proposal kinds whose live state is the proposal sidecar's (`ask_proposals.views`).
-SIDECAR_KINDS = frozenset({"session", "operation"})
+SIDECAR_KINDS = frozenset({"session", "operation", "message"})
 
 
 def with_live(views: list[dict], cid: str) -> list[dict]:
@@ -2896,6 +2977,7 @@ def with_live(views: list[dict], cid: str) -> list[dict]:
                     state="unknown" if status != "ok" else "gone",
                     can_start=False,
                     can_confirm=False,
+                    can_send=False,
                     can_dismiss=False,
                     session_key="",
                     reason="",

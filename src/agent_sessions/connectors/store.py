@@ -64,6 +64,12 @@ RECIPIENT_ID_RE = re.compile(r"[!A-Za-z0-9:._=+/-]{1,255}")
 RECIPIENT_KINDS = frozenset({"private chat", "group", "supergroup", "channel", "room"})
 LABEL_MAX = 100
 SEND_OFF_REASONS = frozenset({"identity_changed", "origin_changed"})
+#: The send rate cap per connector (#1833): at most this many sends claimed per window. A claim is
+#: counted when it is TAKEN, before the send's `deciding` is written, so a crash between the two
+#: can only make the cap stricter. `sends` (the claim times inside the window) exists only on a
+#: messenger that has claimed one.
+SEND_RATE_MAX = 20
+SEND_RATE_WINDOW_S = 3600.0
 #: The audit row's operations.
 AUDIT_OPS = frozenset({"added", "changed", "tested", "enabled", "disabled", "removed"})
 CODE_RE = re.compile(r"[a-z_]{1,40}")
@@ -242,7 +248,18 @@ def _valid_instance(inst: object) -> bool:
     # `account` (#1829) is present only on a `basic` connector, so a store holding none of them is
     # byte-for-byte what an older build reads.
     keys = set(inst) if isinstance(inst, dict) else None
-    if keys not in (_INSTANCE_KEYS, _INSTANCE_KEYS | {"account"}, _INSTANCE_KEYS | MESSENGER_KEYS):
+    if keys not in (
+        _INSTANCE_KEYS,
+        _INSTANCE_KEYS | {"account"},
+        _INSTANCE_KEYS | MESSENGER_KEYS,
+        _INSTANCE_KEYS | MESSENGER_KEYS | {"sends"},
+    ):
+        return False
+    if "sends" in keys and not (
+        isinstance(inst["sends"], list)
+        and len(inst["sends"]) <= SEND_RATE_MAX
+        and all(isinstance(t, int | float) and not isinstance(t, bool) for t in inst["sends"])
+    ):
         return False
     messenger = MESSENGER_KEYS <= keys
     if messenger and not _valid_messenger(inst):
@@ -850,6 +867,28 @@ def set_recipients(iid: str, ids: list[str], snapshot: dict) -> dict:
     return _mutate(apply)  # type: ignore[return-value]
 
 
+def take_send(iid: str, generation: int, recipient_id: str) -> None:
+    """Claim one send (#1833) under the store lock: the instance must still be sendable at
+    ``generation`` with ``recipient_id`` allowed, and fewer than `SEND_RATE_MAX` sends claimed in
+    the last `SEND_RATE_WINDOW_S`. The claim is recorded in the same write. Refused otherwise:
+    `stale` (changed, not sendable, recipient gone) or `rate_limited`."""
+
+    def apply(doc: dict, now: float) -> None:
+        inst = _find(doc, iid)
+        if inst["generation"] != generation or not sendable(inst):
+            raise Refused("the connector changed since this was proposed", "stale")
+        if recipient_id not in {r["id"] for r in inst["recipients"]}:
+            raise Refused("that recipient is no longer allowed", "stale")
+        recent = [t for t in inst.get("sends", []) if now - t < SEND_RATE_WINDOW_S]
+        if len(recent) >= SEND_RATE_MAX:
+            raise Refused(
+                f"at most {SEND_RATE_MAX} messages an hour through one connector", "rate_limited"
+            )
+        inst["sends"] = [*recent, now]
+
+    _mutate(apply)
+
+
 def remove(iid: str) -> None:
     def apply(doc: dict, now: float) -> None:
         inst = _find(doc, iid)
@@ -866,7 +905,9 @@ def remove(iid: str) -> None:
 # ---- the credential, for the transport and for redaction ----------------------------------------
 
 
-def token_for(iid: str, generation: int, *, for_read: bool = True) -> tuple[dict, str]:
+def token_for(
+    iid: str, generation: int, *, for_read: bool = True, for_send: bool = False
+) -> tuple[dict, str]:
     """``(instance, token)`` for a request bound to ``generation`` — `Refused` when the instance
     moved on, its token cannot be opened, or (``for_read``, every HQ read) read is not enabled
     NOW. This is the fence a disable needs: it does not move the generation, so it is checked at
@@ -875,7 +916,12 @@ def token_for(iid: str, generation: int, *, for_read: bool = True) -> tuple[dict
     inst = _find(doc, iid)
     if inst["generation"] != generation:
         raise Refused("the connector changed since this was asked", "stale")
-    if for_read and not readable(inst):
+    if for_send:
+        # A SEND (#1833) is fenced on sending, never on reading: switched on, tested, recipients
+        # bound to this bot — checked at the last point before the request leaves.
+        if not sendable(inst):
+            raise Refused("that connector may not send now", "send_disabled")
+    elif for_read and not readable(inst):
         raise Refused("that connector is not enabled for reading", "connector_disabled")
     env = inst["envelopes"].get("token")
     token = None if env is None else creds.open_(iid, inst["credential_revision"], env)

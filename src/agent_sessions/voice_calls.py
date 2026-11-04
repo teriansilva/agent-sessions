@@ -141,6 +141,8 @@ TOOL_ACTIVITY = {
     "connector_search": "searching your connected service",
     "connector_read": "reading that item",
     "connector_list": "reading that folder",
+    "list_recipients": "checking who I may message",
+    "propose_message": "writing that message for you to send",
     "ask_operator": "preparing a question for you",
     "propose_nudge": "preparing a card for you",
     "propose_session": "preparing a card for you",
@@ -1440,6 +1442,11 @@ class Call:
             choice = card["choice"]
             method, path = "POST", f"/api/pulse/actions/{card['id']}/choose"
             body = {"option": choice["option"], "label": choice["label"]}
+        elif kind == "message":
+            # Exactly the screen's tap (#1833): the decision and nothing else; the stored entry
+            # is what is sent.
+            method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
+            body = {"decision": "send"}
         elif kind == "session":
             method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
             body = {"decision": "start", "bypass": False}
@@ -2124,6 +2131,15 @@ def confirmable_cards(
                 continue  # it can't be heard in full: confirm it on screen
             out.append({"id": pid, "kind": "nudge", "verb": "send it",
                         "line": _sentence(f"A message to {title}: {text}")})  # fmt: skip
+        elif kind == "message":
+            # A message through a connector (#1833): read out word for word, or tapped on screen.
+            text = verbatim(p.get("text") or "")
+            if text is None:
+                continue
+            to = (p.get("recipient") or "").strip()[:80] or "that recipient"
+            via = (p.get("connector") or "").strip()[:40] or "the connector"
+            out.append({"id": pid, "kind": "message", "verb": "send it",
+                        "line": _sentence(f"A message to {to} on {via}: {text}")})  # fmt: skip
         elif kind == "session":
             brief = verbatim(p.get("text") or "")
             if brief is None:
@@ -2401,7 +2417,7 @@ def needs_you_cards(rows: list[dict]) -> list[dict]:
 
 
 #: Voice cards that settle through a proposal's decide route (`{"proposal": view}` back).
-_PROPOSAL_KINDS = ("session", "operation", "pick", "suggest")
+_PROPOSAL_KINDS = ("session", "operation", "pick", "suggest", "message")
 
 
 def _result_state(card: dict, body: dict):
@@ -2427,7 +2443,7 @@ def settled_ok(card: dict, resp) -> bool:
     body = resp.body if isinstance(resp.body, dict) else {}
     if card["kind"] in ("nudge", "needs_you", "permission", "menu"):
         return _result_state(card, body) == "delivered"
-    return _result_state(card, body) in ("done", "started")
+    return _result_state(card, body) in ("done", "started", "sent")
 
 
 def outcome_sentence(card: dict, resp) -> str:
@@ -2482,10 +2498,25 @@ _FINAL = {
 }
 
 
+#: A message's end (#1833), in words that never claim more than the provider said.
+_FINAL_MESSAGE = {
+    "sent": "Sent.",
+    "failed": "It wasn't sent. The card has the reason.",
+    "stale": "That card changed, so nothing was sent.",
+    "dismissed": "Dismissed, so nothing was sent.",
+    "unconfirmed": "It may have been sent, but I couldn't confirm it. Check the chat; "
+    "I won't send it again.",
+    "interrupted": "It may have been sent, but I couldn't confirm it. Check the chat; "
+    "I won't send it again.",
+}
+
+
 def final_sentence(card: dict, state: str | None) -> str:
     """The END of an accepted card, from its stored state — never model prose."""
     if state is None:
         return "Still running. The card will show when it's done."
+    if card.get("kind") == "message":
+        return _FINAL_MESSAGE.get(state, "The card has the result.")
     return _FINAL.get(state, "The card has the result.")
 
 

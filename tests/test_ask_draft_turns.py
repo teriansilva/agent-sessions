@@ -24,6 +24,7 @@ GATED = {
     "ask_operator",
     "end_call",
     "propose_library",
+    "propose_message",
     "propose_nudge",
     "propose_project_change",
     "propose_secret",

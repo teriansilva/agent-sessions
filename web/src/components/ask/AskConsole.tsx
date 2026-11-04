@@ -85,6 +85,7 @@ import type {
   AskConversationTurn,
   AskFollow,
   AskOperationDecision,
+  AskMessageDecision,
   AskProposalCard,
   AskQuestionCard,
   AskSessionDecision,
@@ -95,7 +96,7 @@ import type {
 } from "../../types/api";
 
 import styles from "../pulse/mission.module.css";
-import { FollowingBlock, NudgeCard, OperationCard, QuestionCard, SessionCard } from "./AskCards";
+import { FollowingBlock, MessageCard, NudgeCard, OperationCard, QuestionCard, SessionCard } from "./AskCards";
 import { AttachmentList } from "./AskAttachments";
 import { ASK_SEEN_EVENT, followRows } from "./askUpdates";
 import { AskComposer } from "./AskComposer";
@@ -173,7 +174,8 @@ const NUDGE_FOLLOWS = new Set(["delivered", "indeterminate"]);
 const LIVE_SESSION_STATES = new Set(["pending", "deciding", "unknown"]);
 
 function cardLive(p: AskProposalCard): boolean {
-  if (p.kind === "session" || p.kind === "operation") return LIVE_SESSION_STATES.has(p.state);
+  if (p.kind === "session" || p.kind === "operation" || p.kind === "message")
+    return LIVE_SESSION_STATES.has(p.state);
   return LIVE_PROJECTIONS.has(p.projection);
 }
 
@@ -523,8 +525,9 @@ export function AskConsole({
           const state = p.state ?? "";
           const before = was.get(p.action_id);
           was.set(p.action_id, state);
-          // An HQ operation (#1559) earns no follow: it changes something, it starts nothing.
-          if (p.kind === "operation") continue;
+          // An HQ operation (#1559) earns no follow: it changes something, it starts nothing. A
+          // message (#1833) neither: it leaves BattleLab, there is no session to follow.
+          if (p.kind === "operation" || p.kind === "message") continue;
           const key = p.kind === "session" ? p.session_key : p.key;
           const earns = p.kind === "session" ? state === "started" : NUDGE_FOLLOWS.has(state);
           if (earns && before !== state && key && !(c.following ?? []).includes(key))
@@ -726,7 +729,9 @@ export function AskConsole({
   // A session starting, or an operation running (#1559), settles in seconds: follow it closely.
   const launching = turns.some((t) =>
     t.proposals.some(
-      (p) => (p.kind === "session" || p.kind === "operation") && p.state === "deciding",
+      (p) =>
+        (p.kind === "session" || p.kind === "operation" || p.kind === "message") &&
+        p.state === "deciding",
     ),
   );
   const every = launching ? Math.min(POLL_MS, cardPollMs) : cardPollMs;
@@ -1037,6 +1042,53 @@ export function AskConsole({
               ...t,
               proposals: t.proposals.map((p) =>
                 p.kind === "operation" && p.action_id === pid ? { ...p, ...view } : p,
+              ),
+            })),
+          );
+        }
+        setDeciding((s) => {
+          const n = new Set(s);
+          n.delete(pid);
+          return n;
+        });
+        setCardErrors((m) => {
+          const n = new Map(m);
+          if (error) n.set(pid, error);
+          else n.delete(pid);
+          return n;
+        });
+        if (id && cidRef.current === id) void load(id);
+      }
+    },
+    [load],
+  );
+
+  /** A message card (#1833): Send or Dismiss, exactly `{decision}`. The returned view is applied
+   *  at once, then the conversation is read again (a 202 keeps polling while it sends). */
+  const decideMessage = useCallback(
+    async (pid: string, decision: "send" | "dismiss") => {
+      const id = cidRef.current;
+      setDeciding((s) => new Set(s).add(pid));
+      let error: string | null = null;
+      let decided: AskMessageDecision | null = null;
+      try {
+        decided = (await api.decideAskMessage(pid, decision)).proposal;
+      } catch (e) {
+        const carried =
+          e instanceof ApiError
+            ? ((e.record as { proposal?: AskMessageDecision } | undefined)?.proposal ?? null)
+            : null;
+        if (carried) decided = carried;
+        else error = e instanceof Error && e.message ? e.message : "That did not go through.";
+      } finally {
+        if (decided && id && cidRef.current === id) {
+          const view = decided;
+          gen.current++; // a read already in flight must not land over this answer
+          setTurns((prev) =>
+            prev.map((t) => ({
+              ...t,
+              proposals: t.proposals.map((p) =>
+                p.kind === "message" && p.action_id === pid ? { ...p, ...view } : p,
               ),
             })),
           );
@@ -1527,6 +1579,15 @@ export function AskConsole({
                             </>
                           ) : null
                         }
+                      />
+                    ) : p.kind === "message" ? (
+                      <MessageCard
+                        key={p.action_id}
+                        p={p}
+                        deciding={deciding.has(p.action_id)}
+                        error={cardErrors.get(p.action_id) ?? null}
+                        onSend={() => void decideMessage(p.action_id, "send")}
+                        onDismiss={() => void decideMessage(p.action_id, "dismiss")}
                       />
                     ) : p.kind === "operation" ? (
                       <OperationCard

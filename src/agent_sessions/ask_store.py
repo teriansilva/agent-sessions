@@ -147,7 +147,16 @@ OPERATION_INPUTS = frozenset({"folder", "value", "file"})
 OP_SUMMARY_MAX = 400
 _OP_FIELD_RE = re.compile(r"^[a-z_]{1,40}$")
 OP_FIELDS_MAX = 8
-PROPOSAL_KINDS = frozenset({"nudge", "session", "operation"})
+PROPOSAL_KINDS = frozenset({"nudge", "session", "operation", "message"})
+#: A message HQ proposes through a messenger connector (#1833): its text is the EXACT bytes a tap
+#: sends, so it is bounded by the largest provider limit and never re-rendered.
+MESSAGE_MAX = 32_000
+MESSAGE_STATES = frozenset(
+    {"pending", "deciding", "sent", "failed", "unconfirmed", "stale", "dismissed", "interrupted"}
+)
+_CONNECTOR_ID_RE = re.compile(r"^c_[0-9a-f]{12}$")
+_RECIPIENT_ID_RE = re.compile(r"^[!A-Za-z0-9:._=+/-]{1,255}$")
+_RECIPIENT_KINDS = frozenset({"private chat", "group", "supergroup", "channel", "room"})
 # Follows (#1443 Phase 4): what a followed session's update says, as a kind — the words are the
 # client's, authored, so no model text is ever shown as an update.
 UPDATE_KINDS = frozenset({"finished", "needs_you", "ended", "not_followed"})
@@ -395,6 +404,21 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
             out.update(action_id=aid, key=key, kind=pkind)
             out["title"] = text(rec.get("title"), TITLE_MAX)
             out["text"] = text(rec.get("text"), NUDGE_MAX)
+        elif pkind == "message":
+            # A message to send (#1833): the card's connector and recipient labels and the exact
+            # text. What a tap sends is the sidecar's entry, bound to this card by `binding`.
+            bind = rec.get("binding")
+            if not (isinstance(bind, str) and _DIGEST_RE.match(bind)):
+                raise ValueError("a message card needs its binding")
+            out.update(action_id=aid, kind=pkind, binding=bind)
+            out["connector"] = text(rec.get("connector"), TITLE_MAX)
+            out["recipient"] = text(rec.get("recipient"), TITLE_MAX)
+            out["recipient_kind"] = text(rec.get("recipient_kind"), TITLE_MAX)
+            # A Matrix room's member count, looked up live at staging (#1833): who would read it.
+            members = rec.get("recipient_members")
+            if isinstance(members, int) and not isinstance(members, bool) and 0 <= members <= 10**6:
+                out["recipient_members"] = members
+            out["text"] = text(rec.get("text"), MESSAGE_MAX)
         elif pkind == "operation":
             # An operation HQ proposed (#1559): the card's server-authored wording. What a tap
             # runs is the sidecar's entry, bound to this card by `binding` (`ask_operations`).
@@ -829,6 +853,8 @@ def _admit_entry(e: dict, secrets: list[str], *, fresh: bool) -> dict:
         raise ValueError("malformed turn id")
     if e.get("kind") == "operation":
         return _admit_operation(e, pid, tid, secrets, fresh=fresh)
+    if e.get("kind") == "message":
+        return _admit_message(e, pid, tid, secrets)
     if e.get("kind") != "session":
         raise ValueError("unknown proposal kind")
     state = e.get("state")
@@ -924,6 +950,64 @@ def _admit_values(raw: object, secrets: list[str], *, fresh: bool, what: str) ->
             out[k] = v
         else:
             raise ValueError(f"malformed operation {what} value")
+    return out
+
+
+def _admit_message(e: dict, pid: str, tid: str, secrets: list[str]) -> dict:
+    """One message entry (#1833). The text is guarded like every stored text: a secret registered
+    after staging is redacted HERE, which changes the text, which breaks the card's binding, so
+    the tap finds it `stale` and sends nothing. A stored text is never a secret, and a tap never
+    sends anything but the stored text."""
+    state, iid, gen, bind = (
+        e.get("state"),
+        e.get("instance_id"),
+        e.get("generation"),
+        e.get("binding"),
+    )
+    if state not in MESSAGE_STATES:
+        raise ValueError("unknown message state")
+    if not (isinstance(iid, str) and _CONNECTOR_ID_RE.match(iid)):
+        raise ValueError("malformed connector id")
+    if not (type(gen) is int and gen > 0):
+        raise ValueError("malformed connector generation")
+    if not (isinstance(bind, str) and _DIGEST_RE.match(bind)):
+        raise ValueError("a message needs its binding")
+    rec = e.get("recipient")
+    if not (
+        isinstance(rec, dict)
+        and set(rec) == {"id", "label", "kind"}
+        and isinstance(rec["id"], str)
+        and _RECIPIENT_ID_RE.match(rec["id"])
+        and rec["kind"] in _RECIPIENT_KINDS
+    ):
+        raise ValueError("malformed recipient")
+    body = e.get("text")
+    if not isinstance(body, str) or not body or len(body) > MESSAGE_MAX:
+        raise ValueError("malformed message text")
+    out = {
+        "id": pid,
+        "turn_id": tid,
+        "kind": "message",
+        "state": state,
+        "instance_id": iid,
+        "generation": gen,
+        "binding": bind,
+        "connector": guard_text(e.get("connector") or "", TITLE_MAX, secrets=secrets),
+        "recipient": {
+            "id": rec["id"],
+            "label": guard_text(rec.get("label") or "", TITLE_MAX, secrets=secrets),
+            "kind": rec["kind"],
+        },
+        "text": guard_text(body, MESSAGE_MAX, secrets=secrets),
+        # Short codes and the provider's id, from this server's own transport; never free text.
+        "code": e["code"][:40] if isinstance(e.get("code"), str) else "",
+        "message_id": e["message_id"][:255] if isinstance(e.get("message_id"), str) else "",
+        "reason": guard_text(e.get("reason") or "", DETAIL_MAX, secrets=secrets),
+    }
+    for k in ("ts", "decided_at", "settled_at"):
+        v = e.get(k)
+        if isinstance(v, int | float) and not isinstance(v, bool):
+            out[k] = float(v)
     return out
 
 

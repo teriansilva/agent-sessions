@@ -1129,7 +1129,25 @@ export type AskOperationDecision = Pick<
   "state" | "summary" | "reason" | "can_confirm" | "can_dismiss" | "choices" | "library"
 >;
 
-export type AskProposalCard = AskNudgeCard | AskSessionCard | AskOperationCard;
+/** A message HQ proposes through a messenger connector (#1833): the exact text a tap sends.
+ *  Its live fields come from the proposal sidecar (`ask_messages.view`). */
+export type AskMessageCard = {
+  action_id: string;
+  kind: "message";
+  connector: string;
+  recipient: string;
+  recipient_kind: string;
+  /** A Matrix room's member count, looked up live when HQ staged the card: who would read it. */
+  recipient_members?: number;
+  text: string;
+  state: string;
+  reason?: string;
+  code?: string;
+  can_send?: boolean;
+  can_dismiss?: boolean;
+};
+export type AskMessageDecision = Omit<AskMessageCard, "action_id" | "kind">;
+export type AskProposalCard = AskNudgeCard | AskSessionCard | AskOperationCard | AskMessageCard;
 
 /** One question and what became of it. `status` is the server's: a `pending` turn is still
  *  running there (or in another tab), whatever this page is doing. */
