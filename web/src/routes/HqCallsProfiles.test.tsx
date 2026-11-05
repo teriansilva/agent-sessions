@@ -122,6 +122,41 @@ test("a saved voice the server no longer lists is Missing, with what speaks inst
   expect(within(row("asia-woman")).queryByTestId("hq-calls-contact-missing")).toBeNull();
 });
 
+test("a General's own default voice is what an untouched row and an expired override name (#1859)", () => {
+  const base = settings();
+  const s = settings({
+    contacts: { "romania-woman": { voice: "nova" } },
+    tts_voices: ["aria", "atlas", "ileana"],
+    contact_defaults: {
+      ...base.contact_defaults,
+      "romania-woman": { group: "woman", voice: "ileana", style: "calm", speed: 1 },
+      "us-woman": { group: "woman", voice: "aria", style: "calm", speed: 1 },
+    },
+  });
+  render(<HqCallsProfiles saveBlock={saveBlock} settings={s} voiceList={["aria", "atlas", "ileana"]} />);
+  expect(within(row("romania-woman")).getByTestId("hq-calls-contact-missing-note")).toHaveTextContent(
+    "“nova” is no longer on your server — General Lupu falls back to their own voice (ileana) until you pick one.",
+  );
+  // An untouched row names what it speaks: her own voice, or the group's when that is the default.
+  expect(within(row("us-woman")).getByRole("combobox", { name: "Voice for General Jessica Hale" })).toHaveAttribute(
+    "placeholder",
+    "aria",
+  );
+});
+
+test("an untouched General with their own listed voice shows it as the placeholder", () => {
+  const base = settings();
+  const s = settings({
+    tts_voices: ["aria", "atlas", "dmitri"],
+    contact_defaults: { ...base.contact_defaults, "russia-man": { group: "man", voice: "dmitri", style: "dramatic", speed: 1 } },
+  });
+  render(<HqCallsProfiles saveBlock={saveBlock} settings={s} voiceList={["aria", "atlas", "dmitri"]} />);
+  expect(within(row("russia-man")).getByRole("combobox", { name: "Voice for General Dmitri Sokolov" })).toHaveAttribute(
+    "placeholder",
+    "dmitri",
+  );
+});
+
 test("voices per language: named controls, a missing one marked, remove and add save the profile", async () => {
   const s = settings({
     contacts: { "russia-man": { language_voices: { de: "kerstin", fr: "margot" } } },

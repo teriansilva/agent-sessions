@@ -57,6 +57,9 @@ export interface ContactVoice {
 
 export interface ContactDefaults {
   group: VoiceGroup;
+  /** The voice a call uses with nothing saved for this General (#1859): their own when the
+   *  server lists it, else their group's. Absent from an older server. */
+  voice?: string;
   style: string;
   speed: number;
 }

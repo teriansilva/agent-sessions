@@ -3,7 +3,8 @@
 Pinned here:
 
 * a contact's profile is its override, else its own defaults (`hq_contacts.call_style` /
-  `call_speed`), with the voice falling back to its group's;
+  `call_speed`); the voice is the General's own (`call_voices`, #1859) when the server lists it,
+  else its group's;
 * a style is sent ONLY when the TTS server advertised it, so a strict server never sees an unknown
   field; overrides are validated and reset with `null`;
 * discovery reads a server's voices, styles and languages (VoxCPM's `/health` shape included);
@@ -102,6 +103,72 @@ def test_a_voice_that_left_the_server_falls_back_to_the_group():
 def test_bad_profiles_are_refused(bad):
     with pytest.raises(hs.SettingsError):
         hs.save(bad)
+
+
+# ---- each General's own voice (#1859) ---------------------------------------------------------
+
+#: Kokoro v1.0's English voices (American `a*`, British `b*`): the bundled server's choices.
+KOKORO_ENGLISH = {
+    "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica", "af_kore", "af_nicole",
+    "af_nova", "af_river", "af_sarah", "af_sky", "am_adam", "am_echo", "am_eric", "am_fenrir",
+    "am_liam", "am_michael", "am_onyx", "am_puck", "am_santa", "bf_alice", "bf_emma",
+    "bf_isabella", "bf_lily", "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+}  # fmt: skip
+
+
+def _server_lists(voices: list[str]) -> None:
+    hs.observe("tts", BASE["tts"]["base_url"], "", "", tts_voices=voices)
+    hs.save({**BASE, "tts_voices": voices})
+
+
+def test_a_general_speaks_with_their_own_voice_when_the_server_lists_it():
+    _server_lists(["aria", "atlas", "ileana", "dmitri"])
+    assert hs.profile(hs.get(), "romania-woman")["voice"] == "ileana"
+    assert hs.profile(hs.get(), "russia-man")["voice"] == "dmitri"
+    assert hs.profile(hs.get(), "us-woman")["voice"] == "aria"  # hers isn't listed: the group's
+
+
+def test_the_bundled_server_gives_each_general_a_kokoro_voice_of_their_own():
+    _server_lists(["af_heart", "am_michael", "bf_emma", "am_onyx"])
+    assert hs.profile(hs.get(), "romania-woman")["voice"] == "bf_emma"
+    assert hs.profile(hs.get(), "russia-man")["voice"] == "am_onyx"
+
+
+def test_a_server_that_lists_no_voices_never_gets_a_generals_voice_name():
+    hs.save({**BASE, "tts_voices": []})
+    assert hs.profile(hs.get(), "romania-woman")["voice"] == "aria"
+    assert hs.profile(hs.get(), "russia-man")["voice"] == "atlas"
+
+
+def test_a_saved_override_still_wins_and_falls_back_to_the_generals_own_voice():
+    _server_lists(["aria", "atlas", "nova", "ileana"])
+    hs.save({"contacts": {"romania-woman": {"voice": "nova"}}})
+    assert hs.profile(hs.get(), "romania-woman")["voice"] == "nova"
+    _server_lists(["aria", "atlas", "ileana"])  # nova left the server
+    assert hs.profile(hs.get(), "romania-woman")["voice"] == "ileana"
+
+
+#: The VoxCPM voices designed for the Generals (ro-inference#58): exactly these names.
+VOXCPM_GENERALS = {
+    "hana", "kenji", "claire", "lukas", "irina", "dmitri", "jessica", "jack", "amara", "kwame",
+    "valentina", "mateo", "ileana",
+}  # fmt: skip
+
+
+def test_every_general_has_a_distinct_voice_on_each_kind_of_server():
+    own = [c.call_voices for c in hq_contacts.CONTACTS]
+    assert all(len(v) == 2 for v in own)
+    voxcpm, kokoro = [v[0] for v in own], [v[1] for v in own]
+    assert len(set(voxcpm)) == len(voxcpm) and len(set(kokoro)) == len(kokoro)
+    assert set(voxcpm) == VOXCPM_GENERALS
+    assert set(kokoro) <= KOKORO_ENGLISH
+    # Each Kokoro voice matches its General's voice group: `af_`/`bf_` a woman, `am_`/`bm_` a man.
+    for c in hq_contacts.CONTACTS:
+        assert c.call_voices[1][1] == {"woman": "f", "man": "m"}[c.voice_group], c.id
+    # Never the bundled setup's group voices: those already speak for every General today.
+    from agent_sessions import voice_setup
+
+    assert not set(kokoro) & set(voice_setup.VOICES.values())
 
 
 def test_every_contact_has_a_style_and_speed():
@@ -238,6 +305,44 @@ def test_a_contact_preview_is_a_fixed_line_in_its_profile(auth_cfg, monkeypatch)
     assert "say this" not in seen[-1]["input"]
 
 
+def test_a_generals_own_voice_reaches_the_preview_and_the_call(auth_cfg, monkeypatch):
+    """#1859, end to end: the preview's TTS request, and the call's worker, carry the General's own
+    voice once the server lists it."""
+    from fastapi.testclient import TestClient
+
+    from agent_sessions.main import create_app
+
+    seen: list[dict] = []
+
+    def handler(r: httpx.Request):
+        seen.append(json.loads(r.content))
+        return httpx.Response(
+            200, content=b"\x00\x00" * 2400, headers={"content-type": "audio/pcm"}
+        )
+
+    monkeypatch.setattr(speech_endpoints, "_TRANSPORT", httpx.MockTransport(handler))
+    hs.observe("tts", BASE["tts"]["base_url"], "", "", tts_voices=["aria", "atlas", "dmitri"])
+    c = TestClient(create_app(auth_cfg), base_url="https://testserver")
+    c.post("/login", data={"username": "marcus", "password": "hunter2"}, follow_redirects=False,
+           headers={"Origin": auth_cfg.origin})  # fmt: skip
+    hdr = {"X-CSRF-Token": c.get("/api/config").json()["csrf"], "Origin": auth_cfg.origin}
+    r = c.post(
+        "/api/voice/settings", json={**BASE, "tts_voices": ["aria", "atlas", "dmitri"]}, headers=hdr
+    )
+    assert r.status_code == 200, r.text
+
+    def preview(contact: str) -> int:
+        return c.post("/api/voice/preview", json={"contact": contact}, headers=hdr).status_code
+
+    assert preview("russia-man") == 200
+    assert seen[-1]["voice"] == "dmitri"
+    assert preview("us-man") == 200
+    assert seen[-1]["voice"] == "atlas"  # his own voice isn't listed: the group's
+    block = hs.get()
+    prof = voice_calls.profile_for(block, "russia-man")
+    assert voice_calls.worker_config(block, prof["voice"], prof)["tts"]["voice"] == "dmitri"
+
+
 def test_no_language_field_unless_the_server_accepted_one(monkeypatch):
     call, sent = _call(monkeypatch, tts_takes_language=False)
 
@@ -298,7 +403,18 @@ def test_settings_show_each_generals_defaults():
     d = hs.public()["contact_defaults"]
     assert set(d) == set(hq_contacts.IDS)
     sok = hq_contacts.get("russia-man")
-    assert d["russia-man"] == {"group": "man", "style": sok.call_style, "speed": sok.call_speed}
+    assert d["russia-man"] == {
+        "group": "man", "voice": "atlas", "style": sok.call_style, "speed": sok.call_speed
+    }  # fmt: skip
+
+
+def test_settings_show_the_voice_a_general_would_actually_use():
+    """Hermes 7713: Settings names a General's resolved default, their own voice when the server
+    lists it, so an untouched row and an expired override describe what a call really speaks."""
+    _server_lists(["aria", "atlas", "ileana"])
+    d = hs.public()["contact_defaults"]
+    assert d["romania-woman"]["voice"] == "ileana"
+    assert d["russia-man"]["voice"] == "atlas"  # his own voice isn't listed
 
 
 def test_probed_capabilities_reset_when_their_endpoint_changes():

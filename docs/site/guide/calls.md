@@ -118,7 +118,15 @@ as another language is ignored, even on an English call.
 ## Voices and languages
 
 Each General has their own voice, speaking style and speed. Defaults match their personality, and
-you can change any of them in **Settings → AI → HQ calls → Each General's voice**:
+you can change any of them in **Settings → AI → HQ calls → Each General's voice**.
+
+By default each General speaks with a voice of their own whenever your speech server has it:
+
+- on the bundled speech server (Kokoro), each General gets a different English voice;
+- a server with a voice named after the General (for example `ileana` or `mateo`) uses that one.
+
+Otherwise the General uses the Woman or Man voice. After adding voices to your speech server,
+press **Read list** and then **Save** in the HQ calls settings, so BattleLab sees the new list.
 
 - **Preview** speaks a fixed line in that General's voice.
 - **Languages** gives a General a different voice per language. It is used while the call is in

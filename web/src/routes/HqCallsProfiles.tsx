@@ -1,7 +1,8 @@
 /** Settings → AI → HQ calls → Each General's voice, and the call language (#1397 P3).
  *
  *  Every General starts from their own defaults (the server's `contact_defaults`: a Woman/Man
- *  voice group, a speaking style, a speed). An override is saved whole per General and **Reset**
+ *  voice group, the voice an untouched row speaks (their own when the server lists it, #1859), a
+ *  speaking style, a speed). An override is saved whole per General and **Reset**
  *  removes it. A voice per language speaks while the call is in that language. What the TTS server
  *  offers is what was discovered from it, never assumed: the style column shows only when it
  *  advertised styles, and a saved voice it no longer lists is marked **Missing** with what speaks
@@ -98,7 +99,11 @@ function ContactRow({
   }, [savedKey]);
   const custom = !!saved;
   const known = (v: string) => !voices.length || voices.includes(v);
-  const ownVoice = saved?.voice && known(saved.voice) ? saved.voice : groupVoice;
+  // What an untouched row speaks (#1859): the server's resolved default, the General's own voice
+  // when the server lists it, else the group voice.
+  const defaultVoice = def.voice || groupVoice;
+  const ownDefault = !!def.voice && def.voice !== groupVoice;
+  const ownVoice = saved?.voice && known(saved.voice) ? saved.voice : defaultVoice;
   const lvSaved = saved?.language_voices ?? {};
   const groupWord = def.group === "man" ? "Man" : "Woman";
 
@@ -168,7 +173,7 @@ function ContactRow({
   const addable = languages.filter((l) => !(l in lvSaved));
   const listId = `${uid}-voices`;
   const voiceMissing = !!saved?.voice && !known(saved.voice);
-  // Preview what a call would speak: a saved voice gone from the server falls back to the group
+  // Preview what a call would speak: a saved voice gone from the server falls back to the default
   // voice (the server resolves it), unless another voice is typed in its place (#1640 review 6912).
   const typed = voice.trim();
   const previewVoice = typed && !(voiceMissing && typed === saved?.voice) ? typed : undefined;
@@ -190,7 +195,7 @@ function ContactRow({
           aria-label={`Voice for ${c.name}`}
           list={listId}
           spellCheck={false}
-          placeholder={groupVoice || `${groupWord} voice`}
+          placeholder={defaultVoice || `${groupWord} voice`}
           value={voice}
           onChange={(e) => setVoice(e.target.value)}
           onBlur={commitVoice}
@@ -280,8 +285,9 @@ function ContactRow({
       </div>
       {voiceMissing ? (
         <p className={h.pnote} data-testid="hq-calls-contact-missing-note">
-          “{saved!.voice}” is no longer on your server — {shortName(c)} falls back to the {groupWord} voice
-          {groupVoice ? ` (${groupVoice})` : ""} until you pick one.
+          “{saved!.voice}” is no longer on your server — {shortName(c)} falls back to{" "}
+          {ownDefault ? `their own voice (${defaultVoice})` : `the ${groupWord} voice${groupVoice ? ` (${groupVoice})` : ""}`}{" "}
+          until you pick one.
         </p>
       ) : null}
       {err ? (

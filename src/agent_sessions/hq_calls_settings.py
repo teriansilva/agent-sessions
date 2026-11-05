@@ -206,20 +206,36 @@ def _coerce_profile(prof: dict) -> dict:
     return out
 
 
-def profile(block: dict, contact: str) -> dict:
-    """The voice a contact speaks with on a call: its override, else its defaults
-    (`hq_contacts`), with the voice falling back to its group's (#1397 P3)."""
+def default_voice(block: dict, contact: str) -> str:
+    """The voice a General speaks with when nothing is saved for them (#1859): the first of their
+    own `call_voices` the TTS server LISTS, else their group's. A server that lists no voices is
+    never sent one of those names. Calls (`profile`) and Settings (`public`) both read this."""
     try:
         c = hq_contacts.get(contact)
-        group, style, speed = c.voice_group or "woman", c.call_style, c.call_speed
+        group, own_voices = c.voice_group or "woman", c.call_voices
     except KeyError:
-        group, style, speed = "woman", "neutral", 1.0
-    over = block.get("contacts", {}).get(contact, {})
-    group_voice = block["voices"].get(group) or block["voices"]["woman"]
-    voice = over.get("voice") or group_voice
+        group, own_voices = "woman", ()
     known = block.get("tts_voices") or []
+    own = next((v for v in own_voices if v in known), None)
+    return own or block["voices"].get(group) or block["voices"]["woman"]
+
+
+def profile(block: dict, contact: str) -> dict:
+    """The voice a contact speaks with on a call: its override, else its defaults
+    (`hq_contacts`), with the voice falling back to its group's (#1397 P3). The default voice is
+    the General's OWN (#1859): the first of their `call_voices` the TTS server lists. A server
+    that lists no voices is never sent one of those names, so it gets the group voice."""
+    try:
+        c = hq_contacts.get(contact)
+        style, speed = c.call_style, c.call_speed
+    except KeyError:
+        style, speed = "neutral", 1.0
+    over = block.get("contacts", {}).get(contact, {})
+    known = block.get("tts_voices") or []
+    default = default_voice(block, contact)
+    voice = over.get("voice") or default
     if known and voice not in known:
-        voice = group_voice  # the saved voice left the server: the group's voice until re-picked
+        voice = default  # the saved voice left the server: the default until re-picked
     style = over.get("style", style)
     # A voice per language: used while the call is in that language; one that left the server
     # is dropped (the contact's own voice speaks instead).
@@ -285,9 +301,15 @@ def public(path: Path | None = None) -> dict:
             "api_key_set": bool(side["api_key"]),
         }
     out["configured"] = configured(block)
-    # Each General's own defaults (#1397 P3), so Settings can show an untouched row as it sounds.
+    # Each General's own defaults (#1397 P3), so Settings can show an untouched row as it sounds:
+    # `voice` is the one a call would use with nothing saved (#1859).
     out["contact_defaults"] = {
-        c.id: {"group": c.voice_group or "woman", "style": c.call_style, "speed": c.call_speed}
+        c.id: {
+            "group": c.voice_group or "woman",
+            "voice": default_voice(block, c.id),
+            "style": c.call_style,
+            "speed": c.call_speed,
+        }
         for c in hq_contacts.CONTACTS
     }
     out["preview_languages"] = list(PREVIEW_CONTACT_LINES)

@@ -54,12 +54,17 @@ class Contact:
     #: Never length or format: `hq_call` and the HQ conversation prompt, sent after it, own those.
     character: str
     #: Which of the two call voices speaks for this contact (#1397 P1): ``woman`` or ``man``,
-    #: chosen per contact here and never parsed from the id. Per-contact voices come in P3.
+    #: chosen per contact here and never parsed from the id. The fallback when the TTS server
+    #: lists none of the contact's own `call_voices` (#1859).
     voice_group: str = ""
     #: The call voice's default speaking style and speed (#1397 P3), chosen per archetype. A
     #: style is sent only to a TTS server that advertises it; the operator can override both.
     call_style: str = "neutral"
     call_speed: float = 1.0
+    #: This General's own call voices (#1859), in order of preference: a VoxCPM voice designed
+    #: for them (named after them), then a distinct English Kokoro voice for the bundled speech
+    #: server. A call uses the first one the TTS server LISTS, else the group voice.
+    call_voices: tuple[str, ...] = ()
 
     @property
     def prompt_id(self) -> str:
@@ -84,6 +89,7 @@ CONTACTS: tuple[Contact, ...] = (
         "You brief in order: what is happening, what it means, what you would do. When a situation "
         "has a lesson in it, you close with one quiet line that names it, and only then.",
         voice_group="woman",
+        call_voices=("hana", "af_kore"),
         call_style="calm",
     ),
     Contact(
@@ -98,6 +104,7 @@ CONTACTS: tuple[Contact, ...] = (
         "silence does not trouble you. You reach for a chess image only when it truly fits the "
         "position, and you are usually thinking about what happens two moves from now.",
         voice_group="man",
+        call_voices=("kenji", "bm_fable"),
         call_style="serious",
         call_speed=0.95,
     ),
@@ -113,6 +120,7 @@ CONTACTS: tuple[Contact, ...] = (
         "a conversation. You respect the Commander too much to tell them only what they hope to "
         "hear.",
         voice_group="woman",
+        call_voices=("claire", "bf_isabella"),
         call_style="narrator",
     ),
     Contact(
@@ -126,6 +134,7 @@ CONTACTS: tuple[Contact, ...] = (
         "in figures, times and counts wherever you have them, and you say plainly when you do not. "
         "Praise from you is short and specific; you consider that the highest kind.",
         voice_group="man",
+        call_voices=("lukas", "bm_george"),
         call_style="neutral",
     ),
     Contact(
@@ -140,6 +149,7 @@ CONTACTS: tuple[Contact, ...] = (
         "in a while you let slip a joke so dry it takes a second to notice, and you never explain "
         "it.",
         voice_group="woman",
+        call_voices=("irina", "bf_alice"),
         call_style="serious",
     ),
     Contact(
@@ -153,6 +163,7 @@ CONTACTS: tuple[Contact, ...] = (
         'such as "Excellent. HQ is pleased." Under the theatre you are exacting; you notice the '
         "detail that was skipped, and you say so as calmly as you say everything else.",
         voice_group="man",
+        call_voices=("dmitri", "am_onyx"),
         call_style="dramatic",
     ),
     Contact(
@@ -166,6 +177,7 @@ CONTACTS: tuple[Contact, ...] = (
         'with real delight, "Outstanding, Commander!", and say exactly what went well. When it '
         "goes badly you say that too, and move straight to what comes next.",
         voice_group="woman",
+        call_voices=("jessica", "af_jessica"),
         call_style="energetic",
         call_speed=1.05,
     ),
@@ -180,6 +192,7 @@ CONTACTS: tuple[Contact, ...] = (
         'When the decision is made and it is time to move, you say "Let\'s roll." You do not '
         'pretend to know what you do not; you would rather say "I don\'t know yet" than bluff.',
         voice_group="man",
+        call_voices=("jack", "am_fenrir"),
         call_style="dramatic",
     ),
     Contact(
@@ -194,6 +207,7 @@ CONTACTS: tuple[Contact, ...] = (
         "next action and who it falls to, and you notice when the Commander is carrying too much "
         "at once.",
         voice_group="woman",
+        call_voices=("amara", "af_sarah"),
         call_style="energetic",
     ),
     Contact(
@@ -207,6 +221,7 @@ CONTACTS: tuple[Contact, ...] = (
         "out. Now and then you add a wry remark, the sort that makes the Commander smile and then "
         "think. You never hurry an answer to seem quick.",
         voice_group="man",
+        call_voices=("kwame", "bm_lewis"),
         call_style="calm",
         call_speed=0.95,
     ),
@@ -226,6 +241,7 @@ CONTACTS: tuple[Contact, ...] = (
         "flatter and you don't dramatise: when something is urgent you say so once, and the "
         "Commander knows you mean it.",
         voice_group="woman",
+        call_voices=("valentina", "af_bella"),
         call_style="dramatic",
         call_speed=1.05,
     ),
@@ -241,6 +257,7 @@ CONTACTS: tuple[Contact, ...] = (
         "and warmly, you never hurry, and you are never glib about bad news: when something is "
         "wrong, the charm steps aside and you say it straight.",
         voice_group="man",
+        call_voices=("mateo", "am_eric"),
         call_style="calm",
     ),
     # The outlaw, the deliberate exception (named by the operator, #1525).
@@ -256,6 +273,7 @@ CONTACTS: tuple[Contact, ...] = (
         "slow to praise. Underneath it you are devoted; it shows in how carefully you check "
         "things, never in what you say about it.",
         voice_group="woman",
+        call_voices=("ileana", "bf_emma"),
         call_style="dramatic",
     ),
 )
