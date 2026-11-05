@@ -511,6 +511,60 @@ def waiting_for_input(pid: int) -> bool | None:
     return any(w in wchan for w in _WAITING_WCHANS)
 
 
+def _start_time(pid: int) -> int | None:
+    """Field 22 of ``/proc/<pid>/stat`` (start time, clock ticks): a PID's identity over time."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as fh:
+            raw = fh.read()
+        return int(raw[raw.rfind(")") + 1 :].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def agent_process(key: str) -> tuple[int, int] | None:
+    """``(engine pid, its start time)`` for ``key``, or ``None`` if unresolvable.
+
+    The process the engine runs as: the dtach master's single direct child (:func:`_resolve`).
+    BLOCKING (a ``/proc`` scan). The start time lets :func:`agent_busy` refuse a recycled PID.
+    """
+    try:
+        r = _resolve(key)
+    except Exception:  # pragma: no cover — best-effort, like every probe here
+        return None
+    if r is None:
+        return None
+    start = _start_time(r[2])
+    return None if start is None else (r[2], start)
+
+
+def agent_busy(pid: int, start: int) -> bool | None:
+    """Is any thread of the engine process running or runnable (``R``) or in disk wait (``D``)?
+
+    An agent that is still working on input it has read — claude turning a pasted image path
+    into an attachment burns a core for most of a second (#1605) — always has such a thread; an
+    agent waiting for its next keystroke has none but for a rare timer tick. Only the engine's
+    OWN threads count, never its children, so a tool command it is running does not hold input.
+    ``None`` when ``/proc`` can't say, or ``pid`` is no longer the process measured at
+    ``start``. Read-only.
+    """
+    if _start_time(pid) != start:
+        return None
+    try:
+        tids = os.listdir(f"/proc/{pid}/task")
+    except OSError:
+        return None
+    for tid in tids:
+        try:
+            with open(f"/proc/{pid}/task/{tid}/stat", encoding="utf-8", errors="replace") as fh:
+                raw = fh.read()
+        except OSError:
+            continue  # a thread that exited between the listing and the read
+        fields = raw[raw.rfind(")") + 1 :].split()
+        if fields and fields[0] in ("R", "D"):
+            return True
+    return False
+
+
 def unread_input(device: str, rdev: int) -> int | None:
     """Bytes written to this PTY slave that its reader has not read yet (``TIOCINQ``).
 

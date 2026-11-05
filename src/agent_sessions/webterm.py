@@ -149,6 +149,23 @@ _PASTE_DRAIN_MAX_S = 1.0
 _PASTE_DRAIN_POLL_S = 0.005
 _PASTE_FLIP_GRACE_S = 0.02
 
+# Paste intake (#1605). Reading a paste is not taking it in: claude, given a paste that names an
+# image file, shows "Pasting…" and spends ~0.7–0.9 s turning the path into an `[Image #N]`
+# attachment, and up to 2.1.310 it DISCARDS an Enter read during that time — the composer's
+# Send then leaves the message in the prompt until a second Enter. The Enter cannot be timed
+# client-side (the paste above waits server-side while the Enter queues behind it), and an
+# agent that is still working on input it has read always has a runnable thread, while one
+# waiting for its next key has none (measured: every 5 ms poll busy throughout the intake, at
+# host load ~23; idle, a stray timer tick). So the input frame AFTER a paste is written once the
+# paste has been read through every hop AND the engine process has had no running thread for
+# _PASTE_INTAKE_QUIET_POLLS consecutive polls. Bounded: an agent busy with its own work costs
+# that one frame at most _PASTE_INTAKE_MAX_S; a process /proc can't describe costs nothing.
+_PASTE_INTAKE_MAX_S = 3.0
+_PASTE_INTAKE_QUIET_POLLS = 4
+# A viewer that leaves while an accepted frame is held by these waits (Send, then navigate away)
+# must not lose it (#1855 review): teardown lets the held waits finish first, at most this long.
+_HELD_INPUT_TEARDOWN_S = _PASTE_INTAKE_MAX_S + _PASTE_DRAIN_MAX_S + 1.0
+
 # Re-nudge window (#349): a client resize landing within this many seconds of attach can
 # coalesce with the fresh-attach nudge inside the agent's own resize debounce — shrink +
 # client-resize + restore net out to zero geometry change and the agent never repaints
@@ -925,17 +942,34 @@ async def run(
 
     # When owner input last reached our pty (#1070's flip-buffer grace).
     last_input = {"at": 0.0}
+    # A bracketed paste was written and the agent may still be taking it in (#1605).
+    paste_intake = {"pending": False}
+    # How many paths are holding an accepted owner frame behind a paste wait right now: pump_in,
+    # the #805 replay, the seed-queue drain. Teardown waits for 0 before it cancels them.
+    holding = {"n": 0}
 
-    def _release_seed_hold(*, delivered: bool) -> None:
+    async def _release_seed_hold(*, delivered: bool) -> None:
+        # Frame by frame, with the waits pump_in would have applied (#1605 review): joined into
+        # one write, a queued image paste and its Enter reach the agent together and the Enter is
+        # discarded in the paste's intake. The hold stays up while draining, so input arriving
+        # meanwhile queues BEHIND the queue; it drops only once the queue is empty, with no await
+        # in between. Cancelled mid-drain (viewer gone), the rest is written at once.
         if not seed_hold["active"]:
             return
-        seed_hold["active"] = False
-        queued = b"".join(seed_queue)
-        seed_queue.clear()
-        if delivered and queued and not _gated():
-            with contextlib.suppress(OSError), write_lock:
-                os.write(master, queued)
-            _note_submit(buf_key, queued)
+        holding["n"] += 1
+        try:
+            while delivered and seed_queue and not _gated():
+                await _await_input_turn(seed_queue[0])
+                if _gated():
+                    break
+                _write_now(seed_queue.pop(0))
+        finally:
+            holding["n"] -= 1
+            seed_hold["active"] = False
+            rest = b"".join(seed_queue)
+            seed_queue.clear()
+            if delivered and rest and not _gated():
+                _write_now(rest)
 
     def _write_owner_input(data: bytes) -> None:
         # Queue while the PTY repair is in flight, then while a seed is pending; otherwise write
@@ -996,18 +1030,55 @@ async def run(
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(settle(), _PASTE_DRAIN_MAX_S)
 
+    async def _await_paste_intake() -> None:
+        """Hold the input after a paste until the agent has finished taking the paste in (#1605)."""
+        paste_intake["pending"] = False
+        pool = _probe_executor()
+
+        async def settle() -> None:
+            wait = last_input["at"] + _PASTE_FLIP_GRACE_S - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            downstream = await loop.run_in_executor(pool, tty_health.agent_input, buf_key)
+            agent = await loop.run_in_executor(pool, tty_health.agent_process, buf_key)
+            if agent is None:
+                return  # no engine process to watch → today's behaviour, never a stall
+            quiet = 0
+            while True:
+                # Read first: an agent idle with the paste still queued has not started on it.
+                read = await loop.run_in_executor(pool, _input_settled, downstream)
+                busy = await loop.run_in_executor(pool, tty_health.agent_busy, *agent)
+                if busy is None:
+                    return  # the process went away or /proc can't say
+                quiet = quiet + 1 if read is not False and not busy else 0
+                if quiet >= _PASTE_INTAKE_QUIET_POLLS:
+                    return
+                await asyncio.sleep(_PASTE_DRAIN_POLL_S)
+
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(settle(), _PASTE_INTAKE_MAX_S)
+
+    async def _await_input_turn(data: bytes) -> None:
+        """The waits owed before ``data`` is written: the previous paste's intake (#1605), then,
+        for a paste, the read boundary behind the input before it (#1070)."""
+        if paste_intake["pending"]:
+            await _await_paste_intake()
+        if data.startswith(_PASTE_START):
+            await _await_paste_boundary()
+
     async def _replay_gated_input() -> None:
         # The #805 hold's queue, written in order with the paste boundary between chunks. The gate
         # stays held throughout, so input arriving meanwhile queues BEHIND the replay. If the
         # replay is cancelled (viewer gone), what is left is written at once: never stranded.
         pending: list[bytes] = []
+        holding["n"] += 1
         try:
             while pending := input_gate.take():
                 while pending:
-                    if pending[0].startswith(_PASTE_START):
-                        await _await_paste_boundary()
+                    await _await_input_turn(pending[0])
                     _write_past_gate(pending.pop(0))
         finally:
+            holding["n"] -= 1
             for chunk in pending + input_gate.release():
                 _write_past_gate(chunk)
 
@@ -1022,9 +1093,14 @@ async def run(
         if seed_hold["active"]:
             seed_queue.append(data)
             return
+        _write_now(data)
+
+    def _write_now(data: bytes) -> None:
         with contextlib.suppress(OSError), write_lock:
             os.write(master, data)
         last_input["at"] = time.monotonic()
+        if data.startswith(_PASTE_START) and buf_key:
+            paste_intake["pending"] = True
         _note_submit(buf_key, data)
 
     def _schedule_trailing_nudge() -> None:
@@ -1093,15 +1169,16 @@ async def run(
                 # is the source of truth — not the client.
                 if kind == "i" and not _gated():
                     data = obj.get("d", "").encode("utf-8", "replace")
-                    # #1070: awaited INLINE, so frames behind the paste (its Enter) wait in the
-                    # socket and can never overtake it. Only a paste opener waits; typing doesn't.
-                    # While the #805 gate holds, the replay applies the boundary instead.
-                    if (
-                        data.startswith(_PASTE_START)
-                        and not input_gate.held
-                        and not seed_hold["active"]
-                    ):
-                        await _await_paste_boundary()
+                    # #1070/#1605: awaited INLINE, so frames behind a paste (its Enter) wait in the
+                    # socket and can never overtake it. Only a paste opener, and the one frame
+                    # after a paste, wait; typing doesn't. While the #805 gate holds, the replay
+                    # applies the same waits instead.
+                    if not input_gate.held and not seed_hold["active"]:
+                        holding["n"] += 1
+                        try:
+                            await _await_input_turn(data)
+                        finally:
+                            holding["n"] -= 1
                     _write_owner_input(data)
                 elif kind == "r" and not _gated():
                     with contextlib.suppress(ValueError, TypeError):
@@ -1267,7 +1344,7 @@ async def run(
             with contextlib.suppress(asyncio.CancelledError):
                 delivered = await _deliver_seed_via_pool(fd, seed_key, buf_key, write_lock)
         finally:
-            _release_seed_hold(delivered=bool(delivered))
+            await _release_seed_hold(delivered=bool(delivered))
 
     # Declare this bridge the current byte-owner for the session (#726), sharing the SAME
     # `write_lock` pump_in and the seed injector already serialise on — so the orchestrator's
@@ -1291,6 +1368,17 @@ async def run(
     try:
         await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
     finally:
+        # An accepted frame still held behind a paste wait is written before anything is
+        # cancelled (#1855 review), bounded; never for a demoted viewer, whose input the gate
+        # refuses anyway. A frame that cannot finish in time is lost, as before.
+        cancelled_while_holding = False
+        if holding["n"] and not _gated() and not (stop_event is not None and stop_event.is_set()):
+            end = time.monotonic() + _HELD_INPUT_TEARDOWN_S
+            try:
+                while holding["n"] and time.monotonic() < end:
+                    await asyncio.sleep(_PASTE_DRAIN_POLL_S)
+            except asyncio.CancelledError:
+                cancelled_while_holding = True  # finish the teardown, then re-raise below
         # FIRST: stop advertising this fd. A write racing teardown must find no writer rather
         # than a master that is about to be closed under it.
         if input_writer_token is not None and buf_key:
@@ -1339,3 +1427,5 @@ async def run(
         # Reclaim the scrollback for a session whose dtach master has exited — there's
         # nothing left to resume. Live sessions keep their buffer (master still alive).
         scrollback._maybe_evict_ended(buf_key)
+        if cancelled_while_holding:
+            raise asyncio.CancelledError
