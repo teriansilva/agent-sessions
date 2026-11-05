@@ -255,6 +255,36 @@ def native_version(binary: str) -> tuple[int, int, int] | None:
     return _VERSIONS[key]
 
 
+def parse_version(text) -> tuple[int, int, int] | None:
+    """The first `X.Y.Z` in a reported or pinned version string, else None."""
+    if not isinstance(text, str):
+        return None
+    found = _VERSION.search(text.encode(errors="replace"))
+    return tuple(int(x) for x in found.groups()) if found else None
+
+
+def floor_refusals(source_id: str, version: tuple[int, int, int] | None, by_id) -> list[dict]:
+    """The live API clients that would become unavailable if `source_id` ran `version` (#1852).
+
+    Asked of each client's manifest (`api.kind`, `api.source`), never of an engine name. An
+    unknown version is below every floor, exactly as `readiness` treats it. A client absent
+    from `by_id` (disabled, removed) is not counted: the operator turned it off already.
+    """
+    refusals = []
+    for prov in by_id.values():
+        m = getattr(prov, "manifest", None)
+        api = getattr(m, "api", None)
+        if m is None or m.runtime != "api" or api is None or api.source != source_id:
+            continue
+        floor = _FLOORS.get(api.kind)
+        if floor is None or (version is not None and version >= floor):
+            continue
+        refusals.append(
+            {"engine": m.id, "label": m.identity.label, "floor": ".".join(map(str, floor))}
+        )
+    return sorted(refusals, key=lambda r: r["engine"])
+
+
 def interpreter() -> tuple[str, Path | None]:
     """The exact installed interpreter for the worker, and the release directory to lease."""
     venv = Path(sys.prefix).resolve()

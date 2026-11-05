@@ -70,6 +70,7 @@ was written exactly once. ``--version`` prints a version above the protocol floo
 
 import json
 import os
+import stat
 import sys
 import threading
 import time
@@ -1402,7 +1403,13 @@ def _debug_config():
                 env[key] = "***"
         if _control("probe") == "masked" and entry.get("command"):
             entry["command"] = [*entry["command"][:-1], "***"]
-    print(json.dumps(config))
+    out = json.dumps(config).encode()
+    # Like 1.18.35 (a Bun binary): it exits before it flushes a pipe, so a reader on a pipe gets
+    # the first 8192 bytes and EOF — every time, measured. A regular file gets all of it.
+    if stat.S_ISFIFO(os.fstat(1).st_mode):
+        out = out[:8192]
+    sys.stdout.buffer.write(out + b"\n")
+    sys.stdout.flush()
 
 
 def _start_mcp(config):

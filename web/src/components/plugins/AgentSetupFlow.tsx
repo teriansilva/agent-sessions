@@ -4,12 +4,12 @@ import { Link } from "react-router-dom";
 import { useConfigRefresh } from "../../app/config";
 import { reloadRoster } from "../../app/reloadRoster";
 import { AgentEndpointCard } from "../settings/AgentEndpointCard";
-import { manifestVersion } from "../agents/agentStatus";
+import { manifestVersion, staleAgainst } from "../agents/agentStatus";
 import type { WizardStep } from "../wizard/WizardShell";
 import { SignInTerminal } from "./SignInTerminal";
 import { AGENTS_PATH, pendingOperation, pluginError, rejectedOperation, missingOperation, setupPath, sourceLabel, verifiedGeneration } from "./model";
 import { api } from "../../lib/api";
-import type { PluginCatalog, PluginGeneration, PluginOperation, PluginReview } from "../../types/plugins";
+import type { PluginActivationPreview, PluginCatalog, PluginGeneration, PluginOperation, PluginReview } from "../../types/plugins";
 import button from "../ui/actionButton.module.css";
 import s from "./PluginSetup.module.css";
 
@@ -145,6 +145,32 @@ export function AgentSetupFlow({
   // or run of its own, and its one check is the adapter's readiness against that agent.
   const apiSource = review?.entry.manifest.runtime?.kind === "api" ? review.entry.manifest.api?.source ?? "its console agent" : null;
   const hasSignin = ["cli-subcommand", "auth-login", "interactive"].includes(review?.entry.manifest.signin?.kind ?? "none");
+  // A copy installed from a catalog recipe that is no longer the catalog's (#1852): marked, with
+  // the catalog's version offered first; enabling it stays an informed, secondary choice.
+  const staleEntry = !isEnabled && !auto ? staleAgainst(review, generation, catalog) : null;
+  // What Enable would change (#1852), read from the server before the operator confirms — again
+  // whenever the generation or the roster moves. The floor rule lives on the server only; this
+  // shows its answer, and `activate` re-checks it when it commits.
+  const [preview, setPreview] = useState<{ key: string; value: PluginActivationPreview | null } | null>(null);
+  const [previewTry, setPreviewTry] = useState(0);
+  const previewRevision = catalog?.roster_revision ?? null;
+  const previewKey = review && generation && verifiedGeneration(pinned) && !isEnabled
+    ? `${review.plugin_id}/${generation}/${previewRevision ?? ""}/${previewTry}` : null;
+  const previewPlugin = review?.plugin_id;
+  useEffect(() => {
+    if (!previewKey || !previewPlugin || !generation) return;
+    let alive = true;
+    api.pluginActivationPreview(previewPlugin, generation)
+      .then(value => { if (alive) setPreview({ key: previewKey, value }); })
+      .catch(() => { if (alive) setPreview({ key: previewKey, value: null }); });
+    return () => { alive = false; };
+  }, [previewKey, previewPlugin, generation]);
+  const shownPreview = preview?.key === previewKey ? preview : null;
+  const refusals = shownPreview?.value?.refusals ?? [];
+  // Every Enable from this step — the plain one and the moved-roster confirmation (Hermes 7701) —
+  // waits for a SUCCESSFUL preview of this generation against the roster revision on screen, so
+  // `current → next` is always shown first. A failed read offers Try again, never an unseen enable.
+  const previewReady = !!shownPreview?.value;
 
   const accept = useCallback((op: PluginOperation) => {
     setOperation(op); setUnknownOperation(null);
@@ -308,7 +334,8 @@ export function AgentSetupFlow({
   // update was confirmed against — if it moved, nothing is sent until the operator confirms again
   // against the new state.
   const enableNow = () => run(async current => {
-    if (!review) return;
+    if (!review || !previewReady || refusals.length > 0) return;
+    const shownAt = previewRevision;
     const fresh = await current(api.plugins());
     setCatalog(fresh);
     const row = fresh.plugins.find(p => p.id === review.plugin_id);
@@ -325,10 +352,13 @@ export function AgentSetupFlow({
       setReconfirm({ ...now, enabled: !!row?.enabled, version: manifestVersion(gen?.review.entry.manifest), since: !!binding });
       return;
     }
+    // The versions on screen were read against another roster (Hermes 7701): send nothing; the
+    // preview re-reads for the new revision and the operator enables against what it shows.
+    if (now.revision !== shownAt) throw new Error("This agent changed since its versions were shown. Check them again, then enable.");
     await begin(current, "activate", updateCandidate ? binding! : now);
   });
   const enableAgain = () => {
-    if (!reconfirm) return;
+    if (!reconfirm || !previewReady || refusals.length > 0) return;
     const bound = { active: reconfirm.active, revision: reconfirm.revision };
     setBinding(bound);
     setReconfirm(null);
@@ -483,6 +513,10 @@ export function AgentSetupFlow({
         {operation.state === "cleanup_pending" && <button className={button.ghost} disabled={busy} onClick={() => void recover()}>Retry cleanup</button>}
         {operation.kind === "install" && ["failed", "interrupted"].includes(operation.state) && <button className={button.ghost} onClick={reset}>Review a new attempt</button>}
       </section>}
+      {staleEntry && step >= 2 && review && <section className={s.note} aria-label="Older copy" data-testid="setup-stale">
+        <p>This copy is {review.entry.manifest.identity.label} {manifestVersion(review.entry.manifest) ?? ""}, installed from an older catalog recipe. The catalog now offers {manifestVersion(staleEntry.manifest) ?? "a newer recipe"}.</p>
+        <button className={button.primary} disabled={busy || unresolved || signinLive} onClick={reset}>Review {manifestVersion(staleEntry.manifest) ?? "the catalog’s version"} instead</button>
+      </section>}
       {step === 2 && !auto && review && generation && <>
         {isChat ? <AgentEndpointCard engine={review.plugin_id} generation={generation} readOnly={endpointFrozen} onSaved={async () => {
           setCatalog(current => current && ({ ...current, plugins: current.plugins.map(p => ({ ...p, generations: p.generations?.map(g => g.id === generation ? { ...g, verification: null } : g) })) }));
@@ -519,7 +553,19 @@ export function AgentSetupFlow({
             <button className={button.primary} disabled={busy || unresolved || !pinned} onClick={() => void start("verify")}>{pinned?.verification ? "Run verification again" : "Verify installation"}</button>
           </div>
           {verifiedGeneration(pinned) && <><p className={s.ok}>All required checks passed for this exact installation. {review.source === "local" && "Its source remains local and untrusted."}</p>
-            {!reconfirm && <button className={button.primary} disabled={busy || unresolved} onClick={() => void enableNow()}>Enable agent</button>}
+            {shownPreview?.value && <dl className={s.kv} aria-label="What enabling changes">
+              <dt>Version</dt><dd data-testid="enable-versions">{shownPreview.value.current ?? "current version unknown"} → <b>{shownPreview.value.next ?? "unknown"}</b>
+                {shownPreview.value.older && <> <b className={s.older}>older</b></>}</dd>
+              {shownPreview.value.older && <><dt>Running sessions</dt><dd>Keep {shownPreview.value.current} until they restart; new sessions start on the older {shownPreview.value.next}.</dd></>}
+            </dl>}
+            {refusals.length > 0 && <p role="alert" className={`${s.note} ${s.error}`} data-testid="enable-refused">
+              {refusals.map(r => `${r.label} needs ${review.entry.manifest.identity.label} ${r.floor} or later`).join("; ")}.
+              {" "}Enabling {shownPreview?.value?.next ?? "this version"} would make {refusals.map(r => r.label).join(" and ")} unavailable, so it can’t be enabled. Review the catalog’s version, or disable {refusals.map(r => r.label).join(" and ")} first.</p>}
+            {shownPreview && !shownPreview.value && <div className={s.note} role="alert" data-testid="enable-preview-unavailable">
+              <p>What enabling changes couldn’t be read, so it can’t be enabled yet.</p>
+              <button className={button.ghost} disabled={busy} onClick={() => setPreviewTry(n => n + 1)}>Try again</button></div>}
+            {!reconfirm && <button className={staleEntry ? button.ghost : button.primary} disabled={busy || unresolved || !previewReady || refusals.length > 0} onClick={() => void enableNow()}>
+              {staleEntry ? `Enable ${manifestVersion(review.entry.manifest) ?? "this older copy"} anyway` : "Enable agent"}</button>}
             {reconfirm && <section className={s.panel} aria-label="Confirm again" data-testid="update-reconfirm">
               <p>{reconfirm.since
                 ? <>Since you confirmed this update, {review.entry.manifest.identity.label} {!reconfirm.enabled ? "was disabled or removed" : `changed to ${reconfirm.version ?? "another version"}`}.</>
@@ -529,7 +575,7 @@ export function AgentSetupFlow({
                   : <>Enabling {manifestVersion(review.entry.manifest) ?? "this version"} replaces it; running sessions keep it until they restart.</>}</p>
               <div className={s.row}>
                 <button className={button.ghost} disabled={busy} onClick={() => setReconfirm(null)}>Leave it as it is</button>
-                <button className={button.primary} disabled={busy || unresolved} onClick={enableAgain}>Enable {manifestVersion(review.entry.manifest) ?? "this version"} anyway</button>
+                <button className={button.primary} disabled={busy || unresolved || !previewReady || refusals.length > 0} onClick={enableAgain}>Enable {manifestVersion(review.entry.manifest) ?? "this version"} anyway</button>
               </div>
             </section>}</>}
         </>}

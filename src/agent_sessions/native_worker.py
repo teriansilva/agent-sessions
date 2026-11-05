@@ -29,6 +29,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import errno
+import fcntl
 import json
 import logging
 import logging.handlers
@@ -395,6 +397,50 @@ def battlelab_session(config: dict) -> str:
         raise WorkerError("the session key is not canonical") from None
 
 
+#: Linux UAPI values (memfd.h, fcntl.h), the same on every architecture: the standalone CPython
+#: `install.sh` may vendor is built without `os.memfd_create` and the `fcntl` seal constants.
+_MFD_CLOEXEC, _MFD_ALLOW_SEALING = 0x1, 0x2
+_F_ADD_SEALS = 1024 + 9
+_F_SEAL_SEAL, _F_SEAL_SHRINK, _F_SEAL_GROW = 0x1, 0x2, 0x4
+
+
+def _memfd(name: str) -> int:
+    """An anonymous, sealable, close-on-exec memory file: `os.memfd_create`, or libc's own
+    (glibc >= 2.27) where this Python was built without it."""
+    flags = _MFD_CLOEXEC | _MFD_ALLOW_SEALING
+    if hasattr(os, "memfd_create"):
+        return os.memfd_create(name, flags)
+    import ctypes
+
+    try:
+        create = ctypes.CDLL(None, use_errno=True).memfd_create
+    except (OSError, AttributeError) as exc:
+        raise OSError(errno.ENOSYS, "memfd_create is unavailable") from exc
+    create.argtypes = (ctypes.c_char_p, ctypes.c_uint)
+    create.restype = ctypes.c_int
+    fd = create(name.encode(), flags)
+    if fd < 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err))
+    return fd
+
+
+def _probe_sink(limit: int) -> int:
+    """The configuration probe's stdout: an anonymous in-memory file (memfd; never on disk, no
+    name, 0600) sized to `limit` bytes and sealed there. The kernel refuses any write that would
+    grow it, so the probe can never write more than `limit` bytes however fast it writes; the
+    probe shares this descriptor's file offset, which is how much it wrote."""
+    fd = _memfd("opencode-config-probe")
+    try:
+        os.fchmod(fd, 0o600)
+        os.ftruncate(fd, limit)
+        fcntl.fcntl(fd, _F_ADD_SEALS, _F_SEAL_GROW | _F_SEAL_SHRINK | _F_SEAL_SEAL)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def child_environment(
     config: dict,
     server_password: str | None = None,
@@ -638,29 +684,46 @@ class Worker:
 
         env = native_environment(self.config)
         env["OPENCODE_SERVER_PASSWORD"] = secrets.token_urlsafe(32)
+        # Its stdout is a regular file, never a pipe: opencode 1.18.35 (a Bun binary) exits
+        # before it flushes a pipe and cuts its output at 8192 bytes, so a resolved config over
+        # 8 KB arrived as truncated JSON (measured: `| wc -c` = 8192, a file gets all of it). The
+        # file is a sealed memfd (`_probe_sink`): the config can carry credentials, so it never
+        # reaches a disk, and its size cap is enforced by the kernel like the pipe's was. Not
+        # RLIMIT_FSIZE: that caps every file the probe writes, and opencode checkpoints its
+        # (multi-GB) SQLite WAL during `debug config` — measured, the probe then fails.
         try:
-            probe = await asyncio.create_subprocess_exec(
-                *native_protocol.OpencodeAcpCodec.config_probe_argv(self.config["binary"]),
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-                cwd=self.config["cwd"],
-                env=env,
-            )
-        except (OSError, native_protocol.ProtocolError) as exc:
+            sink = _probe_sink(PROBE_LIMIT + 1)
+        except OSError as exc:
             raise WorkerError(f"the opencode configuration probe could not start: {exc}") from None
         try:
-            out = await asyncio.wait_for(probe.stdout.read(PROBE_LIMIT + 1), PROBE_TIMEOUT)
-            code = await asyncio.wait_for(probe.wait(), PROBE_TIMEOUT)
-        except TimeoutError:
-            raise WorkerError("the opencode configuration probe timed out") from None
+            try:
+                probe = await asyncio.create_subprocess_exec(
+                    *native_protocol.OpencodeAcpCodec.config_probe_argv(self.config["binary"]),
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=sink,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    cwd=self.config["cwd"],
+                    env=env,
+                )
+            except (OSError, native_protocol.ProtocolError) as exc:
+                raise WorkerError(
+                    f"the opencode configuration probe could not start: {exc}"
+                ) from None
+            try:
+                code = await asyncio.wait_for(probe.wait(), PROBE_TIMEOUT)
+            except TimeoutError:
+                raise WorkerError("the opencode configuration probe timed out") from None
+            finally:
+                if probe.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        probe.kill()
+                    await probe.wait()
+            written = os.lseek(sink, 0, os.SEEK_CUR)
+            if code != 0 or written > PROBE_LIMIT:
+                raise WorkerError("the opencode configuration probe failed")
+            out = os.pread(sink, written, 0)
         finally:
-            if probe.returncode is None:
-                with contextlib.suppress(ProcessLookupError):
-                    probe.kill()
-                await probe.wait()
-        if code != 0 or len(out) > PROBE_LIMIT:
-            raise WorkerError("the opencode configuration probe failed")
+            os.close(sink)
         try:
             resolved = json.loads(out)
             overrides = opencode.mcp_password_overrides(resolved)
@@ -2412,6 +2475,11 @@ class Worker:
                 return self.receipt(request, receipt)
         except (native_state.LockBusy, storage.LockBusy):
             return self.error(request, "busy", "another launch is in progress; try Send now again")
+        except AdmissionRefused as exc:
+            # Only entering `queued_admission` raises it, BEFORE the claim: nothing was claimed
+            # or written, so it is a definite refusal, never "unavailable" (a 503 the pane must
+            # read as "status unknown"). The message stays queued; FIFO dispatch settles it.
+            return self.error(request, "stale", str(exc))
         except native_journal.JournalError as exc:
             if exc.code not in {"conflict", "invalid", "busy"}:
                 self.stop_child()  # no further write without durable evidence

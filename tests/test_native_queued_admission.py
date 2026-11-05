@@ -303,3 +303,32 @@ async def test_send_again_from_two_tabs_is_delivered_once(host, project):
         and "".join(i.get("text", "") for i in f["frame"]["params"]["input"]) == "waiting"
     ]
     assert len(starts) == 1
+
+
+@pytest.mark.anyio
+async def test_send_now_after_the_agent_changed_is_a_definite_refusal(
+    host, project, launcher, tmp_home
+):
+    """Send now re-runs the queued admission before its claim (#1538). A refusal there is
+    definite — nothing was claimed or written — so it is a 409 the pane shows as "not applied",
+    never a 503 it must read as "status unknown" and offer to retry (2026-11-05: the operator
+    re-sent the same guidance twice under "Send now status is unknown")."""
+    key, first, queued = await _busy_with_one_queued(project)
+    for _ in range(200):
+        events = (await runtime.events(key, after=0))["events"]
+        if any(e["kind"] == "turn_started" for e in events):
+            break
+        await asyncio.sleep(0.02)
+    launcher.unlink()  # the source no longer resolves the way it did at launch
+    operation = ident()
+    with pytest.raises(runtime.StructuredError) as error:
+        await runtime.send_now(key, operation_id=operation, turn_id=first, queued_turn_id=queued)
+    assert error.value.status == 409, error.value.detail
+    assert "agent changed" in error.value.detail
+    root = native_runtime._journal_root(registry.get(ENGINES["claude"]))
+    journal = native_journal.read(root, key.partition(":")[2])
+    assert operation not in journal.operations  # nothing was claimed
+    assert journal.operations[queued].handoff == "queued"  # FIFO dispatch still settles it
+    assert len(_users(project)) == 1
+    turn = await _refused(key, queued, project)
+    assert turn["not_sent"]["code"] == "agent_changed"

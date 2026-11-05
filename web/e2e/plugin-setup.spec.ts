@@ -54,6 +54,8 @@ async function fixture(page: Page, staged = false) {
     const path = new URL(r.request().url()).pathname;
     if (r.request().method() === "GET") {
       if (path === "/api/plugins") return r.fulfill({ json: data });
+      // #1852: what Enable would change — read before Enable is offered.
+      if (path.endsWith("/activation")) return r.fulfill({ json: { current: null, next: null, older: false, refusals: [] } });
       const found = data.operations.find(o => path.endsWith(o.id));
       return r.fulfill({ status: found ? 200 : 409, json: found ?? { detail: "plugin operation not found" } });
     }

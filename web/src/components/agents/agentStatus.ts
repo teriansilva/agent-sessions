@@ -11,7 +11,7 @@
  *  Nothing here names an engine: grouping reads the manifest's `api.source`. */
 import { isActive } from "../../app/engineRoster";
 import type { EngineInfo, EngineProblem } from "../../types/api";
-import type { PluginCatalog, PluginInstallation, PluginManifest } from "../../types/plugins";
+import type { PluginCatalog, PluginInstallation, PluginManifest, PluginReview } from "../../types/plugins";
 import { pendingOperation, setupPath, verifiedGeneration } from "../plugins/model";
 
 /** An LED tone (docs/design.md §3): up = working, deg = needs the operator, down = broken,
@@ -93,15 +93,37 @@ function installStatus(id: string, data: PluginCatalog | null): Status | null {
   return null;
 }
 
+/** The catalog entry a leftover copy is stale against (#1852): the installable entry for its
+ *  agent, when its recipe is no longer the one this copy was installed from (the same comparison
+ *  as "Update available") and the copy was never enabled. A copy that was once active is a kept
+ *  version — a deliberate Roll back choice, not a leftover. Null when the copy is current, local
+ *  (it has no catalog relation), was once enabled, or the catalog is not known. */
+export function staleAgainst(
+  review: PluginReview | null | undefined,
+  generation: string | null | undefined,
+  data: PluginCatalog | null,
+) {
+  if (!review || !generation || review.source === "local" || !data) return null;
+  const kept = data.operations.some(
+    (o) => o.plugin_id === review.plugin_id && o.kind === "activate" && o.state === "complete" && o.generation_id === generation,
+  );
+  const entry = data.catalog.find((c) => c.manifest.identity.id === review.plugin_id);
+  return !kept && entry && entry.installable !== false && entry.digest !== review.recipe_digest ? entry : null;
+}
+
 /** Where the operator signs in to agent `id` again (a failed turn's Sign in): setup's sign-in
  *  step for its candidate generation when one waits that is not the active one (sign-in only ever
- *  runs on an inactive generation), else setup for the agent, which reviews a new generation to
- *  sign in with. Without the catalog, the agent's setup. */
+ *  runs on an inactive generation) and is not stale, else setup for the agent, which reviews a
+ *  new generation from the current catalog to sign in with. A stale leftover is never the target
+ *  (#1852): enabling it after signing in once replaced a newer host binary. Without the catalog,
+ *  the agent's setup. */
 export function signinPath(id: string, data: PluginCatalog | null): string {
   const row = data?.plugins.find((p) => p.id === id);
   const waiting = row?.candidate && row.candidate !== row.active ? row.candidate : null;
   const candidate = waiting ? row?.generations?.find((g) => g.id === waiting) : undefined;
-  return candidate ? setupPath({ plugin: id, generation: candidate.id }) : setupPath({ plugin: id });
+  return candidate && !staleAgainst(candidate.review, candidate.id, data)
+    ? setupPath({ plugin: id, generation: candidate.id })
+    : setupPath({ plugin: id });
 }
 
 /** One LIVE engine's status. */

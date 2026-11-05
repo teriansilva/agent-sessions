@@ -891,3 +891,22 @@ def test_the_alerts_check_on_enable_honours_the_loop_switch(api, monkeypatch):
     )
     __import__("time").sleep(0.3)
     assert swept == []
+
+
+def test_activation_preview_is_read_only_behind_login_and_activate_refuses_below_floor(
+    api, recipe, monkeypatch
+):
+    """#1852: what Enable would change is readable before it, and the server refuses it."""
+    from test_plugin_manager import _api_client, _roster, verified_at
+
+    client, headers, _ = api
+    _roster(monkeypatch, _api_client("fixture"))
+    gen = verified_at(recipe, "2.1.286")
+    path = f"/api/plugins/fixture/generations/{gen}/activation"
+    assert client.get(path).status_code == 401
+    preview = client.get(path, headers=headers).json()
+    assert preview["next"] == "2.1.286" and preview["refusals"][0]["floor"] == "2.1.287"
+    body = {"request_id": request_id(), "plugin_id": "fixture", "generation_id": gen}
+    refused = client.post("/api/plugins/activate", headers=headers, json=body)
+    assert refused.status_code == 409 and "Fixture — API" in refused.json()["detail"]
+    assert manager.snapshot()["plugins"]["fixture"]["active"] is None

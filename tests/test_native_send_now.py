@@ -397,6 +397,31 @@ async def test_send_now_before_native_turn_ack_keeps_original_input_queued(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("code", sorted(native_worker.AdmissionRefused.MESSAGES))
+async def test_send_now_admission_refusal_is_definite_and_keeps_the_queue(
+    conversation, monkeypatch, code
+):
+    """Admission is rechecked before the claim (#1538): its refusal is a definite `stale`
+    (409), never `unavailable` (503, which the pane must read as "status unknown")."""
+    worker, queued, control = prepared_worker(conversation, monkeypatch)
+
+    @contextlib.contextmanager
+    def refuse():
+        raise native_worker.AdmissionRefused(code)
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(worker, "queued_admission", refuse)
+    result = await worker.effect(control)
+    assert result["error"]["code"] == "stale"
+    assert result["error"]["message"] == native_worker.AdmissionRefused.MESSAGES[code]
+    assert native_runtime._ERRORS[result["error"]["code"]] == 409
+    assert worker.queued == [queued["params"]]
+    journal = native_journal.read(*conversation[:2])
+    assert control["params"]["operation_id"] not in journal.operations
+    assert journal.operations[queued["params"]["operation_id"]].handoff == "queued"
+
+
+@pytest.mark.anyio
 async def test_click_racing_completion_during_claim_keeps_original_queue(conversation, monkeypatch):
     worker, queued, control = prepared_worker(conversation, monkeypatch)
     original_claim = native_journal.claim

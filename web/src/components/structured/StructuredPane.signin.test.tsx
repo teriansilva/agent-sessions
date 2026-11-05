@@ -150,3 +150,41 @@ test("signinPath never sends sign-in to the active generation", () => {
     setupPath({ plugin: id, generation: "g-new" }),
   );
 });
+
+/** #1852: a leftover copy installed from an older catalog recipe is never the sign-in target. */
+function withCandidate(review: Partial<PluginGeneration["review"]> | null, entry?: { digest: string; installable?: boolean }) {
+  const data = catalog({ active: null, candidate: "g-old" });
+  data.plugins[0].generations = [
+    { id: "g-old", review: review && { plugin_id: SOURCE.id, source: "signed", recipe_digest: "old", ...review } } as unknown as PluginGeneration,
+  ];
+  data.catalog = entry ? [{ manifest: { identity: { id: SOURCE.id, label: SOURCE.label, publisher: "p", version: "2" } }, ...entry }] : [];
+  return data;
+}
+
+test("signinPath skips a stale candidate and keeps a current, local or uncatalogued one", () => {
+  const id = SOURCE.id;
+  const atGeneration = setupPath({ plugin: id, generation: "g-old" });
+  expect(signinPath(id, withCandidate({}, { digest: "new" }))).toBe(setupPath({ plugin: id }));
+  expect(signinPath(id, withCandidate({ source: "bundled" }, { digest: "new" }))).toBe(setupPath({ plugin: id }));
+  expect(signinPath(id, withCandidate({}, { digest: "old" }))).toBe(atGeneration);
+  expect(signinPath(id, withCandidate({ source: "local" }, { digest: "new" }))).toBe(atGeneration);
+  expect(signinPath(id, withCandidate({}, { digest: "new", installable: false }))).toBe(atGeneration);
+  expect(signinPath(id, withCandidate({}))).toBe(atGeneration);
+  // A once-enabled copy is a kept version, not a leftover.
+  const kept = withCandidate({}, { digest: "new" });
+  kept.operations = [{ plugin_id: id, kind: "activate", state: "complete", generation_id: "g-old" } as PluginCatalog["operations"][number]];
+  expect(signinPath(id, kept)).toBe(atGeneration);
+});
+
+test("a stale candidate's Sign in opens a fresh setup and says the new copy need not be enabled", async () => {
+  vi.mocked(api.plugins).mockResolvedValue(withCandidate({}, { digest: "new" }));
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap([turn({ remedy: "signin" })]));
+  renderPane();
+  const note = await screen.findByTestId("structured-signin-via-setup");
+  expect(note).toHaveTextContent("No current spare copy");
+  expect(note).toHaveTextContent("you don’t need to enable the new copy");
+  expect(screen.getByRole("link", { name: `Sign in to ${SOURCE.label}` })).toHaveAttribute(
+    "href",
+    setupPath({ plugin: SOURCE.id }),
+  );
+});

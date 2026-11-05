@@ -863,6 +863,7 @@ def _change(
 
     with storage.locked("worker", wait=0), storage.locked("launch"):
         expire_ready_signins()
+        by_id = _live_roster()
         result = _commit_change(
             request_id,
             plugin_id,
@@ -870,7 +871,8 @@ def _change(
             generation_id,
             expected_active,
             expected_revision,
-            known_provider=plugin_id in registry.capture().by_id,
+            known_provider=plugin_id in by_id,
+            roster=by_id,
         )
         registry.sync_committed()  # also retried for an existing id after a lost response
         return result
@@ -885,6 +887,7 @@ def _commit_change(
     expected_revision=_UNSPECIFIED,
     *,
     known_provider: bool,
+    roster,
 ) -> dict:
     request_id = _operation_id(request_id)
     payload = {"plugin_id": plugin_id, "generation_id": generation_id}
@@ -941,6 +944,7 @@ def _commit_change(
                 )
             ):
                 raise ManagerError("required verification has not passed for this installation")
+            _refuse_below_floor(plugin_id, gen, prov, roster)
             row.update(active=generation_id, enabled=True)
         else:
             row["enabled"] = False
@@ -967,6 +971,86 @@ def _commit_change(
         # for actual revocation even when the count or ordinary byte limit was reached.
         _write_roster(path, doc, revocation=revocation)
         return copy.deepcopy(item)
+
+
+def _live_roster():
+    """The live providers by id: what activation's floor guard and its preview ask (#1852)."""
+    from ..engines import registry
+
+    return registry.capture().by_id
+
+
+def generation_version(gen: dict) -> str | None:
+    """The version a generation runs (#1852): ONLY what its verified CLI reported, normalised to
+    `X.Y.Z`. A missing or malformed report is None — never the manifest's pinned version, which
+    would turn an executable nobody measured into a safe-looking enable."""
+    from .. import native_runtime
+
+    for r in (gen.get("verification") or {}).get("results") or []:
+        if r.get("check") == "version":
+            parsed = native_runtime.parse_version(r.get("version"))
+            return ".".join(map(str, parsed)) if parsed else None
+    return None
+
+
+def _refuse_below_floor(plugin_id: str, gen: dict, prov: PluginProvider, roster) -> None:
+    """Never enable a version an enabled API client of this agent cannot run (#1852).
+
+    Refused, not confirmed: the way to run it anyway is to disable that client first, which
+    takes it out of the roster this reads. Fail closed on an unreadable version, as readiness.
+    """
+    from .. import native_runtime
+
+    version = generation_version(gen)
+    refusals = native_runtime.floor_refusals(
+        plugin_id, native_runtime.parse_version(version), roster
+    )
+    if not refusals:
+        return
+    label = prov.manifest.identity.label
+    shown = version or "this version"
+    needs = "; ".join(f"{r['label']} needs {label} {r['floor']} or later" for r in refusals)
+    clients = " and ".join(r["label"] for r in refusals)
+    raise ManagerError(
+        f"Enabling {label} {shown} would make {clients} unavailable: {needs}. Nothing was "
+        f"changed. Install the catalog's version, or disable {clients} first to run {shown}."
+    )
+
+
+def activation_preview(plugin_id: str, generation_id: str) -> dict:
+    """What enabling this generation changes (#1852), read before the operator confirms: the
+    version running now, the version it would run, and the API clients it would refuse for.
+
+    `current` comes from the managed active generation's verified record, or from the live
+    binary's `--version` only where `native_runtime.readiness` already asks it (the source of a
+    live API client) — no binary is run here that the roster does not already probe.
+    """
+    from .. import native_runtime
+
+    gen = generation(plugin_id, generation_id)
+    roster = _live_roster()
+    row = snapshot()["plugins"].get(plugin_id) or {}
+    nxt = generation_version(gen)
+    current = None
+    live = roster.get(plugin_id)
+    if row.get("enabled") and row.get("active") in (row.get("generations") or {}):
+        current = generation_version(row["generations"][row["active"]])
+    elif live is not None and any(
+        getattr(getattr(p.manifest, "api", None), "source", None) == plugin_id
+        for p in roster.values()
+    ):
+        try:
+            found = native_runtime.native_version(live.entrypoint_path())
+        except Exception:  # noqa: BLE001 — no readable binary: the current version is unknown
+            found = None
+        current = ".".join(map(str, found)) if found else None
+    now, then = native_runtime.parse_version(current), native_runtime.parse_version(nxt)
+    return {
+        "current": current,
+        "next": nxt,
+        "older": now is not None and then is not None and then < now,
+        "refusals": native_runtime.floor_refusals(plugin_id, then, roster),
+    }
 
 
 def overlay(loaded):

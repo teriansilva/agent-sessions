@@ -84,3 +84,21 @@ test("with only the active copy installed, Sign in says it opens setup and disab
   // Opening setup is a navigation, never a disable / activate / any other write.
   expect(writes.filter((u) => /\/api\/plugins\//.test(u))).toEqual([]);
 });
+
+// #1852: the waiting candidate was a leftover installed from an OLDER catalog recipe. Signing in
+// there and enabling it replaced a newer host binary and disabled the API client. A stale copy is
+// never the target: Sign in opens a fresh setup from the current catalog instead.
+test("a stale leftover copy is never where Sign in goes", async ({ page }) => {
+  await setup(page);
+  await page.route("**/api/plugins", (r) => r.fulfill({ json: {
+    plugins: [{ id: SOURCE.source, enabled: null, active: null, candidate: "gen-old",
+      generations: [{ id: "gen-old", review: { plugin_id: SOURCE.source, source: "bundled", recipe_digest: "a".repeat(64) } }] }],
+    catalog: [{ manifest: { identity: { id: SOURCE.source, label: LABEL, publisher: "p", version: "2.1.310" } }, digest: "b".repeat(64) }],
+    operations: [], feed: { state: "ready", sequence: 1, error: null },
+  } }));
+  await page.goto(`/s/${ENGINE}/${ID}`);
+  const failed = page.getByTestId("structured-turn").nth(1);
+  const link = failed.getByRole("link", { name: `Sign in to ${LABEL}` });
+  await expect(failed.getByTestId("structured-signin-via-setup")).toContainText("you don’t need to enable the new copy");
+  await expect(link).toHaveAttribute("href", "/settings/agents/setup/new?plugin=" + SOURCE.source);
+});

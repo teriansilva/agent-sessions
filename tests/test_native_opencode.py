@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import uuid
 from pathlib import Path
@@ -576,13 +577,10 @@ async def test_spawn_holds_shared_store_admission_through_process_creation(
         if argv[1:] == ("debug", "config"):
             seen["probe_exclusive"], seen["probe_env"] = exclusive, kwargs["env"]
 
+            os.write(kwargs["stdout"], b'{"mcp": {}}')
+
             class Probe:
                 returncode = 0
-
-                class stdout:  # noqa: N801
-                    @staticmethod
-                    async def read(_n):
-                        return b'{"mcp": {}}'
 
                 @staticmethod
                 async def wait():
@@ -820,6 +818,67 @@ async def test_local_mcp_servers_never_get_the_listener_password(host, project, 
     assert marker.encode() not in _all_state_bytes(tmp_path)
     assert marker not in json.dumps(await runtime.events(key, after=0))
     assert marker not in json.dumps(host.launches)
+
+
+@pytest.mark.anyio
+async def test_a_resolved_config_over_8_kb_is_read_whole(host, project):
+    """opencode cuts `debug config` at 8192 bytes on a pipe (the fake does too): the probe reads
+    a regular file, so a config past 8 KB still configures the launch (2026-11-05)."""
+    operator = _mcp_operator("big")
+    operator["instructions"] = [f"rules/{i:04d}-{'x' * 90}.md" for i in range(120)]
+    assert len(json.dumps(operator)) > 8192
+    _control("operator.json", json.dumps(operator))
+    await _create(project)
+    assert {c["name"] for c in _mcp_children(project)} == {"alpha", "beta"}
+
+
+_BURST = (
+    "import sys\n"
+    "accepted = 0\n"
+    "try:\n"
+    "    for _ in range(32 * 256):\n"
+    "        accepted += sys.stdout.buffer.raw.write(b'x' * 4096)\n"
+    "except OSError:\n"
+    "    pass\n"
+    "open(sys.argv[-1], 'w').write(str(accepted))\n"
+)
+
+
+@pytest.mark.parametrize("libc", [False, True], ids=["os", "libc"])
+def test_the_probe_sink_cannot_grow_past_its_bound(tmp_path, monkeypatch, libc):
+    """Hermes on this fix: the regular file must stay bounded like the pipe was — a 32 MiB burst
+    into the sink leaves it at exactly its limit, enforced by the kernel, not by a poll. Also
+    through libc, for a standalone CPython built without `os.memfd_create`."""
+    if libc:
+        monkeypatch.delattr(os, "memfd_create", raising=False)
+    elif not hasattr(os, "memfd_create"):
+        pytest.skip("this Python has no os.memfd_create")
+    sink = native_worker._probe_sink(1025)
+    try:
+        record = tmp_path / "accepted"
+        subprocess.run([sys.executable, "-c", _BURST, str(record)], stdout=sink, check=True)
+        assert os.fstat(sink).st_size == 1025
+        assert int(record.read_text()) <= 1025
+        assert os.lseek(sink, 0, os.SEEK_CUR) <= 1025
+        assert oct(os.fstat(sink).st_mode & 0o777) == oct(0o600)
+    finally:
+        os.close(sink)
+
+
+@pytest.mark.anyio
+async def test_an_oversized_config_probe_is_refused_and_bounded(tmp_home, tmp_path, monkeypatch):
+    """A probe that writes 32 MiB as fast as it can: none of it past PROBE_LIMIT + 1 is accepted,
+    and the launch is refused."""
+    record = tmp_path / "accepted"
+    binary = tmp_path / "opencode"
+    script = _BURST.replace("sys.argv[-1]", repr(str(record)))
+    binary.write_text(f"#!{sys.executable}\n{script}")
+    binary.chmod(0o755)
+    monkeypatch.setattr(native_worker, "PROBE_LIMIT", 1024)
+    worker = native_worker.Worker(_config(tmp_path, binary=str(binary)), tmp_path)
+    with pytest.raises(native_worker.WorkerError, match="configuration"):
+        await worker.mcp_overrides()
+    assert int(record.read_text()) <= 1025
 
 
 @pytest.mark.anyio

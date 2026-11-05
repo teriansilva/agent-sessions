@@ -16,6 +16,7 @@ textarea.input { min-height: 180px; resize: vertical; }
 .note { padding: 12px 14px; border-left: 2px solid var(--status-degraded); background: color-mix(in srgb, var(--status-degraded) 10%, var(--bg-2)); line-height: 1.5; color: var(--text); overflow-wrap: anywhere; }
 .error { border-color: var(--status-down); color: var(--danger-text); }
 .ok { color: var(--ok-text); }
+.older { font: 600 var(--fs-micro) var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--warn-text); }
 .kv { display: grid; grid-template-columns: minmax(90px, .35fr) minmax(0, 1fr); gap: 12px; margin: 0; }
 .kv dt { color: var(--text-2); } .kv dd { margin: 0; overflow-wrap: anywhere; min-width: 0; }
 .check { min-height: 44px; display: flex; align-items: center; gap: 12px; padding: 8px 0; cursor: pointer; }

@@ -1055,3 +1055,148 @@ def test_bundled_review_installs_exact_artifacts_without_remote_catalog(
     prov = manager.provider("fixture", row["generations"][result["id"]])
     assert Path(prov.entrypoint_path()).read_bytes() == b"#!/bin/true\n"
     assert not (storage.root() / "feed.json").exists()
+
+
+# --- #1852: an API client's native floor guards activation of its source ------------------------
+
+
+def _api_client(source, kind="claude-stream-json", engine="fixture-api"):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        manifest=SimpleNamespace(
+            id=engine,
+            runtime="api",
+            api=SimpleNamespace(kind=kind, source=source),
+            identity=SimpleNamespace(label="Fixture — API"),
+        )
+    )
+
+
+def _roster(monkeypatch, *clients):
+    by_id = {c.manifest.id: c for c in clients}
+    monkeypatch.setattr(manager, "_live_roster", lambda: by_id)
+
+
+def verified_at(recipe, reported):
+    """A verified generation whose `version` check recorded `reported` (None: no version)."""
+    generation = installed(recipe)
+    row = manager.snapshot()["plugins"]["fixture"]
+    prov = manager.provider("fixture", row["generations"][generation])
+    results = [{"check": c, "passed": True} for c in manager.required_checks(prov)]
+    for r in results:
+        if r["check"] == "version" and reported is not None:
+            r["version"] = reported
+    manager.record_verification("fixture", generation, results)
+    return generation
+
+
+def test_activation_below_an_api_clients_floor_is_refused_and_changes_nothing(recipe, monkeypatch):
+    _roster(monkeypatch, _api_client("fixture"))
+    gen = verified_at(recipe, "2.1.286 (Claude Code)")
+    before = manager.snapshot()
+    with pytest.raises(manager.ManagerError) as refused:
+        manager.activate(request_id(), "fixture", gen)
+    message = str(refused.value)
+    assert "Fixture — API" in message and "2.1.287 or later" in message and "2.1.286" in message
+    assert "disable Fixture — API first" in message
+    after = manager.snapshot()
+    assert after["plugins"]["fixture"]["active"] is None
+    assert after["operations"] == before["operations"]
+    assert after.get("roster_revision") == before.get("roster_revision")
+
+
+def test_activation_at_or_above_the_floor_and_unrelated_clients_proceed(recipe, monkeypatch):
+    # A client of ANOTHER source never blocks; this source at its floor is enabled.
+    _roster(monkeypatch, _api_client("fixture"), _api_client("other", engine="other-api"))
+    gen = verified_at(recipe, "2.1.287")
+    assert manager.activate(request_id(), "fixture", gen)["state"] == "complete"
+    assert manager.snapshot()["plugins"]["fixture"]["active"] == gen
+
+
+def test_a_disabled_api_client_does_not_block_its_source(recipe, monkeypatch):
+    # Disabling the client takes it out of the roster: the operator's explicit way to run an
+    # older source anyway.
+    _roster(monkeypatch)
+    gen = verified_at(recipe, "2.1.286")
+    assert manager.activate(request_id(), "fixture", gen)["state"] == "complete"
+
+
+@pytest.mark.parametrize("reported", [None, "unknown build"])
+def test_an_unreadable_version_fails_closed_only_where_a_floor_applies(
+    recipe, monkeypatch, reported
+):
+    # Only the verified CLI's report counts: a pinned version far above the floor never stands
+    # in for a missing or malformed one.
+    recipe["manifest"]["identity"]["version"] = "9.9.9"
+    _roster(monkeypatch, _api_client("fixture"))
+    gen = verified_at(recipe, reported)
+    with pytest.raises(manager.ManagerError, match="this version would make Fixture — API"):
+        manager.activate(request_id(), "fixture", gen)
+    _roster(monkeypatch)
+    assert manager.activate(request_id(), "fixture", gen)["state"] == "complete"
+
+
+def test_activation_preview_shows_current_next_older_and_the_same_refusals(recipe, monkeypatch):
+    _roster(monkeypatch)
+    first = verified_at(recipe, "2.1.318")
+    manager.activate(request_id(), "fixture", first)
+    stale = verified_at(recipe, "2.1.286 (Claude Code)")
+    _roster(monkeypatch, _api_client("fixture"))
+    assert manager.activation_preview("fixture", stale) == {
+        "current": "2.1.318",
+        "next": "2.1.286",
+        "older": True,
+        "refusals": [{"engine": "fixture-api", "label": "Fixture — API", "floor": "2.1.287"}],
+    }
+    with pytest.raises(manager.ManagerError, match="would make Fixture — API unavailable"):
+        manager.activate(request_id(), "fixture", stale)
+    newer = verified_at(recipe, "2.1.320")
+    preview = manager.activation_preview("fixture", newer)
+    assert preview["older"] is False and preview["refusals"] == []
+    with pytest.raises(manager.ManagerError, match="invalid operation id"):
+        manager.activation_preview("fixture", "../x")
+
+
+def test_activation_preview_reads_a_host_binary_only_where_readiness_does(recipe, monkeypatch):
+    from types import SimpleNamespace
+
+    from agent_sessions import native_runtime
+
+    gen = verified_at(recipe, "2.1.286")
+    asked = []
+    host = SimpleNamespace(
+        manifest=SimpleNamespace(id="fixture", runtime="pty", api=None),
+        entrypoint_path=lambda: "/host/bin/fixture",
+    )
+    monkeypatch.setattr(native_runtime, "native_version", lambda p: asked.append(p) or (2, 1, 318))
+    by_id = {"fixture": host}
+    monkeypatch.setattr(manager, "_live_roster", lambda: by_id)
+    # Nothing sources it: no binary is run, the current version is unknown.
+    assert manager.activation_preview("fixture", gen)["current"] is None and asked == []
+    client = _api_client("fixture")
+    by_id[client.manifest.id] = client
+    preview = manager.activation_preview("fixture", gen)
+    assert asked == ["/host/bin/fixture"]
+    assert preview["current"] == "2.1.318" and preview["older"] is True
+    assert [r["engine"] for r in preview["refusals"]] == ["fixture-api"]
+
+
+def test_a_bound_roll_back_below_the_floor_is_refused_too(recipe, monkeypatch):
+    # Roll back is an activation bound to the confirmed state (#1741); the floor applies to it.
+    _roster(monkeypatch)
+    older = verified_at(recipe, "2.1.286")
+    manager.activate(request_id(), "fixture", older)
+    newer = verified_at(recipe, "2.1.310")
+    manager.activate(request_id(), "fixture", newer)
+    _roster(monkeypatch, _api_client("fixture"))
+    state = manager.snapshot()
+    with pytest.raises(manager.ManagerError, match="would make Fixture — API unavailable"):
+        manager.activate(
+            request_id(),
+            "fixture",
+            older,
+            expected_active=newer,
+            expected_revision=state["roster_revision"],
+        )
+    assert manager.snapshot()["plugins"]["fixture"]["active"] == newer

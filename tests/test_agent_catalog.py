@@ -296,3 +296,30 @@ def test_refresh_cancellation_drains_worker_and_preserves_cancellation(
     assert value["last_success"] == (NOW if failure is None else None)
     with storage.locked("agent-catalog-refresh", wait=0):
         pass  # ownership only releases once the cancelled worker has finished writing
+
+
+def test_no_bundled_agent_pins_a_version_below_its_api_clients_native_floor():
+    """Ratchet (#1852): a catalog bump can never ship a console agent that its own API client
+    refuses (`native_runtime.readiness`). Enabling such a copy is refused at activation, so the
+    catalog's offer would be a dead end."""
+    from agent_sessions import native_runtime
+
+    raw = {}
+    for entry in catalog.bundled()[0]:
+        doc = feed.decode(entry.manifest_bytes)
+        raw[doc["identity"]["id"]] = doc
+    checked = 0
+    for client in raw.values():
+        api = client.get("api") or {}
+        floor = native_runtime._FLOORS.get(api.get("kind"))
+        if floor is None:
+            continue
+        source = raw[api["source"]]
+        pinned = (source.get("install") or {}).get("version") or source["identity"]["version"]
+        version = native_runtime.parse_version(pinned)
+        assert version is not None and version >= floor, (
+            f"{api['source']} {pinned} is below {client['identity']['id']}'s native floor "
+            f"{'.'.join(map(str, floor))}"
+        )
+        checked += 1
+    assert checked >= 3

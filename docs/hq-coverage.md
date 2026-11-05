@@ -439,6 +439,7 @@ POST   /api/plugins/remove                                                      
 POST   /api/plugins/review                                                        never  # runs fetched code / vendor login
 POST   /api/plugins/signin                                                        never  # runs fetched code / vendor login
 POST   /api/plugins/verify                                                        never  # runs fetched code / vendor login
+GET    /api/plugins/{plugin_id}/generations/{generation_id}/activation            never  # plugin install surface
 GET    /api/plugins/{plugin_id}/generations/{generation_id}/endpoint              never  # plugin install surface
 PATCH  /api/plugins/{plugin_id}/generations/{generation_id}/endpoint              never  # plugin install surface
 POST   /api/plugins/{plugin_id}/generations/{generation_id}/endpoint/test         never  # plugin install surface

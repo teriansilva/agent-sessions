@@ -276,6 +276,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard, cfg, must_change) -> None:
         await _call(registry.request_reload)
         return {"generation": registry.capture().generation}
 
+    @app.get("/api/plugins/{plugin_id}/generations/{generation_id}/activation", dependencies=read)
+    async def plugin_activation_preview(plugin_id: str, generation_id: str):
+        # What Enable would change (#1852): versions and the API clients the server would refuse
+        # it for. Read-only; `activate` re-checks the same refusal when it commits.
+        return await _call(manager.activation_preview, plugin_id, generation_id)
+
     @app.get("/api/plugins/{plugin_id}/generations/{generation_id}/endpoint", dependencies=read)
     async def candidate_endpoint(plugin_id: str, generation_id: str):
         await _call(_chat_candidate, plugin_id, generation_id)

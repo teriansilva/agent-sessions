@@ -67,6 +67,18 @@ export interface PluginCatalog {
   roster_generation: number;
   roster_revision: string | null;
 }
+/** GET /api/plugins/{id}/generations/{gen}/activation (#1852): what Enable would change, read
+ *  before the operator confirms. `refusals` are the live API clients the server refuses this
+ *  activation for (their native floor); `activate` re-checks the same rule when it commits. */
+export interface PluginActivationPreview {
+  /** The version running now: the managed active copy's, or the host binary's where the roster
+   *  already asks it. Null when unknown or nothing runs. */
+  current: string | null;
+  next: string | null;
+  /** `next` is lower than `current`: a downgrade. */
+  older: boolean;
+  refusals: { engine: string; label: string; floor: string }[];
+}
 export interface PluginAction {
   request_id: string;
   plugin_id: string;
