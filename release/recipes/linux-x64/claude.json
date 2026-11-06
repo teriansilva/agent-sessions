@@ -29,16 +29,16 @@
       "id": "claude",
       "label": "Claude Code",
       "publisher": "battlelab",
-      "version": "2.1.316"
+      "version": "2.1.317"
     },
     "install": {
       "authority": "registry.npmjs.org",
-      "digest": "sha256:745e1b196eb475161a185a00f5e1144d7324ec6094e21149eae719fa42481000",
+      "digest": "sha256:c33bff413c33274e404cd57378300c6a389558a4e757f9af64539326d1c53fb2",
       "entrypoint": "node_modules/@anthropic-ai/claude-code-linux-x64/claude",
       "kind": "npm-prefix",
       "package": "@anthropic-ai/claude-code-linux-x64",
       "platform": "linux-x64",
-      "version": "2.1.316"
+      "version": "2.1.317"
     },
     "instructions": {
       "files": [
@@ -150,8 +150,8 @@
     "artifacts": [
       {
         "destination": "node_modules/@anthropic-ai/claude-code-linux-x64",
-        "sha256": "745e1b196eb475161a185a00f5e1144d7324ec6094e21149eae719fa42481000",
-        "url": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.316.tgz"
+        "sha256": "c33bff413c33274e404cd57378300c6a389558a4e757f9af64539326d1c53fb2",
+        "url": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.317.tgz"
       }
     ]
   }
