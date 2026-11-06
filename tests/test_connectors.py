@@ -201,6 +201,16 @@ def test_the_bundled_manifest_chooses_only_reviewed_members():
     assert m.category in kinds.CATEGORIES and m.publisher in kinds.PUBLISHERS
 
 
+def test_the_forgejo_setup_hint_names_every_scope_the_adapter_needs():
+    """The probe reads ``/api/v1/user`` (``read:user``); a token made from a hint without it fails
+    the test with "token does not have at least one of required scope(s): [read:user]"."""
+    m = manifest.bundled()["forgejo"]
+    assert set(m.scopes) == {"read:user", "read:issue", "read:repository"}
+    assert set(m.scopes) <= kinds.AUTH_SCOPES
+    for scope in m.scopes:
+        assert scope in m.setup
+
+
 @pytest.mark.deploy_shape
 def test_the_installed_package_ships_the_bundled_manifest():
     from importlib import resources

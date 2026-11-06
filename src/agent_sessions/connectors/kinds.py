@@ -43,6 +43,7 @@ AUTH_KIND_SCHEMES = {
 #: GitHub's are the fine-grained token permissions, read-only (#1826).
 AUTH_SCOPES = frozenset(
     {
+        "read:user",
         "read:issue",
         "read:repository",
         "contents:read",

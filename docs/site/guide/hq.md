@@ -292,7 +292,8 @@ pull requests, read an issue or PR with its recent comments (a very long thread 
 its comments, and HQ says so), check a commit's CI status, and read text files at a commit. It **only reads**: there is no sending, commenting or merging through a connector.
 
 Set one up in **Settings → AI → HQ connectors**. You use your own account: create a personal
-access token in Forgejo under *Settings → Applications* with `read:issue` and `read:repository`, then:
+access token in Forgejo under *Settings → Applications* with `read:user`, `read:issue` and `read:repository`
+(the test reads the token's own account, which needs `read:user`), then:
 
 1. **Add Forgejo** from the list of available connectors.
 2. Enter its **address** (for example `https://git.example.com`) and the **access token**, then

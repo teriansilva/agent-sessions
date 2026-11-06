@@ -18,10 +18,10 @@ mode = "operator"
 [auth]
 kind = "token-header"
 scheme = "token"
-scopes = ["read:issue", "read:repository"]
+scopes = ["read:user", "read:issue", "read:repository"]
 
 [capabilities]
 read = ["repos", "issues", "pulls", "ci", "files"]
 
 [docs]
-setup = "Create a token in Forgejo under Settings → Applications with read:issue and read:repository."
+setup = "Create a token in Forgejo under Settings → Applications with read:user, read:issue and read:repository."
