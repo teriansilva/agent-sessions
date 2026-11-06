@@ -32,16 +32,16 @@
             "id": "copilot",
             "label": "GitHub Copilot CLI",
             "publisher": "battlelab",
-            "version": "1.0.103"
+            "version": "1.0.105"
         },
         "install": {
             "authority": "registry.npmjs.org",
-            "digest": "sha256:f3b064d98211b472a3e4cd0e63a9b643177a910a2189d6d3c946fd0df94323fd",
+            "digest": "sha256:aa65846d4c0c6b83e8eb0726fef3de5f38a13b3f17bffeb7674882e79f4ec2d3",
             "entrypoint": "node_modules/@github/copilot-linux-x64/copilot",
             "kind": "npm-prefix",
             "package": "@github/copilot-linux-x64",
             "platform": "linux-x64",
-            "version": "1.0.103"
+            "version": "1.0.105"
         },
         "instructions": {
             "files": [
@@ -123,8 +123,8 @@
         "artifacts": [
             {
                 "destination": "node_modules/@github/copilot-linux-x64",
-                "sha256": "f3b064d98211b472a3e4cd0e63a9b643177a910a2189d6d3c946fd0df94323fd",
-                "url": "https://registry.npmjs.org/@github/copilot-linux-x64/-/copilot-linux-x64-1.0.103.tgz"
+                "sha256": "aa65846d4c0c6b83e8eb0726fef3de5f38a13b3f17bffeb7674882e79f4ec2d3",
+                "url": "https://registry.npmjs.org/@github/copilot-linux-x64/-/copilot-linux-x64-1.0.105.tgz"
             }
         ]
     }
