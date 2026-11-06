@@ -101,6 +101,8 @@ audit and retain the relay's existing cuts for older clients. The next applicati
 carry the current signed pair too. A catalog-only update does not require users to reinstall
 BattleLab, but it does require the same public review and signing process.
 
-Catalog checks are automatic; approving upstream versions and renewing the signed metadata are
-maintainer work. The UI reports expiry and failed checks instead of claiming that the catalog
+Catalog checks are automatic. Newer upstream versions are proposed daily, after a 72-hour
+cool-down, as one pull request to the bundled catalog; it merges on its own only after an
+automated review approves its exact head and every check passes, and only when it changes
+nothing but recipes and the bundled catalog. Renewing the signed metadata is maintainer work. The UI reports expiry and failed checks instead of claiming that the catalog
 is always current. See `docs/release-signing.md` for the signing procedure.
