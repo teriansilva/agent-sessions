@@ -70,6 +70,8 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b
 
 _lock = threading.Lock()
 _typed: dict[str, float] = {}
+#: The values `register_typed` was given, apart from their fragments (provenance; see there).
+_typed_whole: dict[str, float] = {}
 #: THE REGISTRATION FENCE (#1443, Hermes on #1489). A secret becomes KNOWN in one of two ways —
 #: typed once (`register_typed`) or stored (the template-variable store's write, which holds this
 #: fence around its publish) — and a writer that redacts against the known set holds the same
@@ -484,6 +486,21 @@ def register_typed(values: list[str]) -> None:
         for v in _with_fragments(values):
             if len(v) >= SECRET_MIN:
                 _typed[v] = until
+        # Provenance for the share export's identifier check (#1714 P3): each value as it was
+        # registered, apart from the fragments derived from it. Redaction never reads this.
+        now = time.time()
+        for v in [v for v, u in _typed_whole.items() if u <= now]:
+            del _typed_whole[v]
+        for v in values:
+            if len(v) >= SECRET_MIN:
+                _typed_whole[v] = until
+
+
+def typed_whole(now: float | None = None) -> list[str]:
+    """The typed-once values still held, each as registered (never a fragment of one)."""
+    now = time.time() if now is None else now
+    with _lock:
+        return [v for v, until in _typed_whole.items() if until > now]
 
 
 def _stored_values() -> frozenset[str]:

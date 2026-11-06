@@ -81,10 +81,18 @@ def _label(kind: str) -> str:
 
 def catalog() -> dict:
     try:
-        known = imports()
+        known = imports_view()
     except state.StateError:
         known = {}  # the export picker never decides anything from the marks
     return {"items": kinds.catalog(), "imports": known}
+
+
+def imports_view() -> dict:
+    """`imports()` as a response may show it: a template or variable ID the export scan can't
+    judge clean is replaced by a placeholder key, its bundle digest kept (#1714 P3)."""
+    from . import template_kinds
+
+    return template_kinds.withhold_marks(imports())
 
 
 def export(items: object, source: object = None) -> tuple[str, bytes]:
@@ -107,13 +115,15 @@ def export(items: object, source: object = None) -> tuple[str, bytes]:
             or not kinds.id_ok(raw["kind"], raw["id"])
         ):
             raise ShareError(
-                "each item is {kind, id} of a skill, playbook or specialist", status=422
+                "each item is {kind, id} of a skill, playbook, specialist, template or variable",
+                status=422,
             )
         if (raw["kind"], raw["id"]) not in wanted:
             wanted.append((raw["kind"], raw["id"]))
     # A skill the library can't read travels as a reference, never as a broken item.
     held = {sid for sid, rev in kinds.ids("skill").items() if rev is not None}
     read: dict[tuple[str, str], dict] = {}
+    needed_by: dict[tuple[str, str], tuple[str, str]] = {}
     queue = list(wanted)
     while queue:
         kind, item_id = queue.pop(0)
@@ -122,7 +132,13 @@ def export(items: object, source: object = None) -> tuple[str, bytes]:
         try:
             data = kinds.export(kind, item_id)
         except kinds.ItemRefused as exc:
-            raise ShareError(f"{kinds.LABELS[kind]} {item_id}: {exc}", status=422) from None
+            via = needed_by.get((kind, item_id))
+            # An ID or name that itself holds a secret is never echoed back (#1814 review).
+            shown_id = "(its ID withheld)" if getattr(exc, "withhold_id", False) else item_id
+            what = f"{kinds.LABELS[kind]} {shown_id}"
+            if via is not None:
+                what += f" (needed by {_label(via[0])} {via[1]})"
+            raise ShareError(f"{what}: {exc}", status=422) from None
         if kind == "specialist":
             # A specialist's pins are requirements, never references: one the library can't
             # read refuses its export (and its bytes are proved below).
@@ -132,11 +148,16 @@ def export(items: object, source: object = None) -> tuple[str, bytes]:
                 reason = kinds._pin_reason(gone, data["version"], why)
                 raise ShareError(f"Specialist {item_id}: {reason}", status=422)
             deps = list(data["depends_on"])
+        elif kind in kinds.CARRIES_ALL:
+            deps = list(data["depends_on"])  # a template's variables: each must be exportable
         else:
             deps = [d for d in data["depends_on"] if d.split(":", 1)[1] in held]
         data["depends_on"] = deps
         read[(kind, item_id)] = data
-        queue.extend(tuple(d.split(":", 1)) for d in deps)
+        for dep in deps:
+            dep_kind, dep_id = dep.split(":", 1)
+            needed_by.setdefault((dep_kind, dep_id), (kind, item_id))
+            queue.append((dep_kind, dep_id))
         if len(read) > fmt.MAX_ITEMS:
             raise ShareError(f"a bundle holds at most {fmt.MAX_ITEMS} items", status=422)
     for (_kind, item_id), data in read.items():
@@ -149,13 +170,31 @@ def export(items: object, source: object = None) -> tuple[str, bytes]:
                     status=422,
                 )
     order = sorted(read, key=lambda k: (kinds.LEVEL[k[0]], list(read).index(k)))
+    # The ID each item travels under: its own, unless its kind names another (a template goes
+    # under a slug of its current name, never its local ID). Nothing depends on a template, so
+    # no reference changes; two of one name get `-2`, `-3`, … as an import would.
+    shipped: dict[tuple[str, str], str] = {}
+    used: dict[str, set[str]] = {}
+    for k, i in order:
+        wanted = read[(k, i)].get("bundle_id")
+        taken = used.setdefault(k, set())
+        if wanted is None:
+            shipped[(k, i)] = i
+        else:
+            # Within this file only: the importing install plans its own renames.
+            shipped[(k, i)] = next(
+                c
+                for c in [wanted] + [f"{wanted[:60].rstrip('-')}-{n}" for n in range(2, 1000)]
+                if c not in taken
+            )
+        taken.add(shipped[(k, i)])
     now = _now()
     try:
         data = fmt.write(
             [
                 {
                     "kind": k,
-                    "id": i,
+                    "id": shipped[(k, i)],
                     **{f: read[(k, i)][f] for f in ("title", "files", "depends_on")},
                 }
                 for k, i in order
@@ -194,26 +233,36 @@ def _order(bundle: fmt.Bundle) -> list[fmt.Item]:
     return placed
 
 
-def _fresh_id(kind: str, item_id: str, taken: set[str]) -> str | None:
-    if item_id not in taken:
+def _fresh_id(
+    kind: str, item_id: str, taken: set[str], avoid: frozenset[str] | set[str] = frozenset()
+) -> str | None:
+    """The item's own ID when it is free here, else `<id>-2`, `-3`, … (`_2` for a variable),
+    within the store's ID length. A renamed copy also stays clear of `avoid`."""
+    if item_id not in taken and not kinds.reserved(kind, item_id):
         return item_id
-    limit = 48 if kind in ("playbook", "specialist") else 64  # the stores' own ID lengths
+    sep, limit = kinds.RENAME.get(kind, ("-", 64))  # the stores' own ID shapes
     for n in range(2, MAX_RENAME + 1):
-        suffix = f"-{n}"
+        suffix = f"{sep}{n}"
         candidate = item_id[: limit - len(suffix)].rstrip("-_") + suffix
-        if candidate not in taken and kinds.id_ok(kind, candidate):
+        if (
+            candidate not in taken
+            and candidate not in avoid
+            and kinds.id_ok(kind, candidate)
+            and not kinds.reserved(kind, candidate)
+        ):
             return candidate
     return None
 
 
 def _bindings(bundle: fmt.Bundle | None = None) -> dict:
-    """Every id and revision the stores hold now. The specialist pool is bound only for a file
-    that carries specialists: a skills-and-playbooks import never depends on that store."""
+    """Every id and revision the stores hold now. The specialist pool, the template library and
+    the variables library are bound only for a file that carries their kind: a
+    skills-and-playbooks import never depends on those stores."""
     carried = {item.kind for item in bundle.items} if bundle is not None else set(kinds.KINDS)
     return {
         kind: kinds.ids(kind)
         for kind in kinds.KINDS
-        if kind != "specialist" or "specialist" in carried
+        if kind not in kinds.OPTIONAL or kind in carried
     }
 
 
@@ -294,6 +343,7 @@ def _plan(bundle: fmt.Bundle, local: dict, reusable: dict | None = None) -> list
     by_key = {item.key: item for item in bundle.items}
     plan: dict[str, dict] = {}
     taken = {kind: set(local.get(kind, {})) for kind in kinds.KINDS}
+    avoid: dict[str, set[str]] = {kind: set() for kind in kinds.KINDS}
     # A playbook's role skill that the bundle does not carry keeps its own name here, so no
     # renamed copy may take it: a bundled `tdd` renamed to `tdd-2` must never become the skill
     # another playbook in this file already names as `tdd-2`.
@@ -302,7 +352,10 @@ def _plan(bundle: fmt.Bundle, local: dict, reusable: dict | None = None) -> list
             requires = kinds.validate(item.kind, item.id, item.files)
         except kinds.ItemRefused:
             continue
-        taken["skill"].update(s for s in requires if f"skill:{s}" not in by_key)
+        dep_kind = kinds.DEP_KIND.get(item.kind, "skill")
+        taken[dep_kind].update(s for s in requires if f"{dep_kind}:{s}" not in by_key)
+        for kind, names in kinds.avoid(item.kind, item.id, item.files).items():
+            avoid[kind] |= names
     for item in _order(bundle):
         entry = {
             "key": item.key,
@@ -319,13 +372,12 @@ def _plan(bundle: fmt.Bundle, local: dict, reusable: dict | None = None) -> list
         plan[item.key] = entry
         try:
             requires = kinds.validate(item.kind, item.id, item.files)
+            dep_kind = kinds.DEP_KIND.get(item.kind, "skill")
             if item.kind in kinds.CARRIES_ALL:
-                absent = next((s for s in requires if f"skill:{s}" not in by_key), None)
+                absent = next((s for s in requires if f"{dep_kind}:{s}" not in by_key), None)
                 if absent is not None:
-                    raise kinds.ItemRefused(
-                        f"it pins skill {absent}, which this file doesn't carry"
-                    )
-            expected = sorted(f"skill:{s}" for s in requires if f"skill:{s}" in by_key)
+                    raise kinds.ItemRefused(kinds.absent(item.kind, absent))
+            expected = sorted(f"{dep_kind}:{s}" for s in requires if f"{dep_kind}:{s}" in by_key)
             if sorted(item.depends_on) != expected:
                 raise kinds.ItemRefused("its declared dependencies don't match its content")
             for dep in item.depends_on:
@@ -334,6 +386,12 @@ def _plan(bundle: fmt.Bundle, local: dict, reusable: dict | None = None) -> list
                         f"needs {_label(by_key[dep].kind)} {by_key[dep].id}, "
                         "which can't be imported"
                     )
+            kinds.check_uses(
+                item.kind,
+                item.id,
+                item.files,
+                {by_key[d].id: by_key[d].files for d in item.depends_on},
+            )
             found = reusable.get(fmt.tree_digest(item.files)) if item.kind == "skill" else None
             # Each local copy is reused by ONE bundled skill: two distinct skills in the file with
             # the same bytes keep two identities (the second becomes a copy of its own).
@@ -345,18 +403,20 @@ def _plan(bundle: fmt.Bundle, local: dict, reusable: dict | None = None) -> list
                 reused.add(dest)
                 entry.update(status="reused", dest=dest, digest=fmt.tree_digest(item.files))
                 continue
-            dest = _fresh_id(item.kind, item.id, taken[item.kind])
+            dest = _fresh_id(item.kind, item.id, taken[item.kind], avoid[item.kind])
             if dest is None:
                 raise kinds.ItemRefused("no free ID is left for a renamed copy")
-            renames = {
-                by_key[d].id: plan[d]["dest"] for d in item.depends_on if by_key[d].kind == "skill"
-            }
+            renames = {by_key[d].id: plan[d]["dest"] for d in item.depends_on}
             final = kinds.rewrite(item.kind, item.id, dest, item.files, renames)
             if item.kind == "specialist":
                 entry["specialist"] = _settle_view(item.files, checked)
+            shown_view = kinds.view(item.kind, dest, final)
+            if shown_view is not None:
+                entry[item.kind] = shown_view
         except kinds.ItemRefused as exc:
             entry.update(status="refused", reason=str(exc))
-            entry.pop("specialist", None)
+            for view_key in ("specialist", "template", "variable"):
+                entry.pop(view_key, None)
             continue
         taken[item.kind].add(dest)
         entry.update(
@@ -368,12 +428,16 @@ def _plan(bundle: fmt.Bundle, local: dict, reusable: dict | None = None) -> list
     return [plan[item.key] for item in bundle.items]
 
 
-def _files_view(item: fmt.Item, budget: list[int]) -> list[dict]:
+def _files_view(item: fmt.Item, budget: list[int], refused: bool = False) -> list[dict]:
+    """Each file's text for review, within the preview's budget. A refused item's text is
+    withheld: it is never imported, and it may carry what made it refused (a secret's value)."""
     out = []
     for path in sorted(item.files):
         data = item.files[path]
         row: dict = {"path": path, "size": len(data)}
-        if len(data) <= budget[0]:
+        if refused:
+            row["withheld"] = True
+        elif len(data) <= budget[0]:
             try:
                 row["text"] = data.decode("utf-8")
                 budget[0] -= len(data)
@@ -715,7 +779,12 @@ def preview(data: bytes) -> dict:
             "files": sum(len(i.files) for i in bundle.items),
         },
         "items": [
-            {**entry, "files": _files_view(bundle.item(entry["key"]), budget)}
+            {
+                **entry,
+                "files": _files_view(
+                    bundle.item(entry["key"]), budget, refused=entry["status"] == "refused"
+                ),
+            }
             for entry in head["items"]
         ],
     }
@@ -769,8 +838,9 @@ def _public(entry: dict) -> dict:
         k: entry[k]
         for k in ("key", "kind", "id", "title", "dest", "status", "reason", "depends_on", "uses")
     }
-    if "specialist" in entry:
-        out["specialist"] = entry["specialist"]
+    for view_key in ("specialist", "template", "variable"):
+        if view_key in entry:
+            out[view_key] = entry[view_key]
     return out
 
 
@@ -785,8 +855,8 @@ def _fresh(record: dict, journal: dict) -> str | None:
     for key, entry in journal["entries"].items():
         own.setdefault(key.split(":", 1)[0], set()).add(entry["dest"])
     for kind in kinds.KINDS:
-        if kind == "specialist" and kind not in record["bindings"]:
-            continue  # this preview carried no specialist, so the pool never shaped its plan
+        if kind in kinds.OPTIONAL and kind not in record["bindings"]:
+            continue  # this preview carried no item of that kind, so its store shaped no plan
         bound = {k: v for k, v in record["bindings"].get(kind, [])}
         current = {k: v for k, v in kinds.ids(kind).items() if k not in own.get(kind, set())}
         if current != bound:
@@ -1096,11 +1166,7 @@ def _apply(record: dict, journal: dict, statuses: dict, bundle: fmt.Bundle) -> N
             }
             continue
         item = bundle.item(key)
-        renames = {
-            plan[d]["id"]: statuses[d]["dest"]
-            for d in entry["depends_on"]
-            if plan[d]["kind"] == "skill"
-        }
+        renames = {plan[d]["id"]: statuses[d]["dest"] for d in entry["depends_on"]}
         try:
             final = kinds.rewrite(item.kind, item.id, entry["dest"], item.files, renames)
         except kinds.ItemRefused as exc:
@@ -1117,6 +1183,7 @@ def _apply(record: dict, journal: dict, statuses: dict, bundle: fmt.Bundle) -> N
             payload, digest = kinds.prepare(
                 item.kind,
                 final,
+                dest=entry["dest"],
                 choice=_choice(journal, entry),
                 pins=_pins(journal, plan, statuses, entry),
             )
@@ -1129,6 +1196,8 @@ def _apply(record: dict, journal: dict, statuses: dict, bundle: fmt.Bundle) -> N
                 "reason": (
                     f"Nothing was written: {exc}. Preview the file again to choose what it "
                     "runs on."
+                    if item.kind == "specialist"
+                    else f"Nothing was written: {exc}. Preview the file again to import it."
                 ),
             }
             continue
@@ -1248,9 +1317,10 @@ def _after_failure(journal: dict, entry: dict, key: str, digest: str, exc: Excep
         return {"status": "created", "dest": entry["dest"], "reason": None}
     if current is None:
         detail = _failure_text(exc)
-        if isinstance(exc, kinds.PinMoved):
-            # A pinned skill moved under the import: the same plan can never succeed, so it is
-            # settled for good and the remedy is a new preview (never "confirm again").
+        if isinstance(exc, kinds.Terminal):
+            # A pinned skill moved under the import, or the store refuses the planned name now:
+            # the same plan can never succeed, so it is settled for good and the remedy is a new
+            # preview (never "confirm again").
             reason = f"Nothing was written: {detail}. Preview the file again to import it."
             _record_outcome(journal, key, outcome="failed", retry=False, reason=reason)
             return {"status": "failed", "dest": entry["dest"], "reason": reason}

@@ -1,4 +1,5 @@
-"""What each kind contributes to a share bundle (#1714 P1: skills and playbooks; P2: specialists).
+"""What each kind contributes to a share bundle (#1714 P1: skills and playbooks; P2: specialists;
+P3: templates and variable definitions, in `template_kinds`).
 
 A kind reads its local item for export, validates and rewrites an incoming item, publishes a new
 copy through its store's own new-copy path (NOREPLACE, full validation, read-back) and answers
@@ -21,24 +22,49 @@ from ..gallery import files as skill_files
 from ..gallery import skills as skill_library
 from ..playbooks import schema, store, tomlw
 from ..playbooks.schema import SKILL_REF_RE
+from ..templates import FIELD_NAME_RE
+from ..templates import ID_RE as TEMPLATE_ID_RE
 from . import format as fmt
+from . import template_kinds
+from .template_kinds import Refused as ItemRefused
+from .template_kinds import Terminal
 
-#: Apply order across kinds (#1714 "Partial failure"): skills (and later variable definitions)
-#: first, then templates, then playbooks and specialists, then memory.
-LEVEL = {"skill": 0, "playbook": 2, "specialist": 2}
+#: Apply order across kinds (#1714 "Partial failure"): skills and variable definitions first, then
+#: templates (which need variable definitions), then playbooks and specialists, then memory.
+LEVEL = {"skill": 0, "variable": 0, "template": 1, "playbook": 2, "specialist": 2}
 KINDS = tuple(LEVEL)
 #: The Library sections a picker groups by, in order.
-LABELS = {"skill": "Skill", "playbook": "Playbook", "specialist": "Specialist"}
-#: Kinds whose every required skill must travel in the same file: a specialist's pins are what it
-#: runs with, never a reference resolved by name here (a playbook's role skills may be).
-CARRIES_ALL = frozenset({"specialist"})
+LABELS = {
+    "skill": "Skill",
+    "playbook": "Playbook",
+    "specialist": "Specialist",
+    "template": "Template",
+    "variable": "Variable",
+}
+#: The kind each kind's dependencies are: a playbook's role skills, a specialist's pinned skills,
+#: a template's library variables.
+DEP_KIND = {"playbook": "skill", "specialist": "skill", "template": "variable"}
+#: Kinds whose every dependency must travel in the same file: a specialist's pins are what it runs
+#: with, and a template's library fields are its variables; neither is ever a reference resolved
+#: by name here (a playbook's role skills may be).
+CARRIES_ALL = frozenset({"specialist", "template"})
+#: Stores bound to a preview only when the file carries their kind: a skills-and-playbooks import
+#: never depends on the specialist pool, the template library or the variables library.
+OPTIONAL = frozenset({"specialist", "template", "variable"})
+#: How a conflicting ID is renamed: `<id><sep><n>`, within the store's own ID length. A variable
+#: name has no hyphen, so it takes `_2`.
+RENAME = {
+    "skill": ("-", 64),
+    "playbook": ("-", 48),
+    "specialist": ("-", 48),
+    "template": ("-", 64),
+    "variable": ("_", 32),
+}
+
+__all__ = ["ItemRefused", "Terminal"]
 
 
-class ItemRefused(ValueError):
-    """This item cannot be exported or imported; the message is the reason, in words."""
-
-
-class PinMoved(store.Conflict):
+class PinMoved(Terminal):
     """A skill a specialist pins no longer holds the pinned revision at publication: retrying the
     same plan can never succeed, so the remedy is a new preview (never "confirm again")."""
 
@@ -425,6 +451,10 @@ def export(kind: str, item_id: str) -> dict:
             return _playbook_export(item_id)
         if kind == "specialist":
             return _specialist_export(item_id)
+        if kind == "template":
+            return template_kinds.template_export(item_id, template_kinds.secret_inventory())
+        if kind == "variable":
+            return template_kinds.variable_export(item_id, template_kinds.secret_inventory())
     except ItemRefused:
         raise
     except store.NotFound:
@@ -437,14 +467,74 @@ def export(kind: str, item_id: str) -> dict:
 
 
 def validate(kind: str, item_id: str, files: dict[str, bytes]) -> list[str]:
-    """Refuse an incoming item, or return the skill IDs it requires (its content's own word)."""
+    """Refuse an incoming item, or return the IDs (of its `DEP_KIND`) it requires: its content's
+    own word."""
     if kind == "skill":
         return _skill_validate(item_id, files)
     if kind == "playbook":
         return _playbook_validate(item_id, files)
     if kind == "specialist":
         return _specialist_validate(item_id, files)
+    if kind == "template":
+        return list(template_kinds.template_requires(item_id, files))
+    if kind == "variable":
+        template_kinds.variable_check_labels(item_id, template_kinds.variable_doc(item_id, files))
+        return []
     raise ItemRefused(f"this install can't import {kind} items yet")
+
+
+def check_uses(kind: str, item_id: str, files: dict[str, bytes], deps: dict) -> None:
+    """Refuse an item whose dependencies in the file aren't what it needs: a template's library
+    field of one kind never takes a variable of another. `deps` is `{dep id: files}`."""
+    if kind != "template":
+        return
+    for name, want in template_kinds.template_requires(item_id, files).items():
+        got = template_kinds.variable_kind(deps[name])
+        if got != want:
+            raise ItemRefused(
+                f"its field {name} needs a {want} variable, and the file's {name} is "
+                f"{'a ' + got if got else 'not readable'}"
+            )
+
+
+def absent(kind: str, dep: str) -> str:
+    """Why an item of a `CARRIES_ALL` kind is refused when the file lacks its dependency `dep`."""
+    if kind == "template":
+        return f"it uses variable {dep}, which this file doesn't carry"
+    return f"it pins skill {dep}, which this file doesn't carry"
+
+
+def view(kind: str, item_id: str, files: dict[str, bytes]) -> dict | None:
+    """What the preview shows of a template or a variable beyond its files, or `None`."""
+    if kind == "variable":
+        doc = template_kinds.variable_doc(item_id, files)
+        return {
+            "kind": doc["kind"],
+            "value_type": doc["definition"].get("value_type", "text"),
+            "arrives_empty": doc["value"] is None,
+        }
+    if kind == "template":
+        doc = template_kinds.template_doc(item_id, files)
+        return {
+            "fields": len(doc["fields"]),
+            "images": len(doc["images"]),
+            "variables": [f["name"] for f in doc["fields"] if f["source"] == "library"],
+        }
+    return None
+
+
+def reserved(kind: str, value: str) -> bool:
+    """Whether the store refuses a new item `value` that no item holds yet (see
+    `template_kinds.variable_reserved`): never planned as a destination."""
+    return kind == "variable" and template_kinds.variable_reserved(value)
+
+
+def avoid(kind: str, item_id: str, files: dict[str, bytes]) -> dict[str, set[str]]:
+    """Names a RENAMED item of another kind must not take because of this item: a renamed
+    variable never takes a field name a bundled template declares (its rewrite would clash)."""
+    if kind == "template":
+        return {"variable": template_kinds.field_names(item_id, files)}
+    return {}
 
 
 def rewrite(kind: str, item_id: str, dest: str, files: dict[str, bytes], skills: dict) -> dict:
@@ -455,11 +545,18 @@ def rewrite(kind: str, item_id: str, dest: str, files: dict[str, bytes], skills:
             raise ItemRefused(f"this playbook can't be renamed here: {exc}") from None
     if kind == "specialist":
         return _rewrite_specialist(files, skills)  # its id is not in its content
+    if kind == "template":
+        return template_kinds.template_rewrite(item_id, files, skills)  # its id isn't either
     return dict(files)
 
 
 def prepare(
-    kind: str, files: dict[str, bytes], *, choice: dict | None = None, pins: dict | None = None
+    kind: str,
+    files: dict[str, bytes],
+    *,
+    dest: str = "",
+    choice: dict | None = None,
+    pins: dict | None = None,
 ) -> tuple[object, str]:
     """What `publish` writes for this item and the digest `at` will report for it once written.
 
@@ -469,6 +566,10 @@ def prepare(
     if kind == "specialist":
         body = _specialist_prepare(files, choice, pins or {})
         return body, body_digest(body)
+    if kind == "template":
+        return template_kinds.template_prepare(dest, files)
+    if kind == "variable":
+        return template_kinds.variable_prepare(dest, files)
     return files, fmt.tree_digest(files)
 
 
@@ -478,6 +579,10 @@ def publish(kind: str, dest: str, payload) -> str:
         return _skill_publish(dest, payload)
     if kind == "specialist":
         return _specialist_publish(dest, payload)
+    if kind == "template":
+        return template_kinds.template_publish(dest, payload)
+    if kind == "variable":
+        return template_kinds.variable_publish(dest, payload)
     return _playbook_publish(dest, payload)
 
 
@@ -487,6 +592,10 @@ def at(kind: str, dest: str) -> str | None:
         return _skill_at(dest)
     if kind == "specialist":
         return _specialist_at(dest)
+    if kind == "template":
+        return template_kinds.template_at(dest)
+    if kind == "variable":
+        return template_kinds.variable_at(dest)
     return _playbook_at(dest)
 
 
@@ -496,12 +605,20 @@ def ids(kind: str) -> dict[str, str | None]:
         return _skill_ids()
     if kind == "specialist":
         return _specialist_ids()
+    if kind == "template":
+        return template_kinds.template_ids()
+    if kind == "variable":
+        return template_kinds.variable_ids()
     return _playbook_ids()
 
 
 def id_ok(kind: str, value: str) -> bool:
     if kind == "specialist":
         return isinstance(value, str) and bool(specialist_store.ID_RE.fullmatch(value))
+    if kind == "template":
+        return isinstance(value, str) and bool(TEMPLATE_ID_RE.fullmatch(value))
+    if kind == "variable":
+        return isinstance(value, str) and bool(FIELD_NAME_RE.fullmatch(value))
     try:
         store.local_id(kind, value)
     except store.StoreError:
@@ -569,6 +686,7 @@ def catalog() -> list[dict]:
                 "source": "local",
             }
         )
+    out.extend(template_kinds.catalog())
     return out
 
 

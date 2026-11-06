@@ -645,17 +645,28 @@ def _check_library_fields(fields: dict, previous: dict | None = None) -> None:
             )
 
 
-def create_template(payload: object) -> dict:
+class TemplateIdTaken(TemplateError):
+    """``create_template(tid=…)`` found that id already held: nothing was written."""
+
+
+def create_template(payload: object, *, tid: str | None = None) -> dict:
+    """A new template. Its id is minted from the name, or is exactly ``tid`` (a share-bundle
+    import, #1714 P3): then a held id raises ``TemplateIdTaken`` and nothing is written."""
     fields = validate(payload)
+    if tid is not None and (not isinstance(tid, str) or not ID_RE.fullmatch(tid)):
+        raise TemplateError("not a template id")
 
     def fn(records: list[dict]) -> dict:
+        taken = {r["id"] for r in records}
+        if tid is not None and tid in taken:
+            raise TemplateIdTaken(f"a template {tid} already exists")
         if len(records) >= TEMPLATES_MAX:
             raise TemplateError(f"too many templates (max {TEMPLATES_MAX})")
         _check_library_fields(fields)
         now = time.time()
         rec = {
             **fields,
-            "id": _mint_id(fields["name"], {r["id"] for r in records}),
+            "id": tid if tid is not None else _mint_id(fields["name"], taken),
             "created_at": now,
             "updated_at": now,
             "used_count": 0,
@@ -724,6 +735,7 @@ __all__ = [
     "NUMBER_MAX",
     "NUMBER_MAX_INT",
     "TemplateConflict",
+    "TemplateIdTaken",
     "TemplateError",
     "TemplateInventoryIncomplete",
     "TemplateNotFound",

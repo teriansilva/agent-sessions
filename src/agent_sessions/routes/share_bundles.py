@@ -138,7 +138,7 @@ def register(app, *, logged_in, csrf_guard) -> None:
         return await _guarded(_imports())
 
     async def _imports():
-        return _response({"imports": await call(service.imports)})
+        return _response({"imports": await call(service.imports_view)})
 
     @app.post(PREFIX + "/export", dependencies=[Depends(csrf_guard)])
     async def share_export(request: Request):
