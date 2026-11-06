@@ -16,6 +16,7 @@ import b from "../components/ui/actionButton.module.css";
 import { api, ApiError } from "../lib/api";
 import type { ContactDefaults, ContactVoice, VoiceSettings, VoiceSettingsPatch } from "../types/voice";
 import { languageName, playWav } from "./hqCallsAudio";
+import { VoicePicker } from "./VoicePicker";
 import h from "./HqCallsSettings.module.css";
 import styles from "./Settings.module.css";
 
@@ -46,7 +47,13 @@ interface RowProps {
   def: ContactDefaults;
   saved: ContactVoice | undefined;
   groupVoice: string;
+  /** What the dropdowns offer: saved, and still on the server. */
   voices: string[];
+  /** The server publishes no voice list: voices are typed (never inferred from `voices`). */
+  typeVoices: boolean;
+  /** What the server has now (a fresh Read list, else the saved list): a saved voice not in it
+   *  is Missing. `null`: no list to judge by, so nothing is called Missing. */
+  available: string[] | null;
   styleList: string[];
   languages: string[];
   /** Languages the server can preview in (its fixed sentences). */
@@ -60,6 +67,8 @@ function ContactRow({
   saved,
   groupVoice,
   voices,
+  typeVoices,
+  available,
   styleList,
   languages,
   previewable,
@@ -98,7 +107,7 @@ function ContactRow({
     if (!queued.current.length) confirmed.current = undefined; // the props caught up: follow them
   }, [savedKey]);
   const custom = !!saved;
-  const known = (v: string) => !voices.length || voices.includes(v);
+  const known = (v: string) => available === null || available.includes(v);
   // What an untouched row speaks (#1859): the server's resolved default, the General's own voice
   // when the server lists it, else the group voice.
   const defaultVoice = def.voice || groupVoice;
@@ -115,27 +124,33 @@ function ContactRow({
     (confirmed.current === undefined ? saved : confirmed.current) ?? {};
   /** What the row will hold once every queued edit lands (the controls compare against it). */
   const current = (): ContactVoice => queued.current.reduce((p, e) => e(p), base());
-  const save = (edit: Edit) => {
+  /** Queue an edit; resolves to whether the server took it. */
+  const save = (edit: Edit): Promise<boolean> => {
     queued.current.push(edit);
     setErr(null);
-    chain.current = chain.current.then(async () => {
+    const done = chain.current.then(async () => {
       const next = clean(edit(base())); // null: nothing left (Reset)
       const ok = await onSave(c.id, next);
       queued.current.shift();
       if (ok) confirmed.current = next;
       else setErr("Couldn’t save — please try again.");
+      return ok;
     });
-    return chain.current;
+    chain.current = done.then(() => undefined);
+    return done;
   };
-  const commitVoice = () => {
-    const v = voice.trim();
-    if ((current().voice ?? "") !== v) void save((p) => ({ ...p, voice: v || undefined }));
+  const commitVoiceAs = (typed: string) => {
+    const v = typed.trim();
+    if ((current().voice ?? "") === v) return Promise.resolve(true);
+    return save((p) => ({ ...p, voice: v || undefined }));
   };
-  const commitLang = (lang: string) => {
-    const v = (langDraft[lang] ?? "").trim();
-    if (!v || v === (current().language_voices ?? {})[lang]) return;
-    void save((p) => ({ ...p, language_voices: { ...(p.language_voices ?? {}), [lang]: v } }));
+  const commitVoice = () => void commitVoiceAs(voice);
+  const commitLangAs = (lang: string, typed: string) => {
+    const v = typed.trim();
+    if (!v || v === (current().language_voices ?? {})[lang]) return Promise.resolve(true);
+    return save((p) => ({ ...p, language_voices: { ...(p.language_voices ?? {}), [lang]: v } }));
   };
+  const commitLang = (lang: string) => void commitLangAs(lang, langDraft[lang] ?? "");
   const removeLang = (lang: string) => {
     setLangDraft((d) => {
       const n = { ...d };
@@ -171,7 +186,6 @@ function ContactRow({
 
   const langs = Object.keys(lvSaved);
   const addable = languages.filter((l) => !(l in lvSaved));
-  const listId = `${uid}-voices`;
   const voiceMissing = !!saved?.voice && !known(saved.voice);
   // Preview what a call would speak: a saved voice gone from the server falls back to the default
   // voice (the server resolves it), unless another voice is typed in its place (#1640 review 6912).
@@ -184,25 +198,26 @@ function ContactRow({
         <b>{c.name}</b>
         <span data-testid="hq-calls-contact-kind">{custom ? "Custom" : "Default"}</span>
       </div>
-      <datalist id={listId}>
-        {voices.map((v) => (
-          <option key={v} value={v} />
-        ))}
-      </datalist>
       <div className={`${h.pfield} ${h.pvoice}`}>
-        <input
+        <VoicePicker
+          voices={voices}
+          typed={typeVoices}
           className={styles.aiInput}
-          aria-label={`Voice for ${c.name}`}
-          list={listId}
-          spellCheck={false}
+          ariaLabel={`Voice for ${c.name}`}
+          emptyLabel={`Default · ${defaultVoice || `${groupWord} voice`}`}
           placeholder={defaultVoice || `${groupWord} voice`}
           value={voice}
-          onChange={(e) => setVoice(e.target.value)}
-          onBlur={commitVoice}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") commitVoice();
+          onChange={(v) => {
+            setVoice(v);
+            if (typeVoices) return; // typed: it saves when the field is left
+            // A dropdown pick is a decision: save it now. A refused save puts the dropdown back
+            // on what is stored, so choosing the same voice again is a new change and retries.
+            void commitVoiceAs(v).then((ok) => {
+              if (!ok) setVoice(current().voice ?? "");
+            });
           }}
-          data-testid="hq-calls-contact-voice"
+          onCommit={commitVoice}
+          testId="hq-calls-contact-voice"
         />
         {voiceMissing ? (
           <span className="nj-stamp is-warn" data-testid="hq-calls-contact-missing">
@@ -304,17 +319,25 @@ function ContactRow({
             return (
               <div key={lang} className={h.lvrow} data-testid="hq-calls-lv-row" data-lang={lang}>
                 <span className={h.lang}>{lang.toUpperCase()}</span>
-                <input
+                <VoicePicker
+                  voices={voices}
+                  typed={typeVoices}
                   className={styles.aiInput}
-                  aria-label={`${name} voice for ${c.name}`}
-                  list={listId}
-                  spellCheck={false}
+                  ariaLabel={`${name} voice for ${c.name}`}
                   value={langDraft[lang] ?? lvSaved[lang]}
-                  onChange={(e) => setLangDraft((d) => ({ ...d, [lang]: e.target.value }))}
-                  onBlur={() => commitLang(lang)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") commitLang(lang);
+                  onChange={(v) => {
+                    setLangDraft((d) => ({ ...d, [lang]: v }));
+                    if (typeVoices) return; // typed: it saves when the field is left
+                    void commitLangAs(lang, v).then((ok) => {
+                      if (ok) return;
+                      setLangDraft((d) => {
+                        const n = { ...d };
+                        delete n[lang]; // back to what is stored
+                        return n;
+                      });
+                    });
                   }}
+                  onCommit={() => commitLang(lang)}
                 />
                 <div className={h.pacts}>
                   {missing || !previewable.has(lang) ? null : (
@@ -371,15 +394,16 @@ function ContactRow({
                   </option>
                 ))}
               </select>
-              <input
+              <VoicePicker
+                voices={voices}
+                typed={typeVoices}
                 className={styles.aiInput}
-                aria-label={`Voice for the new language for ${c.name}`}
-                list={listId}
-                spellCheck={false}
+                ariaLabel={`Voice for the new language for ${c.name}`}
+                emptyLabel="Voice…"
                 placeholder="voice"
                 value={addVoice}
-                onChange={(e) => setAddVoice(e.target.value)}
-                data-testid="hq-calls-lv-add-voice"
+                onChange={setAddVoice}
+                testId="hq-calls-lv-add-voice"
               />
               <button
                 type="button"
@@ -402,13 +426,26 @@ export function HqCallsProfiles({
   settings,
   saveBlock,
   voiceList,
+  availableVoices,
+  voicesListed,
+  unsavedRead = false,
 }: {
   settings: VoiceSettings;
   /** A settings write through the page's single queue; the page shows what it stores. */
   saveBlock: (patch: VoiceSettingsPatch) => Promise<VoiceSettings>;
-  /** The TTS server's voices: a fresh read, else the last saved one. */
+  /** The TTS server's voices as SAVED: a General's pick saves at once, and a call only uses a
+   *  voice the saved list holds. */
   voiceList: string[];
+  /** What the server has now, for marking a saved voice Missing: a fresh Read list, else the
+   *  saved list; `null` when there is no list to judge by. Absent: `voiceList`. */
+  availableVoices?: string[] | null;
+  /** The server has a voice list (fresh or saved), even one with nothing pickable in it. Absent:
+   *  whether `voiceList` has anything. */
+  voicesListed?: boolean;
+  /** A Read list found voices the saved list lacks: they are offered here once saved. */
+  unsavedRead?: boolean;
 }) {
+  const listed = voicesListed ?? voiceList.length > 0;
   const [langErr, setLangErr] = useState<string | null>(null);
   const previewLanguages = settings.preview_languages ?? ["en"];
   const previewable = new Set(previewLanguages);
@@ -481,6 +518,12 @@ export function HqCallsProfiles({
           speaks while the call is in that language. Accents come only from voices that have them
           natively — never an imitation.
         </p>
+        {unsavedRead ? (
+          <p className={styles.hint} data-testid="hq-calls-unsaved-read">
+            <b>Read list</b> found voices that aren’t saved yet. Press <b>Save</b> above to offer
+            them here.
+          </p>
+        ) : null}
         <ul className={h.plist} data-testid="hq-calls-contacts">
           {CONTACTS.map((c) => {
             const def = settings.contact_defaults?.[c.id] ?? { group: c.id.endsWith("-man") ? "man" : "woman", style: "neutral", speed: 1 };
@@ -492,6 +535,8 @@ export function HqCallsProfiles({
                 saved={settings.contacts?.[c.id]}
                 groupVoice={settings.voices[def.group] || settings.voices.woman}
                 voices={voiceList}
+                typeVoices={!listed}
+                available={availableVoices === undefined ? (listed ? voiceList : null) : availableVoices}
                 styleList={settings.tts_styles}
                 languages={languages}
                 previewable={previewable}

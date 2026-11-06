@@ -101,13 +101,63 @@ test("a speed change saves the General's whole profile; Reset sends null", async
   await waitFor(() => expect(onSaved).toHaveBeenCalled());
 });
 
-test("a typed voice saves when the field is left, not per keystroke", async () => {
-  render(<HqCallsProfiles saveBlock={saveBlock} settings={settings()} voiceList={["aria", "nova"]} />);
-  const input = screen.getByRole("combobox", { name: "Voice for General Hana Seo" });
+test("a server with no voice list: the voice is typed, and saves when the field is left", async () => {
+  render(<HqCallsProfiles saveBlock={saveBlock} settings={settings()} voiceList={[]} />);
+  const input = screen.getByLabelText("Voice for General Hana Seo");
   await userEvent.type(input, "nova");
   expect(api.saveVoiceSettings).not.toHaveBeenCalled();
   await userEvent.tab();
   expect(api.saveVoiceSettings).toHaveBeenCalledExactlyOnceWith({ contacts: { "asia-woman": { voice: "nova" } } });
+});
+
+test("with a voice list, each voice field is a dropdown of every voice, and a pick saves at once", async () => {
+  const list = ["aria", "atlas", "ileana", "dmitri", "nova"];
+  render(<HqCallsProfiles saveBlock={saveBlock} settings={settings({ tts_voices: list })} voiceList={list} />);
+  const pick = screen.getByLabelText("Voice for General Ileana Lupu");
+  expect(pick.tagName).toBe("SELECT");
+  // Every voice is offered, whatever the field holds: a datalist only suggested matching text.
+  expect(within(pick).getAllByRole("option").map((o) => o.textContent)).toEqual([
+    "Default · aria",
+    ...list,
+  ]);
+  await userEvent.selectOptions(pick, "ileana");
+  expect(api.saveVoiceSettings).toHaveBeenCalledExactlyOnceWith({ contacts: { "romania-woman": { voice: "ileana" } } });
+});
+
+test("a refused dropdown pick goes back to what is stored, so picking it again retries (Hermes 7740)", async () => {
+  const list = ["aria", "atlas", "ileana"];
+  vi.mocked(api.saveVoiceSettings).mockRejectedValueOnce(new Error("refused"));
+  render(<HqCallsProfiles saveBlock={saveBlock} settings={settings({ tts_voices: list })} voiceList={list} />);
+  const pick = screen.getByLabelText("Voice for General Ileana Lupu");
+  await userEvent.selectOptions(pick, "ileana");
+  await screen.findByText("Couldn’t save — please try again.");
+  await waitFor(() => expect(pick).toHaveDisplayValue("Default · aria")); // back to what is stored
+  await userEvent.selectOptions(pick, "ileana"); // the same choice again is a change: it retries
+  await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(2));
+  expect(api.saveVoiceSettings).toHaveBeenLastCalledWith({ contacts: { "romania-woman": { voice: "ileana" } } });
+});
+
+test("a refused language-voice pick goes back to what is stored, so picking it again retries (Hermes 7740)", async () => {
+  const list = ["atlas", "kerstin", "jonas"];
+  const s = settings({ contacts: { "russia-man": { language_voices: { de: "kerstin" } } }, tts_voices: list, tts_languages: ["en", "de"] });
+  vi.mocked(api.saveVoiceSettings).mockRejectedValueOnce(new Error("refused"));
+  render(<HqCallsProfiles saveBlock={saveBlock} settings={s} voiceList={list} />);
+  await userEvent.click(screen.getByRole("button", { name: "Voices per language for General Dmitri Sokolov" }));
+  const de = screen.getByLabelText("German voice for General Dmitri Sokolov");
+  await userEvent.selectOptions(de, "jonas");
+  await waitFor(() => expect(de).toHaveDisplayValue("kerstin"));
+  await userEvent.selectOptions(de, "jonas");
+  await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(2));
+  expect(api.saveVoiceSettings).toHaveBeenLastCalledWith({
+    contacts: { "russia-man": { language_voices: { de: "jonas" } } },
+  });
+});
+
+test("a saved voice no longer on the server stays selectable in the dropdown, marked", () => {
+  const s = settings({ contacts: { "us-woman": { voice: "nova" } }, tts_voices: ["aria", "atlas"] });
+  render(<HqCallsProfiles saveBlock={saveBlock} settings={s} voiceList={["aria", "atlas"]} />);
+  const pick = within(row("us-woman")).getByLabelText("Voice for General Jessica Hale");
+  expect(pick).toHaveDisplayValue("nova — not on your server");
 });
 
 test("a saved voice the server no longer lists is Missing, with what speaks instead", () => {
@@ -138,23 +188,17 @@ test("a General's own default voice is what an untouched row and an expired over
     "“nova” is no longer on your server — General Lupu falls back to their own voice (ileana) until you pick one.",
   );
   // An untouched row names what it speaks: her own voice, or the group's when that is the default.
-  expect(within(row("us-woman")).getByRole("combobox", { name: "Voice for General Jessica Hale" })).toHaveAttribute(
-    "placeholder",
-    "aria",
-  );
+  expect(within(row("us-woman")).getByLabelText("Voice for General Jessica Hale")).toHaveDisplayValue("Default · aria");
 });
 
-test("an untouched General with their own listed voice shows it as the placeholder", () => {
+test("an untouched General with their own listed voice shows it as their default", () => {
   const base = settings();
   const s = settings({
     tts_voices: ["aria", "atlas", "dmitri"],
     contact_defaults: { ...base.contact_defaults, "russia-man": { group: "man", voice: "dmitri", style: "dramatic", speed: 1 } },
   });
   render(<HqCallsProfiles saveBlock={saveBlock} settings={s} voiceList={["aria", "atlas", "dmitri"]} />);
-  expect(within(row("russia-man")).getByRole("combobox", { name: "Voice for General Dmitri Sokolov" })).toHaveAttribute(
-    "placeholder",
-    "dmitri",
-  );
+  expect(within(row("russia-man")).getByLabelText("Voice for General Dmitri Sokolov")).toHaveDisplayValue("Default · dmitri");
 });
 
 test("voices per language: named controls, a missing one marked, remove and add save the profile", async () => {
@@ -180,7 +224,7 @@ test("voices per language: named controls, a missing one marked, remove and add 
     contacts: { "russia-man": { language_voices: { de: "kerstin" } } },
   });
   await userEvent.selectOptions(screen.getByRole("combobox", { name: "Language to add for General Dmitri Sokolov" }), "es");
-  await userEvent.type(screen.getByRole("combobox", { name: "Voice for the new language for General Dmitri Sokolov" }), "jonas");
+  await userEvent.selectOptions(screen.getByLabelText("Voice for the new language for General Dmitri Sokolov"), "jonas");
   await userEvent.click(screen.getByTestId("hq-calls-lv-add"));
   // Built on the latest INTENDED profile: the French voice just removed is not sent back (#1640).
   expect(api.saveVoiceSettings).toHaveBeenLastCalledWith({
@@ -217,7 +261,7 @@ test("a language is offered with a Preview only where the server has a sentence 
   );
 });
 
-test("a missing saved voice previews the fallback a call would speak, unless another is typed (#1640 review 6912)", async () => {
+test("a missing saved voice previews the fallback a call would speak, unless another is picked (#1640 review 6912)", async () => {
   vi.mocked(api.voicePreviewContact).mockRejectedValue(new Error("x"));
   const s = settings({ contacts: { "us-woman": { voice: "nova" } }, tts_voices: ["aria", "atlas"] });
   render(<HqCallsProfiles saveBlock={saveBlock} settings={s} voiceList={["aria", "atlas"]} />);
@@ -225,9 +269,8 @@ test("a missing saved voice previews the fallback a call would speak, unless ano
   await userEvent.click(preview);
   // No voice named: the server resolves the profile, and "nova" is gone, so the Woman voice.
   expect(api.voicePreviewContact).toHaveBeenLastCalledWith("us-woman", undefined, undefined);
-  const input = screen.getByRole("combobox", { name: "Voice for General Jessica Hale" });
-  await userEvent.clear(input);
-  await userEvent.type(input, "atlas");
+  const input = screen.getByLabelText("Voice for General Jessica Hale");
+  await userEvent.selectOptions(input, "atlas");
   await waitFor(() => expect(preview).toBeEnabled());
   await userEvent.click(preview);
   expect(api.voicePreviewContact).toHaveBeenLastCalledWith("us-woman", "atlas", undefined);
@@ -296,7 +339,7 @@ test("a refused edit never rides along with a later one (#1640)", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Voices per language for General Dmitri Sokolov" }));
   await userEvent.click(screen.getByRole("button", { name: "Remove the French voice for General Dmitri Sokolov" }));
   await userEvent.selectOptions(screen.getByRole("combobox", { name: "Language to add for General Dmitri Sokolov" }), "es");
-  await userEvent.type(screen.getByRole("combobox", { name: "Voice for the new language for General Dmitri Sokolov" }), "jonas");
+  await userEvent.selectOptions(screen.getByLabelText("Voice for the new language for General Dmitri Sokolov"), "jonas");
   await userEvent.click(screen.getByTestId("hq-calls-lv-add")); // queued behind the removal
   fail(new Error("refused")); // the removal is refused …
   await vi.waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(2));
@@ -311,7 +354,7 @@ test("a voice being typed survives an earlier edit of the same row landing (#164
   vi.mocked(api.saveVoiceSettings).mockImplementationOnce(() => new Promise((r) => (answer = r)));
   const { rerender } = render(<HqCallsProfiles saveBlock={saveBlock} settings={settings()} voiceList={[]} />);
   await userEvent.selectOptions(screen.getByRole("combobox", { name: "Speed for General Jessica Hale" }), "1.1");
-  const input = screen.getByRole("combobox", { name: "Voice for General Jessica Hale" });
+  const input = screen.getByLabelText("Voice for General Jessica Hale");
   await userEvent.type(input, "bella"); // not committed yet: the field still has focus
   const stored = settings({ contacts: { "us-woman": { speed: 1.1 } } });
   await act(async () => answer(stored));
@@ -328,7 +371,7 @@ test("a language voice being typed survives an earlier edit of the same row land
   const { rerender } = render(<HqCallsProfiles saveBlock={saveBlock} settings={s0} voiceList={[]} />);
   await userEvent.selectOptions(screen.getByRole("combobox", { name: "Speed for General Dmitri Sokolov" }), "1.1");
   await userEvent.click(screen.getByRole("button", { name: "Voices per language for General Dmitri Sokolov" }));
-  const de = screen.getByRole("combobox", { name: "German voice for General Dmitri Sokolov" });
+  const de = screen.getByLabelText("German voice for General Dmitri Sokolov");
   await userEvent.clear(de);
   await userEvent.type(de, "jonas");
   const stored = settings({ contacts: { "russia-man": { speed: 1.1, language_voices: { de: "kerstin" } } } });

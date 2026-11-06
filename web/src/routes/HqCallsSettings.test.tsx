@@ -324,6 +324,118 @@ test("Read list records the server's voices, styles and languages on save", asyn
   expect(patch.tts_languages).toEqual(["en", "de"]);
 });
 
+test("the Woman and Man voices are dropdowns of the saved list from the start, no Read list needed", async () => {
+  const saved = ["aria", "atlas", "ember", "nova", "sage"];
+  vi.mocked(api.voiceSettings).mockResolvedValue({ ...SETTINGS, tts_voices: saved });
+  renderPage();
+  const woman = await screen.findByTestId("hq-calls-voice-woman");
+  expect(woman.tagName).toBe("SELECT");
+  expect(within(woman).getAllByRole("option").map((o) => o.textContent)).toEqual(saved);
+  expect(woman).toHaveDisplayValue("aria");
+  await userEvent.selectOptions(woman, "nova");
+  await userEvent.click(screen.getByTestId("hq-calls-save"));
+  expect(vi.mocked(api.saveVoiceSettings).mock.calls[0][0].voices).toEqual({ woman: "nova", man: "atlas" });
+});
+
+test("after Read list, the Woman and Man dropdowns offer the server's fresh list", async () => {
+  vi.mocked(api.voiceLists).mockResolvedValue({ models: ["tts"], voices: ["aria", "atlas", "ileana"] });
+  renderPage();
+  await userEvent.click(await screen.findByTestId("hq-calls-tts-read"));
+  const man = screen.getByTestId("hq-calls-voice-man");
+  await waitFor(() => expect(within(man).getAllByRole("option").map((o) => o.textContent)).toEqual(["aria", "atlas", "ileana"]));
+});
+
+test("a voice Read list found is offered to the Generals only once Save stores it (Hermes 7740)", async () => {
+  const saved = ["aria", "atlas"];
+  vi.mocked(api.voiceSettings).mockResolvedValue({ ...SETTINGS, tts_voices: saved });
+  vi.mocked(api.voiceLists).mockResolvedValue({ models: ["tts"], voices: ["aria", "atlas", "ileana"] });
+  vi.mocked(api.saveVoiceSettings).mockImplementation(async (patch) => ({
+    ...SETTINGS,
+    tts_voices: patch.tts_voices ?? saved,
+  }));
+  renderPage();
+  await userEvent.click(await screen.findByTestId("hq-calls-tts-read"));
+  const ileana = () => screen.getByLabelText("Voice for General Ileana Lupu");
+  // Read, not saved: a call would not use "ileana" yet, so her row doesn't offer it.
+  await screen.findByTestId("hq-calls-unsaved-read");
+  expect(within(ileana()).queryByRole("option", { name: "ileana" })).toBeNull();
+  await userEvent.click(screen.getByTestId("hq-calls-save"));
+  expect(vi.mocked(api.saveVoiceSettings).mock.calls[0][0].tts_voices).toEqual(["aria", "atlas", "ileana"]);
+  // Stored: now offered, and the note is gone.
+  await waitFor(() => expect(within(ileana()).getByRole("option", { name: "ileana" })).toBeInTheDocument());
+  expect(screen.queryByTestId("hq-calls-unsaved-read")).toBeNull();
+});
+
+test("a voice Read list no longer finds is marked Missing at once, for a General and a language (Hermes 7746)", async () => {
+  vi.mocked(api.voiceSettings).mockResolvedValue({
+    ...SETTINGS,
+    tts_voices: ["aria", "nova"],
+    tts_languages: ["en", "de"],
+    contacts: { "us-woman": { voice: "nova" }, "russia-man": { language_voices: { de: "nova" } } },
+  });
+  vi.mocked(api.voiceLists).mockResolvedValue({ models: ["tts"], voices: ["aria"] });
+  renderPage();
+  const jessica = await screen.findByLabelText("Voice for General Jessica Hale");
+  expect(within(jessica).getByRole("option", { name: "nova" })).toBeInTheDocument(); // saved, listed
+  await userEvent.click(screen.getByTestId("hq-calls-tts-read"));
+  const row = (id: string) => screen.getAllByTestId("hq-calls-contact").find((r) => r.dataset.contact === id)!;
+  await waitFor(() => expect(within(row("us-woman")).getByTestId("hq-calls-contact-missing")).toHaveTextContent("Missing"));
+  // Not offered as available any more: only marked, so a pick never persists a voice that left.
+  expect(jessica).toHaveDisplayValue("nova — not on your server");
+  expect(within(jessica).queryByRole("option", { name: "nova" })).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "Voices per language for General Dmitri Sokolov" }));
+  expect(within(row("russia-man")).getByTestId("hq-calls-lv-missing")).toHaveTextContent("Missing");
+});
+
+const rowOf = (id: string) => screen.getAllByTestId("hq-calls-contact").find((r) => r.dataset.contact === id)!;
+
+test("a fresh list with nothing in common with the saved one: still a dropdown, never a typed save (Hermes 7753)", async () => {
+  vi.mocked(api.voiceSettings).mockResolvedValue({
+    ...SETTINGS,
+    tts_voices: ["aria"],
+    tts_languages: ["en", "de"],
+    contacts: { "russia-man": { language_voices: { de: "aria" } } },
+  });
+  vi.mocked(api.voiceLists).mockResolvedValue({ models: ["tts"], voices: ["nova"] });
+  renderPage();
+  await userEvent.click(await screen.findByTestId("hq-calls-tts-read"));
+  await screen.findByTestId("hq-calls-unsaved-read");
+  const ileana = screen.getByLabelText("Voice for General Ileana Lupu");
+  expect(ileana.tagName).toBe("SELECT"); // nothing pickable yet, but no free text either
+  expect(within(ileana).queryByRole("option", { name: "nova" })).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "Voices per language for General Dmitri Sokolov" }));
+  expect(screen.getByLabelText("German voice for General Dmitri Sokolov").tagName).toBe("SELECT");
+  // The saved "aria" left the server: Missing.
+  expect(within(rowOf("russia-man")).getByTestId("hq-calls-lv-missing")).toHaveTextContent("Missing");
+  expect(api.saveVoiceSettings).not.toHaveBeenCalled();
+});
+
+test("a fresh EMPTY list is authoritative: every saved voice is Missing (Hermes 7753)", async () => {
+  vi.mocked(api.voiceSettings).mockResolvedValue({
+    ...SETTINGS,
+    tts_voices: ["aria", "nova"],
+    tts_languages: ["en", "de"],
+    contacts: { "us-woman": { voice: "nova" }, "russia-man": { language_voices: { de: "nova" } } },
+  });
+  vi.mocked(api.voiceLists).mockResolvedValue({ models: ["tts"], voices: [] });
+  renderPage();
+  await screen.findByLabelText("Voice for General Jessica Hale");
+  expect(within(rowOf("us-woman")).queryByTestId("hq-calls-contact-missing")).toBeNull(); // saved list: listed
+  await userEvent.click(screen.getByTestId("hq-calls-tts-read"));
+  await waitFor(() => expect(within(rowOf("us-woman")).getByTestId("hq-calls-contact-missing")).toHaveTextContent("Missing"));
+  expect(screen.getByLabelText("Voice for General Jessica Hale").tagName).toBe("SELECT");
+  await userEvent.click(screen.getByRole("button", { name: "Voices per language for General Dmitri Sokolov" }));
+  expect(within(rowOf("russia-man")).getByTestId("hq-calls-lv-missing")).toHaveTextContent("Missing");
+});
+
+test("a server that publishes no voice list: voices are typed, as before", async () => {
+  vi.mocked(api.voiceLists).mockResolvedValue({ models: ["tts"], voices: null });
+  renderPage();
+  await userEvent.click(await screen.findByTestId("hq-calls-tts-read"));
+  await waitFor(() => expect(screen.getByLabelText("Voice for General Ileana Lupu").tagName).toBe("INPUT"));
+  expect(screen.getByTestId("hq-calls-voice-woman").tagName).toBe("INPUT");
+});
+
 test("the runtime note shows when the server sends one (#1397 P4)", async () => {
   vi.mocked(api.voiceCapabilities).mockResolvedValue({
     ...CAPS,

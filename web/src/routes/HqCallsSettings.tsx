@@ -33,6 +33,7 @@ import type {
 import { playWav } from "./hqCallsAudio";
 import { HqCallsLocal } from "./HqCallsLocal";
 import { HqCallsProfiles } from "./HqCallsProfiles";
+import { VoicePicker } from "./VoicePicker";
 import { ConformanceReportView } from "./HqCallsReport";
 import styles from "./Settings.module.css";
 import h from "./HqCallsSettings.module.css";
@@ -500,7 +501,18 @@ export function HqCallsSettings() {
   const dest = caps?.destinations;
   const voiceList = lists.tts?.voices ?? null;
   // The voices each General may pick from: a fresh read of this endpoint, else the saved list.
-  const knownVoices = listsSig === sig(draft.tts) && lists.tts ? storable(lists.tts.voices) : settings.tts_voices;
+  // The server's voices, with list PRESENCE kept apart from its length (Hermes 7753):
+  // `undefined`: no Read list of THIS endpoint in this visit, so the saved list speaks for it;
+  // `null`: a Read list found the server publishes no voice list, so voices are typed;
+  // an array, even empty: a fresh list, authoritative for what is on the server now.
+  const freshVoices: string[] | null | undefined =
+    listsSig === sig(draft.tts) && lists.tts
+      ? lists.tts.voices === null
+        ? null
+        : storable(lists.tts.voices)
+      : undefined;
+  const voicesListed = freshVoices === undefined ? settings.tts_voices.length > 0 : freshVoices !== null;
+  const knownVoices = freshVoices === undefined ? settings.tts_voices : (freshVoices ?? []);
   const canTest =
     draft.stt.base_url.trim() !== "" && draft.tts.base_url.trim() !== "" && (voices.woman.trim() || voices.man.trim());
 
@@ -573,29 +585,25 @@ export function HqCallsSettings() {
       <section className={styles.section} aria-labelledby="hq-calls-voices-h">
         <h2 id="hq-calls-voices-h">Voices</h2>
         <p className={styles.hint}>
-          Every General starts with the Woman or Man voice; give any of them their own under Each
-          General's voice.
+          Each General speaks with their own voice when your speech server lists it (after adding
+          voices, press <b>Read list</b> above, then <b>Save</b>), otherwise with the Woman or Man
+          voice below. Change any General under Each General's voice.
         </p>
-        <datalist id={voicesId}>
-          {(voiceList ?? []).map((v) => (
-            <option key={v} value={v} />
-          ))}
-        </datalist>
         {(["woman", "man"] as const).map((g) => (
           <div className={styles.aiField} key={g}>
             <label className={styles.aiFieldLabel} htmlFor={`${voicesId}-${g}`}>
               {g === "woman" ? "Woman" : "Man"}
             </label>
             <div className={styles.aiKeyRow}>
-              <input
+              <VoicePicker
                 id={`${voicesId}-${g}`}
+                voices={knownVoices}
+                typed={!voicesListed}
                 className={styles.aiInput}
-                list={voicesId}
-                spellCheck={false}
                 placeholder={g === "woman" ? "aria" : "atlas"}
                 value={voices[g]}
-                onChange={(e) => setVoices({ ...voices, [g]: e.target.value })}
-                data-testid={`hq-calls-voice-${g}`}
+                onChange={(v) => setVoices({ ...voices, [g]: v })}
+                testId={`hq-calls-voice-${g}`}
               />
               <button
                 type="button"
@@ -729,7 +737,14 @@ export function HqCallsSettings() {
       <HqCallsProfiles
         settings={settings}
         saveBlock={(patch) => writeBlock(() => api.saveVoiceSettings(patch))}
-        voiceList={knownVoices}
+        // Offered: voices both SAVED and still on the server. A General's pick saves at once, and a
+        // call uses a voice only once the list holding it is saved (Save stores a fresh Read list,
+        // Hermes 7740). Checked for Missing: the fresh Read list if there is one, else the saved
+        // list, so a voice that left the server is marked at once (Hermes 7746).
+        voiceList={settings.tts_voices.filter((v) => knownVoices.includes(v))}
+        availableVoices={voicesListed ? knownVoices : null}
+        voicesListed={voicesListed}
+        unsavedRead={knownVoices.some((v) => !settings.tts_voices.includes(v))}
       />
 
       <section className={styles.section} aria-labelledby="hq-calls-dest-h">

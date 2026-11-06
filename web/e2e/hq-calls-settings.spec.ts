@@ -88,7 +88,7 @@ test("voices per language: the editor opens in place, a missing voice is named, 
   // Each language row's buttons sit on its field's line.
   for (const lang of ["de", "fr"]) {
     const r = editor.locator(`[data-testid="hq-calls-lv-row"][data-lang="${lang}"]`);
-    const input = (await r.locator("input").boundingBox())!;
+    const input = (await r.getByRole("combobox").first().boundingBox())!; // the voice field
     for (const btn of await r.getByRole("button").all()) {
       const box = (await btn.boundingBox())!;
       expect(Math.abs(box.y + box.height / 2 - (input.y + input.height / 2)), `${lang}: ${await btn.getAttribute("aria-label")}`).toBeLessThan(4);
@@ -212,5 +212,34 @@ test("speech on this machine: Use this machine saves server-side and shows the c
   // The endpoints above now show this machine; the key reads Saved, never its value.
   await expect(page.getByTestId("hq-calls-stt-url")).toHaveValue("http://127.0.0.1:8766/v1");
   await expect(page.getByTestId("hq-calls-tts-token-state")).toHaveText("Saved");
+  await noSideways(page);
+});
+
+test("the voice fields are real dropdowns of every voice the server lists, from the saved list", async ({ page }) => {
+  // The operator, 2026-11-06: "the dropdowns do not seem to work". The fields were text inputs with
+  // a datalist that only suggested matching text, and the Woman/Man list stayed empty until a
+  // Read list in the same visit. Now: a <select> of all voices, filled from the saved list.
+  const all = [
+    "aria", "atlas", "ember", "nova", "sage", "hana", "kenji", "claire", "lukas", "irina", "dmitri",
+    "jessica", "jack", "amara", "kwame", "valentina", "mateo", "ileana",
+  ];
+  const srv = await mockShell(page);
+  srv.settings = { ...SETTINGS, tts_voices: all };
+  await page.goto("/settings/ai-hq-calls");
+  const woman = page.getByTestId("hq-calls-voice-woman");
+  await woman.scrollIntoViewIfNeeded();
+  await expect(woman).toHaveJSProperty("tagName", "SELECT");
+  await expect(woman.locator("option")).toHaveText(all);
+  const ileana = page.getByRole("combobox", { name: "Voice for General Ileana Lupu" });
+  await ileana.scrollIntoViewIfNeeded();
+  await expect(ileana).toHaveJSProperty("tagName", "SELECT");
+  await expect(ileana.locator("option")).toHaveCount(all.length + 1); // and "Default · …" first
+  await ileana.selectOption("ileana");
+  await expect.poll(() => srv.saves.length).toBe(1);
+  expect(srv.saves[0]).toEqual({ contacts: { "romania-woman": { voice: "ileana" } } });
+  if (PHONE(page)) {
+    const box = (await ileana.boundingBox())!;
+    expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  }
   await noSideways(page);
 });
