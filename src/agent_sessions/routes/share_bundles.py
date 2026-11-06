@@ -148,7 +148,8 @@ def register(app, *, logged_in, csrf_guard) -> None:
         value = await _json(request, {"items", "source", "include_secrets"}, {"items"})
         if value.get("include_secrets", False) is not False:
             raise service.ShareError(
-                "secret values are never exported; secrets travel as definitions only",
+                "the export never adds a secret variable's stored value; it travels as its "
+                "definition",
                 status=422,
             )
         name, data = await call(service.export, value["items"], value.get("source"))

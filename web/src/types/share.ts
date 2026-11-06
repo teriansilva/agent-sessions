@@ -1,6 +1,6 @@
 /** Share bundles (#1714): the shapes `/api/share/*` answers. */
 
-export type ShareKind = "skill" | "playbook" | "specialist";
+export type ShareKind = "skill" | "playbook" | "specialist" | "template" | "variable";
 
 /** One exportable local item and the items it needs (`"<kind>:<id>"` keys). */
 export interface ShareCatalogItem {
@@ -11,6 +11,10 @@ export interface ShareCatalogItem {
   exportable: boolean;
   reason: string | null;
   source: string;
+  /** What travels, in words, when it is less than the item (#1714 P3: a secret's definition). */
+  note?: string | null;
+  /** A variable whose value never leaves the install (a secret or a secret file, #1714 P3). */
+  secret?: boolean;
 }
 
 /** Copies created from a file: `"<kind>:<id>" → {bundle digest, revision}`. */
@@ -27,6 +31,8 @@ export interface SharePreviewFile {
   text?: string;
   binary?: boolean;
   omitted?: boolean;
+  /** A refused item's file: its text is never sent (#1714 P3 review), only its path and size. */
+  withheld?: boolean;
 }
 
 export interface SharePreviewItem {
@@ -44,6 +50,10 @@ export interface SharePreviewItem {
   files: SharePreviewFile[];
   /** A specialist's job and what runs it here (#1714 P2). */
   specialist?: SharePreviewSpecialist;
+  /** A variable definition (#1714 P3): `arrives_empty` when the file carries no value for it. */
+  variable?: { kind: string; value_type: string; arrives_empty: boolean };
+  /** A template (#1714 P3): its field and image counts and the library variables it uses. */
+  template?: { fields: number; images: number; variables: string[] };
 }
 
 export interface ShareChoice {

@@ -8,7 +8,7 @@ import Variables from "./Variables";
 
 vi.mock("../lib/api", async () => ({
   ...await vi.importActual<typeof import("../lib/api")>("../lib/api"),
-  api: Object.fromEntries(["variables", "enableSharedVariables", "createVariable", "updateVariable", "deleteVariable", "createVariableCollection", "updateVariableCollection", "deleteVariableCollection", "projectPickerEntities", "putVariableFile", "setVariableProjects", "variableAccessLog"].map(k => [k, vi.fn()])),
+  api: Object.fromEntries(["variables", "enableSharedVariables", "createVariable", "updateVariable", "deleteVariable", "createVariableCollection", "updateVariableCollection", "deleteVariableCollection", "projectPickerEntities", "putVariableFile", "setVariableProjects", "variableAccessLog", "shareImports"].map(k => [k, vi.fn()])),
 }));
 const mocked = vi.mocked(api);
 const variable = (patch: Partial<SharedVariable> = {}): SharedVariable => ({ id: "id-host", name: "host", kind: "text", definition: { value_type: "text" }, set: true, value: "a.test", created_at: 1, updated_at: 10, ...patch });
@@ -20,12 +20,12 @@ beforeEach(() => {
   mocked.projectPickerEntities.mockResolvedValue({ projects: [{ id: "atlas", name: "Atlas iOS" }, { id: "beta", name: "Beta" }] } as never);
   mocked.variableAccessLog.mockResolvedValue({ entries: [] });
 });
-function show(state?: unknown) {
+function show(state?: unknown, search = "") {
   const router = createMemoryRouter([
     { path: "/library/variables", element: <Variables /> },
     { path: "/elsewhere", element: <p>Elsewhere</p> },
     { path: "/templates/:id", element: <p>Template editor</p> },
-  ], { initialEntries: [{ pathname: "/library/variables", state }] });
+  ], { initialEntries: [{ pathname: "/library/variables", search, state }] });
   render(<RouterProvider router={router} />);
   return router;
 }
@@ -412,4 +412,36 @@ test("a file chosen after a failed upload is the one the retry stores, under its
   const [, file, name] = mocked.putVariableFile.mock.calls[1];
   expect(file).toBe(second);
   expect(name).toBe("second.p8");
+});
+
+test("an import's Set value link lands filtered to its variable, marked imported from a file (#1714 P3)", async () => {
+  data.variables = [variable(), variable({ id: "id-tok", name: "deploy_token", kind: "secret", set: false, value: undefined })];
+  mocked.shareImports.mockResolvedValue({ imports: { "variable:deploy_token": { bundle: "b", revision: "r" } } });
+  const router = show(undefined, "?q=deploy_token");
+  const row = await screen.findByRole("article", { name: "deploy_token" });
+  expect(screen.queryByRole("article", { name: "host" })).toBeNull();
+  expect(await within(row).findByTestId("imported-from-file")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Import…" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Export…" })).toBeInTheDocument();
+  // Landing again while the page is open (the import dialog sits on it) replaces the filter.
+  await act(() => router.navigate("/library/variables?q=host"));
+  expect(await screen.findByRole("article", { name: "host" })).toBeInTheDocument();
+  expect(screen.queryByRole("article", { name: "deploy_token" })).toBeNull();
+});
+
+test("Set value lands on its variable even when a collection was selected, and again on a repeat (#1714 P3)", async () => {
+  data.variables = [variable(), variable({ id: "id-tok", name: "deploy_token", kind: "secret", set: false, value: undefined })];
+  data.collections = [{ id: "c1", name: "Prod", variable_ids: ["id-host"], created_at: 1, updated_at: 1 } as never];
+  const router = show();
+  expect(await screen.findByRole("article", { name: "host" })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /Prod/ }));
+  await act(() => router.navigate("/library/variables?q=deploy_token"));
+  expect(await screen.findByRole("article", { name: "deploy_token" })).toBeInTheDocument();
+  // The operator types another search, then follows the same link again: it applies again.
+  const search = screen.getByLabelText("Search variables");
+  await userEvent.clear(search);
+  await userEvent.type(search, "host");
+  expect(screen.queryByRole("article", { name: "deploy_token" })).toBeNull();
+  await act(() => router.navigate("/library/variables?q=deploy_token"));
+  expect(await screen.findByRole("article", { name: "deploy_token" })).toBeInTheDocument();
 });

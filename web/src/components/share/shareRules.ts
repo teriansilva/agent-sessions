@@ -1,6 +1,7 @@
 /** Pure rules of the share dialogs (#1714). The server decides at confirm; these mirror it so the
  *  picker and the preview show the same answer before the operator commits. */
 import { engineName } from "../../app/engineRoster";
+import { VARIABLES_PATH } from "../../lib/routes";
 import type {
   ShareCatalog,
   ShareChoice,
@@ -195,3 +196,8 @@ export function choiceProblem(item: SharePreviewItem, choice: ShareChoice, agent
     return `${engineName(choice.engine)} cannot load skills, and this specialist pins skills. Choose an agent that can.`;
   return null;
 }
+
+// ---- templates and variables (#1714 P3) ---------------------------------------------------------
+
+/** Library → Variables, filtered to one variable (where an empty secret is filled in). */
+export const variableLink = (name: string) => `${VARIABLES_PATH}?q=${encodeURIComponent(name)}`;

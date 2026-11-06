@@ -1,4 +1,5 @@
-/** Export… / Import… for Library → Skills and → Playbooks (#1714 P1, boards in the issue's P0).
+/** Export… / Import… for the Library sections (#1714: skills and playbooks P1, specialists P2,
+ *  prompt templates and variables P3; boards in the issue).
  *
  *  Export: pick items; whatever a chosen item needs is shown as included and can't be unticked on
  *  its own; the server writes one `.battlelab` file. Import: choose a file → the server verifies
@@ -22,7 +23,7 @@ import {
   X,
 } from "lucide-react";
 import { api, ApiError } from "../../lib/api";
-import { playbookPath, SKILLS_PATH, specialistPath } from "../../lib/routes";
+import { playbookPath, SKILLS_PATH, specialistPath, TEMPLATES_PATH } from "../../lib/routes";
 import type {
   ShareCatalog,
   ShareChoice,
@@ -44,14 +45,45 @@ import {
   previewStates,
   sizeText,
 } from "./shareRules";
-import { sharedImportMemory, unshown, type ImportMemory } from "./shareRules";
+import { sharedImportMemory, unshown, variableLink, type ImportMemory } from "./shareRules";
 import { choiceProblem, NO_CHOICE } from "./shareRules";
 import { SettleFields } from "./SettleFields";
 import { eligibleFor, useEngineRoster } from "../../app/engineRoster";
 import styles from "./share.module.css";
 
-const KIND_LABEL: Record<string, string> = { skill: "Skill", playbook: "Playbook", specialist: "Specialist" };
-const GROUP_LABEL: Record<string, string> = { skill: "Skills", playbook: "Playbooks", specialist: "Specialists" };
+const KIND_LABEL: Record<string, string> = {
+  skill: "Skill",
+  playbook: "Playbook",
+  specialist: "Specialist",
+  template: "Template",
+  variable: "Variable",
+};
+const GROUP_LABEL: Record<string, string> = {
+  skill: "Skills",
+  playbook: "Playbooks",
+  specialist: "Specialists",
+  template: "Templates",
+  variable: "Variables",
+};
+/** The picker's group order for each Library section: its own kind first, then what it needs. */
+const ORDER: Record<string, string[]> = {
+  skill: ["skill", "playbook", "specialist", "template", "variable"],
+  playbook: ["playbook", "skill", "specialist", "template", "variable"],
+  specialist: ["specialist", "skill", "playbook", "template", "variable"],
+  template: ["template", "variable", "skill", "playbook", "specialist"],
+  variable: ["variable", "template", "skill", "playbook", "specialist"],
+};
+/** A row's kind badge: a variable whose value never travels reads "Secret" (#1714 P3). */
+const badge = (kind: string, secret = false) => (kind === "variable" && secret ? "Secret" : KIND_LABEL[kind] ?? kind);
+/** "needs 2 skills", "pins 1 skill", "uses 2 variables": what an item depends on, in words. */
+function needsText(item: { kind: string; depends_on: string[] }): string {
+  const n = item.depends_on.length;
+  if (!n) return "";
+  const variables = item.depends_on.every((d) => d.startsWith("variable:"));
+  const verb = item.kind === "specialist" ? "pins" : variables ? "uses" : "needs";
+  const noun = variables ? "variable" : "skill";
+  return ` · ${verb} ${n} ${noun}${n === 1 ? "" : "s"}`;
+}
 
 function errorText(e: unknown): string {
   return e instanceof Error && e.message ? e.message : "Something went wrong.";
@@ -175,13 +207,9 @@ function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void 
   const items = useMemo(() => catalog?.items ?? [], [catalog]);
   const included = useMemo(() => closure(items, chosen), [items, chosen]);
   const needle = filter.trim().toLowerCase();
-  const order: string[] =
-    kind === "playbook"
-      ? ["playbook", "skill", "specialist"]
-      : kind === "specialist"
-        ? ["specialist", "skill", "playbook"]
-        : ["skill", "playbook", "specialist"];
+  const order = ORDER[kind] ?? ORDER.skill;
   const hasSpecialists = items.some((i) => i.kind === "specialist");
+  const hasTexts = items.some((i) => i.kind === "template" || i.kind === "variable");
   const total = chosen.size + included.size;
   const toggle = (key: string) =>
     setChosen((old) => {
@@ -238,8 +266,8 @@ function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void 
     >
       <p className={styles.prose}>
         Choose what to share. Anything a chosen item needs comes along and is shown as <b>included</b>.
-        The file holds the chosen items exactly as written; no settings, deployment files or secret
-        variables are added to it.
+        The file holds the chosen items exactly as written; no settings, deployment files or values
+        of your secret variables are added to it.
       </p>
       {error && (
         <Banner tone="down" icon={<Ban size={16} aria-hidden />} title="Export failed.">
@@ -261,7 +289,10 @@ function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void 
         <div className={styles.drop}>
           <FileText size={28} aria-hidden />
           <b>Nothing to export yet</b>
-          <span>Create a specialist, a skill or a playbook, or add one from the gallery; it will be listed here.</span>
+          <span>
+            Create a skill, a playbook, a specialist, a prompt template or a variable, or add one
+            from the gallery; it will be listed here.
+          </span>
         </div>
       )}
       {!!items.length && (
@@ -306,20 +337,25 @@ function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void 
                         type="checkbox"
                         checked={isChosen || locked}
                         disabled={busy || locked || !i.exportable}
-                        aria-label={`${KIND_LABEL[i.kind] ?? i.kind} ${i.title}${locked ? " (included)" : ""}`}
+                        aria-label={`${badge(i.kind, i.secret)} ${i.title}${locked ? " (included)" : ""}`}
                         onChange={() => toggle(key)}
                       />
                     </label>
                     <div className={styles.name}>
                       <span className={styles.title}>
-                        <span className={styles.kind}>{KIND_LABEL[i.kind] ?? i.kind}</span>
+                        <span className={styles.kind}>{badge(i.kind, i.secret)}</span>
                         {i.title}
                       </span>
                       <span className={styles.line}>
                         {locked
                           ? `Included — ${by!.every((b) => b.startsWith("specialist:")) ? "pinned" : "needed"} by ${by!.map((b) => b.slice(b.indexOf(":") + 1)).join(", ")}`
-                          : `${i.id}${i.source !== "local" ? ` · ${i.source}` : ""}${i.depends_on.length ? ` · ${i.kind === "specialist" ? "pins" : "needs"} ${i.depends_on.length} skill${i.depends_on.length === 1 ? "" : "s"}` : ""}`}
+                          : `${i.id}${i.source !== "local" ? ` · ${i.source}` : ""}${needsText(i)}`}
                       </span>
+                      {i.exportable && i.note && (
+                        <span className={styles.why} data-testid="share-export-note">
+                          {i.note}
+                        </span>
+                      )}
                       {!i.exportable && <span className={`${styles.why} ${styles.down}`}>{i.reason ?? "Can't be exported."}</span>}
                     </div>
                     <div className={styles.state}>
@@ -344,11 +380,21 @@ function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void 
           it. Its notes, sessions, grade and project names stay here.
         </Banner>
       )}
+      {hasTexts && (
+        <Banner icon={<FileText size={16} aria-hidden />} title="What templates and variables carry.">
+          A template takes its text, fields and reference images, and the variables its fields
+          use. A variable takes its definition (type, label, description, default) and, for text,
+          its value. A secret takes its definition only: the export never adds its stored value.
+          Every template and variable text is checked for your stored secrets and for keys, tokens
+          and passwords; one that holds any stays here.
+        </Banner>
+      )}
       {!!items.length && (
         <Banner tone="warn" icon={<AlertTriangle size={16} aria-hidden />} title="Check the text for secrets before you share it.">
           Specialists, skills and playbooks travel exactly as written. A token, password or key
-          pasted into one of their files goes into the bundle with it. Secret variables themselves
-          are never exported.
+          pasted into one of their files goes into the bundle with it, even when it is the value of
+          one of your secret variables. A secret variable itself travels as its definition only: the
+          export never adds its stored value.
         </Banner>
       )}
     </Shell>
@@ -372,14 +418,17 @@ const STALE: Record<string, string> = {
     "This preview's file was cleared to make room for other imports. Nothing was imported. Preview the file again to continue.",
 };
 
-/** Who in this file uses skill `id` under a new name: "playbooks", "specialists", "items" (both),
- *  or null — so a rename note names what actually follows it. */
-function usersOf(preview: SharePreview, id: string): string | null {
+/** Who in this file uses skill (or variable) `key` under a new name: "playbooks",
+ *  "specialists", "templates", "items" (several), or null — so a rename note names what actually
+ *  follows it. */
+function usersOf(preview: SharePreview, key: string): string | null {
+  const id = key.slice(key.indexOf(":") + 1);
   const kinds = new Set(
-    preview.items.filter((o) => o.kind !== "skill" && o.uses.some((u) => u.from === id)).map((o) => o.kind),
+    preview.items.filter((o) => o.depends_on.includes(key) && o.uses.some((u) => u.from === id)).map((o) => o.kind),
   );
   if (!kinds.size) return null;
-  return kinds.size > 1 ? "items" : kinds.has("specialist") ? "specialists" : "playbooks";
+  if (kinds.size > 1) return "items";
+  return kinds.has("specialist") ? "specialists" : kinds.has("template") ? "templates" : "playbooks";
 }
 
 function linkTo(item: { kind: string; dest: string | null }): string | null {
@@ -387,11 +436,14 @@ function linkTo(item: { kind: string; dest: string | null }): string | null {
   if (item.kind === "skill") return `${SKILLS_PATH}/${encodeURIComponent(item.dest)}`;
   if (item.kind === "playbook") return playbookPath(item.dest);
   if (item.kind === "specialist") return specialistPath(item.dest);
+  if (item.kind === "template") return `${TEMPLATES_PATH}/${encodeURIComponent(item.dest)}`;
+  if (item.kind === "variable") return variableLink(item.dest);
   return null;
 }
 
 function Files({ item }: { item: SharePreviewItem }) {
   const rewritten = item.kind === "playbook" && (item.dest !== item.id || item.uses.length > 0);
+  const followed = item.kind === "template" && item.uses.length > 0;
   return (
     <details className={styles.files}>
       <summary>
@@ -409,6 +461,12 @@ function Files({ item }: { item: SharePreviewItem }) {
             .filter(Boolean)
             .join(" and ")}
           ; each rewritten TOML file is saved without its comments or original layout.
+        </span>
+      )}
+      {followed && (
+        <span className={styles.why}>
+          These are the files as sent. On import,{" "}
+          {item.uses.map((u) => `its field ${u.from} and every {{${u.from}}} become ${u.to}`).join("; ")}.
         </span>
       )}
       {item.files.map((f) => (
@@ -458,6 +516,8 @@ function PreviewRow({
   const inputId = `share-i-${item.key}`;
   const serverRefused = item.status === "refused";
   const reused = state.state === "reused";
+  const secret = !!item.variable && item.variable.kind !== "text";
+  const empty = !!item.variable?.arrives_empty && !serverRefused;
   const stamp = reused ? (
     <span className={styles.stamp}>Reused</span>
   ) :
@@ -472,6 +532,12 @@ function PreviewRow({
     ) : (
       <span className={`${styles.stamp} ${styles.ok}`}>New copy</span>
     );
+  const emptyStamp =
+    empty && state.state === "import" ? (
+      <span className={`${styles.stamp} ${styles.warn}`} data-testid="share-arrives-empty">
+        Arrives empty
+      </span>
+    ) : null;
   return (
     <li className={styles.row} data-testid={`share-preview-row-${item.key}`} data-state={state.state}>
       {reused ? (
@@ -485,14 +551,14 @@ function PreviewRow({
             type="checkbox"
             checked={checked && !serverRefused}
             disabled={disabled || serverRefused}
-            aria-label={`Import ${KIND_LABEL[item.kind] ?? item.kind} ${item.title}`}
+            aria-label={`Import ${badge(item.kind, secret)} ${item.title}`}
             onChange={onToggle}
           />
         </label>
       )}
       <div className={styles.name}>
         <span className={styles.title}>
-          <span className={styles.kind}>{KIND_LABEL[item.kind] ?? item.kind}</span>
+          <span className={styles.kind}>{badge(item.kind, secret)}</span>
           {item.title}
         </span>
         <span className={styles.line}>
@@ -516,10 +582,23 @@ function PreviewRow({
                   ? ` · pins ${item.specialist.skills.map((sk) => item.uses.find((u) => u.from === sk)?.to ?? sk).join(", ")}`
                   : ""
               }`
-            : item.uses.length
-              ? ` · uses ${item.uses.map((u) => u.to).join(", ")}`
-              : ""}
+            : item.template
+              ? ` · ${item.template.fields} field${item.template.fields === 1 ? "" : "s"}${
+                  item.template.images ? ` · ${item.template.images} image${item.template.images === 1 ? "" : "s"}` : ""
+                }${item.template.variables.length ? ` · uses ${item.template.variables.join(", ")}` : ""}`
+              : item.variable
+                ? ` · ${item.variable.kind === "secret_file" ? "secret file" : item.variable.kind === "secret" ? "secret" : item.variable.value_type}`
+                : item.uses.length
+                  ? ` · uses ${item.uses.map((u) => u.to).join(", ")}`
+                  : ""}
         </span>
+        {empty && state.state === "import" && (
+          <span className={styles.why}>
+            {secret
+              ? "The file carries no value for a secret. It arrives empty: set it on the Variables page before you send a template that uses it."
+              : "The file carries no value for it. It arrives as a definition: set its value on the Variables page."}
+          </span>
+        )}
         {reused && (
           <span className={styles.why} data-testid="share-reused">
             Your {item.dest} was imported from a file with this same version and hasn't changed
@@ -529,7 +608,10 @@ function PreviewRow({
         {state.state === "refused" && <span className={`${styles.why} ${styles.down}`}>{state.reason}</span>}
         {state.state !== "refused" && item.status === "renamed" && (
           <span className={`${styles.why} ${styles.warn}`}>
-            A {item.kind} named {item.id} already exists here. Yours stays untouched; this copy is {item.dest}
+            {item.kind === "variable"
+              ? `A variable named ${item.id} already exists here, or a template or project here already uses that name.`
+              : `A ${item.kind} named ${item.id} already exists here.`}{" "}
+            Yours stays untouched; this copy is {item.dest}
             {item.uses.length && item.kind === "specialist"
               ? ", pinned to the renamed skills"
               : item.uses.length
@@ -548,7 +630,10 @@ function PreviewRow({
         {state.state === "import" && settle}
         {!serverRefused && !reused && <Files item={item} />}
       </div>
-      <div className={styles.state}>{stamp}</div>
+      <div className={styles.state}>
+        {stamp}
+        {emptyStamp}
+      </div>
     </li>
   );
 }
@@ -563,19 +648,32 @@ const OUTCOME: Record<string, { word: string; tone: string; icon: ReactNode }> =
   stale: { word: "Preview again", tone: styles.warn, icon: <RefreshCw size={16} aria-hidden /> },
 };
 
-function ResultRow({ item, onOpen }: { item: ShareResultItem; onOpen: () => void }) {
+function ResultRow({
+  item,
+  onOpen,
+  empty = false,
+  secret = false,
+}: {
+  item: ShareResultItem;
+  onOpen: () => void;
+  /** A variable created without a value (a secret always): its link says to set it. */
+  empty?: boolean;
+  secret?: boolean;
+}) {
   const o = OUTCOME[item.status] ?? OUTCOME.failed;
   const href = item.status === "created" ? linkTo(item) : null;
+  const fill = empty && item.status === "created";
   return (
     <li className={styles.row} data-testid={`share-result-row-${item.key}`} data-status={item.status}>
       <span className={`${styles.mark} ${o.tone}`}>{o.icon}</span>
       <div className={styles.name}>
         <span className={styles.title}>
-          <span className={styles.kind}>{KIND_LABEL[item.kind] ?? item.kind}</span>
+          <span className={styles.kind}>{badge(item.kind, secret)}</span>
           {item.title}
         </span>
         <span className={styles.line}>
           {item.dest ?? item.id}
+          {fill ? " · not set" : ""}
           {item.status === "reused"
             ? " (yours, reused)"
             : item.dest && item.dest !== item.id
@@ -583,12 +681,15 @@ function ResultRow({ item, onOpen }: { item: ShareResultItem; onOpen: () => void
               : ""}
         </span>
         {item.reason && <span className={`${styles.why} ${o.tone}`}>{item.reason}</span>}
+        {fill && (
+          <span className={styles.why}>It arrived empty. Set its value before you send a template that uses it.</span>
+        )}
       </div>
       <div className={styles.state}>
         <span className={`${styles.stamp} ${o.tone}`}>{o.word}</span>
         {href && (
           <Link className={styles.open} to={href} onClick={onOpen}>
-            Open
+            {fill ? "Set value" : "Open"}
             <ChevronRight size={14} aria-hidden />
           </Link>
         )}
@@ -883,6 +984,7 @@ function ImportDialog({
     // Files the operator is about to import without having been able to read them here.
     const blind = will.reduce((n, i) => n + unshown(i), 0);
     const waiting = unsettled(preview, states);
+    const empties = will.filter((i) => i.variable?.arrives_empty).length;
     const stale = phase.at === "preview" ? phase.stale : undefined;
     const toggle = (key: string) => {
       setAck(false);
@@ -904,7 +1006,7 @@ function ImportDialog({
             disabled={busy || !!stale || !!frozen}
             onToggle={() => toggle(item.key)}
             already={labelled.get(item.key)}
-            usedBy={item.kind === "skill" ? usersOf(preview, item.id) : null}
+            usedBy={item.kind === "skill" || item.kind === "variable" ? usersOf(preview, item.key) : null}
             needsChoice={waiting.some((w) => w.key === item.key)}
             settle={
               item.specialist ? (
@@ -973,8 +1075,9 @@ function ImportDialog({
           </Banner>
         )}
         <Banner icon={<AlertTriangle size={16} aria-hidden />} title="Not signed — imported from a file.">
-          Specialists, skills and playbooks are instructions your agents will read. Review them
-          before you import. Nothing is activated, deployed, launched or made a default.
+          Specialists, skills, playbooks and templates are instructions your agents will read.
+          Review them before you import. Nothing is activated, deployed, launched, sent or made a
+          default.
         </Banner>
         <dl className={styles.meta} data-testid="share-bundle-meta">
           <dt>File</dt>
@@ -1041,6 +1144,7 @@ function ImportDialog({
           {renamed ? ` · ${renamed} renamed` : ""}
           {refused ? ` · ${refused} refused` : ""}
           {waiting.length ? ` · ${waiting.length} need${waiting.length === 1 ? "s" : ""} an agent` : ""}
+          {empties ? ` · ${empties} arrive${empties === 1 ? "s" : ""} empty` : ""}
           {blind > 0 && !ack ? ` · ${blind} unreviewed file${blind === 1 ? "" : "s"} need${blind === 1 ? "s" : ""} your OK` : ""}{" "}
           · nothing changes until you confirm
         </p>
@@ -1081,6 +1185,7 @@ function ImportDialog({
     );
   } else {
     const { result } = phase;
+    const byKey = new Map(phase.preview.items.map((i) => [i.key, i]));
     const shown = result.items.filter((i) => i.status !== "not_selected");
     const count = (s: string) => shown.filter((i) => i.status === s).length;
     const terminal = shown.filter((i) => i.status === "failed" && i.retry === false).length;
@@ -1101,7 +1206,13 @@ function ImportDialog({
         </p>
         <ul className={styles.list}>
           {shown.map((item) => (
-            <ResultRow key={item.key} item={item} onOpen={close} />
+            <ResultRow
+              key={item.key}
+              item={item}
+              onOpen={close}
+              empty={!!byKey.get(item.key)?.variable?.arrives_empty}
+              secret={!!byKey.get(item.key)?.variable && byKey.get(item.key)!.variable!.kind !== "text"}
+            />
           ))}
         </ul>
       </>

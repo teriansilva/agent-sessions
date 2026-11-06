@@ -662,3 +662,124 @@ test("import: a retriable failure still offers Retry failed items (and an older 
   expect(await within(dialog).findByRole("button", { name: "Retry failed items" })).toBeInTheDocument();
   expect(within(dialog).queryByRole("button", { name: "Preview again" })).toBeNull();
 });
+
+// ---- templates and variables (#1714 P3, boards in comment 114659) -----------------------------
+
+const mountKind = (kind: "template" | "variable") =>
+  render(
+    <MemoryRouter>
+      <ShareActions kind={kind} onImported={vi.fn()} />
+    </MemoryRouter>,
+  );
+
+test("export (P3): a template brings its variables; a secret is a definition only", async () => {
+  vi.mocked(api.shareCatalog).mockResolvedValue({
+    imports: {},
+    items: [
+      { kind: "variable", id: "api_url", title: "API URL", depends_on: [], exportable: true, reason: null, source: "local", note: null, secret: false },
+      { kind: "variable", id: "deploy_token", title: "Deploy token", depends_on: [], exportable: true, reason: null, source: "local", note: "Definition only: the export never adds its stored value.", secret: true },
+      { kind: "template", id: "deploy-note", title: "Deploy note", depends_on: ["variable:api_url", "variable:deploy_token"], exportable: true, reason: null, source: "local", note: null },
+      { kind: "template", id: "leaky", title: "Leaky", depends_on: [], exportable: false, reason: "Its body holds one of your stored secrets; remove it to export.", source: "local", note: null },
+    ],
+  });
+  mountKind("template");
+  fireEvent.click(screen.getByRole("button", { name: "Export…" }));
+  const dialog = await screen.findByTestId("share-export");
+  const groups = within(dialog).getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
+  expect(groups[0]).toMatch(/^Templates/);
+  expect(groups[1]).toMatch(/^Variables/);
+  expect(within(dialog).getByTestId("share-export-row-template:deploy-note")).toHaveTextContent("uses 2 variables");
+  expect(within(dialog).getByLabelText("Template Leaky")).toBeDisabled();
+  fireEvent.click(within(dialog).getByLabelText("Template Deploy note"));
+  const secret = within(dialog).getByLabelText("Secret Deploy token (included)");
+  expect(secret).toBeChecked();
+  expect(secret).toBeDisabled();
+  expect(within(dialog).getByTestId("share-export-row-variable:deploy_token")).toHaveTextContent(
+    "Definition only: the export never adds its stored value.",
+  );
+  expect(within(dialog).getByText("What templates and variables carry.")).toBeInTheDocument();
+  expect(screen.getByTestId("share-export-summary")).toHaveTextContent("3 items · 1 chosen · 2 included");
+  // The safety copy agrees with what the picker does: secret DEFINITIONS travel, values never.
+  const text = dialog.textContent ?? "";
+  expect(text).not.toMatch(/(files or secret variables are added|secret variables themselves are never exported)/i);
+  expect(text).toMatch(/no settings, deployment files or values of your secret variables are added to it/);
+  expect(text).toMatch(
+    /goes into the bundle with it, even when it is the value of one of your secret variables\. A secret variable itself travels as its definition only: the export never adds its stored value\./,
+  );
+  expect(text).not.toMatch(/are never exported/);
+  // Never an unqualified promise that no secret value leaves (a pasted one does).
+  expect(text).not.toMatch(/(^|[.!] )Secret values are never exported/);
+  expect(text).not.toMatch(/or secret values are added/);
+});
+
+const P3_PREVIEW: SharePreview = {
+  token: "c".repeat(32),
+  expires_at: "2026-10-30T10:15:00Z",
+  bundle: { digest: "7a3c" + "0".repeat(56) + "e10f", size: 41000, format: 1, created_at: "2026-10-30T09:12:00Z", app_version: "0.27.0", source: null, items: 3, files: 4 },
+  items: [
+    { key: "variable:api_url", kind: "variable", id: "api_url", title: "API URL", dest: "api_url_2", status: "renamed", reason: null, depends_on: [], uses: [], files: [{ path: "variable.json", size: 10, text: "{}" }], variable: { kind: "text", value_type: "text", arrives_empty: false } },
+    { key: "variable:deploy_token", kind: "variable", id: "deploy_token", title: "Deploy token", dest: "deploy_token", status: "new", reason: null, depends_on: [], uses: [], files: [{ path: "variable.json", size: 10, text: "{}" }], variable: { kind: "secret", value_type: "text", arrives_empty: true } },
+    {
+      key: "template:deploy-note",
+      kind: "template",
+      id: "deploy-note",
+      title: "Deploy note",
+      dest: "deploy-note",
+      status: "new",
+      reason: null,
+      depends_on: ["variable:api_url", "variable:deploy_token"],
+      uses: [{ from: "api_url", to: "api_url_2" }],
+      files: [{ path: "template.json", size: 10, text: "{}" }, { path: "images/1.png", size: 18000, binary: true }],
+      template: { fields: 3, images: 1, variables: ["api_url_2", "deploy_token"] },
+    },
+  ],
+};
+
+test("import (P3): a secret arrives empty, a renamed variable is followed, and the result links to set it", async () => {
+  vi.mocked(api.sharePreview).mockResolvedValue(P3_PREVIEW);
+  mountKind("variable");
+  fireEvent.click(screen.getByRole("button", { name: "Import…" }));
+  const dialog = await screen.findByTestId("share-import");
+  fireEvent.change(within(dialog).getByTestId("share-file"), { target: { files: [new File(["x"], "kit.battlelab")] } });
+  const secretRow = await within(dialog).findByTestId("share-preview-row-variable:deploy_token");
+  expect(secretRow).toHaveTextContent("Secret");
+  expect(within(secretRow).getByTestId("share-arrives-empty")).toHaveTextContent("Arrives empty");
+  expect(secretRow).toHaveTextContent("It arrives empty: set it on the Variables page");
+  expect(within(dialog).getByTestId("share-preview-row-variable:api_url")).toHaveTextContent(
+    "templates in this file that use it are pointed at api_url_2",
+  );
+  expect(within(dialog).getByTestId("share-preview-row-template:deploy-note")).toHaveTextContent(
+    "3 fields · 1 image · uses api_url_2, deploy_token",
+  );
+  expect(screen.getByTestId("share-preview-summary")).toHaveTextContent("1 arrives empty");
+  // The image can't be shown: Import waits for the acknowledgement.
+  const importButton = within(dialog).getByRole("button", { name: "Import 3 items" });
+  expect(importButton).toBeDisabled();
+  // Deselecting the secret refuses the template that uses it.
+  fireEvent.click(within(dialog).getByLabelText("Import Secret Deploy token"));
+  expect(within(dialog).getByTestId("share-preview-row-template:deploy-note")).toHaveAttribute("data-state", "refused");
+  fireEvent.click(within(dialog).getByLabelText("Import Secret Deploy token"));
+  fireEvent.click(within(within(dialog).getByTestId("share-blind-ack")).getByRole("checkbox"));
+  vi.mocked(api.shareConfirm).mockResolvedValue({
+    token: P3_PREVIEW.token,
+    bundle: P3_PREVIEW.bundle.digest,
+    repreview: null,
+    items: [
+      { key: "variable:api_url", kind: "variable", id: "api_url", title: "API URL", status: "created", dest: "api_url_2", reason: null, retry: false },
+      { key: "variable:deploy_token", kind: "variable", id: "deploy_token", title: "Deploy token", status: "created", dest: "deploy_token", reason: null, retry: false },
+      { key: "template:deploy-note", kind: "template", id: "deploy-note", title: "Deploy note", status: "created", dest: "deploy-note", reason: null, retry: false },
+    ],
+  });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Import 3 items" }));
+  const secretResult = await within(dialog).findByTestId("share-result-row-variable:deploy_token");
+  expect(within(secretResult).getByRole("link", { name: /Set value/ })).toHaveAttribute("href", "/library/variables?q=deploy_token");
+  expect(secretResult).toHaveTextContent("It arrived empty");
+  expect(within(within(dialog).getByTestId("share-result-row-template:deploy-note")).getByRole("link", { name: /Open/ })).toHaveAttribute(
+    "href",
+    "/templates/deploy-note",
+  );
+  expect(within(within(dialog).getByTestId("share-result-row-variable:api_url")).getByRole("link", { name: /Open/ })).toHaveAttribute(
+    "href",
+    "/library/variables?q=api_url_2",
+  );
+});

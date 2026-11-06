@@ -5,6 +5,8 @@ import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import { SessionChooserModal } from "../components/templates/SessionChooserModal";
 import { UploadImage } from "../components/templates/UploadImage";
 import { SuggestionsPanel } from "../components/templates/SuggestionsPanel";
+import { ImportedMark, ShareActions } from "../components/share/ShareDialogs";
+import { useShareImports } from "../components/share/useShareImports";
 import { VARIABLES_PATH } from "../lib/routes";
 import { api, ApiError } from "../lib/api";
 import type {
@@ -57,6 +59,9 @@ export default function Templates() {
     null,
   );
 
+  // Share bundles (#1714 P3): which templates were imported from a file, re-read after an import.
+  const [shareRound, setShareRound] = useState(0);
+  const imported = useShareImports(shareRound);
   // Resolves to whether the refresh succeeded: a caller that just deleted or hit a conflict
   // must not claim "reloaded" over a failed reload (Hermes on #907, round 3).
   const load = useCallback(
@@ -211,10 +216,18 @@ export default function Templates() {
           </div>
         </div>
         <div className={styles.headRight}>
-          <Link to="/templates/new" className={styles.cta}>
-            <Plus size={14} aria-hidden="true" />
-            New template
-          </Link>
+          <ShareActions
+            kind="template"
+            onImported={() => {
+              setShareRound((n) => n + 1);
+              void load();
+            }}
+          >
+            <Link to="/templates/new" className={styles.cta}>
+              <Plus size={14} aria-hidden="true" />
+              New template
+            </Link>
+          </ShareActions>
         </div>
       </header>
 
@@ -392,6 +405,7 @@ export default function Templates() {
                         </div>
                       )}
                       <p className={styles.cmeta}>{metaLine(t)}</p>
+                      {imported.has(`template:${t.id}`) && <ImportedMark />}
                     </div>
                     <div className={styles.acts}>
                       <button

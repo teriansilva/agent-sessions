@@ -9,6 +9,8 @@ import { VariableForm } from "../components/variables/VariableForm";
 import { draftFor, isNoopUpdate, isSecret, variablePayload, type VariableDraft } from "../components/variables/variableDraft";
 import { formatSize } from "../components/variables/secretFile";
 import { SecretChannels } from "../components/variables/SecretChannels";
+import { ImportedMark, ShareActions } from "../components/share/ShareDialogs";
+import { useShareImports } from "../components/share/useShareImports";
 import buttons from "../components/ui/actionButton.module.css";
 import styles from "./Variables.module.css";
 
@@ -32,7 +34,22 @@ export default function Variables() {
   const [error, setError] = useState<unknown>(null);
   const [note, setNote] = useState("");
   const [selected, setSelected] = useState("all");
-  const [query, setQuery] = useState("");
+  // `?q=` filters to one variable: an import's "Set value" link lands on the secret it created.
+  const [query, setQuery] = useState(() => new URLSearchParams(location.search).get("q") ?? "");
+  const [shareRound, setShareRound] = useState(0);
+  const imported = useShareImports(shareRound);
+  // The link can land here while this page is already open (the import dialog sits on it):
+  // each navigation (`location.key`, so the same link twice applies twice) with `?q=` replaces the
+  // search and shows all variables (a new import is in no collection). Adjusted during render.
+  const [seenKey, setSeenKey] = useState(location.key);
+  if (seenKey !== location.key) {
+    setSeenKey(location.key);
+    const q = new URLSearchParams(location.search).get("q");
+    if (q !== null) {
+      setQuery(q);
+      setSelected("all");
+    }
+  }
   const [editor, setEditor] = useState<Editor | null>(() => prefilledEditor(location.state));
   const [busy, setBusy] = useState(false);
   const [discard, setDiscard] = useState(false);
@@ -170,10 +187,10 @@ export default function Variables() {
   return <div className={styles.page}>
     <header className={styles.head}>
       <div><div className={`nj-kicker ${styles.eyebrow}`}><span className="nj-notch" aria-hidden="true" />Library // <b>Shared inputs</b></div><h1 ref={titleRef} tabIndex={-1}>Variables & collections</h1></div>
-      <div className={styles.actions}>
+      <ShareActions kind="variable" onImported={() => { setShareRound(n => n + 1); void load(); }}>
         <button className={buttons.ghost} disabled={locked || !library || needsMigration || variables.length >= library.limits.variables_max} onClick={() => editVariable(undefined, "secret")}><LockKeyhole size={14} aria-hidden="true" /> New secret</button>
         <button className={buttons.primary} disabled={locked || !library || needsMigration || variables.length >= library.limits.variables_max} onClick={() => editVariable()}><Plus size={14} aria-hidden="true" /> New variable</button>
-      </div>
+      </ShareActions>
     </header>
     <p className={styles.notice}>Reusable definitions and optional global values. Collections organize variables; they do not grant access to secrets or run work. Secrets with <b>Agent access</b> can be requested by agents in the projects that bind them, through the BattleLab secrets tool.</p>
     <SecretChannels />
@@ -223,7 +240,7 @@ export default function Variables() {
           <div className={styles.toolbar}><h2>{collection?.name ?? (selected === "uncollected" ? "Uncollected" : "All variables")}</h2>{collection && <button className={buttons.ghost} disabled={busy} onClick={() => editCollection(collection)}>Edit collection</button>}</div>
           <label className={styles.search}><Search size={16} aria-hidden="true" /><input aria-label="Search variables" placeholder="Search names and descriptions" value={query} onChange={e => setQuery(e.target.value)} /></label>
           {visible.map(v => <article className={styles.row} key={v.id ?? v.name} aria-label={v.name}>
-            <div><div className={styles.name}>{v.kind === "secret" && <LockKeyhole size={14} aria-hidden="true" />}{v.kind === "secret_file" && <FileKey size={14} aria-hidden="true" />}<span>{v.name}</span>{v.agent_access && <span className={styles.chip} title="Agents in the projects that bind it can request it">Agents</span>}</div><div className={styles.kind}>{v.kind === "secret" ? "Secret" : v.kind === "secret_file" ? <>Secret file{v.file ? <> · <span className={styles.fileCase}>{v.file.name}</span></> : null}</> : v.definition.value_type}{v.definition.label && v.definition.label !== v.name ? ` · ${v.definition.label}` : ""}</div></div>
+            <div><div className={styles.name}>{v.kind === "secret" && <LockKeyhole size={14} aria-hidden="true" />}{v.kind === "secret_file" && <FileKey size={14} aria-hidden="true" />}<span>{v.name}</span>{v.agent_access && <span className={styles.chip} title="Agents in the projects that bind it can request it">Agents</span>}{imported.has(`variable:${v.name}`) && <ImportedMark />}</div><div className={styles.kind}>{v.kind === "secret" ? "Secret" : v.kind === "secret_file" ? <>Secret file{v.file ? <> · <span className={styles.fileCase}>{v.file.name}</span></> : null}</> : v.definition.value_type}{v.definition.label && v.definition.label !== v.name ? ` · ${v.definition.label}` : ""}</div></div>
             <div className={styles.value}>{v.needs_reentry ? "Needs re-entry" : !v.set ? "No global value" : v.kind === "secret_file" && v.file ? `Stored · hidden · ${formatSize(v.file.size)}` : v.kind !== "text" ? "Stored · hidden" : String(v.value)}</div>
             <button className={buttons.ghost} disabled={busy || !v.id || needsMigration} aria-label={`Edit ${v.name}`} onClick={() => editVariable(v)}>Edit</button>
           </article>)}

@@ -35,6 +35,7 @@ vi.mock("../lib/api", async () => {
       writeTemplate: vi.fn(),
       // Thumbnails go through the seam, never a native <img src> (Home Free tunnel, #907 review).
       uploadBlob: vi.fn(() => Promise.resolve(new Blob([new Uint8Array([137, 80, 78, 71])]))),
+      shareImports: vi.fn(() => Promise.resolve({ imports: { "template:deploy": { bundle: "b", revision: "r" } } })),
     },
   };
 });
@@ -558,4 +559,18 @@ test("a failed analysis keeps the previous suggestions and says why; STOP WAITIN
   await userEvent.click(screen.getByRole("button", { name: /stop waiting/i }));
   expect(await screen.findByText(/stopped waiting/i)).toBeInTheDocument();
   expect(screen.getByText("Fix review notes")).toBeInTheDocument();
+});
+
+test("the gallery carries Import… / Export… and marks a template imported from a file (#1714 P3)", async () => {
+  mocked.templates.mockResolvedValue({
+    templates: [tpl(), tpl({ id: "deploy", name: "Deploy watch", images: [], fields: [] })],
+    limits: LIMITS,
+  } satisfies TemplatesResponse);
+  renderGallery();
+  expect(await screen.findByRole("button", { name: "Import…" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Export…" })).toBeInTheDocument();
+  const deploy = (await screen.findByRole("link", { name: "Deploy watch" })).closest("li")!;
+  expect(await within(deploy).findByTestId("imported-from-file")).toBeInTheDocument();
+  const pr = screen.getByRole("link", { name: "PR review checklist" }).closest("li")!;
+  expect(within(pr).queryByTestId("imported-from-file")).toBeNull();
 });

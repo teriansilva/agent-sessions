@@ -847,7 +847,7 @@ def catalog() -> list[dict]:
             if kind == "variable":
                 row["title"] = variable_export(rec["name"], secrets)["title"]
                 if rec["kind"] in template_vars.SECRET_KINDS:
-                    row["note"] = "Definition only: its value never leaves this install."
+                    row["note"] = "Definition only: the export never adds its stored value."
                 elif rec.get("unset"):
                     row["note"] = "No value is set: it travels as a definition."
             else:
