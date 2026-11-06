@@ -24,9 +24,18 @@ from agent_sessions import tty_health, webterm
 # any Enter it reads meanwhile, like claude <= 2.1.310. It logs one line per event as JSON, and
 # replaces the log atomically: the test reads it while the agent runs, and a truncate-then-write
 # let a read land on an empty file (#1866).
+#
+# The viewer's teardown SIGTERMs the process on this pty. In production that is the dtach CLIENT,
+# and the agent under the master never sees it; here the fake IS that process. So a SIGTERM only
+# ends it once what it has read is handled and nothing more is pending: input that reached it
+# before the teardown is still judged, and nothing written after it is invented. `lazy_s` sleeps
+# before each read of pending input — an agent the scheduler has not run yet (#1866).
 _INTAKE_AGENT = r"""
-import json, os, sys, threading, time, tty
+import json, os, select, signal, sys, threading, time, tty
 log, intake_s, paint = sys.argv[1], float(sys.argv[2]), sys.argv[3] == "paint"
+lazy_s = float(sys.argv[4]) if len(sys.argv) > 4 else 0.0
+stopping = [False]
+signal.signal(signal.SIGTERM, lambda *_: stopping.__setitem__(0, True))
 
 def publish(path, text):  # atomic: a reader sees the old file or the new one, never a truncated one
     with open(path + ".tmp", "w") as f:
@@ -51,7 +60,18 @@ def take_in():
 
 end = time.time() + 15
 while time.time() < end:
-    buf += os.read(0, 65536)
+    if not select.select([0], [], [], 0.05)[0]:
+        if stopping[0]:
+            break  # torn down, everything read handled, nothing pending
+        continue
+    time.sleep(lazy_s)
+    try:
+        chunk = os.read(0, 65536)
+    except OSError:  # EIO: the pty was hung up
+        break
+    if not chunk:
+        break
+    buf += chunk
     while True:
         if buf.startswith(b"\x1b[200~"):
             stop = buf.find(b"\x1b[201~")
@@ -60,7 +80,7 @@ while time.time() < end:
             body, buf = buf[6:stop], buf[stop + 6:]
             note("paste")
             if b".png" in body:
-                busy[0] = threading.Thread(target=take_in)
+                busy[0] = threading.Thread(target=take_in, daemon=True)
                 busy[0].start()
                 note("pasting")
         elif buf[:1] == b"\r":
@@ -113,7 +133,16 @@ def _composer_frames(paste_body: str):
 
 
 def _run(
-    tmp_path, monkeypatch, frames, *, intake_s=0.7, watch=True, key=None, seed=False, leave=False
+    tmp_path,
+    monkeypatch,
+    frames,
+    *,
+    intake_s=0.7,
+    watch=True,
+    key=None,
+    seed=False,
+    leave=False,
+    lazy_s=0.0,
 ):
     script = tmp_path / "intake_agent.py"
     script.write_text(_INTAKE_AGENT)
@@ -131,6 +160,7 @@ def _run(
     monkeypatch.setattr(webterm.tty_health, "agent_input", lambda key: None)
     monkeypatch.setattr(webterm.tty_health, "agent_process", agent_process)
     argv = [sys.executable, str(script), str(log), str(intake_s), "paint" if seed else "-"]
+    argv.append(str(lazy_s))
     gone_when = None
     if leave:  # the viewer leaves while the agent is taking the image in (Send, navigate away)
         monkeypatch.setattr(webterm, "_HEARTBEAT_INTERVAL_S", 0.05)
@@ -184,6 +214,16 @@ def test_a_send_queued_behind_a_handoff_seed_still_submits_once(tmp_path, monkey
 def test_a_viewer_leaving_during_the_intake_still_submits(tmp_path, monkeypatch):
     """Hermes on #1855: teardown cancelled the held wait and closed the pty, losing the Enter."""
     events = _run(tmp_path, monkeypatch, _composer_frames("x /tmp/shot.png"), leave=True)
+    assert events == ["paste", "pasting", "submitted"], events
+
+
+def test_a_held_enter_reaches_an_agent_slow_to_read_it(tmp_path, monkeypatch):
+    """#1866: on a loaded runner the fake was SIGTERMed by the teardown before it had read the
+    held Enter (`['paste', 'pasting']`), or mid-write of its log (the JSONDecodeError). A fake
+    that is slow to read must still get it, as an agent under the dtach master would."""
+    events = _run(
+        tmp_path, monkeypatch, _composer_frames("x /tmp/shot.png"), leave=True, lazy_s=0.3
+    )
     assert events == ["paste", "pasting", "submitted"], events
 
 
