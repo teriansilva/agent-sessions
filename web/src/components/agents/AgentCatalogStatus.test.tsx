@@ -31,3 +31,9 @@ test("setup, which passes no alerts handler, shows no alerts toggle", () => {
   expect(screen.queryByRole("checkbox", { name: label })).toBeNull();
   expect(screen.getByRole("checkbox", { name: /automatically check daily/i })).toBeInTheDocument();
 });
+
+test("an expired remote catalog says a newer bundled version stays installable (#1861)", () => {
+  render(<AgentCatalogStatus feed={{ ...feed(false), stale: true }} busy={false} refresh={vi.fn()} configure={vi.fn()} />);
+  expect(screen.getByText(/has expired/)).toHaveTextContent(/same recipe or a newer version/);
+  expect(screen.queryByText(/Only unchanged recipes/)).toBeNull();
+});

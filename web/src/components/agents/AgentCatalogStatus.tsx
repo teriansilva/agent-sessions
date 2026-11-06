@@ -16,7 +16,7 @@ export function AgentCatalogStatus({ feed, busy, refresh, configure, configureAl
       <span>{feed?.state === "unavailable" ? "Trust records unavailable" : feed?.source === "bundled" ? "Bundled with this release" : feed?.sequence ? `Signed catalog · sequence ${feed.sequence}` : "Loading catalog…"}</span>
     </div>
     <p>Agent definitions ship with BattleLab. Signed updates are checked on public GitHub.</p>
-    {feed?.stale && <p className={s.note}>The accepted remote catalog has expired. Only unchanged recipes also bundled with this release remain installable.</p>}
+    {feed?.stale && <p className={s.note}>The accepted remote catalog has expired. An agent it lists stays installable from this release’s bundled definitions when the bundle carries the same recipe or a newer version.</p>}
     {feed?.refresh?.error && <p className={s.note} role="status">{feed.refresh.error}</p>}
     {feed?.refresh && <dl className={s.kv}>
       <dt>Last attempt</dt><dd>{date(feed.refresh.last_attempt)}</dd>

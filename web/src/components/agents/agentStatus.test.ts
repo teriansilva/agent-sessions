@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import FIXTURE from "../../test/roster.fixture.json";
 import type { EngineInfo } from "../../types/api";
 import type { PluginCatalog, PluginGeneration } from "../../types/plugins";
-import { buildRows, catalogOnly, engineStatus, rowMatches, versionsOf, type RosterRow } from "./agentStatus";
+import { buildRows, catalogOnly, engineStatus, olderThanInstalled, rowMatches, updateEligible, versionsOf, type RosterRow } from "./agentStatus";
 
 const ENGINES = FIXTURE.engines as unknown as EngineInfo[];
 const byId = (id: string) => ENGINES.find((e) => e.id === id)!;
@@ -61,6 +61,16 @@ describe("engineStatus — the #1408 matrix", () => {
     });
     expect(engineStatus(e, data)).toMatchObject({ rank: 7, word: "Update available", action: { label: "Update" } });
     expect(engineStatus(e, data).action!.to).toMatch(/update=1/);
+  });
+  it("a catalog recipe OLDER than the installed version is never Update available (#1861)", () => {
+    const at = (installed: string, offered: string) => catalog({
+      plugins: [{ id: e.id, active: "g1", candidate: "g1", enabled: true, generations: [{ ...gen("g1", "old"), review: { recipe_digest: "old", entry: { manifest: { identity: { id: e.id, label: e.label, publisher: "p", version: installed } } } } as never }] }],
+      catalog: [{ manifest: { identity: { id: e.id, label: e.label, publisher: "p", version: offered } }, digest: "new", installable: true }],
+    });
+    expect(engineStatus(e, at("2.1.318", "2.1.310"))).toMatchObject({ rank: 8, word: "Ready", action: null });
+    expect(engineStatus(e, at("2.1.286", "2.1.310"))).toMatchObject({ rank: 7, word: "Update available" });
+    // Unordered versions keep the digest rule.
+    expect(engineStatus(e, at("1", "2.1.310"))).toMatchObject({ rank: 7, word: "Update available" });
   });
   it("an active install whose candidate IS the active one is just Ready", () => {
     const data = catalog({ plugins: [{ id: e.id, active: "g1", candidate: "g1", enabled: true, generations: [gen("g1")] }] });
@@ -143,6 +153,14 @@ describe("versionsOf — installed → available, and the rollback target (#1741
     expect(versionsOf("x", data)).toEqual({ installed: "2.1.286", available: "2.1.311", previous: null, undetermined: [] });
   });
 
+  it("offers no update toward a lower version, whatever the digest (#1861)", () => {
+    const data = catalog({
+      plugins: [{ id: "x", active: "g1", candidate: "g1", enabled: true, generations: [verified("g1", "2.1.318", "r-host")] }],
+      catalog: [entry("2.1.310", "r-bundled")],
+    });
+    expect(versionsOf("x", data)).toMatchObject({ installed: "2.1.318", available: null });
+  });
+
   it("is current when the catalog pins the installed recipe", () => {
     const data = catalog({
       plugins: [{ id: "x", active: "g1", candidate: "g1", enabled: true, generations: [verified("g1", "1.19.4", "r")] }],
@@ -209,5 +227,35 @@ describe("versionsOf — installed → available, and the rollback target (#1741
     const g = [verified("g1", "1", "a"), verified("g2", "2", "b")];
     expect(versionsOf("x", catalog({ plugins: [{ id: "x", active: "g2", candidate: "g2", enabled: true, generations: g }], operations: [activated("a2", "g2", 2)] })).previous).toBeNull();
     expect(versionsOf("x", catalog({ plugins: [{ id: "x", active: "g2", candidate: "g2", enabled: false, generations: g }], operations: [activated("a1", "g1", 1), activated("a2", "g2", 2)] })).previous).toBeNull();
+  });
+});
+
+describe("updateEligible — the one update rule (#1741, #1861)", () => {
+  const manifest = (version: string) => ({ identity: { id: "x", label: "X", publisher: "p", version } });
+  const active = (version: string, digest = "r-active") =>
+    ({ id: "g1", review: { recipe_digest: digest, entry: { manifest: manifest(version) } }, required_checks: [], verification: null }) as unknown as PluginGeneration;
+  const offer = (version: string, digest = "r-catalog", installable = true) => ({ manifest: manifest(version), digest, installable });
+
+  it.each([
+    ["higher catalog version, other recipe", offer("2.1.310"), active("2.1.286"), true],
+    ["lower catalog version, other recipe", offer("2.1.310"), active("2.1.318"), false],
+    ["same recipe", offer("2.1.310", "r-active"), active("2.1.310"), false],
+    ["same version, other recipe (digest rule)", offer("2.1.310"), active("2.1.310"), true],
+    ["unordered installed version (digest rule)", offer("2.1.310"), active("1"), true],
+    ["prerelease is not ordered (digest rule)", offer("2.1.310-beta"), active("2.1.318"), true],
+    ["numeric, not lexical", offer("2.1.9"), active("2.1.10"), false],
+    ["exact beyond 2^53 (no Number rounding)", offer("9007199254740992.0.0"), active("9007199254740993.0.0"), false],
+    ["exact beyond 2^53, newer catalog", offer("9007199254740993.0.0"), active("9007199254740992.0.0"), true],
+    ["leading zeros compare by value", offer("2.1.010"), active("2.1.9"), true],
+    ["not installable", offer("2.1.400", "r-catalog", false), active("2.1.286"), false],
+    ["nothing active", offer("2.1.400"), undefined, false],
+  ])("%s", (_name, entry, gen, expected) => {
+    expect(updateEligible(entry, gen)).toBe(expected);
+  });
+
+  it("orders identity.version, never the install's display version", () => {
+    const withInstall = (identity: string, install: string) => ({ identity: { id: "x", label: "X", publisher: "p", version: identity }, install: { kind: "npm-prefix", version: install } });
+    expect(olderThanInstalled(withInstall("0.164.0", "0.164.0-linux-x64"), withInstall("0.166.0", "0.166.0-linux-x64"))).toBe(true);
+    expect(olderThanInstalled(withInstall("1", "9.9.9"), withInstall("1", "0.0.1"))).toBe(false);
   });
 });

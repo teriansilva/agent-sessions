@@ -11,7 +11,7 @@
  *  Nothing here names an engine: grouping reads the manifest's `api.source`. */
 import { isActive } from "../../app/engineRoster";
 import type { EngineInfo, EngineProblem } from "../../types/api";
-import type { PluginCatalog, PluginInstallation, PluginManifest, PluginReview } from "../../types/plugins";
+import type { PluginCatalog, PluginGeneration, PluginInstallation, PluginManifest, PluginReview } from "../../types/plugins";
 import { pendingOperation, setupPath, verifiedGeneration } from "../plugins/model";
 
 /** An LED tone (docs/design.md §3): up = working, deg = needs the operator, down = broken,
@@ -56,6 +56,43 @@ function installer(id: string, data: PluginCatalog | null) {
   return { row, candidate, active, entry, operation };
 }
 
+type CatalogEntry = PluginCatalog["catalog"][number];
+
+/** The three components of an exact `X.Y.Z` as digit strings without leading zeros, so they
+ *  order exactly at any length (as Python's ints do on the server), never through `Number`. */
+const exactVersion = (version: string | undefined) => {
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(version ?? "");
+  return m ? [m[1], m[2], m[3]].map((part) => part.replace(/^0+(?=\d)/, "")) : null;
+};
+
+/** Numeric order of two digit strings without leading zeros: longer is larger, then by digits. */
+const lower = (a: string, b: string) => (a.length !== b.length ? a.length < b.length : a < b);
+
+/** The catalog pins a LOWER `identity.version` than the installed generation's (#1861). Only an
+ *  exact `X.Y.Z` on both sides is ordered — the same field and rule the server's catalog choice
+ *  uses — so anything else is never "older" and keeps the digest rule. */
+export function olderThanInstalled(catalog: PluginManifest | undefined, installed: PluginManifest | undefined): boolean {
+  const a = exactVersion(catalog?.identity.version);
+  const b = exactVersion(installed?.identity.version);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return lower(a[i], b[i]);
+  return false;
+}
+
+/** THE update rule, shared by `versionsOf`, the roster's Update action and setup's `?update=1`
+ *  (#1741, #1861): an installable catalog entry whose recipe is not the active generation's, and
+ *  is not an older version than it. Going back is Roll back / a kept version's Enable, never an
+ *  offered "update". */
+export function updateEligible(entry: CatalogEntry | undefined, active: PluginGeneration | undefined): boolean {
+  return (
+    !!entry &&
+    entry.installable !== false &&
+    !!active &&
+    entry.digest !== active.review.recipe_digest &&
+    !olderThanInstalled(entry.manifest, active.review.entry.manifest)
+  );
+}
+
 /** The installer half of the matrix (3–5, 7), or null when it has nothing to say. */
 function installStatus(id: string, data: PluginCatalog | null): Status | null {
   const { row, candidate, active, entry, operation } = installer(id, data);
@@ -83,7 +120,7 @@ function installStatus(id: string, data: PluginCatalog | null): Status | null {
   if (row && !candidate && !row.enabled) {
     return status(5, "Needs setup", "deg", { label: "Set up", to: setupPath({ plugin: id }) });
   }
-  if (entry && entry.installable !== false && active && entry.digest !== active.review.recipe_digest) {
+  if (updateEligible(entry, active)) {
     // One click (#1741): the setup flow opens on the one-confirmation update for this agent.
     return status(7, "Update available", "deg", {
       label: "Update",
@@ -263,7 +300,7 @@ export function manifestVersion(m: PluginManifest | undefined): string | null {
 export interface Versions {
   /** The active generation's version, or null when the installer manages nothing active. */
   installed: string | null;
-  /** The catalog's version when its recipe differs from the active one (an update), else null. */
+  /** The catalog's version when it is an update for the active one (`updateEligible`), else null. */
   available: string | null;
   /** The generation that was active before this one, still verified: what Roll back activates. */
   previous: { id: string; version: string | null } | null;
@@ -278,10 +315,7 @@ export interface Versions {
 export function versionsOf(id: string, data: PluginCatalog | null): Versions {
   const { row, active, entry } = installer(id, data);
   const installed = manifestVersion(active?.review.entry.manifest);
-  const available =
-    entry && entry.installable !== false && active && entry.digest !== active.review.recipe_digest
-      ? manifestVersion(entry.manifest)
-      : null;
+  const available = updateEligible(entry, active) ? manifestVersion(entry?.manifest) : null;
   let previous: Versions["previous"] = null;
   let undetermined: Versions["undetermined"] = [];
   if (row?.enabled && active) {

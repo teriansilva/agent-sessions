@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { useConfigRefresh } from "../../app/config";
 import { reloadRoster } from "../../app/reloadRoster";
 import { AgentEndpointCard } from "../settings/AgentEndpointCard";
-import { manifestVersion, staleAgainst } from "../agents/agentStatus";
+import { manifestVersion, olderThanInstalled, staleAgainst, updateEligible } from "../agents/agentStatus";
 import type { WizardStep } from "../wizard/WizardShell";
 import { SignInTerminal } from "./SignInTerminal";
 import { AGENTS_PATH, pendingOperation, pluginError, rejectedOperation, missingOperation, setupPath, sourceLabel, verifiedGeneration } from "./model";
@@ -369,11 +369,11 @@ export function AgentSetupFlow({
   const activeGen = selectedRow?.generations?.find(g => g.id === selectedRow.active);
   const versionNow = manifestVersion(activeGen?.review.entry.manifest);
   const versionNext = manifestVersion(entryShown?.manifest);
-  // An update exists only for an ENABLED agent whose active generation is not the catalog's recipe:
-  // a stale or hand-made `?update=1` (the agent was disabled or removed meanwhile, or is already
-  // current) offers nothing to confirm.
-  const updatable = !!selectedRow?.enabled && !!activeGen && !!entryShown && entryShown.installable !== false &&
-    entryShown.digest !== activeGen.review.recipe_digest;
+  // An update exists only for an ENABLED agent the catalog entry is an update for (`updateEligible`:
+  // a different recipe, never an older version, #1861): a stale or hand-made `?update=1` (the agent
+  // was disabled or removed meanwhile, is already current, or the catalog is older) offers nothing.
+  const updatable = !!selectedRow?.enabled && updateEligible(entryShown, activeGen);
+  const olderCatalog = olderThanInstalled(entryShown?.manifest, activeGen?.review.entry.manifest);
   const updateStep = updateMode && step === 0 && !operation && !unknownOperation && !auto && !!selected;
   const showUpdate = updateStep && updatable;
   const update = () => run(async current => {
@@ -386,7 +386,8 @@ export function AgentSetupFlow({
       setCatalog(fresh);
       const row = fresh.plugins.find(p => p.id === selected);
       const now = row?.generations?.find(g => g.id === row.active);
-      if (!row?.enabled || !now || row.active !== activeGen?.id || fresh.catalog.find(c => c.manifest.identity.id === selected)?.digest !== entryShown.digest) {
+      const freshEntry = fresh.catalog.find(c => c.manifest.identity.id === selected);
+      if (!row?.enabled || !now || row.active !== activeGen?.id || freshEntry?.digest !== entryShown.digest || !updateEligible(freshEntry, now)) {
         throw new Error("This agent changed since the update was shown (it was disabled, removed or updated). Nothing was installed.");
       }
       setBinding({ active: now.id, revision: fresh.roster_revision });
@@ -458,7 +459,9 @@ export function AgentSetupFlow({
         {operation.kind === "verify" ? "Verification didn’t pass, so nothing changed" : "The update didn’t complete, so nothing changed"}: {updateFrom} stays active.
         {operation.kind === "verify" && hasSignin && " If it failed on the vendor sign-in, use Back to account setup to sign in, then verify again."}</p>}
       {updateStep && !updatable && catalog && <p className={s.note} role="status" data-testid="update-unavailable">
-        There is no update to confirm: {entryShown?.manifest.identity.label ?? selected} is {!selectedRow?.enabled || !activeGen ? "not enabled on this host" : "already on the catalog’s version"}. Nothing will be installed.</p>}
+        {selectedRow?.enabled && activeGen && olderCatalog
+          ? <>There is no update to confirm: the catalog’s {entryShown?.manifest.identity.label ?? selected} {entryShown?.manifest.identity.version} is older than the installed {activeGen.review.entry.manifest.identity.version}. Nothing will be installed. To go back to an earlier version, use Roll back on the agent’s page.</>
+          : <>There is no update to confirm: {entryShown?.manifest.identity.label ?? selected} is {!selectedRow?.enabled || !activeGen ? "not enabled on this host" : "already on the catalog’s version"}. Nothing will be installed.</>}</p>}
       {step === 0 && !updateStep && locked && <p>Review the catalog entry for <b>{catalog?.catalog.find(c => c.manifest.identity.id === selected)?.manifest.identity.label ?? selected}</b>: its source, pinned artifacts and what it can access, before anything is installed.</p>}
       {step === 0 && !updateStep && locked && catalog?.catalog.find(c => c.manifest.identity.id === selected)?.reason && <p className={s.note}>{catalog.catalog.find(c => c.manifest.identity.id === selected)?.reason}</p>}
       {step === 0 && !updateStep && !locked && <>

@@ -289,6 +289,37 @@ test("a stale or hand-made update link for a disabled agent offers nothing to co
   expect(m.writes).toEqual([]);
 });
 
+test("a newer bundled version beats an older signed cut: Update says it is bundled with BattleLab (#1861)", async ({ page }) => {
+  const m = await mockApp(page, "update");
+  // The server's choice (agent_catalog.current): the accepted cut pins 1.2.3 and has expired; the
+  // release bundles 1.3.0, so the bundled entry is offered on release authority.
+  m.data.feed = { ...m.data.feed, source: "remote", stale: true };
+  m.data.catalog[0] = { ...m.data.catalog[0], source: "bundled" };
+  const row = await agentRow(page);
+  await expect(row.getByTestId("agent-versions")).toHaveText("1.2.3 → 1.3.0");
+  await expect(row).toContainText("Update available");
+  await row.getByRole("link", { name: "Update Sample agent to 1.3.0" }).click();
+  const summary = page.getByRole("region", { name: "Update summary" });
+  await expect(summary).toContainText("registry.npmjs.org · bundled with BattleLab");
+  expect(m.writes).toEqual([]);
+});
+
+test("an older catalog version is never offered as an Update, and a hand-made link says why (#1861)", async ({ page }) => {
+  const m = await mockApp(page, "updated");
+  // 1.3.0 is active; the catalog pins 1.2.3 with another recipe. Going back is Roll back's job.
+  const older = m.data.plugins[0].generations!.find((g) => g.id === OLD)!;
+  m.data.catalog[0] = { ...m.data.catalog[0], manifest: older.review.entry.manifest, digest: OLD_RECIPE };
+  const row = await agentRow(page);
+  await expect(row).toContainText("1.3.0");
+  await expect(row).not.toContainText("Update available");
+  await expect(row.getByRole("link", { name: /^Update Sample agent/ })).toHaveCount(0);
+  await page.goto(`/settings/agents/setup/new?plugin=${AGENT}&update=1`);
+  await expect(page.getByTestId("update-unavailable")).toContainText("the catalog’s Sample agent 1.2.3 is older than the installed 1.3.0");
+  await expect(page.getByTestId("update-unavailable")).toContainText("use Roll back");
+  await expect(page.getByRole("button", { name: /^Update to/ })).toHaveCount(0);
+  expect(m.writes).toEqual([]);
+});
+
 test("Roll back stays offered beside a newer Update (#1741)", async ({ page }) => {
   const m = await mockApp(page, "updated");
   m.data.catalog[0] = { ...m.data.catalog[0], digest: "f".repeat(64),

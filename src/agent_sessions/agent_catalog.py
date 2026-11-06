@@ -1,15 +1,18 @@
 """Public agent definitions: release-bundled authority and verified remote updates (#1370).
 
 The installed release supplies a usable catalog without a network request. Once a remote
-catalog has been accepted, its durable floor constrains the bundled fallback too: an expired
-remote recipe is installable on release authority only when its exact digest is bundled AND
-still offered by the highest accepted remote catalog. Damaged evidence is never first use.
+catalog has been accepted, it decides membership: an agent it omits gets no bundled fallback,
+and an expired remote recipe is installable on release authority only when its exact digest is
+bundled. The recipe for an agent both catalogs list is the newer one (#1861): a bundled entry
+whose `identity.version` is strictly higher replaces the remote entry, fresh or expired; a tie or
+an unparseable version keeps the remote one. Damaged evidence is never first use.
 The legacy ``plugins`` package/state names remain installation compatibility details.
 """
 
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +21,7 @@ from .plugins import feed
 BUNDLED_FILE = Path(__file__).with_name("agent_catalog.json")
 SOURCE_URL = "https://github.com/teriansilva/agent-sessions/tree/main/release/recipes/linux-x64"
 HISTORY_URL = "https://github.com/teriansilva/agent-sessions/commits/main/release/recipes/linux-x64"
+_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 
 @dataclass(frozen=True)
@@ -93,10 +97,15 @@ def current() -> Catalog:
             bundle_digest,
             "bundled",
         )
+    by_id = {e.manifest.id: e for e in entries}
     choices = []
     seen = set()
     for entry in remote.entries:
         seen.add(entry.manifest.id)
+        bundled_entry = by_id.get(entry.manifest.id)
+        if bundled_entry is not None and _newer(bundled_entry, entry):
+            choices.append(Choice(bundled_entry, "bundled"))
+            continue
         source = "signed" if not stale else "bundled" if entry.digest in by_digest else None
         reason = None if source else "The remote catalog expired; refresh before installing."
         choices.append(Choice(entry, source, reason))
@@ -118,6 +127,18 @@ def current() -> Catalog:
         "remote",
         stale=stale,
     )
+
+
+def _version(entry: feed.Entry) -> tuple[int, int, int] | None:
+    """`identity.version` when it is exactly `X.Y.Z`; anything else is unordered."""
+    found = _VERSION.fullmatch(entry.manifest.identity.version)
+    return tuple(int(x) for x in found.groups()) if found else None
+
+
+def _newer(bundled_entry: feed.Entry, remote_entry: feed.Entry) -> bool:
+    """Only a strictly higher, parseable bundled version replaces the remote recipe (#1861)."""
+    ours, theirs = _version(bundled_entry), _version(remote_entry)
+    return ours is not None and theirs is not None and ours > theirs
 
 
 def select(agent_id: str) -> tuple[Choice, int | None]:

@@ -20,8 +20,10 @@ change an enabled agent, or interrupt sessions.
 
 ## Updating an agent
 
-When the catalog pins a newer version than the one you run, Settings → Agents shows
-*installed → available* (for example *2.1.286 → 2.1.311*) with **Update**. Update shows one
+When the catalog pins a different recipe than the one you run, and its version is not older than
+yours, Settings → Agents shows *installed → available* (for example *2.1.286 → 2.1.311*) with
+**Update**. A catalog version older than the installed one is never offered as an update; to go
+back, use **Roll back** or enable a kept version. Update shows one
 confirmation: the versions, the source, what verification does, and that your current version
 stays active if it fails. Confirming installs the new version beside the current one, verifies it
 with this host's existing vendor sign-in (no new sign-in unless verification fails, in which case
@@ -32,9 +34,13 @@ After an update, the previous version stays installed. **Roll back to …** on t
 enables it again, after one confirmation, through the same enable step.
 
 Offline, the bundled definitions are still available. Downloading an agent's artifacts needs
-network access. Once a signed remote catalog has been accepted, its entries constrain the
-bundled fallback: if it expires, only unchanged recipes that it still offers and that also ship
-with the installed BattleLab release remain eligible. Unverified updates are rejected. Missing
+network access. Once a signed remote catalog has been accepted, it decides which agents are
+offered: an agent it no longer lists is not offered from the bundle either. For an agent both
+list, the newer version wins: when the installed BattleLab release bundles a strictly higher
+version than the signed catalog pins, the bundled definition is offered (its source reads
+*bundled with BattleLab*), whether the signed catalog is current or expired. Otherwise the signed
+entry is offered, and once it expires it stays installable only if this release bundles the
+exact same recipe. Unverified updates are rejected. Missing
 or damaged saved trust records are reported and must be restored before catalog installation.
 
 ## Where the API agents fit

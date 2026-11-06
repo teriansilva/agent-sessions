@@ -94,6 +94,108 @@ def test_remote_removal_cannot_be_undone_by_a_bundled_recipe(bundle, signer, mon
             manager._entry(review, fresh=True)
 
 
+def versioned(version, agent_id="fixture"):
+    raw = test_plugin_feed.entry()
+    raw["manifest"]["identity"]["version"] = version
+    raw["manifest"]["identity"]["id"] = agent_id
+    raw["manifest"]["binary"]["name"] = agent_id
+    raw["manifest"]["install"]["entrypoint"] = f"node_modules/fixture/bin/{agent_id}"
+    return raw
+
+
+def bundle_with(path, *raws):
+    path.write_bytes(feed.canonical({"format": 1, "agents": list(raws)}))
+
+
+def choice(agent_id="fixture"):
+    return next(c for c in catalog.current().choices if c.entry.manifest.id == agent_id)
+
+
+@pytest.mark.parametrize("expired", [False, True])
+@pytest.mark.parametrize(
+    ("ours", "theirs", "winner"),
+    [
+        ("1.1.0", "1.0.0", "bundled"),  # strictly newer bundle wins (#1861)
+        ("1.0.10", "1.0.9", "bundled"),  # numeric, not lexical
+        ("1.0.0", "1.0.0", "remote"),  # tie keeps the signed cut
+        ("1.0.0", "1.1.0", "remote"),  # the cut is newer
+        ("1.1.0", "1", "remote"),  # unparseable remote
+        ("1", "1.0.0", "remote"),  # unparseable bundle
+        ("1.1.0-beta", "1.0.0", "remote"),  # only exact X.Y.Z is ordered
+    ],
+)
+def test_the_newer_recipe_wins_per_agent(
+    bundle, signer, monkeypatch, ours, theirs, winner, expired
+):
+    mine = versioned(ours)
+    if ours == theirs:
+        mine["manifest"]["identity"]["label"] = "Bundled definition"  # same version, other digest
+    bundle_with(bundle, mine)
+    accept(signer, entries=[versioned(theirs)])
+    if expired:
+        monkeypatch.setattr(feed.time, "time", lambda: NOW + 86401)
+    chosen = choice()
+    expected = ours if winner == "bundled" else theirs
+    assert chosen.entry.manifest.identity.version == expected
+    if winner == "bundled":
+        assert chosen.source == "bundled" and chosen.reason is None
+        assert chosen.entry.digest == catalog.bundled()[0][0].digest
+    else:
+        # Today's rule, unchanged: signed while fresh, uninstallable once expired (the bundle
+        # never carries the remote recipe's exact digest in these cases).
+        assert chosen.source == (None if expired else "signed")
+    assert len([c for c in catalog.current().choices if c.entry.manifest.id == "fixture"]) == 1
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_remote_only_entries_keep_todays_rule(bundle, signer, monkeypatch, expired):
+    bundle_with(bundle, versioned("9.0.0"))
+    accept(signer, entries=[versioned("9.0.0"), versioned("1.0.0", "other")])
+    if expired:
+        monkeypatch.setattr(feed.time, "time", lambda: NOW + 86401)
+    other = choice("other")
+    assert other.entry.manifest.identity.version == "1.0.0"
+    assert other.source == (None if expired else "signed")
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_a_newer_bundle_cannot_undo_a_remote_removal(bundle, signer, monkeypatch, expired):
+    bundle_with(bundle, versioned("9.0.0"))
+    accept(signer, entries=[versioned("1.0.0", "other")])
+    if expired:
+        monkeypatch.setattr(feed.time, "time", lambda: NOW + 86401)
+    removed = choice()
+    assert removed.source is None and "not offered" in removed.reason
+    with pytest.raises(ValueError, match="not offered"):
+        manager.review(plugin_id="fixture")
+
+
+def test_damaged_evidence_stays_unavailable_with_a_newer_bundle(bundle, signer):
+    bundle_with(bundle, versioned("9.0.0"))
+    accept(signer, entries=[versioned("1.0.0")])
+    (storage.root() / "feed.json").write_bytes(b"damaged")
+    value = catalog.current()
+    assert value.source == "unavailable"
+    assert value.choices and all(c.source is None for c in value.choices)
+    with pytest.raises(ValueError, match="Restore"):
+        manager.review(plugin_id="fixture")
+
+
+def test_a_bundled_winner_installs_on_release_authority_until_a_newer_cut_arrives(bundle, signer):
+    bundle_with(bundle, versioned("1.1.0"))
+    accept(signer, entries=[versioned("1.0.0")])
+    review = manager.review(plugin_id="fixture")
+    assert review["source"] == "bundled" and review["sequence"] is None
+    assert manager._entry(review, fresh=True).digest == catalog.bundled()[0][0].digest
+    # A newer signed cut pins an even newer version: the bundled review is stale, and a fresh
+    # review follows the cut.
+    accept(signer, 2, entries=[versioned("1.2.0")])
+    with pytest.raises(ValueError, match="review this installation again"):
+        manager._entry(review, fresh=True)
+    replacement = manager.review(plugin_id="fixture")
+    assert replacement["source"] == "signed" and replacement["sequence"] == 2
+
+
 @pytest.mark.parametrize("damage", ["missing", "corrupt", "floor", "rollback"])
 def test_established_state_damage_never_becomes_first_boot(bundle, signer, damage):
     accept(signer)
