@@ -21,12 +21,19 @@ import uuid
 from agent_sessions import tty_health, webterm
 
 # A raw-mode TUI that takes a pasted image path in on a busy thread for INTAKE_S seconds and drops
-# any Enter it reads meanwhile, like claude <= 2.1.310. It logs one line per event as JSON.
+# any Enter it reads meanwhile, like claude <= 2.1.310. It logs one line per event as JSON, and
+# replaces the log atomically: the test reads it while the agent runs, and a truncate-then-write
+# let a read land on an empty file (#1866).
 _INTAKE_AGENT = r"""
 import json, os, sys, threading, time, tty
 log, intake_s, paint = sys.argv[1], float(sys.argv[2]), sys.argv[3] == "paint"
-with open(log + ".pid", "w") as f:
-    f.write(str(os.getpid()))
+
+def publish(path, text):  # atomic: a reader sees the old file or the new one, never a truncated one
+    with open(path + ".tmp", "w") as f:
+        f.write(text)
+    os.replace(path + ".tmp", path)
+
+publish(log + ".pid", str(os.getpid()))
 tty.setraw(0)
 os.write(1, b"READY")
 if paint:  # what a handoff seed waits for: bracketed paste armed, a first paint
@@ -35,8 +42,7 @@ events, buf, busy = [], b"", [None]
 
 def note(what):
     events.append([round(time.monotonic(), 3), what])
-    with open(log, "w") as f:
-        json.dump(events, f)
+    publish(log, json.dumps(events))
 
 def take_in():
     end = time.monotonic() + intake_s
