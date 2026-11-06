@@ -124,6 +124,13 @@ export function instance(over: Partial<Inst> = {}): Inst {
 
 export async function mockConnectors(page: Page, instances: Inst[] = []): Promise<ConnectorServer> {
   await mockShell(page);
+  return routeConnectors(page, instances);
+}
+
+/** The `/api/connectors` stand-in alone, for a spec that brings its own app shell (the setup
+ *  wizard's Connect HQ step, #1880). Register it AFTER that spec's catch-all route: the last
+ *  registered route answers first. */
+export async function routeConnectors(page: Page, instances: Inst[] = []): Promise<ConnectorServer> {
   const srv: ConnectorServer = { instances, patches: [], holdTest: null, revoked: false, holdList: null };
   const refuse = (code: string, detail: string, status = 409) => ({ status, json: { detail, code } });
   await page.route(/\/api\/connectors(\/.*)?$/, async (route) => {

@@ -165,3 +165,31 @@ export type RecipientCandidate = ConnectorRecipient & {
   /** How many people are in it (shown so the Commander sees who would read). */
   members?: number;
 };
+
+/** What HQ gets from a connector, in one line, from its manifest's capabilities: the setup
+ *  wizard's Connect HQ tile (#1880). */
+export function tileLine(m: ConnectorManifest): string {
+  // `search` is how HQ finds things, not something it reads: it stays out of the sentence.
+  const things = m.capabilities.read
+    .filter((r) => r !== "search")
+    .map((r) => readsLabel([r]));
+  if (things.length) {
+    const list =
+      things.length === 1
+        ? things[0]
+        : `${things.slice(0, -1).join(", ")} and ${things[things.length - 1]}`;
+    return `HQ reads your ${list}.`;
+  }
+  if (m.capabilities.read.length) return "HQ looks things up there for you.";
+  return "HQ proposes a message; nothing is sent until you tap it.";
+}
+
+/** The instance a Connect HQ tile stands for (#1880): the one HQ works through if there is one,
+ *  else the first. */
+export function tileInstance(
+  m: ConnectorManifest,
+  instances: ConnectorInstance[],
+): ConnectorInstance | undefined {
+  const mine = instances.filter((i) => i.manifest_id === m.id);
+  return mine.find((i) => statusLine(i, m.category).tone === "up") ?? mine[0];
+}

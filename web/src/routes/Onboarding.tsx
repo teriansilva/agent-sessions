@@ -38,6 +38,7 @@ import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import styles from "./Onboarding.module.css";
 import { AiEndpointSetup } from "./AiEndpointSetup";
 import { HqContactGallery } from "../components/hq/HqContactGallery";
+import { ConnectHqStep } from "../components/onboarding/ConnectHqStep";
 import { SlideCounter, SlideDots } from "../components/slideshow/Slideshow";
 import { useSlideshow } from "../components/slideshow/useSlideshow";
 import { newestRelease, whatsNewLabel } from "../whatsnew/due";
@@ -109,6 +110,7 @@ const WIZARD_STEPS = [
   "system",
   "ai",
   "contact",
+  "connectors",
   "project",
   "tour",
   "analytics",
@@ -122,6 +124,7 @@ const STEP_LABEL: Record<Step, string> = {
   system: "Your system",
   ai: "Set up AI",
   contact: "HQ contact",
+  connectors: "Connect HQ",
   project: "First project",
   tour: "Tour",
   analytics: "Usage analytics",
@@ -334,14 +337,16 @@ export function Onboarding({
     () =>
       WIZARD_STEPS.filter(
         (s) =>
-          (s !== "analytics" || analyticsStep) && (s !== "contact" || aiReady),
+          (s !== "analytics" || analyticsStep) &&
+          // Connect HQ (#1880) is HQ's too: without an AI endpoint no HQ reads through a connector.
+          ((s !== "contact" && s !== "connectors") || aiReady),
       ),
     [analyticsStep, aiReady],
   );
   const afterAi: Step = aiReady ? "contact" : "project";
   // The endpoint was removed while the contact step was open (Back → AI → Remove key → Next is
   // not the only way): the step left the rail, so move on rather than render an unlisted step.
-  if (step === "contact" && !aiReady) setStep("project");
+  if ((step === "contact" || step === "connectors") && !aiReady) setStep("project");
   // Each step opens at its top (#1544): the card body is one scroller, and Next sits at the foot of a
   // long step (AI), so the next step would otherwise open scrolled past its own title.
   const paneRef = useRef<HTMLDivElement | null>(null);
@@ -622,8 +627,9 @@ export function Onboarding({
             <p className={styles.copy}>
               We'll check which agents report for duty on this host and connect
               your AI — a local model works. With AI connected, you pick your HQ
-              contact: the General who briefs you. Then a first project, a short
-              tour, and your first session.
+              contact: the General who briefs you, and can connect HQ to your
+              other services. Then a first project, a short tour, and your first
+              session.
             </p>
             <p className={styles.copy}>
               Installed with streaming (the default)? Your deck is also
@@ -895,7 +901,7 @@ export function Onboarding({
               <button
                 type="button"
                 className={styles.ghost}
-                onClick={() => setStep("project")}
+                onClick={() => setStep("connectors")}
               >
                 Decide later
               </button>
@@ -904,6 +910,39 @@ export function Onboarding({
                 type="button"
                 className={styles.btn}
                 onClick={() => setStep("ai")}
+              >
+                <ArrowLeft size={14} /> Back
+              </button>
+              <button
+                type="button"
+                className={`${styles.pri} shine`}
+                onClick={() => setStep("connectors")}
+              >
+                Next <ArrowRight size={14} />
+              </button>
+            </Foot>
+          </Step>
+        )}
+
+        {step === "connectors" && (
+          <Step
+            title="Connect HQ to your services"
+            desc="HQ can look things up in your other services and propose messages you approve. Every connector is optional."
+          >
+            <ConnectHqStep hintClass={styles.copy} />
+            <Foot>
+              <button
+                type="button"
+                className={styles.ghost}
+                onClick={() => setStep("project")}
+              >
+                Skip for now
+              </button>
+              <span className={styles.grow} />
+              <button
+                type="button"
+                className={styles.btn}
+                onClick={() => setStep("contact")}
               >
                 <ArrowLeft size={14} /> Back
               </button>
@@ -969,7 +1008,7 @@ export function Onboarding({
               <button
                 type="button"
                 className={styles.btn}
-                onClick={() => setStep(aiReady ? "contact" : "ai")}
+                onClick={() => setStep(aiReady ? "connectors" : "ai")}
               >
                 <ArrowLeft size={14} /> Back
               </button>

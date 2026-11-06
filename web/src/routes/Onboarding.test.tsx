@@ -37,6 +37,9 @@ vi.mock("../lib/api", () => ({
     plugins: vi.fn(),
     structuredCreate: vi.fn(),
     structuredStart: vi.fn(),
+    // #1880: the Connect HQ step reads the connector catalog.
+    connectors: vi.fn(async () => ({ catalog: [], instances: [], disclosure: "" })),
+    addConnector: vi.fn(),
   },
   ApiError: class ApiError extends Error {
     status: number;
@@ -963,14 +966,51 @@ test("with an AI endpoint the contact step follows AI, and a pick is written to 
     expect(api.setPrefs).toHaveBeenCalledWith({ hq_contact: "us-man" }),
   );
   await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  // #1880: Connect HQ follows the contact.
+  expect(
+    screen.getByRole("heading", { name: /connect hq to your services/i }),
+  ).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
   expect(
     screen.getByRole("heading", { name: /create your first project/i }),
   ).toBeInTheDocument();
-  // Back from the project returns to the contact step, not past it.
+  // Back from the project returns to Connect HQ, and from there to the contact, not past them.
+  await userEvent.click(screen.getByRole("button", { name: /back/i }));
+  expect(
+    screen.getByRole("heading", { name: /connect hq to your services/i }),
+  ).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: /back/i }));
   expect(
     screen.getByRole("heading", { name: /choose your hq contact/i }),
   ).toBeInTheDocument();
+});
+
+// ---- #1880: Connect HQ follows the contact, only with an AI endpoint, and is always skippable ----
+
+test("without an AI endpoint there is no Connect HQ step", () => {
+  renderWizard(vi.fn(), cfg({}));
+  expect(railLabels()).not.toContain("Connect HQ");
+});
+
+test("with an AI endpoint Connect HQ sits right after the HQ contact", () => {
+  renderWizard(vi.fn(), cfg({ ai_review: AI_ON }));
+  const labels = railLabels();
+  expect(labels[labels.indexOf("HQ contact") + 1]).toBe("Connect HQ");
+});
+
+test("Skip for now leaves Connect HQ without adding a connector", async () => {
+  renderWizard(vi.fn(), cfg({ ai_review: AI_ON }));
+  await gotoAiStep();
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  await userEvent.click(screen.getByRole("button", { name: /decide later/i }));
+  expect(
+    screen.getByRole("heading", { name: /connect hq to your services/i }),
+  ).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /skip for now/i }));
+  expect(
+    screen.getByRole("heading", { name: /create your first project/i }),
+  ).toBeInTheDocument();
+  expect(api.addConnector).not.toHaveBeenCalled();
 });
 
 test("Decide later skips the contact step without writing a choice", async () => {
@@ -979,7 +1019,7 @@ test("Decide later skips the contact step without writing a choice", async () =>
   await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
   await userEvent.click(screen.getByRole("button", { name: /decide later/i }));
   expect(
-    screen.getByRole("heading", { name: /create your first project/i }),
+    screen.getByRole("heading", { name: /connect hq to your services/i }),
   ).toBeInTheDocument();
   expect(api.setPrefs).not.toHaveBeenCalledWith(
     expect.objectContaining({ hq_contact: expect.anything() }),
@@ -1055,6 +1095,29 @@ test("an endpoint removed while the contact step is open moves on, and the store
   expect(api.setPrefs).not.toHaveBeenCalledWith(
     expect.objectContaining({ hq_contact: expect.anything() }),
   );
+});
+
+test("an endpoint removed while Connect HQ is open moves on to the project, and the step leaves the rail (#1880)", async () => {
+  const tree = (config: AppConfig) => (
+    <MemoryRouter>
+      <ConfigCtx.Provider value={config}>
+        <Onboarding mode="wizard" onClose={vi.fn()} />
+      </ConfigCtx.Provider>
+    </MemoryRouter>
+  );
+  const { rerender } = render(tree(cfg({ ai_review: AI_ON })));
+  await gotoAiStep();
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  expect(
+    screen.getByRole("heading", { name: /connect hq to your services/i }),
+  ).toBeInTheDocument();
+  rerender(tree(cfg({ ai_review: { ...AI_ON, api_key_set: false, configured: false } })));
+  expect(
+    await screen.findByRole("heading", { name: /create your first project/i }),
+  ).toBeInTheDocument();
+  expect(within(rail()).queryByText("Connect HQ")).toBeNull();
+  expect(api.addConnector).not.toHaveBeenCalled();
 });
 
 // ---- "Your system" (#1819) --------------------------------------------------------------------

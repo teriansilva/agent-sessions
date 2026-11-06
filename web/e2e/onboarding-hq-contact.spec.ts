@@ -5,6 +5,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { DASHBOARD_PATH } from "../src/lib/routes";
+import { GOOD_TOKEN, instance, routeConnectors } from "./connectorsFixture";
 
 const MODELS = ["qwen3", "llama3.3"];
 
@@ -157,8 +158,12 @@ test("with AI configured, the contact step follows AI and a pick is stored as hq
   await expect.poll(() => state.writes.some((w) => w.hq_contact === "us-man")).toBe(true);
   await expectNoHScroll(page);
 
+  await dialog.getByRole("button", { name: /^next$/i }).click(); // → connect hq (#1880)
+  await expect(dialog.getByRole("heading", { name: "Connect HQ to your services" })).toBeVisible();
   await dialog.getByRole("button", { name: /^next$/i }).click(); // → project
   await expect(dialog.getByRole("heading", { name: /create your first project/i })).toBeVisible();
+  await dialog.getByRole("button", { name: /back/i }).click();
+  await expect(dialog.getByRole("heading", { name: "Connect HQ to your services" })).toBeVisible();
   await dialog.getByRole("button", { name: /back/i }).click();
   await expect(dialog.getByRole("heading", { name: "Choose your HQ contact" })).toBeVisible();
 });
@@ -190,8 +195,91 @@ test("without AI there is no contact step until the AI save lands; presets fill 
   await expect(rail.getByText("HQ contact")).toBeVisible();
   await dialog.getByRole("button", { name: /^next$/i }).click();
   await expect(dialog.getByRole("heading", { name: "Choose your HQ contact" })).toBeVisible();
-  // Decide later leaves the stored choice alone.
+  // Decide later leaves the stored choice alone; Connect HQ (#1880) follows, and is skippable.
   await dialog.getByRole("button", { name: /decide later/i }).click();
+  await expect(dialog.getByRole("heading", { name: "Connect HQ to your services" })).toBeVisible();
+  await dialog.getByRole("button", { name: /skip for now/i }).click();
   await expect(dialog.getByRole("heading", { name: /create your first project/i })).toBeVisible();
   expect(state.writes.some((w) => "hq_contact" in w)).toBe(false);
+});
+
+test("Connect HQ: set up a connector inline with Settings' own card, see it connected, move on (#1880)", async ({
+  page,
+}) => {
+  await mockApp(page, { aiConfigured: true });
+  const srv = await routeConnectors(page);
+  const dialog = await toAiStep(page);
+  const rail = dialog.getByRole("navigation", { name: /setup steps/i });
+  await expect(rail.getByText("Connect HQ")).toBeVisible();
+  await dialog.getByRole("button", { name: /^next$/i }).click(); // → contact
+  await dialog.getByRole("button", { name: /^next$/i }).click(); // → connect hq
+  await expect(dialog.getByRole("heading", { name: "Connect HQ to your services" })).toBeInViewport();
+
+  const tiles = dialog.getByTestId("connect-hq-tile");
+  await expect(tiles).toHaveCount(3);
+  const github = tiles.filter({ hasText: "GitHub" });
+  await expect(github.getByTestId("connect-hq-state")).toHaveText("Not set up");
+  // A real tap target (docs/design.md §8).
+  const setUp = github.getByRole("button", { name: "Set up GitHub" });
+  const box = await setUp.boundingBox();
+  expect(box && box.height >= 44).toBe(true);
+  await expectNoHScroll(page);
+
+  await setUp.click();
+  const card = dialog.getByTestId("connector-card");
+  await expect(card).toBeVisible();
+  await expect(card.getByTestId("connector-status")).toHaveText("Needs a token");
+  await card.getByLabel("Access token").fill(GOOD_TOKEN);
+  await card.getByRole("button", { name: "Save and test" }).click();
+  await expect(card.getByTestId("connector-status")).toHaveText("Tested · reading is off");
+  await card.getByRole("checkbox", { name: "Let HQ read through this connector" }).check();
+  await expect(card.getByTestId("connector-status")).toHaveText("HQ reads through it");
+  expect(srv.instances).toHaveLength(1);
+  await expectNoHScroll(page);
+
+  await card.getByRole("button", { name: "Close" }).click();
+  await expect(dialog.getByTestId("connector-card")).toHaveCount(0);
+  await expect(github.getByTestId("connect-hq-state")).toHaveText("HQ reads through it");
+  await expect(github.getByRole("button")).toHaveText("Manage GitHub");
+
+  await dialog.getByRole("button", { name: /^next$/i }).click();
+  await expect(dialog.getByRole("heading", { name: /create your first project/i })).toBeVisible();
+});
+
+test("Connect HQ shows current states on a later run, and removing from the inline card folds it back (#1880)", async ({
+  page,
+}) => {
+  await mockApp(page, { aiConfigured: true });
+  const srv = await routeConnectors(page, [
+    instance({
+      manifest_id: "github",
+      origin: "https://api.github.com",
+      token: GOOD_TOKEN,
+      tested: { login: "commander", repos: 7, at: 2 },
+      last_test: { generation: 1, ok: true, code: null, at: 2 },
+      read: true,
+    }),
+  ]);
+  const dialog = await toAiStep(page);
+  await dialog.getByRole("button", { name: /^next$/i }).click(); // → contact
+  await dialog.getByRole("button", { name: /^next$/i }).click(); // → connect hq
+  const github = dialog.getByTestId("connect-hq-tile").filter({ hasText: "GitHub" });
+  await expect(github.getByTestId("connect-hq-state")).toHaveText("HQ reads through it");
+  const manage = github.getByRole("button", { name: "Manage GitHub" });
+  const box = await manage.boundingBox();
+  expect(box && box.height >= 44).toBe(true);
+  await manage.click();
+  const card = dialog.getByTestId("connector-card");
+  await card.getByRole("button", { name: "Remove", exact: true }).click();
+  await card.getByRole("button", { name: "Remove connector" }).click();
+  await expect(dialog.getByTestId("connector-card")).toHaveCount(0);
+  await expect(github.getByTestId("connect-hq-state")).toHaveText("Not set up");
+  expect(srv.instances).toHaveLength(0);
+  // The footer stays reachable at phone width: Next takes the Commander on.
+  const next = dialog.getByRole("button", { name: /^next$/i });
+  await next.scrollIntoViewIfNeeded();
+  await expect(next).toBeInViewport();
+  await expectNoHScroll(page);
+  await next.click();
+  await expect(dialog.getByRole("heading", { name: /create your first project/i })).toBeVisible();
 });

@@ -81,6 +81,7 @@ the same list.
 | `components/playbooks/playbooks.module.css` | css | 10 | done | route:playbooks route:playbook-detail popup:playbook-delete canvas:playbook-flow | dossier cards arrive once (slide + tint flash, Full; at rest in Reduced/Off) |
 | `components/playbooks/ProjectPlaybook.module.css` | css | 10 | todo |  |  |
 | `components/onboarding/SetupAgents.module.css` | css | 11 | todo | no sweep id yet: the first-run wizard is not reachable by the sweep; `e2e/onboarding-agents.spec.ts` drives it desktop + mobile | none of its own: the inline Add-agent flow opens in place, status LEDs steady, the default client is an accent edge, never motion |
+| `components/onboarding/ConnectHqStep.module.css` | css | 11 | todo | no sweep id yet: the first-run wizard is not reachable by the sweep; `e2e/onboarding-hq-contact.spec.ts` drives the Connect HQ step desktop + mobile (#1880) | none of its own: tiles are dashed boxes, the state LED is Settings' `.hud-led` (`statusLine`), the open card is Settings' own `ConnectorCard`, never motion |
 | `components/plugins/PluginSetup.module.css` | css | 11 | done | route:agent-add | none of its own (the wizard rail is Phase 4's WizardShell) |
 | `components/ProjectColorPicker.module.css` | css | 10 | todo |  |  |
 | `components/projects/ProjectSessionDefaults.module.css` | css | 10 | todo |  |  |

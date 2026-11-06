@@ -162,18 +162,23 @@ export function ConnectorsSettings() {
 
 type Busy = null | "save" | "test" | "read" | "remove";
 
-function ConnectorCard({
+/** One connector's card: its address, token, test and switches. Exported for the setup wizard's
+ *  Connect HQ step (#1880), which shows this very card inline rather than a second form; there
+ *  `onClose` adds a Close button that folds the card back into its tile. Settings passes none. */
+export function ConnectorCard({
   inst,
   manifest,
   disclosure,
   focusOnMount,
   onChanged,
+  onClose,
 }: {
   inst: ConnectorInstance;
   manifest: ConnectorManifest | undefined;
   disclosure: string;
   focusOnMount: boolean;
   onChanged: () => Promise<void>;
+  onClose?: () => void;
 }) {
   const label = manifest?.label ?? inst.manifest_id;
   const fixed = !!manifest?.fixed_origin;
@@ -594,14 +599,25 @@ function ConnectorCard({
             </button>
           </div>
         ) : (
-          <button
-            type="button"
-            className={settings.secBtnGhost}
-            disabled={busy !== null}
-            onClick={() => setConfirmRemove(true)}
-          >
-            Remove
-          </button>
+          <>
+            {onClose && (
+              <button
+                type="button"
+                className={settings.secBtnGhost}
+                onClick={onClose}
+              >
+                Close
+              </button>
+            )}
+            <button
+              type="button"
+              className={settings.secBtnGhost}
+              disabled={busy !== null}
+              onClick={() => setConfirmRemove(true)}
+            >
+              Remove
+            </button>
+          </>
         )}
       </div>
     </li>
