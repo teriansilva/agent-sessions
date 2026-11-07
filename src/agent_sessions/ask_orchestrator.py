@@ -85,6 +85,10 @@ OBJECTIVES_MAX = 30
 QUERY_MAX = pulse_chat.QUERY_MAX
 #: Replayed history: the last settled turns of this conversation, each side capped.
 HISTORY_TURNS = 8
+#: What a FAILED turn's question is replayed with (#1887): a fixed line, never the stored failure
+#: detail (some details carry endpoint text). Without it the question vanished from the history, so
+#: the operator's "try again" reached HQ with nothing to try.
+FAILED_TURN_NOTE = "[No answer: this request failed before HQ could reply.]"
 
 #: How long shutdown waits for running turns — under systemd's default 90 s stop timeout.
 TURN_SHUTDOWN_WAIT_S = 60.0
@@ -2274,10 +2278,15 @@ def _history(
     through the store boundary), and whether any of them was answered by someone other than
     ``contact``. Such an answer — the Commander switched generals mid-conversation — opens with its
     speaker's label (`speaker_label`), so the contact answering now never reads it as their own
-    (`_handover` says what the label means). Decided from the stored speaker, never the text."""
+    (`_handover` says what the label means). Decided from the stored speaker, never the text.
+    A question whose turn FAILED is replayed with `FAILED_TURN_NOTE` (#1887) — no speaker's answer,
+    so no label — and a still-pending one not at all."""
     questions: dict[str, str] = {}
     speakers: dict[str, str] = {}
     answers: dict[str, str] = {}
+    # Every record's status, not only those before this turn: an earlier turn settled as interrupted
+    # after this one began still reads as failed.
+    statuses = _turn_statuses(records)
     order: list[str] = []
     for r in records:
         tid = r.get("turn_id")
@@ -2300,16 +2309,19 @@ def _history(
             answers[tid] = r["text"]
     out: list[dict] = []
     switched = False
-    for tid in order[-HISTORY_TURNS:]:
+    replayed = [t for t in order if t in answers or statuses.get(t, {}).get("status") == "failed"]
+    for tid in replayed[-HISTORY_TURNS:]:
         if tid in answers:
             answer = answers[tid]
             if speakers[tid] != contact:
                 answer = f"{speaker_label(speakers[tid])}\n\n{answer}"
                 switched = True
-            out += [
-                {"role": "user", "content": questions[tid]},
-                {"role": "assistant", "content": answer},
-            ]
+        else:
+            answer = FAILED_TURN_NOTE
+        out += [
+            {"role": "user", "content": questions[tid]},
+            {"role": "assistant", "content": answer},
+        ]
     return out, switched
 
 

@@ -1047,6 +1047,85 @@ def test_history_replays_the_settled_turns_as_user_and_assistant_only(app, ai):
     ]
 
 
+def _conversation(body: dict) -> list[tuple[str, str]]:
+    return [(m["role"], m["content"]) for m in body["messages"] if m["role"] != "system"]
+
+
+def test_try_again_after_a_failed_turn_carries_the_failed_question(app, ai):
+    """The operator's report (#1887): a turn failed on leaked call markup, "try again" reached HQ
+    with no earlier request, and HQ said it was the first message. The failed question is now
+    replayed with the fixed note — never the stored failure detail."""
+    script = ai(answer(LEAKED_CALLS), answer(LEAKED_CALLS), answer("On it."))
+    cid = app.new()
+    failed = app.ask(cid, "nudge the waiting sessions").json()["turn"]
+    assert failed["status"] == "failed" and failed["code"] == "tool_markup"
+    assert app.ask(cid, "try again").json()["turn"]["status"] == "done"
+    assert _conversation(script.bodies[2]) == [
+        ("user", "nudge the waiting sessions"),
+        ("assistant", ask_orchestrator.FAILED_TURN_NOTE),
+        ("user", "try again"),
+    ]
+    assert failed["detail"] not in json.dumps(script.bodies[2])
+    assert "DSML" not in json.dumps(script.bodies[2])
+
+
+def test_an_interrupted_turn_is_replayed_as_failed(app, ai):
+    """A turn the server lost is settled as interrupted when the next one starts, and its detail
+    tells the operator to ask again — which now works by referring back."""
+    cid = app.new()
+    tid = str(uuid.uuid4())
+    ask_store.append(
+        cid,
+        {"type": "user", "turn_id": tid, "text": "lost question", "qd": QD},
+        {"type": "status", "turn_id": tid, "status": "pending"},
+    )
+    script = ai(answer("Again, then."))
+    assert app.ask(cid, "ask again").json()["turn"]["status"] == "done"
+    assert app.get(cid)["turns"][0]["code"] == "interrupted"
+    assert _conversation(script.bodies[0]) == [
+        ("user", "lost question"),
+        ("assistant", ask_orchestrator.FAILED_TURN_NOTE),
+        ("user", "ask again"),
+    ]
+
+
+def test_history_skips_a_pending_turn_and_labels_no_failed_one():
+    """A still-pending question is not replayed; a failed one on another contact carries the note
+    alone — it is no speaker's answer, so no label and no handover."""
+
+    def turn(tid, text, *rest, contact="romania-woman"):
+        user = {"type": "user", "turn_id": tid, "text": text, "contact": contact}
+        return [user, *({"turn_id": tid, **r} for r in rest)]
+
+    records = [
+        *turn(
+            "t1",
+            "answered",
+            {"type": "assistant", "text": "yes"},
+            {"type": "status", "status": "done"},
+        ),
+        *turn(
+            "t2",
+            "failed",
+            {"type": "status", "status": "pending"},
+            {"type": "status", "status": "failed"},
+        ),
+        *turn("t3", "pending", {"type": "status", "status": "pending"}),
+        *turn("now", "current", {"type": "status", "status": "pending"}),
+    ]
+    out, switched = ask_orchestrator._history(records, "now", "russia-man")
+    assert [m["content"] for m in out] == [
+        "answered",
+        "[Answered by General Ileana Lupu]\n\nyes",
+        "failed",
+        ask_orchestrator.FAILED_TURN_NOTE,
+    ]
+    assert switched is True
+    out, switched = ask_orchestrator._history(records[3:], "now", "russia-man")
+    assert [m["content"] for m in out] == ["failed", ask_orchestrator.FAILED_TURN_NOTE]
+    assert switched is False
+
+
 # ---- the endpoint ----------------------------------------------------------------------------
 
 
