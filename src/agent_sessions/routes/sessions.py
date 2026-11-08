@@ -306,6 +306,17 @@ def _memory_pressures() -> dict[str, dict]:
     return native_runtime.memory_pressures()
 
 
+def _agent_notes() -> dict[str, dict]:
+    """``physical key -> {state, summary, at}`` of each session's newest progress/done HQ report
+    (#1882). Agent text, guarded when filed; the row frames it as "agent says". Fail-soft."""
+    from .. import agent_reports
+
+    return {
+        phys: {"state": rep["state"], "summary": rep["summary"], "at": float(rep["at"])}
+        for phys, rep in agent_reports.latest_notes().items()
+    }
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     def _row(
         s,
@@ -428,6 +439,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # An API session's memory warning (#1643): its live generation near its memory limit.
             # Stamped after scoping (`memory_pressures`, one cached pass); null = none or unknown.
             "memory_pressure": None,
+            # The agent's latest progress/done report (#1882), stamped after scoping.
+            "agent_report": None,
         }
 
     def _membership_index() -> dict[str, dict] | None:
@@ -735,6 +748,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         pressures = _memory_pressures()
         for r in scoped:
             r["memory_pressure"] = pressures.get(r["id"])
+        # The agent's latest progress/done report (#1882): one muted "agent says" line.
+        notes = _agent_notes()
+        for r in scoped:
+            r["agent_report"] = notes.get(engines.physical_key(r["id"], aliases))
         return scoped, memberships, pinned, aliases, running_ok
 
     def _list_sessions_sync(
@@ -1042,6 +1059,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # Same stamp as the list (#1085), so the lookup stays the list's row shape exactly.
             row["running"] = engines.physical_key(row["id"], aliases) in _running_keys()
             row["memory_pressure"] = _memory_pressures().get(row["id"])
+            row["agent_report"] = _agent_notes().get(engines.physical_key(row["id"], aliases))
             # Filled only here (#1189): the key is on every row (`_row`), null = not read/unknown.
             row["model_effective"] = transcript.effective_model(s.engine, s.uuid, Path.home())
             # An API session's model and level come from its journal, not a transcript (#1511).

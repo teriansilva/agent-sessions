@@ -528,6 +528,18 @@ def set_hq_contact(value: object, path: Path | None = None) -> str:
     return set_hq_contact_versioned(value, path)[0]
 
 
+def get_hq_reports(path: Path | None = None) -> bool:
+    """Settings → HQ → "Sessions can report to HQ" (#1882): OFF unless explicitly turned on.
+    It governs whether NEW pty launches get the `battlelab_hq` report tool; a running agent keeps
+    what it was started with. Off by default until #1878 P1b closes the remaining review findings
+    (the Commander's decision on PR #1884, replacing #1878 D8's "on by default")."""
+    return _load(path or _default_path()).get("hq_reports") is True
+
+
+def set_hq_reports(value: bool, path: Path | None = None) -> bool:
+    return _set("hq_reports", bool(value), path)
+
+
 def get_onboarded(path: Path | None = None) -> bool | None:
     """First-run onboarding flag (#463): ``True`` once the wizard completes (or is skipped),
     ``False`` if explicitly reset, or ``None`` when never set — so the caller can infer a sane

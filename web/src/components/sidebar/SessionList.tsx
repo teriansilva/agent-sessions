@@ -395,6 +395,22 @@ function Row({
               )}
             </MarqueeText>
           )}
+          {/* The agent's newest progress/done report to HQ (#1882): one muted, ellipsised line
+              behind a dashed AGENT SAYS tag, with its age. Agent text, rendered as text; neutral
+              ink only — "done" is the agent's claim, so it is never green. */}
+          {s.agent_report ? (
+            <div
+              className={styles.agentNote}
+              data-testid="row-agent-note"
+              title={`Agent says: ${s.agent_report.summary}`}
+            >
+              <span className={styles.agentTag}>
+                Agent says{s.agent_report.state === "done" ? " · done" : ""}
+              </span>
+              <span className={styles.agentText}>{s.agent_report.summary}</span>
+              <span className={styles.agentAge}>{relTime(s.agent_report.at)}</span>
+            </div>
+          ) : null}
           <div className={styles.meta}>
             {/* Favorite star (#508): a small amber ★ leads the meta line on favorited rows
                 only (they already pin to the top). Decorative — the on/off state lives on the

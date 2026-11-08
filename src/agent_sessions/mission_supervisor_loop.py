@@ -39,9 +39,18 @@ import asyncio
 import contextlib
 import logging
 import os
+import threading
 import time
 
-from . import aitasks, mission_judge, mission_pace, mission_supervisor, missions, prefs
+from . import (
+    aitasks,
+    mission_fence,
+    mission_judge,
+    mission_pace,
+    mission_supervisor,
+    missions,
+    prefs,
+)
 
 log = logging.getLogger(__name__)
 
@@ -141,6 +150,33 @@ def request_early_pass(mission_id: str, *, now: float | None = None) -> None:
     t = time.monotonic() if now is None else now
     _early[mission_id] = (t + EARLY_READING_DELAY_S, 0)
     _poke()
+
+
+#: Session keys whose agent just filed an HQ report (#1882): the next watch tick wakes the
+#: running mission that holds each one. Written from the broker's worker thread, so locked.
+_report_wakes: set[str] = set()
+_report_wakes_lock = threading.Lock()
+
+
+def wake_for_report(session_key: str, phys_key: str) -> None:
+    """An agent's report (#1882) wakes the supervisor of the mission that holds it — #1214's wake
+    path: the woken pass is the ordinary `run_pass`, with every gate it always had. A session no
+    running mission holds is simply not woken. Never raises, never blocks."""
+    keys = {k for k in (session_key, phys_key) if k}
+    if not keys:
+        return
+    with _report_wakes_lock:
+        _report_wakes.update(keys)
+        while len(_report_wakes) > 512:  # bounded; a lost wake is read at the next sweep
+            _report_wakes.pop()
+    _poke()
+
+
+def _take_report_wakes() -> set[str]:
+    with _report_wakes_lock:
+        out = set(_report_wakes)
+        _report_wakes.clear()
+    return out
 
 
 def _poke() -> None:
@@ -548,6 +584,15 @@ async def watch(*, pace: mission_pace.Pace | None = None) -> list[str]:
     for sk in [k for k in _watch_seen if k not in held]:
         _watch_seen.pop(sk, None)
     woken: list[str] = []
+    # A held session whose agent reported (#1882) wakes its mission now, whatever its screen.
+    reported = _take_report_wakes()
+    if reported:
+        for sk in sorted(held):
+            phys = sk
+            with contextlib.suppress(Exception):
+                phys = mission_fence.physical_of(sk)
+            if (sk in reported or phys in reported) and held[sk] not in woken:
+                woken.append(held[sk])
     for sk in sorted(held):
         mid = held[sk]
         try:

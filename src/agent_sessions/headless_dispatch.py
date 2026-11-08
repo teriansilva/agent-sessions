@@ -794,9 +794,13 @@ async def dispatch(
         # Shared project memory (#1441): never the app's own copies. The paths themselves are bound
         # inside the launch fence, immediately before the spawn (below), so a dispatch refused by
         # authentication or admission never mints an inbox.
-        from . import memory, secrets_broker
+        from . import hq_report_broker, memory, secrets_broker
 
-        for name in (*memory.ALL_ENV_KEYS, *secrets_broker.ALL_ENV_KEYS):
+        for name in (
+            *memory.ALL_ENV_KEYS,
+            *secrets_broker.ALL_ENV_KEYS,
+            *hq_report_broker.ALL_ENV_KEYS,
+        ):
             env.pop(name, None)  # incl. a specialist's notebook (#1693) and a capability (#1786)
         # OWNERSHIP STARTS HERE, not at `transfer()` (#898 review 5, finding 2).
         #
@@ -1040,11 +1044,36 @@ async def dispatch(
                             capability = secrets_broker.launch_env(
                                 key, key, cwd, engine=engine, kind="terminal"
                             )
+                            # The HQ report capability (#1882), minted inside the fence too.
+                            from . import hq_report_broker
+
+                            # Inside `launch_fence`: the revocation is already ordered against
+                            # PTY writes, and the fence must not be taken twice (#1882).
+                            hq_env = hq_report_broker.launch_env(
+                                key,
+                                key,
+                                engine=engine,
+                                manifest=engines.manifest_of(prov),
+                                fenced=True,
+                            )
                             mcp = agent_tools.terminal_launch(
-                                engines.manifest_of(prov), memory_env, env, secrets_env=capability
+                                engines.manifest_of(prov),
+                                memory_env,
+                                env,
+                                secrets_env=capability,
+                                hq_env=hq_env,
                             )
                             spawn_argv = argv[:agent_at] + mcp.argv(argv[agent_at:])
-                            spawn_env = {**env, **memory_env, **capability, **mcp.env}
+                            # …and the capability's id in the master's OWN environment: what a
+                            # bind reads back from the kernel to prove the master is this
+                            # launch's (#1882, `hq_report_broker._master_carries`).
+                            spawn_env = {
+                                **env,
+                                **memory_env,
+                                **capability,
+                                **mcp.env,
+                                **hq_report_broker.master_env(hq_env),
+                            }
                             may_have_inherited = True
                             return (
                                 _popen(  # noqa: S603 — literal argv, no shell

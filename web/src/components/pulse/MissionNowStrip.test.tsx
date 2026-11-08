@@ -83,3 +83,21 @@ test("a mission holding no session says so", async () => {
     await screen.findByText("No session is held by this mission."),
   ).toBeTruthy();
 });
+
+test("a held session's report to HQ shows on its line as agent text (#1882)", async () => {
+  const r = reading("claude:aaaa", "quiet");
+  r.sessions[0].report = {
+    id: "r1",
+    state: "needs_decision",
+    summary: "Both <b>stores</b> pass",
+    question: "Which one?",
+    options: ["A", "B"],
+    at: 1,
+  };
+  nowMock.mockResolvedValueOnce(r);
+  render(<MissionNowStrip missionId="msn_a" />);
+  const line = await screen.findByTestId("mission-now-report");
+  expect(line.textContent).toContain("Agent says · asks to decide");
+  expect(line.textContent).toContain("Both <b>stores</b> pass — Which one?");
+  expect(line.querySelector("b")).toBeNull();
+});

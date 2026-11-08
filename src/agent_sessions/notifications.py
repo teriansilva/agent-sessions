@@ -1065,6 +1065,10 @@ KIND_REASON = {
     "approval": "Waiting for your approval",
     "question": "Asks you a question",
     "needs_inspection": "Stopped — take a look",
+    # An agent's own HQ report (#1882): fixed server strings — the report's words never reach a
+    # row or a push.
+    "report_decision": "The agent asks you to decide",
+    "report_blocked": "The agent says it's blocked",
 }
 
 

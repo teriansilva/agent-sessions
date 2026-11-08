@@ -55,6 +55,7 @@ ledger never becomes a transcript archive (and never a place transcript text can
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import fcntl
 import json
@@ -107,6 +108,138 @@ ESCALATION_STATES: frozenset[str] = frozenset({"escalated", "escalated_low_confi
 # invites a tap that cannot be honoured. It coincides with `REJECTABLE_STATES` below, and for
 # the same reason, but they answer different questions — keep both named.
 OPERATOR_PENDING_STATES: frozenset[str] = frozenset({"proposed", "approved"} | ESCALATION_STATES)
+
+#: The verbs whose DELIVERY ends the session's current HQ report (#1882): text the agent reads as
+#: an answer (a report option's `Decision: …`, HQ's proposed text, the operator's own words).
+REPORT_ENDING: frozenset[str] = frozenset({"answer", "relay"})
+
+
+class LedgerUnreadable(Exception):
+    """The ledger exists but could not be read: whether an answer was sent is UNKNOWN (#1882)."""
+
+
+def report_answer_spent(
+    report_id: str, path: Path | None = None, *, exclude: str | None = None
+) -> bool:
+    """Has an answer to this HQ report already been SENT, or may it have been? (#1882)
+
+    The ledger's half of the one-answer rule; the durable half is the report's own reservation
+    (`agent_reports.mark_answered`), which compaction cannot evict. Once a `source: "report"`
+    action bound to ``report_id`` reached ``claimed`` (its ``claim_owner`` survives every later
+    event), its bytes may be on the pty —
+    unless it settled ``stale``, which every post-claim path only reaches before byte one (a
+    report check, a guard or a fingerprint that refused). ``delivered``, ``failed`` (a partial
+    write included), ``indeterminate`` and a claim still in flight all count. ``exclude`` skips
+    the asking action itself. A plain read; called from an ``append_batch_for_free_sessions``
+    ``record_guard`` it is evaluated inside the writer lock, so two taps cannot both pass.
+
+    STRICT: a ledger that exists and cannot be read raises `LedgerUnreadable` — an admission
+    decision never reads "unknown" as "no earlier answer"."""
+    if not report_id:
+        return False
+    status, latest = latest_by_id_checked(path)
+    if status != "ok":
+        raise LedgerUnreadable("the decision ledger could not be read")
+    for rec in latest.values():
+        if rec.get("source") != "report" or rec.get("report_id") != report_id:
+            continue
+        if exclude is not None and rec.get("id") == exclude:
+            continue
+        if not rec.get("claim_owner") and rec.get("state") != "claimed":
+            continue  # never claimed: nothing was ever on its way to the pty
+        if rec.get("state") == "stale":
+            continue  # refused before byte one
+        return True
+    return False
+
+
+def _proposed_at(rec: dict, first_ts: float | None) -> float | None:
+    """When an action was PROPOSED, as the report end binds it: the earliest of its recorded
+    ``proposed_ts`` (compaction keeps it, `_compact_locked`), its first surviving event and its
+    precondition's screen read."""
+    pre = rec.get("precondition")
+    cands = [
+        rec.get("proposed_ts"),
+        first_ts,
+        pre.get("observed_at") if isinstance(pre, dict) else None,
+    ]
+    times = [float(t) for t in cands if isinstance(t, int | float) and not isinstance(t, bool)]
+    return min(times) if times else None
+
+
+def _spends_report(rec: dict, first_ts: float | None, phys_key: str, report: dict) -> bool:
+    """Could this TERMINAL action spend ``report`` (the session's current one)? Its own option's
+    answer that the one-answer rule counts as spent, or an ordinary answer/relay delivered to the
+    session and proposed after the report."""
+    if rec.get("source") == "report":
+        # Exactly what the one-answer rule counts as spent (`report_answer_spent`): claimed, and
+        # not settled as a clean pre-byte `stale`. A clean refusal, an expiry or a never-claimed
+        # failure spends nothing — pinning it would grow the ledger with every refused tap.
+        return (
+            rec.get("report_id") == report.get("id")
+            and bool(rec.get("claim_owner") or rec.get("state") == "claimed")
+            and rec.get("state") != "stale"
+        )
+    if rec.get("state") != "delivered" or rec.get("verb") not in REPORT_ENDING:
+        return False
+    if str((rec.get("authority") or {}).get("physical_key") or "") != phys_key:
+        return False
+    when = _proposed_at(rec, first_ts)
+    return when is not None and when > float(report.get("at") or 0)
+
+
+def answered_after(
+    phys_key: str, report_at: float, path: Path | None = None, *, exclude: str | None = None
+) -> bool:
+    """Did an ordinary `answer` / `relay` (HQ's text, the orchestrator's — not a report option)
+    get DELIVERED to this session after a report filed at ``report_at`` — proposed after it?
+    (#1882, Hermes on #1884.) Such a delivery ends the report (`_end_answered_report`), but
+    asynchronously and best-effort; until that commits, or if it fails, this is what keeps an
+    option tap from sending a SECOND answer. Proposal time as the end binds it: the earliest of
+    the action's first surviving event and its precondition's screen read. STRICT: raises
+    `LedgerUnreadable`."""
+    p = _path(path)
+    if not p.exists():
+        return False
+    try:
+        raw = p.read_text(errors="replace")
+    except OSError:
+        raise LedgerUnreadable("the decision ledger could not be read") from None
+    records = _parse_records(raw)
+    first: dict[str, float] = {}
+    for r in records:
+        t = r.get("ts")
+        if r["id"] not in first and isinstance(t, int | float) and not isinstance(t, bool):
+            first[r["id"]] = float(t)
+    for rec in _latest_of(records).values():
+        if rec.get("state") != "delivered" or rec.get("verb") not in REPORT_ENDING:
+            continue
+        if rec.get("source") == "report" or rec.get("id") == exclude:
+            continue  # a report's own answer is the one-answer rule's (`report_answer_spent`)
+        if str((rec.get("authority") or {}).get("physical_key") or "") != phys_key:
+            continue
+        when = _proposed_at(rec, first.get(rec["id"]))
+        if when is not None and when > report_at:
+            return True
+    return False
+
+
+def delivered_report_ids(path: Path | None = None) -> set[str]:
+    """The report ids a `source: "report"` answer was DELIVERED for — the needs-you sync's
+    self-heal ends any of them still current (`hq_report_broker.reconcile_reports`). STRICT: an
+    unreadable ledger raises `LedgerUnreadable` (it would otherwise read as "none delivered")."""
+    status, latest = latest_by_id_checked(path)
+    if status != "ok":
+        raise LedgerUnreadable("the decision ledger could not be read")
+    return {
+        str(rec["report_id"])
+        for rec in latest.values()
+        if rec.get("source") == "report"
+        and rec.get("state") == "delivered"
+        and isinstance(rec.get("report_id"), str)
+        and rec["report_id"]
+    }
+
 
 # The only states a reject may move FROM. Deliberately excludes `claimed`: once a delivery has
 # claimed an action the bytes are already going out, so "rejected" would be a lie the operator
@@ -383,6 +516,20 @@ def _read_all_at(p: Path) -> list[dict]:
         raw = p.read_text(errors="replace")
     except OSError:
         return []
+    return _parse_records(raw)
+
+
+def _read_all_strict(p: Path) -> list[dict]:
+    """Every record, or `LedgerUnreadable` when the file exists and cannot be read. ABSENT and
+    EMPTY are both ``[]``; a failed read (permission, I/O) is never mistaken for them — anything
+    that REWRITES the ledger reads this way, so it can never replace history it could not read
+    with nothing (#1882, Hermes on #1884)."""
+    if not p.exists():
+        return []
+    try:
+        raw = p.read_text(errors="replace")
+    except OSError as e:
+        raise LedgerUnreadable(f"the decision ledger could not be read ({type(e).__name__})") from e
     return _parse_records(raw)
 
 
@@ -664,7 +811,96 @@ def get(action_id: str, path: Path | None = None) -> dict | None:
     return latest_by_id(path).get(action_id)
 
 
-def _settled(action_id: str, state: str, record: dict | None = None) -> None:
+#: Report-store mutations running off the event loop (#1882): referenced until done, so none is
+#: collected mid-flight, and a failure is logged rather than lost.
+_report_endings: set = set()
+
+
+def _report_ending_done(fut) -> None:
+    _report_endings.discard(fut)
+    if fut.cancelled():
+        return
+    exc = fut.exception()
+    if exc is not None:
+        log.warning("ending an answered HQ report failed", exc_info=exc)
+
+
+def _end_answered_report(record: dict, proposed_at: float | None) -> None:
+    """End the HQ report a delivered answer was FOR (#1882), and no other.
+
+    A report's own answer ends only its ``report_id``. Any other delivered answer or relay (HQ's
+    text, the orchestrator's) ends the current report only if it was filed BEFORE that action was
+    proposed: text queued before the agent asked can't be its answer to the new question. With no
+    proposal time known, nothing ends (the Commander can still dismiss it).
+
+    The end waits on `session_input.mutation_fence` (up to its budget), so on a running event
+    loop — `actuator.deliver` settles there — it runs in the loop's executor, never on the loop.
+    """
+    from . import agent_reports
+
+    phys = str((record.get("authority") or {}).get("physical_key") or "")
+    if not phys:
+        return
+    if record.get("source") == "report":
+        report_id = str(record.get("report_id") or "")
+        if not report_id:
+            return
+        kw: dict = {"report_id": report_id}
+    else:
+        pre = record.get("precondition")
+        seen = pre.get("observed_at") if isinstance(pre, dict) else None
+        cands = [
+            float(t)
+            for t in (proposed_at, seen)
+            if isinstance(t, int | float) and not isinstance(t, bool)
+        ]
+        if not cands:
+            return
+        # The EARLIEST proposal-side time: a compaction can fold a later event's `ts` into the
+        # first row, and erring early leaves a report current rather than swallowing it.
+        kw = {"before": min(cands)}
+
+    _off_loop(lambda: agent_reports.end_quietly(phys, "answered", **kw))
+
+
+def _release_report_answer(record: dict, state: str) -> None:
+    """A report answer that ended BEFORE byte one gives its report's one answer back (#1882).
+
+    `agent_reports.mark_answered` reserved the report for this action when it was minted. Never
+    claimed and now terminal (expired, rejected, refused before the claim), or refused after the
+    claim (``stale``: every post-claim `stale` is pre-byte), it typed nothing, so a fresh tap may
+    answer. Every other outcome keeps the reservation. Off the loop, like the end."""
+    from . import agent_reports
+
+    if record.get("source") != "report":
+        return
+    if state != "stale" and (record.get("claim_owner") or state == "claimed"):
+        return
+    phys = str((record.get("authority") or {}).get("physical_key") or "")
+    report_id = str(record.get("report_id") or "")
+    action_id = str(record.get("id") or "")
+    if phys and report_id and action_id:
+        _off_loop(lambda: agent_reports.clear_answer_quietly(phys, report_id, action_id))
+
+
+def _off_loop(fn: Callable[[], object]) -> None:
+    """Run a report-store mutation (it waits on `session_input.mutation_fence`) in the running
+    loop's executor when there is one — `actuator.deliver` settles on the loop — else here."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is None:
+        fn()
+        return
+    fut = loop.run_in_executor(None, fn)
+    _report_endings.add(fut)
+    fut.add_done_callback(_report_ending_done)
+
+
+def _settled(
+    action_id: str, state: str, record: dict | None = None, proposed_at: float | None = None
+) -> None:
     """The single settlement boundary: an action just reached a terminal state, so the bell row
     that was raised for it is no longer something the operator can act on.
 
@@ -699,6 +935,16 @@ def _settled(action_id: str, state: str, record: dict | None = None) -> None:
             [action_id],
             decided_at={action_id: float(when)} if isinstance(when, int | float) else None,
         )
+    # A DELIVERED answer ends that session's HQ report (#1882): the agent has its answer. Only a
+    # delivery — a stale one typed nothing, and an indeterminate or failed one may not have given
+    # the agent its answer, so the Commander must look (`report_answer_spent` keeps a second tap
+    # from typing it again).
+    if state == "delivered" and isinstance(record, dict) and record.get("verb") in REPORT_ENDING:
+        with contextlib.suppress(Exception):
+            _end_answered_report(record, proposed_at)
+    if isinstance(record, dict):
+        with contextlib.suppress(Exception):
+            _release_report_answer(record, state)
     # A settled decision may end a needs-you episode (#1086 Phase 4): re-sync now, not at the
     # interval, so its notification is retracted while the operator is still looking.
     with contextlib.suppress(Exception):
@@ -728,15 +974,26 @@ def transition(action_id: str, state: str, path: Path | None = None, **extra) ->
     than inventing one)."""
     p = _path(path)
     with _locked(p):
-        cur = _latest_by_id_locked(p).get(action_id)
+        records = _read_all_at(p)
+        cur = _latest_of(records).get(action_id)
         if cur is None:
             return None
         rec = {"id": action_id, "state": state, **extra}
         rec.setdefault("ts", time.time())
         _append_locked(p, rec, json.dumps(rec, sort_keys=True) + "\n")
         merged = {**cur, **rec}
-    _settled(action_id, state, merged)
+    _settled(action_id, state, merged, _first_ts(records, action_id))
     return merged
+
+
+def _first_ts(records: list[dict], action_id: str) -> float | None:
+    """When the action's FIRST surviving event was written — its proposal, unless a compaction
+    folded it (then a later event's time, never an earlier one)."""
+    for r in records:
+        if r.get("id") == action_id:
+            t = r.get("proposed_ts", r.get("ts"))
+            return float(t) if isinstance(t, int | float) and not isinstance(t, bool) else None
+    return None
 
 
 def compare_and_set(
@@ -762,7 +1019,8 @@ def compare_and_set(
     """
     p = _path(path)
     with _locked(p):
-        cur = _latest_by_id_locked(p).get(action_id)
+        records = _read_all_at(p)
+        cur = _latest_of(records).get(action_id)
         if cur is None or cur.get("state") not in from_states:
             return None
         # REVISION check (#1086 review 5184): the caller acted on the record as it read it; any
@@ -775,7 +1033,7 @@ def compare_and_set(
         rec.update({k: v for k, v in fields.items() if v is not None})
         _append_locked(p, rec, json.dumps(rec, sort_keys=True, default=str) + "\n")
         merged = {**cur, **rec}
-    _settled(action_id, to_state, merged)
+    _settled(action_id, to_state, merged, _first_ts(records, action_id))
     return merged
 
 
@@ -1036,8 +1294,23 @@ def compact(path: Path | None = None, history_max: int = HISTORY_MAX) -> int:
     if not p.exists():
         return 0
     with _locked(p):
-        rows = list(_latest_by_id_locked(p).values())
-        doomed = _doomed(rows, history_max)
+        # STRICT: a ledger that exists and cannot be read is never rewritten (it would become an
+        # empty one). Declined, logged; the next pass retries.
+        try:
+            records = _read_all_strict(p)
+        except LedgerUnreadable as e:
+            log.warning("ledger: compaction declined — %s", e)
+            return 0
+        rows = list(_latest_of(records).values())
+        first = _first_ts_map(records)
+        # …and while the HQ reports store cannot be read, which rows can still spend a CURRENT
+        # report is unknown (#1882): declined entirely rather than guessing a subset to keep. The
+        # ledger only grows until the next pass that can read it.
+        pins = _report_pins([r for r in rows if r.get("state") not in LIVE_STATES], first)
+        if pins is None:
+            log.warning("ledger: compaction declined — the HQ reports store could not be read")
+            return 0
+        doomed = _doomed(rows, history_max, first_ts=first, report_pins=pins)
         # Before anything is projected or deleted: a delivered supervisor nudge whose thread record
         # is missing keeps its only copy of the typed text HERE (#983 review 4871).
         doomed = _preserve_deliveries(doomed)
@@ -1058,7 +1331,40 @@ def compact(path: Path | None = None, history_max: int = HISTORY_MAX) -> int:
         if not ask_follow.project_for_compaction(doomed):
             log.warning("ledger: compaction declined — an Ask nudge could not be admitted yet")
             return 0
-        return _compact_locked(p, history_max, rows=rows, doomed=doomed)
+        return _compact_locked(p, history_max, rows=rows, doomed=doomed, first_ts=first)
+
+
+def _first_ts_map(records: list[dict]) -> dict[str, float]:
+    """``action id -> when it was proposed``: a kept ``proposed_ts``, else its first event."""
+    out: dict[str, float] = {}
+    for r in records:
+        aid = r["id"]
+        t = r.get("proposed_ts", r.get("ts")) if aid not in out else None
+        if aid not in out and isinstance(t, int | float) and not isinstance(t, bool):
+            out[aid] = float(t)
+    return out
+
+
+def _report_pins(done: list[dict], first_ts: dict[str, float]) -> set[str] | None:
+    """Terminal action ids compaction must KEEP because they can spend a CURRENT HQ report
+    (#1882, Hermes on #1884): the one-answer rule and `answered_after` read the ledger, so evicting
+    them would make an answered report answerable again. Exactly those rows while each report is
+    current — a report ends at the latest when its launch ends, is archived or replaced — so the
+    pinned set is bounded by the sessions that hold a report. The reports store is read STRICTLY:
+    ``None`` when it cannot be read, and compaction then DECLINES (`compact`) — no partial guess at
+    which rows to keep."""
+    from . import agent_reports
+
+    try:
+        current = agent_reports.current_checked()
+    except agent_reports.StoreUnreadable:
+        return None
+    pins: set[str] = set()
+    for phys, rep in current.items():
+        for r in done:
+            if _spends_report(r, first_ts.get(r["id"]), phys, rep):
+                pins.add(str(r["id"]))
+    return pins
 
 
 def _pinned_turn_keys() -> set[tuple[str, str]] | None:
@@ -1087,15 +1393,28 @@ def _pinned_turn_keys() -> set[tuple[str, str]] | None:
         return None
 
 
-def _doomed(rows: list[dict], history_max: int) -> list[dict]:
+def _doomed(
+    rows: list[dict],
+    history_max: int,
+    *,
+    first_ts: dict[str, float] | None = None,
+    report_pins: set[str] | None = None,
+) -> list[dict]:
     """The terminal rows this compaction will drop. The SAME partition ``_compact_locked`` uses —
     computed once, from one snapshot, and handed to both, so the two cannot disagree.
 
     Rows pinned by an unresolved turn are excluded, so they are neither dropped nor counted
-    against the tail — see :func:`_pinned_turn_ids`.
+    against the tail — see :func:`_pinned_turn_ids` — and so are rows that can spend a current HQ
+    report (:func:`_report_pins`).
     """
     pinned = _pinned_turn_keys()
     done = [r for r in rows if r.get("state") not in LIVE_STATES]
+    if report_pins is None:
+        report_pins = _report_pins(done, first_ts or {})
+        if report_pins is None:
+            return []  # which rows spend a current report is unknown: nothing may be dropped
+    if report_pins:
+        done = [r for r in done if str(r.get("id") or "") not in report_pins]
     if pinned is None:
         # The pin set is unknown, so nothing may be dropped: this pass cannot prove any given
         # row is safe to remove. Compaction is a housekeeping optimisation and skipping one is
@@ -1201,20 +1520,36 @@ def _project(doomed: list[dict]) -> bool:
 
 
 def _compact_locked(
-    p: Path, history_max: int, *, rows: list[dict] | None = None, doomed: list[dict] | None = None
+    p: Path,
+    history_max: int,
+    *,
+    rows: list[dict] | None = None,
+    doomed: list[dict] | None = None,
+    first_ts: dict[str, float] | None = None,
 ) -> int:
     # `rows` is passed in by `compact` so the partition that was PROJECTED is byte-identical to
     # the one that is rewritten. Re-reading here would reopen the window the projection closed.
-    rows = list(_latest_by_id_locked(p).values()) if rows is None else rows
+    # A re-read here is STRICT for the same reason as in `compact`: never rewrite what was unread.
+    rows = list(_latest_of(_read_all_strict(p)).values()) if rows is None else rows
     # …and `doomed` is passed in for the same reason, one level up. This used to RE-DERIVE the
     # partition, which was fine only while both derivations happened to agree: the moment
     # `_doomed` learned to exclude rows pinned by an unresolved turn, a recomputation here would
     # have projected one set and deleted a different, larger one. One computation, handed to
     # both, is what the `_doomed` docstring always claimed.
+    if first_ts is None:
+        first_ts = _first_ts_map(_read_all_strict(p))
     if doomed is None:
-        doomed = _doomed(rows, history_max)
+        doomed = _doomed(rows, history_max, first_ts=first_ts)
     drop = {id(r) for r in doomed}
-    keep = [r for r in rows if id(r) not in drop]
+    # A kept row is rewritten as ONE merged event, whose `ts` is its LATEST: it keeps when it was
+    # PROPOSED as `proposed_ts`, which the report end and `answered_after` bind on (#1882).
+    keep = [
+        {**r, "proposed_ts": first_ts[r["id"]]}
+        if r["id"] in first_ts and "proposed_ts" not in r
+        else r
+        for r in rows
+        if id(r) not in drop
+    ]
     keep.sort(key=lambda r: float(r.get("ts") or 0))
     tmp = p.with_name(p.name + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

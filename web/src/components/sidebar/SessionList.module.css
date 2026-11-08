@@ -292,6 +292,35 @@ input.editInput {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* The agent's own progress/done line (#1882): neutral ink, a dashed tag, one ellipsised line. */
+.agentNote {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 2px;
+  min-width: 0;
+  font-size: var(--fs-micro);
+  color: var(--text-3, var(--text-muted));
+  white-space: nowrap;
+}
+.agentTag {
+  flex: none;
+  padding: 0 4px;
+  border: 1px dashed var(--line-strong);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.agentText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-2, var(--text-muted));
+}
+.agentAge {
+  flex: none;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
 .summaryExcluded {
   font-style: italic;
   color: var(--text-3, var(--text-muted));

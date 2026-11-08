@@ -150,6 +150,11 @@ async def cleanup_runtime(
     from . import secrets_broker
 
     await asyncio.to_thread(secrets_broker.revoke_launch, phys_key)
+    # Its HQ report (#1882) ends with the runtime, and so does the capability that filed it.
+    from . import agent_reports, hq_report_broker
+
+    await asyncio.to_thread(agent_reports.end_quietly, phys_key, "archived")
+    await asyncio.to_thread(hq_report_broker.revoke_launch, phys_key)
 
     # Stale-socket unlink under the single-writer lock (split-brain guard, 2026-06-12 prod
     # wedge) — shared with Settings → Maintenance's prune (#993) so the guard exists once.

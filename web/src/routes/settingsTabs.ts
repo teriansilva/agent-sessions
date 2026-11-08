@@ -32,6 +32,8 @@ export const SETTINGS_SECTIONS = [
   { id: "ai-session-review", label: "Session review", group: "ai" },
   { id: "ai-auto-sort", label: "Auto-sort", group: "ai" },
   { id: "ai-mission-control", label: "Mission control", group: "ai" },
+  // HQ itself (#1882): whether sessions can report to it.
+  { id: "ai-hq", label: "HQ", group: "ai" },
   // Calling HQ (#1397): speech endpoints, voices and how a call feels.
   { id: "ai-hq-calls", label: "HQ calls", group: "ai" },
   // What HQ reads from (#1746 P1b): add, test and switch on a connector to another service.

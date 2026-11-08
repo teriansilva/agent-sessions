@@ -55,6 +55,10 @@ SKILLS_ENV = "BATTLELAB_SKILLS_BUNDLE"
 #: launch's capability (`secrets_broker.launch_env`): the broker's socket and a token.
 SECRETS_SERVER_NAME = "battlelab_secrets"
 SECRETS_MODULE = "agent_sessions.secrets_mcp"
+#: The HQ report tool (#1882): its own name, beside the others. Its environment is this launch's
+#: report capability (`hq_report_broker.launch_env`): the broker's socket and the token FILE path.
+HQ_SERVER_NAME = "battlelab_hq"
+HQ_MODULE = "agent_sessions.hq_report_mcp"
 
 CLAUDE_FLAG = "claude-mcp-config-flag"  # `--mcp-config <json>`, claude 2.1.304
 CODEX_OVERRIDE = "codex-config-override"  # `-c mcp_servers.<name>.*`, codex-cli 0.162.0
@@ -200,6 +204,28 @@ def secrets_server(secrets_env: Mapping[str, str] | None) -> Server | None:
     )
 
 
+def hq_report_server(hq_env: Mapping[str, str] | None) -> Server | None:
+    """The HQ report tool for a launch given a report capability, or None (no tool). Paths only:
+    the socket and the token FILE, never the token — this environment rides argv."""
+    from . import hq_report_broker
+
+    if not hq_env:
+        return None
+    if set(hq_env) != set(hq_report_broker.ENV_KEYS) or any(
+        not isinstance(v, str) or not v.startswith("/") or "\0" in v or "\n" in v
+        for v in hq_env.values()
+    ):
+        log.warning("hq report tool: malformed capability environment; not wired in")
+        return None
+    exe = _interpreter("hq report tool")
+    if exe is None:
+        return None
+    env = {k: hq_env[k] for k in sorted(hq_report_broker.ENV_KEYS)}
+    return Server(
+        command=exe, args=("-I", "-m", HQ_MODULE), env=_with_base_env(env), name=HQ_SERVER_NAME
+    )
+
+
 def claude_add_dirs(secrets_env: Mapping[str, str] | None) -> tuple[str, ...]:
     """``("--add-dir", <this launch's copy directory>)`` or nothing (#1786 smoke): claude only
     runs a command on files inside its working directories, so a guarded session could not pass
@@ -321,6 +347,7 @@ _COPILOT_SERVER_TOOLS: dict[str, list[str]] = {
     SERVER_NAME: ["memory_index", "memory_read", "memory_search", "memory_write"],
     SKILLS_SERVER_NAME: ["skill_read", "skills_list"],
     SECRETS_SERVER_NAME: ["secret_list", "secret_path"],
+    HQ_SERVER_NAME: ["hq_report"],
 }
 
 
@@ -369,6 +396,7 @@ def terminal_launch(
     *,
     skills_bundle: str | None = None,
     secrets_env: Mapping[str, str] | None = None,
+    hq_env: Mapping[str, str] | None = None,
 ) -> McpLaunch:
     """What a terminal LAUNCH or an unattended dispatch adds for BattleLab's tools, or `NONE`.
 
@@ -385,7 +413,9 @@ def terminal_launch(
     if skills is not None and kind is None:
         raise SkillsRefused("this agent cannot load skills: it has no tool channel")
     servers = [
-        x for x in (server(memory_env), skills, secrets_server(secrets_env)) if x is not None
+        x
+        for x in (server(memory_env), skills, secrets_server(secrets_env), hq_report_server(hq_env))
+        if x is not None
     ]
     if kind is None or not servers:
         return NONE

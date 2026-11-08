@@ -86,6 +86,12 @@ def sync_once() -> dict:
         current: dict[str, dict] = {}
         keep: set[str] = set()
         if enabled:
+            # An agent whose launch is gone no longer holds its report (#1882): ended before the
+            # read, so the episode closes at THIS sync. Best-effort; probes only reporting ones.
+            with contextlib.suppress(Exception):
+                from . import hq_report_broker
+
+                hq_report_broker.reconcile_reports()
             try:
                 out = build_needs_you(int(prefs.get_pulse()["window_days"]), strict=True)
             except needs_you.Unavailable:

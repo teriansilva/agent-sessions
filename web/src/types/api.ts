@@ -85,6 +85,28 @@ export interface Session {
   /** An API session's live generation near its memory limit (#1643), or null: none, unknown, or
    *  not an API session. Absent on older servers. */
   memory_pressure?: MemoryPressure | null;
+  /** The agent's newest `progress` / `done` report to HQ (#1882), or null. AGENT TEXT: the row
+   *  frames it as "agent says" and renders it as text. Absent on older servers. */
+  agent_report?: AgentNote | null;
+}
+
+/** One `progress` / `done` line an agent reported to HQ (#1882). `done` is the agent's claim. */
+export interface AgentNote {
+  state: "progress" | "done";
+  summary: string;
+  at: number;
+}
+
+/** An agent's CURRENT report to HQ (#1882), as Needs you and the mission strip receive it. Every
+ *  text field is the agent's own words (guarded server-side): render as text, never markup. */
+export interface AgentReport {
+  id: string;
+  state: "blocked" | "needs_decision" | "progress" | "done";
+  summary: string;
+  at: number;
+  /** `needs_decision` only. */
+  question?: string;
+  options?: string[];
 }
 
 /** A live API worker's memory warning (#1643): its unit's working set against the operator's API
@@ -803,7 +825,13 @@ export interface ScreenMenu {
 
 /** What kind of stop a NEEDS YOU row is at — read off the SCREEN, never from a model (#1086). */
 export type NeedsYouKind =
-  "choice" | "approval" | "question" | "needs_inspection";
+  | "choice"
+  | "approval"
+  | "question"
+  | "needs_inspection"
+  /** An agent's own report (#1882): fixed server kinds. */
+  | "report_decision"
+  | "report_blocked";
 
 /** The one decision a NEEDS YOU row can settle: the operator projection of a ledger action,
  *  whitelisted server-side. `menu` is the menu an escalation RECORDED (what `/choose` checks). */
@@ -842,6 +870,11 @@ export interface NeedsYouRow {
   kind: NeedsYouKind;
   menu: ScreenMenu | null;
   action: NeedsYouAction | null;
+  /** The agent's current `blocked` / `needs_decision` report (#1882), or null/absent. */
+  report?: AgentReport | null;
+  /** Whether an option tap on `report` can be delivered now, and if not, why (fixed server text).
+   *  Present whenever `report` is. */
+  report_answer?: { available: boolean; reason: string };
 }
 
 export interface NeedsYouPayload {
@@ -1449,6 +1482,9 @@ export interface AppConfig {
   /** The server's write revision of `hq_contact` (#1525): orders a client's own write against this
    *  read. Absent on older servers. */
   hq_contact_rev?: number;
+  /** Settings → HQ → "Sessions can report to HQ" (#1882): off by default (#1889); new launches only.
+   *  Absent on older servers. */
+  hq_reports?: boolean;
   /** Per-user brand accent (#rrggbb) driving --accent + the xterm cursor (#211 Phase 2);
    *  applied at load. Absent on older servers (→ client default phosphor-amber). */
   accent?: string;
@@ -3126,6 +3162,8 @@ export interface MissionNowSession {
   recap_age_s: number | null;
   /** The last recap was written before the latest output, so it describes an earlier screen. */
   recap_older_than_output: boolean;
+  /** The session's current report to HQ (#1882), the agent's own words. Absent on older servers. */
+  report?: AgentReport | null;
 }
 
 export interface MissionNow {

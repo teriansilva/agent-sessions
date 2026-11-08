@@ -2017,12 +2017,39 @@ export const api = {
   /** Details for one NEEDS YOU row — read-only, and no viewer is attached (#1086). */
   needsYouDetails: (sessionId: string) =>
     getJsonWithDetail<NeedsYouDetails>(`/api/pulse/needs-you/${enc(sessionId)}/details`),
-  /** Hide a row until its screen changes; reject `actionId` too when given (#1086). */
-  needsYouDismiss: (sessionId: string, actionId?: string) =>
+  /** Hide a row until its screen changes; reject `actionId` too when given (#1086). The
+   *  dismissal covers only what the row SHOWED (#1882): `shown.actionIds` / `shown.reportId` —
+   *  a decision or report that arrived after the operator looked stays visible. */
+  needsYouDismiss: (
+    sessionId: string,
+    actionId?: string,
+    shown?: { actionIds?: string[]; reportId?: string | null },
+  ) =>
     mutateJson<{ dismissed: boolean; rejected: boolean }>(
       "POST",
       `/api/pulse/needs-you/${enc(sessionId)}/dismiss`,
-      actionId ? { action_id: actionId } : {},
+      {
+        ...(actionId ? { action_id: actionId } : {}),
+        ...(shown?.actionIds?.length ? { shown_action_ids: shown.actionIds } : {}),
+        ...(shown?.reportId ? { shown_report_id: shown.reportId } : {}),
+      },
+    ),
+  /** Answer an agent's `needs_decision` report with option `option` (1-based) of report
+   *  `reportId` (#1882). The tap IS the approval: the server types `Decision: <option>` through
+   *  the approve path, or refuses (409) when the report or its launch moved on. A 200 names its
+   *  `outcome`: `delivered`, `uncertain` (attempted, unconfirmed) or `stale` (nothing typed). */
+  answerReport: (sessionId: string, reportId: string, option: number) =>
+    mutateJson<OrchestratorAction & { outcome?: "delivered" | "uncertain" | "stale" }>(
+      "POST",
+      `/api/needs-you/${enc(sessionId)}/report/answer`,
+      { report_id: reportId, option },
+    ).then(announceActionResolved),
+  /** End an agent's report without sending anything (#1882). */
+  dismissReport: (sessionId: string, reportId: string) =>
+    mutateJson<{ dismissed: boolean }>(
+      "POST",
+      `/api/needs-you/${enc(sessionId)}/report/dismiss`,
+      { report_id: reportId },
     ),
   /** RECENT WORK above Ask (#1086). Never calls the model. */
   recentWork: (windowDays?: number) =>

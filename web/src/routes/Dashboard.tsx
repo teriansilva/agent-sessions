@@ -82,7 +82,8 @@ export default function Dashboard() {
     refresh,
     refreshing: needsRefreshing,
   } = useNeedsYou(windowDays, engine, project);
-  const [details, setDetails] = useState<string | null>(null);
+  // The row whose details are open, and the agent's report it DISPLAYED (#1882).
+  const [details, setDetails] = useState<{ id: string; reportId: string | null } | null>(null);
 
   // The dashboard's own reads (#1123): each tile loads, fails and retries on its own.
   const [sessions, retrySessions, sessionsRefreshing] = usePolled(
@@ -151,7 +152,7 @@ export default function Dashboard() {
       project={project}
       onEngine={setEngine}
       onProject={setProject}
-      onDetails={setDetails}
+      onDetails={(id, reportId) => setDetails({ id, reportId: reportId ?? null })}
       onChanged={() => void refresh()}
     />
   );
@@ -294,8 +295,9 @@ export default function Dashboard() {
       </div>
       {details ? (
         <NeedsYouDetailsDialog
-          key={details}
-          sessionId={details}
+          key={`${details.id}:${details.reportId ?? ""}`}
+          sessionId={details.id}
+          shownReportId={details.reportId}
           // Close only THIS dialog: a completion that lands later must never close a newer one.
           onClose={() => setDetails((cur) => (cur === details ? null : cur))}
           onChanged={() => void refresh()}

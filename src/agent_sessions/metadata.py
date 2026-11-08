@@ -551,6 +551,8 @@ def archive_state_held(*keys: str, path: Path | None = None):
 
 def load_checked(
     path: Path | None = None,
+    *,
+    strict_aliases: bool = False,
 ) -> tuple[dict[str, SessionMeta], dict[str, str], dict[str, str]]:
     """``(index, aliases, overrides)`` from ONE locked read, raising :class:`MetadataUnreadable`
     rather than answering "nothing is overridden" for a sidecar it could not read.
@@ -598,7 +600,24 @@ def load_checked(
         raise MetadataUnreadable("the sidecar is not an object")
     raw, _ = _normalize_keys(raw)
     overrides = {key: archive_state_of_row(raw, key) for key in raw if key != _ALIAS_KEY}
-    return _index_from_raw(raw, normalized=True), _aliases_from_raw(raw), overrides
+    aliases = _aliases_checked(raw) if strict_aliases else _aliases_from_raw(raw)
+    return _index_from_raw(raw, normalized=True), aliases, overrides
+
+
+def _aliases_checked(raw: dict) -> dict[str, str]:
+    """The alias section for a STRICT read (``load_checked(strict_aliases=True)``, opt-in so the
+    other strict callers — native ownership, scrollback, the actuator, missions — keep their own
+    tested handling of a malformed section): absent is ``{}``, but a section that is not a
+    ``str → str`` mapping raises :class:`MetadataUnreadable` — malformed is unknown, never "no
+    aliases" (#1882, Hermes on #1884: a strict reader joins reports to cards through it)."""
+    if _ALIAS_KEY not in raw:
+        return {}
+    aliases = raw[_ALIAS_KEY]
+    if not isinstance(aliases, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in aliases.items()
+    ):
+        raise MetadataUnreadable("the alias section is malformed")
+    return dict(aliases)
 
 
 def _aliases_from_raw(raw: dict) -> dict[str, str]:

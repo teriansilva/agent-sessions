@@ -54,6 +54,7 @@ import { ConnectorsSettings } from "./ConnectorsSettings";
 import { ForgeSettings } from "./ForgeSettings";
 import { AutoSortSettings } from "./AutoSortSettings";
 import { HqCallsSettings } from "./HqCallsSettings";
+import { HqReportsSettings } from "./HqReportsSettings";
 import { OrchestratorSettings } from "./OrchestratorSettings";
 import { PromptsSettings } from "./PromptsSettings";
 import { PulseSettings } from "./PulseSettings";
@@ -2126,6 +2127,7 @@ export function Settings() {
           </>
         )}
         {/* Every system prompt, in one catalog (#824). */}
+        {section === "ai-hq" && <HqReportsSettings />}
         {section === "ai-hq-calls" && <HqCallsSettings />}
         {section === "ai-hq-connectors" && <ConnectorsSettings />}
         {section === "ai-prompts" && <PromptsSettings />}

@@ -194,6 +194,8 @@ def _preflight_prefs(payload: dict) -> None:
         raise bad("onboarded must be a boolean")
     if "analytics_consent" in payload and not isinstance(payload["analytics_consent"], bool):
         raise bad("analytics_consent must be a boolean")
+    if "hq_reports" in payload and not isinstance(payload["hq_reports"], bool):
+        raise bad("hq_reports must be a boolean")
     if "whats_new_seen" in payload:
         if prefs.release_tuple(payload["whats_new_seen"]) is None:
             raise bad("whats_new_seen must be a release version like 0.20.0")
@@ -755,6 +757,9 @@ def register(
                 # unconfirmed write against, must come from the same read.
                 "hq_contact": hq_state[0],
                 "hq_contact_rev": hq_state[1],
+                # Settings → HQ → "Sessions can report to HQ" (#1882): off by default (#1889);
+                # governs whether NEW pty launches get the report tool.
+                "hq_reports": prefs.get_hq_reports(),
                 # Session Overview view-state (#144): expanded cluster cwds (default collapsed).
                 # Per-user.
                 "overview_expanded": prefs.get_overview_expanded(),
@@ -1172,6 +1177,12 @@ def register(
             if not isinstance(v, bool):
                 raise HTTPException(status_code=422, detail="analytics_consent must be a boolean")
             out["analytics"] = analytics.set_consent(v)
+        if "hq_reports" in payload:
+            # Settings → HQ → "Sessions can report to HQ" (#1882). New launches only.
+            v = payload["hq_reports"]
+            if not isinstance(v, bool):
+                raise HTTPException(status_code=422, detail="hq_reports must be a boolean")
+            out["hq_reports"] = prefs.set_hq_reports(v)
         if "whats_new_seen" in payload:
             # What's new (#971). The store keeps the numeric maximum, so the response carries the
             # value actually kept — which is newer than the request's when another device got there.

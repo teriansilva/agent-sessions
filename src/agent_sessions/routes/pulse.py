@@ -28,13 +28,16 @@ import contextlib
 import json
 import logging
 import time
+import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import (
     actuator,
+    agent_reports,
     aitasks,
+    ask_store,
     engines,
     handoff,
     menu_answer,
@@ -477,18 +480,27 @@ def build_needs_you(
     engine walk shared by both card reads, metadata read under the writers' lock, and a checked
     dismissal read. Any of them incomplete raises `needs_you.ReadIncomplete`, never a list that
     silently lost a session or a flag. The list route stays fail-soft."""
+    # ONE metadata snapshot for the strict read (#1882, Hermes on #1884): the cards are curated
+    # through it AND reports are joined and judged through its aliases, so the two can never
+    # disagree. Unreadable or malformed fails the read.
+    snapshot: tuple | None = None
+    if strict:
+        try:
+            snapshot = metadata.load_checked(strict_aliases=True)
+        except metadata.MetadataUnreadable as e:
+            raise needs_you.ReadIncomplete(f"session metadata: {e}") from e
     try:
         scanned = pulse.checked_scan() if strict else None
         # The fail-soft call is exactly the pre-#1086-P4 one; only the strict read adds arguments.
         cards = (
-            pulse.build_cards(window_days=wd, strict=True, scanned=scanned)
+            pulse.build_cards(window_days=wd, strict=True, scanned=scanned, checked=snapshot)
             if strict
             else pulse.build_cards(window_days=wd)
         )
-        suppressed = (
-            needs_you_dismissals.suppressed_checked()
+        dismissed = (
+            needs_you_dismissals.suppressed_detail_checked()
             if strict
-            else needs_you_dismissals.suppressed()
+            else needs_you_dismissals.suppressed_detail()
         )
     except (pulse.CardsIncomplete, needs_you_dismissals.DismissalsUnreadable) as e:
         raise needs_you.ReadIncomplete(str(e)) from e
@@ -499,21 +511,46 @@ def build_needs_you(
     except Exception:  # noqa: BLE001 — `needs_you` also refuses a past-deadline action
         log.debug("needs-you: housekeeping failed", exc_info=True)
     pending = pending_checked()
+    # The agents' own reports (#1882), keyed by PHYSICAL session. The strict read raises on an
+    # unreadable store: unknown is not "nobody needs you".
+    try:
+        current_reports = agent_reports.current_checked() if strict else agent_reports.current_map()
+    except agent_reports.StoreUnreadable as e:
+        raise needs_you.ReadIncomplete(f"agent reports: {e}") from e
+    # Reports are keyed by PHYSICAL session (the key the launch filed under), cards by the id the
+    # engine knows them by — which can differ once an engine that mints its own id reconciles a
+    # placeholder. So the two sides are compared as RESOLVED physical keys (#1882, Hermes on #1884),
+    # through ONE alias snapshot used for card selection, report attachment and answerability. The
+    # strict read takes it under the writers' lock and FAILS on an unreadable map: "no aliases"
+    # would detach a placeholder-keyed report from its card, and the sync would retract it.
+    aliases = snapshot[1] if snapshot is not None else metadata.load_aliases()
+    reporting = {
+        phys
+        for phys, r in current_reports.items()
+        if r.get("state") in agent_reports.NEEDS_YOU_STATES
+    }
     # A LIVE DECISION IS LISTED WHATEVER THE WINDOW (#1086 Phase 3). The window scopes the
     # review flag's "needs you"; a decision the operator can still act on must never
     # vanish from the one surface that acts on it because the session is older than it.
+    # The same holds for an agent's report asking for the Commander (#1882).
     in_window = {c["id"] for c in cards}
     wanted = {str(a.get("session_id") or "") for a in pending} - in_window
-    if wanted:
+    wanted_phys = reporting - {engines.physical_key(c["id"], aliases) for c in cards}
+    if wanted or wanted_phys:
         try:
             full = (
-                pulse.build_cards(window_days=None, strict=True, scanned=scanned)
+                pulse.build_cards(window_days=None, strict=True, scanned=scanned, checked=snapshot)
                 if strict
                 else pulse.build_cards(window_days=None)
             )
         except pulse.CardsIncomplete as e:
             raise needs_you.ReadIncomplete(str(e)) from e
-        cards += [c for c in full if c["id"] in wanted]
+        cards += [
+            c
+            for c in full
+            if c["id"] not in in_window
+            and (c["id"] in wanted or engines.physical_key(c["id"], aliases) in wanted_phys)
+        ]
     cards = in_scope_cards(cards)
     try:
         held: set[str] | None = set(missions.all_active_memberships())
@@ -531,11 +568,130 @@ def build_needs_you(
         ),
         engine=engine,
         project=project,
-        suppressed=suppressed,
+        suppressed={k: v["fingerprint"] for k, v in dismissed.items()},
         strict=strict,
+        reports=_reports_by_card(cards, current_reports, aliases),
+        suppressed_reports={k: v["report_id"] for k, v in dismissed.items()},
+        suppressed_actions={k: v["action_ids"] for k, v in dismissed.items()},
     )
+    for row in out["rows"]:
+        if row.get("report") is not None:
+            try:
+                stored = current_reports.get(engines.physical_key(row["id"], aliases))
+            except Exception:  # noqa: BLE001 — unresolvable: the ledger half still answers
+                stored = None
+            row["report_answer"] = report_answerable(row, stored, aliases)
     out["window_days"] = wd
     return out
+
+
+def _reports_by_card(
+    cards: list[dict], current: dict[str, dict], aliases: dict[str, str] | None = None
+) -> dict[str, dict]:
+    """``card id -> its session's current report`` (public fields), through the physical key
+    resolved with the caller's alias snapshot (``None``: read it, fail-soft)."""
+    if not current:
+        return {}
+    out: dict[str, dict] = {}
+    for c in cards:
+        try:
+            phys = engines.physical_key(c["id"], aliases)
+        except Exception:  # noqa: BLE001, S112 — an unresolvable key has no report
+            continue
+        rep = current.get(phys)
+        if rep is not None:
+            out[c["id"]] = agent_reports.public(rep)
+    return out
+
+
+#: Why a report's options are disabled on its card (#1882). Fixed server text.
+REPORT_ANSWER_OFF = (
+    "Answering from here needs the orchestrator on (Settings → Mission control). Open the "
+    "session to answer it."
+)
+REPORT_ANSWER_NOT_ACTUABLE = (
+    "This agent doesn't take typed answers from BattleLab. Open the session to answer it."
+)
+REPORT_ANSWER_EXCLUDED = (
+    "This session is excluded from the orchestrator. Open the session to answer it."
+)
+#: One answer per report (#1882): an answer holds the report's reservation
+#: (`agent_reports.mark_answered`) or was claimed and did not settle as a clean refusal, so its
+#: bytes may be on the screen.
+REPORT_ANSWER_SENT = (
+    "An answer to this was already sent or may have been — open the session to check."
+)
+#: The same fact as a refused tap's detail.
+REPORT_ANSWER_SENT_DETAIL = agent_reports.ANSWER_SPENT
+#: A refused tap's machine code (#1882): ``stale`` — nothing was typed by this tap, nor can an
+#: earlier answer have been; ``spent`` — an answer to this report was already sent or may have
+#: been. The client may say "Nothing was sent" ONLY for ``stale``.
+REFUSED_STALE = "stale"
+REFUSED_SPENT = "spent"
+#: …and ``unknown``: whether an earlier answer was sent can't be read. Fails closed.
+REFUSED_UNKNOWN = "unknown"
+#: …and ``uncertain``: no record still held can show whether an answer went (the report aged out
+#: of history, or is not one this server knows). Never said as "nothing was sent".
+REFUSED_UNCERTAIN = "uncertain"
+REPORT_ANSWER_UNCERTAIN = (
+    "an answer to this report may already have been sent; its record is no longer held"
+)
+REPORT_ANSWER_UNKNOWN = (
+    "The decision ledger can't be read, so an earlier answer can't be ruled out — open the "
+    "session to check."
+)
+
+
+def _report_spent(report_id: str, stored: dict | None) -> bool:
+    """Either source says an answer holds the report. Raises
+    `orchestrator_ledger.LedgerUnreadable` when the ledger can't say."""
+    if not report_id:
+        return False
+    mine = stored is not None and stored.get("id") == report_id
+    if mine and agent_reports.answer_mark(stored):
+        return True
+    if orchestrator_ledger.report_answer_spent(report_id):
+        return True
+    # An ordinary answer or relay delivered to the session since the report was filed answered
+    # it, whether or not its asynchronous end has committed yet (Hermes on #1884).
+    return bool(
+        mine
+        and stored.get("phys_key")
+        and orchestrator_ledger.answered_after(str(stored["phys_key"]), float(stored["at"]))
+    )
+
+
+def report_answerable(
+    row: dict, stored: dict | None = None, aliases: dict[str, str] | None = None
+) -> dict:
+    """Can an option tap on this row's report be DELIVERED? ``{"available", "reason"}``.
+
+    The same gates `actuator.deliver` applies before it types: the master switch and a tier that
+    is not `off` (an operator's tap is consent to THIS action, not an exemption from the switch),
+    an actuable engine and a session not opted out — and a report no earlier answer to was
+    already sent, or may have been (one answer per report). A card is never offered as
+    actionable when every tap would be refused. Never raises; unknown reads as unavailable."""
+    try:
+        report_id = str((row.get("report") or {}).get("id") or "")
+        try:
+            if _report_spent(report_id, stored):
+                return {"available": False, "reason": REPORT_ANSWER_SENT}
+        except orchestrator_ledger.LedgerUnreadable:
+            return {"available": False, "reason": REPORT_ANSWER_UNKNOWN}
+        cfg = prefs.get_automation_policy("session")
+        if not cfg.get("enabled") or cfg.get("autonomy") == "off":
+            return {"available": False, "reason": REPORT_ANSWER_OFF}
+        prov, _native = engines.parse_key(str(row.get("id") or ""))
+        if not engines.supports_orchestrator_input(prov):
+            return {"available": False, "reason": REPORT_ANSWER_NOT_ACTUABLE}
+        phys = engines.physical_key(str(row["id"]), aliases)
+        idx = metadata.load()
+        meta = idx.get(str(row["id"])) or idx.get(phys)
+        if meta is not None and meta.orchestrator_excluded:
+            return {"available": False, "reason": REPORT_ANSWER_EXCLUDED}
+    except Exception:  # noqa: BLE001 — an unanswerable question is not a yes
+        return {"available": False, "reason": REPORT_ANSWER_OFF}
+    return {"available": True, "reason": ""}
 
 
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
@@ -620,17 +776,42 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     ) -> JSONResponse:
         """DISMISS a NEEDS YOU row (#1086 Phase 3): hide it until the session's screen changes, and
         reject its pending decision when the body names one. The fingerprint is read HERE, from the
-        live screen — a client can say which session, never which screen."""
+        live screen — a client can say which session, never which screen.
+
+        The dismissal covers only what the operator SAW (#1882, Hermes on #1884): the body names
+        the decisions (``shown_action_ids``) and the agent's report (``shown_report_id``) the row
+        displayed. The server records a shown decision only while it is still pending and the
+        shown report only while it is still current; anything that arrived after the operator
+        looked stays visible. Omitted lists record nothing, so an older client can never hide
+        more than the screen."""
         try:
             raw = await request.body()
             body = json.loads(raw) if raw.strip() else {}
         except ValueError:
             return JSONResponse({"detail": "the body must be JSON"}, status_code=422)
-        if not isinstance(body, dict) or set(body) - {"action_id"}:
-            return JSONResponse({"detail": "the body may only name action_id"}, status_code=422)
+        allowed = {"action_id", "shown_action_ids", "shown_report_id"}
+        if not isinstance(body, dict) or set(body) - allowed:
+            return JSONResponse(
+                {"detail": "the body may only name action_id, shown_action_ids, shown_report_id"},
+                status_code=422,
+            )
         action_id = body.get("action_id")
         if action_id is not None and not isinstance(action_id, str):
             return JSONResponse({"detail": "action_id must be a string"}, status_code=422)
+        shown_ids = body.get("shown_action_ids", [])
+        if (
+            not isinstance(shown_ids, list)
+            or len(shown_ids) > 20
+            or not all(isinstance(a, str) and 0 < len(a) <= 64 for a in shown_ids)
+        ):
+            return JSONResponse(
+                {"detail": "shown_action_ids must be a list of action ids"}, status_code=422
+            )
+        shown_report_id = body.get("shown_report_id")
+        if shown_report_id is not None and (
+            not isinstance(shown_report_id, str) or not 0 < len(shown_report_id) <= 64
+        ):
+            return JSONResponse({"detail": "shown_report_id must be a string"}, status_code=422)
 
         def _apply() -> tuple[int, dict]:
             card, err = _standalone_card(session_id)
@@ -647,9 +828,285 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 if rejected is not None:
                     with contextlib.suppress(Exception):
                         _retire_decided(action_id)
-            fp = orchestrator.observed_screen(engines.physical_key(session_id))["fingerprint"]
-            needs_you_dismissals.dismiss(session_id, fp)
+            phys = engines.physical_key(session_id)
+            fp = orchestrator.observed_screen(phys)["fingerprint"]
+            # The report the row SHOWED (#1882), recorded only while it is still the current one:
+            # a newer report on the same screen is not dismissed. Unreadable reads as none, which
+            # can only leave a later report visible.
+            current = agent_reports.current(phys)
+            report = (
+                str(current["id"])
+                if current and shown_report_id and current["id"] == shown_report_id
+                else None
+            )
+            # …and the decisions it SHOWED that are still pending — never one that arrived after
+            # the operator looked. Unreadable reads as none, the same direction.
+            shown = set(shown_ids)
+            carried = [
+                str(a["id"])
+                for a in orchestrator_ledger.live_actions()
+                if a.get("session_id") == session_id
+                and a.get("state") in orchestrator_ledger.OPERATOR_PENDING_STATES
+                and a["id"] in shown
+            ]
+            needs_you_dismissals.dismiss(session_id, fp, report_id=report, action_ids=carried)
             return 200, {"dismissed": True, "rejected": rejected is not None}
+
+        status, out = await asyncio.to_thread(_apply)
+        return JSONResponse(out, status_code=status)
+
+    # ---- an agent's own HQ report (#1882) ---------------------------------------------------
+
+    @app.post("/api/needs-you/{session_id:path}/report/answer")
+    async def report_answer(
+        session_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Answer an agent's `needs_decision` report with one of ITS options (#1882).
+
+        The tap mints a ledger `answer` action (``source: "report"``) whose text is
+        server-rendered — ``Decision: <option>``, normalized by `handoff.sanitize_seed` as delivery
+        normalizes it — bound to the report's id, its launch generation and the screen as it is
+        now, and approves it in the same request: the tap IS the approval. It is delivered by the
+        approve path (`_deliver_approved` → `actuator.deliver`), which re-checks the report after
+        the claim and again under the write lock, so a report that moved on types nothing. The
+        body names the report and the option NUMBER; the words come from the stored report."""
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = None
+        if not isinstance(body, dict) or set(body) != {"report_id", "option"}:
+            return JSONResponse({"detail": "the body names report_id and option"}, status_code=422)
+        report_id, option = body["report_id"], body["option"]
+        if not isinstance(report_id, str) or not report_id or len(report_id) > 64:
+            return JSONResponse({"detail": "report_id must be a string"}, status_code=422)
+        if isinstance(option, bool) or not isinstance(option, int):
+            return JSONResponse({"detail": "option must be a number"}, status_code=422)
+
+        def stale(detail: str) -> tuple[int, dict]:
+            return 409, {"detail": detail, "code": REFUSED_STALE}
+
+        def _gone_reply(phys: str) -> tuple[int, dict]:
+            """The report is no longer current. "Nothing was sent" (``stale``) only on POSITIVE
+            evidence from a record still held (#1882, Hermes on #1884): the report's own ended row,
+            read strictly, showing it was never answered — no answer reservation, not ended by an
+            answer, no ordinary delivery after it — and a strictly read ledger with no claimed
+            answer for it. A report id found nowhere (aged out of history, or never ours) is
+            ``uncertain``, never ``stale``; an unreadable store is ``unknown``."""
+            try:
+                cur = agent_reports.current_checked().get(phys)
+                rows = agent_reports.history_checked(phys)
+            except agent_reports.StoreUnreadable:
+                return unknown_reply
+            if cur is not None and cur.get("id") == report_id:
+                # Current but not a decision: nothing to choose — unless something holds it.
+                if agent_reports.answer_mark(cur):
+                    return spent_reply
+                return stale("that report is not a decision")
+            ended = next((r for r in rows if r["id"] == report_id), None)
+            if ended is None:
+                return uncertain_reply
+            verdict = agent_reports.answered_or_maybe(ended)
+            if verdict == "spent":
+                return spent_reply
+            if verdict == "uncertain":
+                return uncertain_reply
+            try:
+                if orchestrator_ledger.report_answer_spent(report_id):
+                    return spent_reply
+            except orchestrator_ledger.LedgerUnreadable:
+                return unknown_reply
+            return stale("the agent's report is no longer current")
+
+        spent_reply = (409, {"detail": REPORT_ANSWER_SENT_DETAIL, "code": REFUSED_SPENT})
+        unknown_reply = (503, {"detail": agent_reports.ANSWER_UNKNOWN, "code": REFUSED_UNKNOWN})
+        uncertain_reply = (409, {"detail": REPORT_ANSWER_UNCERTAIN, "code": REFUSED_UNCERTAIN})
+
+        def _mint() -> tuple[int, dict]:
+            card, err = _standalone_card(session_id)
+            if err is not None:
+                return err[0], {"detail": err[1]}
+            phys = engines.physical_key(session_id)
+            try:
+                rep = agent_reports.current_checked().get(phys)
+            except agent_reports.StoreUnreadable:
+                return 503, {"detail": "the agent-reports store could not be read"}
+            if rep is None or rep.get("id") != report_id or rep.get("state") != "needs_decision":
+                return _gone_reply(phys)
+            options = agent_reports.public(rep).get("options") or []
+            if not 1 <= option <= len(options):
+                return 422, {"detail": "no such option on this report"}
+            available = report_answerable({"id": session_id, "report": {"id": rep["id"]}}, rep)
+            if available["reason"] == REPORT_ANSWER_SENT:
+                return spent_reply
+            if available["reason"] == REPORT_ANSWER_UNKNOWN:
+                return unknown_reply
+            if not available["available"]:
+                return stale(available["reason"])
+            try:
+                text = handoff.sanitize_seed(f"Decision: {options[option - 1]}")
+            except handoff.HandoffError:
+                return 422, {"detail": "that option has no typeable text"}
+            if not session_input.is_live(phys):
+                return stale("the session is not running, so nothing can be typed")
+            from .. import automation, template_secrets
+
+            try:
+                grant = automation.capture_candidates([session_id], None).get(session_id)
+            except Exception:  # noqa: BLE001 — unreadable ownership authorizes nothing
+                grant = None
+            if grant is None:
+                return 503, {"detail": "who owns this session could not be confirmed"}
+            cfg = prefs.get_automation_policy("session")
+            now = time.time()
+            project = card.get("project") or {}
+            rec = {
+                "id": uuid.uuid4().hex,
+                "state": "proposed",
+                "ts": now,
+                "expires_at": now + int(cfg["proposal_ttl_minutes"]) * 60,
+                "tier": cfg["autonomy"],
+                "source": "report",
+                "report_id": rep["id"],
+                "report_generation": str(rep.get("generation") or ""),
+                "session_id": session_id,
+                "engine": str(card.get("engine") or ""),
+                "title": str(card.get("title") or "")[: pulse_chat.TITLE_MAX],
+                "project": str(project.get("name") or "")[: pulse_chat.PROJECT_MAX],
+                "project_id": project.get("id") or "",
+                "verb": "answer",
+                "answer": text,
+                "confidence": 1.0,
+                "rationale": "Your answer to the agent's question",
+                "evidence": "none",
+                "authority": grant,
+                "precondition": orchestrator.precondition_for(phys),
+            }
+
+            # ONE ANSWER PER REPORT, reserved on the REPORT record before the action exists
+            # (atomic under the fence and the store's lock, so two taps reserve it once, and
+            # durable whatever the ledger compacts). Not inside the ledger lock: the reservation
+            # takes the write fence, and nothing may take the fence under a lock a delivery's
+            # write window could want.
+            try:
+                reserved = agent_reports.mark_answered(phys, rep["id"], rec["id"])
+            except agent_reports.StoreUnreadable:
+                return 503, {"detail": "the agent-reports store could not be read"}
+            except agent_reports.Busy:
+                return 503, {"detail": "a delivery is in progress; try again"}
+            if reserved == "spent":
+                return spent_reply
+            if reserved != "ok":
+                return _gone_reply(phys)
+
+            spent = unknown = False
+
+            def clean(r: dict) -> bool:
+                nonlocal spent, unknown
+                # …and the ledger's half, inside its lock: an answer claimed for this report.
+                try:
+                    if orchestrator_ledger.report_answer_spent(
+                        r["report_id"], exclude=r["id"]
+                    ) or orchestrator_ledger.answered_after(phys, float(rep["at"])):
+                        spent = True
+                        return False
+                except orchestrator_ledger.LedgerUnreadable:
+                    unknown = True
+                    return False
+                # The secret check at the write, inside the ledger lock (as HQ's proposals do).
+                try:
+                    return ask_store.guard_text(r["answer"], 4000) == r["answer"]
+                except Exception:  # noqa: BLE001 — redaction that cannot run authorizes nothing
+                    return False
+
+            try:
+                with template_secrets.registration_fence():
+                    kept, _dropped = orchestrator_ledger.append_batch_for_free_sessions(
+                        [rec], record_guard=clean
+                    )
+            except BaseException:
+                agent_reports.clear_answer_quietly(phys, rep["id"], rec["id"])
+                raise
+            if not kept:
+                # Never minted: give the reservation back (best-effort; a failure leaves the
+                # report refusing, never double-typing).
+                agent_reports.clear_answer_quietly(phys, rep["id"], rec["id"])
+                if spent:
+                    return spent_reply
+                if unknown:
+                    return unknown_reply
+                return stale("that session already has a decision waiting")
+            return 200, {"action_id": rec["id"]}
+
+        status, out = await asyncio.to_thread(_mint)
+        if status != 200:
+            return JSONResponse(out, status_code=status)
+        resp = await _deliver_approved(out["action_id"])
+        if resp.status_code == 200:
+            # WHAT HAPPENED, said explicitly (Hermes on #1884): the approve path answers 200 for
+            # an attempted write too. `delivered` only when the PTY took every byte; `uncertain`
+            # when a write was attempted and its outcome is unknown or partial (failed after the
+            # claim, indeterminate); `stale` when it failed before the claim (nothing typed).
+            rec = json.loads(resp.body)
+            state = rec.get("state")
+            if state == "delivered":
+                outcome = "delivered"
+            elif state == "indeterminate" or (state == "failed" and rec.get("claim_owner")):
+                outcome = "uncertain"
+            else:
+                outcome = "stale"
+            return JSONResponse({**rec, "outcome": outcome})
+        if resp.status_code != 409:
+            return resp
+        # Which refusal: only THIS action settling `stale`/`expired` on a ground other than the
+        # one-answer rule proves nothing was typed. Anything else (another caller had the action,
+        # another answer holds the report) may have been sent.
+        body = json.loads(resp.body)
+        clean_refusal = body.get("state") in ("stale", "expired") and body.get("detail") not in (
+            REPORT_ANSWER_SENT_DETAIL,
+            agent_reports.ANSWER_UNKNOWN,
+        )
+        if body.get("detail") == agent_reports.ANSWER_UNKNOWN:
+            body["code"] = REFUSED_UNKNOWN
+        else:
+            body["code"] = REFUSED_STALE if clean_refusal else REFUSED_SPENT
+        return JSONResponse(body, status_code=409)
+
+    @app.post("/api/needs-you/{session_id:path}/report/dismiss")
+    async def report_dismiss(
+        session_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """DISMISS an agent's report (#1882): it ends — into history — and nothing is typed. The
+        body may name the ``report_id`` the card showed; a newer report is then left alone."""
+        try:
+            raw = await request.body()
+            body = json.loads(raw) if raw.strip() else {}
+        except ValueError:
+            return JSONResponse({"detail": "the body must be JSON"}, status_code=422)
+        if not isinstance(body, dict) or set(body) - {"report_id"}:
+            return JSONResponse({"detail": "the body may only name report_id"}, status_code=422)
+        report_id = body.get("report_id")
+        if report_id is not None and not isinstance(report_id, str):
+            return JSONResponse({"detail": "report_id must be a string"}, status_code=422)
+
+        def _apply() -> tuple[int, dict]:
+            _card, err = _standalone_card(session_id)
+            if err is not None:
+                return err[0], {"detail": err[1]}
+            try:
+                ended = agent_reports.end(
+                    engines.physical_key(session_id), "dismissed", report_id=report_id or None
+                )
+            except agent_reports.StoreUnreadable:
+                return 503, {"detail": "the agent-reports store could not be read"}
+            except agent_reports.Busy:
+                return 503, {"detail": "a delivery is in progress; try again"}
+            return 200, {"dismissed": ended is not None}
 
         status, out = await asyncio.to_thread(_apply)
         return JSONResponse(out, status_code=status)
@@ -1049,6 +1506,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 edit, refused = await asyncio.to_thread(_operator_edit, action_id, body["text"])
                 if refused is not None:
                     return JSONResponse({"detail": refused[1]}, status_code=refused[0])
+        return await _deliver_approved(action_id, edit)
+
+    async def _deliver_approved(action_id: str, edit: dict | None = None) -> JSONResponse:
+        """THE approve path: the operator's tap delivers ``action_id`` through `actuator.deliver`
+        (``operator_approval=True``) and retires its alert. Shared by the approve route and a
+        report option's tap (#1882), so there is one way an approval reaches a session."""
         try:
             rec = await actuator.deliver(
                 action_id, registry=registry, operator_approval=True, edit=edit

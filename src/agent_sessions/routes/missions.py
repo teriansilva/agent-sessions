@@ -837,8 +837,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         Same gate as the mission detail: a logged-in operator and a valid mission id; an unknown
         mission is a 404, never "holds no session". Returns DERIVED fields only — a status word,
         seconds since visible output, the prompt class while waiting, the recap's age — never screen
-        text. No model call and no write: the output clock is in memory, the recap time is one store
-        read, and the screen is read only for a session that has gone quiet, cached briefly.
+        text. The one exception is ``report``: the session's current HQ report (#1882), the agent's
+        own words, guarded when filed and framed as agent text by the strip. No model call and no
+        write: the output clock is in memory, the recap time is one store read, and the screen is
+        read only for a session that has gone quiet, cached briefly.
         """
         try:
             facts = await missions.run_admitted(lambda: missions.now_facts(mission_id))
@@ -846,6 +848,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return _fail(e)
         now = time.time()
         out = []
+        # The held sessions' own HQ reports (#1882): the one non-derived field, the agent's words
+        # (guarded and capped when filed), shown as agent text on the session's line.
+        from .. import agent_reports
+
+        reports = await asyncio.to_thread(agent_reports.current_map)
         for f in facts:
             key = f["session_key"]
             try:
@@ -862,6 +869,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     **mission_now.derive(
                         now=now, last_output_at=last, prompt_class=cls, recap_at=f["recap_at"]
                     ),
+                    "report": (agent_reports.public(reports[phys]) if phys in reports else None),
                 }
             )
         return JSONResponse({"sessions": out, "checked_at": now})

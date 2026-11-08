@@ -64,7 +64,10 @@ _KIND_BY_CLASS = {
     "question": "question",
     "open": "needs_inspection",
 }
-KINDS = ("choice", "approval", "question", "needs_inspection")
+KINDS = ("choice", "approval", "question", "needs_inspection", "report_decision", "report_blocked")
+#: An agent's own HQ report (#1882) → the kind its row names. Fixed server kinds; the report's
+#: words ride the row's ``report`` block, never its kind, reason or key.
+_KIND_BY_REPORT = {"needs_decision": "report_decision", "blocked": "report_blocked"}
 
 
 class Unavailable(Exception):
@@ -171,11 +174,22 @@ def build(
     now: float | None = None,
     suppressed: dict[str, str] | None = None,
     strict: bool = False,
+    reports: dict[str, dict] | None = None,
+    suppressed_reports: dict[str, str] | None = None,
+    suppressed_actions: dict[str, frozenset[str]] | None = None,
 ) -> dict:
     """The NEEDS YOU payload. Pure apart from ``observe`` (a screen read per candidate row).
 
     ``held`` is the set of session keys a mission holds, or ``None`` when that store could not be
     read — which raises :class:`MembershipUnavailable` rather than guessing.
+
+    ``reports`` maps a session key to its CURRENT HQ report (#1882): a `blocked` or
+    `needs_decision` report puts the session here too. A mission-held session's report never
+    does — its mission decides what reaches the Commander. ``suppressed_reports`` names the report
+    each dismissal was made over (``""``: none): a screen dismissal hides a report row only when
+    it dismissed THAT report, so a newer report on an unchanged screen is never hidden.
+    ``suppressed_actions`` names the pending decisions each dismissal covered: a row carrying a
+    pending decision the dismissal did not cover is never hidden either.
     """
     if held is None:
         raise MembershipUnavailable
@@ -193,12 +207,16 @@ def build(
             continue
         action = _pick_action(by_session.get(sid, []), now)
         flagged = bool(card.get("intervention_required"))
-        if not flagged and action is None:
+        report = (reports or {}).get(sid)
+        if report is not None and report.get("state") not in _KIND_BY_REPORT:
+            report = None
+        if not flagged and action is None and report is None:
             continue
-        # WHEN it started needing you: the decision's own time when there is one, else the review
-        # that raised the flag, else the session's last activity.
+        # WHEN it started needing you: the decision's own time when there is one, else the
+        # agent's report, else the review that raised the flag, else the session's last activity.
         since = _first_present(
             _num(action.get("ts")) if action else None,
+            _num(report.get("at")) if report else None,
             _num(card.get("reviewed_at")),
             _num(card.get("last_activity")),
         )
@@ -217,6 +235,7 @@ def build(
                 "summary": str(card.get("ai_summary") or ""),
                 "flagged": flagged,
                 "action": _public_action(action) if action else None,
+                "report": report,
             }
         )
 
@@ -230,6 +249,23 @@ def build(
             fp = suppressed.get(r["id"])
             if fp is None:
                 kept.append(r)
+                continue
+            # The report is what the row SHOWS when it carries no decision (the row's controls
+            # are the decision's otherwise), so only then must the dismissal have covered it.
+            if (
+                r["report"] is not None
+                and r["action"] is None
+                and (suppressed_reports or {}).get(r["id"]) != r["report"].get("id")
+            ):
+                kept.append(r)  # a report the dismissal never covered (#1882)
+                continue
+            pending_ids = {
+                str(a.get("id") or "")
+                for a in by_session.get(r["id"], [])
+                if _actionable(a, now) and a.get("id")
+            }
+            if pending_ids - (suppressed_actions or {}).get(r["id"], frozenset()):
+                kept.append(r)  # a decision the dismissal never covered (#1882)
                 continue
             if strict:
                 # A dismissal is judged on the screen; a screen that could not be read is
@@ -274,6 +310,10 @@ def build(
             observed_cache[r["id"]] if r["id"] in observed_cache else _safe_observe(observe, r)
         )
         r["kind"], live_menu = _kind(observed)
+        # The agent's own report names the kind when no decision is pending (a pending decision
+        # is what the row's controls settle, so its screen kind stays).
+        if r["report"] is not None and r["action"] is None:
+            r["kind"] = _KIND_BY_REPORT[r["report"]["state"]]
         # A menu for display: the recorded one when the decision has one (what `/choose` checks),
         # else what the screen shows now. Labels are agent text, cleaned and capped by the parser.
         recorded = (r["action"] or {}).get("menu")

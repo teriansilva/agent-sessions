@@ -39,6 +39,7 @@ from . import (
     autosort_loop,
     engines,
     feed_alerts,
+    hq_report_broker,
     memory,
     memory_loop,
     metadata,  # noqa: F401 — compatibility: tests patch main.metadata.set_alias
@@ -228,6 +229,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     memory.scrub_process_environment()
     # Nor a secrets capability (#1786): one is minted per launch, never inherited.
     secrets_broker.scrub_process_environment()
+    # Nor an HQ report capability (#1882).
+    hq_report_broker.scrub_process_environment()
 
     # One-time prefs migration (#357 Phase 2): union-merge any legacy `overview_excluded`
     # hide list into `projects_hidden` and drop the old key. A pure no-op once migrated
@@ -345,6 +348,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # judges liveness against the re-adopted sessions — a live agent keeps its capability
         # across this restart, a dead launch's copies are removed. Then it serves the socket.
         secrets_task = asyncio.create_task(secrets_broker.serve())
+        # The HQ report broker (#1882): the same ordering, for the same reason.
+        hq_report_task = asyncio.create_task(hq_report_broker.serve())
         # Periodic AI session review (#356 Phase 2): same reaper pattern. The task exits
         # immediately under the AGENT_SESSIONS_AI_REVIEW_LOOP=0 kill-switch; otherwise it
         # re-reads the ai_review prefs every sweep, so the Settings enable toggle governs
@@ -506,6 +511,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             for task in (
                 reaper_task,
                 secrets_task,
+                hq_report_task,
                 review_task,
                 autosort_task,
                 pulse_task,

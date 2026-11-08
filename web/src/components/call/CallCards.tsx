@@ -258,7 +258,9 @@ export function CallCards({ cid, seq }: { cid: string | null; seq: number }) {
                 deciding={deciding.has(id)}
                 error={errors.get(id) ?? null}
                 onApprove={() => void run(id, () => api.approveAction(id), dropNeedsYou(id))}
-                onDismiss={() => void run(id, () => api.needsYouDismiss(r.id, id), dropNeedsYou(id))}
+                onDismiss={() =>
+                  void run(id, () => api.needsYouDismiss(r.id, id, { actionIds: [id] }), dropNeedsYou(id))
+                }
               />
             )}
           </div>

@@ -20,10 +20,14 @@ import { useHoldFocusWhileBusy } from "../templates/useHoldFocusWhileBusy";
  *  box; nothing is ever queued behind another action. Every agent string is rendered as text. */
 export function NeedsYouDetailsDialog({
   sessionId,
+  shownReportId = null,
   onClose,
   onChanged,
 }: {
   sessionId: string;
+  /** The agent's report the LIST ROW displayed (#1882). A Dismiss here names that one — never a
+   *  report fetched later that this dialog does not show. */
+  shownReportId?: string | null;
   onClose: () => void;
   /** Something was decided: the list should re-read. */
   onChanged: () => void;
@@ -290,10 +294,19 @@ export function NeedsYouDetailsDialog({
                 type="button"
                 className={s.quiet}
                 disabled={busy || outdated}
-                onClick={() => void act(() => api.needsYouDismiss(d.id, action?.id))}
+                onClick={() =>
+                  void act(() =>
+                    api.needsYouDismiss(d.id, action?.id, {
+                      actionIds: action ? [action.id] : [],
+                      reportId: shownReportId,
+                    }),
+                  )
+                }
                 data-testid="needs-you-dismiss"
               >
-                Dismiss
+                {/* With a decision this REJECTS it (and hides the row); without one it only hides
+                    what is on screen now, until the screen changes — never ends a report. */}
+                {action ? "Dismiss" : "Hide for now"}
               </button>
               <span className={s.sp} />
               {isChoose && action!.can_approve ? (

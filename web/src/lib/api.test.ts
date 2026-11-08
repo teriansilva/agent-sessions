@@ -199,3 +199,26 @@ test("fileBlob asks the server for no more than the tunnel carries, and refuses 
   }
   expect(isApiTunneled()).toBe(false);
 });
+
+// A Needs-you dismissal names only what the row SHOWED (#1882): a decision or report that arrived
+// after the operator looked must not be swept up by it, and a call that names nothing records none.
+test("needsYouDismiss sends the decisions and report the row showed, and nothing it did not", async () => {
+  const fetch = vi.fn<ApiFetch>(
+    async () => new Response(JSON.stringify({ dismissed: true, rejected: false }), { status: 200 }),
+  );
+  try {
+    setApiFetch(fetch);
+    await api.needsYouDismiss("claude:s1", "act-a", { actionIds: ["act-a"], reportId: "rep-a" });
+    await api.needsYouDismiss("claude:s1", undefined, { actionIds: [], reportId: null });
+    await api.needsYouDismiss("claude:s1");
+    const bodies = fetch.mock.calls.map((c) => JSON.parse(String(c[1]?.body)));
+    expect(bodies).toEqual([
+      { action_id: "act-a", shown_action_ids: ["act-a"], shown_report_id: "rep-a" },
+      {},
+      {},
+    ]);
+    expect(fetch.mock.calls[0][0]).toBe("/api/pulse/needs-you/claude%3As1/dismiss");
+  } finally {
+    setApiFetch(null);
+  }
+});

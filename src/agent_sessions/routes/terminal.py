@@ -48,6 +48,7 @@ from .. import (
     engines,
     fsbrowse,
     handoff,
+    hq_report_broker,
     launchtiming,
     memory,
     missions,
@@ -899,14 +900,30 @@ def register(
                     capability = secrets_broker.launch_env(
                         transcript_key, phys_key, cwd, engine=prov.engine_id, kind="terminal"
                     )
+                    # The HQ report capability (#1882): this new agent process only. Its paths
+                    # reach the MCP server's own environment, not the agent's.
+                    hq_env = hq_report_broker.launch_env(
+                        transcript_key,
+                        phys_key,
+                        engine=prov.engine_id,
+                        manifest=engines.manifest_of(prov),
+                    )
                     tool = agent_tools.terminal_launch(
                         engines.manifest_of(prov),
                         paths,
                         os.environ,
                         skills_bundle=claim.bundle if claim is not None else None,
                         secrets_env=capability,
+                        hq_env=hq_env,
                     )
-                    return {**paths, **capability}, tool
+                    # …and the report capability's id in the agent's OWN environment, which its
+                    # dtach master inherits: a bind reads it back from the kernel to prove the
+                    # master is THIS launch's (`hq_report_broker._master_carries`).
+                    return {
+                        **paths,
+                        **capability,
+                        **hq_report_broker.master_env(hq_env),
+                    }, tool
 
                 try:
                     memory_env, mcp = await asyncio.to_thread(_memory_for_launch)

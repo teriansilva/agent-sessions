@@ -278,6 +278,125 @@
   margin-top: var(--sp-2);
 }
 
+/* ---- an agent's own report (#1882) ---- */
+/* Untrusted agent text, framed as such: the details dialog's quote block under a "the agent says
+ * — its own words, unchecked" label; the summary in --text-2, the question in --text-1. Options
+ * are numbered GHOST plates (none is HQ's pick, so no primary), two columns on a desktop and one
+ * on a phone, every one ≥ 44px. Neutral ink only. */
+.report {
+  margin-top: var(--sp-2);
+  max-width: 720px;
+}
+.reportQuote {
+  border-left: 2px solid var(--line-strong);
+  padding: 6px 10px;
+  background: var(--glass-strong);
+}
+.reportLab {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.reportLabNote {
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  text-transform: none;
+}
+.reportSummary,
+.reportQuestion {
+  margin: 4px 0 0;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.reportSummary {
+  color: var(--text-2);
+}
+.reportQuestion {
+  margin-top: 8px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.reportOpts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.reportOpt {
+  composes: ghost from "../ui/actionButton.module.css";
+}
+/* Doubled so the label's own voice wins over the plate's display caps, whatever order the two
+ * sheets land in: an option is the agent's sentence, not a command label. */
+.reportOpts .reportOpt {
+  min-height: 44px;
+  height: auto;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 8px 12px;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+  font-family: inherit;
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  white-space: normal;
+}
+.reportOpts .reportOpt:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.reportOptNum {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  border: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--hud-text);
+}
+.reportOptLabel {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+}
+.reportHint {
+  margin: var(--sp-2) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.reportHint code {
+  color: var(--text-2);
+}
+.reportOpen {
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 4px;
+  color: var(--accent-text);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+}
+.reportOpen:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
+}
+.reportDismiss {
+  min-width: 96px;
+}
+
 /* ---- a section's own control row ---- */
 .bar {
   display: flex;
@@ -439,6 +558,12 @@
   }
   .entry > :last-child {
     grid-column: 2;
+  }
+  .reportOpts {
+    grid-template-columns: 1fr;
+  }
+  .row .ctl .reportDismiss {
+    flex: 1;
   }
   /* On a phone, Dismiss sits apart from Approve (review 72959). */
   .foot .quiet {

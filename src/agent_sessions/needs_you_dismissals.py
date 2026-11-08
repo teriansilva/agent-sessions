@@ -34,8 +34,18 @@ def _path() -> Path:
     )
 
 
-def dismiss(session_key: str, fingerprint: str, now: float | None = None) -> None:
-    """Record that ``session_key`` was dismissed while showing ``fingerprint``."""
+def dismiss(
+    session_key: str,
+    fingerprint: str,
+    now: float | None = None,
+    *,
+    report_id: str | None = None,
+    action_ids: list[str] | None = None,
+) -> None:
+    """Record that ``session_key`` was dismissed while showing ``fingerprint`` — and WHICH
+    occurrence it dismissed: the agent's HQ report the row showed (#1882) and the pending
+    decisions it carried. A screen dismissal hides only those, never a newer report or a newly
+    actionable decision on the same unchanged screen."""
     now = time.time() if now is None else now
     path = _path()
     with json_write_lock(path):
@@ -43,6 +53,10 @@ def dismiss(session_key: str, fingerprint: str, now: float | None = None) -> Non
         rows = doc.get("dismissed") if isinstance(doc.get("dismissed"), dict) else {}
         rows = {k: v for k, v in rows.items() if isinstance(v, dict) and _fresh(v, now)}
         rows[session_key] = {"fingerprint": fingerprint, "ts": now}
+        if report_id:
+            rows[session_key]["report_id"] = report_id
+        if action_ids:
+            rows[session_key]["action_ids"] = sorted({str(a) for a in action_ids if a})
         if len(rows) > MAX_ENTRIES:
             keep = sorted(rows.items(), key=lambda kv: float(kv[1].get("ts") or 0))[-MAX_ENTRIES:]
             rows = dict(keep)
@@ -63,6 +77,13 @@ def suppressed_checked(now: float | None = None) -> dict[str, str]:
     :class:`DismissalsUnreadable` instead of reading as "nothing dismissed" — the notification
     sync must not re-announce a dismissed screen because a read failed. A missing file is a
     genuinely empty record. Writes are atomic replaces, so there is no torn state to wait out."""
+    return {k: v["fingerprint"] for k, v in suppressed_detail_checked(now).items()}
+
+
+def suppressed_detail_checked(now: float | None = None) -> dict[str, dict]:
+    """``session_key -> {"fingerprint", "report_id", "action_ids"}`` (``report_id`` ``""`` when
+    the row showed no report; ``action_ids`` the pending decisions it carried), strict like
+    :func:`suppressed_checked` — ONE read for all of them."""
     now = time.time() if now is None else now
     path = _path()
     try:
@@ -79,28 +100,58 @@ def suppressed_checked(now: float | None = None) -> dict[str, str]:
         return {}
     if not isinstance(rows, dict):
         raise DismissalsUnreadable("dismissed is not a mapping")
-    out: dict[str, str] = {}
+    return _detail(rows, now, strict=True)
+
+
+def _malformed(k: object, v: object) -> bool:
+    if (
+        not isinstance(k, str)
+        or not isinstance(v, dict)
+        or not isinstance(v.get("fingerprint"), str)
+    ):
+        return True
+    rid, aids = v.get("report_id"), v.get("action_ids")
+    return (rid is not None and not isinstance(rid, str)) or (
+        aids is not None
+        and (not isinstance(aids, list) or not all(isinstance(a, str) for a in aids))
+    )
+
+
+def _detail(rows: dict, now: float, *, strict: bool = False) -> dict[str, dict]:
+    """``strict``: a malformed entry raises (unknown is never "not dismissed" to a reader that
+    retracts or announces on the answer, #1882); the lenient read skips it."""
+    if strict and any(_malformed(k, v) for k, v in rows.items()):
+        raise DismissalsUnreadable("a dismissal is malformed")
+    out: dict[str, dict] = {}
     for k, v in rows.items():
         if isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("fingerprint"), str):
             if _fresh(v, now):
-                out[k] = v["fingerprint"]
+                rid = v.get("report_id")
+                aids = v.get("action_ids")
+                out[k] = {
+                    "fingerprint": v["fingerprint"],
+                    "report_id": rid if isinstance(rid, str) else "",
+                    "action_ids": frozenset(
+                        a for a in (aids if isinstance(aids, list) else []) if isinstance(a, str)
+                    ),
+                }
     return out
 
 
 def suppressed(now: float | None = None) -> dict[str, str]:
     """``session_key -> fingerprint`` for every live dismissal. Read-lenient: a bad file is {}."""
+    return {k: v["fingerprint"] for k, v in suppressed_detail(now).items()}
+
+
+def suppressed_detail(now: float | None = None) -> dict[str, dict]:
+    """:func:`suppressed_detail_checked`, read-lenient: a bad file is {}."""
     now = time.time() if now is None else now
     try:
         doc = read_json_doc(_path())
     except Exception:  # noqa: BLE001 — an unreadable file dismisses nothing
         return {}
     rows = doc.get("dismissed") if isinstance(doc, dict) else None
-    out: dict[str, str] = {}
-    for k, v in (rows or {}).items() if isinstance(rows, dict) else ():
-        if isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("fingerprint"), str):
-            if _fresh(v, now):
-                out[k] = v["fingerprint"]
-    return out
+    return _detail(rows, now) if isinstance(rows, dict) else {}
 
 
 def _fresh(row: dict, now: float) -> bool:

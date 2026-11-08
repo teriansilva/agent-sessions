@@ -651,6 +651,58 @@ def _mission_membership_authority(rec: dict):
     return lambda: automation.check(rec), _state
 
 
+def _report_authority(rec: dict):
+    """`(check, fingerprint)` for an answer to an agent's HQ report (#1882), or `(None, None)`.
+
+    DERIVED FROM THE RECORD, like `_supervisor_authority`. An option tap mints an `answer`
+    bound to the report's id and the launch generation it was filed from. The screen
+    precondition cannot see a report change on an unchanged screen (`screen_matches` accepts an
+    absent fingerprint), so this re-reads the session's CURRENT report: a report replaced,
+    dismissed or ended, or a restarted launch, refuses — after the claim, inside `_final_guard`
+    under the write lock, and again in the in-fence fingerprint, so nothing is typed. So does a
+    report whose one answer ANOTHER action holds — its reservation on the report record
+    (`agent_reports.mark_answered`, durable) or a claim in the ledger
+    (`ledger.report_answer_spent`): one answer per report, even when that one's outcome is
+    unknown.
+    """
+    if str(rec.get("source") or "") != "report":
+        return None, None
+    from . import agent_reports
+
+    phys = str((rec.get("authority") or {}).get("physical_key") or "")
+    report_id = str(rec.get("report_id") or "")
+    generation = str(rec.get("report_generation") or "")
+    own = str(rec.get("id") or "")
+
+    def _spent() -> bool | None:
+        """True / False, or None when the ledger can't be read (unknown — refused). Spent: another
+        answer to this report was claimed, or an ordinary answer/relay was delivered to the
+        session after the report was filed (its asynchronous end may not have committed)."""
+        try:
+            if ledger.report_answer_spent(report_id, exclude=own):
+                return True
+            cur = agent_reports.current_checked().get(phys) if phys else None
+            return bool(
+                cur is not None
+                and cur.get("id") == report_id
+                and ledger.answered_after(phys, float(cur["at"]))
+            )
+        except (ledger.LedgerUnreadable, agent_reports.StoreUnreadable):
+            return None
+
+    def _check() -> tuple[bool, str]:
+        if not phys:
+            return False, "the answer names no session"
+        spent = _spent()
+        if spent is None:
+            return False, agent_reports.ANSWER_UNKNOWN
+        if spent:
+            return False, agent_reports.ANSWER_SPENT
+        return agent_reports.authority(phys, report_id, generation, own or None)
+
+    return _check, lambda: (agent_reports.authority_state(phys), _spent())
+
+
 def _supervisor_authority(rec: dict):
     """`(check, fingerprint)` for a supervisor-minted action, or `(None, None)`.
 
@@ -813,6 +865,13 @@ def _compose_fingerprint(base: Callable[[], object], extra) -> Callable[[], obje
         return (base(), extra())
 
     return _fp
+
+
+def _compose_optional(a, b):
+    """Two optional fingerprint parts as one (None when both are absent)."""
+    if a is None:
+        return b
+    return _compose_fingerprint(a, b)
 
 
 def _render_authority(rec: dict):
@@ -1145,6 +1204,19 @@ async def deliver(
     if ledger.claim(action_id, CLAIMABLE_STATES, expect_ts=read_ts, **(edit or {})) is None:
         raise NotDeliverable("another caller claimed or changed this action first")
 
+    # AN ANSWER TO AN AGENT'S REPORT (#1882) is checked against the report NOW, right after the
+    # claim: a report replaced, dismissed or ended, or a restarted launch, settles it `stale`
+    # before anything else runs, and nothing is typed. `_final_guard` asks again before byte one.
+    rep_check, rep_state = _report_authority(rec)
+    if rep_check is not None:
+        ok, why = await asyncio.to_thread(rep_check)
+        if not ok:
+            return (
+                ledger.compare_and_set(
+                    action_id, frozenset({"claimed"}), "stale", detail=why, outcome="refused"
+                )
+                or rec
+            )
     sup_check, sup_state = _supervisor_authority(rec)
     mem_check, mem_state = _mission_membership_authority(rec)
     txt_check, txt_state = _render_authority(rec)
@@ -1181,6 +1253,12 @@ async def deliver(
         # this guard is caught too.
         if sup_check is not None:
             ok, why = sup_check()
+            if not ok:
+                return False, why
+        # …and an answer to an agent's report (#1882): still the session's current report, from
+        # the same launch. Under the write lock, before byte one.
+        if rep_check is not None:
+            ok, why = rep_check()
             if not ok:
                 return False, why
         # …and the action's OWN mission MEMBERSHIP, for every action that names both a mission and
@@ -1277,7 +1355,13 @@ async def deliver(
                 # …and an autonomous draft's OPERATOR-DIRECTION eligibility (#983 P4 review). Read
                 # from the shared store, the only thing a sibling instance and this one agree on:
                 # its `set_direction` never moves this process's epoch, so nothing else sees it.
-                _compose_fingerprint(dir_state, ac_state) if dir_state is not None else ac_state,
+                # …and an answer's REPORT (#1882): id, generation, launch still current.
+                _compose_optional(
+                    _compose_fingerprint(dir_state, ac_state)
+                    if dir_state is not None
+                    else ac_state,
+                    rep_state,
+                ),
             ),
         )
     except Exception as e:

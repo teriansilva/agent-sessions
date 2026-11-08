@@ -121,6 +121,7 @@ TOOL_ACTIVITY = {
     "list_sessions": "looking through your sessions",
     "session_status": "checking that session",
     "session_brief": "checking that session",
+    "session_report": "checking that session",
     "list_missions": "checking your missions",
     "mission_status": "checking that mission",
     "fleet_status": "checking the fleet",

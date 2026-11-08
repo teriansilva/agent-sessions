@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, api } from "../../lib/api";
 import { relTime } from "../../lib/format";
-import type { NeedsYouRow } from "../../types/api";
+import type { AgentReport, NeedsYouRow } from "../../types/api";
 import { Loader } from "../hud/Loader";
 import { Led } from "../hud/Meters";
 import s from "./AskHome.module.css";
@@ -34,7 +34,9 @@ export function NeedsYou({
   project: string;
   onEngine: (v: string) => void;
   onProject: (v: string) => void;
-  onDetails: (id: string) => void;
+  /** Open a row's details. ``shownReportId``: the agent's report the row DISPLAYS, so a
+   *  dismissal from the details covers that report and never one it didn't show (#1882). */
+  onDetails: (id: string, shownReportId?: string | null) => void;
   /** A decision was settled from a row (or Retry was pressed): re-read the list. */
   onChanged: () => void;
 }) {
@@ -110,7 +112,7 @@ function Body({
 }: {
   state: NeedsYouState;
   filtered: boolean;
-  onDetails: (id: string) => void;
+  onDetails: (id: string, shownReportId?: string | null) => void;
   onChanged: () => void;
 }) {
   if (state.status === "loading" && !state.data) {
@@ -153,7 +155,15 @@ function Body({
     <div>
       {refreshFailed}
       {rows.map((r) => (
-        <Row key={r.id} row={r} onDetails={onDetails} onChanged={onChanged} />
+        // Keyed by the REPORT too (#1882): a row whose report was replaced is a new row — a tap
+        // still in flight for the old report keeps no "Sending…" here and its late result or
+        // error is dropped with the old row, never shown against the new report.
+        <Row
+          key={r.report ? `${r.id}:${r.report.id}` : r.id}
+          row={r}
+          onDetails={onDetails}
+          onChanged={onChanged}
+        />
       ))}
       {state.data?.truncated ? (
         <p className={s.note}>
@@ -170,11 +180,11 @@ function Row({
   onChanged,
 }: {
   row: NeedsYouRow;
-  onDetails: (id: string) => void;
+  onDetails: (id: string, shownReportId?: string | null) => void;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<RowError | null>(null);
   const label = approveLabel(row.action, row.menu);
 
   const approve = async () => {
@@ -185,20 +195,44 @@ function Row({
       await api.approveAction(row.action.id);
       onChanged();
     } catch (e) {
-      setError(
-        e instanceof ApiError && e.status === 409
-          ? "The session moved on — open the details to see where it is now."
-          : e instanceof Error
-            ? e.message
-            : "That didn’t go through.",
-      );
+      setError({
+        text:
+          e instanceof ApiError && e.status === 409
+            ? "The session moved on — open the details to see where it is now."
+            : e instanceof Error
+              ? e.message
+              : "That didn’t go through.",
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // An agent's own report (#1882) is drawn as its words, with its options, when the row carries
+  // no pending decision of its own (a pending decision is what the row's controls settle).
+  const report = !row.action && row.report ? row.report : null;
+
+  const dismissReport = async () => {
+    if (!report || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.dismissReport(row.id, report.id);
+      onChanged();
+    } catch (e) {
+      setError({ text: e instanceof Error ? e.message : "That didn’t go through." });
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className={s.row} data-testid="needs-you-row" data-session={row.id}>
+    <div
+      className={s.row}
+      data-testid="needs-you-row"
+      data-session={row.id}
+      data-kind={row.kind}
+    >
       <Led tone="att" label="Needs you" className={s.led} />
       <div>
         <Link className={s.rowTitle} to={sessionRoute(row.id)}>
@@ -208,17 +242,53 @@ function Row({
           {row.engine}
           {row.project.name ? ` · ${row.project.name}` : ""} · {relTime(row.since)}
         </div>
-        <div className={s.why}>
-          <span className={s.kind}>{KIND_LABEL[row.kind] ?? row.kind}</span>
-          {row.reason || row.action?.rationale || row.summary || "Waiting on you."}
-        </div>
+        {report ? (
+          <>
+            <div className={s.why}>
+              <span className={s.kind}>{KIND_LABEL[row.kind] ?? row.kind}</span>
+            </div>
+            <ReportBody
+              row={row}
+              report={report}
+              busy={busy}
+              setBusy={setBusy}
+              setError={setError}
+              onChanged={onChanged}
+            />
+          </>
+        ) : (
+          <div className={s.why}>
+            <span className={s.kind}>{KIND_LABEL[row.kind] ?? row.kind}</span>
+            {row.reason || row.action?.rationale || row.summary || "Waiting on you."}
+          </div>
+        )}
         {error ? (
-          <div className={s.rowErr} role="alert">
-            {error}
+          <div className={s.rowErr} role="alert" data-testid="needs-you-row-error">
+            {error.text}
+            {error.open ? (
+              <>
+                {" "}
+                <Link className={s.reportOpen} to={sessionRoute(row.id)}>
+                  Open session
+                </Link>
+              </>
+            ) : null}
           </div>
         ) : null}
       </div>
       <div className={s.ctl}>
+        {report ? (
+          <button
+            type="button"
+            className={`${s.quiet} ${s.reportDismiss}`}
+            disabled={busy}
+            onClick={() => void dismissReport()}
+            data-testid="needs-you-report-dismiss"
+          >
+            {/* ENDS the agent's report (#1882) — not the screen "hide" Details offers. */}
+            Dismiss report
+          </button>
+        ) : null}
         {label ? (
           <button
             type="button"
@@ -235,7 +305,7 @@ function Row({
           className={s.icon}
           aria-label={`Details for ${row.title || row.id}`}
           title="Details"
-          onClick={() => onDetails(row.id)}
+          onClick={() => onDetails(row.id, report?.id ?? null)}
           data-testid="needs-you-details"
         >
           <Info size={16} aria-hidden="true" />
@@ -243,4 +313,167 @@ function Row({
       </div>
     </div>
   );
+}
+
+/** The agent's own report (#1882): its words, framed as unchecked agent text (rendered as TEXT,
+ *  never markup), and for a decision its numbered options. A tap on an option IS the approval:
+ *  the server types exactly `Decision: <option>` into the session, or refuses when the report or
+ *  its launch moved on. When delivery is impossible the options are disabled, with the server's
+ *  reason and a way to the session. */
+function ReportBody({
+  row,
+  report,
+  busy,
+  setBusy,
+  setError,
+  onChanged,
+}: {
+  row: NeedsYouRow;
+  report: AgentReport;
+  busy: boolean;
+  setBusy: (v: boolean) => void;
+  setError: (v: RowError | null) => void;
+  onChanged: () => void;
+}) {
+  const [sending, setSending] = useState<number | null>(null);
+  // A tap that may have reached the agent LOCKS this report's options (#1882, Hermes on #1884):
+  // only an explicit "nothing was sent" (or a refusal the server gave before anything was minted)
+  // gives them back. The row is keyed by report id, so a newer report starts unlocked.
+  const [locked, setLocked] = useState(false);
+  const options = report.state === "needs_decision" ? report.options ?? [] : [];
+  const answer = row.report_answer ?? { available: false, reason: "" };
+  const reasonId = `report-reason-${row.id}`;
+
+  const pick = async (n: number) => {
+    if (busy || locked || !answer.available) return;
+    setBusy(true);
+    setSending(n);
+    setError(null);
+    let reopen = false;
+    try {
+      const done = await api.answerReport(row.id, report.id, n);
+      // Success only for `delivered`: the server answers 200 for an attempted write too.
+      if (done.outcome === "uncertain") {
+        setError({ text: UNCERTAIN, open: true });
+      } else if (done.outcome === "stale") {
+        reopen = true;
+        setError({
+          text: "Nothing was sent — the session couldn’t take it. Open the session to see where it is now.",
+          open: true,
+        });
+      }
+      onChanged();
+    } catch (e) {
+      const refused = reportRefusal(e);
+      reopen = refused.reopen === true;
+      setError(refused);
+    } finally {
+      setLocked(!reopen);
+      setSending(null);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className={s.report} data-testid="needs-you-report">
+      <div className={s.reportQuote}>
+        <div className={s.reportLab}>
+          The agent says <span className={s.reportLabNote}>— its own words, unchecked</span>
+        </div>
+        <p className={s.reportSummary} data-testid="needs-you-report-summary">
+          {report.summary}
+        </p>
+        {report.question ? (
+          <p className={s.reportQuestion} data-testid="needs-you-report-question">
+            {report.question}
+          </p>
+        ) : null}
+      </div>
+      {options.length ? (
+        <>
+          <div className={s.reportOpts} role="group" aria-label="Options">
+            {options.map((label, i) => (
+              <button
+                key={`${i}-${label}`}
+                type="button"
+                className={s.reportOpt}
+                disabled={busy || locked || !answer.available}
+                aria-describedby={answer.available ? undefined : reasonId}
+                onClick={() => void pick(i + 1)}
+                data-testid="needs-you-report-option"
+              >
+                <span className={s.reportOptNum} aria-hidden="true">
+                  {i + 1}
+                </span>
+                <span className={s.reportOptLabel}>
+                  {sending === i + 1 ? "Sending…" : label}
+                </span>
+              </button>
+            ))}
+          </div>
+          {answer.available ? (
+            <p className={s.reportHint}>
+              A tap sends it: the session receives <code>Decision: &lt;option&gt;</code> as if
+              you typed it.
+            </p>
+          ) : (
+            <p className={s.reportHint} id={reasonId} data-testid="needs-you-report-reason">
+              {answer.reason}{" "}
+              <Link className={s.reportOpen} to={sessionRoute(row.id)}>
+                Open session
+              </Link>
+            </p>
+          )}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/** An answer whose write was attempted and not confirmed, or one already sent: never "sent",
+ *  never "nothing was sent". */
+const UNCERTAIN =
+  "This answer may already have been sent — the session didn’t confirm it. Check the session before answering again.";
+
+/** A row's error line; ``open`` adds the way to the session; ``reopen``: the tap provably sent
+ *  nothing, so the report's options may be offered again. */
+type RowError = { text: string; open?: boolean; reopen?: boolean };
+
+/** What a refused option tap tells the Commander (#1882). The server says WHICH refusal it is:
+ *  only `stale` proves nothing was typed, so only it may say "Nothing was sent" and give the
+ *  options back; `spent` / `uncertain` mean an answer may already have been sent, so the session
+ *  must be checked first; `unknown` (a store can't be read) claims neither. A failure where the
+ *  request may have reached the server — the network, a lost response, a 5xx or a 409 without a
+ *  code — is treated as possibly sent. A refusal the server gives before anything is minted (a
+ *  4xx other than 409) sends nothing. */
+function reportRefusal(e: unknown): RowError {
+  if (!(e instanceof ApiError)) {
+    // No answer from the server: the request may have reached it and been typed.
+    return {
+      text: "This answer may already have been sent — the connection dropped before BattleLab replied. Check the session before answering again.",
+      open: true,
+    };
+  }
+  const code = (e.record as { code?: unknown } | undefined)?.code;
+  if (code === "unknown") {
+    // Whether an earlier answer was sent can't be read: refused, and claims neither.
+    return { text: `${e.message}. Open the session to check.`, open: true };
+  }
+  if (e.status === 409 && code === "stale") {
+    return {
+      text: `Nothing was sent — ${e.message || "the agent’s report moved on"}. Open the session to see where it is now.`,
+      open: true,
+      reopen: true,
+    };
+  }
+  if (code === "spent" || code === "uncertain") {
+    return {
+      text: "An answer to this may already have been sent. Check the session before answering again.",
+      open: true,
+    };
+  }
+  if (e.status >= 400 && e.status < 500 && e.status !== 409) {
+    return { text: e.message, reopen: true };
+  }
+  return { text: UNCERTAIN, open: true };
 }

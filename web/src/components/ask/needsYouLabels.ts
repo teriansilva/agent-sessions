@@ -6,6 +6,9 @@ export const KIND_LABEL: Record<NeedsYouKind, string> = {
   approval: "Approval",
   question: "Question",
   needs_inspection: "Needs a look",
+  // An agent's own report (#1882): the server's fixed strings (`notifications.KIND_REASON`).
+  report_decision: "The agent asks you to decide",
+  report_blocked: "The agent says it's blocked",
 };
 
 /** The verbs whose TEXT an operator may edit before approving (server: `EDITABLE_VERBS`). */

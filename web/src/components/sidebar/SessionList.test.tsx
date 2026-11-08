@@ -1147,3 +1147,33 @@ test("a modified click on the map, or a click elsewhere, keeps the New session l
   expect(ws.openNewSession).not.toHaveBeenCalled();
   expect(screen.getByTestId("where")).toHaveTextContent("/new");
 });
+
+// #1882: the agent's newest progress/done report is one muted "agent says" line, as text.
+test("the row shows the agent's progress line framed as agent says, never as markup", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  mockSessions.mockResolvedValue(
+    pageOf([
+      {
+        ...sess("claude:n1", "Migrate billing"),
+        agent_report: { state: "progress", summary: "3 of 4 <i>packages</i> green", at: now - 120 },
+      },
+      {
+        ...sess("claude:n2", "Docs guide"),
+        agent_report: { state: "done", summary: "Guide written", at: now - 60 },
+      },
+      sess("claude:n3", "No report"),
+    ]),
+  );
+  render(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("Migrate billing");
+  const notes = screen.getAllByTestId("row-agent-note");
+  expect(notes).toHaveLength(2);
+  expect(notes[0].textContent).toContain("Agent says");
+  expect(notes[0].textContent).toContain("3 of 4 <i>packages</i> green");
+  expect(notes[0].querySelector("i")).toBeNull();
+  expect(notes[1].textContent).toContain("Agent says · done");
+});

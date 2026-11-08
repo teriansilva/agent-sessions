@@ -137,6 +137,7 @@ def build_cards(
     working_keys: set[str] | None = None,
     strict: bool = False,
     scanned: list | None = None,
+    checked: tuple | None = None,
 ) -> list[dict]:
     """Curate the in-window, non-archived sessions into ranked cards. Pure FS + metadata, no
     network — safe to run under ``asyncio.to_thread``.
@@ -157,14 +158,17 @@ def build_cards(
     metadata under the writers' lock (`metadata.load_checked`, which also sees through the
     zero-byte window of an in-place rewrite) and a checked engine walk (``scanned``, from
     :func:`checked_scan`, so two calls in one decision share one walk). Every other caller keeps
-    the fail-soft read.
+    the fail-soft read. ``checked``: a `metadata.load_checked` snapshot the caller already holds,
+    so the cards are curated through the SAME metadata and aliases the caller joins with (#1882).
     """
     now = time.time() if now is None else now
     working = working_keys or set()
     cutoff = None if window_days is None else now - window_days * 86400
     if strict:
         try:
-            meta_index, aliases, _overrides = metadata.load_checked()
+            meta_index, aliases, _overrides = (
+                checked if checked is not None else metadata.load_checked()
+            )
         except metadata.MetadataUnreadable as e:
             raise CardsIncomplete(f"session metadata: {e}") from e
         sessions = scanned if scanned is not None else checked_scan()

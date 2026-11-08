@@ -292,7 +292,11 @@ test("Dismiss rejects that decision and never names a screen", async ({ page }) 
   await page.getByTestId("needs-you-dialog").getByTestId("needs-you-dismiss").click();
   await expect.poll(() => seen.dismisses.length).toBe(1);
   expect(decodeURIComponent(seen.dismisses[0].url())).toContain(`/needs-you/${A}/dismiss`);
-  expect(seen.dismisses[0].postDataJSON()).toEqual({ action_id: "act-choose" });
+  // …and names only what it SHOWED (#1882): that decision, never one that arrived since.
+  expect(seen.dismisses[0].postDataJSON()).toEqual({
+    action_id: "act-choose",
+    shown_action_ids: ["act-choose"],
+  });
 });
 
 test("a filter change cannot be painted over by a late answer for the old filter", async ({ page }) => {

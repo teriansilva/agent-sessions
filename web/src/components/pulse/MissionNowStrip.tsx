@@ -29,6 +29,13 @@ const DOT: Record<string, string> = {
   unobserved: styles.nowUnobserved,
 };
 
+const REPORT_STATE: Record<string, string> = {
+  blocked: "blocked",
+  needs_decision: "asks to decide",
+  done: "done",
+  progress: "",
+};
+
 interface Reading {
   /** The mission this reading was requested for. A reading for any other mission is not shown. */
   id: string;
@@ -127,6 +134,17 @@ export function MissionNowStrip({ missionId }: { missionId: string }) {
                     className={`${styles.nowMuted} ${s.recap_older_than_output ? styles.nowStale : ""}`}
                   >
                     {recap}
+                  </span>
+                ) : null}
+                {/* The agent's current report to HQ (#1882): its own words, as text. The
+                    mission's escalation decides what reaches the Commander. */}
+                {s.report ? (
+                  <span className={styles.nowReport} data-testid="mission-now-report">
+                    <span className={styles.nowReportTag}>
+                      Agent says{s.report.state === "progress" ? "" : ` · ${REPORT_STATE[s.report.state]}`}
+                    </span>{" "}
+                    {s.report.summary}
+                    {s.report.question ? ` — ${s.report.question}` : ""}
                   </span>
                 ) : null}
               </li>

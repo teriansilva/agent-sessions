@@ -2337,6 +2337,20 @@
 .nowStale {
   font-style: italic;
 }
+/* An agent's own report to HQ (#1882): agent text, neutral ink, behind a dashed tag. */
+.nowReport {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.nowReportTag {
+  padding: 0 4px;
+  border: 1px dashed var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
 
 /* --- #1061 P3: what the launch confirmation says it will track -----------------------------------
  * One row per objective: a REQUIRED / GOAL mark, the title, and the probe with its target in mono.
