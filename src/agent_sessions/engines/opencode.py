@@ -251,6 +251,13 @@ API_PERMISSION: dict = {
 }
 
 
+#: The guarded (no bypass) block: everything asks, except ``task``, which is refused. A subagent
+#: runs in a child session whose permission requests opencode 1.18.35 never sends over ACP
+#: (measured on #1891), so the operator could never see, approve or refuse what it asks: it
+#: would wait for ever. Refused, the model does the work itself, where every call is asked.
+API_GUARDED_PERMISSION: dict = {**API_PERMISSION, "task": "deny"}
+
+
 def mint_api_agent() -> str:
     """A fresh, unguessable agent name for ONE `opencode-api` worker generation."""
     return f"{API_AGENT_PREFIX}{secrets.token_hex(8)}"
@@ -321,25 +328,46 @@ def mcp_server_states(resolved: object) -> list[tuple[str, str]]:
     ]
 
 
-def api_config_content(agent: str, mcp: dict | None = None, *, bypass: bool = False) -> str:
+def api_config_content(
+    agent: str,
+    mcp: dict | None = None,
+    *,
+    bypass: bool = False,
+    operator_permission: object = None,
+) -> str:
     """`OPENCODE_CONFIG_CONTENT` for an `opencode-api` child: its immutable guarded or bypass agent,
     built exactly like the unattended one (`_agent_config_content`), plus the per-server MCP
     overrides of `mcp_password_overrides`. The app's own `OPENCODE_CONFIG_CONTENT` is NOT merged
-    in: the worker's environment is sanitized (#1312)."""
+    in: the worker's environment is sanitized (#1312). ``operator_permission``: the config-level
+    ``permission`` block the operator's and the project's config resolve to (`opencode debug
+    config`), read only under bypass (#1891)."""
     if not isinstance(agent, str) or not _API_AGENT_RE.match(agent):
         raise ValueError("malformed API agent name")
     # Operator-approved opt-in bypass (#1339, comment 89017): construct a separate all-allow
     # block for this generation. The guarded template and the operator's config stay intact.
+    allow_all = {key: "allow" for key in API_PERMISSION}
     config = json.loads(
         _agent_config_content(
             None,
             agent,
-            {key: "allow" for key in API_PERMISSION} if bypass is True else API_PERMISSION,
+            allow_all if bypass is True else API_GUARDED_PERMISSION,
             "BattleLab API client: skip permission prompts"
             if bypass is True
-            else "BattleLab API client: every tool call asks the operator",
+            else "BattleLab API client: every tool call asks the operator; subagents are refused",
         )
     )
+    if bypass is True:
+        # A `task` subagent runs under the config-level block, not ours, and 1.18.35 never
+        # forwards a CHILD session's permission request over ACP (measured on #1891,
+        # `tests/fixtures/opencode_subagent.PROVENANCE.md`): an ask there waits for ever. The
+        # operator chose to skip prompts for this session, so its subagents skip them too. Both
+        # directions: every subagent with no block of its own (`general`, `explore`, and any the
+        # operator or project defines without one) now runs unprompted; one whose own block says
+        # `ask` still asks, since its block wins over this one, and still can't be answered.
+        # opencode deep-merges this block over the operator's and the project's KEY BY KEY and
+        # keeps THEIR order, so a key of theirs this block doesn't name (`github_*: ask`) would
+        # follow our `*` and win. Every key they declared is restated as allow (#1891 review).
+        config["permission"] = {**allow_all, **_allow_every(operator_permission)}
     # Belt and braces for the listener (the argv flags are what binds it to loopback): measured
     # on 1.18.35, this block alone does NOT override an operator's global `server.*` for `acp`,
     # and `port` is omitted because the config schema refuses 0 (the flag allows it).
@@ -347,6 +375,23 @@ def api_config_content(agent: str, mcp: dict | None = None, *, bypass: bool = Fa
     if mcp:
         config["mcp"] = mcp
     return json.dumps(config)
+
+
+def _allow_every(block: object) -> dict:
+    """Each key of a resolved config-level ``permission`` block as allow, in its own shape: a
+    pattern map (``{"*.env": "ask"}``) keeps its patterns, each allowed, so a deep merge over the
+    original leaves nothing that asks. Anything that isn't a block yields nothing."""
+    if not isinstance(block, dict):
+        return {}
+    out: dict = {}
+    for key, value in block.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(value, dict):
+            out[key] = {pattern: "allow" for pattern in value if isinstance(pattern, str)}
+        else:
+            out[key] = "allow"
+    return out
 
 
 def _ask_config_content(existing: str | None, agent: str) -> str:

@@ -446,6 +446,8 @@ def child_environment(
     server_password: str | None = None,
     agent: str | None = None,
     mcp: dict | None = None,
+    *,
+    operator_permission: object = None,
 ) -> dict[str, str]:
     """`native_environment` plus what one adapter's child needs and nothing else.
 
@@ -475,7 +477,10 @@ def child_environment(
         env["OPENCODE_SERVER_PASSWORD"] = server_password
         try:
             env["OPENCODE_CONFIG_CONTENT"] = opencode.api_config_content(
-                agent, mcp, bypass=config.get("bypass") is True
+                agent,
+                mcp,
+                bypass=config.get("bypass") is True,
+                operator_permission=operator_permission,
             )
         except ValueError as exc:
             raise WorkerError(str(exc)) from None
@@ -498,6 +503,8 @@ class Worker:
             self.session_key, self.worker_id, config["connection_id"], self.adapter
         )
         self.native_id: str | None = config.get("native_id")
+        # opencode: the resolved config-level permission block (#1891), from the spawn's probe.
+        self.operator_permission: object = None
         self.codec: (
             native_protocol.CodexCodec
             | native_protocol.ClaudeCodec
@@ -654,7 +661,13 @@ class Worker:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self.config["cwd"],
-                env=child_environment(self.config, self._server_password, self.agent, mcp),
+                env=child_environment(
+                    self.config,
+                    self._server_password,
+                    self.agent,
+                    mcp,
+                    operator_permission=self.operator_permission,
+                ),
                 limit=native_protocol.MAX_FRAME_BYTES + 1,
             )
         finally:
@@ -729,6 +742,9 @@ class Worker:
             overrides = opencode.mcp_password_overrides(resolved)
         except (ValueError, UnicodeError) as exc:
             raise WorkerError(f"the opencode configuration could not be used: {exc}") from None
+        # The config-level permission rules the child would merge ours over (#1891): patterns
+        # and actions, no credential. Bypass restates each as allow.
+        self.operator_permission = resolved.get("permission")
         # The servers' names only (#1726), `configured`: reported with the session once bound.
         self.codec.configured_mcp(opencode.mcp_server_states(resolved))
         return overrides

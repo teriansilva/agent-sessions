@@ -342,5 +342,11 @@ async def test_opencode_create_and_resume_keep_mode(host, project, bypass):
     assert configs
     for config in configs:
         rules = config["agent"][config["default_agent"]]["permission"]
-        assert set(rules.values()) == {"allow" if bypass else "ask"}
+        if bypass:
+            assert set(rules.values()) == {"allow"}
+            assert set(config["permission"].values()) == {"allow"}  # subagents too (#1891)
+        else:
+            # Everything asks; a subagent, whose asks never reach the operator, is denied (#1891).
+            assert {k: v for k, v in rules.items() if v != "ask"} == {"task": "deny"}
+            assert config["permission"] == {"*": "ask"}
     assert (await runtime.snapshot(key))["bypass"] is bypass

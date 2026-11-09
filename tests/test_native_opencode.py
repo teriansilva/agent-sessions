@@ -541,7 +541,8 @@ def test_the_child_environment_carries_a_fresh_password_and_the_forced_ask(tmp_p
     assert own["mode"] == "primary" and "prompt" not in own and "model" not in own
     permission = own["permission"]
     assert next(iter(permission)) == "*"  # the catch-all first: nothing after it allows
-    assert set(permission.values()) == {"ask"}
+    # Everything asks, except a subagent: its asks never reach the operator (#1891).
+    assert {k: v for k, v in permission.items() if v != "ask"} == {"task": "deny"}
     assert {"bash", "edit", "webfetch", "task", "external_directory", "read"} <= set(permission)
     assert set(env) == {
         "HOME",
@@ -667,7 +668,7 @@ async def test_listener_password_reaches_only_the_child(host, project, tmp_path)
     assert {"OPENCODE_SERVER_PASSWORD", "OPENCODE_CONFIG_CONTENT"} <= env_keys
     assert not {k for k in env_keys if k.startswith("AGENT_SESSIONS_")}
     forced = json.loads(logged[0]["env"]["config"])
-    assert set(forced["agent"][forced["default_agent"]]["permission"].values()) == {"ask"}
+    assert set(forced["agent"][forced["default_agent"]]["permission"].values()) == {"ask", "deny"}
     assert forced["server"] == {"hostname": "127.0.0.1", "mdns": False}
     # Never on an argv (systemd's or the worker's), in the journal, state, lifecycle or events.
     assert password not in json.dumps(host.launches)

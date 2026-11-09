@@ -3752,6 +3752,95 @@ class OpencodeAcpCodec(_Codec):
         # `todowrite` checklist, journaled when that call completes (review on #1811).
         self._call_names: dict[str, str] = {}
         self._todos: dict[str, list[dict[str, str]]] = {}
+        # The subagents the `task` tool runs (#1891), by the call's ACP id, with what was last
+        # journaled of each. 1.18.35 has no background mode: a subagent lives inside the turn that
+        # started it, and `session/cancel` aborts it with that turn. Named like Claude's set, the
+        # worker's busy, inventory and Stop-all checks read it.
+        self._background: set[str] = set()
+        self._subagent_facts: dict[str, dict[str, str]] = {}
+        # Calls whose subagent already ended this connection: an update arriving after its end
+        # (a later turn included) never tracks it again, as the journal's fold keeps it ended.
+        self._subagents_ended: set[str] = set()
+
+    def send_now_would_stop_background(self) -> bool:
+        """Would Send now, a `session/cancel` here (no send-now of opencode's own), end a running
+        subagent (#1891)? Then the message keeps its place, as for Claude (#1526)."""
+        return bool(self._background) or self.overflow
+
+    def _subagent(self, item_id: str, name: Any, raw: Any, status: str) -> list[NativeEvent]:
+        """A `task` call as a background task (#1891), reported when what it runs (its
+        description, its subagent type) is first known or changes, and ended with its call. Only
+        a call named `task` whose input names a ``subagent_type`` starts one: a call the model
+        made to an unavailable `task` (guarded: `task` is denied, so not offered) is retitled
+        ``invalid`` with no such input, and is never a row."""
+        if status in {"completed", "failed"}:
+            if item_id not in self._background:
+                return []
+            self._forget_subagent(item_id)
+            return [
+                _event(
+                    "background",
+                    task_id=item_id,
+                    state=status,
+                    task_state=status,
+                    active=bool(self._background),
+                )
+            ]
+        facts = {}
+        if isinstance(raw, dict):
+            for field, key in (("description", "description"), ("task_type", "subagent_type")):
+                value = raw.get(key)
+                if isinstance(value, str) and value.strip():
+                    value, limit = value.strip(), TASK_METADATA_LIMITS[field]
+                    facts[field] = value if len(value) <= limit else value[: limit - 1] + "…"
+        known = self._subagent_facts.get(item_id)
+        if known is None:
+            if name != "task" or "task_type" not in facts or self._subagent_ended(item_id):
+                return []
+            if len(self._background) >= MAX_PENDING:
+                # More than are tracked (#1725): busy and said so, once, until the turn ends.
+                if self.overflow:
+                    return []
+                self.overflow = True
+                return [_event("background", state="activity", active=True)]
+            self._background.add(item_id)
+            known = self._subagent_facts[item_id] = {}
+        elif all(known.get(k) == v for k, v in facts.items()):
+            return []
+        known.update(facts)
+        return [
+            _event(
+                "background",
+                task_id=item_id,
+                state="running",
+                task_state="running",
+                active=True,
+                **known,
+            )
+        ]
+
+    def _end_subagents(self) -> list[NativeEvent]:
+        """The turn ended: whatever subagent it still ran ended with it (an interrupt, a lost
+        update). None outlives its turn."""
+        ended = [
+            _event("background", task_id=task, state="stopped", task_state="stopped", active=False)
+            for task in sorted(self._background)
+        ]
+        for task in list(self._background):
+            self._forget_subagent(task)
+        self.overflow = False
+        return ended
+
+    def _subagent_ended(self, item_id: str) -> bool:
+        """Did this call's subagent end on this connection? Past the bound nothing more is
+        remembered, so nothing new is trusted (as Claude's `_ended_task`): fail closed."""
+        return item_id in self._subagents_ended or len(self._subagents_ended) >= MAX_CONSUMED
+
+    def _forget_subagent(self, item_id: str) -> None:
+        self._background.discard(item_id)
+        self._subagent_facts.pop(item_id, None)
+        if len(self._subagents_ended) < MAX_CONSUMED:
+            self._subagents_ended.add(item_id)
 
     def configured_mcp(self, servers: list[tuple[str, str]]) -> None:
         """The probe's MCP servers, ``(name, "configured" | "disabled")``, reported with the
@@ -3951,7 +4040,10 @@ class OpencodeAcpCodec(_Codec):
         self.native_turn_id = None
         self._approvals.clear()
         self._tool_calls.clear()
-        return [_event("turn_completed", **data, state=state, error=error)]
+        return [*self._end_subagents(), _event("turn_completed", **data, state=state, error=error)]
+
+    def _ended_uncertain(self, why: str) -> list[NativeEvent]:
+        return [*self._end_subagents(), *super()._ended_uncertain(why)]
 
     def _reply(self, frame: dict) -> list[NativeEvent]:
         request_id = frame.get("id")
@@ -4241,6 +4333,9 @@ class OpencodeAcpCodec(_Codec):
             previous = self._tool_calls.get(item_id, {})
             context = {**previous, **{k: v for k, v in update.items() if k != "sessionUpdate"}}
             extra, plan = self._call_facts(kind, update, previous)
+            subagent = self._subagent(
+                item_id, self._call_names.get(item_id), update.get("rawInput"), status
+            )
             cancellations = []
             for key, approval in list(self._approvals.items()):
                 bound = approval.get("presented", {}).get("toolContext")
@@ -4293,7 +4388,7 @@ class OpencodeAcpCodec(_Codec):
                 if texts:
                     data["output"] = _text("\n".join(texts))
             data["completed"] = status in {"completed", "failed"}
-            return [*cancellations, _event("tool", **common, **data, **extra), *plan]
+            return [*cancellations, _event("tool", **common, **data, **extra), *plan, *subagent]
         return []
 
     def _call_facts(

@@ -1502,6 +1502,7 @@ def opencode():
     session, model, mode = None, "local/fake-a", config.get("default_agent", "build")
     effort = None
     prompt = None  # the id of the open session/prompt request
+    subagent = None  # the open `task` call of a SUBAGENT turn (#1891)
     serial = [100]
 
     def update(update_kind, **fields):
@@ -1639,6 +1640,17 @@ def opencode():
             reply(rid, {"configOptions": _acp_config(model, mode, _modes(config), effort)})
         elif method == "session/cancel":
             wait_cancel()
+            if subagent is not None:
+                # A cancel aborts the subagent with its parent turn (measured, 1.18.35).
+                update(
+                    "tool_call_update",
+                    toolCallId=subagent,
+                    kind="think",
+                    title="task",
+                    status="failed",
+                    rawOutput={"error": "Task cancelled"},
+                )
+                subagent = None
             if prompt is not None:
                 reply(prompt, {"stopReason": "cancelled", "usage": {"totalTokens": 0}})
                 prompt = None
@@ -1651,6 +1663,34 @@ def opencode():
             if text in {"HANG", "HANG_APPROVE"}:
                 if text == "HANG_APPROVE":
                     ask({"toolCallId": "call-h", "kind": "execute", "title": "sleep"}, [ONCE])
+                continue
+            if text in {"SUBAGENT", "SUBAGENT_DONE"}:
+                # A `task` subagent as 1.18.35 reports it over ACP (#1891 probe): only the
+                # parent's tool call, nothing from the child session in between.
+                call = {"toolCallId": "call-task", "kind": "think", "locations": []}
+                update("tool_call", **call, title="task", status="pending", rawInput={})
+                running = {
+                    **call,
+                    "title": "Research flights",
+                    "status": "in_progress",
+                    "rawInput": {
+                        "description": "Research flights",
+                        "prompt": "Find the cheapest flights.",
+                        "subagent_type": "general",
+                    },
+                }
+                update("tool_call_update", **running)
+                update("tool_call_update", **running)  # 1.18.35 repeats it
+                if text == "SUBAGENT":
+                    subagent = "call-task"
+                    continue
+                update(
+                    "tool_call_update",
+                    **{**running, "status": "completed"},
+                    rawOutput={"output": "<task_result>cheap</task_result>"},
+                )
+                finish(rid, "done")
+                prompt = None
                 continue
             wait_release(text)
             if text == "FAIL":
