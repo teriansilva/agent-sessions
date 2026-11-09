@@ -5458,12 +5458,14 @@ def judge_worklist(mission_id: str, *, path: Path | None = None) -> dict | None:
     try:
         con.execute("BEGIN")
         m = con.execute(
-            "SELECT state, instruction, title, cwd, archived_at FROM missions WHERE id=?",
+            "SELECT state, instruction, title, cwd, archived_at, project_id FROM missions "
+            "WHERE id=?",
             (mission_id,),
         ).fetchone()
         rows = con.execute(
             "SELECT key, title, gate, state, probe, observed, incarnation, judge_rejected_fp, "
-            "direction, ord FROM mission_objectives WHERE mission_id=? ORDER BY ord ASC",
+            "direction, ord, project_id FROM mission_objectives WHERE mission_id=? "
+            "ORDER BY ord ASC",
             (mission_id,),
         ).fetchall()
         con.execute("COMMIT")
@@ -5475,11 +5477,19 @@ def judge_worklist(mission_id: str, *, path: Path | None = None) -> dict | None:
         con.close()
     if m is None:
         return None
+    from . import mission_probes  # the probe module imports this one at load
+
     judged = []
     for r in rows:
         d = dict(r)
         if canonical_probe(str(d.get("probe") or "")) != "supervisor_judged":
             continue
+        # A row in ANOTHER project (#1797 S2a) is never judged here: the judge reads this
+        # mission's checkout and sessions, which are not where that work happens. It stays
+        # unjudged until it is followed in its own project (P6).
+        if mission_probes.is_foreign({"project_id": m["project_id"]}, d):
+            continue
+        del d["project_id"]
         d["probe"] = "supervisor_judged"
         d["gate"] = bool(d.get("gate"))
         d["observed"] = _loads(d.get("observed"))
@@ -5611,7 +5621,7 @@ def objective_snapshot(
         con.execute("BEGIN")
         row = con.execute(
             "SELECT key, probe, probe_args, observed, state, source, incarnation, probe_target, "
-            "probe_gen, probe_rev, direction, direction_source "
+            "probe_gen, probe_rev, direction, direction_source, project_id "
             "FROM mission_objectives WHERE mission_id=? AND key=?",
             (mission_id, objective_key),
         ).fetchone()
@@ -5623,7 +5633,7 @@ def objective_snapshot(
         # reads only the checkout folder and the merge SHA, so delivery can resolve the CURRENT
         # target from the same snapshot the facts came from.
         mrow = con.execute(
-            "SELECT cwd, merge_sha FROM missions WHERE id=?", (mission_id,)
+            "SELECT cwd, merge_sha, project_id FROM missions WHERE id=?", (mission_id,)
         ).fetchone()
         con.execute("COMMIT")
     except BaseException:
@@ -5638,6 +5648,10 @@ def objective_snapshot(
     d["mission_id"] = mission_id
     d["mission_cwd"] = mrow["cwd"]
     d["mission_merge_sha"] = mrow["merge_sha"]
+    # The dual read (#1777), and the mission's own project beside it (#1797 S2a): a row whose
+    # effective project differs is observed in THAT project's checkout, never the mission's.
+    d["mission_project_id"] = mrow["project_id"]
+    d["project_id"] = d.get("project_id") or mrow["project_id"]
     d["probe_args"] = _loads(d.get("probe_args"))
     d["observed"] = _loads(d.get("observed"))
     d["episode"] = 1 if ep is None else int(ep["episode"])

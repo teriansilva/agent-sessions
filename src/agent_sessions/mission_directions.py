@@ -441,10 +441,15 @@ def render(obj: dict | None, cfg: dict, *, now: float | None = None) -> dict:
     fallback template. Returns ``{text, source, facts, provenance, digest}``; raises
     :class:`NotRenderable` when a direction cannot be filled.
     """
-    from . import actuator, handoff
+    from . import actuator, handoff, mission_probes
 
     if not obj:
         raise NotRenderable("the objective no longer exists")
+    # EVIDENCE IN ANOTHER PROJECT IS NEVER DIRECTED INTO THIS MISSION'S SESSION (#1797 S2a): the
+    # session works in the mission's own checkout, and the row's facts come from another. Running
+    # each step in its own project is P6; until then such a row is observed, never nudged.
+    if mission_probes.is_foreign({"project_id": obj.get("mission_project_id")}, obj):
+        raise NotRenderable("this objective belongs to another project than the mission's session")
     ts = _now() if now is None else now
     direction = obj.get("direction")
     has_direction = isinstance(direction, str) and bool(direction.strip())
@@ -627,6 +632,9 @@ def current_authority(
         mission = {
             "cwd": snapshot.get("mission_cwd"),
             "merge_sha": snapshot.get("mission_merge_sha"),
+            # The mission's project, so a row in another one resolves against ITS checkout
+            # (#1797 S2a) — the same view the probe runner bound it with.
+            "project_id": snapshot.get("mission_project_id"),
         }
         try:
             now = mission_probes.resolve_target(mission, snapshot).digest

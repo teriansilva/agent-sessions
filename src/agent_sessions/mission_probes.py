@@ -102,6 +102,45 @@ Fact = forge_mod.Fact
 # ---------------------------------------------------------------- targets
 
 
+def is_foreign(mission: dict, obj: dict) -> bool:
+    """Is this objective row in a project OTHER than its mission's (#1797 S2a)?
+
+    The row's effective project is its own `project_id`, else its mission's (the S1a dual read).
+    Only a row naming a project that differs from the mission's is foreign; a mission or row that
+    names none is the mission's own, exactly as before slice 2."""
+    own = str(mission.get("project_id") or "")
+    row = str(obj.get("project_id") or "")
+    return bool(row) and bool(own) and row != own
+
+
+def _project_checkout(project_id: str) -> str:
+    """A project's working folder, by the rule a mission's cwd is resolved by
+    (`routes.missions._resolve_cwd`): the default folder, else the first. An unknown, archived or
+    folder-less project — or an unreadable projects store — is NO checkout, never a fallback."""
+    from . import projects
+
+    try:
+        entity = projects.load().get(project_id)
+    except Exception:  # noqa: BLE001 — unreadable: no checkout, so the probe says `unknown`
+        return ""
+    if entity is None or getattr(entity, "archived", False):
+        return ""
+    return str(entity.default_folder or (entity.folders[0] if entity.folders else "") or "")
+
+
+def objective_view(mission: dict, obj: dict) -> dict:
+    """The mission as THIS objective's probe sees it (#1797 S2a).
+
+    A row in the mission's own project sees the mission unchanged. A foreign row sees its own
+    project's checkout as `cwd` and NO mission merge SHA: the merge SHA is the mission's own
+    project's (`note_merge_sha`), and a foreign `http_revision` names its own `expect`. Every
+    probe input — the checkout, its origin remote, branch and HEAD, hence the target digest the
+    bind/observe fence compares — then comes from the row's own project."""
+    if not is_foreign(mission, obj):
+        return mission
+    return {**mission, "cwd": _project_checkout(str(obj["project_id"])), "merge_sha": ""}
+
+
 def _repo_for(mission: dict, args: dict) -> str:
     """Which repository a forge probe is about.
 
@@ -392,6 +431,7 @@ class Target:
 
 def resolve_target(mission: dict, obj: dict) -> Target:
     """Read every input a probe's destination depends on, once. Never raises."""
+    mission = objective_view(mission, obj)
     cfg = {}
     with contextlib.suppress(Exception):
         cfg = prefs.get_forge()
@@ -461,6 +501,10 @@ def probe_one(mission: dict, obj: dict, *, target: Target | None = None) -> Fact
         return Fact.unknown(f"{kind} is not a probe the server can run")
     args = obj.get("probe_args") if isinstance(obj.get("probe_args"), dict) else {}
     tgt = target if target is not None else resolve_target(mission, obj)
+    # The row's OWN project's checkout (#1797 S2a) — taken from the BOUND target, never looked up
+    # again: the project's folder is a target input, and resolving it a second time here would
+    # answer from a folder the fence never compared (the independent review on #1896).
+    mission = {**mission, "cwd": tgt.cwd, "merge_sha": tgt.merge_sha}
     try:
         if kind == "git_local":
             return _probe_git_local(mission, args)
@@ -728,7 +772,13 @@ def run_for_mission(mission_id: str, *, path=None) -> dict:
                 # revision to look for and a playbook cannot name one that does not exist yet.
                 # Write-once in the store, and only from an observation that actually settled.
                 sha = str((fact.extra or {}).get("sha") or "")
-                if str(o.get("probe") or "") == "forge_merged" and sha:
+                # Only the mission's OWN project's merge (#1797 S2a): the mission-level SHA is the
+                # `http_revision` fallback for that project, never for another's.
+                if (
+                    str(o.get("probe") or "") == "forge_merged"
+                    and sha
+                    and not is_foreign(mission, o)
+                ):
                     # Fenced too: the merge SHA is part of the resolved target a direction's facts
                     # are checked against (#983). Same lock order as the writes above.
                     with contextlib.suppress(Exception), _fact_fence():

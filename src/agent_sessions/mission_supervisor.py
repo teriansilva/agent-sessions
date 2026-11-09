@@ -254,6 +254,10 @@ def _draft_not_sent(rec: dict) -> str:
     return str(rec.get("detail") or "") or f"it settled as {state or 'unknown'}"
 
 
+#: Why a row in another project is never nudged from this mission (#1797 S2a).
+FOREIGN_WHY = "this objective is in another project; it is not worked in this mission's session"
+
+
 def may_nudge(
     mission_id: str,
     objective_key: str,
@@ -292,6 +296,17 @@ def may_nudge(
             return False, "the mission's sessions could not be read, so nothing may be sent"
     if held <= 0:
         return False, "this mission holds no session, so there is nothing to nudge"
+    # IN ANOTHER PROJECT (#1797 S2a): that work does not happen in this mission's session, so
+    # nothing is typed into it about it. Asked of the store here, at the write boundary as well as
+    # in `assess`, so no caller can nudge one by naming its key. Unreadable is a refusal.
+    try:
+        snap = missions.objective_snapshot(mission_id, objective_key, path=path)
+    except Exception:  # noqa: BLE001
+        return False, "the objective could not be read, so nothing may be sent"
+    if snap is not None and mission_probes.is_foreign(
+        {"project_id": snap.get("mission_project_id")}, snap
+    ):
+        return False, FOREIGN_WHY
     episode, stood_down, question_seq = missions.objective_hold(
         mission_id, objective_key, path=path
     )
@@ -420,6 +435,15 @@ def assess(mission_id: str, *, now: float | None = None, path=None) -> dict:
     """
     ts = time.time() if now is None else now
     rows = _objective_rows(mission_id, path=path)
+    # WHICH ROWS ARE THIS MISSION'S OWN WORK (#1797 S2a). A row in another project is observed in
+    # its own checkout, but its work does not happen in this mission's session — so it is never
+    # nudged, never drafted for, and never typed into it. An unreadable mission is not "every row
+    # is ours": it is every row being held back (fail closed).
+    try:
+        own_project: str | None = missions.procedure_scope(mission_id, path=path)["project_id"]
+        own_known = True
+    except Exception:  # noqa: BLE001
+        own_project, own_known = None, False
     # Counted ONCE and passed down, rather than re-read per objective — and read BEFORE the loop
     # because `may_nudge` needs it (see below).
     #
@@ -471,6 +495,7 @@ def assess(mission_id: str, *, now: float | None = None, path=None) -> dict:
             roster_unreadable=held is None,
             path=path,
         )
+        foreign = not own_known or mission_probes.is_foreign({"project_id": own_project}, o)
         out.append(
             {
                 "key": key,
@@ -478,6 +503,8 @@ def assess(mission_id: str, *, now: float | None = None, path=None) -> dict:
                 "gate": gate,
                 "state": state,
                 "met": met,
+                # IN ANOTHER PROJECT (#1797 S2a): shown, counted, never nudged or drafted for.
+                "foreign": foreign,
                 # WHETHER THE OPERATOR WROTE A DIRECTION for it (#983 P3). A mechanical fact from
                 # the stored row, and the one that decides whether a model's draft is accepted.
                 "has_direction": mission_directions.has_direction(o),
@@ -838,7 +865,7 @@ def _draft_reading(raw: object, a: dict) -> dict | None:
     if not isinstance(key, str) or not isinstance(text, str):
         return None
     o = next((o for o in a["objectives"] if o["key"] == key), None)
-    if o is None or o.get("met") or o.get("has_direction"):
+    if o is None or o.get("met") or o.get("has_direction") or o.get("foreign"):
         return None
     if not text.strip() or len(text) > DRAFT_MAX:
         return None
@@ -875,7 +902,8 @@ def _reading(reply: dict, a: dict, input_fp: str) -> dict:
     used and no plain `continue` is also proposed. A draft naming a different objective than the
     nudge is dropped.
     """
-    keys = {o["key"] for o in a["objectives"]}
+    # A row in another project is never this session's to be nudged about (#1797 S2a).
+    keys = {o["key"] for o in a["objectives"] if not o.get("foreign")}
     assessment = reply.get("assessment")
     if assessment not in _ASSESSMENTS:
         assessment = "on_track"
