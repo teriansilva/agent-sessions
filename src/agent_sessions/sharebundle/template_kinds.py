@@ -121,7 +121,11 @@ _WITHHOLD = frozenset({"ID", "variable name"})
 #: Identifier texts: a slug (a template ID is the lowercased name with every other run of
 #: characters turned into `-`) or a lowercase name, and tags (lowercase, typed). A secret is
 #: matched there in that same folded form too.
-_IDENTIFIERS = frozenset({"ID", "variable name", "field names", "tag"})
+_IDENTIFIERS = frozenset(
+    # A shared memory note (#1714 P4) is named by a slug of its name on the importing install,
+    # and a `[[link]]` is a slug: both are identifiers.
+    {"ID", "variable name", "field names", "tag", "note name", "note link"}
+)
 _FOLD_RE = re.compile(r"[^a-z0-9]+")
 #: A minted ID is cut at 48 (`templates._mint_id`, after which `-` is stripped) and a renamed
 #: import at 64 less its `-<n>`: a base this long may be a cut slug.

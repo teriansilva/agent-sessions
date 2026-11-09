@@ -25,6 +25,8 @@ from ..sharebundle import kinds, service, state
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 MAX_JSON_BODY = 256 * 1024
 PREFIX = "/api/share"
+WITHHELD_HEADER = "X-Share-Withheld-Notes"
+QUARANTINED_HEADER = "X-Share-Quarantined-Notes"
 
 
 def _response(value: object, status: int = 200) -> JSONResponse:
@@ -152,12 +154,14 @@ def register(app, *, logged_in, csrf_guard) -> None:
                 "definition",
                 status=422,
             )
-        name, data = await call(service.export, value["items"], value.get("source"))
-        return Response(
-            data,
-            media_type="application/x-tar",
-            headers={**NO_STORE, "Content-Disposition": f'attachment; filename="{name}"'},
-        )
+        report: dict = {}
+        name, data = await call(service.export, value["items"], value.get("source"), report)
+        headers = {**NO_STORE, "Content-Disposition": f'attachment; filename="{name}"'}
+        if report:
+            # What the export left out of the memory it carries: counts only (#1714 P4).
+            headers[WITHHELD_HEADER] = str(report["withheld"])
+            headers[QUARANTINED_HEADER] = str(report["quarantined"])
+        return Response(data, media_type="application/x-tar", headers=headers)
 
     @app.post(PREFIX + "/import/preview", dependencies=[Depends(csrf_guard)])
     async def share_preview(request: Request):
@@ -174,7 +178,15 @@ def register(app, *, logged_in, csrf_guard) -> None:
         return await _guarded(_import(request))
 
     async def _import(request: Request):
-        value = await _json(request, {"token", "selection", "settle"}, {"token", "selection"})
+        value = await _json(
+            request, {"token", "selection", "settle", "memory_project"}, {"token", "selection"}
+        )
         return _response(
-            await call(service.confirm, value["token"], value["selection"], value.get("settle"))
+            await call(
+                service.confirm,
+                value["token"],
+                value["selection"],
+                value.get("settle"),
+                value.get("memory_project"),
+            )
         )

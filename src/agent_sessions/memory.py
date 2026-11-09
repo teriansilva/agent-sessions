@@ -2497,3 +2497,249 @@ def _record_import(conn, source, name, slug, digest, base, state, reason, now) -
         " VALUES(?,?,?,?,?,?,?,?)",
         (source, name, slug, digest, base, state, reason, now),
     )
+
+
+# ---- share bundles (#1714 P4) -------------------------------------------------------------------
+#
+# A share bundle carries one project's notes (and, opt-in, the notebooks of specialists that travel
+# with them) to another install of the same operator. The EXPORT is the read view: every note
+# `_view_files` would leave out (one that holds a stored secret, in any field it shows) is left out
+# here too, and so is one the withhold check refuses now (a credential shape); quarantine never
+# travels. Only counts of what was left out are reported, never a title. The IMPORT is one note at a
+# time, each under the secret-inventory fence and then the decision locks (project, then
+# specialist), judged by the same withhold check an agent's note gets, against the inventory as of
+# its commit:
+#
+# - a note the check withholds is HELD BACK whole — never stored, never put in a review tray (the
+#   trays are bounded, and an import must not evict what agents left for review: #1471's rule), and
+#   reported with its reason;
+# - an identical note already in the scope (same name, description, type and body) is left as it
+#   is ("already here"), so importing the same file twice adds nothing;
+# - anything else is a NEW note beside whatever is there (`slug-2`, …), never over one: an import
+#   never edits, replaces or merges into an existing note. Undoing it is deleting the new note.
+#
+# The destination slug is decided under the scope lock and handed to `intent` BEFORE the commit,
+# so the caller can journal it; `share_note_at` answers what a slug holds now (crash reconcile).
+# Imported notes are written by one writer per bundle (`share_writer`, a `launches` row of kind
+# `share`): the page labels them "imported from a file". Nothing is ever enabled by an import: a
+# project whose memory is off takes nothing in.
+
+SHARE_KIND = "share"
+SHARE_FIELDS = ("name", "description", "type", "body")
+#: Why an import can't take a note in right now (retry later), as opposed to a verdict on the note.
+SHARE_RETRY = "retry"
+
+
+def _share_text(note) -> str:
+    """What a shared note says: the fields that travel (its slug never does)."""
+    return "\n".join(note[k] for k in SHARE_FIELDS)
+
+
+def share_digest(note) -> str:
+    """A shared note's content digest: what its intent journals and `share_note_at` reports."""
+    return _content(note)
+
+
+def share_writer(bundle_digest: str) -> str:
+    """The writer the notes of one bundle are attributed to (shaped like a launch token)."""
+    return _import_token("share:" + bundle_digest)
+
+
+def share_canonical(raw) -> dict:
+    """A note as an import would store it: the normalization every write path applies."""
+    return {
+        "name": _one_line(_CONTROL.sub("", raw["name"]), 120),
+        "description": _one_line(_CONTROL.sub("", raw["description"]), 160),
+        "type": raw["type"] if raw["type"] in TYPES else DEFAULT_TYPE,
+        "body": _CONTROL.sub("", raw["body"].replace("\r\n", "\n")).strip(),
+    }
+
+
+def share_note_problem(note: object) -> str:
+    """Why ``note`` (an incoming ``{name, description, type, body}``) isn't a note this store
+    would hold as it is, or ``""``. Exact: an import stores what the preview showed, byte for
+    byte, so nothing is normalized on the way in."""
+    if (
+        not isinstance(note, dict)
+        or set(note) != set(SHARE_FIELDS)
+        or not all(isinstance(note[k], str) for k in SHARE_FIELDS)
+    ):
+        return "a note is {name, description, type, body}, all text"
+    if note["type"] not in TYPES:
+        return f"its type is one of {', '.join(TYPES)}"
+    if share_canonical(note) != note:
+        return "it isn't in the form a note is stored in (one-line name and description)"
+    if not note["name"] or not note["body"]:
+        return "a note needs a name and a body"
+    if len(_share_text(note).encode()) > OPERATOR_MAX_BYTES:
+        return f"a note is at most {OPERATOR_MAX_BYTES // 1024} KiB"
+    return ""
+
+
+def share_notes(scope: str, known: list[str]) -> dict:
+    """The notes of ``scope`` that may leave the install, judged against ``known`` (the caller's
+    one inventory): ``{"notes": [{name, description, type, body}], "withheld": n,
+    "quarantined": q}``. A note `_view_files` leaves out, or that the withhold check refuses now,
+    is counted in ``withheld``; quarantine items are counted, never read."""
+    scope = _scope_id(scope)
+    _project(project_of(scope))
+    out: dict = {"notes": [], "withheld": 0, "quarantined": 0}
+    if not _exists(scope):
+        return out
+    conn = _connect(scope)
+    try:
+        rows = conn.execute("SELECT * FROM notes ORDER BY type, slug").fetchall()
+        out["quarantined"] = conn.execute("SELECT COUNT(*) FROM quarantine").fetchone()[0]
+    finally:
+        conn.close()
+    for r in rows:
+        note = share_canonical(r)
+        if (
+            _carries_secret(r, known)
+            or _withheld(_share_text(note), known)
+            or share_note_problem(note)
+        ):
+            out["withheld"] += 1
+            continue
+        out["notes"].append(note)
+    return out
+
+
+def share_judge(notes: list[dict]) -> list[str]:
+    """For a preview: why each note would be held back here now (``""`` when it would be taken
+    in), against the inventory as of the request. Raises `MemoryStoreError` (503) when the secret
+    check can't run: nothing could be taken in."""
+    known = _inventory_snapshot()
+    if known is None:
+        raise MemoryStoreError("the secret check can't run here, so no note can be imported", 503)
+    return [_withheld(_share_text(n), known) for n in notes]
+
+
+def share_scope_state(scope: str) -> str:
+    """``""`` when ``scope`` takes an imported note now, else why not (in words)."""
+    scope = _scope_id(scope)
+    pid = project_of(scope)
+    if not _project_on(pid):
+        return "memory is off for this project; an import never turns it on"
+    return ""
+
+
+def share_note_at(scope: str, slug: str) -> str | None:
+    """The content digest of the note at ``slug`` in ``scope``, ``None`` when there is none."""
+    scope = _scope_id(scope)
+    if not isinstance(slug, str) or not _SLUG_RE.fullmatch(slug) or not _exists(scope):
+        return None
+    conn = _connect(scope)
+    try:
+        row = conn.execute("SELECT * FROM notes WHERE slug=?", (slug,)).fetchone()
+    finally:
+        conn.close()
+    return None if row is None else _content(row)
+
+
+def share_note_removed(scope: str, digest: str) -> bool:
+    """Whether a note with this content digest was taken into ``scope`` and then deleted or
+    cleared (its version is a `deleted` tombstone): a retry must never bring it back."""
+    scope = _scope_id(scope)
+    if not _exists(scope):
+        return False
+    conn = _connect(scope)
+    try:
+        row = conn.execute("SELECT outcome FROM receipts WHERE digest=?", (digest,)).fetchone()
+    finally:
+        conn.close()
+    return row is not None and row["outcome"] == "deleted"
+
+
+def share_import_note(scope: str, note: dict, *, writer: str, intent) -> dict:
+    """Take one shared note into ``scope``: ``{"outcome", "slug", "reason"}``.
+
+    Outcomes: ``created`` (a new note at ``slug``), ``already`` (an identical note is at ``slug``;
+    nothing written), ``held`` (the withhold check refused it: nothing stored), ``refused`` (not a
+    note this store holds), ``retry`` (it can't be taken in now: memory off, being cleared, full,
+    or the secret check unavailable; nothing written). ``intent(slug)`` is called under the locks
+    BEFORE the commit; if it raises, nothing is written. The view is not re-rendered here: the
+    caller publishes the scope once after its notes (`publish`)."""
+    from . import template_secrets
+
+    scope = _scope_id(scope)
+    pid = project_of(scope)
+    problem = share_note_problem(note)
+    if problem:
+        return {"outcome": "refused", "slug": "", "reason": problem}
+    if not isinstance(writer, str) or not _TOKEN_RE.fullmatch(writer):
+        raise MemoryStoreError("not a writer token", 500)
+    digest = share_digest(note)
+    # Fence, then the decision locks (project, then specialist): the one order. The check, the
+    # slug and the commit all see one secret inventory and one switch.
+    with _fenced(), _decision_locks(scope):
+        if not _exists(pid) or not _project_on(pid):
+            return {"outcome": SHARE_RETRY, "slug": "", "reason": share_scope_state(scope)}
+        try:
+            known = template_secrets.redaction_values()
+        except template_secrets.RedactionUnavailable:
+            return {
+                "outcome": SHARE_RETRY,
+                "slug": "",
+                "reason": "the secret check can't run, so nothing was taken in",
+            }
+        why = _withheld(_share_text(note), known)
+        if why:
+            return {"outcome": "held", "slug": "", "reason": why}
+        if not _exists(scope):
+            # A specialist's notebook in this project, made only once a note may be written (as
+            # a launch makes it on first use): under the project's lock, so a deletion of the
+            # project can't race it.
+            _create_scope(scope)
+        conn = _connect(scope)
+        try:
+            if _meta(conn, "clearing", "0") == "1" or (scope != pid and _project_clearing(pid)):
+                return {"outcome": SHARE_RETRY, "slug": "", "reason": "memory is being cleared"}
+            same = conn.execute(
+                "SELECT slug FROM notes WHERE name=? AND description=? AND type=? AND body=?"
+                " ORDER BY slug LIMIT 1",
+                tuple(note[k] for k in SHARE_FIELDS),
+            ).fetchone()
+            if same is not None:
+                return {"outcome": "already", "slug": same["slug"], "reason": ""}
+            if conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0] >= SCOPE_MAX_NOTES:
+                return {
+                    "outcome": SHARE_RETRY,
+                    "slug": "",
+                    "reason": f"memory is full ({SCOPE_MAX_NOTES} notes)",
+                }
+            base = slugify(note["name"]) or "note-" + digest[:8]
+            slug = _free_slug(conn, base)
+            # The slug is shown too (the view's file name, the page's ids): judged exactly as a
+            # render judges a stored note (`_carries_secret`), so nothing taken in is moved into a
+            # tray by the next render, and no slug holding a secret reaches a journal.
+            if _carries_secret({**note, "slug": slug}, known):
+                return {"outcome": "held", "slug": "", "reason": "contains a stored secret value"}
+            intent(slug)  # journaled before anything is written
+            now = time.time()
+            with _txn(conn):
+                conn.execute(
+                    "INSERT OR IGNORE INTO launches(token, session_key, kind, at)"
+                    " VALUES(?, '', ?, ?)",
+                    (writer, SHARE_KIND, now),
+                )
+                # INSERT, never OR REPLACE: a slug someone took meanwhile fails the commit.
+                conn.execute(
+                    "INSERT INTO notes(slug, name, description, type, body, digest, token,"
+                    " created, updated) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (slug, *(note[k] for k in SHARE_FIELDS), digest, writer, now, now),
+                )
+                conn.execute(
+                    "INSERT OR IGNORE INTO versions(slug, digest) VALUES(?, ?)", (slug, digest)
+                )
+            return {"outcome": "created", "slug": slug, "reason": ""}
+        finally:
+            conn.close()
+
+
+def _project_clearing(pid: str) -> bool:
+    conn = _connect(pid)
+    try:
+        return _meta(conn, "clearing", "0") == "1"
+    finally:
+        conn.close()

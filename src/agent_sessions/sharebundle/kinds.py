@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import sqlite3
 import tomllib
 import unicodedata
 
@@ -25,13 +26,21 @@ from ..playbooks.schema import SKILL_REF_RE
 from ..templates import FIELD_NAME_RE
 from ..templates import ID_RE as TEMPLATE_ID_RE
 from . import format as fmt
-from . import template_kinds
+from . import memory_kinds, template_kinds
 from .template_kinds import Refused as ItemRefused
 from .template_kinds import Terminal
 
 #: Apply order across kinds (#1714 "Partial failure"): skills and variable definitions first, then
 #: templates (which need variable definitions), then playbooks and specialists, then memory.
-LEVEL = {"skill": 0, "variable": 0, "template": 1, "playbook": 2, "specialist": 2}
+LEVEL = {
+    "skill": 0,
+    "variable": 0,
+    "template": 1,
+    "playbook": 2,
+    "specialist": 2,
+    "memory": 3,
+    "notebook": 3,
+}
 KINDS = tuple(LEVEL)
 #: The Library sections a picker groups by, in order.
 LABELS = {
@@ -40,17 +49,29 @@ LABELS = {
     "specialist": "Specialist",
     "template": "Template",
     "variable": "Variable",
+    "memory": "Project memory",
+    "notebook": "Specialist notes",
 }
 #: The kind each kind's dependencies are: a playbook's role skills, a specialist's pinned skills,
 #: a template's library variables.
-DEP_KIND = {"playbook": "skill", "specialist": "skill", "template": "variable"}
+DEP_KIND = {
+    "playbook": "skill",
+    "specialist": "skill",
+    "template": "variable",
+    "notebook": "specialist",
+}
 #: Kinds whose every dependency must travel in the same file: a specialist's pins are what it runs
 #: with, and a template's library fields are its variables; neither is ever a reference resolved
 #: by name here (a playbook's role skills may be).
-CARRIES_ALL = frozenset({"specialist", "template"})
+CARRIES_ALL = frozenset({"specialist", "template", "notebook"})
 #: Stores bound to a preview only when the file carries their kind: a skills-and-playbooks import
 #: never depends on the specialist pool, the template library or the variables library.
-OPTIONAL = frozenset({"specialist", "template", "variable"})
+OPTIONAL = frozenset({"specialist", "template", "variable", "memory", "notebook"})
+#: Containers of notes (#1714 P4): each note is its own unit, taken in through memory's own write
+#: path into the project the confirm names (`service._apply_notes`). Nothing is planned for them
+#: in a store, so they bind nothing and carry no *imported from a file* mark (the notes' writer
+#: says it instead).
+CONTAINERS = frozenset(memory_kinds.KINDS)
 #: How a conflicting ID is renamed: `<id><sep><n>`, within the store's own ID length. A variable
 #: name has no hyphen, so it takes `_2`.
 RENAME = {
@@ -455,11 +476,13 @@ def export(kind: str, item_id: str) -> dict:
             return template_kinds.template_export(item_id, template_kinds.secret_inventory())
         if kind == "variable":
             return template_kinds.variable_export(item_id, template_kinds.secret_inventory())
+        if kind in CONTAINERS:
+            return memory_kinds.export(kind, item_id, template_kinds.secret_inventory())
     except ItemRefused:
         raise
     except store.NotFound:
         raise ItemRefused(f"there is no {kind} {item_id} here") from None
-    except (store.StoreError, gallery_contract.GalleryError, ValueError, OSError):
+    except (store.StoreError, gallery_contract.GalleryError, ValueError, OSError, sqlite3.Error):
         raise ItemRefused(
             f"the {kind} {item_id} can't be read here; fix it before exporting"
         ) from None
@@ -480,6 +503,8 @@ def validate(kind: str, item_id: str, files: dict[str, bytes]) -> list[str]:
     if kind == "variable":
         template_kinds.variable_check_labels(item_id, template_kinds.variable_doc(item_id, files))
         return []
+    if kind in CONTAINERS:
+        return memory_kinds.validate(kind, item_id, files)
     raise ItemRefused(f"this install can't import {kind} items yet")
 
 
@@ -501,6 +526,8 @@ def absent(kind: str, dep: str) -> str:
     """Why an item of a `CARRIES_ALL` kind is refused when the file lacks its dependency `dep`."""
     if kind == "template":
         return f"it uses variable {dep}, which this file doesn't carry"
+    if kind == "notebook":
+        return f"it holds the notes of specialist {dep}, which this file doesn't carry"
     return f"it pins skill {dep}, which this file doesn't carry"
 
 
@@ -520,6 +547,8 @@ def view(kind: str, item_id: str, files: dict[str, bytes]) -> dict | None:
             "images": len(doc["images"]),
             "variables": [f["name"] for f in doc["fields"] if f["source"] == "library"],
         }
+    if kind in CONTAINERS:
+        return memory_kinds.view(files)
     return None
 
 
@@ -588,6 +617,8 @@ def publish(kind: str, dest: str, payload) -> str:
 
 def at(kind: str, dest: str) -> str | None:
     """The revision at `dest` now, `None` when absent, `"unavailable"` when it is not ours."""
+    if kind in CONTAINERS:
+        raise ValueError("a container has no single destination; its notes are settled each")
     if kind == "skill":
         return _skill_at(dest)
     if kind == "specialist":
@@ -601,6 +632,8 @@ def at(kind: str, dest: str) -> str | None:
 
 def ids(kind: str) -> dict[str, str | None]:
     """Every id the store holds now (all sources) with its revision: the preview's binding."""
+    if kind in CONTAINERS:
+        return {}  # notes are named under the scope lock at confirm: nothing is planned here
     if kind == "skill":
         return _skill_ids()
     if kind == "specialist":
@@ -613,6 +646,8 @@ def ids(kind: str) -> dict[str, str | None]:
 
 
 def id_ok(kind: str, value: str) -> bool:
+    if kind in CONTAINERS:
+        return memory_kinds.id_ok(kind, value)
     if kind == "specialist":
         return isinstance(value, str) and bool(specialist_store.ID_RE.fullmatch(value))
     if kind == "template":
@@ -687,6 +722,7 @@ def catalog() -> list[dict]:
             }
         )
     out.extend(template_kinds.catalog())
+    out.extend(memory_kinds.catalog())
     return out
 
 

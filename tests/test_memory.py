@@ -495,6 +495,9 @@ ALLOWED_IMPORTERS = {
     "webterm.py",
     "routes/memory.py",
     "routes/terminal.py",
+    # Share bundles (#1714 P4): a project's notes leave as the read view and come in through
+    # memory's own write path (`share_import_note`) — an operator's file, never a model input.
+    "sharebundle/memory_kinds.py",
     "template_vars.py",
 }
 
