@@ -1043,7 +1043,7 @@ class Call:
             cards = confirmable_cards(
                 view, summaries=summaries, picks=picks, suggestions=suggestions
             )[:4]
-            lines = list(card_sentences(view, skip={c["id"] for c in cards}))
+            lines = list(card_sentences(view, skip={c["id"] for c in cards}, said=words))
             sid = uuid.uuid4().hex[:12]
             # HQ judged the call over (#1668): it ends once THIS farewell has played — never over
             # a card that still needs the operator, an empty answer, an answer that ASKS
@@ -1055,6 +1055,7 @@ class Call:
                 and words.strip()
                 and not cards
                 and not lines
+                and not view.get("ask")  # an open question, even one already said (#1911)
                 and not asks_something(words)
                 and self._still_heard(heard)
             ):

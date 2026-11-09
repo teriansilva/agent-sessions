@@ -188,9 +188,19 @@ def split_speech(text: str, *, first_max: int | None = None) -> list[str]:
     return [c for c in fitted if c]
 
 
-def card_sentences(view: dict, *, skip: set[str] | frozenset = frozenset()) -> list[str]:
+def _same_words(text: str) -> str:
+    return " ".join(speakable(text).casefold().split())
+
+
+def card_sentences(
+    view: dict, *, skip: set[str] | frozenset = frozenset(), said: str = ""
+) -> list[str]:
     """Fixed, server-rendered sentences for what an HQ turn left on screen (D8). The card text
-    itself is not read out: the title and kind are enough to find it; the screen has the rest."""
+    itself is not read out: the title and kind are enough to find it; the screen has the rest.
+
+    ``said`` is what HQ's own answer already spoke on this turn: a question it contains WORD FOR
+    WORD (case and spacing aside) is not asked a second time, only its options are read (#1911).
+    Exact containment only: a paraphrase is asked again, so nothing goes unsaid."""
     out: list[str] = []
     for p in view.get("proposals") or []:
         if p.get("action_id") in skip:
@@ -216,11 +226,13 @@ def card_sentences(view: dict, *, skip: set[str] | frozenset = frozenset()) -> l
     ask = view.get("ask")
     if isinstance(ask, dict) and ask.get("question"):
         opts = [o for o in ask.get("options") or [] if isinstance(o, str)]
-        line = str(ask["question"]).strip()
-        if opts:
-            words = ("One", "Two", "Three", "Four")
-            line += " " + " ".join(f"{words[i]}: {o}." for i, o in enumerate(opts[:4]))
-        out.append(line)
+        question = str(ask["question"]).strip()
+        asked = bool(_same_words(question)) and _same_words(question) in _same_words(said)
+        words = ("One", "Two", "Three", "Four")
+        listed = " ".join(f"{words[i]}: {o}." for i, o in enumerate(opts[:4]))
+        line = " ".join(part for part in ("" if asked else question, listed) if part)
+        if line:
+            out.append(line)
     return out
 
 

@@ -1178,3 +1178,26 @@ def test_a_retry_of_a_typed_turn_still_running_is_counted_once(app, ai, monkeypa
     # owned by the first thread's event loop — a harness artifact a real server never has; what
     # matters, the call state after its `begin`, is asserted above.)
     assert 200 in results, results
+
+
+def test_an_open_question_already_said_never_ends_the_call(monkeypatch):
+    """#1911: a question already spoken in the answer adds no card line, so the end-call guard
+    checks the open question itself — a question without a question mark still holds the call."""
+    q = "Tell me which project it goes into."
+    r = Rig(
+        monkeypatch,
+        {
+            "end_call": True,
+            "answer": q,
+            "ask": {"question_id": "q1", "question": q, "options": [], "allow_text": True},
+        },
+    )
+
+    async def go():
+        await r.ask("Okay, bye")
+        said = last_say(r)
+        assert said["text"] == q  # said once: no second line for it
+        await r.call.on_played(said["id"])
+
+    run(go())
+    assert r.call.state != "ended"

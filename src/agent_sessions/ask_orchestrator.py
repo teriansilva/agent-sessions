@@ -73,6 +73,14 @@ log = logging.getLogger(__name__)
 
 #: Bounds (#1443 §2). The round after the last is sent with `tool_choice: "none"`.
 MAX_TOOL_ROUNDS = 6
+#: Added to a staged card's tool result on a call (#1911): the call announces every card itself
+#: (`voice_text.card_sentences` / the read-back), so HQ's own words would say it twice.
+CALL_CARD_NOTE = (
+    "On this call the card is read out to the Commander right after your answer. Answer the rest "
+    'of what they asked as you would anyway. About the card itself say only "Here it is." plus '
+    "what the card does not show, such as a warning: never describe its project, agent, brief or "
+    "effect, and never tell them to start or confirm it."
+)
 MAX_CALLS_PER_ROUND = 8
 MAX_PROPOSALS_PER_TURN = 3
 SCREEN_TAIL_MAX = 4_000
@@ -2306,6 +2314,8 @@ async def _call(turn: _Turn, name: str, raw_args: str) -> tuple[str, dict, dict]
         result, meta = await tool.run(turn, args)
     except _ToolRefused as e:
         return json.dumps({"error": str(e)}), stored_args, {"error": e.code}
+    if tool.kind == "proposal" and turn.via == "call" and result.get("proposed") is True:
+        result = {**result, "on_call": CALL_CARD_NOTE}  # one announcement per card (#1911)
     content = json.dumps(result, ensure_ascii=False)
     if len(content) > TOOL_RESULT_MAX:
         return (

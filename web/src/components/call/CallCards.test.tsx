@@ -5,6 +5,10 @@ import { expect, test, vi } from "vitest";
 
 import { api } from "../../lib/api";
 import { CallCards } from "./CallCards";
+import { IDLE } from "./callClient";
+import { CallContext } from "./callContext";
+
+const defaultCall = { cardDecided: () => undefined };
 
 vi.mock("../../lib/api", async (orig) => {
   const real = await orig<typeof import("../../lib/api")>();
@@ -51,7 +55,12 @@ test("opening the call shows the conversation's cards at once, before any turn (
   );
 });
 
-test("a new turn never hides an older card still waiting for a decision (#1640)", async () => {
+const shown = () => screen.queryAllByTestId("call-card").map((c) => c.dataset.card);
+const question = (answered = false) => ({
+  question_id: "q1", question: "Which project?", options: ["One", "Two"], allow_text: false, answered,
+});
+
+test("a newer turn's card takes an older still-pending card off the call screen (#1911)", async () => {
   vi.mocked(api.askConversation).mockResolvedValue({
     turns: [
       { turn_id: "t1", status: "done", proposals: [nudge("older-open"), nudge("older-done", false)] },
@@ -59,12 +68,62 @@ test("a new turn never hides an older card still waiting for a decision (#1640)"
     ],
   } as never);
   render(<CallCards cid={CID} seq={1} />);
-  await waitFor(() =>
-    expect(screen.getAllByTestId("call-card").map((c) => c.dataset.card)).toEqual([
-      "older-open",
-      "newest",
-    ]),
+  await waitFor(() => expect(shown()).toEqual(["newest"]));
+});
+
+test("a newer turn's open question takes the older cards off the call screen (#1911)", async () => {
+  vi.mocked(api.askConversation).mockResolvedValue({
+    turns: [
+      { turn_id: "t1", status: "done", proposals: [nudge("older-open")] },
+      { turn_id: "t2", status: "done", proposals: [], ask: question() },
+    ],
+  } as never);
+  const { container } = render(<CallCards cid={CID} seq={1} />);
+  await waitFor(() => expect(api.askConversation).toHaveBeenCalled());
+  await act(async () => undefined);
+  expect(shown()).toEqual([]);
+  expect(container).toBeEmptyDOMElement();
+});
+
+test("a turn that presents nothing new leaves the open card where it is (#1911)", async () => {
+  vi.mocked(api.askConversation).mockResolvedValue({
+    turns: [
+      { turn_id: "t1", status: "done", proposals: [nudge("open")] },
+      { turn_id: "t2", status: "done", proposals: [] },
+    ],
+  } as never);
+  render(<CallCards cid={CID} seq={1} />);
+  await waitFor(() => expect(shown()).toEqual(["open"]));
+});
+
+test("answering HQ's question never brings the card it replaced back (#1911 review)", async () => {
+  vi.mocked(api.askConversation).mockResolvedValue({
+    turns: [
+      { turn_id: "t1", status: "done", proposals: [nudge("replaced")] },
+      { turn_id: "t2", status: "done", proposals: [], ask: question(true) }, // answered by t3
+      { turn_id: "t3", status: "done", proposals: [] },
+    ],
+  } as never);
+  render(<CallCards cid={CID} seq={1} />);
+  await waitFor(() => expect(api.askConversation).toHaveBeenCalled());
+  await act(async () => undefined);
+  expect(shown()).toEqual([]);
+});
+
+test("a card a spoken window still names stays in view after a newer card (#1911 review)", async () => {
+  vi.mocked(api.askConversation).mockResolvedValue({
+    turns: [
+      { turn_id: "t1", status: "done", proposals: [nudge("armed")] },
+      { turn_id: "t2", status: "done", proposals: [nudge("typed-newer")] },
+    ],
+  } as never);
+  const snap = { ...IDLE, phase: "connected" as const, challenge: { cards: ["armed"], expiresAt: Date.now() + 20_000 } };
+  render(
+    <CallContext.Provider value={{ ...defaultCall, snap } as never}>
+      <CallCards cid={CID} seq={1} />
+    </CallContext.Provider>,
   );
+  await waitFor(() => expect(shown()).toEqual(["armed", "typed-newer"]));
 });
 
 test("a refreshed session card with a changed bypass default starts its switch afresh (#1640)", async () => {

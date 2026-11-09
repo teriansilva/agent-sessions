@@ -478,6 +478,48 @@ def test_a_call_asks_hq_and_speaks_the_stored_answer(ready, worker):
     assert got, "speech audio reaches the client"
 
 
+def test_a_question_turn_says_its_question_once_through_the_socket(ready, monkeypatch):
+    """#1911: a turn that ends on `ask_operator` stores the question as its answer text too
+    (`_asked_records`). Spoken through the real call: the question once, then its options."""
+    c, hdr, cfg = ready
+    fw = FakeWorker()
+    monkeypatch.setattr(voice_calls, "start_worker", fw.start)
+    q = "Which project should the research go into?"
+
+    async def fake_begin(cid, turn_id, text, **kw):
+        return None, {
+            "turn_id": turn_id,
+            "status": "done",
+            "answer": q,
+            "proposals": [],
+            "ask": {"question_id": "q1", "question": q, "options": ["Battlelab", "Docs Site"],
+                    "allow_text": False, "answered": False},
+            "via": "call",
+        }  # fmt: skip
+
+    monkeypatch.setattr(ask_orchestrator, "begin", fake_begin)
+    call = _admit(c, hdr)
+    with c.websocket_connect(f"/ws/voice/{call['id']}", headers=_ws(c, cfg)) as ws:
+        ws.send_text(json.dumps({"t": "hello", "csrf": hdr["X-CSRF-Token"]}))
+        heard = 0
+        for _ in range(200):
+            m = ws.receive()
+            if m.get("text") is None:
+                if m.get("bytes") is not None:
+                    continue
+                break
+            ev = json.loads(m["text"])
+            if ev.get("t") == "connected":
+                ws.send_bytes(b"\x00" * 640)
+            if ev.get("t") == "caption" and ev.get("who") == "hq" and "One:" in ev.get("text", ""):
+                heard += 1
+                break
+        ws.send_text(json.dumps({"t": "end"}))
+    assert heard == 1
+    spoken = [s for s in fw.said if not s.startswith("HQ,")]
+    assert spoken == [q, "One: Battlelab. Two: Docs Site."]
+
+
 def test_the_browsers_played_ack_arms_the_challenge_through_the_socket(ready, worker):
     """#1397 P2 through the real socket: the read-back's `said` reaches the browser, the browser
     acks `played`, and only then is the card offered for a spoken confirmation. (A route that

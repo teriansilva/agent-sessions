@@ -150,8 +150,8 @@ EXPECTED_DEFAULT_SHA = {
     "hq_persona_southamerica_woman": "bdf45f54ce29ec33",
     "hq_persona_southamerica_man": "17073866ed4ba72d",
     "hq_persona_romania_woman": "6713e8f713ddc052",
-    "hq_call": "ba7a61d7d1e836f6",  # #1397; #1668: end_call; #1681: readable proposal text
-    "hq_call_detailed": "c47168a87e1751e2",  # #1397 (#1626 review); #1668: end_call; #1681: same
+    "hq_call": "ce1ee037ac976380",  # #1397; #1668: end_call; #1681: readable proposal text
+    "hq_call_detailed": "01a686993922ea45",  # #1397 (#1626 review); #1668: end_call; #1681: same
     "hq_call_end": "4af567dd1abae1eb",  # #1668: on a call, do the words and HQ's answer end it?
     "voice_confirm_judge": "1dbd567458fe0b85",  # #1715: did a spoken reply confirm a card?
     "hq_handover": "a27b7d563b8cb484",  # the Commander switched contact mid-conversation

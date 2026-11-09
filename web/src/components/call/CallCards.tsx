@@ -141,37 +141,32 @@ function NeedsYouCallCard({
   );
 }
 
-/** Can the operator still decide this card? (The server's own `can_*`; never derived here.) */
-function actionable(p: AskProposalCard): boolean {
-  if (p.kind === "nudge") return p.can_approve || p.can_reject;
-  if (p.kind === "session") return p.can_start || p.can_dismiss;
-  if (p.kind === "message") return !!(p.can_send || p.can_dismiss);
-  return p.can_confirm || p.can_dismiss;
-}
-
-/** The call's cards: the newest turn's (decided ones show their outcome), plus every OLDER card
- *  still waiting for a decision — a new turn never hides a card still pending, as on the HQ page. */
-function callCards(turns: AskConversationTurn[]): AskProposalCard[] {
-  const newest = [...turns].reverse().find((t) => (t.proposals ?? []).length > 0);
-  const latest = newest?.proposals ?? [];
-  const seen = new Set(latest.map((p) => p.action_id));
-  const older: AskProposalCard[] = [];
-  for (const t of turns) {
-    if (t === newest) continue;
-    for (const p of t.proposals ?? []) {
-      if (!seen.has(p.action_id) && actionable(p)) {
-        seen.add(p.action_id);
-        older.push(p);
-      }
+/** The call's ONE open selection (#1911): the cards of the newest turn that presented a
+ *  selection — cards, or a question (answered or not: once HQ asked, what came before is behind
+ *  it). A newer selection takes the older cards off the call screen (hidden here, never
+ *  dismissed: they stay on the HQ page); a turn that presents nothing new (talk, a prose reply)
+ *  leaves the current one where it is. A card a spoken window still names stays in view, whatever
+ *  its turn: "confirm" never answers a card the screen no longer shows. */
+function callCards(turns: AskConversationTurn[], armed: readonly string[]): AskProposalCard[] {
+  const newest = [...turns]
+    .reverse()
+    .find((t) => (t.proposals ?? []).length > 0 || t.ask != null);
+  const shown = newest?.proposals ?? [];
+  const seen = new Set(shown.map((p) => p.action_id));
+  const named: AskProposalCard[] = [];
+  for (const p of turns.flatMap((t) => t.proposals ?? [])) {
+    if (armed.includes(p.action_id) && !seen.has(p.action_id)) {
+      seen.add(p.action_id);
+      named.push(p);
     }
   }
-  return [...older, ...latest];
+  return [...named, ...shown];
 }
 
 export function CallCards({ cid, seq }: { cid: string | null; seq: number }) {
   const call = useCall();
   const { snap } = call;
-  const [cards, setCards] = useState<AskProposalCard[]>([]);
+  const [turns, setTurns] = useState<AskConversationTurn[]>([]);
   const [needsYou, setNeedsYou] = useState<NeedsYouRow[]>([]);
   const [deciding, setDeciding] = useState<Set<string>>(new Set());
   const [errors, setErrors] = useState<Map<string, string>>(new Map());
@@ -185,7 +180,7 @@ export function CallCards({ cid, seq }: { cid: string | null; seq: number }) {
       .askConversation(cid)
       .then((c) => {
         if (reads.current !== mine) return;
-        setCards(callCards(c.turns));
+        setTurns(c.turns);
       })
       .catch(() => undefined);
   }, [cid]);
@@ -197,8 +192,8 @@ export function CallCards({ cid, seq }: { cid: string | null; seq: number }) {
   }, [seq, load]);
 
   // A spoken window naming cards that are not this conversation's: Needs-you actions HQ read out.
-  const proposals = cards;
   const challenged = snap.challenge?.cards ?? [];
+  const proposals = callCards(turns, challenged);
   const unknown = challenged.filter(
     (id) => !proposals.some((p) => p.action_id === id) && !needsYou.some((r) => r.action?.id === id),
   );
