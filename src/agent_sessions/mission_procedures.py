@@ -202,9 +202,82 @@ def _variables_used(flow: dict) -> list[str]:
     return sorted(names)
 
 
-def listing(mission_id: str) -> dict:
-    """The procedures this mission can apply, by index, with the digest of exactly this list."""
-    return _listing(mission_id)[0]
+def listing(mission_id: str, project: object = None) -> dict:
+    """The procedures this mission can apply, by index, with the digest of exactly this list —
+    from the mission's own project, or from the project chosen BY INDEX (#1797 S2b)."""
+    return _listing(mission_id, _chosen_project(mission_id, project))[0]
+
+
+# ---- the project chooser (#1797 S2b) ------------------------------------------------------------
+
+
+def _project_rows() -> list[dict]:
+    """Every non-archived project, SORTED BY ID, each with its resolved working folder (the rule
+    a mission's cwd is resolved by). Folder-less projects are listed, not ready, with a reason."""
+    from . import mission_probes, projects
+
+    try:
+        index = projects.load()
+    except Exception:  # noqa: BLE001
+        raise ProcedureError("the projects could not be read", status=503) from None
+    rows = []
+    for pid in sorted(index):
+        entity = index[pid]
+        if getattr(entity, "archived", False):
+            continue
+        folder = mission_probes.entity_checkout(entity)
+        rows.append(
+            {
+                "project_id": pid,
+                "name": entity.name,
+                "folder": folder,
+                "ready": bool(folder),
+                "reason": None if folder else "that project has no folder to work in",
+            }
+        )
+    return rows
+
+
+def project_list(mission_id: str) -> dict:
+    """The projects an objective may be chosen in, by index, with the digest of exactly this list.
+
+    The digest binds what moves a position or an identity — each project's id, archived state
+    (only unarchived are listed) and resolved working folder — and not its name: the list is not
+    name-sorted, so a rename is not a stale list."""
+    missions.procedure_scope(mission_id)  # 404 for an unknown mission
+    rows = _project_rows()
+    for i, row in enumerate(rows):
+        row["index"] = i
+    basis = [[r["project_id"], False, r["folder"]] for r in rows]
+    return {
+        "mission_id": mission_id,
+        "projects": [
+            {k: r[k] for k in ("index", "project_id", "name", "ready", "reason")} for r in rows
+        ],
+        "digest": _digest(basis),
+    }
+
+
+def _chosen_project(mission_id: str, project: object) -> str | None:
+    """The objective's project: the mission's own when `project` is None, else the one at
+    `project.index` of the project list whose digest `project.projects` echoes (409 when it moved,
+    422 when the index is out of range, 409 when that project is not ready)."""
+    if project is None:
+        return None
+    if not isinstance(project, dict) or set(project) != {"index", "projects"}:
+        raise ProcedureError("project is {index, projects}", status=422)
+    index, digest = project["index"], project["projects"]
+    if type(index) is not int or index < 0 or not isinstance(digest, str) or not digest:
+        raise ProcedureError("project is {index, projects}", status=422)
+    now = project_list(mission_id)
+    if now["digest"] != digest:
+        raise ProcedureError("the project list changed; read it again", status=409)
+    if index >= len(now["projects"]):
+        raise ProcedureError("no project has that index", status=422)
+    row = now["projects"][index]
+    if not row["ready"]:
+        raise ProcedureError(row["reason"], status=409)
+    return row["project_id"]
 
 
 def _flow_targets(facts: dict, fid: str) -> list:
@@ -217,7 +290,9 @@ def _flow_targets(facts: dict, fid: str) -> list:
     )
 
 
-def _listing(mission_id: str) -> tuple[dict, dict | None, dict | None]:
+def _listing(
+    mission_id: str, project_id: str | None = None
+) -> tuple[dict, dict | None, dict | None]:
     """`(listing, record, bundle)`: the listing AND the one deployment snapshot it was built from.
 
     The digest binds that snapshot — the deployment's identity and generation, the deployed
@@ -226,15 +301,18 @@ def _listing(mission_id: str) -> tuple[dict, dict | None, dict | None]:
     exactly the ones the operator's `{index, listing}` was chosen against, and a re-applied
     deployment with other targets is a different listing."""
     scope = missions.procedure_scope(mission_id)
-    pid = scope["project_id"]
+    primary = scope["project_id"]
+    # A project OTHER than the mission's needs the mission to have its own (its primary) first.
+    pid = (project_id or primary) if primary else None
     out: dict = {
         "mission_id": mission_id,
         "project_id": pid,
+        "primary_project_id": primary,
         "playbook": None,
         "reason": None,
         "procedures": [],
     }
-    basis: dict = {"project": pid, "playbook": None, "flows": []}
+    basis: dict = {"project": pid, "primary": primary, "playbook": None, "flows": []}
     record = bundle = None
     if not pid:
         out["reason"] = "the mission has no project; every objective names one (choose it first)"
@@ -396,23 +474,27 @@ def _input_choices(now: dict, record: dict, bundle: dict, index: int) -> dict:
     }
 
 
-def input_choices(mission_id: str, index: object, listing_digest: object) -> dict:
+def input_choices(
+    mission_id: str, index: object, listing_digest: object, project: object = None
+) -> dict:
     """The server-built choices for each choosable input of the procedure at `index` (#1076).
 
     BLOCKING, and it may make the bounded forge read — run it off the event loop, never inside
     the missions write lock (it takes none)."""
-    now, record, bundle = _checked_listing(mission_id, index, listing_digest)
+    now, record, bundle = _checked_listing(mission_id, index, listing_digest, project)
     return _input_choices(now, record, bundle, index)  # type: ignore[arg-type]
 
 
-def _checked_listing(mission_id: str, index: object, listing_digest: object):
+def _checked_listing(
+    mission_id: str, index: object, listing_digest: object, project: object = None
+):
     if type(index) is not int or index < 0:
         raise ProcedureError("index must be a non-negative integer", status=422)
     if not isinstance(listing_digest, str) or not listing_digest:
         raise ProcedureError(
             "listing is required: the digest of the list you chose from", status=422
         )
-    now, record, bundle = _listing(mission_id)
+    now, record, bundle = _listing(mission_id, _chosen_project(mission_id, project))
     if now["listing"] != listing_digest:
         raise ProcedureError("the procedure list changed; read it again", status=409)
     if now["reason"] is not None:
@@ -451,12 +533,17 @@ def _chosen(picks: object, choices_digest: object, offered: dict) -> dict[str, d
 
 
 def resolve_picks(
-    mission_id: str, index: object, listing_digest: object, inputs: object, choices: object
+    mission_id: str,
+    index: object,
+    listing_digest: object,
+    inputs: object,
+    choices: object,
+    project: object = None,
 ) -> dict[str, dict]:
     """`{variable: choice}` for the client's positions, checked against a FRESH read of the
     offered choices (the bounded forge read). BLOCKING and possibly slow: run it off the event
     loop and outside the missions pool; it takes no missions lock."""
-    now, record, bundle = _checked_listing(mission_id, index, listing_digest)
+    now, record, bundle = _checked_listing(mission_id, index, listing_digest, project)
     offered = _input_choices(now, record, bundle, index)  # type: ignore[arg-type]
     return _chosen(inputs, choices, offered)
 
@@ -469,14 +556,15 @@ def apply_listed(
     inputs: object = None,
     choices: object = None,
     picked: dict[str, dict] | None = None,
+    project: object = None,
 ) -> dict:
     """Apply the procedure at `index` of the listing whose digest the client echoes; optionally
     with per-objective inputs picked by index (`inputs` + `choices`, checked here, or `picked`
     already checked by `resolve_picks` — the route's split, so the forge read runs off the
     missions pool and the store write through it). The listing is re-checked either way."""
     if picked is None and inputs is not None:
-        picked = resolve_picks(mission_id, index, listing_digest, inputs, choices)
-    now, record, bundle = _checked_listing(mission_id, index, listing_digest)
+        picked = resolve_picks(mission_id, index, listing_digest, inputs, choices, project)
+    now, record, bundle = _checked_listing(mission_id, index, listing_digest, project)
     assert record is not None and bundle is not None  # a listing with procedures has both
     return _apply_from(mission_id, now, record, bundle, index, picked or {})  # type: ignore[arg-type]
 
@@ -527,6 +615,7 @@ def _apply_from(
         inputs=inputs,
         items=items,
         reason=f"applied {record['playbook_id']}@{revision[:12]} · {fid}",
+        primary_project_id=now["primary_project_id"],
     )
 
 
@@ -619,15 +708,17 @@ def _with_picks(flow: dict, items: list[dict], picked: dict) -> list[dict]:
     return out
 
 
-def apply_local(mission_id: str, flow_id: object, doc: object) -> dict:
+def apply_local(mission_id: str, flow_id: object, doc: object, project: object = None) -> dict:
     """Apply a mission-local procedure the operator wrote: the bundle's own flow validator, and
     targets from the project's current bindings with bundle defaults refused."""
     scope = missions.procedure_scope(mission_id)
-    pid = scope["project_id"]
-    if not pid:
+    primary = scope["project_id"]
+    if not primary:
         raise ProcedureError(
             "the mission has no project; every objective names one (choose it first)", status=409
         )
+    # In the chosen project (#1797 S2b): ITS deployed playbook's declarations and ITS bindings.
+    pid = _chosen_project(mission_id, project) or primary
     record, bundle, reason = _deployment(pid)
     if bundle is None and reason != NO_DEPLOYMENT:
         # The project HAS a playbook, and its declarations are what a mission-local procedure may
@@ -688,6 +779,7 @@ def apply_local(mission_id: str, flow_id: object, doc: object) -> dict:
         inputs=inputs,
         items=items,
         reason=f"mission-local procedure {flow_id} added by the operator",
+        primary_project_id=primary,
     )
 
 

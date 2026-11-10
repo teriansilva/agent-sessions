@@ -9827,13 +9827,27 @@ _PROCEDURE_ORIGINS = {
 }
 
 
-def _fence_plan_project_tx(con, mission_id: str, project_id: str | None) -> None:
-    """Refuse a dispatch proposal (or its launch) in a project other than the plan's (#1777).
+def _project_usable(project_id: str) -> bool:
+    """Does the project exist, unarchived? An unreadable store is NO (fail closed, #1797)."""
+    from . import projects
 
-    Slice 1 is single-project: every objective in the plan names the mission's project, and the
-    evidence rows carry it. The dispatch proposal can name a project, and the launch stamps that
-    onto the mission — so without this, a mission whose objectives say project A could launch its
-    session in project B (Hermes on #1790). **Caller holds the transaction.**"""
+    try:
+        entity = projects.load().get(project_id)
+    except Exception:  # noqa: BLE001
+        return False
+    return entity is not None and not getattr(entity, "archived", False)
+
+
+def _fence_plan_project_tx(con, mission_id: str, project_id: str | None) -> None:
+    """Refuse a dispatch proposal (or its launch) in a project no objective of the plan names.
+
+    Every objective in the plan names its project (#1777), and since slice 2 (#1797 S2b) those
+    may differ: the mission's own project — its PRIMARY — must be one of them. The dispatch
+    proposal can name a project, and the launch stamps that onto the mission — so without this, a
+    mission whose objectives say project A could launch its session in project C (Hermes on
+    #1790). Moving it to ANOTHER named project passes. An objective whose evidence rows were
+    dropped is still in the plan document, so it still names its project. **Caller holds the
+    transaction.**"""
     latest = _latest_plan_tx(con, mission_id)
     if latest is None:
         return
@@ -9843,6 +9857,18 @@ def _fence_plan_project_tx(con, mission_id: str, project_id: str | None) -> None
             "this mission's objectives name project "
             + ", ".join(sorted(named))
             + "; the plan cannot move it to another project",
+            status=409,
+        )
+    # THE MERGE SHA IS ITS PROJECT'S (independent review of #1797 S2b). It is mission-level and
+    # write-once, recorded from the primary's own rows; moving the primary after one was recorded
+    # would hand that project's merge to another project's rows. Refused rather than re-tagged.
+    m = con.execute(
+        "SELECT project_id, merge_sha FROM missions WHERE id=?", (mission_id,)
+    ).fetchone()
+    if m is not None and m["merge_sha"] and m["project_id"] and project_id != m["project_id"]:
+        raise MissionError(
+            f"this mission already recorded a merge in project {m['project_id']}; "
+            "it cannot move to another project",
             status=409,
         )
 
@@ -10133,10 +10159,16 @@ def apply_procedure(
     inputs: list[dict],
     items: list[dict],
     reason: str,
+    primary_project_id: str | None = None,
     now: float | None = None,
     path: Path | None = None,
 ) -> dict:
     """Apply ONE procedure to a mission as one more objective (#1777 S1b) — in ONE transaction.
+
+    `project_id` is the OBJECTIVE's project; `primary_project_id` is the mission's project the
+    listing was built against (#1797 S2b: an objective may be in another project). Both are
+    re-checked inside the transaction: the mission still has that primary, and a project other
+    than it still exists, unarchived.
 
     Writes the next plan revision (every earlier objective plus this one) and this objective's
     evidence rows together, so the plan and the rows can never disagree, and a refusal writes
@@ -10144,9 +10176,10 @@ def apply_procedure(
     caller (`mission_procedures`) from a reviewed source: `{step, key, title, probe, probe_args,
     pending, gate}`. A waiting item arrives as `probe = none` with its real probe in `pending`.
 
-    Refused (409) unless the mission is still `draft`/`planned`, still in `project_id` (slice 1 is
-    single-project: the objective's project IS the mission's), and does not already hold an
-    identical objective — re-applying never duplicates (#1193).
+    Refused (409) unless the mission is still `draft`/`planned`, still in the primary the listing
+    was built against, and does not already hold an identical objective IN THE SAME PROJECT —
+    re-applying never duplicates (#1193); the same procedure in another project is another
+    objective (#1797 S2b).
     """
     from . import mission_plan_document as plan_doc
 
@@ -10177,15 +10210,27 @@ def apply_procedure(
                     "the mission has no project; every objective names one (choose it first)",
                     status=409,
                 )
-            if m["project_id"] != project_id:
+            primary = project_id if primary_project_id is None else primary_project_id
+            if m["project_id"] != primary:
                 raise MissionError(
                     "the mission's project changed since the procedures were listed", status=409
+                )
+            if project_id != m["project_id"] and not _project_usable(project_id):
+                raise MissionError(
+                    "that project is archived or no longer exists; choose a project again",
+                    status=409,
                 )
             latest = _latest_plan_tx(con, mission_id)
             prior = latest["document"] if latest else None
             objectives_so_far = list(prior["objectives"]) if prior else []
             for o in objectives_so_far:
-                if o["procedure"] == procedure and _same_inputs(con, mission_id, o, inputs):
+                # The SAME procedure in ANOTHER project is a different objective (#1797 S2b):
+                # its deployment, reviewed targets and bindings are that project's own.
+                if (
+                    o["project_id"] == project_id
+                    and o["procedure"] == procedure
+                    and _same_inputs(con, mission_id, o, inputs)
+                ):
                     raise MissionError(
                         f"objective {o['id']} already applies this procedure with these inputs",
                         status=409,

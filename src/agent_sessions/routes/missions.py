@@ -2388,29 +2388,58 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     # ---- procedures and the plan document (#1777, #1613 P4 slice 1) -------------------------
 
     @app.get("/api/missions/{mission_id}/procedures")
-    async def procedures_route(mission_id: str, _user: str = Depends(logged_in)) -> JSONResponse:
-        """The procedures this mission can apply, BY INDEX, from its project's deployed playbook,
-        with the digest of exactly this list. Read-only; a reason when there are none."""
+    async def procedures_route(
+        mission_id: str,
+        project: int | None = None,
+        projects: str = "",
+        _user: str = Depends(logged_in),
+    ) -> JSONResponse:
+        """The procedures this mission can apply, BY INDEX, from its project's deployed playbook —
+        or, with `?project=<index>&projects=<digest>` (#1797 S2b), from the project at that index
+        of `…/procedures/projects` — with the digest of exactly this list."""
         from .. import mission_procedures  # the playbook package imports late (an import cycle)
 
+        chosen = None if project is None else {"index": project, "projects": projects}
         try:
-            out = await missions.run_admitted(lambda: mission_procedures.listing(mission_id))
+            out = await missions.run_admitted(
+                lambda: mission_procedures.listing(mission_id, chosen)
+            )
+        except missions.MissionError as e:
+            return _fail(e)
+        return JSONResponse(out, headers=_NO_STORE)
+
+    @app.get("/api/missions/{mission_id}/procedures/projects")
+    async def procedure_projects_route(
+        mission_id: str, _user: str = Depends(logged_in)
+    ) -> JSONResponse:
+        """The projects an objective may be chosen in, BY INDEX (#1797 S2b): every unarchived
+        project sorted by id, folder-less ones not ready, with the digest of exactly this list."""
+        from .. import mission_procedures
+
+        try:
+            out = await missions.run_admitted(lambda: mission_procedures.project_list(mission_id))
         except missions.MissionError as e:
             return _fail(e)
         return JSONResponse(out, headers=_NO_STORE)
 
     @app.get("/api/missions/{mission_id}/procedures/{index}/inputs")
     async def procedure_inputs_route(
-        mission_id: str, index: int, listing: str = "", _user: str = Depends(logged_in)
+        mission_id: str,
+        index: int,
+        listing: str = "",
+        project: int | None = None,
+        projects: str = "",
+        _user: str = Depends(logged_in),
     ) -> JSONResponse:
         """The server-built CHOICES for each choosable input of one listed procedure (#1777 S1d,
         #1076): the deployed value plus the open, non-fork pull requests' head branches of the
         reviewed repository. An apply names a choice by its index and echoes `choices`."""
         from .. import mission_procedures
 
+        chosen = None if project is None else {"index": project, "projects": projects}
         try:
             out = await asyncio.to_thread(
-                mission_procedures.input_choices, mission_id, index, listing
+                mission_procedures.input_choices, mission_id, index, listing, chosen
             )
         except missions.MissionError as e:
             return _fail(e)
@@ -2431,6 +2460,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
 
         try:
             body = await _bounded_body(request, PROCEDURE_BODY_MAX)
+            # `project` (#1797 S2b): `{index, projects}` into `…/procedures/projects`; absent
+            # means the mission's own project. Optional in both shapes, never anything else —
+            # `null` included: present means an `{index, projects}` choice.
+            if "project" in body and not isinstance(body["project"], dict):
+                raise missions.MissionError("project is {index, projects}", status=422)
+            chosen = body.pop("project", None)
             if "mission_local" in body:
                 if set(body) != {"mission_local"}:
                     raise missions.MissionError(
@@ -2441,7 +2476,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     raise missions.MissionError("mission_local is {flow_id, flow}", status=422)
                 out = await missions.run_admitted(
                     lambda: mission_procedures.apply_local(
-                        mission_id, local["flow_id"], local["flow"]
+                        mission_id, local["flow_id"], local["flow"], chosen
                     )
                 )
             else:
@@ -2466,10 +2501,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                         body["listing"],
                         body["inputs"],
                         body["choices"],
+                        chosen,
                     )
                 out = await missions.run_admitted(
                     lambda: mission_procedures.apply_listed(
-                        mission_id, body["index"], body["listing"], picked=picked
+                        mission_id, body["index"], body["listing"], picked=picked, project=chosen
                     )
                 )
         except missions.MissionError as e:

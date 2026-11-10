@@ -123,6 +123,11 @@ def _project_checkout(project_id: str) -> str:
         entity = projects.load().get(project_id)
     except Exception:  # noqa: BLE001 — unreadable: no checkout, so the probe says `unknown`
         return ""
+    return entity_checkout(entity)
+
+
+def entity_checkout(entity) -> str:
+    """`_project_checkout` for an entity already read — one store read for a whole list."""
     if entity is None or getattr(entity, "archived", False):
         return ""
     return str(entity.default_folder or (entity.folders[0] if entity.folders else "") or "")
