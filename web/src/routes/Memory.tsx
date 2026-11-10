@@ -13,6 +13,7 @@ import { ImportCard } from "../components/memory/ImportCard";
 import { linkedFrom, TYPE_ORDER, TYPE_TAG } from "../components/memory/memoryGraph";
 import buttons from "../components/ui/actionButton.module.css";
 import { Loader } from "../components/hud/Loader";
+import { ShareActions } from "../components/share/ShareDialogs";
 import styles from "./Memory.module.css";
 
 const MemoryGraph = lazy(() => import("../components/memory/MemoryGraph"));
@@ -36,7 +37,9 @@ const message = (e: unknown) => (e instanceof Error ? e.message : "The request f
 function Writer({ session }: { session: MemorySession }) {
   const name = session.engine ? engineName(session.engine) : "unknown agent";
   const to = session.key ? sessionPathFromKey(session.key) : null;
-  const label = session.kind === "import"
+  const label = session.kind === "share"
+    ? "imported from a file"  // a share bundle's note (#1714 P4): no agent wrote it here
+    : session.kind === "import"
     ? `${name} · imported`  // taken in from the agent's own memory (#1471): no session wrote it here
     : `${name} · ${session.kind || "agent"}${session.resolved ? "" : " · session unresolved"}`;
   return to ? <Link to={to} className={styles.writer}>{label}</Link> : <span className={styles.writer}>{label}</span>;
@@ -219,8 +222,11 @@ export default function Memory() {
           <button type="button" aria-pressed={shown === "graph"} onClick={() => setMode("graph")}>Graph</button>
           <button type="button" aria-pressed={shown === "list"} onClick={() => setMode("list")}>List</button>
         </div>}
-        <a className={buttons.ghost} href={api.memoryExportUrl(view.project.id)} download><Download size={14} aria-hidden="true" /> Export</a>
-        <button type="button" className={`${buttons.ghost} ${styles.dangerButton}`} disabled={busy} onClick={e => pid && setConfirm({ kind: "clear", pid, returnTo: e.currentTarget })}>Clear…</button>
+        {/* Share bundles (#1714 P4): Import… into this project, Export… from it; the Markdown .zip
+            stays, as a link inside Export…. */}
+        <ShareActions kind="memory" memory={{ id: view.project.id, name: view.project.name, enabled: view.enabled }} onImported={() => void refresh(view.project.id)}>
+          <button type="button" className={`${buttons.ghost} ${styles.dangerButton}`} disabled={busy} onClick={e => pid && setConfirm({ kind: "clear", pid, returnTo: e.currentTarget })}>Clear…</button>
+        </ShareActions>
       </div>
     </div>
   );
@@ -298,7 +304,7 @@ export default function Memory() {
           <span className={styles.tag} data-type={n.type}>{TYPE_TAG[n.type]}</span>
           <span className={styles.rowText}>
             <span className={styles.rowName}>{n.name}</span>
-            <span className={styles.meta}>{n.session.engine ? engineName(n.session.engine) : "unknown"} · {n.session.kind === "import" ? "imported" : `${n.session.kind || "agent"}${n.session.resolved ? "" : " · unresolved"}`} · {relTime(n.updated)}</span>
+            <span className={styles.meta}>{n.session.kind === "share" ? "imported from a file" : <>{n.session.engine ? engineName(n.session.engine) : "unknown"} · {n.session.kind === "import" ? "imported" : `${n.session.kind || "agent"}${n.session.resolved ? "" : " · unresolved"}`}</>} · {relTime(n.updated)}</span>
           </span>
         </button>
       ))}

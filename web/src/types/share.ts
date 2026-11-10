@@ -1,6 +1,13 @@
 /** Share bundles (#1714): the shapes `/api/share/*` answers. */
 
-export type ShareKind = "skill" | "playbook" | "specialist" | "template" | "variable";
+export type ShareKind = "skill" | "playbook" | "specialist" | "template" | "variable" | "memory";
+
+/** What a project's memory (or a specialist's notebook in it) would send (#1714 P4): counts only. */
+export interface ShareMemoryCounts {
+  notes: number;
+  withheld: number;
+  quarantined: number;
+}
 
 /** One exportable local item and the items it needs (`"<kind>:<id>"` keys). */
 export interface ShareCatalogItem {
@@ -15,6 +22,10 @@ export interface ShareCatalogItem {
   note?: string | null;
   /** A variable whose value never leaves the install (a secret or a secret file, #1714 P3). */
   secret?: boolean;
+  /** A `memory` or `notebook` row's project (#1714 P4): local only, never in a file. */
+  project?: { id: string; name: string };
+  /** How many notes would travel and how many stay home; `null` when it can't be told. */
+  memory?: ShareMemoryCounts | null;
 }
 
 /** Copies created from a file: `"<kind>:<id>" → {bundle digest, revision}`. */
@@ -54,6 +65,40 @@ export interface SharePreviewItem {
   variable?: { kind: string; value_type: string; arrives_empty: boolean };
   /** A template (#1714 P3): its field and image counts and the library variables it uses. */
   template?: { fields: number; images: number; variables: string[] };
+  /** A project's notes (#1714 P4), each judged here: what its import would do. */
+  memory?: ShareNotesView;
+  /** A specialist's notes in that project (#1714 P4), judged the same way. */
+  notebook?: ShareNotesView;
+}
+
+/** One incoming note as the preview judged it. A held or refused note's own text is not sent. */
+export interface ShareNoteVerdict {
+  file: string;
+  verdict: "new" | "held" | "refused";
+  reason: string | null;
+  name?: string;
+  type?: string;
+  description?: string;
+}
+
+export interface ShareNotesView {
+  notes: ShareNoteVerdict[];
+  counts: { new: number; held: number; refused: number };
+}
+
+/** What happened to each note of a container at confirm (#1714 P4). */
+export interface ShareNoteOutcome {
+  file: string;
+  outcome: "created" | "already" | "held" | "refused" | "failed" | "retry" | "pending";
+  slug: string | null;
+  reason: string | null;
+}
+
+export interface ShareNotesResult {
+  /** The memory scope the notes went into: a project id, or `<project>~<specialist>`. */
+  scope: string | null;
+  notes: ShareNoteOutcome[];
+  counts: Record<ShareNoteOutcome["outcome"], number>;
 }
 
 export interface ShareChoice {
@@ -112,6 +157,8 @@ export interface ShareResultItem {
    *  (a destination taken, a pinned skill that moved): only a new preview gets past it. Absent
    *  from an older server's answer, which is treated as retriable. */
   retry?: boolean;
+  /** A memory container's notes, one outcome each (#1714 P4). */
+  memory?: ShareNotesResult;
 }
 
 export interface ShareResult {

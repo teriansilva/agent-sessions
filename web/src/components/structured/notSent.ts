@@ -17,6 +17,8 @@ export const NOT_SENT_TEXT: Readonly<Record<string, string>> = Object.freeze({
   worker_ended: "the session ended while this message waited — nothing was delivered.",
   journal_unwritable:
     "BattleLab couldn’t write this session’s record while the message waited — nothing was delivered.",
+  authority_withdrawn:
+    "the mission it was sent for withdrew its authority while it waited — nothing was delivered.",
   unexpected: "BattleLab could not hand this message to the agent — nothing was delivered.",
 });
 

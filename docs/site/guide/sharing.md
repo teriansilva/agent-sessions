@@ -1,6 +1,6 @@
-# Sharing specialists, skills, playbooks, templates and variables
+# Sharing specialists, skills, playbooks, templates, variables and memory
 
-Move specialists, skills, playbooks, prompt templates and variable definitions between BattleLab
+Move specialists, skills, playbooks, prompt templates, variable definitions and project notes between BattleLab
 installs: your own second machine, or a
 colleague's.
 You export a selection to **one file** (`*.battlelab`) and import that file on the other install
@@ -94,7 +94,35 @@ created), BattleLab asks you to **Preview again** instead of applying an out-of-
 Confirming the same preview twice is safe. Items already imported are reported as they were, and
 no second copy is made. **Retry failed items** tries only what didn't make it.
 
+## Project memory
+
+A project's shared notes travel in the same file. Open **Library → Memory**, select the project,
+and use **Export…** or **Import…** in its bar.
+
+**Export.** The project's notes start chosen. You can add the notes a specialist keeps in this
+project; that brings the specialist (and the skills it pins) along, marked **Included**. A file
+holds the memory of one project. Each note travels as its name, description, type and text: not
+the project's name or ID, and not who wrote it. A note that holds one of your stored secrets or
+looks like a key, token or password stays here, and so does every quarantined item. The picker and
+the download say only how many stayed, never which. If the secret check can't run, no memory is
+exported. The Markdown `.zip` of the notes is still there, as a link in the export dialog.
+
+**Import.** Notes go into the project open on the page, and only while its memory is on: an
+import never turns memory on. From any other Library page, a file's notes wait and say where to
+import them. The preview judges each note the way an agent's note is judged:
+
+- **New**: it will be added.
+- **Held back**: it holds one of your stored secrets or looks like a credential. It is never
+  stored and never put in the review tray, and its text isn't shown.
+- **Refused**: it isn't a note memory can hold.
+
+A note is added beside your own, never over it: one with the same name as yours gets `-2`, and one
+identical to a note you already have is left as it is (**Already here** in the result). A
+specialist's notes go into the notebook of the specialist this import creates. Each note has its
+own result, and one failed note never stops the others; **Retry failed items** tries only it.
+Imported notes read **imported from a file**. To undo an import, delete the notes you don't want.
+
 ## Coming later
 
-A project's memory notes will use the same file. Secret values will stay out unless you choose to
-include them encrypted under a passphrase you type.
+Secret values will stay out unless you choose to include them encrypted under a passphrase you
+type.

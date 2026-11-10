@@ -507,8 +507,8 @@ async def test_native_refuses_an_execution_guard_and_console_clients_stay_unsupp
     async def acquire():  # pragma: no cover — never reached
         raise AssertionError
 
-    guard = ExecutionGuard("mission-grant", acquire)
-    with pytest.raises(runtime.StructuredError, match="caller authority"):
+    guard = ExecutionGuard("mission-grant", acquire)  # in-process only: no `admit` (#1897)
+    with pytest.raises(runtime.StructuredError, match="authority can't be checked"):
         await runtime.create_session(
             ENGINES["codex"], str(project), operation_id=ident(), execution_admission=guard
         )

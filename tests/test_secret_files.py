@@ -859,3 +859,80 @@ def test_an_emptied_current_blob_is_kept_for_the_operator(tmp_home):
     store.sweep_secret_files()
     assert blob.exists()
     assert variables.library()["variables"][0]["needs_reentry"] is True
+
+
+# ---- #1868: the value of a short key line is a fragment of its own ------------------------------
+
+
+@pytest.mark.parametrize(
+    ("line", "value"),
+    [
+        ("DB_PASSWORD=Hunter2Deploy", "Hunter2Deploy"),
+        ("export DB_PASSWORD=Hunter2Deploy", "Hunter2Deploy"),
+        ("DB_PASSWORD = Hunter2Deploy", "Hunter2Deploy"),
+        ('DB_PASSWORD="Hunter2 Deploy"', "Hunter2 Deploy"),
+        ("DB_PASSWORD='Hunter2Deploy'", "Hunter2Deploy"),
+        ("DB_PASSWORD=Hunter2Deploy # rotated monthly", "Hunter2Deploy"),
+        ("  password: Xk7pQ9wz12", "Xk7pQ9wz12"),
+        ("- password: Xk7pQ9wz12", "Xk7pQ9wz12"),
+        ('  password: "Xk7p:Q9wz12"', "Xk7p:Q9wz12"),
+        ("TOKEN=a1=b=c=d=e", "a1=b=c=d=e"),
+        ('DB_PASSWORD="Hunter2Deploy" # rotated', "Hunter2Deploy"),
+        ("  password: 'Xk7pQ9wz12'  # rotated", "Xk7pQ9wz12"),
+        ("DB_PASSWORD=Hunter2Deploy\t# rotated", "Hunter2Deploy"),
+        ("PIN_CODE=Abc12345", "Abc12345"),  # exactly SECRET_MIN
+        ("REGION=us-east-1a", "us-east-1a"),  # letters and digits: an accepted false positive
+    ],
+)
+def test_the_value_of_a_key_line_is_redacted_when_printed_alone(tmp_home, line, value):
+    text = f"# deploy settings\n{line}\nOTHER=1\n"
+    upload(define("deploy_env"), text.encode(), ".env")
+    values = template_secrets.redaction_values()
+    assert value in values
+    assert value not in template_secrets.redact_text(f"use {value} here", values)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "SHORT=Abc12345"[:-1],  # a 7-character value: below SECRET_MIN, never an entry alone
+        "metadata:",
+        "kind: Secret",
+        "url: https:",
+        "key: |",
+        "# comment=Hunter2Deploy",
+        "NODE_ENV=production",
+        "user: kubernetes-admin",
+    ],
+)
+def test_short_values_structure_and_comments_add_no_value_entry(tmp_home, line):
+    upload(define("deploy_env"), f"{line}\nFILLER_LINE_THAT_IS_LONG=1\n".encode(), ".env")
+    values = set(template_secrets.redaction_values())
+    for value in (
+        "Abc1234",
+        "Secret",
+        "https:",
+        "|",
+        "Hunter2Deploy",
+        "production",
+        "kubernetes-admin",
+    ):
+        assert value not in values
+
+
+def test_a_single_line_secret_has_no_value_fragment(tmp_home):
+    # A single-line value is redacted whole; it is never parsed as a key line.
+    assert template_secrets.fragments("PASSWORD=Hunter2Deploy") == []
+
+
+def test_a_letters_only_value_never_blocks_ordinary_work(tmp_home):
+    """#1868 review: the redaction set also drives refusals (labels) and quarantines; a common
+    word from a secret file must not become a stand-alone entry. Both orders."""
+    variables.create(
+        {"name": "api_key", "kind": "text", "definition": {"help": "API key for production"}}
+    )
+    upload(define("deploy_env"), b"NODE_ENV=production\nDB_PASSWORD=Hunter2Deploy\n", ".env")
+    later = variables.create(
+        {"name": "dash", "kind": "text", "definition": {"help": "the production dashboard"}}
+    )
+    assert later["name"] == "dash"

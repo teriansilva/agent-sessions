@@ -437,13 +437,56 @@ _FRAGMENT_RE = re.compile(r"[A-Za-z0-9+/=_\-.]{20,}")
 _ARMOUR_RE = re.compile(r"-----(?:BEGIN|END) [A-Z0-9 ]+-----")
 
 
+#: A key line of a multi-line secret (#1868): `.env` (`KEY=value`, `export KEY=value`) or YAML
+#: (`key: value`, `- key: value`). The key is a word; `=` may have spaces around it, `:` needs one
+#: after it (so `https://…` is no key line). Group `v` is everything after the separator.
+_KEY_LINE_RE = re.compile(
+    r"(?:export\s+|-\s+)?[A-Za-z_][A-Za-z0-9_.\-]*(?:\s*=\s*|:\s+)(?P<v>\S.*)"
+)
+
+
+def _key_value(line: str) -> str | None:
+    """The value of a stripped key line, as a program would read it, or None. A quoted value is
+    what lies between its opening quote and the matching closing one, whatever follows (a
+    comment): the unquoted spelling is what gets printed. An unquoted value ends at whitespace
+    followed by `#` (a comment). A comment line is no key line."""
+    if line.startswith("#"):
+        return None
+    m = _KEY_LINE_RE.fullmatch(line)
+    if m is None:
+        return None
+    v = m.group("v").strip()
+    if v[0] in "\"'":
+        close = v.find(v[0], 1)
+        return (v[1:close] if close > 0 else v[1:]).strip()
+    return _COMMENT_RE.split(v, 1)[0].strip()
+
+
+#: Where an unquoted value's trailing comment starts.
+_COMMENT_RE = re.compile(r"\s#")
+
+
+def _value_entry(value: str) -> bool:
+    """Whether a key line's value is a redaction entry of its own (#1868): at least `SECRET_MIN`
+    long, with letters AND digits. A letters-only value (`production`, `kubernetes-admin`,
+    `localhost`) is not: the redaction set also drives refusals and quarantines (labels, the
+    share export, memory ingest), and a common word there would block ordinary work. It stays
+    redacted as part of its whole line; printed alone, it is the documented residual."""
+    return (
+        len(value) >= SECRET_MIN
+        and any(c.isalpha() for c in value)
+        and any(c.isdigit() for c in value)
+    )
+
+
 def fragments(value: str) -> list[str]:
     """What an agent printing a MULTI-LINE value line by line would still show (#1786): every
-    complete line of at least ``SECRET_MIN`` characters (stripped), except PEM armour, and every
-    credential-alphabet run of 20+ characters. Contract decision (Hermes 7394, 4): a line of a
-    secret is redacted wherever it appears, even an ordinary-looking one such as
-    ``apiVersion: v1`` — over-redacting text is the safe failure. A single-line value has none
-    (the value itself is redacted)."""
+    complete line of at least ``SECRET_MIN`` characters (stripped), except PEM armour, every
+    credential-alphabet run of 20+ characters, and the value of every key line (`KEY=value`,
+    `key: value`, #1868) that is that long and has letters and digits (`_value_entry`).
+    Contract decision (Hermes 7394, 4): a line of a secret is redacted wherever it appears,
+    even an ordinary-looking one such as ``apiVersion: v1`` — over-redacting text is the safe
+    failure. A single-line value has none (the value itself is redacted)."""
     if "\n" not in value:
         return []
     out = {m.group(0) for m in _FRAGMENT_RE.finditer(value)}
@@ -451,6 +494,11 @@ def fragments(value: str) -> list[str]:
         line = line.strip()
         if len(line) >= SECRET_MIN and not _ARMOUR_RE.fullmatch(line):
             out.add(line)
+        # The value of a key line (#1868): `DB_PASSWORD=Hunter2Deploy` printed as just
+        # `Hunter2Deploy`, when it has letters and digits (`_value_entry`).
+        kv = _key_value(line)
+        if kv is not None and _value_entry(kv):
+            out.add(kv)
     return sorted(out)
 
 

@@ -27,12 +27,20 @@ class ExecutionGuard:
 
     binding: str
     acquire: Callable[[], AbstractAsyncContextManager[Callable[[], None]]]
+    #: For a client whose turn is claimed in ANOTHER process (native workers, #1897): a blocking,
+    #: bounded call run off the loop that performs the caller's domain check inside its write
+    #: fence and returns the durable authority tokens the worker re-checks at its claim
+    #: (`session_input.admit_native`). It raises when authority is withdrawn. A guard without it
+    #: cannot fence a native turn, and a native client refuses it.
+    admit: Callable[[], dict] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.binding, str) or not _IDENTIFIER.fullmatch(self.binding):
             raise ValueError("execution authority needs a bounded opaque binding")
         if not callable(self.acquire):
             raise ValueError("execution authority needs a server admission factory")
+        if self.admit is not None and not callable(self.admit):
+            raise ValueError("execution authority's cross-process admission must be callable")
 
 
 def normalize_context(value: object = None) -> dict:

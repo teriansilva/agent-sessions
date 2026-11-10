@@ -164,7 +164,8 @@ export function newImportMemory(): ImportMemory {
 /** Files this item would import that the preview couldn't show (too large for the preview's text
  *  budget, or not text): they can't be reviewed before confirm. */
 export function unshown(item: SharePreviewItem): number {
-  return item.files.filter((f) => typeof f.text !== "string").length;
+  // A withheld file (a note memory would hold back or refuse, #1714 P4) is never imported.
+  return item.files.filter((f) => typeof f.text !== "string" && !f.withheld).length;
 }
 
 /** One memory for the whole page (Skills and Playbooks alike); a reload starts it empty, and the
@@ -201,3 +202,58 @@ export function choiceProblem(item: SharePreviewItem, choice: ShareChoice, agent
 
 /** Library → Variables, filtered to one variable (where an empty secret is filled in). */
 export const variableLink = (name: string) => `${VARIABLES_PATH}?q=${encodeURIComponent(name)}`;
+
+// ---- project memory (#1714 P4) ------------------------------------------------------------------
+
+/** The kinds that are containers of notes: imported one note at a time into a project. */
+export const CONTAINERS: ReadonlySet<string> = new Set(["memory", "notebook"]);
+export const isContainer = (item: { kind: string }) => CONTAINERS.has(item.kind);
+
+/** The project a file's notes go into: the one open on Library → Memory. */
+export interface NotesInto {
+  id: string;
+  name: string;
+  /** Whether its memory is on; an import never turns it on. */
+  enabled: boolean;
+}
+
+/** The preview as this page can import it: a file's notes need a project whose memory is on, so
+ *  without one (any other Library section, or memory off) each notes item is refused here, saying
+ *  where or how it can be imported. The server refuses the same at confirm. */
+export function notesRule(preview: SharePreview, into?: NotesInto): SharePreview {
+  const reason = !into
+    ? "Notes go into a project. Import this file from Library → Memory, with that project open."
+    : !into.enabled
+      ? `Memory is off for ${into.name}. Turn it on (the switch on this page) to import notes into it; an import never turns it on.`
+      : null;
+  if (!reason || !preview.items.some((i) => isContainer(i) && i.status !== "refused")) return preview;
+  return {
+    ...preview,
+    items: preview.items.map((i) =>
+      isContainer(i) && i.status !== "refused" ? { ...i, status: "refused", reason } : i,
+    ),
+  };
+}
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** "15 notes travel · 2 held back by the secret check · 1 quarantined item stays" */
+export function memoryCountsText(c: { notes: number; withheld: number; quarantined: number }): string {
+  return [
+    `${plural(c.notes, "note travels", "notes travel")}`,
+    c.withheld ? `${c.withheld} held back by the secret check` : "",
+    c.quarantined ? `${plural(c.quarantined, "quarantined item stays", "quarantined items stay")}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** What an export left out of the memory it carries, as a sentence (counts only, never which). */
+export function leftOutText(c: { withheld: number; quarantined: number }): string {
+  if (!c.withheld && !c.quarantined) return "";
+  const parts = [
+    c.withheld ? `${plural(c.withheld, "note was", "notes were")} held back by the secret check` : "",
+    c.quarantined ? `${plural(c.quarantined, "quarantined item", "quarantined items")} stayed here` : "",
+  ].filter(Boolean);
+  return ` ${parts.join("; ")}.`;
+}

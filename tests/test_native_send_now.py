@@ -366,7 +366,7 @@ def prepared_worker(conversation, monkeypatch):
     worker.codec = codex_running()
     worker.ready.set()
     monkeypatch.setattr(worker, "gate_open", lambda: True)
-    monkeypatch.setattr(worker, "queued_admission", contextlib.nullcontext)
+    monkeypatch.setattr(worker, "queued_admission", lambda *_a: contextlib.nullcontext())
     native_journal.claim(root, journal_tests.request(binding, operation_id=OPERATION))
     queued = journal_tests.request(binding, revision=native_journal.read(root, sid).revision)
     native_journal.claim(root, queued, queued=True)
@@ -406,7 +406,7 @@ async def test_send_now_admission_refusal_is_definite_and_keeps_the_queue(
     worker, queued, control = prepared_worker(conversation, monkeypatch)
 
     @contextlib.contextmanager
-    def refuse():
+    def refuse(_params=None):  # the promoted message it admits (#1897)
         raise native_worker.AdmissionRefused(code)
         yield  # pragma: no cover
 
@@ -634,7 +634,7 @@ def background_worker(conversation, monkeypatch, kind):
     worker.codec = _agent_turn_codec(kind)
     worker.ready.set()
     monkeypatch.setattr(worker, "gate_open", lambda: True)
-    monkeypatch.setattr(worker, "queued_admission", contextlib.nullcontext)
+    monkeypatch.setattr(worker, "queued_admission", lambda *_a: contextlib.nullcontext())
     queued = journal_tests.request(binding, revision=native_journal.read(root, sid).revision)
     native_journal.claim(root, queued, queued=True)
     worker.queued.append(queued["params"])
@@ -1068,3 +1068,32 @@ async def test_a_replayed_control_answers_from_its_receipt_after_the_head_change
     # The steered head left the queue; the second is head now. The SAME control again:
     again = await worker.effect(first)
     assert again["result"] == sent["result"] and len(writes) == 1
+
+
+@pytest.mark.anyio
+async def test_a_queued_handoff_releases_authority_only_after_its_uncertain_record(
+    conversation, monkeypatch
+):
+    """#1897: the caller-authority lock held across a queued handoff is released once the
+    `uncertain` record is durable, and never before it (a withdrawal returning earlier could
+    commit while the message is still on its way to being recorded)."""
+    worker, queued, _ = prepared_worker(conversation, monkeypatch)
+    worker.codec.native_turn_id = None
+    worker.codec.operation_id = None  # idle: the queued message goes as a new turn
+    order = []
+    real = native_journal.record_handoff
+
+    def record(root, binding, operation_id, handoff, **kw):
+        out = real(root, binding, operation_id, handoff, **kw)
+        order.append(("record", handoff))
+        return out
+
+    async def write(_frame):
+        order.append(("write",))
+
+    monkeypatch.setattr(native_journal, "record_handoff", record)
+    monkeypatch.setattr(worker, "write", write)
+    await worker.handoff(
+        "submit", queued["params"], queued=True, on_durable=lambda: order.append(("release",))
+    )
+    assert order[:3] == [("record", "uncertain"), ("release",), ("write",)], order

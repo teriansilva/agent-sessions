@@ -1183,9 +1183,11 @@ async def create(
     ):
         raise NativeError(422, "effort must be a level identifier")
     if execution_admission is not None:
-        raise NativeError(
-            409, "native clients cannot enforce caller authority across processes yet"
-        )
+        # A create starts a worker, not a turn: the caller's authority is checked now (#1897),
+        # and the first guarded TURN is the fenced effect. Guarded work never skips permissions.
+        if bypass:
+            raise NativeError(422, "guarded work can't skip permission prompts")
+        await _admit(execution_admission)
     cwd, model = _validate_create(cwd, model)
     timings = launchtiming.start(engine_id, "create")
     # Set once a background waiter owns the rest of this start (and its timing line).
@@ -2034,6 +2036,21 @@ async def _effect(
                 remedy="retry",
             )
         try:
+            if action == "submit" and "authority" in params:
+                # An older worker can't check a caller's authority (#1897): refuse, never send the
+                # turn unchecked and never let its closed frame reject it as a lost request.
+                life = await asyncio.to_thread(native_state.read_lifecycle, gen.worker_id)
+                if life.get("authority") is not True:
+                    worker = native_containment.WorkerIdentity(gen.worker_id)
+                    if not await asyncio.to_thread(HOST.worker_running, worker, life.get("pid")):
+                        raise _Unreachable("the old worker exited")
+                    raise NativeError(
+                        409,
+                        "this session's worker predates mission authority checks: stop and"
+                        " resume it, then send again",
+                        reason=native_ipc.AUTHORITY_UNSUPPORTED,
+                        remedy="stop_resume",
+                    )
             if action == "submit" and any(
                 a["mime"] == native_attachments.FILE_MIME for a in params.get("attachments") or ()
             ):
@@ -2939,6 +2956,8 @@ NOT_SENT_REASONS = {
     "journal_unwritable": (
         "BattleLab couldn't write this session's record while the message waited"
     ),
+    # #1897: a guarded (mission) message whose caller's authority was withdrawn while it waited.
+    "authority_withdrawn": "the mission it was sent for withdrew its authority while it waited",
     "unexpected": "BattleLab could not hand this message to the agent",
 }
 
@@ -3540,6 +3559,31 @@ def _prepare_journal(prov, session_id: str) -> None:
         raise NativeError(404 if exc.code == "unavailable" else 503, exc.detail) from None
 
 
+async def _admit(guard) -> dict:
+    """The caller's cross-process admission (#1897), off the loop. A refusal is a known
+    non-send with a closed reason: nothing was claimed."""
+    admit = getattr(guard, "admit", None)
+    if admit is None:
+        raise NativeError(409, "this caller's authority can't be checked across processes")
+    from . import session_input
+
+    try:
+        tokens = await asyncio.to_thread(admit)
+    except session_input.AuthorityRefused as exc:
+        raise NativeError(409, f"not sent: {exc}", reason=native_ipc.AUTHORITY_WITHDRAWN) from None
+    except (native_state.StateError, OSError, session_input.AuthorityFenceBusy) as exc:
+        raise NativeError(
+            503, "the caller's authority could not be checked; nothing was sent", remedy="retry"
+        ) from exc
+    if (
+        not isinstance(tokens, dict)
+        or set(tokens) != {"session", "policy"}
+        or not all(isinstance(v, str) for v in tokens.values())
+    ):
+        raise NativeError(503, "the caller's authority answer is malformed; nothing was sent")
+    return tokens
+
+
 def _replay(journal: native_journal.Journal, operation_id: str, request: dict) -> dict | None:
     previous = journal.operations.get(operation_id)
     if previous is None:
@@ -3565,10 +3609,8 @@ async def submit(
     """``attachments``: files/pictures already admitted by ``native_attachments.admit``.
     ``reply_to``: the async question this message answers (#1463); the journal admits it only
     while that question is still open."""
-    if execution_admission is not None:
-        raise NativeError(
-            409, "native clients cannot enforce caller authority across processes yet"
-        )
+    if execution_admission is not None and getattr(execution_admission, "admit", None) is None:
+        raise NativeError(409, "this caller's authority can't be checked across processes")
     try:
         native_protocol.validate_text(text, allow_empty=bool(attachments))
     except native_protocol.ProtocolError as exc:
@@ -3579,11 +3621,18 @@ async def submit(
     permission_operation = _permission_change(record).get("operation_id")
     if _permission_change(record).get("state") == "stopping":
         raise NativeError(409, "finish enabling Skip permissions before sending another message")
+    if execution_admission is not None and _effective_bypass(record):
+        # Guarded work never runs without permission prompts (#1897, #1613 D8). A change that
+        # races this check moves `permission_operation`, which `_effect` refuses.
+        raise NativeError(409, "guarded work can't run in a session that skips permission prompts")
     params = {"text": text, "context": context or {}}
     if attachments:
         params["attachments"] = attachments
     if reply_to is not None:
         params["reply_to"] = reply_to
+    if execution_admission is not None:
+        # The binding is part of the turn's identity; its tokens are not (they are per attempt).
+        params["authority"] = execution_admission.binding
     try:
         immutable = native_ipc.normalize_immutable_request({"action": "submit", "params": params})
     except native_ipc.IPCError as exc:
@@ -3616,12 +3665,21 @@ async def submit(
         # Before anything is launched or claimed (#1733): make room for this claim. A rollover
         # that cannot be written is a KNOWN refusal — nothing was claimed or sent.
         await asyncio.to_thread(_prepare_journal, prov, session_id)
+        authority = {}
+        if execution_admission is not None:
+            # After the replay check (an exact repeat observes, it needs no authority), and fresh
+            # for every attempt: the worker compares these at its claim (#1897).
+            tokens = await _admit(execution_admission)
+            authority = {
+                "authority_session": tokens["session"],
+                "authority_policy": tokens["policy"],
+            }
         try:
             receipt = await _effect(
                 engine_id,
                 session_id,
                 "submit",
-                {**params, "operation_id": turn_id, "expected_revision": revision},
+                {**params, **authority, "operation_id": turn_id, "expected_revision": revision},
                 permission_operation,
             )
             break

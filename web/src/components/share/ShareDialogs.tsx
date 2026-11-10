@@ -1,5 +1,5 @@
 /** Export… / Import… for the Library sections (#1714: skills and playbooks P1, specialists P2,
- *  prompt templates and variables P3; boards in the issue).
+ *  prompt templates and variables P3; project memory P4; boards in the issue).
  *
  *  Export: pick items; whatever a chosen item needs is shown as included and can't be unticked on
  *  its own; the server writes one `.battlelab` file. Import: choose a file → the server verifies
@@ -23,7 +23,7 @@ import {
   X,
 } from "lucide-react";
 import { api, ApiError } from "../../lib/api";
-import { playbookPath, SKILLS_PATH, specialistPath, TEMPLATES_PATH } from "../../lib/routes";
+import { MEMORY_PATH, playbookPath, SKILLS_PATH, specialistPath, TEMPLATES_PATH } from "../../lib/routes";
 import type {
   ShareCatalog,
   ShareChoice,
@@ -33,6 +33,7 @@ import type {
   ShareResult,
   ShareResultItem,
 } from "../../types/share";
+import { ShareNotes, ShareNotesOutcome } from "./ShareNotes";
 import buttons from "../ui/actionButton.module.css";
 import hud from "../HudDialog.module.css";
 import {
@@ -47,6 +48,7 @@ import {
 } from "./shareRules";
 import { sharedImportMemory, unshown, variableLink, type ImportMemory } from "./shareRules";
 import { choiceProblem, NO_CHOICE } from "./shareRules";
+import { CONTAINERS, isContainer, leftOutText, memoryCountsText, notesRule, type NotesInto } from "./shareRules";
 import { SettleFields } from "./SettleFields";
 import { eligibleFor, useEngineRoster } from "../../app/engineRoster";
 import styles from "./share.module.css";
@@ -57,6 +59,8 @@ const KIND_LABEL: Record<string, string> = {
   specialist: "Specialist",
   template: "Template",
   variable: "Variable",
+  memory: "Memory",
+  notebook: "Notes",
 };
 const GROUP_LABEL: Record<string, string> = {
   skill: "Skills",
@@ -64,6 +68,8 @@ const GROUP_LABEL: Record<string, string> = {
   specialist: "Specialists",
   template: "Templates",
   variable: "Variables",
+  memory: "Project memory",
+  notebook: "Specialist notes",
 };
 /** The picker's group order for each Library section: its own kind first, then what it needs. */
 const ORDER: Record<string, string[]> = {
@@ -72,6 +78,8 @@ const ORDER: Record<string, string[]> = {
   specialist: ["specialist", "skill", "playbook", "template", "variable"],
   template: ["template", "variable", "skill", "playbook", "specialist"],
   variable: ["variable", "template", "skill", "playbook", "specialist"],
+  // #1714 P4: a project's notes, its specialists' notebooks, and what a notebook brings along.
+  memory: ["memory", "notebook", "specialist", "skill"],
 };
 /** A row's kind badge: a variable whose value never travels reads "Secret" (#1714 P3). */
 const badge = (kind: string, secret = false) => (kind === "variable" && secret ? "Secret" : KIND_LABEL[kind] ?? kind);
@@ -80,6 +88,7 @@ function needsText(item: { kind: string; depends_on: string[] }): string {
   const n = item.depends_on.length;
   if (!n) return "";
   const variables = item.depends_on.every((d) => d.startsWith("variable:"));
+  if (item.kind === "notebook") return ` · needs specialist ${item.depends_on[0].slice(item.depends_on[0].indexOf(":") + 1)}`;
   const verb = item.kind === "specialist" ? "pins" : variables ? "uses" : "needs";
   const noun = variables ? "variable" : "skill";
   return ` · ${verb} ${n} ${noun}${n === 1 ? "" : "s"}`;
@@ -172,7 +181,16 @@ function Banner({
 
 // ---- export -------------------------------------------------------------------------------------
 
-function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void }) {
+function ExportDialog({
+  kind,
+  onClose,
+  memory,
+}: {
+  kind: ShareKind;
+  onClose: () => void;
+  /** Library → Memory (#1714 P4): the project open on the page; only its memory is offered. */
+  memory?: NotesInto;
+}) {
   const [catalog, setCatalog] = useState<ShareCatalog | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -191,10 +209,13 @@ function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void 
           const parsed = asCatalog(value);
           if (!parsed) setError("The list of exportable items could not be read.");
           setCatalog(parsed);
+          // On Library → Memory, the open project's notes start chosen (#1714 P4 board A).
+          const own = parsed?.items.find((i) => i.kind === "memory" && i.id === memory?.id && i.exportable);
+          if (own) setChosen(new Set([keyOf(own)]));
         })
         .catch((e: unknown) => live.current && setError(errorText(e)))
         .finally(() => live.current && setLoading(false)),
-    [],
+    [memory?.id],
   );
   useEffect(() => {
     void fetchCatalog();
@@ -204,12 +225,25 @@ function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void 
     setError("");
     void fetchCatalog();
   };
-  const items = useMemo(() => catalog?.items ?? [], [catalog]);
+  // A file carries one project's memory: Library → Memory offers the open project's only, and no
+  // other section offers memory at all (its ORDER has no memory groups).
+  const items = useMemo(
+    () => (catalog?.items ?? []).filter((i) => !CONTAINERS.has(i.kind) || (!!memory && i.project?.id === memory.id)),
+    [catalog, memory],
+  );
+  const hasMemory = items.some((i) => CONTAINERS.has(i.kind));
   const included = useMemo(() => closure(items, chosen), [items, chosen]);
+  // On Library → Memory a row of another kind shows only when a chosen notebook brings it along
+  // (its specialist, that specialist's skills): the picker is the project's memory, never the
+  // whole library (#1714 P4 board A).
+  const offered = useCallback(
+    (i: (typeof items)[number]) => !memory || CONTAINERS.has(i.kind) || included.has(keyOf(i)),
+    [memory, included],
+  );
   const needle = filter.trim().toLowerCase();
   const order = ORDER[kind] ?? ORDER.skill;
-  const hasSpecialists = items.some((i) => i.kind === "specialist");
-  const hasTexts = items.some((i) => i.kind === "template" || i.kind === "variable");
+  const hasSpecialists = items.some((i) => i.kind === "specialist" && offered(i));
+  const hasTexts = items.some((i) => (i.kind === "template" || i.kind === "variable") && offered(i));
   const total = chosen.size + included.size;
   const toggle = (key: string) =>
     setChosen((old) => {
@@ -223,9 +257,12 @@ function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void 
     setError("");
     try {
       const keys = [...chosen];
-      const blob = await api.shareExport(
-        keys.map((k) => ({ kind: k.split(":")[0], id: k.slice(k.indexOf(":") + 1) })),
-      );
+      let leftOut: { withheld: number; quarantined: number } | null = null;
+      const wanted = keys.map((k) => ({ kind: k.split(":")[0], id: k.slice(k.indexOf(":") + 1) }));
+      // Only an export that carries memory asks for what it left out (#1714 P4).
+      const blob = wanted.some(isContainer)
+        ? await api.shareExport(wanted, (counts) => void (leftOut = counts))
+        : await api.shareExport(wanted);
       const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "").replace("T", "-");
       const name = `battlelab-${stamp}.battlelab`;
       const url = URL.createObjectURL(blob);
@@ -236,7 +273,8 @@ function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void 
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10_000);
-      if (live.current) setDone(`Downloaded ${name} with ${total} item${total === 1 ? "" : "s"}.`);
+      if (live.current)
+        setDone(`Downloaded ${name} with ${total} item${total === 1 ? "" : "s"}.${leftOut ? leftOutText(leftOut) : ""}`);
     } catch (e) {
       if (live.current) setError(errorText(e));
     } finally {
@@ -285,17 +323,18 @@ function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void 
         </p>
       )}
       {loading && !catalog && <p role="status" className={styles.prose}>Loading your library…</p>}
-      {catalog && !items.length && (
+      {catalog && !items.some(offered) && (
         <div className={styles.drop}>
           <FileText size={28} aria-hidden />
           <b>Nothing to export yet</b>
           <span>
-            Create a skill, a playbook, a specialist, a prompt template or a variable, or add one
-            from the gallery; it will be listed here.
+            {memory
+              ? `${memory.name} has no notes to export yet. Notes agents leave here will be listed.`
+              : "Create a skill, a playbook, a specialist, a prompt template or a variable, or add one from the gallery; it will be listed here."}
           </span>
         </div>
       )}
-      {!!items.length && (
+      {items.some(offered) && (
         <input
           className={styles.filter}
           type="search"
@@ -309,6 +348,7 @@ function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void 
         const rows = items.filter(
           (i) =>
             i.kind === k &&
+            offered(i) &&
             (!needle || `${i.title} ${i.id}`.toLowerCase().includes(needle) || included.has(keyOf(i)) || chosen.has(keyOf(i))),
         );
         if (!rows.length) return null;
@@ -348,8 +388,10 @@ function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void 
                       </span>
                       <span className={styles.line}>
                         {locked
-                          ? `Included — ${by!.every((b) => b.startsWith("specialist:")) ? "pinned" : "needed"} by ${by!.map((b) => b.slice(b.indexOf(":") + 1)).join(", ")}`
-                          : `${i.id}${i.source !== "local" ? ` · ${i.source}` : ""}${needsText(i)}`}
+                          ? `Included — ${by!.every((b) => b.startsWith("specialist:")) ? "pinned" : "needed"} by ${by!.map((b) => (b.startsWith("notebook:") ? "its notes" : b.slice(b.indexOf(":") + 1))).join(", ")}`
+                          : CONTAINERS.has(i.kind)
+                            ? `${i.memory ? memoryCountsText(i.memory) : "Can't be counted now"}${needsText(i)}`
+                            : `${i.id}${i.source !== "local" ? ` · ${i.source}` : ""}${needsText(i)}`}
                       </span>
                       {i.exportable && i.note && (
                         <span className={styles.why} data-testid="share-export-note">
@@ -373,6 +415,24 @@ function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void 
           </section>
         );
       })}
+      {hasMemory && (
+        <Banner icon={<FileText size={16} aria-hidden />} title="What memory carries.">
+          Each note's name, description, type and text — not the project's name or ID, and not who
+          wrote it. A note that holds one of your stored secrets or looks like a credential stays
+          here, and so does every quarantined item: they are only counted, never named.
+        </Banner>
+      )}
+      {memory && (
+        // The read view as Markdown files, as the bar's Export link was: there whatever the share
+        // catalog answers.
+        <p className={styles.prose}>
+          Or{" "}
+          <a className={styles.open} href={api.memoryExportUrl(memory.id)} download data-testid="share-memory-zip">
+            download {memory.name}'s notes as Markdown (.zip)
+          </a>
+          , the read view as files.
+        </p>
+      )}
       {hasSpecialists && (
         <Banner icon={<FileText size={16} aria-hidden />} title="What a specialist carries.">
           The job: its title, summary, capacity and pinned skills, exactly at the versions it pins.
@@ -389,7 +449,7 @@ function ExportDialog({ kind, onClose }: { kind: ShareKind; onClose: () => void 
           and passwords; one that holds any stays here.
         </Banner>
       )}
-      {!!items.length && (
+      {items.some(offered) && (
         <Banner tone="warn" icon={<AlertTriangle size={16} aria-hidden />} title="Check the text for secrets before you share it.">
           Specialists, skills and playbooks travel exactly as written. A token, password or key
           pasted into one of their files goes into the bundle with it, even when it is the value of
@@ -438,6 +498,7 @@ function linkTo(item: { kind: string; dest: string | null }): string | null {
   if (item.kind === "specialist") return specialistPath(item.dest);
   if (item.kind === "template") return `${TEMPLATES_PATH}/${encodeURIComponent(item.dest)}`;
   if (item.kind === "variable") return variableLink(item.dest);
+  if (CONTAINERS.has(item.kind)) return `${MEMORY_PATH}?project=${encodeURIComponent(item.dest)}`;
   return null;
 }
 
@@ -476,6 +537,10 @@ function Files({ item }: { item: SharePreviewItem }) {
           </span>
           {typeof f.text === "string" ? (
             <pre>{f.text}</pre>
+          ) : f.withheld ? (
+            <span className={styles.why} data-testid="share-file-withheld">
+              Held back or refused: it is never imported, and its text isn't shown.
+            </span>
           ) : (
             <span className={styles.why}>
               {f.binary
@@ -499,7 +564,11 @@ function PreviewRow({
   usedBy = null,
   settle,
   needsChoice = false,
+  into,
 }: {
+  /** A memory container (#1714 P4): where its notes go, in words ("Alpha", "implementer-2's
+   *  notebook in Alpha"). */
+  into?: string;
   already?: string;
   /** A specialist's agent/model/effort fields (#1714 P2), shown while it is to be imported. */
   settle?: ReactNode;
@@ -529,9 +598,12 @@ function PreviewRow({
       <span className={`${styles.stamp} ${styles.warn}`}>Choose agent</span>
     ) : item.status === "renamed" ? (
       <span className={`${styles.stamp} ${styles.warn}`}>Renamed</span>
+    ) : isContainer(item) ? (
+      <span className={`${styles.stamp} ${styles.ok}`}>Notes</span>
     ) : (
       <span className={`${styles.stamp} ${styles.ok}`}>New copy</span>
     );
+  const notes = item.memory ?? item.notebook;
   const emptyStamp =
     empty && state.state === "import" ? (
       <span className={`${styles.stamp} ${styles.warn}`} data-testid="share-arrives-empty">
@@ -562,8 +634,22 @@ function PreviewRow({
           {item.title}
         </span>
         <span className={styles.line}>
+          {notes ? (
+            <>
+              {notes.counts.new} new
+              {notes.counts.held ? ` · ${notes.counts.held} held back` : ""}
+              {notes.counts.refused ? ` · ${notes.counts.refused} refused` : ""}
+              {into ? (
+                <>
+                  {" → into "}
+                  <b>{into}</b>
+                </>
+              ) : null}
+            </>
+          ) : (
           <b>{item.id}</b>
-          {reused ? (
+          )}
+          {notes ? null : reused ? (
             <>
               {" → already here as "}
               <b>{item.dest}</b>
@@ -628,6 +714,13 @@ function PreviewRow({
           </span>
         )}
         {state.state === "import" && settle}
+        {notes && !serverRefused && <ShareNotes view={notes} label={`Notes in ${item.title}`} />}
+        {notes && !serverRefused && state.state === "import" && (
+          <span className={styles.why}>
+            Each note is added beside your own: one with the same name as yours gets <code>-2</code>, and
+            one identical to a note here is left as it is. Nothing is overwritten or merged.
+          </span>
+        )}
         {!serverRefused && !reused && <Files item={item} />}
       </div>
       <div className={styles.state}>
@@ -653,15 +746,22 @@ function ResultRow({
   onOpen,
   empty = false,
   secret = false,
+  notes,
 }: {
   item: ShareResultItem;
   onOpen: () => void;
+  /** The preview's view of a memory container, to name its notes (#1714 P4). */
+  notes?: SharePreviewItem["memory"];
   /** A variable created without a value (a secret always): its link says to set it. */
   empty?: boolean;
   secret?: boolean;
 }) {
   const o = OUTCOME[item.status] ?? OUTCOME.failed;
-  const href = item.status === "created" ? linkTo(item) : null;
+  const tally = item.memory;
+  const href =
+    item.status === "created" || (tally && tally.counts.created + tally.counts.already > 0)
+      ? linkTo({ kind: item.kind, dest: item.dest ?? tally?.scope ?? null })
+      : null;
   const fill = empty && item.status === "created";
   return (
     <li className={styles.row} data-testid={`share-result-row-${item.key}`} data-status={item.status}>
@@ -672,6 +772,10 @@ function ResultRow({
           {item.title}
         </span>
         <span className={styles.line}>
+          {tally ? (
+            <ShareNotesOutcome tally={tally} view={notes} />
+          ) : (
+            <>
           {item.dest ?? item.id}
           {fill ? " · not set" : ""}
           {item.status === "reused"
@@ -679,6 +783,8 @@ function ResultRow({
             : item.dest && item.dest !== item.id
               ? ` (renamed from ${item.id})`
               : ""}
+            </>
+          )}
         </span>
         {item.reason && <span className={`${styles.why} ${o.tone}`}>{item.reason}</span>}
         {fill && (
@@ -715,6 +821,14 @@ async function copiesFrom(digest: string): Promise<number | null> {
   }
 }
 
+/** Where a container's notes go, in words: the project, or the notebook there of the specialist
+ *  this import creates. */
+function intoText(preview: SharePreview, item: SharePreviewItem, into: NotesInto): string {
+  if (item.kind !== "notebook") return into.name;
+  const spec = preview.items.find((i) => i.key === item.depends_on[0]);
+  return `${spec?.dest ?? item.id}'s notebook in ${into.name}`;
+}
+
 function asResult(value: unknown): ShareResult | null {
   if (!value || typeof value !== "object") return null;
   const r = value as { items?: unknown; token?: unknown };
@@ -726,10 +840,14 @@ function ImportDialog({
   onClose,
   onImported,
   memory,
+  notesInto,
 }: {
   onClose: () => void;
   onImported: () => void;
   memory: ImportMemory;
+  /** Library → Memory (#1714 P4): the project a file's notes go into. Without it (any other
+   *  section), a file's notes can't be imported here, and say where they can. */
+  notesInto?: NotesInto;
 }) {
   const [phase, setPhase] = useState<Phase>({ at: "pick" });
   const [file, setFile] = useState<File | null>(null);
@@ -779,9 +897,12 @@ function ImportDialog({
     }
     setPhase({ at: "checking" });
     try {
-      const preview = asPreview(await api.sharePreview(f));
+      const answered = asPreview(await api.sharePreview(f));
       if (!live.current) return;
-      if (!preview) throw new Error("The preview could not be read.");
+      if (!answered) throw new Error("The preview could not be read.");
+      // Notes need a project whose memory is on: without one they are refused here, with where to
+      // import them instead (the server would refuse them at confirm anyway).
+      const preview = notesRule(answered, notesInto);
       const digest = preview.bundle.digest;
       const known = new Map(memory.created.get(digest) ?? []);
       const library = await copiesFrom(digest);
@@ -819,23 +940,30 @@ function ImportDialog({
     setError("");
     try {
       const chosen = settleFor(preview);
+      const notes = !!notesInto && preview.items.some((i) => isContainer(i) && selected.has(i.key));
       const result = asResult(
-        chosen
-          ? await api.shareConfirm(preview.token, [...selected], chosen)
-          : await api.shareConfirm(preview.token, [...selected]),
+        notes
+          ? await api.shareConfirm(preview.token, [...selected], chosen, notesInto!.id)
+          : chosen
+            ? await api.shareConfirm(preview.token, [...selected], chosen)
+            : await api.shareConfirm(preview.token, [...selected]),
       );
       if (!live.current) return;
       if (!result) throw new Error("The import answer could not be read.");
       const digest = preview.bundle.digest;
       const record = memory.created.get(digest) ?? new Map();
+      // Notes aren't copies: importing them again only adds what isn't already here, so they are
+      // never held back as "already imported".
       for (const item of result.items)
-        if (item.status === "created" && item.dest)
+        if (item.status === "created" && item.dest && !isContainer(item))
           record.set(item.key, { dest: item.dest, token: preview.token });
       memory.created.set(digest, record);
-      if (result.items.some((i) => i.status === "created")) created.current = true;
+      if (result.items.some((i) => i.status === "created" || (i.memory?.counts.created ?? 0) > 0))
+        created.current = true;
       // A failed item may still have been published (the server couldn't tell): a fresh preview of
       // this bundle starts with nothing ticked.
-      if (result.items.some((i) => i.status === "failed")) memory.unclear.add(digest);
+      // (A notes item's failure isn't: importing notes again only adds what isn't already here.)
+      if (result.items.some((i) => i.status === "failed" && !isContainer(i))) memory.unclear.add(digest);
       setPhase({ at: "result", preview, result });
     } catch (e) {
       if (!live.current) return;
@@ -985,6 +1113,8 @@ function ImportDialog({
     const blind = will.reduce((n, i) => n + unshown(i), 0);
     const waiting = unsettled(preview, states);
     const empties = will.filter((i) => i.variable?.arrives_empty).length;
+    const notesNew = will.reduce((n, i) => n + ((i.memory ?? i.notebook)?.counts.new ?? 0), 0);
+    const notesHeld = will.reduce((n, i) => n + ((i.memory ?? i.notebook)?.counts.held ?? 0), 0);
     const stale = phase.at === "preview" ? phase.stale : undefined;
     const toggle = (key: string) => {
       setAck(false);
@@ -1000,6 +1130,7 @@ function ImportDialog({
         {list.map((item) => (
           <PreviewRow
             key={item.key}
+            into={isContainer(item) && notesInto ? intoText(preview, item, notesInto) : undefined}
             item={item}
             state={states.get(item.key)!}
             checked={selected.has(item.key)}
@@ -1079,6 +1210,17 @@ function ImportDialog({
           Review them before you import. Nothing is activated, deployed, launched, sent or made a
           default.
         </Banner>
+        {notesInto && preview.items.some(isContainer) && (
+          <dl className={styles.dest} data-testid="share-notes-into">
+            <dt>Notes go into</dt>
+            <dd>
+              <b>{notesInto.name}</b>
+              <span className={notesInto.enabled ? styles.ok : styles.why}>
+                memory {notesInto.enabled ? "on" : "off"}
+              </span>
+            </dd>
+          </dl>
+        )}
         <dl className={styles.meta} data-testid="share-bundle-meta">
           <dt>File</dt>
           <dd>
@@ -1144,6 +1286,8 @@ function ImportDialog({
           {renamed ? ` · ${renamed} renamed` : ""}
           {refused ? ` · ${refused} refused` : ""}
           {waiting.length ? ` · ${waiting.length} need${waiting.length === 1 ? "s" : ""} an agent` : ""}
+          {notesNew ? ` · ${notesNew} note${notesNew === 1 ? "" : "s"} new` : ""}
+          {notesHeld ? ` · ${notesHeld} held back` : ""}
           {empties ? ` · ${empties} arrive${empties === 1 ? "s" : ""} empty` : ""}
           {blind > 0 && !ack ? ` · ${blind} unreviewed file${blind === 1 ? "" : "s"} need${blind === 1 ? "s" : ""} your OK` : ""}{" "}
           · nothing changes until you confirm
@@ -1203,6 +1347,9 @@ function ImportDialog({
           {count("created")} of the {chosen} item{chosen === 1 ? "" : "s"} you chose{" "}
           {chosen === 1 ? "was" : "were"} imported. Each is a new local copy marked{" "}
           <b>Imported from a file</b>; nothing that was here changed.
+          {shown.some(isContainer)
+            ? " Notes are added beside yours, written by “imported from a file”; memory's switch wasn't touched."
+            : ""}
         </p>
         <ul className={styles.list}>
           {shown.map((item) => (
@@ -1212,6 +1359,7 @@ function ImportDialog({
               onOpen={close}
               empty={!!byKey.get(item.key)?.variable?.arrives_empty}
               secret={!!byKey.get(item.key)?.variable && byKey.get(item.key)!.variable!.kind !== "text"}
+              notes={byKey.get(item.key)?.memory ?? byKey.get(item.key)?.notebook}
             />
           ))}
         </ul>
@@ -1258,9 +1406,13 @@ export function ShareActions({
   kind,
   onImported,
   children,
+  memory: notesInto,
 }: {
   kind: ShareKind;
   onImported: () => void;
+  /** Library → Memory (#1714 P4): the project open on the page, where notes are exported from
+   *  and imported into. */
+  memory?: NotesInto;
   /** The section's own primary action, kept beside the pair. */
   children?: ReactNode;
 }) {
@@ -1278,9 +1430,9 @@ export function ShareActions({
         Export…
       </button>
       {children}
-      {open === "export" && <ExportDialog kind={kind} onClose={() => setOpen(null)} />}
+      {open === "export" && <ExportDialog kind={kind} memory={notesInto} onClose={() => setOpen(null)} />}
       {open === "import" && (
-        <ImportDialog onClose={() => setOpen(null)} onImported={onImported} memory={memory} />
+        <ImportDialog onClose={() => setOpen(null)} onImported={onImported} memory={memory} notesInto={notesInto} />
       )}
     </div>
   );

@@ -39,6 +39,7 @@ import os
 import select
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import count
@@ -256,6 +257,10 @@ def policy_transaction(scope: str | None = None):
     # instance flipping the orchestrator off must be ordered against a writer here, and the
     # process-local epoch cannot see it.
     with _lock, _authority_fence():
+        # Before the change commits (#1897): one durable policy record for every scope, so any
+        # policy edit refuses every guarded native turn admitted before it and not yet claimed.
+        # A rejected save over-refuses those; that is the safe direction.
+        _withdraw_native_policy_locked()
         yield
         # Rejected saves changed no grant. If a persistence failure occurred after replacement,
         # the durable fingerprint still detects that change before byte one.
@@ -379,6 +384,46 @@ def _bump_epoch_locked(key: str) -> None:
     _epochs[key] = _epochs.get(key, 0) + 1
 
 
+def _native_session_id(key: str) -> str | None:
+    """The native session id of an API session key (`engine:<uuid>`), or None. Pure.
+
+    A mission roster pseudo-key (`mission_fence.roster_key`) names no session. A console key
+    whose id is also a UUID resolves too, harmlessly: it has no authority record."""
+    engine, _, native = key.rpartition(":")
+    if not engine or engine == "mission-roster":
+        return None
+    try:
+        return native if str(uuid.UUID(native)) == native else None
+    except ValueError:
+        return None
+
+
+def _withdraw_native_locked(keys) -> None:
+    """Withdraw the durable authority a native worker checks at its claim (#1897), BEFORE the
+    caller's store write commits: a worker claiming after this refuses; one that claimed before
+    it was admitted before the withdrawal. Only the mission/session authority transactions call
+    this, never a viewer attach or writer registration. A failure ABORTS the withdrawal (raised
+    before its body runs), never lets it commit unmirrored."""
+    from . import native_authority, native_state
+
+    try:
+        for key in keys:
+            native = _native_session_id(key)
+            if native is not None:
+                native_authority.bump_session(native)
+    except (native_state.StateError, OSError, ValueError) as exc:
+        raise AuthorityFenceBusy("a native session's authority could not be withdrawn") from exc
+
+
+def _withdraw_native_policy_locked() -> None:
+    from . import native_authority, native_state
+
+    try:
+        native_authority.bump_policy()
+    except (native_state.StateError, OSError, ValueError) as exc:
+        raise AuthorityFenceBusy("the native policy authority could not be withdrawn") from exc
+
+
 @contextlib.contextmanager
 def session_transaction(key: str):
     """Hold the write fence across a change to THIS session's authorization, bumping its epoch
@@ -395,6 +440,7 @@ def session_transaction(key: str):
     has already changed while the epoch still reads old.
     """
     with _lock, _authority_fence():
+        _withdraw_native_locked([key])  # before the change commits (#1897)
         try:
             yield
         finally:
@@ -421,6 +467,7 @@ def sessions_transaction(keys):
     """
     ks = [k for k in dict.fromkeys(keys) if k]
     with _lock, _authority_fence():
+        _withdraw_native_locked(ks)  # before the change commits (#1897)
         try:
             yield
         finally:
@@ -460,6 +507,30 @@ def bump_epoch(key: str) -> None:
     """
     with _lock:
         _bump_epoch_locked(key)
+
+
+class AuthorityRefused(RuntimeError):
+    """A guarded native turn's domain check refused it inside the fence. Nothing was claimed."""
+
+
+def admit_native(key: str, check: Callable[[], tuple[bool, str]]) -> dict:
+    """Admit a guarded native turn for ``key``: the caller's domain ``check``, then the durable
+    tokens its worker must still find at the claim (#1897). BLOCKING: run it off the loop.
+
+    Inside `_lock` and the cross-process fence, exactly where every withdrawal commits, so a
+    withdrawal is ordered entirely before this (``check`` refuses) or entirely after it (it
+    replaces the tokens, and the worker refuses the claim). ``check`` must not take `_lock`.
+    """
+    native = _native_session_id(key)
+    if native is None:
+        raise AuthorityRefused("not a native API session")
+    from . import native_authority
+
+    with _lock, _authority_fence():
+        ok, why = check()
+        if not ok:
+            raise AuthorityRefused(why or "the caller's authority was withdrawn")
+        return native_authority.admit(native)
 
 
 def current_epoch(key: str) -> int:

@@ -64,6 +64,8 @@ REASON_CODES = frozenset(
         "worker_ended",
         # #1733: its worker stopped because BattleLab could not write the session's record.
         "journal_unwritable",
+        # #1897: the caller's authority (a mission's hold, its policy) was withdrawn first.
+        "authority_withdrawn",
         "unexpected",
     }
 )
@@ -80,6 +82,12 @@ CONVERSATION_FULL = "conversation_full"
 #: The revision a send named has moved (#1420): the conversation may have changed under it. A closed
 #: reason so the pane can tell it from any other refusal, never by reading the words.
 REVISION_MOVED = "revision_changed"
+#: A guarded send refused because the caller's authority (a mission's hold on the session, the
+#: mission policy) was withdrawn before the worker claimed it (#1897). Nothing was claimed or sent.
+AUTHORITY_WITHDRAWN = "authority_withdrawn"
+#: A guarded send refused by the app because the session's live worker is from a release that
+#: cannot check a caller's authority (#1897). Nothing was sent; Stop and resume starts a new one.
+AUTHORITY_UNSUPPORTED = "authority_unsupported"
 #: What a refusal's action is (#1725), machine-readable beside its reason, for the pane to offer as
 #: a button. Each only ever goes through a route that already exists, with all of its checks:
 #: `retry` the same operation id; `stop_resume` the confirmed Stop, then the same id;
@@ -136,6 +144,10 @@ EFFECT_ACTIONS = frozenset({"submit", "decide", "interrupt", "send_now", "withdr
 _ENGINE = re.compile(r"[a-z][a-z0-9-]{1,23}\Z", re.ASCII)
 _NATIVE = re.compile(r"[A-Za-z0-9_.:-]{1,258}\Z", re.ASCII)
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
+#: The same shape as `structured_types.ExecutionGuard.binding`: opaque, bounded, server-made.
+_AUTHORITY_BINDING = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z", re.ASCII)
+#: A guarded submit's per-attempt tokens (#1897): checked by the worker, never part of identity.
+_AUTHORITY_TOKENS = frozenset({"authority_session", "authority_policy"})
 _HEADER = frozenset(
     {"protocol", "type", "session_key", "worker_id", "connection_id", "adapter", "adapter_version"}
 )
@@ -392,6 +404,10 @@ def _params(action, value, *, immutable=False):
     optional = (
         (keys[action] & {"actor"} if immutable else set())
         | ({"attachments", "reply_to"} if action == "submit" else set())
+        # A guarded turn (#1897): its caller's opaque binding is part of its identity; the tokens
+        # the worker re-checks at its claim are per attempt, never stored with the identity.
+        | ({"authority"} if action == "submit" else set())
+        | (_AUTHORITY_TOKENS if action == "submit" and not immutable else set())
         | ({"grant", "answers"} if action == "decide" else set())
         # Stop all and send (#1644): what the operator confirmed, part of the request's identity.
         | ({"confirm_worker_id", "confirm_tasks"} if action == "send_now" else set())
@@ -404,6 +420,10 @@ def _params(action, value, *, immutable=False):
         "confirm_worker_id" in value and "confirm_tasks" in value
     ):
         raise IPCError("a confirmation goes with Stop all and send, and only with it")
+    if action == "submit" and not immutable:
+        tokens = len(_AUTHORITY_TOKENS & set(value))
+        if tokens not in (0, 2) or ("authority" in value) != (tokens == 2):
+            raise IPCError("a guarded turn carries its binding with both authority tokens")
     if action == "stop" and "confirm_digest" in value and "confirm_everything" in value:
         raise IPCError("a Stop confirms an exact inventory or everything, not both")
     if action == "stop" and value.get("confirm_everything", True) is not True:
@@ -419,6 +439,8 @@ def _params(action, value, *, immutable=False):
             "turn_id",
             "queued_turn_id",
             "approval_connection_id",
+            "authority_session",
+            "authority_policy",
         }:
             out[key] = _uuid(item)
         elif key in {"expected_revision", "after"}:
@@ -458,6 +480,10 @@ def _params(action, value, *, immutable=False):
 
             if not valid_grant_id(item):
                 raise IPCError("invalid private IPC grant id")
+            out[key] = item
+        elif key == "authority":
+            if not isinstance(item, str) or not _AUTHORITY_BINDING.fullmatch(item):
+                raise IPCError("invalid private IPC authority binding")
             out[key] = item
         elif key == "actor":
             # The authenticated operator, bound into the decision's durable identity (#1278).
@@ -520,7 +546,7 @@ def immutable_request(request: dict) -> dict:
         "params": {
             key: item
             for key, item in value["params"].items()
-            if key not in {"operation_id", "expected_revision"}
+            if key not in {"operation_id", "expected_revision", *_AUTHORITY_TOKENS}
         },
     }
 
@@ -1047,7 +1073,8 @@ def validate_response(value, *, expected: Binding | None = None):
         if "reason" in error:
             # A closed refusal reason (#1644) the pane acts on; never free text.
             out["error_reason"] = _choice(
-                error["reason"], SEND_NOW_REFUSALS | {JOURNAL_UNWRITABLE, CONVERSATION_FULL}
+                error["reason"],
+                SEND_NOW_REFUSALS | {JOURNAL_UNWRITABLE, CONVERSATION_FULL, AUTHORITY_WITHDRAWN},
             )
         out["error"] = {
             "code": _choice(

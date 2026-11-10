@@ -156,7 +156,16 @@ def _foldable(secrets: list[str]) -> set[str]:
         v = v.strip()  # `echo token > file` is one token and a newline: a single-line secret
         if "\n" in v:
             out.update(template_secrets._FRAGMENT_RE.findall(v))
-            out.update(line.strip() for line in v.splitlines() if _credential_line(line.strip()))
+            for line in v.splitlines():
+                line = line.strip()
+                if _credential_line(line):
+                    out.add(line)
+                # The value of a key line (#1868), by the same rule as a line of its own: a
+                # `DB_PASSWORD=Hunter2Deploy` value is folded. A letters-only value is never a
+                # value entry at all (`template_secrets._value_entry`).
+                value = template_secrets._key_value(line)
+                if value is not None and _credential_line(value):
+                    out.add(value)
         elif v:
             out.add(v)
     return out

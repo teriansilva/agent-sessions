@@ -825,7 +825,12 @@ function announceProjects<T>(p: Promise<T>): Promise<T> {
 
 /** POST a JSON body and get the answer as raw bytes (a WAV preview, #1397). Errors carry the
  *  server's `detail` like `mutateJson`. */
-async function postForBlob(path: string, body: unknown): Promise<Blob> {
+async function postForBlob(
+  path: string,
+  body: unknown,
+  /** Read the answer's headers (a share export's counts, #1714 P4). */
+  onResponse?: (r: Response) => void,
+): Promise<Blob> {
   const r = await apiFetch(path, {
     method: "POST",
     credentials: "same-origin",
@@ -842,6 +847,7 @@ async function postForBlob(path: string, body: unknown): Promise<Blob> {
     }
     throw new ApiError(r.status, detail || `POST ${path} → ${r.status}`);
   }
+  onResponse?.(r);
   return await r.blob();
 }
 
@@ -958,12 +964,26 @@ export const api = {
   localSkills: () => getJsonWithDetail<{ skills: LocalSkill[] }>("/api/library/skills"),
   shareCatalog: () => getJsonWithDetail<ShareCatalog>("/api/share/catalog"),
   shareImports: () => getJsonWithDetail<{ imports: ShareImports }>("/api/share/imports"),
-  shareExport: (items: { kind: string; id: string }[]) => postForBlob("/api/share/export", { items }),
+  /** `onLeftOut` (#1714 P4): how many notes the export held back and how many quarantined items
+   *  stayed, from the answer's headers; called only when the file carries memory. */
+  shareExport: (items: { kind: string; id: string }[], onLeftOut?: (counts: { withheld: number; quarantined: number }) => void) =>
+    postForBlob("/api/share/export", { items }, (r) => {
+      const withheld = r.headers.get("X-Share-Withheld-Notes");
+      const quarantined = r.headers.get("X-Share-Quarantined-Notes");
+      if (onLeftOut && withheld !== null && quarantined !== null)
+        onLeftOut({ withheld: Number(withheld) || 0, quarantined: Number(quarantined) || 0 });
+    }),
   sharePreview: (file: Blob) => postBytes<SharePreview>("/api/share/import/preview", file),
   /** `settle` (#1714 P2): what each imported specialist runs on, by item key; sent only when the
    *  file holds specialists, so a skills-and-playbooks import is the request it always was. */
-  shareConfirm: (token: string, selection: string[], settle?: Record<string, ShareChoice>) =>
-    mutateJson<ShareResult>("POST", "/api/share/import", settle ? { token, selection, settle } : { token, selection }),
+  shareConfirm: (token: string, selection: string[], settle?: Record<string, ShareChoice>, memoryProject?: string) =>
+    mutateJson<ShareResult>("POST", "/api/share/import", {
+      token,
+      selection,
+      ...(settle ? { settle } : {}),
+      // #1714 P4: the project a file's notes go into, sent only when notes are imported.
+      ...(memoryProject ? { memory_project: memoryProject } : {}),
+    }),
   localSkill: (id: string) => getJsonWithDetail<LocalSkill>(`/api/library/skills/${encodeURIComponent(id)}`),
   saveLocalSkill: (id: string, newId: string, revision: string, origin: string | null, files: Record<string, string>, operation: string) => mutateJson<GalleryOperation>("POST", `/api/library/skills/${encodeURIComponent(id)}/copies`, { new_id: newId, revision, origin, files, operation }),
   plugins: () => pluginCatalog("/api/plugins"),

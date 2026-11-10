@@ -1109,3 +1109,20 @@ def test_the_picker_judges_the_image_names_that_travel(install):
     row = next(r for r in kinds.catalog() if r["kind"] == "template")
     assert row["exportable"] is True and row["id"] == tid
     assert fmt.read(_export(("template", tid))).item(f"template:{tid}")
+
+
+# ---- #1868: a short key line's value is folded like a credential line ---------------------------
+
+
+def test_a_key_lines_credential_value_is_matched_case_folded_in_an_identifier(install, monkeypatch):
+    monkeypatch.setattr(template_secrets, "_typed", {})
+    _secret_file("deploy_env", b"NODE_ENV=production\nDB_PASSWORD=Hunter2Deploy\n")
+    leaky = templates.create_template({"name": "HUNTER2DEPLOY notes", "body": "hi"})["id"]
+    with pytest.raises(service.ShareError) as err:
+        _export(("template", leaky))
+    assert "holds one of your stored secrets" in err.value.detail
+    assert "Hunter2Deploy" not in err.value.detail and "hunter2deploy" not in err.value.detail
+    # A letters-only value is no entry of its own (`template_secrets._value_entry`): an ordinary
+    # name that holds it stays exportable.
+    ok = templates.create_template({"name": "Production checklist", "body": "hi"})["id"]
+    assert fmt.read(_export(("template", ok))).item(f"template:{ok}")

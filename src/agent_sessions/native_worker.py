@@ -47,6 +47,7 @@ from pathlib import Path
 from . import (
     agent_tools,
     native_attachments,
+    native_authority,
     native_containment,
     native_exec,
     native_ipc,
@@ -160,6 +161,8 @@ class AdmissionRefused(WorkerError):
         "source_store_changed": "the queued message's source store changed",
         "generation_closed": "this worker generation is closed",
         "question_replaced": "its question was answered or replaced",
+        # #1897: the caller's authority (a mission's hold, its policy) was withdrawn meanwhile.
+        "authority_withdrawn": "the authority it was sent under was withdrawn",
     }
 
     def __init__(self, code: str):
@@ -199,6 +202,11 @@ def _log_to_journal() -> None:
     handler.setLevel(logging.WARNING)
     log.addHandler(handler)
     log.setLevel(logging.WARNING)
+
+
+def _authority_tokens(params: dict) -> dict:
+    """The per-attempt tokens a guarded submit carries (#1897), as `native_authority` compares."""
+    return {"session": params.get("authority_session"), "policy": params.get("authority_policy")}
 
 
 def admit_queued(roster, session_key: str, adapter: str, config: dict) -> None:
@@ -1734,9 +1742,29 @@ class Worker:
         self.reported_send_now = state
         await asyncio.to_thread(self.report, send_now_state=state)
 
+    def claim(self, request: dict, queued: bool) -> tuple[bool, dict]:
+        """Claim ``request``. BLOCKING. A guarded turn (#1897) is claimed only while its caller's
+        authority tokens are current, under the authority lock, so no withdrawal can commit
+        between the comparison and the claim. An exact repeat of a turn already claimed still
+        replays: observing an earlier effect needs no authority."""
+        params = request["params"]
+        if request["action"] != "submit" or "authority" not in params:
+            return native_journal.claim(self.journal_root, request, queued=queued)
+        try:
+            with native_authority.held(self.session_id, _authority_tokens(params)):
+                return native_journal.claim(self.journal_root, request, queued=queued)
+        except native_authority.AuthorityError:
+            journal = native_journal.read(self.journal_root, self.session_id)
+            if params["operation_id"] not in journal.operations:
+                raise
+            return native_journal.claim(self.journal_root, request, queued=queued)
+
     @contextlib.contextmanager
-    def queued_admission(self):
-        """Recheck the current generation and source at delayed stdin handoff (#1378, #1538)."""
+    def queued_admission(self, params: dict | None = None):
+        """Recheck the current generation and source at delayed stdin handoff (#1378, #1538),
+        and a guarded message's caller authority (#1897). The authority lock is held from the
+        comparison until the handoff's durable `uncertain` record (the yielded release), or to
+        the end of the block when the caller has no such point."""
         from .engines import registry
         from .plugins import storage
 
@@ -1745,7 +1773,19 @@ class Worker:
                 raise AdmissionRefused("generation_closed")
             with registry.snapshot_scope(fresh=True, require_current=True) as roster:
                 admit_queued(roster, self.session_key, self.adapter, self.config)
-                yield
+                with contextlib.ExitStack() as authority:
+                    if params is not None and "authority" in params:
+                        try:
+                            authority.enter_context(
+                                native_authority.held(
+                                    self.session_id, _authority_tokens(params), wait=0
+                                )
+                            )
+                        except native_authority.AuthorityError:
+                            raise AdmissionRefused("authority_withdrawn") from None
+                    # Yields the early release: the handoff calls it once its `uncertain` record
+                    # is durable, so a stalled write never holds every withdrawal behind it.
+                    yield authority.close
 
     async def dispatch_queue(self) -> None:
         """Only this live connection may drain its FIFO; a successor never replays it."""
@@ -1769,12 +1809,14 @@ class Worker:
                         try:
                             if not await self._answer_current(params):
                                 raise AdmissionRefused("question_replaced")
-                            with self.queued_admission():
+                            with self.queued_admission(params) as release:
                                 admitted = True
                                 self.queued.pop(0)
                                 now = params["operation_id"] in self.sent_now
                                 self.sent_now.discard(params["operation_id"])
-                                await self.handoff("submit", params, queued=True, now=now)
+                                await self.handoff(
+                                    "submit", params, queued=True, now=now, on_durable=release
+                                )
                         except (native_state.LockBusy, storage.LockBusy):
                             if admitted:
                                 raise
@@ -2303,10 +2345,20 @@ class Worker:
                     self.flush()
             for attempt in range(STOP_CLAIM_TRIES):
                 try:
-                    fresh, receipt = await asyncio.to_thread(
-                        native_journal.claim, self.journal_root, request, queued=queued
-                    )
+                    fresh, receipt = await asyncio.to_thread(self.claim, request, queued)
                     break
+                except native_authority.AuthorityError:
+                    # Refused before any claim (#1897): nothing was journaled or sent.
+                    return self.error(
+                        request,
+                        "conflict",
+                        "not sent: the authority it was sent under was withdrawn",
+                        native_ipc.AUTHORITY_WITHDRAWN,
+                    )
+                except native_state.LockBusy:
+                    return self.error(
+                        request, "unavailable", "the authority check is busy; nothing was sent"
+                    )
                 except native_journal.JournalError as exc:
                     if (
                         action == "stop"
@@ -2422,7 +2474,8 @@ class Worker:
                 return self.error(
                     request, "busy", "a message is already waiting for this response to stop"
                 )
-            with self.queued_admission():
+            # The PROMOTED message's own authority (#1897): it leaves the queue under this fence.
+            with self.queued_admission(queued) as release:
                 fresh, receipt = await asyncio.to_thread(
                     native_journal.claim, self.journal_root, request
                 )
@@ -2454,7 +2507,9 @@ class Worker:
                     self.queued.remove(queued)
                     self.sent_now.discard(queued["operation_id"])
                     if current:
-                        delivered = await self.handoff("steer", queued, queued=True)
+                        delivered = await self.handoff(
+                            "steer", queued, queued=True, on_durable=release
+                        )
                         handoff = delivered["handoff"]
                     else:
                         # Steering leaves the queue too: an answer whose question was replaced
@@ -2484,9 +2539,11 @@ class Worker:
                 elif self._native_send_now():
                     # Also for Stop all and send: the CLI's own way ends no background task, so
                     # it is taken whenever it is there; the confirmation only permits the Stop.
-                    receipt = await self._send_now_native(queued, params, receipt)
+                    receipt = await self._send_now_native(queued, params, receipt, release)
                 else:
-                    receipt = await self._send_now_by_interrupt(params, receipt, stop_all=stop_all)
+                    receipt = await self._send_now_by_interrupt(
+                        params, receipt, stop_all=stop_all, release=release
+                    )
                 self.queue_wake.set()
                 return self.receipt(request, receipt)
         except (native_state.LockBusy, storage.LockBusy):
@@ -2520,7 +2577,7 @@ class Worker:
         ) == native_ipc.tasks_digest(getattr(self.codec, "_background", ()))
 
     async def _send_now_by_interrupt(
-        self, params: dict, receipt: dict, *, stop_all: bool = False
+        self, params: dict, receipt: dict, *, stop_all: bool = False, release=None
     ) -> dict:
         """Send now on a serial protocol without its own: cancel the turn, and let the existing
         dispatcher deliver the message after terminal evidence. Never while that cancellation,
@@ -2537,6 +2594,10 @@ class Worker:
                 "not_sent",
             )
         self.priority_turn = params["turn_id"]
+        if release is not None:
+            # The queued message does not leave here: FIFO dispatch re-admits it (and rechecks
+            # its authority, #1897) after the interrupt, so the lock is not held across it.
+            release()
         receipt = await self.handoff("interrupt", params, receipt=receipt)
         if receipt["handoff"] != "sent":
             self.priority_turn = None
@@ -2548,7 +2609,9 @@ class Worker:
             self.promote_queued(params["queued_turn_id"])
         return receipt
 
-    async def _send_now_native(self, queued: dict, params: dict, receipt: dict) -> dict:
+    async def _send_now_native(
+        self, queued: dict, params: dict, receipt: dict, release=None
+    ) -> dict:
         """The CLI's own Send now (#1526): the message is written to the CLI first, then a
         `send_now` interrupt names it. A plain interrupt is a Stop, which also ends every
         background agent; this cuts only the running turn. Whether the message is still current
@@ -2557,12 +2620,12 @@ class Worker:
         if not self._native_send_now():
             # The connection changed while the journal was read (its fence was lost).
             return await self._send_now_by_interrupt(
-                params, receipt, stop_all=params["mode"] == "stop_all"
+                params, receipt, stop_all=params["mode"] == "stop_all", release=release
             )
         self.queued.remove(queued)
         self.sent_now.discard(queued["operation_id"])
         if current:
-            delivered = await self.handoff("ahead", queued, queued=True)
+            delivered = await self.handoff("ahead", queued, queued=True, on_durable=release)
         else:
             # Like a steer: an answer whose question was replaced meanwhile is never sent (#1463).
             log_queue_refusal(
@@ -2690,8 +2753,10 @@ class Worker:
         )
 
     async def handoff(
-        self, action: str, params: dict, *, receipt=None, queued=False, now=False
+        self, action: str, params: dict, *, receipt=None, queued=False, now=False, on_durable=None
     ) -> dict:
+        """``on_durable`` (#1897): called once the outcome is durable enough that a withdrawal
+        may commit — after the `uncertain` record (or a `not_sent` one) — never before."""
         refusal: Exception | None = None
         try:
             frame = self.frame(action, params, now=now)
@@ -2720,6 +2785,8 @@ class Worker:
                 "not_sent",
                 **reason,
             )
+            if on_durable is not None:
+                on_durable()
             if action == "stop":
                 receipt = {**receipt, "containment": "unknown"}
                 self.stop_child()
@@ -2733,6 +2800,8 @@ class Worker:
                 params["operation_id"],
                 "uncertain",
             )
+        if on_durable is not None:
+            on_durable()
         try:
             await self.write(frame)
         except (OSError, ConnectionError, AssertionError, TimeoutError):
@@ -2929,6 +2998,9 @@ class Worker:
                 # (#1438); absent on older workers, which the pane then offers no button for.
                 interrupt_own=self.codec.send_now_background == "interrupt",
                 files=True,
+                # Checks a guarded turn's caller authority at its claim and queued handoff (#1897);
+                # absent on older workers, which the server then never sends a guarded turn to.
+                authority=True,
                 # Reads and writes a `not_sent` handoff's `reason_code` (#1538): the web process
                 # writes `worker_ended` for an earlier generation only while the live worker
                 # says so, since an older reader refuses the field.

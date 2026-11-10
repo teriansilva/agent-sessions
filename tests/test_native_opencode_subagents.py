@@ -366,7 +366,7 @@ def _subagent_worker(conversation, monkeypatch):  # noqa: F811
     worker.codec = codec
     worker.ready.set()
     monkeypatch.setattr(worker, "gate_open", lambda: True)
-    monkeypatch.setattr(worker, "queued_admission", contextlib.nullcontext)
+    monkeypatch.setattr(worker, "queued_admission", lambda *_a: contextlib.nullcontext())
     active = journal_tests.request(binding)
     native_journal.claim(root, active)
     codec.submit("research", active["params"]["operation_id"])

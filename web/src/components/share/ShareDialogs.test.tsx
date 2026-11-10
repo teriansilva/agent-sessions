@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetRoster, setRoster } from "../../app/engineRoster";
@@ -20,6 +20,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
       shareExport: vi.fn(),
       sharePreview: vi.fn(),
       shareConfirm: vi.fn(),
+      memoryExportUrl: (pid: string) => `/api/memory/${pid}/export`,
     },
   };
 });
@@ -782,4 +783,269 @@ test("import (P3): a secret arrives empty, a renamed variable is followed, and t
     "href",
     "/library/variables?q=api_url_2",
   );
+});
+
+// ---- project memory (#1714 P4) ------------------------------------------------------------------
+
+const NOTES: SharePreviewItem = {
+  key: "memory:project",
+  kind: "memory",
+  id: "project",
+  title: "Project memory",
+  dest: null,
+  status: "new",
+  reason: null,
+  depends_on: [],
+  uses: [],
+  files: [
+    { path: "notes/0001.json", size: 90, text: '{"format": 1, "name": "Deploy"}' },
+    { path: "notes/0002.json", size: 90, withheld: true },
+  ],
+  memory: {
+    notes: [
+      { file: "notes/0001.json", verdict: "new", reason: null, name: "Deploy", type: "decision", description: "Staging first." },
+      { file: "notes/0002.json", verdict: "held", reason: "looks like a credential" },
+    ],
+    counts: { new: 1, held: 1, refused: 0 },
+  },
+};
+const MEMORY_PREVIEW: SharePreview = { ...PREVIEW, items: [PREVIEW.items[1], NOTES] };
+const ALPHA = { id: "p-alpha", name: "Alpha", enabled: true };
+
+async function memoryPreview(into?: typeof ALPHA) {
+  vi.mocked(api.sharePreview).mockResolvedValue(MEMORY_PREVIEW);
+  render(
+    <MemoryRouter>
+      <ShareActions kind={into ? "memory" : "skill"} memory={into} onImported={vi.fn()} />
+    </MemoryRouter>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Import…" }));
+  const dialog = await screen.findByTestId("share-import");
+  fireEvent.change(within(dialog).getByTestId("share-file"), { target: { files: [new File(["x"], "m.battlelab")] } });
+  await within(dialog).findByText(/Not signed — imported from a file/);
+  return dialog;
+}
+
+test("memory: notes go into the open project, each judged, and the confirm names that project", async () => {
+  const dialog = await memoryPreview(ALPHA);
+  expect(within(dialog).getByTestId("share-notes-into")).toHaveTextContent("Alpha");
+  const row = within(dialog).getByTestId("share-preview-row-memory:project");
+  expect(row).toHaveTextContent("1 new · 1 held back → into Alpha");
+  const notes = within(row).getByTestId("share-notes");
+  expect(notes).toHaveTextContent("Deploy");
+  expect(notes).toHaveTextContent("Name withheld");
+  expect(notes).toHaveTextContent("Looks like a credential. It is never stored");
+  // A held note's file was withheld: it never needs the "import without review" acknowledgement.
+  expect(within(dialog).queryByTestId("share-blind-ack")).toBeNull();
+  vi.mocked(api.shareConfirm).mockResolvedValue({
+    token: PREVIEW.token,
+    bundle: PREVIEW.bundle.digest,
+    repreview: null,
+    items: [
+      { key: "skill:b", kind: "skill", id: "b", title: "b", status: "created", dest: "b", reason: null },
+      {
+        key: "memory:project",
+        kind: "memory",
+        id: "project",
+        title: "Project memory",
+        status: "created",
+        dest: "p-alpha",
+        reason: null,
+        memory: {
+          scope: "p-alpha",
+          notes: [
+            { file: "notes/0001.json", outcome: "already", slug: "deploy", reason: null },
+            { file: "notes/0002.json", outcome: "held", slug: null, reason: "looks like a credential" },
+          ],
+          counts: { created: 0, already: 1, held: 1, refused: 0, failed: 0, retry: 0, pending: 0 },
+        },
+      },
+    ],
+  });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Import 2 items" }));
+  await waitFor(() =>
+    expect(api.shareConfirm).toHaveBeenCalledWith(PREVIEW.token, ["skill:b", "memory:project"], undefined, "p-alpha"),
+  );
+  const result = await within(dialog).findByTestId("share-result-row-memory:project");
+  expect(within(result).getByTestId("share-notes-counts")).toHaveTextContent("0 imported · 1 already here · 1 held back");
+  expect(result).toHaveTextContent("Deploy (yours: deploy)");
+  expect(within(result).getByRole("link", { name: /Open/ })).toHaveAttribute("href", "/library/memory?project=p-alpha");
+});
+
+test("memory: from another Library page, or with memory off, the notes wait and are never sent", async () => {
+  for (const into of [undefined, { ...ALPHA, enabled: false }]) {
+    const dialog = await memoryPreview(into);
+    const row = within(dialog).getByTestId("share-preview-row-memory:project");
+    expect(row).toHaveAttribute("data-state", "refused");
+    expect(row).toHaveTextContent(into ? "Memory is off for Alpha" : "Import this file from Library → Memory");
+    vi.mocked(api.shareConfirm).mockResolvedValue({ token: PREVIEW.token, bundle: PREVIEW.bundle.digest, repreview: null, items: [] });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Import 1 item" }));
+    await waitFor(() => expect(api.shareConfirm).toHaveBeenCalledWith(PREVIEW.token, ["skill:b"]));
+    vi.mocked(api.shareConfirm).mockReset();
+    cleanup();
+  }
+});
+
+test("memory: the export offers the open project's notes, chosen, with counts and the .zip link", async () => {
+  vi.mocked(api.shareCatalog).mockResolvedValue({
+    imports: {},
+    items: [
+      { kind: "memory", id: "p-alpha", title: "Alpha", depends_on: [], exportable: true, reason: null, source: "local", project: { id: "p-alpha", name: "Alpha" }, memory: { notes: 15, withheld: 2, quarantined: 1 } },
+      { kind: "memory", id: "p-beta", title: "Beta", depends_on: [], exportable: true, reason: null, source: "local", project: { id: "p-beta", name: "Beta" }, memory: { notes: 3, withheld: 0, quarantined: 0 } },
+    ],
+  });
+  vi.mocked(api.shareExport).mockImplementation(async (_items, onLeftOut) => {
+    onLeftOut?.({ withheld: 2, quarantined: 1 });
+    return new Blob(["x"]);
+  });
+  globalThis.URL.createObjectURL = vi.fn(() => "blob:x");
+  globalThis.URL.revokeObjectURL = vi.fn();
+  render(
+    <MemoryRouter>
+      <ShareActions kind="memory" memory={ALPHA} onImported={vi.fn()} />
+    </MemoryRouter>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Export…" }));
+  const dialog = await screen.findByTestId("share-export");
+  const own = await within(dialog).findByTestId("share-export-row-memory:p-alpha");
+  expect(own).toHaveTextContent("15 notes travel · 2 held back by the secret check · 1 quarantined item stays");
+  expect(within(own).getByRole("checkbox")).toBeChecked();
+  expect(within(dialog).queryByTestId("share-export-row-memory:p-beta")).toBeNull(); // one project per file
+  expect(within(dialog).getByTestId("share-memory-zip")).toHaveAttribute("download");
+  fireEvent.click(within(dialog).getByRole("button", { name: /Download bundle/ }));
+  expect(await within(dialog).findByRole("status")).toHaveTextContent(
+    "2 notes were held back by the secret check; 1 quarantined item stayed here.",
+  );
+});
+
+test("memory: the export lists only this project's memory; a notebook brings its specialist and skill, included", async () => {
+  vi.mocked(api.shareCatalog).mockResolvedValue({
+    imports: {},
+    items: [
+      { kind: "skill", id: "tdd", title: "tdd", depends_on: [], exportable: true, reason: null, source: "local" },
+      { kind: "skill", id: "unrelated", title: "unrelated", depends_on: [], exportable: true, reason: null, source: "local" },
+      { kind: "specialist", id: "implementer", title: "Implementer", depends_on: ["skill:tdd"], exportable: true, reason: null, source: "local" },
+      { kind: "specialist", id: "other", title: "Other", depends_on: [], exportable: true, reason: null, source: "local" },
+      { kind: "template", id: "t", title: "T", depends_on: [], exportable: true, reason: null, source: "local" },
+      { kind: "memory", id: "p-alpha", title: "Alpha", depends_on: [], exportable: true, reason: null, source: "local", project: ALPHA, memory: { notes: 2, withheld: 0, quarantined: 0 } },
+      { kind: "notebook", id: "p-alpha~implementer", title: "Implementer — notes in Alpha", depends_on: ["specialist:implementer"], exportable: true, reason: null, source: "local", project: ALPHA, memory: { notes: 4, withheld: 0, quarantined: 0 } },
+    ],
+  });
+  render(
+    <MemoryRouter>
+      <ShareActions kind="memory" memory={ALPHA} onImported={vi.fn()} />
+    </MemoryRouter>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Export…" }));
+  const dialog = await screen.findByTestId("share-export");
+  await within(dialog).findByTestId("share-export-row-memory:p-alpha");
+  for (const key of ["skill:tdd", "skill:unrelated", "specialist:implementer", "specialist:other", "template:t"])
+    expect(within(dialog).queryByTestId(`share-export-row-${key}`)).toBeNull();
+  expect(within(dialog).queryByText("What templates and variables carry.")).toBeNull();
+  fireEvent.click(within(dialog).getByLabelText("Notes Implementer — notes in Alpha"));
+  expect(within(dialog).getByLabelText("Specialist Implementer (included)")).toBeDisabled();
+  expect(within(dialog).getByLabelText("Skill tdd (included)")).toBeDisabled();
+  expect(within(dialog).queryByTestId("share-export-row-skill:unrelated")).toBeNull();
+  expect(within(dialog).queryByTestId("share-export-row-specialist:other")).toBeNull();
+});
+
+test("memory: a held note's file says it is never imported, a notebook names where its notes go, a partial import refreshes", async () => {
+  const notebook: SharePreviewItem = {
+    ...NOTES,
+    key: "notebook:implementer",
+    kind: "notebook",
+    id: "implementer",
+    title: "Specialist notes",
+    depends_on: ["specialist:implementer"],
+    memory: undefined,
+    notebook: NOTES.memory,
+  };
+  const spec: SharePreviewItem = { ...PREVIEW.items[1], key: "specialist:implementer", kind: "specialist", id: "implementer", title: "Implementer", dest: "implementer-2", status: "renamed" };
+  vi.mocked(api.sharePreview).mockResolvedValue({ ...PREVIEW, items: [spec, NOTES, notebook] });
+  const onImported = vi.fn();
+  render(
+    <MemoryRouter>
+      <ShareActions kind="memory" memory={ALPHA} onImported={onImported} />
+    </MemoryRouter>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Import…" }));
+  const dialog = await screen.findByTestId("share-import");
+  fireEvent.change(within(dialog).getByTestId("share-file"), { target: { files: [new File(["x"], "m.battlelab")] } });
+  await within(dialog).findByText(/Not signed — imported from a file/);
+  const row = within(dialog).getByTestId("share-preview-row-memory:project");
+  expect(within(row).getAllByTestId("share-file-withheld")).toHaveLength(1);
+  expect(row).not.toHaveTextContent("Too large to show here");
+  expect(within(dialog).getByTestId("share-preview-row-notebook:implementer")).toHaveTextContent(
+    "into implementer-2's notebook in Alpha",
+  );
+  expect(within(dialog).getByRole("list", { name: "Notes in Specialist notes" })).toBeInTheDocument();
+  expect(screen.getByTestId("share-preview-summary")).toHaveTextContent("2 notes new · 2 held back");
+  vi.mocked(api.shareConfirm).mockResolvedValue({
+    token: PREVIEW.token,
+    bundle: PREVIEW.bundle.digest,
+    repreview: null,
+    items: [
+      { key: "specialist:implementer", kind: "specialist", id: "implementer", title: "Implementer", status: "failed", dest: "implementer-2", reason: "x", retry: true },
+      {
+        key: "memory:project",
+        kind: "memory",
+        id: "project",
+        title: "Project memory",
+        status: "failed",
+        dest: "p-alpha",
+        reason: "1 of its notes couldn't be taken in now",
+        retry: true,
+        memory: {
+          scope: "p-alpha",
+          notes: [
+            { file: "notes/0001.json", outcome: "created", slug: "deploy", reason: null },
+            { file: "notes/0002.json", outcome: "retry", slug: null, reason: "Nothing was written." },
+          ],
+          counts: { created: 1, already: 0, held: 0, refused: 0, failed: 0, retry: 1, pending: 0 },
+        },
+      },
+      { key: "notebook:implementer", kind: "notebook", id: "implementer", title: "Specialist notes", status: "skipped", dest: null, reason: "Not attempted." },
+    ],
+  });
+  fireEvent.click(within(dialog).getByRole("button", { name: /Import 3 items/ }));
+  fireEvent.click(await within(dialog).findByRole("button", { name: "Done" }));
+  expect(onImported).toHaveBeenCalled();
+});
+
+test("memory: a project with no notes to export says so; a notes item's failure alone doesn't hold the next preview", async () => {
+  vi.mocked(api.shareCatalog).mockResolvedValue({
+    imports: {},
+    items: [{ kind: "skill", id: "tdd", title: "tdd", depends_on: [], exportable: true, reason: null, source: "local" }],
+  });
+  render(
+    <MemoryRouter>
+      <ShareActions kind="memory" memory={ALPHA} onImported={vi.fn()} />
+    </MemoryRouter>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Export…" }));
+  const exp = await screen.findByTestId("share-export");
+  expect(await within(exp).findByText("Alpha has no notes to export yet. Notes agents leave here will be listed.")).toBeInTheDocument();
+  expect(within(exp).queryByLabelText("Filter by name or ID")).toBeNull();
+  cleanup();
+  // A partial notes import, then the same file again: it starts ticked, with no "copies" warning.
+  const dialog = await memoryPreview(ALPHA);
+  vi.mocked(api.shareConfirm).mockResolvedValue({
+    token: PREVIEW.token,
+    bundle: PREVIEW.bundle.digest,
+    repreview: null,
+    items: [
+      { key: "skill:b", kind: "skill", id: "b", title: "b", status: "not_selected", dest: null, reason: null },
+      {
+        key: "memory:project", kind: "memory", id: "project", title: "Project memory", status: "failed", dest: "p-alpha", reason: "1 note", retry: true,
+        memory: { scope: "p-alpha", notes: [{ file: "notes/0001.json", outcome: "retry", slug: null, reason: "x" }], counts: { created: 0, already: 0, held: 0, refused: 0, failed: 0, retry: 1, pending: 0 } },
+      },
+    ],
+  });
+  fireEvent.click(within(dialog).getByLabelText("Import Skill b"));
+  fireEvent.click(within(dialog).getByRole("button", { name: "Import 1 item" }));
+  fireEvent.click(await within(dialog).findByRole("button", { name: "Done" }));
+  cleanup();
+  const again = await memoryPreview(ALPHA);
+  expect(within(again).getByLabelText("Import Memory Project memory")).toBeChecked();
+  expect(within(again).queryByText(/An earlier import of this file may have been applied/)).toBeNull();
 });

@@ -39,6 +39,12 @@ is asserted by a test rather than assumed.
 **Lock order**, one-way by construction and stated once, here:
 
     session_input._lock  →  authfence (this file)  →  session_input._screen_lock
+    session_input._lock  →  authfence (this file)  →  native_authority's flock (#1897)
+
+A native worker takes `native_authority`'s flock (after its own session and launch locks) and
+never `_lock` or this fence; the app takes that flock only with a bounded wait
+(`native_authority.LOCK_WAIT`) inside a withdrawal or an admission, so the one-way order holds
+across processes too.
 
 Both sides take them in that order: the writer holds `_lock`, takes this, then `_screen_lock` for
 the byte; a mutation holds `_lock` and takes this. Nothing takes them in the other direction, and

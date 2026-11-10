@@ -401,7 +401,99 @@
   color: var(--text-2);
 }
 
+/* ---- project memory (#1714 P4) ---- */
+.dest {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-1) var(--sp-3);
+  align-items: center;
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+}
+.dest dt {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.dest dd {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+.notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.notes ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+}
+.note {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  gap: var(--sp-2);
+  align-items: center;
+  min-height: 44px;
+  padding: var(--sp-1) var(--sp-2);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+}
+.note:last-child {
+  border-bottom: 0;
+}
+.tag {
+  padding: 2px 4px;
+  border: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-align: center;
+  color: var(--text-2);
+}
+.noteText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.noteText b {
+  font-weight: 500;
+}
+.noteOutcomes {
+  margin: var(--sp-1) 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  color: var(--text-2);
+}
 @media (max-width: 800px) {
+  .note {
+    grid-template-columns: 40px minmax(0, 1fr);
+  }
+  .note > .stamp {
+    grid-column: 2;
+    justify-self: start;
+  }
+  .dest {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .dialog {
     margin: auto auto 0;
     width: 100%;
