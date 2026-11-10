@@ -97,6 +97,7 @@ export function ShelfThumb({ missionId, item }: { missionId: string; item: Shelf
           break;
         }
       }
+      window.clearTimeout(stop);
       release();
     })();
     return () => {

@@ -44,8 +44,44 @@ export interface ShelfItem {
   url_path?: string;
   // text items
   text?: string;
+  /** Every session whose window covered the item (a found item can name several). */
+  sessions?: string[];
   // code items (found in git)
-  meta?: Record<string, unknown> | null;
+  meta?: ShelfCodeMeta | null;
+}
+
+export interface ShelfCodeFile {
+  path: string;
+  /** A added, M modified, D deleted. */
+  status: string;
+  add: number | null;
+  del: number | null;
+  from: "commit" | "worktree";
+  sha?: string;
+  worktree_too?: boolean;
+}
+
+export interface ShelfCodeMeta {
+  repo: string;
+  repo_name: string;
+  branch: string | null;
+  base: string | null;
+  head: string | null;
+  commits: { sha: string; subject: string }[];
+  commits_more: boolean;
+  files: ShelfCodeFile[];
+  files_more: number;
+  add: number;
+  del: number;
+  pr: { number: number; state: string; url: string; merged: boolean } | null;
+  late: boolean;
+  sessions: string[];
+}
+
+export interface ShelfDiffFile extends ShelfCodeFile {
+  patch: string;
+  truncated: boolean;
+  unavailable: boolean;
 }
 
 export interface ShelfCounts {
@@ -62,4 +98,6 @@ export interface ShelfManifest {
   counts: ShelfCounts;
   items: ShelfItem[];
   next_cursor: string | null;
+  /** Sessions whose found-in-git items are still to come (collected when the session ends). */
+  found_pending?: string[];
 }

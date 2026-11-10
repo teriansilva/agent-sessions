@@ -118,10 +118,12 @@ interface Shelf {
   state: string;
   /** Detail reads answered with `review`. */
   reviewReads: number;
+  /** Sessions whose found-in-git items are still to come. */
+  pending: string[];
 }
 
 async function setup(page: Page, initial = "review"): Promise<Shelf> {
-  const shelf: Shelf = { list: items(), revision: 10, verdicts: [], raw: [], events: [], state: initial, reviewReads: 0 };
+  const shelf: Shelf = { list: items(), revision: 10, verdicts: [], raw: [], events: [], state: initial, reviewReads: 0, pending: [] };
   const state = initial;
   await page.route("**/api/**", (r) => r.fulfill({ json: {} }));
   await page.route("**/api/config", (r) =>
@@ -179,7 +181,20 @@ async function setup(page: Page, initial = "review"): Promise<Shelf> {
   });
   await page.route(new RegExp(`/api/missions/${MID}(\\?.*)?$`), (r) => r.fulfill({ json: detail() }));
   await page.route(`**/api/missions/${MID}/shelf`, (r) =>
-    r.fulfill({ json: manifest(shelf.list, shelf.revision) }),
+    r.fulfill({ json: { ...manifest(shelf.list, shelf.revision), found_pending: shelf.pending } }),
+  );
+  await page.route(`**/api/missions/${MID}/shelf/*/diff`, (r) =>
+    r.fulfill({
+      json: {
+        id: id(11),
+        files_more: 0,
+        files: [
+          { path: "src/timeline.ts", status: "A", add: 2, del: 0, from: "commit", truncated: false, unavailable: false,
+            patch: "--- /dev/null\n+++ b/src/timeline.ts\n@@ -0,0 +1,2 @@\n+<script>alert(1)</script>\n+export const FPS = 24;\n" },
+          { path: "old.txt", status: "D", add: 0, del: 1, from: "worktree", truncated: false, unavailable: false, patch: "" },
+        ],
+      },
+    }),
   );
   await page.route(`**/api/missions/${MID}/shelf/*`, async (r) => {
     if (r.request().method() !== "PATCH") return r.fallback();
@@ -498,4 +513,68 @@ test("the opening view is latched, and the hidden thread keeps its scroll positi
   await expect(page.getByTestId("mission-shelf")).toBeVisible();
   await page.getByRole("tab", { name: "Thread" }).click();
   await expect.poll(() => thread.evaluate((el) => Math.round(el.scrollTop))).toBe(120);
+});
+
+function codeItem(): Item {
+  return {
+    id: id(11),
+    seq: 11,
+    source: "found",
+    kind: "code",
+    title: "render: add the hero timeline",
+    why: "",
+    session_key: S1,
+    sessions: [S1, S2],
+    ref_type: "code",
+    size: null,
+    sha256: null,
+    created_at: T + 900,
+    verdict: null,
+    note: "",
+    verdict_at: null,
+    meta: {
+      repo: "/repo", repo_name: "battlelab-site", branch: "devopsagent/launch", base: "1".repeat(40),
+      head: "3e9c1f2" + "0".repeat(33), commits: [{ sha: "3e9c1f2" + "0".repeat(33), subject: "render: add the hero timeline" }],
+      commits_more: false,
+      files: [
+        { path: "src/timeline.ts", status: "A", add: 2, del: 0, from: "commit" },
+        { path: "old.txt", status: "D", add: 0, del: 1, from: "worktree" },
+      ],
+      files_more: 0, add: 2, del: 1,
+      pr: { number: 418, state: "open", url: "https://git.example.org/o/r/pulls/418", merged: false },
+      late: false, sessions: [S1, S2],
+    },
+  };
+}
+
+test("found in git: the code tile, its diff as text, its PR, and the placeholder while a session runs", async ({ page }) => {
+  const shelf = await setup(page);
+  shelf.list.push(codeItem());
+  shelf.pending = [S2];
+  await openShelf(page);
+  const placeholder = page.locator(`[data-shelf-found-pending="${S2}"]`);
+  await expect(placeholder).toContainText("Collected when this session ends");
+  const t = tile(page, 11);
+  await expect(t).toContainText("battlelab-site");
+  await expect(t).toContainText("+2");
+  await expect(t).toContainText("2 files");
+  await expect(t).toContainText("Touched by 2 sessions");
+  await t.click();
+  const box = lightbox(page);
+  const diff = box.locator("[data-shelf-diff='src/timeline.ts']");
+  await expect(diff).toContainText("+<script>alert(1)</script>");
+  await expect(diff.locator("script")).toHaveCount(0);
+  const pr = box.locator("[data-shelf-pr]");
+  await expect(pr).toHaveAttribute("href", "https://git.example.org/o/r/pulls/418");
+  await expect(pr).toHaveAttribute("target", "_blank");
+  await expect(pr).toHaveAttribute("rel", "noopener noreferrer");
+  await box.locator("[data-shelf-code-file='old.txt']").click();
+  await expect(box.locator("[data-shelf-diff='old.txt']")).toContainText("Deleted — nothing to show.");
+  // The file list's targets hold the floor on a phone too.
+  if ((page.viewportSize()?.width ?? 0) <= 800) {
+    const h = await box.locator("[data-shelf-code-file]").first().evaluate((el) => el.getBoundingClientRect().height);
+    expect(h).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  }
+  await box.getByRole("radio", { name: "Looks good" }).click();
+  await expect(box.getByRole("radio", { name: "Looks good" })).toHaveAttribute("aria-checked", "true");
 });

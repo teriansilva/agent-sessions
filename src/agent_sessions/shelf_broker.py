@@ -406,3 +406,61 @@ async def serve() -> None:
         with contextlib.suppress(OSError):
             if os.lstat(path).st_ino == ours:
                 path.unlink()
+
+
+def _revoke_ids(ids: list[str]) -> None:
+    """End these capabilities: rows revoked, then their token files gone."""
+    if not ids:
+        return
+    with missions._write_lock:
+        con = missions._ready()
+        try:
+            con.executemany(
+                "UPDATE mission_shelf_caps SET revoked_at=? WHERE id=? AND revoked_at IS NULL",
+                [(time.time(), i) for i in ids],
+            )
+        finally:
+            con.close()
+    for cap_id in ids:
+        _remove_launch(cap_id)
+
+
+def revoke_session(mission_id: str, session_key: str) -> None:
+    """The session left the mission (detach): its shelf capabilities end now. Membership already
+    refuses it; this ends the capability itself (#1740 P1b). Never raises."""
+    try:
+        con = missions._ready()
+        try:
+            ids = [
+                r["id"]
+                for r in con.execute(
+                    "SELECT id FROM mission_shelf_caps WHERE revoked_at IS NULL AND mission_id=?"
+                    " AND (session_key=? OR phys_key=? OR phys_key IN (SELECT physical_key FROM"
+                    " session_runtime_bindings WHERE logical_key=?))",
+                    (mission_id, session_key, session_key, session_key),
+                ).fetchall()
+            ]
+        finally:
+            con.close()
+        _revoke_ids(ids)
+    except Exception:  # noqa: BLE001 — a detach never fails for this
+        log.warning("shelf: revoking a detached session's capabilities failed", exc_info=True)
+
+
+def revoke_launch(phys_key: str) -> None:
+    """The session's runtime is torn down (archive): its shelf capabilities end now."""
+    try:
+        con = missions._ready()
+        try:
+            ids = [
+                r["id"]
+                for r in con.execute(
+                    "SELECT id FROM mission_shelf_caps WHERE revoked_at IS NULL AND phys_key=?",
+                    (phys_key,),
+                ).fetchall()
+            ]
+        finally:
+            con.close()
+        _revoke_ids(ids)
+    except Exception:  # noqa: BLE001 — teardown never fails for this
+        log.warning("shelf: revoking %s's capabilities failed", phys_key, exc_info=True)

@@ -23,6 +23,8 @@ export interface ShelfState {
   revision: number;
   counts: ShelfCounts;
   items: ShelfItem[];
+  /** Sessions whose found-in-git items are still to come. */
+  foundPending: string[];
 }
 
 export interface MissionShelf {
@@ -58,7 +60,13 @@ export function useMissionShelf(missionId: string): MissionShelf {
         if (!r || typeof r.revision !== "number" || !Array.isArray(r.items) || !r.counts) {
           throw new Error("not a shelf manifest");
         }
-        if (first === null) first = { revision: r.revision, counts: r.counts, items };
+        if (first === null)
+          first = {
+            revision: r.revision,
+            counts: r.counts,
+            items,
+            foundPending: Array.isArray(r.found_pending) ? r.found_pending : [],
+          };
         items.push(...r.items);
         cursor = r.next_cursor;
         if (!cursor) break;
@@ -89,7 +97,7 @@ export function useMissionShelf(missionId: string): MissionShelf {
       if (!s) return s;
       const items = withItem(s.items, item);
       const unreviewed = items.filter((i) => i.verdict === null).length;
-      return { revision, items, counts: { ...s.counts, unreviewed } };
+      return { ...s, revision, items, counts: { ...s.counts, unreviewed } };
     });
   }, []);
 

@@ -1359,6 +1359,13 @@ export const SWEEP = [
     expect: "dialog",
   },
   {
+    id: "popup:shelf-lightbox-code",
+    path: M1,
+    mock: { shelf: "showcase" },
+    open: [{ testId: "view-shelf" }, { css: "[data-shelf-tile='shf_00000000000000000000000000000010']" }],
+    expect: "dialog",
+  },
+  {
     id: "popup:shelf-lightbox-text",
     path: M1,
     mock: { shelf: "showcase" },

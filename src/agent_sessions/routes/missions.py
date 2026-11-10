@@ -80,6 +80,7 @@ from .. import (
     mission_plan,
     mission_questions,
     mission_relay_reconcile,
+    mission_shelf_git,
     mission_supervisor,
     mission_turn_reconcile,
     missions,
@@ -93,6 +94,7 @@ from .. import (
     scopedspawn,
     scrollback,
     session_input,
+    shelf_broker,
 )
 from . import files as files_routes
 
@@ -1146,7 +1148,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                             # refuses unless the reservation is still the exact one taken here.
                             return missions.adopt(mission_id, key, role=role, expect_token=token)
 
-                    return JSONResponse(await missions.run_admitted(_adopt))
+                    adopted = await missions.run_admitted(_adopt)
+                    # The shelf's git baseline (#1740 P1b): what this session's repositories look
+                    # like as it joins, so what it changes can be found later. Best-effort.
+                    await asyncio.to_thread(mission_shelf_git.take_baselines, mission_id, key)
+                    return JSONResponse(adopted)
             finally:
                 with contextlib.suppress(Exception):
                     missions.release_session(key, token)
@@ -1185,6 +1191,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # comparison and `os.write()` and the old mission still typed into the session
             # (#888 review, finding 1).
             out = await _fenced_write(mission_id, lambda: missions.detach(mission_id, key))
+            # The session has left: what it changed in git is final (#1740 P1b), and its shelf
+            # tool no longer adds anything.
+            await asyncio.to_thread(shelf_broker.revoke_session, mission_id, key)
+            mission_shelf_git.collect_soon(mission_id)
             return JSONResponse(out)
         except missions.MissionError as e:
             return _fail(e)
@@ -1629,18 +1639,20 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # withdraws the authority behind any in-flight nudge. Committing it outside the fence
             # let a closed mission's nudge still land (#888 review, finding 3). Non-terminal
             # transitions pay only an epoch bump, which costs a re-proposal at worst.
-            return JSONResponse(
-                await _fenced_write(
+            out = await _fenced_write(
+                mission_id,
+                lambda: missions.set_state(
                     mission_id,
-                    lambda: missions.set_state(
-                        mission_id,
-                        str(body.get("from") or ""),
-                        str(body.get("to") or ""),
-                        outcome=body.get("outcome"),
-                        detail=str(body.get("detail") or ""),
-                    ),
-                )
+                    str(body.get("from") or ""),
+                    str(body.get("to") or ""),
+                    outcome=body.get("outcome"),
+                    detail=str(body.get("detail") or ""),
+                ),
             )
+            # In review or closed, every session's git changes are final (#1740 P1b).
+            if str(body.get("to") or "") in mission_shelf_git.CLOSING_STATES:
+                mission_shelf_git.collect_soon(mission_id)
+            return JSONResponse(out)
         except missions.MissionError as e:
             return _fail(e)
 

@@ -2,8 +2,8 @@
  *  review — the head with the unreviewed count, kind chips and source / grouping controls, and the
  *  tiles grouped by the session that produced them. A tile opens the lightbox; verdicts are set
  *  only there. */
-import { ChevronRight } from "lucide-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { ChevronRight, GitBranch } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api, ApiError } from "../../../lib/api";
@@ -45,11 +45,27 @@ export function MissionShelf({
 
   const items = useMemo(() => shelf?.items ?? [], [shelf]);
   const revision = shelf?.revision ?? 0;
+  /** The newest revision this view knows. A verdict answer sets it the moment it lands (before
+   *  the render that shows it), so a verdict chained on a note save never sends a stale one. */
+  const revisionRef = useRef(revision);
+  useEffect(() => {
+    revisionRef.current = revision;
+  }, [revision]);
   const shown = useMemo(() => applyFilters(items, filters), [items, filters]);
-  const groups = useMemo(
-    () => (filters.group === "session" ? groupBySession(shown) : [{ key: null, items: shown }]),
-    [shown, filters.group],
+  /** Sessions whose found-in-git items are still to come: each gets a placeholder in its group,
+   *  so the gap is visible rather than silent (design decision 9). */
+  const pending = useMemo(
+    () => (filters.source === "delivered" ? [] : (shelf?.foundPending ?? [])),
+    [shelf, filters.source],
   );
+  const groups = useMemo(() => {
+    if (filters.group !== "session")
+      return shown.length ? [{ key: null, items: shown }] : [];
+    const out = groupBySession(shown);
+    for (const k of pending)
+      if (!out.some((g) => g.key === k)) out.push({ key: k, items: [] });
+    return out;
+  }, [shown, filters.group, pending]);
   // The lightbox walks the tiles in the order they were drawn when it opened.
   const drawn = useMemo(() => groups.flatMap((g) => g.items), [groups]);
   const order = useMemo(() => {
@@ -78,23 +94,33 @@ export function MissionShelf({
   );
 
   const onVerdict = useCallback(
-    async (base: ShelfItem, verdict: ShelfVerdict, note: string): Promise<VerdictResult> => {
-      const attempt = async (revision: number) => {
+    async (
+      base: ShelfItem,
+      verdict: ShelfVerdict,
+      note: string,
+    ): Promise<VerdictResult> => {
+      const attempt = async (rev: number) => {
         const r = await api.setShelfVerdict(missionId, base.id, {
-          expected_revision: revision,
+          expected_revision: rev,
           verdict,
           note: note.trim(),
         });
+        revisionRef.current = r.revision;
         applyVerdict(r.revision, r.item);
+        return r.item;
       };
       try {
-        await attempt(revision);
-        return { ok: true };
+        // The LATEST revision, never the one this callback was made with: a verdict chained on a
+        // note save is sent after that save moved the shelf.
+        return { ok: true, item: await attempt(revisionRef.current) };
       } catch (e) {
         if (!(e instanceof ApiError) || e.status !== 409) {
           return {
             ok: false,
-            message: e instanceof ApiError ? e.message : "The verdict was not saved. Try again.",
+            message:
+              e instanceof ApiError
+                ? e.message
+                : "The verdict was not saved. Try again.",
           };
         }
       }
@@ -103,30 +129,45 @@ export function MissionShelf({
       // verdict another tab set on it is never overwritten without being seen.
       const fresh = await reload();
       const now = fresh?.items.find((i) => i.id === base.id);
-      if (!fresh || !now) return { ok: false, message: "The shelf could not be re-read. Try again." };
+      if (!fresh || !now)
+        return {
+          ok: false,
+          message: "The shelf could not be re-read. Try again.",
+        };
       if (now.verdict !== base.verdict || now.note !== base.note) {
         return {
           ok: false,
-          message: "This item's verdict changed elsewhere; it shows the current one now.",
+          message:
+            "This item's verdict changed elsewhere; it shows the current one now.",
         };
       }
       try {
-        await attempt(fresh.revision);
-        return { ok: true };
+        return { ok: true, item: await attempt(fresh.revision) };
       } catch (e) {
         return {
           ok: false,
-          message: e instanceof ApiError ? e.message : "The verdict was not saved. Try again.",
+          message:
+            e instanceof ApiError
+              ? e.message
+              : "The verdict was not saved. Try again.",
         };
       }
     },
-    [missionId, revision, applyVerdict, reload],
+    [missionId, applyVerdict, reload],
   );
 
   if (!shelf) {
     return (
-      <div className={styles.view} data-testid="mission-shelf" data-state="loading">
-        {error ? <div className={styles.notice}>{error}</div> : <p className={styles.lbl}>Reading the shelf…</p>}
+      <div
+        className={styles.view}
+        data-testid="mission-shelf"
+        data-state="loading"
+      >
+        {error ? (
+          <div className={styles.notice}>{error}</div>
+        ) : (
+          <p className={styles.lbl}>Reading the shelf…</p>
+        )}
       </div>
     );
   }
@@ -173,7 +214,11 @@ export function MissionShelf({
   );
 
   return (
-    <div className={styles.view} data-testid="mission-shelf" data-revision={shelf.revision}>
+    <div
+      className={styles.view}
+      data-testid="mission-shelf"
+      data-revision={shelf.revision}
+    >
       {error ? <div className={styles.notice}>{error}</div> : null}
       <div className={styles.head}>
         <div className={styles.title}>
@@ -189,7 +234,10 @@ export function MissionShelf({
               {c.by_source.delivered} delivered · {c.by_source.found} found
             </span>
           </div>
-          <div className={styles.unrev} aria-label={`${c.unreviewed} of ${c.total} unreviewed`}>
+          <div
+            className={styles.unrev}
+            aria-label={`${c.unreviewed} of ${c.total} unreviewed`}
+          >
             <span className="nj-readout is-sm" data-shelf-unreviewed="">
               {c.unreviewed}
             </span>
@@ -202,7 +250,10 @@ export function MissionShelf({
         </div>
         {c.total ? (
           <div className={styles.filters}>
-            <div className={`${styles.chipRow} ${styles.isScroll}`} data-shelf-kinds="">
+            <div
+              className={`${styles.chipRow} ${styles.isScroll}`}
+              data-shelf-kinds=""
+            >
               <span className={styles.rowLbl}>Kind</span>
               {kindChip("all")}
               {KIND_ORDER.filter((k) => c.by_kind[k] > 0).map(kindChip)}
@@ -223,7 +274,12 @@ export function MissionShelf({
                 type="button"
                 className="nj-chip"
                 aria-pressed={filters.unreviewedOnly}
-                onClick={() => setFilters((f) => ({ ...f, unreviewedOnly: !f.unreviewedOnly }))}
+                onClick={() =>
+                  setFilters((f) => ({
+                    ...f,
+                    unreviewedOnly: !f.unreviewedOnly,
+                  }))
+                }
               >
                 Unreviewed only
               </button>
@@ -246,11 +302,12 @@ export function MissionShelf({
         <section className={styles.empty} data-shelf-empty="">
           <h3>Nothing on the shelf yet</h3>
           <p>
-            Results arrive here as the mission's agents deliver them: files they produced, links
-            and text. Every item gets your verdict.
+            Results arrive here as the mission's agents deliver them: files they
+            produced, links and text. What a session changes in git is found
+            when it ends. Every item gets your verdict.
           </p>
           <div className={styles.kindStrip}>
-            {KIND_ORDER.filter((k) => k !== "code").map((k) => {
+            {KIND_ORDER.map((k) => {
               const Icon = KIND_ICON[k];
               return (
                 <span key={k}>
@@ -261,64 +318,84 @@ export function MissionShelf({
             })}
           </div>
         </section>
-      ) : shown.length === 0 ? (
+      ) : null}
+      {c.total > 0 && shown.length === 0 && !groups.length ? (
         <section className={styles.empty}>
           <p>No item matches these filters.</p>
           <button
             type="button"
             className="nj-chip"
-            onClick={() => setFilters((f) => ({ ...NO_FILTERS, group: f.group }))}
+            onClick={() =>
+              setFilters((f) => ({ ...NO_FILTERS, group: f.group }))
+            }
           >
             Clear filters
           </button>
         </section>
-      ) : (
-        groups.map((g) => {
-          const unrev = g.items.filter((i) => i.verdict === null).length;
-          const path = g.key ? sessionPathFromKey(g.key) : null;
-          const title = g.key ? sessionTitles[g.key] ?? g.key : "Items";
-          return (
-            <section
-              key={g.key ?? "flat"}
-              className={styles.group}
-              aria-label={filters.group === "session" ? title : "All items"}
-              data-shelf-group={g.key ?? ""}
-            >
-              {filters.group === "session" ? (
-                <div className={styles.gHead}>
-                  <div className={styles.gTitle}>
-                    {g.key ? <span className={styles.eng}>{engineOf(g.key)}</span> : null}
-                    <span>{title}</span>
-                  </div>
-                  <span className={styles.gMeta}>
-                    <b>{g.items.length}</b> {g.items.length === 1 ? "item" : "items"} ·{" "}
-                    <b>{unrev}</b> to review
-                  </span>
-                  {path ? (
-                    <Link className={styles.gLink} to={path}>
-                      Open session <ChevronRight size={14} aria-hidden="true" />
-                    </Link>
+      ) : null}
+      {groups.map((g) => {
+        const unrev = g.items.filter((i) => i.verdict === null).length;
+        const path = g.key ? sessionPathFromKey(g.key) : null;
+        const title = g.key ? (sessionTitles[g.key] ?? g.key) : "Items";
+        return (
+          <section
+            key={g.key ?? "flat"}
+            className={styles.group}
+            aria-label={filters.group === "session" ? title : "All items"}
+            data-shelf-group={g.key ?? ""}
+          >
+            {filters.group === "session" ? (
+              <div className={styles.gHead}>
+                <div className={styles.gTitle}>
+                  {g.key ? (
+                    <span className={styles.eng}>{engineOf(g.key)}</span>
                   ) : null}
+                  <span>{title}</span>
+                </div>
+                <span className={styles.gMeta}>
+                  <b>{g.items.length}</b>{" "}
+                  {g.items.length === 1 ? "item" : "items"} · <b>{unrev}</b> to
+                  review
+                </span>
+                {path ? (
+                  <Link className={styles.gLink} to={path}>
+                    Open session <ChevronRight size={14} aria-hidden="true" />
+                  </Link>
+                ) : null}
+              </div>
+            ) : null}
+            <div className={styles.grid}>
+              {g.key && pending.includes(g.key) ? (
+                <div
+                  className={styles.pending}
+                  data-shelf-found-pending={g.key}
+                >
+                  <span className={styles.pendingTag}>
+                    <GitBranch aria-hidden="true" />
+                    Found in git
+                  </span>
+                  <span>
+                    Collected when this session ends: what it changed in the
+                    repository.
+                  </span>
                 </div>
               ) : null}
-              <div className={styles.grid}>
-                {g.items.map((it) => (
-                  <ShelfTile
-                    key={it.id}
-                    ref={(el) => {
-                      if (el) tiles.current.set(it.id, el);
-                      else tiles.current.delete(it.id);
-                    }}
-                    missionId={missionId}
-                    item={it}
-                    onOpen={onOpen}
-                  />
-                ))}
-              </div>
-            </section>
-          );
-        })
-      )}
+              {g.items.map((it) => (
+                <ShelfTile
+                  key={it.id}
+                  ref={(el) => {
+                    if (el) tiles.current.set(it.id, el);
+                    else tiles.current.delete(it.id);
+                  }}
+                  missionId={missionId}
+                  item={it}
+                  onOpen={onOpen}
+                />
+              ))}
+            </div>
+          </section>
+        );
+      })}
 
       {openIndex >= 0 ? (
         <ShelfLightbox

@@ -21,6 +21,7 @@ vi.mock("../../../lib/api", async () => {
       setShelfVerdict: vi.fn(),
       missionShelfBlob: vi.fn(() => new Promise(() => {})),
       missionShelfProbe: vi.fn(),
+      missionShelfDiff: vi.fn(),
     },
   };
 });
@@ -61,6 +62,7 @@ function state(items = ITEMS, revision = 6): ShelfState {
   return {
     revision,
     items,
+    foundPending: [],
     counts: {
       total: items.length,
       by_kind: { image: 3, video: 0, audio: 0, document: 1, code: 0, link: 1, text: 1 },
@@ -239,6 +241,8 @@ test("a verdict pressed while the note's blur save is in flight is queued, never
     ["good", "x"],
     ["needs_work", "x"],
   ]);
+  // Chained on the note save's ANSWER: sent at the revision that save moved the shelf to.
+  expect(vi.mocked(api.setShelfVerdict).mock.calls.map((c) => c[2].expected_revision)).toEqual([6, 7]);
 });
 
 test("an answer for an item the operator moved away from never paints over the next one", async () => {
@@ -256,4 +260,91 @@ test("an answer for an item the operator moved away from never paints over the n
     settle(null);
   });
   expect(within(screen.getByRole("dialog", { name: "Report" })).queryByRole("alert")).toBeNull();
+});
+
+const CODE = it_({
+  seq: 9,
+  kind: "code",
+  source: "found",
+  title: "render: add the hero timeline",
+  ref_type: "code",
+  size: null,
+  sessions: [S1, "codex:bbbbbbbb-0000-4000-8000-000000000002"],
+  meta: {
+    repo: "/p",
+    repo_name: "battlelab-site",
+    branch: "devopsagent/launch",
+    base: "a".repeat(40),
+    head: "3e9c1f2" + "0".repeat(33),
+    commits: [{ sha: "3e9c1f2" + "0".repeat(33), subject: "render: add the hero timeline" }],
+    commits_more: false,
+    files: [
+      { path: "src/timeline.ts", status: "A", add: 96, del: 0, from: "commit" },
+      { path: "old.txt", status: "D", add: 0, del: 3, from: "commit" },
+    ],
+    files_more: 0,
+    add: 96,
+    del: 3,
+    pr: { number: 418, state: "open", url: "https://git.example.org/o/r/pulls/418", merged: false },
+    late: false,
+    sessions: [S1],
+  },
+});
+
+test("a found code change: its tile, its diff as text, its PR and every session it touched", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.missionShelfDiff).mockResolvedValue({
+    id: CODE.id,
+    files_more: 0,
+    files: [
+      { ...CODE.meta!.files[0], patch: "@@ -0,0 +1 @@\n+<b>export</b> const T = 1;\n", truncated: false, unavailable: false },
+      { ...CODE.meta!.files[1], patch: "", truncated: false, unavailable: false },
+    ],
+  });
+  view(data({ shelf: state([CODE]) }));
+  const tile = screen.getByRole("button", { name: /^Code:\srender/ });
+  expect(tile.textContent).toContain("battlelab-site");
+  expect(tile.textContent).toContain("+96");
+  expect(tile.textContent).toContain("2 files");
+  expect(tile.textContent).toContain("Touched by 2 sessions");
+  await user.click(tile);
+  const dialog = screen.getByRole("dialog", { name: "render: add the hero timeline" });
+  const diff = await within(dialog).findByText("+<b>export</b> const T = 1;");
+  expect(diff.closest("pre")!.querySelector("b")).toBeNull();
+  const pr = dialog.querySelector<HTMLAnchorElement>("[data-shelf-pr]")!;
+  expect(pr.getAttribute("href")).toBe("https://git.example.org/o/r/pulls/418");
+  expect(pr.getAttribute("rel")).toBe("noopener noreferrer");
+  await user.click(within(dialog).getByRole("button", { name: /old\.txt/ }));
+  expect(dialog.textContent).toContain("Deleted — nothing to show.");
+  expect(vi.mocked(api.missionShelfDiff)).toHaveBeenCalledWith(M, CODE.id);
+});
+
+test("a session whose git changes are still to come shows the found-in-git placeholder", () => {
+  view(data({ shelf: { ...state([]), foundPending: [S1] } }));
+  const group = screen.getByRole("region", { name: "Render the hero video" });
+  expect(group.querySelector(`[data-shelf-found-pending="${S1}"]`)).not.toBeNull();
+  expect(group.textContent).toContain("Collected when this session ends");
+});
+
+test("a verdict queued behind a note save still lands on its own item after moving on", async () => {
+  const user = userEvent.setup();
+  const verdicted = ITEMS.map((i, n) => (n === 0 ? { ...i, verdict: "good" as const } : i));
+  let settle!: (v: unknown) => void;
+  vi.mocked(api.setShelfVerdict)
+    .mockImplementationOnce(() => new Promise((res) => (settle = res)) as never)
+    .mockResolvedValueOnce({ revision: 8, item: { ...verdicted[0], verdict: "needs_work", note: "x" } });
+  view(data({ shelf: state(verdicted) }));
+  await user.click(screen.getByRole("button", { name: /^Image:\sPoster/ }));
+  const dialog = screen.getByRole("dialog", { name: "Poster" });
+  await user.type(within(dialog).getByLabelText("Note · optional"), "x");
+  await user.click(within(dialog).getAllByRole("radio", { name: "Needs work" })[0]);
+  await user.keyboard("{Escape}");
+  await act(async () => {
+    settle({ revision: 7, item: { ...verdicted[0], note: "x" } });
+  });
+  const calls = vi.mocked(api.setShelfVerdict).mock.calls;
+  expect(calls.map((c) => [c[1], c[2].verdict, c[2].note, c[2].expected_revision])).toEqual([
+    [verdicted[0].id, "good", "x", 6],
+    [verdicted[0].id, "needs_work", "x", 7],
+  ]);
 });

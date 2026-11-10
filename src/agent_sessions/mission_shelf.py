@@ -528,6 +528,13 @@ def _bump_tx(con, mission_id: str) -> tuple[int, int]:
     return seq, revision
 
 
+def _bump_revision_tx(con, mission_id: str) -> int:
+    """Raise the revision without taking a seq (an item changed, none was added)."""
+    seq, revision = _bump_tx(con, mission_id)
+    con.execute("UPDATE mission_shelf_state SET next_seq=? WHERE mission_id=?", (seq, mission_id))
+    return revision
+
+
 def deliver(
     mission_id: str,
     item: object,
@@ -738,6 +745,14 @@ def _public(row: dict, state: dict | None) -> dict:
         "note": row.get("note") or "",
         "verdict_at": row.get("verdict_at"),
     }
+    meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+    # A found item names every session whose window covered the change (#1740 P1b).
+    sessions = meta.get("sessions")
+    out["sessions"] = (
+        [s for s in sessions if isinstance(s, str)][:20]
+        if isinstance(sessions, list)
+        else ([row["session_key"]] if row.get("session_key") else [])
+    )
     if row["ref_type"] == "path":
         out["path"] = row["ref"]
         out["name"] = os.path.basename(row["ref"])
@@ -798,10 +813,14 @@ def manifest(
     source: object = None,
     verdict: object = None,
     limit: int = PAGE_MAX,
+    found: bool = True,
     path: Path | None = None,
 ) -> dict:
     """One page of a mission's shelf. Counts and file checks describe the WHOLE shelf, computed
-    before the filters (the session list's facet rule); the filters narrow before the page."""
+    before the filters (the session list's facet rule); the filters narrow before the page.
+
+    ``found=False`` skips the found-in-git refresh: the route runs it itself, on a thread of its
+    own, so git never holds one of the store's admission slots."""
     missions.validate_id(mission_id)
     after = _parse_cursor(cursor)
     if kind not in (None, "") and kind not in KINDS:
@@ -814,6 +833,13 @@ def manifest(
     m = missions.get_mission(mission_id, events_limit=1, path=path)
     if m is None:
         raise missions.MissionError("unknown mission", status=404)
+    if after == 0 and found:
+        # The first page of a read is where found-in-git work happens (#1740 P1b): a late
+        # baseline for a session that joined without one, and the collection of every session
+        # whose changes are now final. Both are bounded and never raise.
+        from . import mission_shelf_git
+
+        mission_shelf_git.refresh(mission_id, path=path)
     con = missions._ready(path)
     try:
         con.execute("BEGIN DEFERRED")
@@ -859,7 +885,17 @@ def manifest(
         "counts": counts,
         "items": [_public(r, states.get(r["id"])) for r in page],
         "next_cursor": f"s{page[-1]['seq']}" if len(picked) > limit else None,
+        "found_pending": _found_pending(mission_id, path),
     }
+
+
+def _found_pending(mission_id: str, path: Path | None) -> list[str]:
+    from . import mission_shelf_git
+
+    try:
+        return mission_shelf_git.pending_sessions(mission_id, path=path)
+    except Exception:  # noqa: BLE001 — a hint, never a reason to fail the read
+        return []
 
 
 def get_item(mission_id: str, item_id: str, *, path: Path | None = None) -> dict | None:

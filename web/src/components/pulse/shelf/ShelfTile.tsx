@@ -150,6 +150,27 @@ function Media({ missionId, item }: { missionId: string; item: ShelfItem }) {
           <div className={styles.urlPath}>{item.url_path}</div>
         </div>
       );
+    case "code": {
+      const m = item.meta;
+      if (!m) return <div className={`${styles.media} ${styles.card}`}>{tag}</div>;
+      const files = m.files.length + (m.files_more || 0);
+      const ref = m.commits.length
+        ? m.commits.length === 1
+          ? m.commits[0].sha.slice(0, 7)
+          : `${m.commits.length}${m.commits_more ? "+" : ""} commits`
+        : "uncommitted";
+      return (
+        <div className={`${styles.media} ${styles.card}`}>
+          {tag}
+          <div className={styles.repo}>{m.repo_name}</div>
+          <div className={styles.sub}>
+            {m.branch ? `${m.branch} · ` : ""}
+            {ref}
+          </div>
+          <DiffStat add={m.add} del={m.del} files={files} />
+        </div>
+      );
+    }
     case "text":
       return (
         <div className={`${styles.media} ${styles.card} ${styles.cardTop}`}>
@@ -162,12 +183,36 @@ function Media({ missionId, item }: { missionId: string; item: ShelfItem }) {
   }
 }
 
+/** `+a −d ▪▪▪▪▪ N files`: the share of added vs deleted lines in five squares (state colours, since
+ *  they ARE the state of the lines), and the file count. */
+export function DiffStat({ add, del, files }: { add: number; del: number; files: number }) {
+  const n = 5;
+  const tot = add + del;
+  const na = tot ? Math.max(add ? 1 : 0, Math.round((add / tot) * n)) : 0;
+  const nd = tot ? Math.min(n - na, Math.round((del / tot) * n)) : 0;
+  return (
+    <div className={styles.diffstat}>
+      <span className={styles.dsAdd}>+{add}</span>
+      <span className={styles.dsDel}>−{del}</span>
+      <span className={styles.diffbar} aria-hidden="true">
+        {Array.from({ length: n }, (_, i) => (
+          <i key={i} className={i < na ? styles.dbAdd : i < na + nd ? styles.dbDel : undefined} />
+        ))}
+      </span>
+      <span className={styles.dsFiles}>
+        {files} {files === 1 ? "file" : "files"}
+      </span>
+    </div>
+  );
+}
+
 export const ShelfTile = forwardRef<
   HTMLButtonElement,
   { missionId: string; item: ShelfItem; onOpen: (item: ShelfItem) => void }
 >(function ShelfTile({ missionId, item, onOpen }, ref) {
   const foot = footState(item);
-  const size = item.ref_type === "path" || item.ref_type === "text" ? fmtBytes(item.size) : "";
+  const size =
+    item.ref_type === "path" || item.ref_type === "text" ? fmtBytes(item.size) : "";
   return (
     <button
       ref={ref}
@@ -193,6 +238,9 @@ export const ShelfTile = forwardRef<
         {item.why ? <p className={styles.tWhy}>{item.why}</p> : null}
         <div className={styles.tMeta}>
           <SourceTag item={item} />
+          {(item.sessions?.length ?? 0) > 1 ? (
+            <span data-shelf-several="">Touched by {item.sessions!.length} sessions</span>
+          ) : null}
           {size ? <span>{size}</span> : null}
           <span>{fmtClock(item.created_at)}</span>
         </div>

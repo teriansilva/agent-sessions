@@ -70,6 +70,8 @@ export async function answerExtra(path, q, method, req, state) {
   // The mission shelf (#1740): `shelf` (a sweep state) fills it; otherwise it is empty.
   const sr = /^\/api\/missions\/msn_[0-9a-f]{32}\/shelf\/(shf_[0-9a-f]{32})\/raw$/.exec(path);
   if (sr) return shelfRaw(sr[1]);
+  const sd = /^\/api\/missions\/msn_[0-9a-f]{32}\/shelf\/(shf_[0-9a-f]{32})\/diff$/.exec(path);
+  if (sd) return json(shelfDiff(sd[1]));
   const mi = /^\/api\/missions\/(msn_[0-9a-f]{32})(\/[a-z_]+)?$/.exec(path);
   if (mi && method === "GET") {
     const [, id, sub] = mi;
@@ -79,7 +81,12 @@ export async function answerExtra(path, q, method, req, state) {
     if (sub === "/objectives") return json({ objectives: shown.objectives });
     if (sub === "/context") return json(MS.contextVariant(missionContext(id), state?.missionContext));
     if (sub === "/now") return json(missionNow());
-    if (sub === "/shelf") return json(shelfManifest(id, state?.shelf ? shelfShowcase() : []));
+    if (sub === "/shelf") {
+      const m = shelfManifest(id, state?.shelf ? shelfShowcase() : []);
+      // A session still running has its found-in-git items to come (the dashed placeholder).
+      if (state?.shelf) m.found_pending = [SHELF_B];
+      return json(m);
+    }
     return undefined;
   }
   const st = /^\/api\/structured\/sessions\/([^/]+?)(\/[a-z]+)?$/.exec(path);
@@ -913,6 +920,8 @@ function playbookDocuments(book) {
 
 // ---- the mission shelf (#1740) ---------------------------------------------------------------
 const SHELF_PNG = readFileSync(new URL("../../e2e/fixtures/media/dot.png", import.meta.url));
+const SHELF_WEBM = readFileSync(new URL("../../e2e/fixtures/media/clip.webm", import.meta.url));
+const SHELF_OGG = readFileSync(new URL("../../e2e/fixtures/media/tone.ogg", import.meta.url));
 const shf = (n) => "shf_" + String(n).padStart(32, "0");
 const SHELF_A = "claude:5f3c0000-0000-4000-8000-0000000000a1";
 const SHELF_B = "codex:019a0000-0000-7000-8000-0000000000b2";
@@ -953,6 +962,26 @@ function shelfShowcase() {
     item(7, { kind: "document", title: "Changelog for v0.21", why: "Grouped by area; links each item to its issue.", ...file("CHANGELOG.md", "text/plain; charset=utf-8"), size: 6348 }),
     item(8, { kind: "document", title: "Release notes", why: "The PDF for the press page.", ...file("out/release-notes.pdf", null), size: 98304 }),
     item(9, { kind: "link", title: "Staging preview of the release page", why: "The page with the video and screenshots in place.", ref_type: "url", url: "https://staging.example.org/releases/v0-21", host: "staging.example.org", url_path: "/releases/v0-21", size: null }),
+    // Found in git (#1740 P1b): a code change two sessions' windows covered, with its PR.
+    item(10, {
+      kind: "code", source: "found", ref_type: "code", size: null, session_key: SHELF_A,
+      title: "render: add the hero timeline",
+      sessions: [SHELF_A, SHELF_B],
+      meta: {
+        repo: "/home/operator/projects/battlelab-site", repo_name: "battlelab-site",
+        branch: "devopsagent/launch-v021", base: "1".repeat(40), head: "3e9c1f2" + "0".repeat(33),
+        commits: [{ sha: "3e9c1f2" + "0".repeat(33), subject: "render: add the hero timeline" }],
+        commits_more: false,
+        files: [
+          { path: "src/render/timeline.ts", status: "A", add: 96, del: 0, from: "commit" },
+          { path: "render.config.json", status: "M", add: 4, del: 2, from: "commit" },
+          { path: "src/render/scenes.ts", status: "M", add: 28, del: 12, from: "commit" },
+        ],
+        files_more: 0, add: 128, del: 14,
+        pr: { number: 418, state: "open", url: "https://git.example.org/battlelab/site/pulls/418", merged: false },
+        late: false, sessions: [SHELF_A, SHELF_B],
+      },
+    }),
   ];
 }
 
@@ -978,7 +1007,27 @@ function shelfManifest(missionId, items) {
   };
 }
 
+function shelfDiff(itemId) {
+  return {
+    id: itemId,
+    files_more: 0,
+    files: [
+      {
+        path: "src/render/timeline.ts", status: "A", add: 96, del: 0, from: "commit", truncated: false, unavailable: false,
+        patch: "--- /dev/null\n+++ b/src/render/timeline.ts\n@@ -0,0 +1,6 @@ new file\n+export const HERO_TIMELINE = [\n+  { at: 0, scene: \"title\", hold: 2.5 },\n+  { at: 2.5, scene: \"map\", until: 19 },\n+];\n+\n+export const FPS = 24;\n",
+      },
+      {
+        path: "render.config.json", status: "M", add: 4, del: 2, from: "commit", truncated: false, unavailable: false,
+        patch: "@@ -3,7 +3,9 @@\n   \"width\": 1920,\n-  \"fps\": 30,\n-  \"theme\": \"light\",\n+  \"fps\": 24,\n+  \"theme\": \"dark\",\n+  \"codec\": \"vp9\",\n+  \"crf\": 31,\n",
+      },
+      { path: "src/render/scenes.ts", status: "M", add: 28, del: 12, from: "commit", truncated: false, unavailable: false, patch: "@@ -1,3 +1,3 @@\n-export const SCENES = 3;\n+export const SCENES = 4;\n" },
+    ],
+  };
+}
+
 function shelfRaw(itemId) {
+  if (itemId === shf(1)) return { raw: { status: 200, contentType: "video/webm", body: SHELF_WEBM } };
+  if (itemId === shf(2)) return { raw: { status: 200, contentType: "audio/ogg", body: SHELF_OGG } };
   if (itemId === shf(3) || itemId === shf(5)) {
     return { raw: { status: 200, contentType: "image/png", body: SHELF_PNG } };
   }

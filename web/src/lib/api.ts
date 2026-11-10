@@ -6,7 +6,7 @@ import type {
   SpecialistList,
 } from "../types/specialists";
 import type { ApiLook } from "../theme/apiLook";
-import type { ShelfItem, ShelfManifest, ShelfVerdict } from "../types/shelf";
+import type { ShelfDiffFile, ShelfItem, ShelfManifest, ShelfVerdict } from "../types/shelf";
 import type { ShareCatalog, ShareChoice, ShareImports, SharePreview, ShareResult } from "../types/share";
 import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, GalleryComparison, GalleryFiles, LocalSkill } from "../types/gallery";
 import type { CollectionInput, SecretAccessEntry, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
@@ -2228,6 +2228,13 @@ export const api = {
     getJsonWithDetail<ShelfManifest>(
       `/api/missions/${enc(missionId)}/shelf${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
       signal,
+      { cache: "no-store" },
+    ),
+  /** A found code change's files and patches (#1740 P1b): mission-bound, by item id only. */
+  missionShelfDiff: (missionId: string, itemId: string) =>
+    getJsonWithDetail<{ id: string; files: ShelfDiffFile[]; files_more: number }>(
+      `/api/missions/${enc(missionId)}/shelf/${enc(itemId)}/diff`,
+      undefined,
       { cache: "no-store" },
     ),
   /** The operator's verdict on one shelf item, made against the revision the page read. A shelf

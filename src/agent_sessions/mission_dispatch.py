@@ -596,6 +596,13 @@ async def run(
     # where it is what proves which session the launch became.
     nonce = launch_binding.mint_nonce()
 
+    # The shelf's git baseline (#1740 P1b), snapshotted BEFORE the agent starts and recorded under
+    # its key the moment the key exists: what it then changes in the mission's repositories is
+    # found exactly, never mixed with what was already dirty. Best-effort, off the loop.
+    from . import mission_shelf_git
+
+    shelf_snaps = await asyncio.to_thread(mission_shelf_git.prepare_baselines, mission_id)
+
     def on_key(key: str) -> None:
         # The record must be ahead of the master, never behind it. `False` means the dispatch has
         # already been settled by somebody else, and starting an agent for it would produce
@@ -606,6 +613,7 @@ async def run(
         late = {"nonce": nonce} if engines.is_new_session_placeholder(key) else {}
         if not missions.note_dispatch_session(mission_id, key, expect_plan=plan_id, **late):
             raise missions.MissionError("this dispatch is no longer current", status=409)
+        mission_shelf_git.record_baselines(mission_id, key, shelf_snaps)
         # THE RESOURCE IDENTITY IS PERSISTED HERE, at the real pre-launch callback (#894 review 2,
         # finding 1). `note_spawn_session` previously had no production caller at all, so a child
         # that launched and then failed short of adoption left a KEYLESS reservation — a row with

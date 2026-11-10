@@ -76,7 +76,10 @@ const tile = (page: Page, key: string) => page.locator(`[data-shelf-tile="${ids[
 async function openShelf(page: Page) {
   await page.goto(`${base()}/mission?m=${mid}`);
   await page.getByRole("tab", { name: /Shelf/ }).click({ timeout: 30_000 });
-  await expect(page.locator("[data-shelf-tile]")).toHaveCount(9, { timeout: 30_000 });
+  // Every seeded DELIVERED item (the found-in-git test adds found tiles of its own).
+  await expect(page.locator("[data-shelf-tile]:has([data-source='delivered'])")).toHaveCount(9, {
+    timeout: 30_000,
+  });
 }
 
 test("direct: every kind opens from real bytes through the mission-bound route", async ({ page }) => {
@@ -196,7 +199,7 @@ test("app mode: the shelf's bytes come through the tunnel, never as a relay requ
     dispatchEvent(new PopStateEvent("popstate"));
   }, mid);
   await page.getByRole("tab", { name: /Shelf/ }).click({ timeout: 30_000 });
-  await expect(page.locator("[data-shelf-tile]")).toHaveCount(9, { timeout: 30_000 });
+  await expect(tile(page, "image")).toBeVisible({ timeout: 30_000 });
   await tile(page, "image").click();
   const img = page.getByRole("dialog").locator("[data-media-el='image']");
   await expect.poll(() => img.evaluate((el: HTMLImageElement) => el.naturalWidth), { timeout: 30_000 }).toBe(64);
@@ -205,4 +208,37 @@ test("app mode: the shelf's bytes come through the tunnel, never as a relay requ
   const video = page.getByRole("dialog").locator("[data-media-el='video']");
   await expect.poll(async () => (await video.getAttribute("src")) ?? "", { timeout: 30_000 }).toMatch(/^blob:/);
   expect(native).toEqual([]);
+});
+
+test("found in git: a commit after the session joined is a code change with its diff", async ({ page }) => {
+  // The seeder took the session's baseline as it joined. Now the session commits, then leaves.
+  const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+  writeFileSync(join(stack.repo, "timeline.ts"), "export const FPS = 24;\n");
+  execFileSync("git", ["-C", stack.repo, "add", "timeline.ts"], { env });
+  execFileSync("git", ["-C", stack.repo, "commit", "-qm", "render: add the hero timeline"], { env });
+  const cfg = await (await page.request.get(`${base()}/api/config`)).json();
+  const detach = await page.request.post(`${base()}/api/missions/${mid}/detach`, {
+    data: { session_key: SESSION },
+    headers: { "X-CSRF-Token": cfg.csrf, Origin: base() },
+  });
+  expect(detach.status()).toBe(200);
+  await expect
+    .poll(async () => {
+      const m = await (await page.request.get(`${base()}/api/missions/${mid}/shelf`)).json();
+      return m.items.filter((i: { kind: string }) => i.kind === "code").length;
+    }, { timeout: 30_000 })
+    .toBe(1);
+  await openShelf(page);
+  const code = page.locator("[data-shelf-tile][data-kind='code']");
+  await expect(code).toContainText("render: add the hero timeline");
+  await code.click();
+  await page.getByRole("dialog").locator("[data-shelf-code-file='timeline.ts']").click();
+  const diff = page.getByRole("dialog").locator("[data-shelf-diff='timeline.ts']");
+  await expect(diff).toContainText("+export const FPS = 24;");
+  // The deleted file is listed with no viewer; the excluded folder is never reported.
+  const listed = await page.getByRole("dialog").locator("[data-shelf-code-file]").evaluateAll((els) =>
+    els.map((e) => e.getAttribute("data-shelf-code-file")),
+  );
+  expect(listed).toContain("out/gone.png");
+  expect(listed.some((p) => (p ?? "").startsWith("private/"))).toBe(false);
 });

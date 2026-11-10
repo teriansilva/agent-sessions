@@ -155,6 +155,10 @@ async def cleanup_runtime(
 
     await asyncio.to_thread(agent_reports.end_quietly, phys_key, "archived")
     await asyncio.to_thread(hq_report_broker.revoke_launch, phys_key)
+    from . import shelf_broker
+
+    # The mission shelf's capability ends with the runtime too (#1740 P1b).
+    await asyncio.to_thread(shelf_broker.revoke_launch, phys_key)
 
     # Stale-socket unlink under the single-writer lock (split-brain guard, 2026-06-12 prod
     # wedge) — shared with Settings → Maintenance's prune (#993) so the guard exists once.

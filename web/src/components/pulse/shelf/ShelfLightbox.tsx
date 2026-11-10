@@ -33,7 +33,8 @@ import {
   ShelfMediaStage,
   ShelfTextDocument,
 } from "./ShelfMedia";
-import { SourceTag, StateWord } from "./ShelfTile";
+import { ShelfCodeStage } from "./ShelfCode";
+import { DiffStat, SourceTag, StateWord } from "./ShelfTile";
 import {
   KIND_LABEL,
   extOf,
@@ -51,7 +52,8 @@ import styles from "./shelf.module.css";
  *  previous / next are RENDERED for one layout only, never just hidden, so the focus trap never
  *  wraps onto a control that cannot take focus. */
 const PHONE = "(max-width: 800px)";
-const hasMedia = () => typeof window !== "undefined" && typeof window.matchMedia === "function";
+const hasMedia = () =>
+  typeof window !== "undefined" && typeof window.matchMedia === "function";
 function subscribePhone(cb: () => void) {
   if (!hasMedia()) return () => {};
   const mq = window.matchMedia(PHONE);
@@ -71,7 +73,9 @@ function usePhone(): boolean {
 const safeHref = (url: string | undefined): string | null =>
   url && /^https?:\/\//i.test(url) ? url : null;
 
-export type VerdictResult = { ok: true } | { ok: false; message: string };
+export type VerdictResult =
+  | { ok: true; item: ShelfItem }
+  | { ok: false; message: string };
 
 export function ShelfLightbox({
   missionId,
@@ -91,7 +95,11 @@ export function ShelfLightbox({
   onIndex: (i: number) => void;
   onClose: () => void;
   /** Record a verdict and note for `base` (the item as this lightbox shows it). */
-  onVerdict: (base: ShelfItem, verdict: ShelfVerdict, note: string) => Promise<VerdictResult>;
+  onVerdict: (
+    base: ShelfItem,
+    verdict: ShelfVerdict,
+    note: string,
+  ) => Promise<VerdictResult>;
   triggerRef: RefObject<HTMLElement | null>;
 }) {
   const item = items[index];
@@ -111,9 +119,15 @@ export function ShelfLightbox({
   const [note, setNote] = useState(item?.note ?? "");
   /** What is being saved: a verdict (its buttons wait) or only a note (on blur; the buttons stay
    *  live). A verdict pressed while a note save is in flight is QUEUED and sent the moment that
-   *  save settles, against the shelf it produced — never swallowed (Hermes 7899). */
+   *  save LANDS, against the shelf it produced — never swallowed by a save in flight (Hermes
+   *  7899). When the note save FAILS, the queued verdict is not sent: the status line says the
+   *  save failed and the operator presses again (sending it without the note they typed would
+   *  record something they did not choose). */
   const [saving, setSaving] = useState<"verdict" | "note" | null>(null);
-  const [queued, setQueued] = useState<{ id: string; verdict: ShelfVerdict } | null>(null);
+  const [queued, setQueued] = useState<{
+    id: string;
+    verdict: ShelfVerdict;
+  } | null>(null);
   /** The item on screen now: an answer for another one never paints its status here. */
   const shownRef = useRef<string | undefined>(item?.id);
   const [status, setStatus] = useState<string | null>(null);
@@ -141,7 +155,13 @@ export function ShelfLightbox({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT" || t.isContentEditable)) return;
+      if (
+        t &&
+        (t.tagName === "TEXTAREA" ||
+          t.tagName === "INPUT" ||
+          t.isContentEditable)
+      )
+        return;
       if (t?.closest("video, audio")) return; // the player's own arrow keys seek
       if (e.key === "ArrowLeft") go(-1);
       else if (e.key === "ArrowRight") go(1);
@@ -150,36 +170,61 @@ export function ShelfLightbox({
     return () => document.removeEventListener("keydown", onKey);
   }, [go]);
 
+  /** The note-only save in flight, resolving to the item as it stands once that save landed
+   *  (or null when it failed). A verdict pressed meanwhile is CHAINED on it — sent against that
+   *  item, for that item, even if the operator has moved to another one or closed the lightbox
+   *  by then (independent review of #1904). */
+  const noteSave = useRef<Promise<ShelfItem | null> | null>(null);
+
   const save = useCallback(
-    async (base: ShelfItem, verdict: ShelfVerdict, text: string, what: "verdict" | "note") => {
+    async (
+      base: ShelfItem,
+      verdict: ShelfVerdict,
+      text: string,
+      what: "verdict" | "note",
+    ): Promise<ShelfItem | null> => {
       setSaving(what);
       setStatus(null);
       const r = await onVerdict(base, verdict, text);
       setSaving(null);
       if (!r.ok && shownRef.current === base.id) setStatus(r.message);
+      return r.ok ? r.item : null;
     },
     [onVerdict],
   );
 
-  // A queued verdict goes once the save before it settled — after the re-render that folded its
-  // answer in, so it is made against the item and revision that answer produced.
-  useEffect(() => {
-    if (saving !== null || !queued || !item) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- the queue is drained exactly once
-    setQueued(null);
-    if (queued.id === item.id) void save(item, queued.verdict, note, "verdict");
-  }, [saving, queued, item, note, save]);
+  const saveNote = (base: ShelfItem, verdict: ShelfVerdict, text: string) => {
+    // Resolves to the SERVER's item once the note landed: a verdict chained on it is sent
+    // against what the store holds, not a copy patched here.
+    const p = save(base, verdict, text, "note");
+    noteSave.current = p;
+    void p.finally(() => {
+      if (noteSave.current === p) noteSave.current = null;
+    });
+  };
 
   if (!item) return null;
 
   const pressVerdict = (v: ShelfVerdict) => {
-    if (saving === "note") setQueued({ id: item.id, verdict: v });
-    else void save(item, v, note, "verdict");
+    const pending = noteSave.current;
+    if (saving === "note" && pending) {
+      const forId = item.id;
+      const text = note;
+      setQueued({ id: forId, verdict: v });
+      void pending.then(async (landed) => {
+        setQueued((q) => (q?.id === forId ? null : q));
+        if (landed) await save(landed, v, text, "verdict");
+      });
+    } else void save(item, v, note, "verdict");
   };
   const noteDirty = note.trim() !== item.note;
 
   const radios = (
-    <div className={styles.verdictRadios} role="radiogroup" aria-label="Verdict">
+    <div
+      className={styles.verdictRadios}
+      role="radiogroup"
+      aria-label="Verdict"
+    >
       {(
         [
           ["good", "Looks good", Check, styles.vGood],
@@ -190,7 +235,9 @@ export function ShelfLightbox({
           key={v}
           type="button"
           role="radio"
-          aria-checked={(queued?.id === item.id ? queued.verdict : item.verdict) === v}
+          aria-checked={
+            (queued?.id === item.id ? queued.verdict : item.verdict) === v
+          }
           className={`${styles.vBtn} ${cls}`}
           disabled={saving === "verdict"}
           onClick={() => pressVerdict(v)}
@@ -229,29 +276,47 @@ export function ShelfLightbox({
     );
 
   const ext = (extOf(item.name) || "").toUpperCase();
-  const viewerTag = [
-    "Viewer",
-    KIND_LABEL[item.kind],
-    [ext, item.size !== null ? fmtBytes(item.size) : ""].filter(Boolean).join(" · "),
-  ]
-    .filter(Boolean)
-    .join(" // ");
+  const viewerTag =
+    item.kind === "code" && item.meta
+      ? [
+          "Code change",
+          item.meta.repo_name,
+          item.meta.branch,
+          item.meta.head?.slice(0, 7),
+        ]
+          .filter(Boolean)
+          .join(" // ")
+      : [
+          "Viewer",
+          KIND_LABEL[item.kind],
+          [ext, item.size !== null ? fmtBytes(item.size) : ""]
+            .filter(Boolean)
+            .join(" · "),
+        ]
+          .filter(Boolean)
+          .join(" // ");
 
   let viewer: ReactNode;
   let checker = false;
-  if (item.ref_type === "path" && isGone(item)) {
+  if (item.kind === "code") {
+    viewer = <ShelfCodeStage key={item.id} missionId={missionId} item={item} />;
+  } else if (item.ref_type === "path" && isGone(item)) {
     viewer = <ShelfGoneStage item={item} />;
   } else if (isInlineMedia(item)) {
     checker = item.kind === "image";
-    viewer = <ShelfMediaStage key={item.id} missionId={missionId} item={item} />;
+    viewer = (
+      <ShelfMediaStage key={item.id} missionId={missionId} item={item} />
+    );
   } else if (isTextDocument(item)) {
-    viewer = <ShelfTextDocument key={item.id} missionId={missionId} item={item} />;
+    viewer = (
+      <ShelfTextDocument key={item.id} missionId={missionId} item={item} />
+    );
   } else if (item.ref_type === "path") {
     viewer = (
       <div className={styles.stageMsg} data-shelf-download-only="">
         <span>
-          {ext || "This file"} is download-only on the shelf: it is not a type the viewer shows in
-          place.
+          {ext || "This file"} is download-only on the shelf: it is not a type
+          the viewer shows in place.
         </span>
         <ShelfDownload missionId={missionId} item={item} />
       </div>
@@ -283,9 +348,59 @@ export function ShelfLightbox({
   }
 
   const rows: [string, ReactNode][] = [
-    ["Source", `${item.source === "delivered" ? "Delivered" : "Found in git"} · ${fmtClock(item.created_at)}`],
+    [
+      "Source",
+      `${item.source === "delivered" ? "Delivered" : "Found in git"} · ${fmtClock(item.created_at)}`,
+    ],
     ["Session", sessionLabel(item.session_key)],
   ];
+  const m = item.kind === "code" ? item.meta : null;
+  if (m) {
+    rows.push(["Repo", m.repo_name]);
+    if (m.branch) rows.push(["Branch", m.branch]);
+    rows.push([
+      m.commits.length === 1 ? "Commit" : "Commits",
+      m.commits.length
+        ? m.commits.length === 1
+          ? `${m.commits[0].sha.slice(0, 7)} · ${m.commits[0].subject}`
+          : `${m.commits.length}${m.commits_more ? "+" : ""} — last ${m.commits[m.commits.length - 1].sha.slice(0, 7)}`
+        : "none — uncommitted changes",
+    ]);
+    rows.push([
+      "Changes",
+      <DiffStat
+        key="ds"
+        add={m.add}
+        del={m.del}
+        files={m.files.length + (m.files_more || 0)}
+      />,
+    ]);
+    if (m.pr && safeHref(m.pr.url)) {
+      rows.push([
+        "Pull request",
+        <a
+          key="pr"
+          href={safeHref(m.pr.url)!}
+          target="_blank"
+          rel="noopener noreferrer"
+          referrerPolicy="no-referrer"
+        >
+          PR #{m.pr.number} · {m.pr.merged ? "merged" : m.pr.state}
+        </a>,
+      ]);
+    }
+    if (m.late)
+      rows.push([
+        "Note",
+        "Watched from the first shelf read, not from when the session joined.",
+      ]);
+  }
+  if ((item.sessions?.length ?? 0) > 1) {
+    rows.push([
+      "Touched by",
+      `${item.sessions!.length} sessions: ${item.sessions!.map((k) => sessionLabel(k)).join("; ")}`,
+    ]);
+  }
   if (item.ref_type === "path") {
     rows.push(["File", item.path ?? item.name ?? ""]);
     rows.push([
@@ -302,7 +417,10 @@ export function ShelfLightbox({
         <StateWord word="Matches delivery" led="up" tone="ok" />
       ),
     ]);
-    rows.push(["Delivered", `sha256 ${shortSha(item.sha256)} · ${fmtClock(item.created_at)}`]);
+    rows.push([
+      "Delivered",
+      `sha256 ${shortSha(item.sha256)} · ${fmtClock(item.created_at)}`,
+    ]);
     if (isChanged(item)) {
       rows.push([
         "On disk",
@@ -314,7 +432,11 @@ export function ShelfLightbox({
   }
 
   const savedLine = status ? (
-    <div className={`${styles.saved} ${styles.isErr}`} role="alert" data-shelf-verdict-error="">
+    <div
+      className={`${styles.saved} ${styles.isErr}`}
+      role="alert"
+      data-shelf-verdict-error=""
+    >
       {status}
     </div>
   ) : saving ? (
@@ -411,7 +533,9 @@ export function ShelfLightbox({
                     </button>
                   </>
                 ) : null}
-                {item.ref_type === "path" && !isGone(item) && (isInlineMedia(item) || isTextDocument(item)) ? (
+                {item.ref_type === "path" &&
+                !isGone(item) &&
+                (isInlineMedia(item) || isTextDocument(item)) ? (
                   <ShelfDownload missionId={missionId} item={item} />
                 ) : null}
               </div>
@@ -425,11 +549,17 @@ export function ShelfLightbox({
           </div>
           <div className={styles.side}>
             <section>
-              <p className={styles.lbl}>{item.why ? "Why · in the agent's words" : "Why"}</p>
+              <p className={styles.lbl}>
+                {item.why ? "Why · in the agent's words" : "Why"}
+              </p>
               {item.why ? (
                 <p className={styles.why}>{item.why}</p>
               ) : (
-                <p className={styles.hint}>No reason was given with this item.</p>
+                <p className={styles.hint}>
+                  {item.source === "found"
+                    ? "Found in git — no agent delivered this, so there is no note."
+                    : "No reason was given with this item."}
+                </p>
               )}
             </section>
             <section>
@@ -442,6 +572,23 @@ export function ShelfLightbox({
                 ))}
               </dl>
             </section>
+            {m?.pr && safeHref(m.pr.url) ? (
+              <section>
+                <div className={styles.rowBtns}>
+                  <a
+                    className={`${action.ghost} ${action.compact}`}
+                    href={safeHref(m.pr.url)!}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    referrerPolicy="no-referrer"
+                    data-shelf-pr=""
+                  >
+                    <ExternalLink size={14} aria-hidden="true" /> Open PR #
+                    {m.pr.number}
+                  </a>
+                </div>
+              </section>
+            ) : null}
             {item.ref_type === "url" && safeHref(item.url) ? (
               <section>
                 <div className={styles.rowBtns}>
@@ -475,7 +622,8 @@ export function ShelfLightbox({
                 placeholder="What should change? The note is kept with the verdict."
                 onChange={(e) => setNote(e.target.value)}
                 onBlur={() => {
-                  if (item.verdict && noteDirty && !saving) void save(item, item.verdict, note, "note");
+                  if (item.verdict && noteDirty && !saving)
+                    saveNote(item, item.verdict, note);
                 }}
                 data-shelf-note=""
               />
@@ -486,7 +634,9 @@ export function ShelfLightbox({
             </section>
           </div>
         </div>
-        {phone ? <div className={styles.dock}>{verdictButtons(true)}</div> : null}
+        {phone ? (
+          <div className={styles.dock}>{verdictButtons(true)}</div>
+        ) : null}
       </div>
     </>,
     document.body,

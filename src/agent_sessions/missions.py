@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 35
+SCHEMA_VERSION = 36
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -1405,6 +1405,8 @@ SHELF_DDL: tuple[str, ...] = (
     "created_at REAL NOT NULL, "
     "verdict TEXT CHECK(verdict IS NULL OR verdict IN ('good','needs_work')), "
     "note TEXT NOT NULL DEFAULT '', verdict_at REAL, "
+    # v36: a found code change's per-file patches (JSON), served only by the diff route.
+    "detail TEXT, "
     "UNIQUE(mission_id, seq))",
     "CREATE TABLE IF NOT EXISTS mission_shelf_state ("
     "mission_id TEXT PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE, "
@@ -1427,16 +1429,42 @@ def _migrate_34_to_35(con) -> None:
         con.execute(statement)
 
 
+#: v36 (#1740 P1b): what a mission's sessions changed in git. One BASELINE per (mission, session,
+#: repository), taken when the session joins (or, late, the first time the shelf is read), and
+#: collected once at the end; the found items it produces go in `mission_shelf_items` with their
+#: per-file patches in the new `detail` column. Cascades with the mission like the rest.
+SHELF_BASELINES_DDL: tuple[str, ...] = (
+    "CREATE TABLE IF NOT EXISTS mission_shelf_baselines ("
+    "mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE, "
+    "session_key TEXT NOT NULL, repo TEXT NOT NULL, head TEXT, branch TEXT, "
+    "dirty TEXT NOT NULL DEFAULT '{}', taken_at REAL NOT NULL, late INTEGER NOT NULL DEFAULT 0, "
+    "collected_at REAL, outcome TEXT, attempts INTEGER NOT NULL DEFAULT 0, claimed_at REAL, "
+    "PRIMARY KEY (mission_id, session_key, repo))",
+)
+_SCHEMA += ";\n".join(SHELF_BASELINES_DDL) + ";\n"
+
+
+def _migrate_35_to_36(con) -> None:
+    """Additive only (workflow §0): one table and one nullable column. Idempotent."""
+    for statement in SHELF_BASELINES_DDL:
+        con.execute(statement)
+    if _has_table(con, "mission_shelf_items"):
+        have = {r[1] for r in con.execute("PRAGMA table_info(mission_shelf_items)")}
+        if "detail" not in have:
+            con.execute("ALTER TABLE mission_shelf_items ADD COLUMN detail TEXT")
+
+
 #: The versions `rollback_schema` can take a store back to, newest first. One entry per additive
 #: step whose previous build reads the newer file unchanged once `user_version` says so.
-ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34})
+ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34, 35})
 
 
 def rollback_schema(to: int, *, path: Path | None = None) -> dict:
     """Take the store back to schema `to` for the previous build, deleting nothing (#1777, #1740).
 
     Every target is additive below this build: v34 added the plan revisions and three objective
-    columns (to 33), v35 the shelf tables (to 34); an older build never reads either.
+    columns (to 33), v35 the shelf tables (to 34), v36 the shelf's git baselines and a patch
+    column (to 35); an older build never reads any of them.
 
     A build refuses a store newer than itself, so rolling the app back past v34 would make every
     mission read fail. This is the way back: `user_version` set to `to`, in one transaction, and
@@ -1588,6 +1616,8 @@ def _migrate(con) -> int:
             _migrate_33_to_34(con)
         if version < 35:
             _migrate_34_to_35(con)
+        if version < 36:
+            _migrate_35_to_36(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 

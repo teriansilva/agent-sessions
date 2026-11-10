@@ -116,11 +116,17 @@ def test_a_fresh_store_and_an_upgraded_one_get_the_same_shelf_schema(tmp_path):
         "mission_shelf_items",
         "mission_shelf_state",
         "mission_shelf_caps",
+        "mission_shelf_baselines",
         "idx_mission_shelf_caps_phys",
     }
     # Rewind to what a v34 build left, then let this build upgrade it.
     con = sqlite3.connect(fresh_db)
-    for name in ("mission_shelf_items", "mission_shelf_state", "mission_shelf_caps"):
+    for name in (
+        "mission_shelf_items",
+        "mission_shelf_state",
+        "mission_shelf_caps",
+        "mission_shelf_baselines",
+    ):
         con.execute(f"DROP TABLE {name}")
     con.execute("PRAGMA user_version=34")
     con.commit()
@@ -129,20 +135,44 @@ def test_a_fresh_store_and_an_upgraded_one_get_the_same_shelf_schema(tmp_path):
     missions.create_mission("upgraded", cwd="/tmp")
     assert _tables(fresh_db) == fresh
     con = sqlite3.connect(fresh_db)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION == 35
+    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION == 36
     con.close()
 
 
 def test_rollback_to_34_keeps_the_shelf_and_this_build_converges(mission, proj):
     deliver(mission, title="t", why="w", text="kept")
     db = missions._db_path()
-    assert missions.rollback_schema(34, path=db) == {"from": 35, "to": 34}
+    assert missions.rollback_schema(34, path=db) == {"from": missions.SCHEMA_VERSION, "to": 34}
     con = sqlite3.connect(db)
     assert con.execute("SELECT COUNT(*) FROM mission_shelf_items").fetchone()[0] == 1
     con.close()
     missions.reset_schema_cache_for_test()
     missions._migrate_34_to_35(sqlite3.connect(db))  # idempotent
     assert mission_shelf.manifest(mission)["counts"]["total"] == 1
+
+
+def test_rollback_to_35_keeps_the_baselines_and_this_build_converges(mission, proj):
+    deliver(mission, title="t", why="w", text="kept")
+    db = missions._db_path()
+    con = sqlite3.connect(db)
+    con.execute(
+        "INSERT INTO mission_shelf_baselines (mission_id, session_key, repo, taken_at)"
+        " VALUES (?, ?, '', 1)",
+        (mission, SESSION),
+    )
+    con.commit()
+    con.close()
+    assert missions.rollback_schema(35, path=db) == {"from": missions.SCHEMA_VERSION, "to": 35}
+    con = sqlite3.connect(db)
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 35
+    assert con.execute("SELECT COUNT(*) FROM mission_shelf_items").fetchone()[0] == 1
+    assert con.execute("SELECT COUNT(*) FROM mission_shelf_baselines").fetchone()[0] == 1
+    con.close()
+    missions.reset_schema_cache_for_test()
+    assert mission_shelf.manifest(mission)["counts"]["total"] == 1  # this build re-reads it
+    con = sqlite3.connect(db)
+    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION
+    con.close()
 
 
 def test_deleting_the_mission_deletes_its_shelf(mission):
@@ -787,3 +817,20 @@ def test_the_shared_file_states_are_never_mutated_by_a_write_back(mission, proj,
     snapshot = {k: dict(v) for k, v in cached.items()}
     mission_shelf.manifest(mission, cursor="s0")  # a later page reuses it
     assert mission_shelf._STATES[mission][2] == snapshot
+
+
+def test_an_upgraded_v35_store_gets_the_patch_column_in_the_same_place(tmp_path):
+    db = tmp_path / "missions.db"
+    missions.create_mission("fresh", cwd="/tmp")
+    fresh = [r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(mission_shelf_items)")]
+    con = sqlite3.connect(db)
+    con.execute("ALTER TABLE mission_shelf_items DROP COLUMN detail")
+    con.execute("DROP TABLE mission_shelf_baselines")
+    con.execute("PRAGMA user_version=35")
+    con.commit()
+    con.close()
+    missions.reset_schema_cache_for_test()
+    missions.create_mission("upgraded", cwd="/tmp")
+    after = [r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(mission_shelf_items)")]
+    assert after == fresh and after[-1] == "detail"
+    missions._migrate_35_to_36(sqlite3.connect(db))  # idempotent

@@ -15,10 +15,12 @@ stricter than `/api/files/raw`, which is home-rooted (`docs/invariants/file-raw.
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from .. import files, mission_shelf, missions
+from .. import files, mission_shelf, mission_shelf_git, missions
 from . import files as files_routes
 
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
@@ -43,6 +45,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         describe the whole shelf, before the filters."""
         q = request.query_params
         try:
+            missions.validate_id(mission_id)
+            if not q.get("cursor"):
+                # Found-in-git work (git subprocesses) on a thread of its own, never inside the
+                # store's admission pool; serialised per mission and never raising.
+                await asyncio.to_thread(mission_shelf_git.refresh, mission_id, wait=False)
             out = await missions.run_admitted(
                 lambda: mission_shelf.manifest(
                     mission_id,
@@ -50,6 +57,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                     kind=q.get("kind"),
                     source=q.get("source"),
                     verdict=q.get("verdict"),
+                    found=False,
                 )
             )
         except missions.MissionError as e:
@@ -84,6 +92,18 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                     note=body.get("note", ""),
                 )
             )
+        except missions.MissionError as e:
+            return _fail(e)
+        return JSONResponse(out, headers=_NO_STORE)
+
+    @app.get("/api/missions/{mission_id}/shelf/{item_id}/diff")
+    async def shelf_diff(
+        mission_id: str, item_id: str, _user: str = Depends(logged_in)
+    ) -> JSONResponse:
+        """A found code change's files and their patches (#1740 P1b). Takes no path: the patches
+        were taken at collection, inside the mission's boundary, and are served as JSON text."""
+        try:
+            out = await missions.run_admitted(lambda: mission_shelf_git.diff(mission_id, item_id))
         except missions.MissionError as e:
             return _fail(e)
         return JSONResponse(out, headers=_NO_STORE)

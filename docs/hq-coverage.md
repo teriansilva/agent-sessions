@@ -98,7 +98,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Send a message to the mission / retry / dismiss an ambiguous turn | POST …/message/stream, …/turns/{t}/ack | P5 W |
 | Answer the mission's question (option / free text) | POST …/answer | P5 W |
 | Archive finished missions older than N days (preview, then archive) | GET/POST /api/missions/archive-older | P5 R/W (destructive) |
-| The mission shelf (#1740): read what a mission produced; set a verdict and note on one item; open a file item's bytes | GET …/shelf, PATCH …/shelf/{item}, GET …/shelf/{item}/raw | P5 R/W (the bytes are n/a: HQ never moves files) |
+| The mission shelf (#1740): read what a mission produced; set a verdict and note on one item; open a file item's bytes | GET …/shelf, PATCH …/shelf/{item}, GET …/shelf/{item}/diff, GET …/shelf/{item}/raw | P5 R/W (the bytes are n/a: HQ never moves files) |
 
 #### Decisions, Needs you, notifications, Recent work, dashboard
 | Capability | Route(s) | HQ |
@@ -408,6 +408,7 @@ POST   /api/missions/{mission_id}/relay                                         
 GET    /api/missions/{mission_id}/screen/{session_key:path}                       P5
 GET    /api/missions/{mission_id}/shelf                                           P5
 PATCH  /api/missions/{mission_id}/shelf/{item_id}                                 P5
+GET    /api/missions/{mission_id}/shelf/{item_id}/diff                            P5
 GET    /api/missions/{mission_id}/shelf/{item_id}/raw                             n/a  # file bytes
 POST   /api/missions/{mission_id}/spawn                                           P5
 POST   /api/missions/{mission_id}/state                                           P5

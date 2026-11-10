@@ -13,12 +13,14 @@ from __future__ import annotations
 import json
 import sys
 
-from agent_sessions import mission_shelf, missions
+from agent_sessions import mission_shelf, mission_shelf_git, missions
 
 
 def main(repo: str, session: str) -> int:
     m = missions.create_mission("Launch assets for v0.21", title="Launch assets", cwd=repo)
     missions.adopt(m["id"], session)
+    # The git baseline as the session joins (#1740 P1b): what it changes later is found.
+    mission_shelf_git.take_baselines(m["id"], session)
 
     def add(**item) -> str:
         return mission_shelf.deliver(m["id"], item, session_key=session, phys_key=session)["id"]
