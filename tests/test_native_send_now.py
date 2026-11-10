@@ -1097,3 +1097,76 @@ async def test_a_queued_handoff_releases_authority_only_after_its_uncertain_reco
         "submit", queued["params"], queued=True, on_durable=lambda: order.append(("release",))
     )
     assert order[:3] == [("record", "uncertain"), ("release",), ("write",)], order
+
+
+@pytest.mark.anyio
+async def test_send_now_call_sites_release_authority_at_the_durable_record(
+    conversation, monkeypatch
+):
+    """#1897 follow-up: each Send now path hands the caller-authority release to its handoff
+    (the CLI's own Send now, `ahead`) or calls it before the interrupt (the FIFO dispatcher
+    re-admits the message afterwards), never holding the lock across a stalled write."""
+    worker, queued, control = prepared_worker(conversation, monkeypatch)
+    calls = []
+    released = []
+
+    def release():
+        released.append(True)
+
+    async def handoff(action, params, *, receipt=None, queued=False, now=False, on_durable=None):
+        calls.append((action, on_durable, len(released)))
+        return {"handoff": "sent", "operation_id": params["operation_id"]}
+
+    async def current(_params):
+        return True
+
+    monkeypatch.setattr(worker, "handoff", handoff)
+    monkeypatch.setattr(worker, "_answer_current", current)
+    monkeypatch.setattr(worker, "_native_send_now", lambda: True)
+    await worker._send_now_native(queued["params"], control["params"], {}, release)
+    assert calls[0][0] == "ahead" and calls[0][1] is release
+
+    calls.clear()
+    monkeypatch.setattr(worker, "_send_now_would_stop_background", lambda: False)
+    await worker._send_now_by_interrupt(control["params"], {}, release=release)
+    action, durable, released_before = calls[0]
+    assert action == "interrupt" and durable is None
+    assert released_before == len(released) == 1, "the lock was held across the interrupt"
+
+    # The CLI's Send now lost its connection meanwhile: the fallback interrupt releases too.
+    calls.clear()
+    released.clear()
+    monkeypatch.setattr(worker, "_native_send_now", lambda: False)
+    await worker._send_now_native(queued["params"], control["params"], {}, release)
+    action, durable, released_before = calls[0]
+    assert action == "interrupt" and durable is None
+    assert released_before == 1, "the fallback held the lock across its interrupt"
+
+
+@pytest.mark.anyio
+async def test_steer_hands_the_authority_release_to_its_handoff(conversation, monkeypatch):
+    """#1897 follow-up (Hermes on #1918): the `steer` branch of Send now passes the release from
+    `queued_admission` to its handoff, so the lock ends at the durable record."""
+    worker, queued, control = prepared_worker(conversation, monkeypatch)
+    calls = []
+
+    def release():
+        pass
+
+    @contextlib.contextmanager
+    def admission(_params=None):
+        yield release
+
+    async def handoff(action, params, *, receipt=None, queued=False, now=False, on_durable=None):
+        calls.append((action, on_durable))
+        return {"handoff": "sent", "operation_id": params["operation_id"]}
+
+    async def current(_params):
+        return True
+
+    monkeypatch.setattr(worker, "queued_admission", admission)
+    monkeypatch.setattr(worker, "handoff", handoff)
+    monkeypatch.setattr(worker, "_answer_current", current)
+    await worker.effect(control)
+    steer = [c for c in calls if c[0] == "steer"]
+    assert steer and steer[0][1] is release, calls
