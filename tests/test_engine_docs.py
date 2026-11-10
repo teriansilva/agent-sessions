@@ -212,6 +212,7 @@ _NOT_MANIFEST_VALUES = {
     "PTY_ONLY_BLOCKS",  # a guard list: which blocks a chat manifest may not declare
     "PTY_ONLY_CAPABILITIES",
     "API_IMAGE_INPUT",  # a fact about each protocol, not a value a manifest chooses (#1332)
+    "API_MISSION_READY",  # BattleLab's mission supervision of each protocol (#1898)
 }
 
 

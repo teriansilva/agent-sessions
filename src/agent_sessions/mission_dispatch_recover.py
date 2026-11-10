@@ -63,6 +63,55 @@ from . import engines, headless_dispatch, mission_dispatch, missions
 log = logging.getLogger(__name__)
 
 
+#: How far back recovery pages for a structured brief (50 turns a page).
+MAX_HISTORY_PAGES = 40
+
+
+def _is_api_key(key: str) -> bool:
+    try:
+        prov, _native = engines.parse_key(key)
+    except Exception:  # noqa: BLE001
+        return False
+    return getattr(prov.manifest, "runtime", None) == "api"
+
+
+async def _api_briefed(key: str, plan_id: str | None) -> bool | None:
+    """For a STRUCTURED dispatch (#1898): did the session receive this attempt's brief? `None`
+    means we could not look. A session without its brief is not adopted (it is stopped and the
+    mission settled failed); a brief whose delivery is uncertain is adopted, never re-sent."""
+    from . import mission_structured
+    from . import structured_runtime as runtime
+
+    if not plan_id:
+        return None
+    _session, brief = mission_structured.ids(plan_id)
+    try:
+        snap = await runtime.snapshot(key)
+    except runtime.StructuredError as exc:
+        return False if exc.status == 404 else None
+    except Exception:  # noqa: BLE001
+        log.debug("could not read the API session %s", key, exc_info=True)
+        return None
+    turns = list(snap.get("turns") or ())
+    turn = next((t for t in turns if t.get("turn_id") == brief), None)
+    # THE BRIEF IS THE SESSION'S FIRST TURN, so a long-running session has scrolled it out of the
+    # snapshot's window: page back through history rather than read "never briefed" (review).
+    before = turns[0]["turn_id"] if turns and snap.get("omitted_turns") else None
+    for _ in range(MAX_HISTORY_PAGES):
+        if turn is not None or before is None:
+            break
+        try:
+            page = await runtime.history(key, before=before)
+        except Exception:  # noqa: BLE001 — could not look
+            return None
+        turn = next((t for t in page.get("turns") or () if t.get("turn_id") == brief), None)
+        before = page.get("before") if page.get("has_more") else None
+    else:
+        if turn is None and before is not None:
+            return None  # too far back to tell: not a verdict
+    return turn is not None and not turn.get("not_sent")
+
+
 async def _has_session(key: str, cwd: str) -> bool | None:
     """Does the ENGINE'S OWN STORE know this session? `None` means we could not look.
 
@@ -311,7 +360,10 @@ async def recover_once(*, path=None) -> int:
             resource_stopped = outcome == "stopped"
             adopt = None
         else:
-            present = await _has_session(str(key), str(row["cwd"]))
+            if _is_api_key(str(key)):
+                present = await _api_briefed(str(key), row_plan)
+            else:
+                present = await _has_session(str(key), str(row["cwd"]))
             if present is None:
                 continue  # we could not look; that is not a verdict
             if present:
@@ -319,6 +371,13 @@ async def recover_once(*, path=None) -> int:
                     f"the app stopped while {key} was being dispatched; the session started but "
                     "there is no record that it received its brief"
                 )
+                if _is_api_key(str(key)):
+                    # A structured dispatch is adopted only once its brief turn is on record
+                    # (#1898); its delivery may still be unconfirmed, and it is never re-sent.
+                    detail = (
+                        f"the app stopped while {key} was being dispatched; the session started "
+                        "and its brief was handed to the agent"
+                    )
                 adopt = str(key)
             else:
                 # THE TEARDOWN'S OWN WORD, all the way to the operator's timeline (#904 review

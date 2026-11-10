@@ -65,7 +65,8 @@ class ClientDescriptor:
     ready: bool
     reason: str | None
     authentication: str
-    # Deliberately false until the complete mission observation/stop/authority cutover lands.
+    # The kind's `kinds.API_MISSION_READY` capability bit (#1898), never readiness: a mission role
+    # needs `ready` AND this. False for every kind until P3d (#1900) proves one end to end.
     mission_ready: bool = False
     # The client's protocol takes pictures in a turn (`kinds.API_IMAGE_INPUT`, #1332 Phase 3).
     images: bool = False
@@ -317,6 +318,7 @@ def describe(engine_id: str, *, check_ready: bool = True) -> ClientDescriptor:
             ready,
             reason,
             adapter.authentication,
+            mission_ready=m.runtime == "api" and kinds.API_MISSION_READY.get(kind or "", False),
             images=m.runtime == "api" and kinds.API_IMAGE_INPUT.get(kind or "", False),
             files=m.runtime == "api",
         )
@@ -814,7 +816,7 @@ async def submit_turn(
         if not isinstance(reply_to, str):
             raise StructuredError(422, "reply_to must be a question id")
         uploaded["reply_to"] = reply_to
-    await adapter.submit(
+    receipt = await adapter.submit(
         engine,
         native,
         tid,
@@ -827,7 +829,16 @@ async def submit_turn(
     )
     raw = await adapter.snapshot(engine, native)
     turn = next(t for t in raw["turns"] if t["turn_id"] == tid and t.get("kind") != "agent")
-    return {"session_key": f"{engine}:{native}", "revision": raw["revision"], **_turn(turn)}
+    out = {"session_key": f"{engine}:{native}", "revision": raw["revision"], **_turn(turn)}
+    # The native receipt's closed delivery code (#1898): `sent`, `queued`, `uncertain` or
+    # `not_sent`. A caller that must never re-send an ambiguous effect reads THIS, never the
+    # journal and never the words. Absent for the chat adapter, which has no worker handoff.
+    from . import native_journal  # at call time: importing it here first is a cycle
+
+    handoff = receipt.get("handoff") if isinstance(receipt, dict) else None
+    if handoff in native_journal.HANDOFFS:
+        out["handoff"] = handoff
+    return out
 
 
 async def decide(
@@ -1165,6 +1176,14 @@ async def operator_stop(
     else:
         result = await adapter.stop(engine, native)
     return {"session_key": f"{engine}:{native}", **result}
+
+
+async def may_have_worker(session_key: str) -> bool:
+    """Could a worker of ``session_key`` still run, read from BOTH the session record and the
+    worker directories (#1898)? A missing record is never proof of no worker; anything that
+    can't be read answers True."""
+    engine, native = _key(session_key)
+    return await asyncio.to_thread(native_runtime.session_may_have_worker, f"{engine}:{native}")
 
 
 async def probe(session_key: str) -> dict:

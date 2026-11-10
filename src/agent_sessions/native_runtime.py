@@ -923,6 +923,63 @@ def engine_may_have_workers(engine_id: str) -> bool:
     return False
 
 
+def session_may_have_worker(session_key: str) -> bool:
+    """Could a worker of THIS session still be running? (#1898) `engine_may_have_workers` for one
+    session key: only generations recorded ``gone`` count as over, and BOTH the session record
+    and the worker directories are read, because a session record can be lost or mismatched while
+    its worker runs (Hermes on #1315). Anything unreadable answers True. Local files only."""
+    _engine, _, native = session_key.partition(":")
+    try:
+        # Under the session's lifecycle lock, like `_probe_sync`: a launch holds it from the
+        # record to the worker directory, so this never reads the gap between the two as empty.
+        with native_state.session_lock(native):
+            return _session_may_have_worker_locked(session_key, native)
+    except (OSError, ValueError, native_state.StateError):
+        return True  # a busy or unreadable lock is not proof of anything
+
+
+def _session_may_have_worker_locked(session_key: str, native: str) -> bool:
+    try:
+        record = native_state.read_session(native)
+    except (OSError, ValueError, native_state.StateError):
+        return True
+    if record is not None:
+        if not isinstance(record, dict):
+            return True
+        workers = {w for w in record.get("workers") or [] if isinstance(w, str)}
+        if record.get("current_worker"):
+            workers.add(record["current_worker"])
+        for worker in workers:
+            try:
+                if native_state.read_lifecycle(worker).get("phase") != "gone":
+                    return True
+            except (OSError, ValueError, native_state.StateError):
+                return True
+    try:
+        worker_dirs = [d for d in (native_state.root() / "workers").iterdir() if d.is_dir()]
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    for wdir in worker_dirs:
+        try:
+            if str(uuid.UUID(wdir.name)) != wdir.name:
+                continue
+        except ValueError:
+            continue
+        try:
+            if native_state.read_lifecycle(wdir.name).get("phase") == "gone":
+                continue
+            config = native_state.read_config(wdir.name)
+        except (OSError, ValueError, native_state.StateError):
+            return True
+        if not isinstance(config, dict) or not isinstance(config.get("session_key"), str):
+            return True  # a worker nobody can attribute may be this session's
+        if config["session_key"] == session_key:
+            return True
+    return False
+
+
 def _generation(session_id: str) -> Generation | None:
     record = native_state.read_session(session_id)
     if record is None or not record.get("current_worker") or record.get("closed"):

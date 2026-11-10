@@ -182,17 +182,15 @@ def engine_options() -> list[dict]:
     picker uses. Applying it HERE — when the list is built — is what makes "`shell` is never a
     dispatch target" a property of the offer rather than a refusal after the fact.
     """
+    from . import mission_structured
+
     out: list[dict] = []
     for prov in engines.all_providers():
-        supported, _why = handoff.seed_start_state(prov, present=prov.is_present())
-        if not supported:
-            continue
-        # …AND IT CAN BE STARTED WITH NOBODY WATCHING (#989). A second, separate check rather than
-        # a change to `seed_start_state`: the handoff picker has an operator at the terminal and
-        # keeps offering every seedable engine, while a mission offers only engines whose launch
-        # can be proved started and bound to a session without one.
-        unattended, _why = engines.unattended_start_state(prov)
-        if not unattended:
+        # ONE admission for both kinds of client (#1898): an API client needs its kind's mission
+        # capability AND readiness; a console client needs a seedable start that can be proved
+        # started and bound with nobody watching (#989). `mission_structured.admits` is that rule.
+        admitted, _why = mission_structured.admits(prov)
+        if not admitted:
             continue
         out.append({"id": prov.engine_id, "label": prov.engine_id})
     return out[:MAX_ENGINES]
@@ -219,11 +217,17 @@ def engine_unavailable() -> list[dict]:
     for prov in engines.all_providers():
         if not engines.is_agent(prov):
             continue
-        ok, why = handoff.seed_start_state(prov, present=prov.is_present())
-        words = _UNAVAILABLE_WORDS.get(why or "", why or "")
-        if ok:
-            ok, why = engines.unattended_start_state(prov)
-            words = "can't be started unattended yet"
+        from . import mission_structured
+
+        if mission_structured.is_api(prov):
+            ok, why = mission_structured.admits(prov)
+            words = why or ""
+        else:
+            ok, why = handoff.seed_start_state(prov, present=prov.is_present())
+            words = _UNAVAILABLE_WORDS.get(why or "", why or "")
+            if ok:
+                ok, why = engines.unattended_start_state(prov)
+                words = "can't be started unattended yet"
         if ok:
             continue
         out.append(

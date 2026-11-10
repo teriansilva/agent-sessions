@@ -70,9 +70,26 @@ def held_keys(mission_id: str, *, path=None) -> list[str]:
     fails closed on — and each key is then resolved on its own. A roster is a handful of sessions,
     so the per-key lookup costs nothing, and a failure in either read still raises.
     """
-    return [
+    keys = [
         physical_of(str(k), path=path) for k in missions.active_session_keys(mission_id, path=path)
     ]
+    # …AND AN API SESSION STILL BEING DISPATCHED (#1898). Its brief is a guarded turn whose fence
+    # is the session's durable authority (#1897), withdrawn only through the keys a transaction
+    # names. Before the settlement adopts it the session is on the dispatch record, not the roster,
+    # so without this a stand-down committing mid-dispatch would not reach the brief's claim. Only
+    # API sessions: a console dispatch seeds outside the fence and its epochs stay as they were.
+    row = missions.get_dispatch(mission_id, path=path)
+    pending = str((row or {}).get("session_key") or "")
+    if pending and pending not in keys:
+        from . import mission_structured
+
+        try:
+            prov, _native = engines.parse_key(pending)
+        except Exception:  # noqa: BLE001 — a placeholder or unknown engine is no API session
+            prov = None
+        if prov is not None and mission_structured.is_api(prov):
+            keys.append(pending)
+    return keys
 
 
 async def fenced_write(mission_id: str, fn, *, path=None):
@@ -205,6 +222,20 @@ async def fenced_teardown(key: str, *, spare_if=None) -> str:
         with session_input.sessions_transaction([phys]):
             if not _unowned():
                 return "spared"
+            if getattr(prov.manifest, "runtime", None) == "api":
+                # AN API SESSION HAS NO DTACH MASTER (#1898): `cleanup_runtime` would find nothing
+                # and answer "gone" for a worker it never touched. Its worker is stopped through
+                # the structured facade and only a PROVED `gone` counts; anything else is
+                # `leaked`, which keeps the durable record.
+                from . import mission_structured
+
+                if asyncio.run(mission_structured._nothing_runs(phys)):
+                    return "gone"  # never recorded, or proved gone: the boundary is empty
+                try:
+                    asyncio.run(runtime_cleanup.contain_native(prov.engine_id, phys_native))
+                except runtime_cleanup.UnresolvableRuntime:
+                    return "leaked"
+                return "gone"
             # `spare_if` stays as well — belt and braces inside a boundary that already excludes
             # the race, and the only thing that still speaks for a caller-specific reason to stop.
             # THE BINDING IS NOT RETIRED HERE, and a proved stop is not permission to (#994

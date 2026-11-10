@@ -512,11 +512,20 @@ def _reap_dead_spawns(mission_id: str) -> int:
             # first; an unreadable store raises here and leaves the row charged.
             phys = mission_fence.physical_of(key)
             engine, native = engines.parse_runtime_key(phys)
-            verdict = ptybridge.probe_master(ptybridge.socket_path(engine.engine_id, native))
+            if getattr(engine.manifest, "runtime", None) == "api":
+                # AN API SESSION IS PROBED THROUGH ITS CONTAINMENT (#1898), tri-state like the
+                # master probe: only a proved `gone` frees the slot; `live` and `unknown` keep it.
+                from .. import structured_runtime
+
+                probed = asyncio.run(structured_runtime.probe(phys))
+                dead = probed.get("containment") == "gone"
+            else:
+                verdict = ptybridge.probe_master(ptybridge.socket_path(engine.engine_id, native))
+                dead = verdict is ptybridge.DEAD
         except Exception:  # noqa: BLE001
             log.debug("mission %s: could not probe %s", mission_id, key)
             continue
-        if verdict is not ptybridge.DEAD:
+        if not dead:
             continue
         try:
             if missions.close_spawn(r["plan_id"], reason=f"{key} is no longer running"):

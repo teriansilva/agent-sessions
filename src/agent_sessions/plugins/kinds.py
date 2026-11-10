@@ -69,6 +69,15 @@ API_IMAGE_INPUT = {
     "opencode-acp": False,
     "copilot-acp": False,  # same ACP image gate as opencode-acp (#1565)
 }
+#: Which API kinds may hold a MISSION role (#1273 P3, #1898): a fact about how BattleLab supervises
+#: each protocol, never a value a manifest chooses. A capability bit only, never readiness: callers
+#: combine it with `registry.can_start`. All false until P3d (#1900) proves a kind end to end.
+API_MISSION_READY = {
+    "codex-app-server": False,
+    "claude-stream-json": False,
+    "opencode-acp": False,
+    "copilot-acp": False,
+}
 #: The BattleLab conversation store owns UUIDs independently of a native agent's session id.
 API_SESSION_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 #: `endpoint.kind` — the wire format a `chat` plugin speaks. The endpoint's URL, key and model are

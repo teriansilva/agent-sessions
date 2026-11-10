@@ -36,7 +36,13 @@ import functools
 import logging
 from typing import NamedTuple
 
-from . import engines, headless_dispatch, launch_binding, missions, session_input
+from . import (
+    engines,
+    headless_dispatch,
+    launch_binding,
+    missions,
+    session_input,
+)
 
 log = logging.getLogger(__name__)
 
@@ -616,29 +622,56 @@ async def run(
         # used to live here could leave a dispatch naming a session and a reservation that did not.
         minted = key
 
+    # AN API CLIENT IS DISPATCHED STRUCTURED (#1898): a create and one guarded brief turn through
+    # `mission_structured`, never dtach or a seed. Its posture is fixed BEFORE anything reads it:
+    # #1215's grant never applies to a mission's API session (#1613 D8), so `authorize` skips the
+    # grant check and the timeline records "bypass off", which is what the session runs with.
+    # Imported here, not at the top: it reaches the native runtime, whose import graph already
+    # passes through the routes package that imports this module (an import cycle at startup).
+    from . import mission_structured
+
+    structured = mission_structured.is_api(engines.get(engine))
+    if structured:
+        bypass = False
     try:
-        out = await headless_dispatch.dispatch(
-            engine=engine,
-            cwd=cwd,
-            brief=brief,
-            registry=registry,
-            # UNATTENDED BYPASS IS AN EXPLICIT GRANT (#1215). #898 defaults it to False so the
-            # decision belongs to a layer that knows whether an operator authorised it. This is
-            # that layer, and the grant is the operator's own `agent_defaults.bypass` — the setting
-            # in Agents › Defaults, which says it governs mission launches too — approved on #1215
-            # in their own words. Approving a PLAN is still not the grant; the setting is.
-            bypass=bypass,
-            on_key=on_key,
-            authorize=authorize,
-            nonce=nonce,
-            # The mission this agent works for (#1740): its launch gets the shelf tool, minted
-            # for THIS mission inside the launch fence. The session is adopted only once it runs.
-            shelf_mission=mission_id,
-            # An optional model (#1189), resolved by the launcher's own resolver: a refusal is a
-            # `DispatchError` below (nothing spawned). Passed only when set, so `None` is exactly
-            # the launch this path made before a model could be chosen. #1194 is the first caller.
-            **({"model": model} if model is not None else {}),
-        )
+        if structured:
+            out = await mission_structured.dispatch(
+                mission_id=mission_id,
+                plan_id=plan_id,
+                engine=engine,
+                cwd=cwd,
+                brief=brief,
+                on_key=on_key,
+                authorize=authorize,
+                model=model,
+            )
+        else:
+            out = await headless_dispatch.dispatch(
+                engine=engine,
+                cwd=cwd,
+                brief=brief,
+                registry=registry,
+                # UNATTENDED BYPASS IS AN EXPLICIT GRANT (#1215). #898 defaults it to False so
+                # the decision belongs to a layer that knows whether an operator authorised it.
+                # This is that layer, and the grant is the operator's own
+                # `agent_defaults.bypass` — the setting in Agents › Defaults, which says it
+                # governs mission launches too — approved on #1215 in their own words.
+                # Approving a PLAN is still not the grant; the setting is.
+                bypass=bypass,
+                on_key=on_key,
+                authorize=authorize,
+                nonce=nonce,
+                # The mission this agent works for (#1740): its launch gets the shelf tool,
+                # minted for THIS mission inside the launch fence. The session is adopted only
+                # once it runs. A structured (API) session gets no shelf yet: `shelf_broker`
+                # plumbs terminal launches only (#1899/#1900 track it).
+                shelf_mission=mission_id,
+                # An optional model (#1189), resolved by the launcher's own resolver: a refusal is
+                # a `DispatchError` below (nothing spawned). Passed only when set, so `None` is
+                # exactly the launch this path made before a model could be chosen. #1194 is the
+                # first caller.
+                **({"model": model} if model is not None else {}),
+            )
     except headless_dispatch.DispatchError as e:
         # Could not be ATTEMPTED — an ineligible engine, a brief the sanitiser refused. Nothing
         # was spawned, so this is not a mission that failed; it is a dispatch that did not happen,
