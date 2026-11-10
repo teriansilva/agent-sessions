@@ -1,11 +1,12 @@
-"""Apply a procedure to a mission (#1777 S1b, #1613 P4 slice 1: one project).
+"""Apply a procedure to a mission (#1777 S1b, #1613 P4; slice 2 #1797: another project, order).
 
 An **objective** is one project, one procedure from that project's playbook, and that procedure's
 inputs (#1613 §1). This module builds the two things the operator applies from:
 
-* **the listing** — the mission project's DEPLOYED playbook and its procedures, by index, with a
-  digest of exactly that list (`listing`). The client names a procedure only by its index plus
-  that digest; a list that changed in between is a 409, never a different procedure.
+* **the listing** — a project's DEPLOYED playbook and its procedures, by index, with a digest of
+  exactly that list (`listing`): the mission's own project, or one chosen by index from the
+  digest-bound project list (`project_list`, #1797 S2b). The client names a procedure only by
+  its index plus that digest; a list that changed in between is a 409, never a different one.
 * **a mission-local procedure** — a format-5 flow the operator wrote for this mission, validated
   by the bundle loader's own flow validator (`playbooks.validate.flow_document`). Never a bypass.
 
@@ -557,20 +558,39 @@ def apply_listed(
     choices: object = None,
     picked: dict[str, dict] | None = None,
     project: object = None,
+    after: object = None,
 ) -> dict:
     """Apply the procedure at `index` of the listing whose digest the client echoes; optionally
     with per-objective inputs picked by index (`inputs` + `choices`, checked here, or `picked`
     already checked by `resolve_picks` — the route's split, so the forge read runs off the
     missions pool and the store write through it). The listing is re-checked either way."""
+    order = _after(after)
     if picked is None and inputs is not None:
         picked = resolve_picks(mission_id, index, listing_digest, inputs, choices, project)
     now, record, bundle = _checked_listing(mission_id, index, listing_digest, project)
     assert record is not None and bundle is not None  # a listing with procedures has both
-    return _apply_from(mission_id, now, record, bundle, index, picked or {})  # type: ignore[arg-type]
+    return _apply_from(mission_id, now, record, bundle, index, picked or {}, order)  # type: ignore[arg-type]
+
+
+def _after(after: object) -> list[str] | None:
+    """The objectives this one comes after (#1797 S2c): absent or `[]` is none; otherwise a list
+    of objective ids, which the store checks against the plan inside the transaction. (The
+    route refuses an explicit JSON `null`, as it does for `project`.)"""
+    if after is None or after == []:
+        return None
+    if not isinstance(after, list) or not all(isinstance(a, str) for a in after):
+        raise ProcedureError("after is a list of objective ids", status=422)
+    return list(after)
 
 
 def _apply_from(
-    mission_id: str, now: dict, record: dict, bundle: dict, index: int, picked: dict
+    mission_id: str,
+    now: dict,
+    record: dict,
+    bundle: dict,
+    index: int,
+    picked: dict,
+    after: list[str] | None = None,
 ) -> dict:
     pid = now["project_id"]
     fid = now["procedures"][index]["flow_id"]
@@ -616,6 +636,7 @@ def _apply_from(
         items=items,
         reason=f"applied {record['playbook_id']}@{revision[:12]} · {fid}",
         primary_project_id=now["primary_project_id"],
+        after=after,
     )
 
 
@@ -708,9 +729,12 @@ def _with_picks(flow: dict, items: list[dict], picked: dict) -> list[dict]:
     return out
 
 
-def apply_local(mission_id: str, flow_id: object, doc: object, project: object = None) -> dict:
+def apply_local(
+    mission_id: str, flow_id: object, doc: object, project: object = None, after: object = None
+) -> dict:
     """Apply a mission-local procedure the operator wrote: the bundle's own flow validator, and
     targets from the project's current bindings with bundle defaults refused."""
+    order = _after(after)
     scope = missions.procedure_scope(mission_id)
     primary = scope["project_id"]
     if not primary:
@@ -780,6 +804,7 @@ def apply_local(mission_id: str, flow_id: object, doc: object, project: object =
         items=items,
         reason=f"mission-local procedure {flow_id} added by the operator",
         primary_project_id=primary,
+        after=order,
     )
 
 
@@ -797,6 +822,8 @@ def plan(mission_id: str, revision: int | None = None) -> dict:
         "plan": rev,
         # Derived from TODAY's evidence rows, on whichever revision was asked for.
         "step_states": plan_doc.step_states(rev["document"], rows),
+        # Each objective's derived state (#1797 S2c): `done` once all its steps are done/notes.
+        "objective_states": plan_doc.objective_states(rev["document"], rows),
         "is_latest": latest is not None and latest["revision"] == rev["revision"],
     }
 

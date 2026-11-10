@@ -227,6 +227,18 @@ PROCEDURE_BODY_MAX = 4 * 64 * 1024
 _NO_STORE = {"Cache-Control": "no-store"}
 
 
+def _query_project(project: int | None, projects: str) -> dict | None:
+    """The `?project=&projects=` pair (#1797 S2b): both or neither. A bare digest is refused (422)
+    rather than silently serving the mission's own project."""
+    if project is None:
+        if projects:
+            raise missions.MissionError(
+                "projects needs project: the pair names a choice", status=422
+            )
+        return None
+    return {"index": project, "projects": projects}
+
+
 async def _bounded_body(request: Request, limit: int) -> dict:
     """`_body` with a size cap read INCREMENTALLY: a chunked body has no Content-Length, and
     `request.body()` would buffer all of it before any check."""
@@ -2399,8 +2411,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         of `…/procedures/projects` — with the digest of exactly this list."""
         from .. import mission_procedures  # the playbook package imports late (an import cycle)
 
-        chosen = None if project is None else {"index": project, "projects": projects}
         try:
+            chosen = _query_project(project, projects)
             out = await missions.run_admitted(
                 lambda: mission_procedures.listing(mission_id, chosen)
             )
@@ -2436,8 +2448,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         reviewed repository. An apply names a choice by its index and echoes `choices`."""
         from .. import mission_procedures
 
-        chosen = None if project is None else {"index": project, "projects": projects}
         try:
+            chosen = _query_project(project, projects)
             out = await asyncio.to_thread(
                 mission_procedures.input_choices, mission_id, index, listing, chosen
             )
@@ -2454,7 +2466,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     ) -> JSONResponse:
         """Apply ONE procedure as one more objective: `{index, listing}` names a deployed one by
         its index in the list the server built; `{mission_local: {flow_id, flow}}` is one the
-        operator wrote, held to the bundle's own flow validator. Never both. The plan revision and
+        operator wrote, held to the bundle's own flow validator. Never both. Either may carry
+        `project` (#1797 S2b) and `after` (S2c). The plan revision and
         the evidence rows commit together or not at all."""
         from .. import mission_procedures
 
@@ -2466,6 +2479,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             if "project" in body and not isinstance(body["project"], dict):
                 raise missions.MissionError("project is {index, projects}", status=422)
             chosen = body.pop("project", None)
+            # `after` (#1797 S2c): the objectives already in the plan this one comes after —
+            # optional in both shapes, checked against the plan inside the store's transaction.
+            if "after" in body and body["after"] is None:
+                raise missions.MissionError("after is a list of objective ids", status=422)
+            order = mission_procedures._after(body.pop("after", None))
             if "mission_local" in body:
                 if set(body) != {"mission_local"}:
                     raise missions.MissionError(
@@ -2476,7 +2494,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     raise missions.MissionError("mission_local is {flow_id, flow}", status=422)
                 out = await missions.run_admitted(
                     lambda: mission_procedures.apply_local(
-                        mission_id, local["flow_id"], local["flow"], chosen
+                        mission_id, local["flow_id"], local["flow"], chosen, order
                     )
                 )
             else:
@@ -2505,7 +2523,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     )
                 out = await missions.run_admitted(
                     lambda: mission_procedures.apply_listed(
-                        mission_id, body["index"], body["listing"], picked=picked, project=chosen
+                        mission_id,
+                        body["index"],
+                        body["listing"],
+                        picked=picked,
+                        project=chosen,
+                        after=order,
                     )
                 )
         except missions.MissionError as e:

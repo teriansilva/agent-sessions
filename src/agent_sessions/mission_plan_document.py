@@ -172,6 +172,23 @@ def _exact_keys(d: object, keys: set[str], what: str) -> dict:
     return d
 
 
+def _check_after(after: object, oid: str, earlier: set[str], what: str) -> None:
+    """`after` names objectives EARLIER in the list — never itself, never twice, never one that
+    comes later — so the objective graph is a DAG by construction (#1797 S2c). Never empty: no
+    order is written as no key, so one plan has one spelling."""
+    if not isinstance(after, list) or not after or len(after) > MAX_OBJECTIVES:
+        raise PlanError(f"{what}.after must list the objectives this one comes after")
+    for a in after:
+        if not isinstance(a, str) or not OBJECTIVE_ID_RE.fullmatch(a):
+            raise PlanError(f"{what}.after has an invalid objective id")
+        if a == oid:
+            raise PlanError(f"{what}.after names the objective itself")
+        if a not in earlier:
+            raise PlanError(f"{what}.after names {a!r}, which is not an earlier objective")
+    if len(set(after)) != len(after):
+        raise PlanError(f"{what}.after names an objective twice")
+
+
 def _snapshot(p: dict, what: str) -> dict:
     """The procedure's flow, RE-VALIDATED from what the snapshot stores (Hermes on #1781).
 
@@ -225,12 +242,18 @@ def validate_document(doc: object) -> dict:
     evidence: set[str] = set()
     for i, o in enumerate(objectives):
         what = f"objectives[{i}]"
-        o = _exact_keys(o, {"id", "project_id", "procedure", "inputs"}, what)
+        keys = {"id", "project_id", "procedure", "inputs"}
+        # THE OBJECTIVE'S ORDER (#1797 S2c): optional, still format 1. Absent means "no order".
+        if isinstance(o, dict) and "after" in o:
+            keys = keys | {"after"}
+        o = _exact_keys(o, keys, what)
         oid = o["id"]
         if not isinstance(oid, str) or not OBJECTIVE_ID_RE.fullmatch(oid):
             raise PlanError(f"{what}.id has an invalid shape")
         if oid in seen:
             raise PlanError(f"duplicate objective id {oid!r}")
+        if "after" in o:
+            _check_after(o["after"], oid, seen, what)
         seen.add(oid)
         if not isinstance(o["project_id"], str) or not PROJECT_ID_RE.fullmatch(o["project_id"]):
             raise PlanError(f"{what}.project_id is required: every objective names a project")
@@ -328,11 +351,48 @@ def step_states(doc: dict, rows: list[dict]) -> dict[str, str]:
       counts), so the plan and the completion gate can never give two answers (#897). A step
       whose remaining evidence gates nothing is done once each row is met or waived;
     * `ready` — every step in its `after` is done, and it is not;
-    * `waiting` — a prerequisite is not done.
+    * `waiting` — a prerequisite is not done. Every open step also waits until every objective
+      in its objective's `after` is done (#1797 S2c, `objective_states`); a step already done,
+      failed or a note keeps its own state.
 
     A missing evidence row (dropped by the operator) counts as waived: dropping is the operator's
     decision not to require it, which is what waiving is.
     """
+    own = _own_states(doc, rows)
+    done = _objectives_done(doc, own)
+    # The objectives each objective comes after (#1797 S2c); absent is none.
+    order = {o["id"]: list(o.get("after") or []) for o in doc["objectives"]}
+    out: dict[str, str] = {}
+    for s in doc["steps"]:
+        state = own[s["id"]]
+        if state == "open":
+            prereqs_done = all(own.get(p) in ("done", "note") for p in s["after"])
+            # EVERY open step of an objective also waits for the objectives it comes after — not
+            # only its first: a first step already done from its own evidence must not release
+            # the rest of an objective whose predecessor is still open (independent review).
+            prereqs_done = prereqs_done and all(done.get(a) for a in order[s["objective"]])
+            state = "ready" if prereqs_done else "waiting"
+        out[s["id"]] = state
+    return out
+
+
+def objective_states(doc: dict, rows: list[dict]) -> dict[str, str]:
+    """Each objective's DERIVED state (#1797 S2c): `done` when every one of its steps is `done` or
+    `note` (so a note-only objective is done), else `open`. Never stored."""
+    done = _objectives_done(doc, _own_states(doc, rows))
+    return {oid: ("done" if d else "open") for oid, d in done.items()}
+
+
+def _objectives_done(doc: dict, own: dict[str, str]) -> dict[str, bool]:
+    out = {o["id"]: True for o in doc["objectives"]}
+    for s in doc["steps"]:
+        if own[s["id"]] not in ("done", "note"):
+            out[s["objective"]] = False
+    return out
+
+
+def _own_states(doc: dict, rows: list[dict]) -> dict[str, str]:
+    """Each step's state from its OWN evidence alone: `note`, `failed`, `done` or `open`."""
     by_key = {r.get("key"): r for r in rows}
     own: dict[str, str] = {}
     for s in doc["steps"]:
@@ -348,11 +408,4 @@ def step_states(doc: dict, rows: list[dict]) -> dict[str, str]:
         else:
             settled = all(r.get("state") in ("met", "waived") for r in ev)
             own[s["id"]] = "done" if settled else "open"
-    out: dict[str, str] = {}
-    for s in doc["steps"]:
-        state = own[s["id"]]
-        if state == "open":
-            prereqs_done = all(own.get(p) in ("done", "note") for p in s["after"])
-            state = "ready" if prereqs_done else "waiting"
-        out[s["id"]] = state
-    return out
+    return own

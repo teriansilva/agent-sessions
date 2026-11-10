@@ -503,3 +503,17 @@ def test_a_pr_is_picked_from_the_chosen_projects_repo(auth_cfg, two, monkeypatch
     # The inputs read without the project is A's listing, not B's: a stale pairing is refused.
     r = c.get(f"/api/missions/{mid}/procedures/{dev}/inputs", params={"listing": q["listing"]})
     assert r.status_code == 409
+
+
+def test_a_bare_projects_digest_is_refused_not_ignored(auth_cfg, two):
+    """Hermes on #1906: the query pair is both or neither."""
+    mid = two["mission"]
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    digest = mission_procedures.project_list(mid)["digest"]
+    assert c.get(f"/api/missions/{mid}/procedures", params={"projects": digest}).status_code == 422
+    listing = mission_procedures.listing(mid)["listing"]
+    r = c.get(
+        f"/api/missions/{mid}/procedures/0/inputs", params={"listing": listing, "projects": digest}
+    )
+    assert r.status_code == 422

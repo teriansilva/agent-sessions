@@ -10212,10 +10212,15 @@ def apply_procedure(
     items: list[dict],
     reason: str,
     primary_project_id: str | None = None,
+    after: list[str] | None = None,
     now: float | None = None,
     path: Path | None = None,
 ) -> dict:
     """Apply ONE procedure to a mission as one more objective (#1777 S1b) — in ONE transaction.
+
+    `after` (#1797 S2c) names objectives ALREADY in the latest revision that this one comes
+    after — the only place objective order is authored, so a cycle cannot be expressed. The
+    plan validator refuses an unknown id, a duplicate or the objective itself (422).
 
     `project_id` is the OBJECTIVE's project; `primary_project_id` is the mission's project the
     listing was built against (#1797 S2b: an objective may be in another project). Both are
@@ -10295,6 +10300,8 @@ def apply_procedure(
                 reasons[o["id"]] = first["envelope"]["reason"]
             reasons[oid] = reason
             new = {"id": oid, "project_id": project_id, "procedure": procedure, "inputs": inputs}
+            if after:
+                new["after"] = list(after)
             doc = plan_doc.build([*objectives_so_far, new], reasons)
             expected = {k for s in doc["steps"] if s["objective"] == oid for k in s["evidence"]}
             keys = [plan_doc.evidence_key(oid, it["key"]) for it in items]
