@@ -51,7 +51,7 @@ def test_launch_has_one_contained_entrypoint_and_private_output():
     assert argv[:3] == ["/usr/bin/systemd-run", "--user", "--quiet"]
     assert f"--unit={WORKER.unit}" in argv
     assert "--scope" not in argv and "--pty" not in argv
-    assert "--expand-environment=no" in argv
+    assert not any(arg.startswith("--expand-environment") for arg in argv)  # needs systemd 254
     assert "--working-directory=/private/native state" in argv
     expected = {
         "ExitType=main",
@@ -85,6 +85,25 @@ def test_launch_has_one_contained_entrypoint_and_private_output():
         "--state-dir",
         "/private/native state",
     ]
+
+
+def test_command_words_are_escaped_for_the_service_manager():
+    # The manager substitutes `$VAR` in command words; `$$` is its literal dollar on every version.
+    assert containment.literal_command(["/usr/bin/env", "a$b", "${X}", "$$", "plain"]) == [
+        "/usr/bin/env",
+        "a$$b",
+        "$${X}",
+        "$$$$",
+        "plain",
+    ]
+    argv = containment.launch_argv(
+        WORKER,
+        python="/releases/build-$1/venv/bin/python",
+        state_dir="/private/state",
+        home="/home/op$",
+    )
+    command = argv[argv.index("--") + 1 :]
+    assert "HOME=/home/op$$" in command and "/releases/build-$$1/venv/bin/python" in command
 
 
 def test_launch_does_not_copy_process_environment_or_offer_a_passthrough(monkeypatch):

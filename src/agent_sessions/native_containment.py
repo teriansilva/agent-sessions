@@ -150,6 +150,17 @@ def _exec_word(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def literal_command(argv: list[str]) -> list[str]:
+    """Escape a `systemd-run` command line so the manager passes every word unchanged.
+
+    The manager substitutes `$VAR` / `${VAR}` in a service's command words and turns `$$` into
+    `$`. `--expand-environment=no` would say so directly, but `systemd-run` older than 254
+    rejects that option and nothing launches (Ubuntu 22.04 ships 249). Doubling every `$` gives
+    the same argv on every version.
+    """
+    return [word.replace("$", "$$") for word in argv]
+
+
 def launch_argv(
     worker: WorkerIdentity,
     *,
@@ -193,7 +204,6 @@ def launch_argv(
         "--quiet",
         "--collect",
         "--service-type=exec",
-        "--expand-environment=no",
         "--description=BattleLab native agent runtime",
         f"--unit={worker.unit}",
         f"--working-directory={_path(state_dir)}",
@@ -238,17 +248,21 @@ def launch_argv(
         "--property=StandardOutput=null",
         "--property=StandardError=null",
         "--",
-        "/usr/bin/env",
-        "-i",
-        *environment,
-        _path(python),
-        "-I",
-        "-m",
-        "agent_sessions.native_worker",
-        "--worker-id",
-        worker.worker_id,
-        "--state-dir",
-        state_dir,
+        *literal_command(
+            [
+                "/usr/bin/env",
+                "-i",
+                *environment,
+                _path(python),
+                "-I",
+                "-m",
+                "agent_sessions.native_worker",
+                "--worker-id",
+                worker.worker_id,
+                "--state-dir",
+                state_dir,
+            ]
+        ),
     ]
 
 

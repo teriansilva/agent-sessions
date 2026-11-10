@@ -67,10 +67,24 @@ def test_service_argv_has_host_lifetime_cgroup_cleanup_and_no_app_environment(
     assert "--pty" in argv and "--scope" not in argv
     assert "--property=RuntimeMaxSec=600" in argv
     assert "--property=KillMode=control-group" in argv
-    assert "--expand-environment=no" in argv
+    # systemd-run < 254 rejects this option, so no sign-in could start; `$` is escaped instead.
+    assert not any(arg.startswith("--expand-environment") for arg in argv)
     assert argv[-2:] == [str(binary), "login"]
     assert argv[argv.index("--") + 1 : argv.index("--") + 3] == ["/usr/bin/env", "-i"]
     assert all("secret-must" not in arg and "AGENT_SESSIONS_" not in arg for arg in argv)
+
+
+def test_service_command_words_reach_the_vendor_unexpanded(tmp_path, user_manager):
+    # A real transient service: `$HOME`, `${PATH}` and `$$` arrive as written, as they did under
+    # `--expand-environment=no`, on a systemd-run that never sees that option.
+    words = ["a$b", "$HOME", "${PATH}x", "c$$d", "$"]
+    argv = process._wrapped(
+        ["/bin/echo", *words], tmp_path, f"battlelab-plugin-{uuid.uuid4().hex}.service", 30
+    )
+    # Pipe instead of a PTY so the test reads the output; the escaping is the same argv.
+    argv[argv.index("--pty")] = "--pipe"
+    result = subprocess.run(argv, capture_output=True, timeout=30, check=True)
+    assert result.stdout.decode().split() == words
 
 
 def test_verification_cannot_request_permission_bypass(vendor, tmp_path):

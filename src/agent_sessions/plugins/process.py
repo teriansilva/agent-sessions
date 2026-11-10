@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import opencode_admission
+from ..native_containment import literal_command
 
 MAX_OUTPUT = 1024 * 1024
 MAX_INPUT = 256 * 1024
@@ -211,7 +212,6 @@ def _wrapped(
         "--collect",
         "--pty",
         "--service-type=exec",
-        "--expand-environment=no",
         f"--unit={unit}",
         f"--working-directory={cwd}",
         f"--property=RuntimeMaxSec={seconds}",
@@ -223,10 +223,9 @@ def _wrapped(
         "--property=TasksMax=512",
         "--property=MemoryMax=1G",
         "--",
-        "/usr/bin/env",
-        "-i",
-        *(f"{key}={value}" for key, value in environment.items()),
-        *argv,
+        *literal_command(
+            ["/usr/bin/env", "-i", *(f"{key}={value}" for key, value in environment.items()), *argv]
+        ),
     ]
 
 
