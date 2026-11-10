@@ -498,6 +498,100 @@ def test_tool_calls_written_as_text_are_asked_again_never_stored(app, ai):
     assert "DSML" not in json.dumps(ask_store.read(cid))
 
 
+def _m(text: str) -> str:
+    """Call markup from a placeholder spelling: ‹ › become < >. The literal tags are never written
+    in this file — a reviewing model that uses these very tokens (MiMo, Qwen) breaks its own
+    tool-call framing when it reads them, so these tests spell them only at runtime."""
+    return text.replace("‹", "<").replace("›", ">")
+
+
+TC = _m("‹tool_call›")
+
+
+#: The XML shape a live MiMo turn stored as its answer (Qwen/GLM/Hermes write the same family).
+LEAKED_XML_CALL = _m(
+    "‹tool_call›‹function=connector_list›‹parameter=connector_index›1‹/parameter›"
+    "‹parameter=item_ref›folder:Documents/‹/parameter›‹/function›‹/tool_call›"
+)
+
+
+def test_xml_tool_calls_written_as_text_are_asked_again_never_stored(app, ai):
+    script = ai(answer(LEAKED_XML_CALL), answer("The folder holds three leases."))
+    cid = app.new()
+    turn = app.ask(cid, "what is in my documents folder?").json()["turn"]
+    assert turn["status"] == "done" and turn["answer"] == "The folder holds three leases."
+    assert len(script.bodies) == 2
+    assert not any(TC in json.dumps(m) for m in script.bodies[1]["messages"])
+    assert TC not in json.dumps(ask_store.read(cid))
+
+
+def test_call_markup_quoted_without_a_tool_name_is_an_answer(app, ai):
+    """Prose about the format (no tool HQ offers named) is an answer, not a leaked call."""
+    text = _m("Your model wrote `‹tool_call›` tags as text; its server did not parse them.")
+    script = ai(answer(text))
+    turn = app.ask(app.new(), _m("what does ‹tool_call› mean?")).json()["turn"]
+    assert turn["status"] == "done" and turn["answer"] == text
+    assert len(script.bodies) == 1
+
+
+def test_a_call_written_as_text_on_the_forced_round_says_hq_ran_out_of_rounds(app, ai):
+    """The live MiMo turn: every round spent walking folders, then — tools off — the next call
+    arrived as text and was stored as the answer. It now fails, naming the cause."""
+    script = ai(
+        *[call("list_projects", cid=f"r{i}") for i in range(ask_orchestrator.MAX_TOOL_ROUNDS)],
+        answer(LEAKED_XML_CALL),
+    )
+    cid = app.new()
+    turn = app.ask(cid, "walk my folders").json()["turn"]
+    assert turn["status"] == "failed" and turn["code"] == "out_of_rounds"
+    assert "ran out of lookups" in turn["detail"]
+    assert turn["answer"] is None
+    assert len(script.bodies) == ask_orchestrator.MAX_TOOL_ROUNDS + 1
+    assert script.bodies[-1]["tool_choice"] == "none"
+    assert TC not in json.dumps(ask_store.read(cid))
+
+
+LEAKED_SHAPES = [
+    LEAKED_CALLS,
+    LEAKED_XML_CALL,
+    _m("Let me look.\n‹tool_call›\n‹function=connector_list›\n‹/function›\n‹/tool_call›"),
+    _m("‹tool_call›‹function=read_file›‹parameter=path›a‹/parameter›‹/function›‹/tool_call›"),
+    _m('‹tool_call›\n{"name": "list_projects", "arguments": {}}\n‹/tool_call›'),
+    _m("Checking.\n‹tool_call›list_projects\n‹arg_key›q‹/arg_key›‹arg_value›x‹/arg_value›"),
+    _m('‹function_calls›‹invoke name="list_projects"›‹/invoke›‹/function_calls›'),
+    _m('Checking. ‹invoke name="list_agents"›‹parameter name="q"›x‹/parameter›‹/invoke›'),
+    _m("‹|tool_calls_section_begin|›‹|tool_call_begin|›functions.list_projects:0"),
+    _m("Checking. ‹|tool_call_begin|›functions.list_agents:0‹|tool_call_argument_begin|›{}"),
+    _m("‹|channel|›commentary to=functions.list_projects ‹|constrain|›json‹|message|›{}"),
+    _m("‹|reserved_special_token_5|›"),
+    '[TOOL_CALLS][{"name": "list_projects", "arguments": {}}]',
+    "Checking. [TOOL_CALLS]list_agents[ARGS]{}",
+    '{"name": "connector_list", "parameters": {"connector_index": 1}}',
+]
+
+
+@pytest.mark.parametrize("text", LEAKED_SHAPES, ids=[f"leak{i}" for i in range(len(LEAKED_SHAPES))])
+def test_leaked_call_shapes_of_every_family_are_detected(text):
+    assert ask_orchestrator._leaked_calls(text)
+
+
+QUOTED_ANSWERS = [
+    _m("Your model wrote `‹tool_call›` tags as text; its server did not parse them."),
+    # A tool name elsewhere in the text is not a call: HQ's answers quote agents' screens.
+    _m("The session printed `‹tool_call›` tags as text; I checked it with session_status."),
+    _m('Its screen shows ‹tool_call›{"name": "Bash"}‹/tool_call›; find_sessions lists it.'),
+    '{"name": "list_projects"}',
+    "Two sessions ran out of tokens.",
+]
+
+
+@pytest.mark.parametrize(
+    "text", QUOTED_ANSWERS, ids=[f"quote{i}" for i in range(len(QUOTED_ANSWERS))]
+)
+def test_answers_that_quote_call_markup_are_not_leaked_calls(text):
+    assert not ask_orchestrator._leaked_calls(text)
+
+
 def test_tool_calls_written_as_text_twice_fail_the_turn(app, ai):
     script = ai(answer("Checking.\n" + LEAKED_CALLS))
     cid = app.new()

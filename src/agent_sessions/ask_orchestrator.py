@@ -71,8 +71,10 @@ from .connectors import hq as connector_hq
 
 log = logging.getLogger(__name__)
 
-#: Bounds (#1443 §2). The round after the last is sent with `tool_choice: "none"`.
-MAX_TOOL_ROUNDS = 6
+#: Bounds (#1443 §2). The round after the last is sent with `tool_choice: "none"`. Sixteen, not
+#: six: a connector folder is walked one level per round (refs are minted, never built), so a
+#: path seven folders deep spent every round of six before HQ read a single file.
+MAX_TOOL_ROUNDS = 16
 #: Added to a staged card's tool result on a call (#1911): the call announces every card itself
 #: (`voice_text.card_sentences` / the read-back), so HQ's own words would say it twice.
 CALL_CARD_NOTE = (
@@ -2795,6 +2797,52 @@ def _persona(turn: _Turn) -> list[dict]:
 #: tool parser misses a call the model meant to make: the text is then the CALL, not an answer.
 #: The full-width bar never occurs in prose, so this matches the token shape, not a guess at it.
 _TOOL_MARKUP_RE = re.compile(r"</?｜[^｜<>\n]{1,40}｜")
+#: The ASCII call markup of the other families — Qwen/MiMo/GLM/Hermes `tool_call` tags and
+#: `function=` elements, pipe-bracketed special tokens (Kimi, Llama, gpt-oss), `invoke name=`
+#: and `[TOOL_CALLS]` (named, not spelled out: a model that uses these tokens breaks its own
+#: framing when it reads them literally). A MiMo turn stored such a connector_list call as its
+#: answer. HQ's answers quote
+#: agents' screens, which can show the same tags, so markup counts as a leaked call only in two
+#: shapes (`_leaked_calls`): the reply OPENS with it (an answer never does), or it names one of
+#: HQ's tools right where a call puts its name — never a tool name merely elsewhere in the text.
+_CALL_OPENER_RE = re.compile(
+    r"\s*(?:<\s*(?:tool_calls?|function_calls?|tool_use)\s*>|<\s*function\s*=|<\s*invoke\s+name\s*="
+    r"|<\|[A-Za-z0-9_]{1,40}\|>|\[TOOL_CALLS\])",
+    re.IGNORECASE,
+)
+_N = r"([A-Za-z0-9_.-]{1,64})"
+_NAMED_CALL_RE = re.compile(
+    rf"<\s*function\s*=\s*[\"']?{_N}"
+    rf"|<\s*invoke\s+name\s*=\s*[\"']{_N}"
+    rf"|<\s*tool_call\s*>\s*(?:\{{\s*\"name\"\s*:\s*\"{_N}\"|{_N})"
+    rf"|\[TOOL_CALLS\]\s*(?:\[\s*\{{\s*\"name\"\s*:\s*\"{_N}\"|{_N})"
+    rf"|<\|tool_call_begin\|>\s*(?:functions\.)?{_N}"
+    rf"|\bto=functions\.{_N}",
+    re.IGNORECASE,
+)
+
+
+def _leaked_calls(text: str) -> bool:
+    """Whether ``text`` is tool-call markup the endpoint's parser missed, not an answer."""
+    if _TOOL_MARKUP_RE.search(text) or _CALL_OPENER_RE.match(text):
+        return True
+    for m in _NAMED_CALL_RE.finditer(text):
+        if any(g.removeprefix("functions.") in TOOLS for g in m.groups() if g):
+            return True
+    # A bare JSON call (Llama-style), the whole reply: `{"name": "<tool>", "parameters": {…}}`.
+    stripped = text.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            obj = json.loads(stripped)
+        except ValueError:
+            return False
+        return (
+            isinstance(obj, dict)
+            and isinstance(obj.get("name"), str)
+            and obj["name"] in TOOLS
+            and ("parameters" in obj or "arguments" in obj)
+        )
+    return False
 
 
 async def run_turn(turn: _Turn) -> list[dict]:
@@ -2886,7 +2934,7 @@ async def run_turn(turn: _Turn) -> list[dict]:
             # Text beside the parsed calls is replayed only when it is clean: leaked call markup
             # is never sent back to the model, whichever branch the reply takes.
             replay = content if isinstance(content, str) else None
-            if replay is not None and _TOOL_MARKUP_RE.search(replay):
+            if replay is not None and _leaked_calls(replay):
                 replay = None
             convo.append({"role": "assistant", "content": replay, "tool_calls": clean})
             for n, call in enumerate(clean):
@@ -2916,10 +2964,18 @@ async def run_turn(turn: _Turn) -> list[dict]:
                 # `ask_operator` ends the turn: the operator holds the next move.
                 return _asked_records(turn)
             continue
-        if isinstance(content, str) and _TOOL_MARKUP_RE.search(content):
+        if isinstance(content, str) and _leaked_calls(content):
             # Tool calls the endpoint returned as text it could not parse: not an answer, and
             # never stored as one. Asked again once (the round still counts), then the turn fails.
-            if not asked_again and not last:
+            if last:
+                # Told to answer, the model still wanted to look something up: with tools off the
+                # endpoint parses no call, so it arrives as text. HQ ran out of rounds — say so.
+                return fail(
+                    f"HQ ran out of lookups ({MAX_TOOL_ROUNDS} rounds) before it could answer — "
+                    "ask for a smaller step, or name the file or folder to start from",
+                    "out_of_rounds",
+                )
+            if not asked_again:
                 asked_again = True
                 continue
             return fail(

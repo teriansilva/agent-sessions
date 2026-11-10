@@ -76,9 +76,10 @@ MAX_CONVERSATIONS = 50
 MAX_TURNS = 50
 #: The most of one conversation file read back. Above the worst case by construction: a turn is
 #: at most a question and an answer (TEXT_MAX each), 8+8 matches, two status records and
-#: 6 rounds × 8 tool records (ARG_MAX of arguments and META_IDS_MAX ids each). The worst case is
-#: measured, not estimated, by `test_the_worst_case_conversation_fits_the_read_cap`.
-READ_MAX_BYTES = 16 * 1024 * 1024
+#: `ask_orchestrator.MAX_TOOL_ROUNDS` × 8 tool records (ARG_MAX of arguments and META_IDS_MAX ids
+#: each). The worst case is measured, not estimated, by
+#: `test_the_worst_case_conversation_fits_the_read_cap`.
+READ_MAX_BYTES = 32 * 1024 * 1024
 #: The head read for the conversation list: enough for the header and the first question.
 _HEAD_BYTES = 64 * 1024
 
