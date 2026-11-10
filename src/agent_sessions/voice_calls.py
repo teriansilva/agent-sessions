@@ -128,6 +128,7 @@ TOOL_ACTIVITY = {
     "agent_usage": "checking your usage",
     "list_projects": "reading your projects",
     "list_agents": "reading your agents",
+    "list_specialists": "reading your specialists",
     "list_folders": "reading your folders",
     "list_playbooks": "reading your playbooks",
     "playbook_detail": "reading that playbook",

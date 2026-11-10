@@ -1756,3 +1756,189 @@ async def test_a_cancelled_launch_keeps_its_slot_until_its_late_spawn_has_run(
         await task
     assert held_at_spawn == [1], "the slot was gone before the late spawn ran"
     assert list(capacity._slots_dir().iterdir()) == []
+
+
+# ---- started from a specialist (#1910) ---------------------------------------------------------
+
+
+def _specialist_seams(monkeypatch, *, refuse: str | None = None):
+    """Stand in for `specialist_launch` at its boundary (its store and bundles are pinned by
+    `test_specialist_launch.py`), and watch what reaches `agent_tools.terminal_launch`."""
+    from agent_sessions import agent_tools, specialist_launch
+
+    seen: dict = {"for_new": [], "abandon": [], "settle": [], "bundles": []}
+
+    def for_new(engine, key, sid, n, *, model):
+        seen["for_new"].append((engine, key, sid, n, model))
+        if refuse:
+            raise specialist_launch.Refused(refuse)
+        return specialist_launch.Claim("r1", key, sid, n, "owner-1", "/bundles/r1")
+
+    async def settle(claim):
+        seen["settle"].append(claim.reservation_id)
+
+    real = agent_tools.terminal_launch
+
+    def terminal_launch(*args, **kw):
+        seen["bundles"].append(kw.get("skills_bundle"))
+        if seen.get("skills_refused"):
+            raise agent_tools.SkillsRefused("this agent cannot load skills: it has no tool channel")
+        return real(*args, **{**kw, "skills_bundle": None})
+
+    monkeypatch.setattr(specialist_launch, "for_new", for_new)
+    monkeypatch.setattr(
+        specialist_launch, "abandon", lambda c: seen["abandon"].append(c.reservation_id)
+    )
+    monkeypatch.setattr(specialist_launch, "settle", settle)
+    monkeypatch.setattr(agent_tools, "terminal_launch", terminal_launch)
+    return seen
+
+
+@pytest.mark.anyio
+async def test_a_SPECIALIST_dispatch_carries_its_skill_bundle_and_settles_its_slot(
+    env, prov, reg, monkeypatch
+):
+    _stub_spawn(monkeypatch)
+    _stub_started(monkeypatch)
+    seen = _specialist_seams(monkeypatch)
+    out = await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="research", specialist=("researcher", 3)
+    )
+    assert out.ok is True
+    # Re-validated against THIS engine and the model the dispatch resolved (none: the default),
+    # keyed by the session the lock and socket are named for.
+    assert seen["for_new"] == [("claude", out.key, "researcher", 3, None)]
+    # The bundle reached the agent's tool channel; a launch never starts without its skills.
+    assert seen["bundles"] == ["/bundles/r1"]
+    # Launched → settled by liveness, never released on a guess.
+    assert seen["settle"] == ["r1"] and seen["abandon"] == []
+
+
+@pytest.mark.anyio
+async def test_a_REFUSED_specialist_launches_nothing_and_frees_the_session(
+    env, prov, reg, monkeypatch
+):
+    def forbidden(*a, **kw):
+        raise AssertionError("a refused specialist must never spawn")
+
+    monkeypatch.setattr(headless_dispatch, "_popen", forbidden)
+    seen = _specialist_seams(monkeypatch, refuse="this specialist is at capacity")
+    released = []
+
+    class L:
+        fd = 3
+
+        def transfer(self):
+            raise AssertionError("nothing to transfer")
+
+        def release(self):
+            released.append(True)
+
+    monkeypatch.setattr(sessionlock, "acquire", lambda key: L())
+    out = await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="x", specialist=("researcher", 3)
+    )
+    assert out.ok is False and out.reason == "this specialist is at capacity"
+    assert seen["bundles"] == [] and released == [True]
+    # No slot was taken, so there is nothing to release or settle.
+    assert seen["abandon"] == [] and seen["settle"] == []
+
+
+@pytest.mark.anyio
+async def test_an_agent_that_cannot_CARRY_the_skills_is_refused_and_its_slot_released(
+    env, prov, reg, monkeypatch
+):
+    def forbidden(*a, **kw):
+        raise AssertionError("never launched without its skills")
+
+    monkeypatch.setattr(headless_dispatch, "_popen", forbidden)
+    seen = _specialist_seams(monkeypatch)
+    seen["skills_refused"] = True
+    out = await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="x", specialist=("researcher", 3)
+    )
+    assert out.ok is False and "cannot load skills" in out.reason
+    # Nothing can have inherited the launch: the slot (and its bundle) go back at once.
+    assert seen["abandon"] == ["r1"] and seen["settle"] == []
+
+
+@pytest.mark.anyio
+async def test_a_dispatch_WITHOUT_a_specialist_takes_no_slot_and_carries_no_bundle(
+    env, prov, reg, monkeypatch
+):
+    _stub_spawn(monkeypatch)
+    _stub_started(monkeypatch)
+    seen = _specialist_seams(monkeypatch)
+    out = await headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="go")
+    assert out.ok is True
+    assert seen["for_new"] == [] and seen["bundles"] == [None]
+    assert seen["abandon"] == [] and seen["settle"] == []
+
+
+@pytest.mark.anyio
+async def test_a_dispatch_over_the_SESSION_LIMIT_takes_no_specialist_slot(
+    env, prov, reg, monkeypatch
+):
+    from agent_sessions import session_capacity
+
+    def full(key):
+        raise session_capacity.SessionLimitReached(8, 8)
+
+    monkeypatch.setattr(session_capacity, "admit", full)
+    seen = _specialist_seams(monkeypatch)
+    out = await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="x", specialist=("researcher", 3)
+    )
+    assert out.ok is False and out.refusal == session_capacity.SESSION_LIMIT
+    # The session limit is first of all: a refused dispatch spends nothing, a slot included.
+    assert seen["for_new"] == [] and seen["abandon"] == []
+
+
+@pytest.mark.anyio
+async def test_a_SPECIALIST_dispatch_gives_the_agent_its_NOTEBOOK(env, prov, reg, monkeypatch):
+    """The terminal LAUNCH passes the specialist to memory; so must the unattended one."""
+    from agent_sessions import memory
+
+    _stub_spawn(monkeypatch)
+    _stub_started(monkeypatch)
+    _specialist_seams(monkeypatch)
+    asked = []
+    monkeypatch.setattr(
+        memory,
+        "launch_env",
+        lambda key, cwd, *, kind, specialist=None: asked.append(specialist) or {},
+    )
+    await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="x", specialist=("researcher", 3)
+    )
+    await headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="y")
+    assert asked == ["researcher", None]
+
+
+@pytest.mark.anyio
+async def test_a_dispatch_CANCELLED_while_reserving_releases_the_slot_it_got(
+    env, prov, reg, monkeypatch
+):
+    from agent_sessions import specialist_launch
+
+    seen = _specialist_seams(monkeypatch)
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_for_new(engine, key, sid, n, *, model):
+        entered.set()
+        release.wait(5)
+        return specialist_launch.Claim("r9", key, sid, n, "owner-9", None)
+
+    monkeypatch.setattr(specialist_launch, "for_new", slow_for_new)
+    task = asyncio.ensure_future(
+        headless_dispatch.dispatch(
+            registry=reg, engine="claude", cwd=str(env), brief="x", specialist=("researcher", 3)
+        )
+    )
+    await asyncio.to_thread(entered.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    release.set()  # the worker finishes AFTER the cancellation: its slot must still go back
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert seen["abandon"] == ["r9"] and seen["settle"] == []

@@ -274,6 +274,7 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "end_call": "call",
         "propose_nudge": "proposal",
         "list_agents": "read",
+        "list_specialists": "read",
         "propose_session": "proposal",
         # #1554: usage, the fleet and the allowlisted settings view — all read-only.
         "agent_usage": "read",

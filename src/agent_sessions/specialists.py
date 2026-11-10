@@ -62,6 +62,16 @@ TEMPLATES: tuple[dict, ...] = (
         "grade": "strong",
         "skills": [],
     },
+    # HQ's web research (#1910): the skill carries the method; the agent must be one that can
+    # search and read the web itself. Skills here are suggestions the editor offers, by id.
+    {
+        "id": "researcher",
+        "title": "Researcher",
+        "summary": "Researches a question on the web in steps, cross-checks sources and "
+        "reports findings with every fact cited.",
+        "grade": "strong",
+        "skills": ["research-with-citations"],
+    },
 )
 
 

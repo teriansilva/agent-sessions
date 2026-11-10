@@ -794,6 +794,10 @@ MAX_SESSION_PROPOSALS = MAX_TURNS * 3
 NOTICES = frozenset({"", "default_changed", "busy", "session_limit"})
 _ENGINE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+#: A session proposal started FROM a specialist (#1910): its id (`specialists_store.ID_RE`) and the
+#: version the card showed (`specialist_launch.VERSION_MAX`).
+_SPECIALIST_ID_RE = re.compile(r"\A[a-z0-9][a-z0-9-]{0,47}\Z")
+SPECIALIST_VERSION_MAX = 999_999
 PATH_MAX = 4_096
 #: The reason a pending brief becomes ``stale`` when a secret it contains is registered later.
 BRIEF_NOW_SECRET = "the brief now contains a secret, so it will not be sent — ask again"  # noqa: S105 — a message, not a credential
@@ -912,6 +916,22 @@ def _admit_entry(e: dict, secrets: list[str], *, fresh: bool) -> dict:
         "agent": guard_text(e.get("agent"), TITLE_MAX, secrets=secrets),
         "reason": guard_text(e.get("reason") or "", DETAIL_MAX, secrets=secrets),
     }
+    # Optional (#1910): absent on every entry before it, and then not written at all, so a sidecar
+    # without one is byte-for-byte what an older build reads.
+    spec = e.get("specialist")
+    if spec is not None:
+        sid, n = (spec.get("id"), spec.get("version")) if isinstance(spec, dict) else (None, None)
+        if not (
+            isinstance(spec, dict)
+            and set(spec) == {"id", "version"}
+            and isinstance(sid, str)
+            and _SPECIALIST_ID_RE.match(sid)
+            and isinstance(n, int)
+            and not isinstance(n, bool)
+            and 1 <= n <= SPECIALIST_VERSION_MAX
+        ):
+            raise ValueError("malformed specialist")
+        out["specialist"] = {"id": sid, "version": n}
     for k in ("ts", "decided_at", "settled_at"):
         v = e.get(k)
         if isinstance(v, int | float) and not isinstance(v, bool):

@@ -456,7 +456,7 @@ def test_every_write_needs_csrf_and_origin(api, auth_cfg):
     assert detail["revision"] == 1 and not detail["archived"]  # nothing was written
 
 
-def test_pool_ships_empty_with_four_templates(api):
+def test_pool_ships_empty_with_five_templates(api):
     c, _ = api
     out = c.get("/api/specialists").json()
     assert out["specialists"] == []
@@ -465,8 +465,11 @@ def test_pool_ships_empty_with_four_templates(api):
         "Implementer",
         "Reviewer",
         "Bookkeeper",
+        "Researcher",
     ]
     assert all(t["grade"] in model_grades.GRADES for t in out["templates"])
+    # The Researcher suggests the web-research skill the guide ships (#1910), by its Library id.
+    assert out["templates"][-1]["skills"] == ["research-with-citations"]
 
 
 def test_create_edit_archive_round_trip(api):

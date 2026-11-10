@@ -201,6 +201,9 @@ class _Turn:
     #: `propose_session` means. None until the tool ran in this turn.
     projects: list[dict] | None = None
     agents: list[dict] | None = None
+    #: The specialists THIS turn's `list_specialists` returned (#1910): what a `specialist_index`
+    #: in `propose_session` means. None until the tool ran in this turn.
+    specialists: list[dict] | None = None
     #: Who asked (#1559): their request identity (`asgi_call.Operator`) and the app, so the facts an
     #: operation card shows are read as THEY would read them. Memory only, never stored.
     operator: object | None = None
@@ -618,6 +621,84 @@ async def _list_agents(turn: _Turn, args: dict) -> tuple[dict, dict]:
         for r in rows
     ]
     return {"agents": shown}, {"count": len(rows)}
+
+
+SPECIALIST_TEXT_MAX = 280
+
+
+def _specialist_rows(body: dict, agents: list[dict]) -> list[dict]:
+    """The pool as the Specialists page reads it (`GET /api/specialists`), unarchived only. Every
+    operator-written text is guarded whole, then cut; ids and versions are structural. An agent is
+    named as `list_agents` names it, never by its id; one not installed here can't start."""
+    from . import automation_runner
+
+    names = {a["id"]: a["name"] for a in agents}
+
+    rows: list[dict] = []
+    for s in body.get("specialists") or []:
+        if not isinstance(s, dict) or s.get("archived"):
+            continue
+        cur = s.get("current") or {}
+        engine = cur.get("engine")
+        if not isinstance(engine, str) or not isinstance(cur.get("version"), int):
+            continue
+        skills = [k.get("id") for k in cur.get("skills") or [] if isinstance(k, dict)]
+        live, capacity = s.get("live") or 0, cur.get("capacity") or 0
+        can_start, why = automation_runner.engine_state(engine)
+        if engine not in names:
+            problem = "the agent it runs on is not installed here"
+        elif s.get("skills_missing"):
+            problem = "a skill it carries is missing from the Library"
+        elif s.get("skills_outdated"):
+            problem = "a skill it carries changed in the Library; save the specialist again"
+        else:
+            problem = "" if can_start else _why_not(why)
+        rows.append(
+            {
+                "index": len(rows),
+                "id": s.get("id"),
+                "version": cur["version"],
+                "engine": engine,
+                "title": ask_store.guard_text(cur.get("title"), SPECIALIST_TEXT_MAX),
+                "summary": ask_store.guard_text(cur.get("summary"), SPECIALIST_TEXT_MAX),
+                "agent": names.get(engine, "an agent not installed here"),
+                "model": ask_store.guard_text(cur.get("model"), SPECIALIST_TEXT_MAX),
+                "skills": [ask_store.guard_text(k, SPECIALIST_TEXT_MAX) for k in skills if k],
+                "busy": bool(capacity) and live >= capacity,
+                "can_start": not problem,
+                "why_not": problem,
+            }
+        )
+    return rows
+
+
+async def _list_specialists(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    from . import ask_library
+
+    operator, app = _operator(turn)
+    try:
+        body = await ask_library._get(app, operator, "/api/specialists", "the specialist pool")
+    except ask_library.Refused as e:
+        raise _ToolRefused(str(e), e.code) from None
+    agents = await asyncio.to_thread(_agent_rows)
+    rows = await asyncio.to_thread(_specialist_rows, body, agents)
+    turn.specialists = rows
+    shown = [
+        {
+            "index": r["index"],
+            "title": r["title"],
+            "summary": r["summary"],
+            "agent": r["agent"],
+            "model": r["model"],
+            "skills": r["skills"],
+            "version": r["version"],
+            "can_start": r["can_start"],
+            **({"why_not": r["why_not"]} if r["why_not"] else {}),
+            **({"all_busy": True} if r["busy"] else {}),
+        }
+        for r in rows
+    ]
+    return {"specialists": shown}, {"count": len(rows)}
 
 
 # ---- usage, the fleet and the settings view (#1554) --------------------------------------------
@@ -1056,7 +1137,33 @@ async def _propose_session(turn: _Turn, args: dict) -> tuple[dict, dict]:
             "refused: that project is archived or has no folder, so a session can't start there",
             "not_startable",
         )
-    agent = _index_arg(args, "engine_index", turn.agents, "list_agents")
+    specialist = None
+    if args.get("specialist_index") is not None:
+        # FROM A SPECIALIST (#1910): its agent, its pinned version, its Library skills. An agent
+        # index, if given too, must name the same agent: the specialist decides, never the model.
+        specialist = _index_arg(args, "specialist_index", turn.specialists, "list_specialists")
+        if not specialist["can_start"]:
+            raise _ToolRefused(
+                f"refused: {specialist['title']} can't start — {specialist['why_not']}",
+                "not_startable",
+            )
+        if args.get("engine_index") is not None:
+            named = _index_arg(args, "engine_index", turn.agents, "list_agents")
+            if named["id"] != specialist["engine"]:
+                raise _ToolRefused(
+                    f"refused: {specialist['title']} runs on {specialist['agent']}, not "
+                    f"{named['name']} — leave engine_index out to use the specialist's agent",
+                    "agent",
+                )
+        agent = {"id": specialist["engine"], "name": specialist["agent"]}
+    else:
+        if args.get("engine_index") is None:
+            raise _ToolRefused(
+                "refused: name an agent (engine_index from list_agents) or a specialist "
+                "(specialist_index from list_specialists)",
+                "bad_arguments",
+            )
+        agent = _index_arg(args, "engine_index", turn.agents, "list_agents")
     raw = _str_arg(args, "brief", ask_store.BRIEF_MAX)
     # The normalization delivery applies (control bytes stripped, trimmed), applied HERE: the
     # brief the card shows is the brief typed.
@@ -1103,6 +1210,11 @@ async def _propose_session(turn: _Turn, args: dict) -> tuple[dict, dict]:
         "bypass_default": await asyncio.to_thread(ask_proposals.bypass_default),
         "bypass": None,
     }
+    shown_agent = agent["name"]
+    if specialist is not None:
+        entry["specialist"] = {"id": specialist["id"], "version": specialist["version"]}
+        shown_agent = f"{agent['name']} · {specialist['title']} v{specialist['version']}"
+        entry["agent"] = shown_agent
     # CARD FIRST, ENTRY SECOND: a card whose entry never landed reads "no longer tracked" and
     # offers nothing; an entry is only startable from its card.
     try:
@@ -1114,7 +1226,7 @@ async def _propose_session(turn: _Turn, args: dict) -> tuple[dict, dict]:
                 "action_id": pid,
                 "kind": "session",
                 "title": project["name"],
-                "agent": agent["name"],
+                "agent": shown_agent,
                 "text": brief,
             },
         )
@@ -1825,19 +1937,36 @@ TOOLS: dict[str, Tool] = {
             _list_agents,
         ),
         Tool(
+            "list_specialists",
+            "read",
+            _spec(
+                "list_specialists",
+                "The operator's specialists (Library → Specialists), by index: title, summary, "
+                "the agent and model each runs on, the Library skills it carries, its version, "
+                "and whether one can start now (can_start, why_not; all_busy when every slot is "
+                "taken). A specialist index can be used in propose_session this turn.",
+                {},
+                [],
+            ),
+            _list_specialists,
+        ),
+        Tool(
             "propose_session",
             "proposal",
             _spec(
                 "propose_session",
-                "Propose starting a new session: a project and an agent by the indexes "
-                "list_projects and list_agents returned in this turn, and the brief the agent "
-                "gets as its first message. Nothing starts: the operator sees a card and decides.",
+                "Propose starting a new session: a project by the index list_projects returned "
+                "in this turn, an agent by the index list_agents returned OR a specialist by "
+                "the index list_specialists returned (the session then runs on the "
+                "specialist's agent with its Library skills), and the brief the agent gets as "
+                "its first message. Nothing starts: the operator sees a card and decides.",
                 {
                     "project_index": {"type": "integer"},
                     "engine_index": {"type": "integer"},
+                    "specialist_index": {"type": "integer"},
                     "brief": {"type": "string", "description": "the first message, in full"},
                 },
-                ["project_index", "engine_index", "brief"],
+                ["project_index", "brief"],
             ),
             _propose_session,
         ),
@@ -2268,7 +2397,7 @@ DRAFT_READ_TOOLS = frozenset(
         "playbook_detail", "playbook_schema", "list_skills", "skill_detail", "list_automations",
         "automation_detail", "list_secrets", "agent_usage", "fleet_status", "read_settings",
         "list_connectors", "connector_search", "connector_read", "connector_list",
-        "list_recipients",
+        "list_recipients", "list_specialists",
     }
 )  # fmt: skip
 

@@ -62,6 +62,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Capability | Route(s) | HQ |
 |---|---|---|
 | Start a session (agent, project, brief, bypass) | WS new=1 / POST /api/structured/sessions / POST /api/chat/new | have (`propose_session`); P7 adds model/effort and API/chat agents |
+| Start a session from a specialist (its version, model and Library skills) (#1910) | WS new=1 `specialist`, `specialist_version` | have (`propose_session` `specialist_index`, pinned version; HQ's web research) |
 | List agents and whether they can start | GET /api/engines | have (`list_agents`) + #1554 |
 | List models for an API agent | GET /api/structured/clients/{engine}/models | P7 R |
 | Choose or create a folder | GET /api/fs/dirs, POST /api/fs/mkdir | P1 W (folder picked **on the card**; the model never sees a path) |
@@ -201,7 +202,8 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Automations: duplicate, delete | POST/DELETE /api/automations* | P4 W |
 | Automations: pause, resume, turn off, run now | POST …/pause, …/resume, …/disable, …/run | P4 W (run now starts agents) |
 | Automations: enable (consent to its scope) | POST …/enable `revision, consent, scope_digest` | have (`propose_library`: the card shows the server's own scope lines; the tap is the consent, #1611) |
-| Specialists (#1693): list, detail, a pinned version | GET /api/specialists, /api/specialists/{sid}, …/versions/{n} | P4 R |
+| Specialists (#1693): list | GET /api/specialists | have (`list_specialists`, #1910) |
+| Specialists (#1693): detail, a pinned version | GET /api/specialists/{sid}, …/versions/{n} | P4 R |
 | Specialists: create, edit (a new version), archive, unarchive | POST /api/specialists, PATCH /api/specialists/{sid}, POST …/archive, …/unarchive | P4 W (revision-checked; the grade is derived, never chosen) |
 | Specialists: release a held slot (#1693 S4) | POST /api/specialists/reservations/{rid}/release | P4 W (only a slot reconcile holds) |
 
@@ -551,7 +553,7 @@ GET    /api/template-variables                                                  
 POST   /api/template-variables                                                    P3
 DELETE /api/template-variables/{name}                                             P3
 PATCH  /api/template-variables/{name}                                             P3
-GET    /api/specialists                                                           P4
+GET    /api/specialists                                                           have  # list_specialists (#1910)
 POST   /api/specialists                                                           P4
 GET    /api/specialists/{sid}                                                     P4
 PATCH  /api/specialists/{sid}                                                     P4

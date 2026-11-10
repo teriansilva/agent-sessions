@@ -519,6 +519,7 @@ async def dispatch(
     model: object = None,
     spawn_fence: Callable[[], contextlib.AbstractContextManager] | None = None,
     guard_secrets: bool = False,
+    specialist: tuple[str, int] | None = None,
 ) -> Dispatch:
     """Launch `engine` in `cwd` with nobody watching, and deliver `brief`.
 
@@ -556,6 +557,14 @@ async def dispatch(
 
     **`guard_secrets`** marks the brief's seed so its delivery withholds it if it carries a secret
     known when it is typed (`handoff.claim_seed_guarded`).
+
+    **`specialist`** ``(id, version)`` starts the session FROM that specialist version (#1910): the
+    terminal LAUNCH's own seam (`specialist_launch.for_new`), re-validated against this engine and
+    the model this dispatch resolved, a slot reserved and its skill bundle built after the
+    single-writer lock and before the spawn, the bundle handed to `agent_tools.terminal_launch`.
+    A refusal (at capacity, a skill changed, another agent or model, an agent that cannot carry
+    skills) launches nothing. The slot is released when nothing can have inherited it, and
+    otherwise settled by liveness the way the terminal LAUNCH settles it. ``None``: unchanged.
 
     **`registry` is required**, not optional. A `dtach -n` master has no reader, so nothing drains
     it, nothing observes first paint and no writer is registered — and the seed delivery then
@@ -706,6 +715,14 @@ async def dispatch(
             await asyncio.to_thread(late.wait)
 
     capacity_slot: session_capacity.Reservation | None = None
+    # Imported here, as the terminal route's other launch helpers are: its gallery/playbook imports
+    # would close a cycle through `templates` at module load.
+    from . import specialist_launch
+
+    specialist_claim: specialist_launch.Claim | None = None
+    # The reservation's worker, kept for the `finally` as `admission_task` is: a cancellation while
+    # it runs must still release what it reserved, or the slot stays held until reconcile.
+    specialist_task: asyncio.Future | None = None
     try:
         # THE SESSION LIMIT (#1819), first of all: the auth probe below launches a real agent, and a
         # refused dispatch spends nothing.
@@ -714,6 +731,20 @@ async def dispatch(
         except session_capacity.SessionLimitReached as e:
             out.reason, out.refusal = str(e), session_capacity.SESSION_LIMIT
             return out
+        # FROM A SPECIALIST (#1910): its slot and skill bundle, keyed by this session, taken under
+        # its single-writer lock after the session limit and before any probe or spawn. Refused →
+        # nothing launches.
+        if specialist is not None:
+            specialist_task = asyncio.ensure_future(
+                asyncio.to_thread(
+                    specialist_launch.for_new, engine, key, *specialist, model=model_sel.model
+                )
+            )
+            try:
+                specialist_claim = await asyncio.shield(specialist_task)
+            except specialist_launch.Refused as e:
+                out.reason = e.detail
+                return out
         try:
             maintenance_admission = await opencode_admission.for_launch(engine)
         except opencode_admission.Unavailable as e:
@@ -1039,7 +1070,18 @@ async def dispatch(
                             # (#1441), resolved from the dispatch's own folder, and with them the
                             # memory tool its manifest declares (#1506). `launch_env` never
                             # raises; with memory off both are empty.
-                            memory_env = memory.launch_env(key, cwd, kind="terminal")
+                            memory_env = memory.launch_env(
+                                key,
+                                cwd,
+                                kind="terminal",
+                                # Started from a specialist (#1910): its notebook for this
+                                # project, as the terminal LAUNCH gives it.
+                                specialist=(
+                                    specialist_claim.specialist_id
+                                    if specialist_claim is not None
+                                    else None
+                                ),
+                            )
                             # The secrets capability (#1786), minted inside the fence like memory.
                             capability = secrets_broker.launch_env(
                                 key, key, cwd, engine=engine, kind="terminal"
@@ -1056,13 +1098,22 @@ async def dispatch(
                                 manifest=engines.manifest_of(prov),
                                 fenced=True,
                             )
-                            mcp = agent_tools.terminal_launch(
-                                engines.manifest_of(prov),
-                                memory_env,
-                                env,
-                                secrets_env=capability,
-                                hq_env=hq_env,
-                            )
+                            try:
+                                mcp = agent_tools.terminal_launch(
+                                    engines.manifest_of(prov),
+                                    memory_env,
+                                    env,
+                                    skills_bundle=(
+                                        specialist_claim.bundle
+                                        if specialist_claim is not None
+                                        else None
+                                    ),
+                                    secrets_env=capability,
+                                    hq_env=hq_env,
+                                )
+                            except agent_tools.SkillsRefused as e:
+                                # Never launched without the skills it was started for.
+                                return None, str(e)
                             spawn_argv = argv[:agent_at] + mcp.argv(argv[agent_at:])
                             # …and the capability's id in the master's OWN environment: what a
                             # bind reads back from the kernel to prove the master is this
@@ -1343,3 +1394,28 @@ async def dispatch(
             # LAST, once the workers above are joined: nothing can launch after this. The auth
             # probe ran under this slot too; a master that came up now counts by itself.
             capacity_slot.release()
+        if specialist_claim is None and specialist_task is not None:
+            # Cancelled while reserving: join the worker (shielded and repeated, as the admission
+            # flock's is) and adopt what it got. Nothing was spawned, so it is abandoned below.
+            while not specialist_task.done():
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await asyncio.shield(specialist_task)
+            if not specialist_task.cancelled() and specialist_task.exception() is None:
+                specialist_claim = specialist_task.result()
+        if specialist_claim is not None:
+            # THE SPECIALIST SLOT (#1910), after the teardown, as the terminal LAUNCH settles it:
+            # nothing can have inherited the launch → released (with its bundle); anything else is
+            # settled by liveness (dead → released, live → live, unknown → left to reconcile).
+            # Shielded: this runs on the cancellation path too, and a leaked slot holds capacity.
+            if not may_have_inherited:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(
+                        asyncio.ensure_future(
+                            asyncio.to_thread(specialist_launch.abandon, specialist_claim)
+                        )
+                    )
+            else:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(
+                        asyncio.ensure_future(specialist_launch.settle(specialist_claim))
+                    )

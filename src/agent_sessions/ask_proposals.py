@@ -145,6 +145,64 @@ def _brief_refusal(brief: str) -> str:
     return "" if same else ask_store.BRIEF_NOW_SECRET
 
 
+def _specialist_refusal(row: dict) -> str:
+    """A card started from a specialist (#1910) starts the version it SHOWED, and only while that
+    is still the specialist's current, unarchived version on the card's agent: an edit, an archive
+    or a move to another agent since the card was shown makes it out of date. Blocking."""
+    pinned = row.get("specialist")
+    if not pinned:
+        return ""
+    from . import specialists_store
+
+    try:
+        spec = specialists_store.get(pinned["id"])
+    except specialists_store.NotFound:
+        return "that specialist no longer exists"
+    except specialists_store.StoreError as e:
+        return f"the specialist could not be read just now ({e})"
+    if spec["archived"]:
+        return "that specialist was archived since this was proposed"
+    cur = spec["current"]
+    if cur["version"] != pinned["version"] or cur["engine"] != row["engine"]:
+        return "that specialist was edited since this was proposed — ask HQ again"
+    # A skill it carries changed in the Library while the card waited: the launch's bundle build
+    # would refuse it, so the card is out of date now rather than a failed start later. Read the
+    # way the Specialists page reads it (`library_revisions`): a specialist with no skills has
+    # nothing to prove (Hermes on #1912), and a library that can't be read just now flags nothing
+    # rather than spending the card, because the bundle build stays the last word at launch.
+    pins = cur.get("skills") or []
+    if pins:
+        from . import specialists
+
+        try:
+            library = specialists.library_revisions()
+        except Exception:  # noqa: BLE001 — unreadable: flag nothing, as the page does
+            library = None
+        if library is not None:
+            moved = [p["id"] for p in pins if library.get(p.get("id")) != p.get("revision")]
+            if moved:
+                return (
+                    f"a skill that specialist carries ({', '.join(moved)}) changed in the "
+                    "Library since this was proposed"
+                )
+    return ""
+
+
+def specialist_launch_args(row: dict) -> dict:
+    """The dispatch arguments a card started from a specialist adds: the pinned ``(id, version)``
+    and that version's model (`None` for the agent's default). Empty for a plain session."""
+    pinned = row.get("specialist")
+    if not pinned:
+        return {}
+    from . import model_grades, specialists_store
+
+    model = specialists_store.version(pinned["id"], pinned["version"])["model"]
+    return {
+        "specialist": (pinned["id"], pinned["version"]),
+        "model": None if model == model_grades.DEFAULT_MODEL else model,
+    }
+
+
 def precheck(row: dict) -> str:
     """Everything a start depends on, before ``deciding`` is written. Returns the stale reason, or
     "". Blocking."""
@@ -156,7 +214,12 @@ def precheck(row: dict) -> str:
     ok, why = automation_runner.engine_state(row["engine"])
     if not ok:
         return why
-    return _project_refusal(row) or _folder_refusal(row) or _brief_refusal(row["brief"])
+    return (
+        _project_refusal(row)
+        or _folder_refusal(row)
+        or _brief_refusal(row["brief"])
+        or _specialist_refusal(row)
+    )
 
 
 # ---- the sidecar -------------------------------------------------------------------------------
@@ -409,6 +472,9 @@ async def decide(
             k: row[k] for k in ("id", "engine", "cwd", "real", "brief", "project_id", "project")
         }
         approved["bypass_default"] = row["bypass_default"]
+        if row.get("specialist"):
+            # The specialist version the card showed (#1910): part of what was approved.
+            approved["specialist"] = dict(row["specialist"])
         approved["decided_at"] = decided_at = time.time()
         # DURABLE BEFORE ANYTHING IS SPAWNED: from here on a crash leaves `deciding`, which the
         # next read settles as `interrupted`.
@@ -490,6 +556,18 @@ async def _launch(cid: str, row: dict, fd: int, registry) -> None:
     outcome: dict
     try:
         try:
+            # A plain card takes no thread hop here: nothing may suspend between the tap and the
+            # dispatch's `on_key` that a plain launch did not suspend at before (#1910).
+            try:
+                extra = (
+                    await asyncio.to_thread(specialist_launch_args, row)
+                    if row.get("specialist")
+                    else {}
+                )
+            except Exception:  # noqa: BLE001 — the version was checked at precheck; gone since
+                raise headless_dispatch.DispatchError(
+                    "the specialist could not be read just now"
+                ) from None
             out = await headless_dispatch.dispatch(
                 engine=row["engine"],
                 cwd=row["real"],
@@ -501,6 +579,9 @@ async def _launch(cid: str, row: dict, fd: int, registry) -> None:
                 spawn_fence=spawn_fence,
                 # The delivery checks the brief again as it is typed (`handoff.claim_seed_guarded`).
                 guard_secrets=True,
+                # From a specialist (#1910): its version, its model, its skills. Re-validated by
+                # the dispatch itself against the engine and model it resolves.
+                **extra,
             )
         except headless_dispatch.DispatchError as e:
             outcome = {"state": FAILED, "reason": f"{e} — nothing was started"}

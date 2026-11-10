@@ -159,8 +159,8 @@ function Pool() {
         <div className={pb.empty}>
           <h2>No specialists yet.</h2>
           <p>
-            Start from a template (Intern, Implementer, Reviewer, Bookkeeper) and choose
-            the agent and model it runs on.
+            Start from a template (Intern, Implementer, Reviewer, Bookkeeper, Researcher) and
+            choose the agent and model it runs on.
           </p>
         </div>
       )}

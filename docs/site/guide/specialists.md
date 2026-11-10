@@ -10,9 +10,9 @@ The pool starts empty. BattleLab creates nothing for you.
 ## Create one
 
 1. Open **Library → Specialists** and choose **New specialist**.
-2. Start from a template (Intern, Implementer, Reviewer or Bookkeeper) or from scratch. A template
-   fills in the job: the title, a summary and suggested skills. The agent and the model are always
-   yours to pick.
+2. Start from a template (Intern, Implementer, Reviewer, Bookkeeper or
+   [Researcher](/guide/web-research)) or from scratch. A template fills in the job: the title,
+   a summary and suggested skills. The agent and the model are always yours to pick.
 3. Choose the **agent** and **model**. For an API client you can also pick an effort level.
 4. Add **skills** from your skills library, set the **capacity** (1 to 8 at once), and save.
 
