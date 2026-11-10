@@ -381,3 +381,26 @@ for (const theme of ["dark", "light"] as const) {
     );
   });
 }
+
+test("on a wide screen the thread and composer use the page's width, not a centred column (#1873)", async ({
+  page,
+}, info) => {
+  test.skip(info.project.name === "mobile", "a phone shows the thread full screen already");
+  await page.setViewportSize({ width: 1920, height: 1000 });
+  await mockShell(page);
+  await page.goto(hqConversationPath(A));
+  await expect(page.getByTestId("ask-turns")).toContainText("the alpha answer");
+  const list = (await page.getByTestId("hq-list").boundingBox())!;
+  const head = (await page.getByTestId("ask-head").boundingBox())!;
+  const turns = (await page.getByTestId("ask-turns").boundingBox())!;
+  const composer = (await page.getByTestId("composer-input").boundingBox())!;
+  // The list grows past its old 300 px on a wide screen.
+  expect(list.width).toBeGreaterThan(330);
+  // Head, thread and composer run from beside the list to the right edge (less the page's
+  // padding), not a 760 px column in the middle.
+  const room = 1920 - (list.x + list.width);
+  for (const b of [head, turns, composer]) {
+    expect(b.width).toBeGreaterThan(room - 120);
+  }
+  expect(head.x).toBeLessThan(list.x + list.width + 60);
+});

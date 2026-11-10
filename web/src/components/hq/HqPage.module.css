@@ -4,7 +4,8 @@
 
 .page {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
+  /* The list grows with a wide screen (#1873), so its titles read; the thread takes the rest. */
+  grid-template-columns: clamp(300px, 20vw, 420px) minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   overflow: hidden;

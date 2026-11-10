@@ -687,6 +687,41 @@ test("the switcher lists latest first and opens the one picked — by keyboard",
   expect(trigger).toHaveFocus();
 });
 
+test("typing in the switcher searches; ArrowUp reaches the field and Enter opens the first match", async () => {
+  twoConversations();
+  await mountAt(<AskConsole configured />);
+  await screen.findByText(`answer for ${CID}`);
+  const trigger = screen.getByTestId("ask-switcher");
+  await userEvent.click(trigger);
+  const search = screen.getByTestId("ask-switcher-search");
+  // Focus is on a row, not the field (a phone's keyboard stays down) — and typing goes to the field.
+  expect(screen.getAllByTestId("ask-switcher-item")[0]).toHaveFocus();
+  await userEvent.keyboard("OLD");
+  expect(search).toHaveFocus();
+  expect(search).toHaveValue("OLD");
+  expect(screen.getAllByTestId("ask-switcher-item").map((i) => i.textContent)).toEqual([
+    expect.stringContaining("older"),
+  ]);
+  // Down into the rows, Up back to the field.
+  await userEvent.keyboard("{ArrowDown}");
+  expect(screen.getAllByTestId("ask-switcher-item")[0]).toHaveFocus();
+  await userEvent.keyboard("{ArrowUp}");
+  expect(search).toHaveFocus();
+  await userEvent.clear(search);
+  await userEvent.type(search, "nothing like it");
+  expect(screen.queryAllByTestId("ask-switcher-item")).toHaveLength(0);
+  expect(screen.getByTestId("ask-switcher-search-empty")).toHaveTextContent("nothing like it");
+  await userEvent.clear(search);
+  await userEvent.type(search, "older{Enter}");
+  expect(await screen.findByText(`answer for ${OTHER}`)).toBeInTheDocument();
+  expect(screen.queryByTestId("ask-switcher-menu")).toBeNull();
+  expect(trigger).toHaveFocus();
+  // Opened again, the search starts empty.
+  await userEvent.click(trigger);
+  expect(screen.getByTestId("ask-switcher-search")).toHaveValue("");
+  expect(screen.getAllByTestId("ask-switcher-item")).toHaveLength(2);
+});
+
 test("Escape closes the switcher, hands focus back, and goes no further", async () => {
   twoConversations();
   const outer = vi.fn();
@@ -2033,12 +2068,30 @@ test("the switcher marks a conversation with an unseen update, in words as well 
     ],
     configured: true,
   });
-  await mountAt(<AskConsole configured />);
+  await mountAt(<AskConsole configured />, 1) // "first": the update is pinned above it;
   await screen.findAllByTestId("ask-turn");
   await userEvent.click(screen.getByTestId("ask-switcher"));
   const items = await screen.findAllByTestId("ask-switcher-item");
-  expect(within(items[0]).queryByTestId("ask-switcher-unread")).toBeNull();
-  expect(within(items[1]).getByTestId("ask-switcher-unread")).toHaveTextContent("New updates");
+  // Pinned on top, under "Updates", although it is the older of the two.
+  expect(items[0]).toHaveTextContent("other");
+  expect(within(items[0]).getByTestId("ask-switcher-unread")).toHaveTextContent("New updates");
+  expect(within(items[1]).queryByTestId("ask-switcher-unread")).toBeNull();
+  expect(screen.getAllByTestId("ask-switcher-group")[0]).toHaveTextContent("Updates · 1");
+});
+
+test("the closed switcher counts the OTHER conversations with an unseen update", async () => {
+  withUpdates({});
+  vi.mocked(api.askConversations).mockResolvedValue({
+    conversations: [
+      { id: CID, title: "first", created_at: 1, updated_at: 3 },
+      { id: OTHER, title: "other", created_at: 1, updated_at: 2, unread: true },
+    ],
+    configured: true,
+  });
+  await mountAt(<AskConsole configured />, 1);
+  await screen.findAllByTestId("ask-turn");
+  expect(await screen.findByTestId("ask-switcher-updates")).toBeInTheDocument();
+  expect(screen.getByTestId("ask-switcher")).toHaveAccessibleName(/1 with new updates/);
 });
 
 // --- Hermes round 2 on #1500 ----------------------------------------------------------------------

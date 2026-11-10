@@ -1187,7 +1187,10 @@ export function AskConsole({
   }, [turns, cid]);
 
   return (
-    <div className={`${styles.threadCol} ${a.col}`} data-testid="ask-col">
+    <div
+      className={`${styles.threadCol} ${a.col} ${chrome === "page" ? a.colWide : ""}`}
+      data-testid="ask-col"
+    >
       <header
         className={`${a.measure} ${a.head} ${contact ? a.headContact : ""}`}
         data-testid="ask-head"
