@@ -109,6 +109,8 @@ async function openConsole(
     .first()
     .click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
+  // A finished mission opens on its SHELF (#1740); the strip belongs to the thread.
+  await page.getByRole("tab", { name: "Thread" }).click();
   return { calls: () => n };
 }
 

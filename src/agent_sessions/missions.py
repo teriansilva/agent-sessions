@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 34
+SCHEMA_VERSION = 35
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -1380,13 +1380,63 @@ def _migrate_33_to_34(con) -> None:
             con.execute(f"ALTER TABLE mission_objectives ADD COLUMN {name} {kind}")
 
 
+#: v35 (#1740): the mission shelf — what a mission produced, laid out for review
+#: (`mission_shelf`). Three tables, each cascading with its mission, so `delete_mission`'s physical
+#: scrub covers agent-written titles, whys and text exactly as it covers the instruction.
+#:
+#: * `mission_shelf_items` — one row per item: delivered by an agent through the shelf tool, or
+#:   found in git (P1b). `seq` is the stable per-mission order; `verdict`/`note` are the operator's.
+#: * `mission_shelf_state` — the shelf's revision (rises on every add and every verdict) and the
+#:   next `seq`.
+#: * `mission_shelf_caps` — one row per launch capability of the shelf tool (`shelf_broker`): a
+#:   keyed digest of its token, never the token.
+SHELF_DDL: tuple[str, ...] = (
+    "CREATE TABLE IF NOT EXISTS mission_shelf_items ("
+    "id TEXT PRIMARY KEY, "
+    "mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE, "
+    "seq INTEGER NOT NULL, "
+    "source TEXT NOT NULL CHECK(source IN ('delivered','found')), "
+    "kind TEXT NOT NULL CHECK(kind IN "
+    "('image','video','audio','document','code','link','text')), "
+    "title TEXT NOT NULL, why TEXT NOT NULL DEFAULT '', "
+    "session_key TEXT, step_id TEXT, "
+    "ref_type TEXT NOT NULL CHECK(ref_type IN ('path','url','text','code')), "
+    "ref TEXT NOT NULL, mime TEXT, size INTEGER, sha256 TEXT, fingerprint TEXT, meta TEXT, "
+    "created_at REAL NOT NULL, "
+    "verdict TEXT CHECK(verdict IS NULL OR verdict IN ('good','needs_work')), "
+    "note TEXT NOT NULL DEFAULT '', verdict_at REAL, "
+    "UNIQUE(mission_id, seq))",
+    "CREATE TABLE IF NOT EXISTS mission_shelf_state ("
+    "mission_id TEXT PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE, "
+    "revision INTEGER NOT NULL DEFAULT 0, next_seq INTEGER NOT NULL DEFAULT 1)",
+    "CREATE TABLE IF NOT EXISTS mission_shelf_caps ("
+    "id TEXT PRIMARY KEY, digest TEXT UNIQUE NOT NULL, "
+    "mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE, "
+    "session_key TEXT NOT NULL, phys_key TEXT NOT NULL, engine TEXT NOT NULL, "
+    "created_at REAL NOT NULL, revoked_at REAL)",
+    "CREATE INDEX IF NOT EXISTS idx_mission_shelf_caps_phys "
+    "ON mission_shelf_caps(phys_key, revoked_at)",
+)
+_SCHEMA += ";\n".join(SHELF_DDL) + ";\n"
+
+
+def _migrate_34_to_35(con) -> None:
+    """Additive only (workflow §0): three new tables. Idempotent, so a store rolled back to 34
+    (`rollback_schema`) and opened again by this build converges."""
+    for statement in SHELF_DDL:
+        con.execute(statement)
+
+
 #: The versions `rollback_schema` can take a store back to, newest first. One entry per additive
 #: step whose previous build reads the newer file unchanged once `user_version` says so.
-ROLLBACK_TARGETS: frozenset[int] = frozenset({33})
+ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34})
 
 
 def rollback_schema(to: int, *, path: Path | None = None) -> dict:
-    """Take the store back to schema `to` for the previous build, deleting nothing (#1777).
+    """Take the store back to schema `to` for the previous build, deleting nothing (#1777, #1740).
+
+    Every target is additive below this build: v34 added the plan revisions and three objective
+    columns (to 33), v35 the shelf tables (to 34); an older build never reads either.
 
     A build refuses a store newer than itself, so rolling the app back past v34 would make every
     mission read fail. This is the way back: `user_version` set to `to`, in one transaction, and
@@ -1536,6 +1586,8 @@ def _migrate(con) -> int:
             _migrate_32_to_33(con)
         if version < 34:
             _migrate_33_to_34(con)
+        if version < 35:
+            _migrate_34_to_35(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 

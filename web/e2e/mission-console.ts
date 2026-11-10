@@ -35,7 +35,25 @@ export interface MissionMockOptions {
   context?: unknown;
   /** `GET /api/missions/{id}/now` — the live strip (#1064). */
   now?: unknown;
+  /** `GET /api/missions/{id}/shelf` — the mission shelf (#1740). Defaults to an empty shelf. */
+  shelf?: unknown;
 }
+
+/** An empty shelf manifest, exactly as `GET /api/missions/{id}/shelf` answers for a mission that
+ *  has produced nothing yet (#1740). */
+export const EMPTY_SHELF = {
+  mission_id: "msn_1",
+  revision: 0,
+  counts: {
+    total: 0,
+    by_kind: { image: 0, video: 0, audio: 0, document: 0, code: 0, link: 0, text: 0 },
+    by_source: { delivered: 0, found: 0 },
+    unreviewed: 0,
+    file_checks: { changed: 0, missing: 0, inaccessible: 0 },
+  },
+  items: [],
+  next_cursor: null,
+};
 
 /** Route every mission endpoint the console reads. Call BEFORE `page.goto`. */
 export async function mockMissions(
@@ -80,6 +98,9 @@ export async function mockMissions(
   // The live strip (#1064). Registered after the catch-all, so it answers ahead of it.
   await page.route("**/api/missions/*/now", (r) =>
     r.fulfill({ json: opts.now ?? { sessions: [], checked_at: 1_700_000_000 } }),
+  );
+  await page.route("**/api/missions/*/shelf", (r) =>
+    r.fulfill({ json: opts.shelf ?? EMPTY_SHELF }),
   );
 }
 

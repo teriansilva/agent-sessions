@@ -386,6 +386,8 @@ async function select(page: Page, id: string) {
   await page.getByTestId("rail-mission").filter({ hasText: TITLES[id] }).first().click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByTestId("console-title")).toHaveText(TITLES[id]);
+  // A failed mission opens on its SHELF (#1740); these are the thread's own rows.
+  await page.getByRole("tab", { name: "Thread" }).click();
   await expect(page.getByTestId("thread-event").first()).toBeVisible();
 }
 

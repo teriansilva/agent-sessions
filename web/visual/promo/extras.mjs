@@ -1,4 +1,6 @@
 // Per-surface mocks beyond the shell: HQ conversations, missions, library, files, structured.
+import { readFileSync } from "node:fs";
+
 import * as F from "./fixtures.mjs";
 import * as MS from "./missionStates.mjs";
 
@@ -65,6 +67,9 @@ export async function answerExtra(path, q, method, req, state) {
     if (r) return r;
   }
   if (/^\/api\/missions\/msn_[0-9a-f]{32}\/screen\/[^/]+$/.test(path)) return json(MS.missionScreen());
+  // The mission shelf (#1740): `shelf` (a sweep state) fills it; otherwise it is empty.
+  const sr = /^\/api\/missions\/msn_[0-9a-f]{32}\/shelf\/(shf_[0-9a-f]{32})\/raw$/.exec(path);
+  if (sr) return shelfRaw(sr[1]);
   const mi = /^\/api\/missions\/(msn_[0-9a-f]{32})(\/[a-z_]+)?$/.exec(path);
   if (mi && method === "GET") {
     const [, id, sub] = mi;
@@ -74,6 +79,7 @@ export async function answerExtra(path, q, method, req, state) {
     if (sub === "/objectives") return json({ objectives: shown.objectives });
     if (sub === "/context") return json(MS.contextVariant(missionContext(id), state?.missionContext));
     if (sub === "/now") return json(missionNow());
+    if (sub === "/shelf") return json(shelfManifest(id, state?.shelf ? shelfShowcase() : []));
     return undefined;
   }
   const st = /^\/api\/structured\/sessions\/([^/]+?)(\/[a-z]+)?$/.exec(path);
@@ -903,4 +909,87 @@ function playbookDocuments(book) {
     },
     readme: `# ${book.name}\n\n${book.summary}\n`,
   };
+}
+
+// ---- the mission shelf (#1740) ---------------------------------------------------------------
+const SHELF_PNG = readFileSync(new URL("../../e2e/fixtures/media/dot.png", import.meta.url));
+const shf = (n) => "shf_" + String(n).padStart(32, "0");
+const SHELF_A = "claude:5f3c0000-0000-4000-8000-0000000000a1";
+const SHELF_B = "codex:019a0000-0000-7000-8000-0000000000b2";
+
+function shelfShowcase() {
+  const at = (m) => F.NOW - m * 60;
+  const file = (name, mime, extra = {}) => ({
+    ref_type: "path",
+    name,
+    path: `/home/operator/projects/battlelab-site/${name}`,
+    mime,
+    viewable: mime !== null,
+    sha256: "9f2c" + "0".repeat(56) + "41a0",
+    file: { state: "ok" },
+    ...extra,
+  });
+  const item = (n, over) => ({
+    id: shf(n),
+    seq: n,
+    source: "delivered",
+    why: "",
+    session_key: n <= 4 ? SHELF_A : SHELF_B,
+    size: 1024,
+    sha256: null,
+    created_at: at(40 - n),
+    verdict: null,
+    note: "",
+    verdict_at: null,
+    ...over,
+  });
+  return [
+    item(1, { kind: "video", title: "Hero video, 1080p", why: "The 30-second launch cut, dark theme for the hero shot as asked.", ...file("out/hero-v021.webm", "video/webm"), size: 19293798, verdict: "good", verdict_at: at(5) }),
+    item(2, { kind: "audio", title: "Voice-over, take 3", why: "Second paragraph shortened so the read fits 30 seconds.", ...file("out/vo-take3.ogg", "audio/ogg"), size: 626688, verdict: "needs_work", note: "Keep the full second paragraph; trim the intro instead.", verdict_at: at(4) }),
+    item(3, { kind: "image", title: "Poster frame", why: "Frame 00:04 of the hero video, for the release page.", ...file("out/hero-poster.png", "image/png", { file: { state: "changed", disk_sha256: "77ab" + "1".repeat(56) + "0e93", disk_mtime: at(3) } }), size: 1153433 }),
+    item(4, { kind: "text", title: "Render settings", why: "So the next render can match this one.", ref_type: "text", text: "Rendered at 1920×1080, 24 fps, VP9 at constant quality 31. The title card holds for 2.5 s; the map sequence runs 00:06–00:19.", size: 1434 }),
+    item(5, { kind: "image", title: "Map view, dark", why: "Hero screenshot for the release notes.", ...file("shots/map-dark.png", "image/png"), size: 421888, verdict: "good", verdict_at: at(6) }),
+    item(6, { kind: "image", title: "Shelf page, dark", why: "Third screenshot, as the plan asked.", ...file("shots/shelf-dark.png", "image/png", { file: { state: "missing" } }) }),
+    item(7, { kind: "document", title: "Changelog for v0.21", why: "Grouped by area; links each item to its issue.", ...file("CHANGELOG.md", "text/plain; charset=utf-8"), size: 6348 }),
+    item(8, { kind: "document", title: "Release notes", why: "The PDF for the press page.", ...file("out/release-notes.pdf", null), size: 98304 }),
+    item(9, { kind: "link", title: "Staging preview of the release page", why: "The page with the video and screenshots in place.", ref_type: "url", url: "https://staging.example.org/releases/v0-21", host: "staging.example.org", url_path: "/releases/v0-21", size: null }),
+  ];
+}
+
+function shelfManifest(missionId, items) {
+  const by_kind = { image: 0, video: 0, audio: 0, document: 0, code: 0, link: 0, text: 0 };
+  for (const i of items) by_kind[i.kind] += 1;
+  return {
+    mission_id: missionId,
+    revision: items.length,
+    counts: {
+      total: items.length,
+      by_kind,
+      by_source: { delivered: items.length, found: 0 },
+      unreviewed: items.filter((i) => i.verdict === null).length,
+      file_checks: {
+        changed: items.filter((i) => i.file?.state === "changed").length,
+        missing: items.filter((i) => i.file?.state === "missing").length,
+        inaccessible: 0,
+      },
+    },
+    items,
+    next_cursor: null,
+  };
+}
+
+function shelfRaw(itemId) {
+  if (itemId === shf(3) || itemId === shf(5)) {
+    return { raw: { status: 200, contentType: "image/png", body: SHELF_PNG } };
+  }
+  if (itemId === shf(7)) {
+    return {
+      raw: {
+        status: 200,
+        contentType: "text/plain; charset=utf-8",
+        body: "# v0.21\n\n## Missions\n- The shelf: everything a mission produced, for review.\n",
+      },
+    };
+  }
+  return json({ detail: "the file is no longer on disk" }, 404);
 }

@@ -163,6 +163,91 @@ async def run_bounded(key: str, fn, *args):
     return await _run(key, fn, *args)
 
 
+async def stream_raw(
+    request: Request,
+    raw: files.RawFile,
+    *,
+    key: str,
+    download: bool,
+    inline_type: str | None,
+) -> Response:
+    """Serve an opened, VERIFIED `RawFile` — everything `/api/files/raw` does once it holds one,
+    shared with the mission shelf's read path (#1740) so both send the same sandbox, caps, ranges
+    and stream ownership. ``inline_type`` is the only Content-Type the bytes may be shown as
+    (None: download only, a 415 otherwise); ``key`` is the panel pool's fairness key.
+
+    This frame owns ``raw`` until `_RawStream` does: every way out of the block — a refusal, or
+    anything unexpected — closes it, or one malformed query leaks a stream slot and four of them
+    lock the viewer out until restart (Hermes 6648: `max=²`)."""
+    try:
+        if inline_type is None and not download:
+            raise files.FsError("not a type the viewer can show; download it", status=415)
+        # `max` (#1530): the caller's ceiling — Home Free's tunnel buffers a response whole, so
+        # it asks for nothing larger than it can carry. Judged on the size AT OPEN, which is
+        # also exactly how many bytes the body will ever send, so a file that grows after the
+        # viewer's /read cannot push a bigger response through. ASCII digits only: `str.isdigit`
+        # also accepts `²`, which `int` then refuses.
+        cap = request.query_params.get("max")
+        if cap is not None:
+            if not (cap.isascii() and cap.isdigit()):
+                raise files.FsError("max must be a whole number of bytes", status=422)
+            if raw.size > int(cap):
+                raise files.FsError(f"the file is larger than {cap} bytes", status=413)
+        span = files.parse_range(request.headers.get("range"), raw.size)
+        start, end = span if span else (0, raw.size - 1)
+        length = max(0, end - start + 1)
+        headers = {
+            **_RAW_HEADERS,
+            "Content-Length": str(length),
+            "Content-Disposition": _content_disposition(
+                "attachment" if download else "inline", raw.path
+            ),
+        }
+        if span:
+            headers["Content-Range"] = f"bytes {start}-{end}/{raw.size}"
+        media_type = "application/octet-stream" if download or inline_type is None else inline_type
+
+        async def body():
+            pos, remaining = start, length
+            while remaining > 0:
+                n = min(files.RAW_CHUNK, remaining)
+                waited = 0.0
+                while True:
+                    try:
+                        chunk = await _run(key, raw.read, pos, n)
+                        break
+                    except files.FilesBusy:
+                        if waited >= _RAW_BUSY_WAIT_S:
+                            raise
+                        await asyncio.sleep(0.05)
+                        waited += 0.05
+                if not chunk:
+                    return
+                pos += len(chunk)
+                remaining -= len(chunk)
+                yield chunk
+
+        response = _RawStream(
+            raw,
+            body(),
+            status_code=206 if span else 200,
+            media_type=media_type,
+            headers=headers,
+        )
+    except files.FsError as e:
+        _close_in_background(raw)
+        extra = {"Content-Range": f"bytes */{raw.size}"} if e.status == 416 else {}
+        raise HTTPException(
+            status_code=e.status, detail=str(e), headers={**_RAW_HEADERS, **extra}
+        ) from None
+    except BaseException:
+        _close_in_background(raw)
+        raise HTTPException(
+            status_code=500, detail="could not read the file", headers=_RAW_HEADERS
+        ) from None
+    return response
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     @app.middleware("http")
     async def _file_routes_are_never_cached(request: Request, call_next):
@@ -189,6 +274,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             path.startswith("/api/files/")
             or path.startswith("/api/git/")
             or (path.startswith("/api/missions/") and path.endswith("/context"))
+            # The mission shelf (#1740): its manifest carries file paths and its raw route file
+            # bytes — no-store on the 401 and on an escaped exception too.
+            or (path.startswith("/api/missions/") and "/shelf" in path)
         ):
             return await call_next(request)
         try:
@@ -259,76 +347,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             raise HTTPException(
                 status_code=500, detail="could not read the file", headers=_RAW_HEADERS
             ) from None
-        # From here until `_RawStream` owns it, THIS frame owns `raw`: every way out of the block —
-        # a refusal, or anything unexpected — closes it, or one malformed query leaks a stream slot
-        # and four of them lock the viewer out until restart (Hermes 6648: `max=²`).
-        try:
-            if raw.kind is None and not download:
-                raise files.FsError("not a type the viewer can show; download it", status=415)
-            # `max` (#1530): the caller's ceiling — Home Free's tunnel buffers a response whole, so
-            # it asks for nothing larger than it can carry. Judged on the size AT OPEN, which is
-            # also exactly how many bytes the body will ever send, so a file that grows after the
-            # viewer's /read cannot push a bigger response through. ASCII digits only: `str.isdigit`
-            # also accepts `²`, which `int` then refuses.
-            cap = request.query_params.get("max")
-            if cap is not None:
-                if not (cap.isascii() and cap.isdigit()):
-                    raise files.FsError("max must be a whole number of bytes", status=422)
-                if raw.size > int(cap):
-                    raise files.FsError(f"the file is larger than {cap} bytes", status=413)
-            span = files.parse_range(request.headers.get("range"), raw.size)
-            start, end = span if span else (0, raw.size - 1)
-            length = max(0, end - start + 1)
-            headers = {
-                **_RAW_HEADERS,
-                "Content-Length": str(length),
-                "Content-Disposition": _content_disposition(
-                    "attachment" if download else "inline", raw.path
-                ),
-            }
-            if span:
-                headers["Content-Range"] = f"bytes {start}-{end}/{raw.size}"
-            media_type = "application/octet-stream" if download or raw.mime is None else raw.mime
-
-            async def body():
-                pos, remaining = start, length
-                while remaining > 0:
-                    n = min(files.RAW_CHUNK, remaining)
-                    waited = 0.0
-                    while True:
-                        try:
-                            chunk = await _run(path, raw.read, pos, n)
-                            break
-                        except files.FilesBusy:
-                            if waited >= _RAW_BUSY_WAIT_S:
-                                raise
-                            await asyncio.sleep(0.05)
-                            waited += 0.05
-                    if not chunk:
-                        return
-                    pos += len(chunk)
-                    remaining -= len(chunk)
-                    yield chunk
-
-            response = _RawStream(
-                raw,
-                body(),
-                status_code=206 if span else 200,
-                media_type=media_type,
-                headers=headers,
-            )
-        except files.FsError as e:
-            _close_in_background(raw)
-            extra = {"Content-Range": f"bytes */{raw.size}"} if e.status == 416 else {}
-            raise HTTPException(
-                status_code=e.status, detail=str(e), headers={**_RAW_HEADERS, **extra}
-            ) from None
-        except BaseException:
-            _close_in_background(raw)
-            raise HTTPException(
-                status_code=500, detail="could not read the file", headers=_RAW_HEADERS
-            ) from None
-        return response
+        return await stream_raw(request, raw, key=path, download=download, inline_type=raw.mime)
 
     @app.post("/api/files/write")
     async def files_write(

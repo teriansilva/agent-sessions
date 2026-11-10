@@ -68,6 +68,7 @@ from .. import (
     session_stream,
     sessionlock,
     sessions,
+    shelf_broker,
     specialist_launch,
     transcript_owner,
     webterm,
@@ -908,6 +909,15 @@ def register(
                         engine=prov.engine_id,
                         manifest=engines.manifest_of(prov),
                     )
+                    # The shelf capability (#1740): only when a mission holds this session
+                    # now, minted for that mission. Its paths reach the MCP server's own
+                    # environment, not the agent's.
+                    shelf_env = shelf_broker.launch_env(
+                        transcript_key,
+                        phys_key,
+                        engine=prov.engine_id,
+                        manifest=engines.manifest_of(prov),
+                    )
                     tool = agent_tools.terminal_launch(
                         engines.manifest_of(prov),
                         paths,
@@ -915,6 +925,7 @@ def register(
                         skills_bundle=claim.bundle if claim is not None else None,
                         secrets_env=capability,
                         hq_env=hq_env,
+                        shelf_env=shelf_env,
                     )
                     # …and the report capability's id in the agent's OWN environment, which its
                     # dtach master inherits: a bind reads it back from the kernel to prove the

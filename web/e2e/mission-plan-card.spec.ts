@@ -150,11 +150,14 @@ function planningRequests(page: Page) {
  *
  *  The thread is bottom-anchored like a chat. P1's card was tall enough to fill the pane, so nothing
  *  showed; folded to one line, the card dropped to the bottom with the thread and left hundreds of
- *  pixels of void above it. So: the card's top is within 24px of the Details band's bottom, and the
+ *  pixels of void above it. So: the card's top is within 24px of the bottom of the column's head (the
+ *  THREAD | SHELF strip under the Details band, #1740), and the
  *  thread's own content still sits at the bottom of the pane, below the card. Measured as boxes in the
  *  browser, at whatever viewport the project runs. */
 async function expectCardUnderDetails(page: Page, label: string) {
-  const band = await page.getByTestId("details-toggle").boundingBox();
+  // The THREAD | SHELF strip (#1740) heads the thread column, directly under the Details band: the
+  // card sits under that strip, which is the top of the thread's body now.
+  const band = await page.getByRole("tablist", { name: "Mission view" }).boundingBox();
   const card = await page.getByTestId("mission-plan-card").boundingBox();
   expect(band, `${label}: the Details band has a box`).not.toBeNull();
   expect(card, `${label}: the plan card has a box`).not.toBeNull();

@@ -1336,6 +1336,35 @@ export const SWEEP = [
   { id: "mission:plan-armed", path: M1, mock: { mission: "ready" }, open: [{ testId: "mission-begin" }], present: "[data-testid='mission-launch-confirm']", height: 1300 },
   // A start that failed: the failure block with Start again.
   { id: "mission:failed", path: M1, mock: { mission: "failed" } },
+  // The mission shelf (#1740 P1a): every delivered kind, a changed and a missing file, verdicts.
+  {
+    id: "mission:shelf",
+    path: M1,
+    mock: { shelf: "showcase" },
+    open: [{ testId: "view-shelf" }],
+    present: "[data-testid='mission-shelf'] [data-shelf-tile]",
+    height: 1500,
+  },
+  {
+    id: "mission:shelf-empty",
+    path: M1,
+    open: [{ testId: "view-shelf" }],
+    present: "[data-shelf-empty]",
+  },
+  {
+    id: "popup:shelf-lightbox",
+    path: M1,
+    mock: { shelf: "showcase" },
+    open: [{ testId: "view-shelf" }, { css: "[data-shelf-tile='shf_00000000000000000000000000000003']" }],
+    expect: "dialog",
+  },
+  {
+    id: "popup:shelf-lightbox-text",
+    path: M1,
+    mock: { shelf: "showcase" },
+    open: [{ testId: "view-shelf" }, { css: "[data-shelf-tile='shf_00000000000000000000000000000007']" }],
+    expect: "dialog",
+  },
   // No AI endpoint: the notice, and the composer that says what it needs.
   {
     id: "mission:no-ai",

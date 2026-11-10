@@ -53,6 +53,10 @@ import type { DirectionOp } from "./objectiveDirection";
 import { MissionRail } from "./MissionRail";
 import { ContextPane, ObjectivesPane, TimelinePane } from "./MissionDetail";
 import { useMissionDetail } from "./useMissionDetail";
+import { MissionShelf } from "./shelf/MissionShelf";
+import { defaultView, tabCounts } from "./shelf/shelfLogic";
+import { useMissionShelf } from "./shelf/useMissionShelf";
+import shelfStyles from "./shelf/shelf.module.css";
 import styles from "./mission.module.css";
 
 /** One page of the rail. The server caps `limit` itself; this is the client's step size. */
@@ -181,6 +185,18 @@ function MissionBody({
   }) => void;
 }) {
   const d = useMissionDetail(missionId);
+  /** THE SHELF (#1740): what the mission produced. Read here, above the THREAD | SHELF switch, so
+   *  the tab can say how much is waiting for review while the thread is the one showing. */
+  const shelfData = useMissionShelf(missionId);
+  /** Which half of the thread column shows. `null` until the operator picks: a mission in review
+   *  or closed opens on SHELF, anything else on THREAD (#1740 design decision 1). */
+  const [pickedView, setPickedView] = useState<"thread" | "shelf" | null>(null);
+  /** The default is LATCHED from the first read of the mission: a mission moving into review while
+   *  the operator works on its thread must not pull the page out from under them. */
+  const [openedOn, setOpenedOn] = useState<"thread" | "shelf" | null>(null);
+  if (openedOn === null && d.mission) setOpenedOn(defaultView(d.mission.state));
+  const view = pickedView ?? openedOn ?? "thread";
+  const viewIds = useId();
   // THE OPT-IN AND ITS ONE-TAP EXIT (#983 P4). The thread is where an autonomous send becomes
   // visible, so the turn-off is offered on the row that proves why you might want it. It is a
   // pref write, and `refreshConfig` is what makes the thread row and the draft card stop claiming
@@ -231,6 +247,12 @@ function MissionBody({
         .map((s) => s.session_key),
     [d.mission],
   );
+  /** Session key → title for the shelf's groups, from the cards this console already holds. */
+  const sessionTitles = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const c of cards) if (c.title) out[c.id] = c.title;
+    return out;
+  }, [cards]);
 
   /** The decisions waiting on THIS mission — the whole point of the console. A pending action
    *  rides its session's card (`_attach_pending`, #754), so the mission's decisions are the
@@ -702,7 +724,86 @@ function MissionBody({
       <div
         className={styles.threadCol}
       >
-        <div className={styles.pane} data-testid="pane">
+        {/* THREAD | SHELF (#1740) — the one place a workspace has tabs (docs/design.md). The
+            thread is HIDDEN under SHELF, never unmounted, and the composer below stays docked
+            under both: a typed draft and events arriving meanwhile are all still there on the way
+            back, which is #948's rule for this column. */}
+        <div
+          className={shelfStyles.viewTabs}
+          role="tablist"
+          aria-label="Mission view"
+          onKeyDown={(e) => {
+            // The APG tabs pattern: one tab stop, arrows (and Home / End) move between the two.
+            const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+            if (!keys.includes(e.key)) return;
+            e.preventDefault();
+            const next =
+              e.key === "Home" ? "thread" : e.key === "End" ? "shelf" : view === "thread" ? "shelf" : "thread";
+            setPickedView(next);
+            document.getElementById(`${viewIds}-${next}-tab`)?.focus();
+          }}
+        >
+          <button
+            type="button"
+            role="tab"
+            id={`${viewIds}-thread-tab`}
+            aria-selected={view === "thread"}
+            tabIndex={view === "thread" ? 0 : -1}
+            aria-controls={`${viewIds}-thread`}
+            className={shelfStyles.viewTab}
+            onClick={() => setPickedView("thread")}
+            data-testid="view-thread"
+          >
+            Thread
+          </button>
+          <button
+            type="button"
+            role="tab"
+            id={`${viewIds}-shelf-tab`}
+            aria-selected={view === "shelf"}
+            tabIndex={view === "shelf" ? 0 : -1}
+            aria-controls={`${viewIds}-shelf`}
+            className={shelfStyles.viewTab}
+            onClick={() => setPickedView("shelf")}
+            data-testid="view-shelf"
+          >
+            Shelf
+            {shelfData.shelf ? (
+              <>
+                <span className={shelfStyles.count}>
+                  {tabCounts(shelfData.shelf.items).total}
+                </span>
+                {tabCounts(shelfData.shelf.items).toReview ? (
+                  <span className={shelfStyles.todo}>
+                    · {tabCounts(shelfData.shelf.items).toReview} to review
+                  </span>
+                ) : null}
+              </>
+            ) : null}
+          </button>
+        </div>
+        {view === "shelf" ? (
+          <div
+            role="tabpanel"
+            id={`${viewIds}-shelf`}
+            aria-labelledby={`${viewIds}-shelf-tab`}
+            className={shelfStyles.panel}
+          >
+            <MissionShelf
+              missionId={missionId}
+              data={shelfData}
+              sessionTitles={sessionTitles}
+            />
+          </div>
+        ) : null}
+        <div
+          className={`${styles.pane} ${view === "thread" ? "" : shelfStyles.hiddenPane}`}
+          data-testid="pane"
+          role="tabpanel"
+          id={`${viewIds}-thread`}
+          aria-labelledby={`${viewIds}-thread-tab`}
+          hidden={view !== "thread"}
+        >
           {/* WHAT THE MISSION IS WAITING ON, at the TOP of the body (#967 P2b review). The no-AI
             notice, the open question and the plan card are not thread entries; they describe the
             mission the thread is about. They used to sit inside the bottom-anchored box below, so

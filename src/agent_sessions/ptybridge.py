@@ -49,8 +49,9 @@ UNKNOWN = "unknown"
 _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
 # The secrets broker's socket shares this directory (`secrets_broker.socket_path`: an agent's
 # environment names it, so it stays here) but is no dtach master: never probe it as a session.
-# Nor is the HQ report broker's (`hq_report_broker.socket_path`, #1882).
-_BROKER_SOCKET = re.compile(r"(?:secrets|hq-report)-[0-9a-f]{10}\.sock")
+# Nor is the HQ report broker's (`hq_report_broker.socket_path`, #1882), nor the shelf broker's
+# (`shelf_broker.socket_path`, #1740).
+_BROKER_SOCKET = re.compile(r"(?:secrets|hq-report|shelf)-[0-9a-f]{10}\.sock")
 
 
 class PtyBridgeError(RuntimeError):

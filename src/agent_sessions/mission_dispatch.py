@@ -631,6 +631,9 @@ async def run(
             on_key=on_key,
             authorize=authorize,
             nonce=nonce,
+            # The mission this agent works for (#1740): its launch gets the shelf tool, minted
+            # for THIS mission inside the launch fence. The session is adopted only once it runs.
+            shelf_mission=mission_id,
             # An optional model (#1189), resolved by the launcher's own resolver: a refusal is a
             # `DispatchError` below (nothing spawned). Passed only when set, so `None` is exactly
             # the launch this path made before a model could be chosen. #1194 is the first caller.

@@ -59,6 +59,10 @@ SECRETS_MODULE = "agent_sessions.secrets_mcp"
 #: report capability (`hq_report_broker.launch_env`): the broker's socket and the token FILE path.
 HQ_SERVER_NAME = "battlelab_hq"
 HQ_MODULE = "agent_sessions.hq_report_mcp"
+#: The shelf tool (#1740): its own name, beside the others, for a MISSION's session only. Its
+#: environment is this launch's capability (`shelf_broker.launch_env`): the socket and token FILE.
+SHELF_SERVER_NAME = "battlelab_shelf"
+SHELF_MODULE = "agent_sessions.shelf_mcp"
 
 CLAUDE_FLAG = "claude-mcp-config-flag"  # `--mcp-config <json>`, claude 2.1.304
 CODEX_OVERRIDE = "codex-config-override"  # `-c mcp_servers.<name>.*`, codex-cli 0.162.0
@@ -226,6 +230,31 @@ def hq_report_server(hq_env: Mapping[str, str] | None) -> Server | None:
     )
 
 
+def shelf_server(shelf_env: Mapping[str, str] | None) -> Server | None:
+    """The shelf tool (#1740) for a launch given a shelf capability, or None (no tool). Paths
+    only: the socket and the token FILE, never the token — this environment rides argv."""
+    from . import shelf_broker
+
+    if not shelf_env:
+        return None
+    if set(shelf_env) != set(shelf_broker.ENV_KEYS) or any(
+        not isinstance(v, str) or not v.startswith("/") or "\0" in v or "\n" in v
+        for v in shelf_env.values()
+    ):
+        log.warning("shelf tool: malformed capability environment; not wired in")
+        return None
+    exe = _interpreter("shelf tool")
+    if exe is None:
+        return None
+    env = {k: shelf_env[k] for k in sorted(shelf_broker.ENV_KEYS)}
+    return Server(
+        command=exe,
+        args=("-I", "-m", SHELF_MODULE),
+        env=_with_base_env(env),
+        name=SHELF_SERVER_NAME,
+    )
+
+
 def claude_add_dirs(secrets_env: Mapping[str, str] | None) -> tuple[str, ...]:
     """``("--add-dir", <this launch's copy directory>)`` or nothing (#1786 smoke): claude only
     runs a command on files inside its working directories, so a guarded session could not pass
@@ -348,6 +377,7 @@ _COPILOT_SERVER_TOOLS: dict[str, list[str]] = {
     SKILLS_SERVER_NAME: ["skill_read", "skills_list"],
     SECRETS_SERVER_NAME: ["secret_list", "secret_path"],
     HQ_SERVER_NAME: ["hq_report"],
+    SHELF_SERVER_NAME: ["shelf_add"],
 }
 
 
@@ -397,6 +427,7 @@ def terminal_launch(
     skills_bundle: str | None = None,
     secrets_env: Mapping[str, str] | None = None,
     hq_env: Mapping[str, str] | None = None,
+    shelf_env: Mapping[str, str] | None = None,
 ) -> McpLaunch:
     """What a terminal LAUNCH or an unattended dispatch adds for BattleLab's tools, or `NONE`.
 
@@ -414,7 +445,13 @@ def terminal_launch(
         raise SkillsRefused("this agent cannot load skills: it has no tool channel")
     servers = [
         x
-        for x in (server(memory_env), skills, secrets_server(secrets_env), hq_report_server(hq_env))
+        for x in (
+            server(memory_env),
+            skills,
+            secrets_server(secrets_env),
+            hq_report_server(hq_env),
+            shelf_server(shelf_env),
+        )
         if x is not None
     ]
     if kind is None or not servers:

@@ -64,6 +64,7 @@ from . import (
     security_headers,
     session_stream,
     shares,
+    shelf_broker,
     specialist_capacity,
     template_vars,
     update_loop,
@@ -94,6 +95,7 @@ from .routes import history as history_routes
 from .routes import link as link_routes
 from .routes import maintenance as maintenance_routes
 from .routes import memory as memory_routes
+from .routes import mission_shelf as mission_shelf_routes
 from .routes import missions as missions_routes
 from .routes import playbooks as playbooks_routes
 from .routes import prompts as prompts_routes
@@ -231,6 +233,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     secrets_broker.scrub_process_environment()
     # Nor an HQ report capability (#1882).
     hq_report_broker.scrub_process_environment()
+    shelf_broker.scrub_process_environment()
 
     # One-time prefs migration (#357 Phase 2): union-merge any legacy `overview_excluded`
     # hide list into `projects_hidden` and drop the old key. A pure no-op once migrated
@@ -350,6 +353,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         secrets_task = asyncio.create_task(secrets_broker.serve())
         # The HQ report broker (#1882): the same ordering, for the same reason.
         hq_report_task = asyncio.create_task(hq_report_broker.serve())
+        # The mission shelf's broker (#1740): mission sessions put results on the shelf through it.
+        shelf_task = asyncio.create_task(shelf_broker.serve())
         # Periodic AI session review (#356 Phase 2): same reaper pattern. The task exits
         # immediately under the AGENT_SESSIONS_AI_REVIEW_LOOP=0 kill-switch; otherwise it
         # re-reads the ai_review prefs every sweep, so the Settings enable toggle governs
@@ -512,6 +517,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 reaper_task,
                 secrets_task,
                 hq_report_task,
+                shelf_task,
                 review_task,
                 autosort_task,
                 pulse_task,
@@ -764,6 +770,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # MISSION CONTROL (#846, Phase 1 of #840): the mission record — list/get/create/adopt/detach/
     # state/archive/objectives. No new decision endpoint; approve/reject stay on the pulse routes.
     missions_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
+    # The mission shelf (#1740): manifest, verdict and the mission-bound read path.
+    mission_shelf_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Automations (#1201): same auth surface as missions; Run now dispatches with this registry.
     automations_routes.register(
         app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry

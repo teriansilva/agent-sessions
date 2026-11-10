@@ -6,6 +6,7 @@ import type {
   SpecialistList,
 } from "../types/specialists";
 import type { ApiLook } from "../theme/apiLook";
+import type { ShelfItem, ShelfManifest, ShelfVerdict } from "../types/shelf";
 import type { ShareCatalog, ShareChoice, ShareImports, SharePreview, ShareResult } from "../types/share";
 import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, GalleryComparison, GalleryFiles, LocalSkill } from "../types/gallery";
 import type { CollectionInput, SecretAccessEntry, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
@@ -296,8 +297,16 @@ async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
  *  /models proxy relays the gateway's own message (#382), and "GET /api/ai-review/models
  *  → 502" in its place tells the operator nothing about why their endpoint was rejected.
  *  Plain `getJson` stays the default: most GETs have no useful `detail` to surface. */
-async function getJsonWithDetail<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const r = await apiFetch(path, { credentials: "same-origin", ...(signal ? { signal } : {}) });
+async function getJsonWithDetail<T>(
+  path: string,
+  signal?: AbortSignal,
+  init: RequestInit = {},
+): Promise<T> {
+  const r = await apiFetch(path, {
+    credentials: "same-origin",
+    ...init,
+    ...(signal ? { signal } : {}),
+  });
   if (r.status === 401 || r.status === 403) await authGate(r);
   if (!r.ok) {
     let detail = "";
@@ -706,9 +715,15 @@ async function fileBlob(
 ): Promise<Blob> {
   // `max`: the server refuses anything bigger BEFORE sending a byte, judged on the size at open —
   // so a file that grew since the viewer's /read cannot fill the tunnel (Hermes, PR #1533).
-  const r = await apiFetch(`${filesRawUrl(path, opts.download)}&max=${FILE_BLOB_CAP}`, {
+  return rawBlob(`${filesRawUrl(path, opts.download)}&max=${FILE_BLOB_CAP}`, opts.signal);
+}
+
+/** A raw-bytes URL's body as a Blob through the fetch seam, capped at `FILE_BLOB_CAP` whether or
+ *  not the server sent a length (#1530; shared with the mission shelf's read path, #1740). */
+async function rawBlob(url: string, signal?: AbortSignal): Promise<Blob> {
+  const r = await apiFetch(url, {
     credentials: "same-origin",
-    signal: opts.signal,
+    signal,
   });
   if (r.status === 401) await authGate(r);
   if (!r.ok) {
@@ -736,6 +751,51 @@ async function fileBlob(
     parts.push(value);
   }
   return new Blob(parts as BlobPart[], { type });
+}
+
+/** The mission shelf's read path (#1740): mission-bound, and it takes NO path — the server
+ *  resolves the file from the item and re-proves the mission's folders on every read. The `src`
+ *  of a native media element or a Download's `href`, on a DIRECT connection only. */
+export function missionShelfRawUrl(
+  missionId: string,
+  itemId: string,
+  download = false,
+  attempt = 0,
+): string {
+  return (
+    `/api/missions/${enc(missionId)}/shelf/${enc(itemId)}/raw` +
+    (download ? "?download=1" : "") +
+    (attempt > 0 ? `${download ? "&" : "?"}attempt=${attempt}` : "")
+  );
+}
+
+/** A shelf item's bytes THROUGH the fetch seam (app mode previews and downloads, and every text
+ *  document), capped at `FILE_BLOB_CAP` and asked with `max` so the server refuses first. */
+function missionShelfBlob(
+  missionId: string,
+  itemId: string,
+  opts: { signal?: AbortSignal; download?: boolean } = {},
+): Promise<Blob> {
+  const url = missionShelfRawUrl(missionId, itemId, opts.download);
+  return rawBlob(`${url}${url.includes("?") ? "&" : "?"}max=${FILE_BLOB_CAP}`, opts.signal);
+}
+
+/** Why a shelf media element failed: one byte through the same transport (#1530's probe). */
+async function missionShelfProbe(
+  missionId: string,
+  itemId: string,
+  signal?: AbortSignal,
+): Promise<{ status: number; retryAfter: number | null; detail: string }> {
+  const r = await apiFetch(missionShelfRawUrl(missionId, itemId), {
+    credentials: "same-origin",
+    headers: { Range: "bytes=0-0" },
+    signal,
+  });
+  if (r.status === 401) await authGate(r);
+  const retryAfter = Number(r.headers.get("retry-after")) || null;
+  const detail = r.ok ? "" : await errorDetail(r);
+  if (r.ok) void r.body?.cancel();
+  return { status: r.status, retryAfter, detail };
 }
 
 /** Why a media element failed (#1530): its `error` event cannot see the HTTP status, so ask with
@@ -1328,6 +1388,8 @@ export const api = {
   uploadBlob,
   fileBlob,
   filesRawProbe,
+  missionShelfBlob,
+  missionShelfProbe,
   /** Instruction templates (#905): the operator's library of reusable messages. Its own
    *  route, off /api/config. Reads need a session; every mutation is CSRF-guarded. A stale
    *  PATCH/DELETE (the record moved since `expectedUpdatedAt`) is a 409 whose `record.current`
@@ -2158,6 +2220,27 @@ export const api = {
     getJson<Evidence>(
       `/api/missions/${enc(missionId)}/screen/${enc(sessionKey)}`,
       { cache: "no-store" },
+    ),
+
+  /** One page of a mission's shelf (#1740): counts and file checks for the whole shelf, items in
+   *  their stable order. Never cached: file states are re-checked on every read. */
+  missionShelf: (missionId: string, cursor?: string | null, signal?: AbortSignal) =>
+    getJsonWithDetail<ShelfManifest>(
+      `/api/missions/${enc(missionId)}/shelf${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+      signal,
+      { cache: "no-store" },
+    ),
+  /** The operator's verdict on one shelf item, made against the revision the page read. A shelf
+   *  that moved meanwhile is a 409 whose `record.revision` is the current one. */
+  setShelfVerdict: (
+    missionId: string,
+    itemId: string,
+    body: { expected_revision: number; verdict: ShelfVerdict | null; note: string },
+  ) =>
+    mutateJson<{ revision: number; item: ShelfItem }>(
+      "PATCH",
+      `/api/missions/${enc(missionId)}/shelf/${enc(itemId)}`,
+      body,
     ),
 
   /** Per-session Pulse-orchestration opt-out (#726). Managed-by-default; this withdraws (or

@@ -1942,3 +1942,44 @@ async def test_a_dispatch_CANCELLED_while_reserving_releases_the_slot_it_got(
     with contextlib.suppress(asyncio.CancelledError):
         await task
     assert seen["abandon"] == ["r9"] and seen["settle"] == []
+
+
+@pytest.mark.anyio
+async def test_a_missions_dispatch_carries_the_shelf_tool_and_nothing_else_does(
+    env, prov, reg, monkeypatch, tmp_path
+):
+    """#1740: a dispatch for a mission gets the shelf tool, minted for THAT mission inside the
+    launch fence; a dispatch for nobody gets none, and the app's own copy never leaks through."""
+    from agent_sessions import missions, secrets_broker, shelf_broker
+
+    runtime = tmp_path / "shelf-run"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv(secrets_broker.RUNTIME_ENV, str(runtime))
+    monkeypatch.setattr(secrets_broker, "_ram_check", lambda path: True)
+    monkeypatch.setattr(shelf_broker, "_server_running", True)
+    monkeypatch.setenv(shelf_broker.ENV_TOKEN_FILE, "/stale/app/copy")
+    _stub_spawn(monkeypatch)
+    _stub_started(monkeypatch)
+    original = headless_dispatch._popen
+    observed, argvs = [], []
+
+    def capture(argv, **kwargs):
+        observed.append(kwargs["env"])
+        argvs.append(list(argv))
+        return original(argv, **kwargs)
+
+    monkeypatch.setattr(headless_dispatch, "_popen", capture)
+    mid = missions.create_mission("x", cwd=str(env))["id"]
+    plain = await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="go"
+    )
+    mission = await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="go", shelf_mission=mid
+    )
+    assert plain.ok and mission.ok and len(observed) == 2
+    assert not shelf_broker.ENV_KEYS & set(observed[0])
+    assert "battlelab_shelf" not in " ".join(argvs[0])
+    server = json.loads(argvs[1][-1])["mcpServers"]["battlelab_shelf"]
+    assert set(server["env"]) >= shelf_broker.ENV_KEYS
+    assert server["env"][shelf_broker.ENV_TOKEN_FILE].startswith(str(runtime))
+    assert not shelf_broker.ENV_KEYS & set(observed[1])  # the agent's own env: never the paths

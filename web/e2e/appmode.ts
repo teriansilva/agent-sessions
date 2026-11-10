@@ -55,6 +55,9 @@ export interface Stack {
   repo: string;
   relayPort: number;
   appPort: number;
+  /** The app's own environment (its HOME and stores), for a seeding script that must write what the
+   *  running app reads (#1740). */
+  env: Record<string, string>;
   /** Everything the three children printed. A failure in CI is otherwise undiagnosable: the
    *  interesting error is usually in the agent's log, not in the browser. */
   logs: Record<string, string>;
@@ -320,6 +323,7 @@ export async function startStack(): Promise<Stack> {
     repo,
     relayPort,
     appPort,
+    env: { ...env, AGENT_SESSIONS_ORIGIN: `http://127.0.0.1:${appPort}` },
     logs,
     stop: async () => {
       // AWAIT the group kill before deleting. `uv run` is a launcher, so the signal goes to the

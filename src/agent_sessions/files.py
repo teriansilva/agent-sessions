@@ -683,15 +683,27 @@ def open_raw(path: str) -> RawFile:
     way (containment, not a regular file, busy) gives it back before raising, so a failed open can
     never leak a slot.
     """
+
+    def prove() -> tuple[int, os.stat_result, str]:
+        _refuse_if_symlink(path)
+        resolved = contained_path(path)
+        return _open_verified(resolved, directory=False)
+
+    return open_raw_with(prove)
+
+
+def open_raw_with(prove) -> RawFile:
+    """`open_raw`'s slot discipline around another proof (the mission shelf's stricter one,
+    #1740): ``prove()`` returns ``(fd, fstat, verified_path)`` for a descriptor it has verified,
+    or raises. The slot is taken before it runs and given back if it raises, so the shelf's reads
+    share the viewer's `RAW_MAX_STREAMS` and can never leak one."""
     global _raw_inflight
     with _raw_lock:
         if _raw_inflight >= RAW_MAX_STREAMS:
             raise RawBusy()
         _raw_inflight += 1
     try:
-        _refuse_if_symlink(path)
-        resolved = contained_path(path)
-        fd, st, verified = _open_verified(resolved, directory=False)
+        fd, st, verified = prove()
     except BaseException:
         with _raw_lock:
             _raw_inflight -= 1
@@ -746,6 +758,7 @@ __all__ = [
     "RawBusy",
     "RawFile",
     "open_raw",
+    "open_raw_with",
     "parse_range",
     "preview_for",
     "raw_streams_inflight",

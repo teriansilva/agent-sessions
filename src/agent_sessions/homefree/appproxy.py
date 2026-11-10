@@ -36,6 +36,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import struct
 
 import httpx
@@ -56,6 +57,15 @@ MAX_REQUEST_BODY = int(os.environ.get("HF_MAX_REQUEST_BODY") or 32 * 1024 * 1024
 #: is refused here before it is accumulated, not after.
 MAX_RAW_RESPONSE = int(os.environ.get("HF_MAX_RAW_RESPONSE") or 25 * 1024 * 1024)
 _RAW_PREFIX = "/api/files/raw"
+#: The mission shelf's read path (#1740) streams file bytes too: the same ceiling, the same
+#: streamed-and-counted handling. Matched exactly, ids included, so nothing else rides it.
+_SHELF_RAW = re.compile(r"^/api/missions/msn_[0-9a-f]{32}/shelf/shf_[0-9a-f]{32}/raw(?:\?|$)")
+
+
+def _is_raw(path: str) -> bool:
+    """A response that carries a file's bytes: streamed upstream under `MAX_RAW_RESPONSE`."""
+    return path.startswith(_RAW_PREFIX) or bool(_SHELF_RAW.match(path))
+
 
 _HOP = frozenset(
     {
@@ -252,7 +262,7 @@ class AppProxyTarget:
                 await stream.end()
 
         async def do(client: httpx.AsyncClient) -> None:
-            if path.startswith(_RAW_PREFIX):
+            if _is_raw(path):
                 await do_raw(client)
                 return
             resp = await client.request(

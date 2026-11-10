@@ -520,6 +520,7 @@ async def dispatch(
     spawn_fence: Callable[[], contextlib.AbstractContextManager] | None = None,
     guard_secrets: bool = False,
     specialist: tuple[str, int] | None = None,
+    shelf_mission: str | None = None,
 ) -> Dispatch:
     """Launch `engine` in `cwd` with nobody watching, and deliver `brief`.
 
@@ -825,12 +826,13 @@ async def dispatch(
         # Shared project memory (#1441): never the app's own copies. The paths themselves are bound
         # inside the launch fence, immediately before the spawn (below), so a dispatch refused by
         # authentication or admission never mints an inbox.
-        from . import hq_report_broker, memory, secrets_broker
+        from . import hq_report_broker, memory, secrets_broker, shelf_broker
 
         for name in (
             *memory.ALL_ENV_KEYS,
             *secrets_broker.ALL_ENV_KEYS,
             *hq_report_broker.ALL_ENV_KEYS,
+            *shelf_broker.ALL_ENV_KEYS,
         ):
             env.pop(name, None)  # incl. a specialist's notebook (#1693) and a capability (#1786)
         # OWNERSHIP STARTS HERE, not at `transfer()` (#898 review 5, finding 2).
@@ -1098,6 +1100,19 @@ async def dispatch(
                                 manifest=engines.manifest_of(prov),
                                 fenced=True,
                             )
+                            # The shelf capability (#1740): a MISSION's launch only, for the
+                            # mission the caller names — never asked of the agent.
+                            shelf_env = (
+                                shelf_broker.launch_env(
+                                    key,
+                                    key,
+                                    engine=engine,
+                                    manifest=engines.manifest_of(prov),
+                                    mission_id=shelf_mission,
+                                )
+                                if shelf_mission
+                                else {}
+                            )
                             try:
                                 mcp = agent_tools.terminal_launch(
                                     engines.manifest_of(prov),
@@ -1110,6 +1125,7 @@ async def dispatch(
                                     ),
                                     secrets_env=capability,
                                     hq_env=hq_env,
+                                    shelf_env=shelf_env,
                                 )
                             except agent_tools.SkillsRefused as e:
                                 # Never launched without the skills it was started for.

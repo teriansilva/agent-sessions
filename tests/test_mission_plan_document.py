@@ -136,7 +136,7 @@ def test_a_fresh_store_and_an_upgraded_one_get_the_same_v34_schema(store):
     assert _ddl(store, "mission_plan_revisions_append_only") == fresh["trigger"]
     assert _columns(store, "mission_objectives") == fresh["columns"]
     con = sqlite3.connect(store)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION == 34
+    assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION >= 34
     con.close()
 
 
@@ -761,7 +761,8 @@ def test_rollback_to_33_keeps_every_byte_and_this_build_converges_again(store, m
     missions.patch_objectives(m["id"], [{"op": "add", "key": "kept", "title": "kept"}])
     files_before = sorted(p.name for p in store.parent.iterdir())
 
-    assert missions.rollback_schema(33, path=store) == {"from": 34, "to": 33}
+    this_build = missions.SCHEMA_VERSION
+    assert missions.rollback_schema(33, path=store) == {"from": this_build, "to": 33}
     con = sqlite3.connect(store)
     assert con.execute("PRAGMA user_version").fetchone()[0] == 33
     # Nothing dropped: the v34 table, its row and the v34 columns are all still there.
@@ -795,15 +796,15 @@ def test_rollback_to_33_keeps_every_byte_and_this_build_converges_again(store, m
     con.close()
 
     # This build opens it again: the idempotent step re-runs and the data is exactly as it was.
-    monkeypatch.setattr(missions, "SCHEMA_VERSION", 34)
+    monkeypatch.setattr(missions, "SCHEMA_VERSION", this_build)
     missions.reset_schema_cache_for_test()
     assert missions.plan_revision(m["id"])["document"] == doc
     assert [o["key"] for o in missions.objectives(m["id"])] == ["kept"]
     con = sqlite3.connect(store)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 34
+    assert con.execute("PRAGMA user_version").fetchone()[0] == this_build
     con.close()
-    # …and back once more (v33 → v34 → v33 → v34): the round trip repeats.
-    assert missions.rollback_schema(33, path=store) == {"from": 34, "to": 33}
+    # …and back once more (v33 → this build → v33 → this build): the round trip repeats.
+    assert missions.rollback_schema(33, path=store) == {"from": this_build, "to": 33}
     missions.reset_schema_cache_for_test()
     assert missions.plan_revision(m["id"])["revision"] == 1
 
@@ -823,10 +824,10 @@ def test_rollback_refuses_what_it_cannot_do(store, tmp_path):
 def test_the_cli_rolls_back_and_reports(store, capsys):
     missions.create_mission("x", cwd="/repo")
     assert cli.main(["missions-schema", "status", "--db", str(store)]) == 0
-    assert "schema 34" in capsys.readouterr().out
+    assert f"schema {missions.SCHEMA_VERSION}" in capsys.readouterr().out
     assert cli.main(["missions-schema", "rollback", "--to", "33", "--db", str(store)]) == 0
     out = capsys.readouterr().out
-    assert "34 → 33" in out and "Nothing was deleted" in out
+    assert f"{missions.SCHEMA_VERSION} → 33" in out and "Nothing was deleted" in out
     assert cli.main(["missions-schema", "rollback", "--to", "33", "--db", str(store)]) == 2
 
 
@@ -850,7 +851,7 @@ def test_every_objective_insert_names_its_columns():
 def test_this_build_still_refuses_a_newer_store(store):
     missions.create_mission("x", cwd="/repo")
     con = sqlite3.connect(store)
-    con.execute("PRAGMA user_version=35")
+    con.execute(f"PRAGMA user_version={missions.SCHEMA_VERSION + 1}")
     con.commit()
     con.close()
     missions.reset_schema_cache_for_test()

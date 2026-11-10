@@ -2,7 +2,7 @@
  *
  * Entering the section opens the new-mission page with nothing selected — even while a mission
  * needs the operator. What needs them is previewed on the landing from the rail's own rows, and
- * that preview names its scope instead of pretending to be global. No workspace tabs; below 1400px
+ * that preview names its scope instead of pretending to be global. One tab strip, THREAD | SHELF (#1740); below 1400px
  * the details are one disclosure that never unmounts the thread. No untracked-session surface. The
  * composer takes templates, insert-only, and refuses to start a brief the server would truncate.
  */
@@ -219,13 +219,16 @@ test("a filtered first page with nothing needing you says it only read that page
   await expect(page.getByTestId("landing-clear-filters")).toBeVisible();
 });
 
-test("no workspace tabs; the details disclosure never unmounts the thread's draft", async ({ page }, testInfo) => {
+test("THREAD | SHELF is the only tab strip; the details disclosure never unmounts the thread's draft", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "width-driven layout, measured on the desktop project");
   await setup(page);
   await page.setViewportSize({ width: 1280, height: 860 });
   await page.goto(missionLink(OTHER));
   await expect(page.getByTestId("console-title")).toHaveText("Quiet mission");
-  await expect(page.getByRole("tablist", { name: "Mission view" })).toHaveCount(0);
+  // #1740 reverses #948's "no workspace tabs" for the mission page only: one THREAD | SHELF strip,
+  // on THREAD for a mission that is not in review or closed.
+  await expect(page.getByRole("tablist", { name: "Mission view" })).toHaveCount(1);
+  await expect(page.getByRole("tab", { name: "Thread" })).toHaveAttribute("aria-selected", "true");
 
   const draft = page.locator('[data-testid="split"] textarea').first();
   await draft.fill("half a thought");
@@ -247,7 +250,7 @@ test("no workspace tabs; the details disclosure never unmounts the thread's draf
   await page.setViewportSize({ width: 1440, height: 900 });
   await expect(toggle).toBeHidden();
   await expect(page.getByTestId("mission-details")).toBeVisible();
-  await expect(page.getByRole("tablist", { name: "Mission view" })).toHaveCount(0);
+  await expect(page.getByRole("tablist", { name: "Mission view" })).toHaveCount(1);
 });
 
 test("no untracked-session surface anywhere in the section", async ({ page }, testInfo) => {
