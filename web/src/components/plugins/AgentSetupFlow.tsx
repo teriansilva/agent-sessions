@@ -433,8 +433,10 @@ export function AgentSetupFlow({
     setLocalConfirmed(false); setAdoptConfirmed(false); setError(""); setStep(0);
     navigateSetup(setupPath({ plugin: selected }));
   };
+  // Only a local manifest needs the operator's trust tick; signed and bundled recipes are the
+  // catalog's own (the server treats both as trusted: plugins/manager.py `_entry`).
   const canInstall = !!review && !pending && !unknownOperation && !busy &&
-    (review.source === "signed" || localConfirmed) && (!review.adopted_path || adoptConfirmed);
+    (review.source !== "local" || localConfirmed) && (!review.adopted_path || adoptConfirmed);
   const unresolved = pending || !!unknownOperation;
   const dirty = !enabled && (busy || unresolved || !!review || !!local || !!adopted);
 

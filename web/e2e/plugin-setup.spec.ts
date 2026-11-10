@@ -167,6 +167,21 @@ test("local review needs fresh consent and exact source stays untrusted after ve
   await noOverflow(page);
 });
 
+for (const source of ["bundled", "signed"] as const) test(`a ${source} catalog entry installs without the local trust tick`, async ({ page }) => {
+  const m = await fixture(page);
+  // The bundled catalog's review comes back `source: "bundled"`; Install stayed disabled for it.
+  await page.route("**/api/plugins/review", r => r.fulfill({ json: { ...m.gen.review, source } }));
+  await page.goto(PATH);
+  await page.getByRole("combobox", { name: "Agent", exact: true }).selectOption("sample-agent");
+  await page.getByRole("button", { name: "Review installation" }).click();
+  await expect(page.getByRole("heading", { name: "Review this installation" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: /I trust this exact/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "Install", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Connect your account" })).toBeVisible();
+  expect(posts(m, "/install")).toHaveLength(1);
+  expect(posts(m, "/install")[0].body).toMatchObject({ digest: REVIEW.digest, confirm_local: false });
+});
+
 test("lost install response and page reload read the same operation without replay", async ({ page }) => {
   const m = await fixture(page); m.setInstall("running", true);
   await localReview(page);
