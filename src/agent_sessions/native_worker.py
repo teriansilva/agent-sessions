@@ -898,6 +898,12 @@ class Worker:
             or self.floor.busy
         )
 
+    def wake_held(self) -> bool:
+        """A `ScheduleWakeup` is pending (#1927): the idle exit waits until it is due, plus a
+        grace for the turn it starts. Liveness only, never dispatch, never a Stop's inventory."""
+        due = getattr(self.codec, "wake_due", None)
+        return due is not None and native_protocol._monotonic() < due + native_protocol.WAKE_GRACE
+
     # --- the process floor and the background inventory (#1724) ---------------------------
 
     def _observe(self) -> native_processes.Scan:
@@ -1648,6 +1654,12 @@ class Worker:
             if self.busy():
                 self.last_activity = time.monotonic()
                 continue
+            if self.wake_held():
+                # The CLI's own timer (#1927), outside `busy()`: `last_activity` keeps meaning
+                # the last real work, so a wake that never fires exits at
+                # max(last_activity + idle_timeout, wake_due + WAKE_GRACE). It holds a rollover
+                # retire too: that stops the child, and the timer with it.
+                continue
             if self.rollover_due():
                 # Full, and nothing runs (#1725): this connection retires now, between turns.
                 async with self.effects:
@@ -1658,7 +1670,7 @@ class Worker:
             if time.monotonic() - self.last_activity < self.idle_timeout:
                 continue
             async with self.effects:  # no effect is between claim and handoff
-                if self.busy():
+                if self.busy() or self.wake_held():
                     continue
                 self.closing = True
                 self.report(idle_exit_at=time.time())

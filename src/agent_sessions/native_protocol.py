@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -44,6 +45,21 @@ MAX_RESULTS = 16_384
 #: turn and retires between turns (`rollover`). What is already queued and the agent's own turns
 #: still fit, so the mark is reached well before the ledger stops recording.
 RESULTS_RESERVE = 1024
+#: A pending `ScheduleWakeup` (#1927) is the Claude CLI's own timer, which fires only while the
+#: child runs: the worker holds its idle exit until ``wake_due + WAKE_GRACE``. The CLI clamps a
+#: delay to WAKE_BOUNDS; a turn the agent starts from WAKE_EARLY before the due time on consumes it.
+WAKE_GRACE = 120.0
+WAKE_BOUNDS = (60, 3600)
+WAKE_EARLY = 5.0
+MAX_WAKE_CALLS = 8  # calls awaiting their result; parallel ones each keep their own input
+#: The CLI's own report of the delay it scheduled: "… (in 633s)". It aligns the asked delay.
+_WAKE_IN = re.compile(r"\(in (\d{1,6})s\)")
+
+
+def _monotonic() -> float:
+    return time.monotonic()  # a seam: tests move the clock
+
+
 #: Callbacks remembered as answered, for refusing a repeat of one. A long guarded turn answers more
 #: than `MAX_PENDING`, which used to end the generation. The oldest is forgotten past this bound:
 #: an ancient id asked again is only a new request for the operator, never an authorization.
@@ -2295,6 +2311,11 @@ class ClaudeCodec(_Codec):
         # The operator turn's own output said its vendor login failed (`error:
         # authentication_failed` on an assistant frame): a failed end offers Sign in.
         self._signin = False
+        # A pending `ScheduleWakeup` (#1927): its due time on `_monotonic()`, and the call whose
+        # result is awaited. Only a successful result changes it: the CLI keeps its timer when a
+        # later call fails.
+        self.wake_due: float | None = None
+        self._wake_calls: dict[str, Any] = {}  # each call's input, until its result (bounded)
 
     @staticmethod
     def argv(
@@ -2471,6 +2492,8 @@ class ClaudeCodec(_Codec):
         An end carries how it ended (#1438): its own result says, else it simply completed."""
         if running == self.unowned_turn:
             return []
+        if running and self.wake_due is not None and _monotonic() >= self.wake_due - WAKE_EARLY:
+            self.wake_due = None  # the wake fired: this is its turn (#1927)
         self.unowned_turn = running
         self.background_turn = str(uuid.uuid4()) if running else None
         return [
@@ -3295,6 +3318,31 @@ class ClaudeCodec(_Codec):
                 best = name
         return best
 
+    def _wake_result(self, block: dict) -> None:
+        """A `ScheduleWakeup` came back (#1927): what is pending now. The delay is the one the
+        CLI reports scheduling, else the one asked, clamped as the CLI does. A refused or
+        unreadable call changes nothing; `stop` cancels."""
+        tool_input = self._wake_calls.pop(block.get("tool_use_id"), None)  # type: ignore[arg-type]
+        if block.get("is_error") or not isinstance(tool_input, dict):
+            return
+        if tool_input.get("stop") is True:
+            self.wake_due = None
+            return
+        content = block.get("content")
+        if isinstance(content, list):
+            content = " ".join(
+                part["text"]
+                for part in content[:8]
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+            )
+        found = _WAKE_IN.search(content[:4096]) if isinstance(content, str) else None
+        delay = int(found.group(1)) if found else tool_input.get("delaySeconds")
+        if isinstance(delay, bool) or not isinstance(delay, int | float) or delay != delay:
+            return
+        low, high = WAKE_BOUNDS
+        # Clamped before any float(): a JSON integer can be arbitrarily large (review on #1929).
+        self.wake_due = _monotonic() + float(min(max(delay, low), high))
+
     def _plan_call(self, item_id: str, name: str, tool_input: Any) -> list[NativeEvent]:
         if not isinstance(tool_input, dict):
             return []
@@ -3496,6 +3544,10 @@ class ClaudeCodec(_Codec):
                         )
                     )
                     output.extend(self._plan_call(item_id, name, tool_input))
+                    if name == "ScheduleWakeup":
+                        if len(self._wake_calls) >= MAX_WAKE_CALLS:
+                            self._wake_calls.pop(next(iter(self._wake_calls)))
+                        self._wake_calls[item_id] = tool_input
             return output
         if kind == "user" and isinstance(frame.get("message"), dict):
             content = frame["message"].get("content")
@@ -3515,6 +3567,8 @@ class ClaudeCodec(_Codec):
                     )
                     for block in results
                 ]
+                for block in results:
+                    self._wake_result(block)
                 for block in results:
                     # The structured result belongs to the frame's ONE tool result, if it worked.
                     ok = not block.get("is_error")
