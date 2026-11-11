@@ -128,7 +128,15 @@ for (const theme of ["dark", "light"]) {
     await page.route(SEND_NOW, (r) => { posts.push(r.request().postDataJSON()); return r.fulfill({ status: 500 }); });
     await page.goto(`/s/claude-api/${ID}`);
     const hint = page.getByTestId("structured-sendnow-hint");
-    await expect(hint).toHaveText("Send now unavailable: the agent has 2 background tasks running. Send queues behind its current turn.");
+    await expect(hint).toHaveText("Your message waits for this turn: Send now would also stop 2 background tasks.");
+    // The work Send now would stop is named on the strip's line, so the hint is a tag there, not
+    // a sentence of its own above the composer (the sentence is for screen readers only).
+    const tag = page.getByTestId("structured-background-strip").getByTestId("structured-sendnow-tag");
+    await expect(tag).toBeVisible();
+    await expect(tag).toHaveText("Send waits");
+    await expect(tag).toHaveAttribute("title", "Your message waits for this turn: Send now would also stop 2 background tasks.");
+    const box = await hint.boundingBox();
+    expect((box?.width ?? 0) * (box?.height ?? 0)).toBeLessThanOrEqual(1);
     await expect(page.getByRole("textbox", { name: /Message/ })).toHaveAttribute("placeholder", /queues behind the agent’s current turn/);
     await page.screenshot({ path: testInfo.outputPath(`hint-${theme}.png`) });
     // Always send now never presses a Send now that would be refused, and never Stop all.
@@ -142,7 +150,45 @@ test("#1644: an unreported Send now state reads as unknown, not unavailable", as
   await page.goto(`/s/claude-api/${ID}`);
   await expect(page.getByTestId("structured-sendnow-hint")).toHaveAttribute("data-state", "unknown");
   await expect(page.getByTestId("structured-sendnow-hint")).toContainText("Send now status unknown");
+  await expect(page.getByTestId("structured-sendnow-tag")).toHaveAttribute("data-state", "unknown");
+  await expect(page.getByTestId("structured-sendnow-tag")).toHaveText("Send now ?");
 });
+
+test("#1644: with no background strip to carry it, the hint is a line above the composer", async ({ page }) => {
+  // A worker over its task list (`overflow`) reports no rows: no strip, so no line to tag.
+  const { state } = await blocked(page);
+  Object.assign(state.native as Json, { background_active: false, background_tasks: [] });
+  await page.goto(`/s/claude-api/${ID}`);
+  await expect(page.getByTestId("structured-queued")).toBeVisible();
+  await expect(page.getByTestId("structured-background-strip")).toHaveCount(0);
+  const hint = page.getByTestId("structured-sendnow-hint");
+  await expect(hint).toBeVisible();
+  await expect(hint).toHaveText("Your message waits for this turn: Send now would also stop background work.");
+});
+
+for (const width of [360, 1280]) {
+  test(`#1644: the Send waits tag fits the strip's line beside Show (${width}px)`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await blocked(page);
+    await page.goto(`/s/claude-api/${ID}`);
+    const strip = page.getByTestId("structured-background-strip").getByRole("button").first();
+    const tag = page.getByTestId("structured-sendnow-tag");
+    await expect(tag).toBeVisible();
+    const [s, t, show] = await Promise.all([
+      strip.boundingBox(), tag.boundingBox(), strip.getByText("Show", { exact: true }).boundingBox(),
+    ]);
+    expect(t && s && show).toBeTruthy();
+    // One line: the tag sits inside the summary row, wholly left of Show, nothing wrapped.
+    expect(t!.y).toBeGreaterThanOrEqual(s!.y);
+    expect(t!.y + t!.height).toBeLessThanOrEqual(s!.y + s!.height);
+    expect(t!.x + t!.width).toBeLessThanOrEqual(show!.x);
+    expect(s!.height).toBeLessThanOrEqual(48);
+    // Narrow, the lead job steps aside for the tag instead of clipping to a stray character.
+    const lead = page.getByTestId("structured-background-lead");
+    if (width < 520) await expect(lead).toBeHidden();
+    else await expect(lead).toBeVisible();
+  });
+}
 
 test("#1644: a ready worker shows no hint", async ({ page }) => {
   await blocked(page, "dark", "ready");

@@ -25,7 +25,7 @@ import {
   ScanUnknown,
   TaskRow,
 } from "./BackgroundWork";
-import { backgroundWorking, heldSentence } from "./structuredView";
+import { hasBackgroundJobs, heldSentence } from "./structuredView";
 import styles from "./BackgroundStrip.module.css";
 
 const described = (t: StructuredBackgroundTask) =>
@@ -46,23 +46,16 @@ function since(t: StructuredBackgroundTask, now: number) {
     : null;
 }
 
-/** Live work of the live generation only: reported tasks, or the aggregate activity flag of a
- *  worker that reports no task identities. */
-function hasBackgroundJobs(snap: StructuredSnapshot | null): boolean {
-  const native = snap?.native;
-  if (!native?.worker) return false;
-  return (
-    (native.background_tasks?.length ?? 0) > 0 ||
-    (!!native.background_active && backgroundWorking(snap))
-  );
-}
-
 export function BackgroundStrip({
   snap,
   onStop,
   onStopEverything,
+  sendNow,
 }: {
   snap: StructuredSnapshot | null;
+  /** What Send now would do (#1644), as a tag on the summary line: the work it would stop is the
+   *  work this line already names, so the hint lives here rather than on a line of its own. */
+  sendNow?: { state: "would_stop_background" | "unknown"; sentence: string };
   /** The pane's Stop (#1724), offered beside an unreadable process scan. */
   onStop?: () => void;
   /** The pane's Stop everything (#1724), offered beside jobs that could not be resumed. */
@@ -160,9 +153,21 @@ export function BackgroundStrip({
                 {count}
               </span>
               {lead && (
-                <span className={styles.lead} aria-hidden="true">
+                <span className={styles.lead} aria-hidden="true" data-testid="structured-background-lead">
                   <span className={styles.leadName}>{jobName(lead)}</span>
                   {leadSince && <span className={styles.leadSince}>{leadSince}</span>}
+                </span>
+              )}
+              {sendNow && (
+                // aria-hidden: the pane announces the full sentence in its own status region.
+                <span
+                  className={`${styles.sendNow} ${sendNow.state === "unknown" ? styles.sendNowUnknown : ""}`}
+                  title={sendNow.sentence}
+                  aria-hidden="true"
+                  data-testid="structured-sendnow-tag"
+                  data-state={sendNow.state}
+                >
+                  {sendNow.state === "unknown" ? "Send now ?" : "Send waits"}
                 </span>
               )}
               <span className={styles.toggle}>{open ? "Hide" : "Show"}</span>

@@ -577,3 +577,14 @@ export function hasBackgroundWork(
       inventory.scan === "unknown")
   );
 }
+
+/** Live work of the live generation only: reported tasks, or the aggregate activity flag of a
+ *  worker that reports no task identities. */
+export function hasBackgroundJobs(snap: StructuredSnapshot | null): boolean {
+  const native = snap?.native;
+  if (!native?.worker) return false;
+  return (
+    (native.background_tasks?.length ?? 0) > 0 ||
+    (!!native.background_active && backgroundWorking(snap))
+  );
+}

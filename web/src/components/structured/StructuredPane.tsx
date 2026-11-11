@@ -145,6 +145,7 @@ import {
   turnStateLabel,
   waitingBehindOwnTurn,
   hasBackgroundWork,
+  hasBackgroundJobs,
   remedyWarning,
 } from "./structuredView";
 import { ChoiceQuestions } from "./Questions";
@@ -2677,15 +2678,25 @@ export function StructuredPane({
   const sendNowState = snap?.native?.send_now_state;
   const stopStyle = sendNowTarget(snap)?.mode === "interrupt";
   const waitingHead = !!snap && operatorTurns(snap).some((t) => t.state === "queued");
-  const sendNowHint = !readOnly && isActive(snap) && stopStyle && (alwaysSendNow || waitingHead)
-    && (sendNowState === "would_stop_background" || sendNowState === "unknown") && !stopChoiceView ? (
-      <p role="status" data-testid="structured-sendnow-hint" data-state={sendNowState}
-        className={`${styles.sendNowHint} ${sendNowState === "unknown" ? styles.sendNowHintUnknown : styles.sendNowHintBlocked}`}>
-        {sendNowState === "unknown"
-          ? "Send now status unknown (the agent hasn’t reported it yet). Send queues until it is known."
-          : `Send now unavailable: the agent has ${choiceTasks.length === 1 ? "a background task" : choiceTasks.length > 1 ? `${choiceTasks.length} background tasks` : "background work"} running. Send queues behind its current turn.`}
-      </p>
-    ) : null;
+  const sendNowShown = !readOnly && isActive(snap) && stopStyle && (alwaysSendNow || waitingHead)
+    && (sendNowState === "would_stop_background" || sendNowState === "unknown") && !stopChoiceView;
+  const stoppedWork = choiceTasks.length === 1
+    ? "the background task"
+    : choiceTasks.length > 1 ? `${choiceTasks.length} background tasks` : "background work";
+  const sendNowSentence = sendNowState === "unknown"
+    ? "Send now status unknown (the agent hasn’t reported it yet). Your message waits for this turn until it is known."
+    : `Your message waits for this turn: Send now would also stop ${stoppedWork}.`;
+  // With the background strip shown, the hint is a tag on the strip's line (the work it names is
+  // the work Send now would stop); the sentence stays here for screen readers. Without it, a line.
+  const sendNowInStrip = sendNowShown && hasBackgroundJobs(snap);
+  const sendNowHint = sendNowShown ? (
+    <p role="status" data-testid="structured-sendnow-hint" data-state={sendNowState}
+      className={sendNowInStrip
+        ? "nj-sr-only"
+        : `${styles.sendNowHint} ${sendNowState === "unknown" ? styles.sendNowHintUnknown : styles.sendNowHintBlocked}`}>
+      {sendNowSentence}
+    </p>
+  ) : null;
 
   const turnOnAlwaysSendNow = (queuedTurnId: string) => {
     setAlwaysSendNow(true);
@@ -3934,6 +3945,9 @@ export function StructuredPane({
         snap={snap}
         onStop={readOnly ? undefined : () => void stop()}
         onStopEverything={readOnly ? undefined : stopEverything}
+        sendNow={sendNowInStrip
+          ? { state: sendNowState as "would_stop_background" | "unknown", sentence: sendNowSentence }
+          : undefined}
       />
       {stopChoiceView}
       {stopConfirm?.key === key && (

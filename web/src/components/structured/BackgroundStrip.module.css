@@ -6,6 +6,7 @@
 .strip {
   flex: none;
   min-width: 0;
+  container-type: inline-size;
   border-top: 1px solid var(--line-strong);
   background: var(--bg-1);
   color: var(--text-2);
@@ -63,6 +64,27 @@
   color: var(--text-2);
   font: 500 var(--fs-micro) / 1 var(--font-mono);
   letter-spacing: 0.16em;
+}
+/* Send now would stop this work (#1644): a tag on the line that names the work, not a sentence of
+ * its own above the composer. Warn colour beside its words; a muted outline while unknown. */
+.sendNow {
+  flex: none;
+  padding: 3px 6px;
+  border: 1px solid currentColor;
+  color: var(--warn-text);
+  font: 600 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.16em;
+  white-space: nowrap;
+}
+.sendNowUnknown {
+  color: var(--text-2);
+}
+/* Too narrow for both: the tag keeps its place and the lead job steps aside (Show lists it),
+ * rather than clipping to a stray character. */
+@container (max-width: 520px) {
+  .summary:has(.sendNow) .lead {
+    display: none;
+  }
 }
 .led {
   width: 7px;
