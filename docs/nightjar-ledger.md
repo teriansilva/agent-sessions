@@ -45,6 +45,7 @@ the same list.
 | `components/ask/AskHome.module.css` | css | 5 | done | route:dashboard route:dashboard-acquiring route:dashboard-recent popup:needs-you-details popup:recent-work | rows arrive (slide + tint flash), needs-you LEDs blink in Full (steady in Reduced/Off), first read Acquiring (scan bar) |
 | `components/ask/AskSidebar.module.css` | css | 4 | done | popup:hq | drawer slide-in + scrim (≤800px) |
 | `components/automations/automations.module.css` | css | 10 | done | route:automations route:automations-list popup:automation-menu route:automation-runs route:automation-editor popup:consent | segments and weekdays light in the chrome on a short colour fade; the run row lights its edge; no ambient motion (the counters are static readouts) |
+| `components/chat/Avatar.module.css` | css | 6 | done | share:open route:settings-profile | none (static discs) |
 | `components/chat/ChatPane.module.css` | css | 6 | todo |  |  |
 | `components/chat/EditProposal.module.css` | css | 6 | todo |  |  |
 | `components/dashboard/Dashboard.module.css` | css | 5 | done | route:dashboard route:dashboard-acquiring route:dashboard-unread route:dashboard-recent | readouts flash on change (filter step), LEDs flash on a state change, new rows arrive (slide + tint flash), first read Acquiring (radar / scan bar), re-read keeps its data under the refresh bar (scan, static in Reduced/Off), Recent work grows its row (grid-rows) |

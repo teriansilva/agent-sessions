@@ -176,6 +176,11 @@ already have instead of starting another copy.
   always opens in Missions.
 - **Share link.** The session's actions and the mission's **⋯** menu carry **Share link**: the
   system share sheet where the device has one, otherwise the link is copied.
+- **Who is here.** In an API session, each message has a small avatar beside it: your image (set in
+  Settings → General → Profile) or your initial, a visitor's initial in their own colour, and 🤖
+  for the agent. Once the session has a live public link, or anyone is on one, its head shows
+  **N connected**: everyone who has the session open, counted from the last 30 seconds. Hover it
+  to see who. Visitors see the same count in their page's top bar, but no names.
 
 ## Organising the list
 

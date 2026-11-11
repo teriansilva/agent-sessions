@@ -31,8 +31,17 @@ import anyio
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from .. import missions, native_images, share_api, shares, template_secrets
+from .. import (
+    missions,
+    native_images,
+    presence,
+    profile_avatar,
+    share_api,
+    shares,
+    template_secrets,
+)
 from .. import structured_runtime as runtime
+from . import profile as profile_routes
 from . import upload as upload_routes
 
 MAX_TEXT = 20_000  # the facade's own per-turn text budget
@@ -266,6 +275,7 @@ def register(app: FastAPI, *, store: shares.ShareStore, require_share) -> None:
     ) -> Response:
         share = visitor.share
         _api_only(share)
+        presence.default().touch(share.session_key, visitor.viewer, name=visitor.name)
         snap = await _snapshot(share.session_key)
         authors = await asyncio.to_thread(store.authors, share.session_key)
 
@@ -285,6 +295,11 @@ def register(app: FastAPI, *, store: shares.ShareStore, require_share) -> None:
         mission_held = await asyncio.to_thread(missions.session_mission, share.session_key)
         view["can_send"] = share.mode == "send" and not view["read_only"] and mission_held is None
         view["mission_held"] = mission_held is not None
+        # The operator's avatar (#1931): its version for `?v=`, or null — never the operator's
+        # name, which a visitor never learns.
+        view["operator_avatar"] = await asyncio.to_thread(profile_avatar.version)
+        # How many are connected (#1931): a count, never who.
+        view["present"] = presence.default().count(share.session_key)
         return _no_store(JSONResponse(view))
 
     @app.get("/api/public/events")
@@ -295,6 +310,7 @@ def register(app: FastAPI, *, store: shares.ShareStore, require_share) -> None:
     ) -> Response:
         share = visitor.share
         _api_only(share)
+        presence.default().touch(share.session_key, visitor.viewer, name=visitor.name)
         limit = max(1, min(int(limit), 100))
         try:
             page = await runtime.events(share.session_key, after=max(0, int(after)), limit=limit)
@@ -342,6 +358,13 @@ def register(app: FastAPI, *, store: shares.ShareStore, require_share) -> None:
                 "Content-Length": str(st.st_size),
             },
         )
+
+    @app.get("/api/public/avatar")
+    async def public_avatar(visitor=Depends(_view)) -> Response:  # noqa: B008
+        """The operator's avatar (#1931), for an API link's visitor: the same gate as the
+        transcript (cookie, live row, API links only), so it shows nothing a link doesn't."""
+        _api_only(visitor.share)
+        return profile_routes.avatar_response(await asyncio.to_thread(profile_avatar.read))
 
     @app.post("/api/public/upload")
     async def public_upload_image(

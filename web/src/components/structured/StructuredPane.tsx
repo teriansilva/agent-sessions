@@ -16,10 +16,21 @@ import {
   ShieldOff,
   Square,
   SquareDashedBottom,
+  Users,
   X,
   Zap,
 } from "lucide-react";
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  createContext,
+  Fragment,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
@@ -79,6 +90,10 @@ import type {
   StructuredTurn,
 } from "../../types/api";
 import chat from "../chat/ChatPane.module.css";
+import { Avatar, type AvatarSpec } from "../chat/Avatar";
+import { operatorAvatarSpec } from "../chat/avatarSpec";
+import { useConfig } from "../../app/config";
+import { presenceTitle, presentLabel } from "../../lib/shareFormat";
 import { Markdown } from "./Markdown";
 import { LiveReply } from "./LiveReply";
 import { applyTextDeltas, streaming } from "./streamDeltas";
@@ -1110,15 +1125,32 @@ function AgentTurnView({
   );
 }
 
-function MessageHeader({ speaker, title, kind, ts }: {
+/** The operator's own disc (#1931): their uploaded image, else their initial on the accent. */
+const OperatorAvatar = createContext<AvatarSpec>({ kind: "accent", initial: "Y" });
+
+/** Who sent a user turn, as a disc: a visitor by name, unknown as `?`, else the operator. */
+function turnAvatar(author: StructuredTurn["author"], operator: AvatarSpec): AvatarSpec {
+  if (author?.via === "public_link") return { kind: "who", name: author.name };
+  if (author?.via === "unknown") return { kind: "unknown" };
+  return operator;
+}
+
+function MessageHeader({ speaker, title, kind, ts, author }: {
   speaker: string;
   title?: string;
   kind: "user" | "assistant";
   ts?: number | null;
+  /** A user turn's author, for its disc (#1931); assistant headers always show the agent's. */
+  author?: StructuredTurn["author"];
 }) {
   const timestamp = messageTimestamp(ts, kind);
+  const operator = useContext(OperatorAvatar);
   return (
     <div className={`${chat.who} ${styles.messageHeader}`}>
+      <Avatar
+        spec={kind === "assistant" ? { kind: "agent" } : turnAvatar(author, operator)}
+        className={styles.messageAvatar}
+      />
       <span title={title}>{speaker}</span>
       {timestamp && (
         <time className={styles.messageTimestamp} dateTime={timestamp.iso}
@@ -1257,6 +1289,7 @@ function TurnView({
           }
           kind="user"
           ts={turn.ts}
+          author={turn.author}
         />
         {!!turn.attachments?.length && (
           <div className={styles.turnImages}>
@@ -1560,6 +1593,13 @@ export function StructuredPane({
   // Whose login a `signin` failure needs (that same console agent), once the roster can say.
   const signinAgent = engineInfo(engine) ? (source ?? engine) : null;
   const [snap, setSnap] = useState<StructuredSnapshot | null>(null);
+  const config = useConfig();
+  const avatarVersion = config?.avatar;
+  const operatorName = config?.username;
+  const operatorAvatar = useMemo(
+    () => operatorAvatarSpec(avatarVersion, operatorName),
+    [avatarVersion, operatorName],
+  );
   // A skip start's own outcome (#1505): handed over by New session, or this pane's Start. A
   // refusal shows its reason; a lost answer says the start may not have reached BattleLab.
   // Keyed, so an outcome never shows on another session's pane.
@@ -1741,6 +1781,9 @@ export function StructuredPane({
     // Reads race (the poll, and a re-read after every action): an older answer arriving last
     // must never roll the view back. The journal revision only grows.
     if (s.revision < cursor.current) return false;
+    // Only the snapshot READ carries presence (#1931): an action's own snapshot keeps the last.
+    if (s.presence === undefined && held.current?.presence)
+      s = { ...s, presence: held.current.presence };
     floorSeq.current = sent;
     cursor.current = s.event_cursor;
     // A recorded turn replaces its pending entry, whatever that entry's POST says or will say.
@@ -3253,12 +3296,28 @@ export function StructuredPane({
           },
         ];
 
+  const presence = snap?.presence ?? null;
+
   // The terminal session's own bar (#1348): the shared facts run + the same actions, so an API
   // session and a terminal session cannot drift apart. The journal read is this pane's link LED.
   const header = host.suppressHead ? null : (
     <div className={term.panelHead} data-panel-head="">
       <span className={term.headLeft}>
         <HeadFacts engine={engine} status={status} row={row} />
+        {presence && (presence.shared || presence.visitors.length > 0) && (
+          // #1931: who has this session open — you, and anyone on one of its links.
+          <span
+            className={`${chat.chip} ${styles.presentChip}`}
+            data-testid="structured-present"
+            title={presenceTitle(presence)}
+          >
+            {/* Compact (icon + count): the head is the app's most crowded bar. The words are there
+                for a screen reader; the names are in the tooltip. */}
+            <Users size={12} aria-hidden="true" />
+            <span aria-hidden="true">{presence.count}</span>
+            <span className="sr-only">{presentLabel(presence.count)}</span>
+          </span>
+        )}
         {/* Show the effective mode, including an explicit change after starting. */}
         {snap?.bypass && (
           <span
@@ -3689,6 +3748,7 @@ export function StructuredPane({
       {/* The conversation area: the log, and the uplink veil over it (a sibling, so the veil's
           heading is never inside the log's own live region or its busy state). */}
       <ArrivalContext.Provider value={{ has: arrived.has, primed: painted.current }}>
+      <OperatorAvatar.Provider value={operatorAvatar}>
       <div className={styles.logArea}>
         <div
           className={chat.log}
@@ -3867,6 +3927,7 @@ export function StructuredPane({
         )}
         {veil && <TermUplinkVeil veil={veil} title={row?.title} input="outbox" />}
       </div>
+      </OperatorAvatar.Provider>
       </ArrivalContext.Provider>
       {/* Live background jobs (#1726): one line glued above the composer, never in the log. */}
       <BackgroundStrip

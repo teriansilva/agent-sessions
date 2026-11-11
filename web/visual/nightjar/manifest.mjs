@@ -1077,6 +1077,8 @@ export const SWEEP = [
     api: { "/api/system": SB.SYSTEM, "/api/system/resources": SB.RESOURCES },
   },
   { id: "route:settings-analytics", path: "/settings/analytics" },
+  // The operator's avatar (#1931): the preview disc and its actions.
+  { id: "route:settings-profile", path: "/settings/profile" },
   // ---- /PR4b settings B ----
   // ---- brand (#1590) ---- the kit's lockup with its tagline on Settings → About.
   { id: "route:settings-about", path: "/settings/about", expectCss: "[data-brand-lockup]" },

@@ -315,6 +315,9 @@ async def test_a_send_link_sends_as_the_visitor_and_both_views_say_so(env, host,
     # Both reads are bound to the link the cookie names (#1444): the viewer refuses another's.
     assert view["link"] == events["link"] == share_api.link_id(share.share_id)
     assert view["can_send"] is True
+    # #1931: the visitor reads the avatar's version (none set) and a COUNT of who is connected.
+    assert view["operator_avatar"] is None
+    assert view["present"] >= 1 and isinstance(view["present"], int)
     for leak in ("cwd", "native", "operation_id", str(project)):
         assert leak not in repr(view), leak
     op_snap = await runtime.snapshot(key)  # the operator's own view is untouched…
@@ -325,6 +328,10 @@ async def test_a_send_link_sends_as_the_visitor_and_both_views_say_so(env, host,
         row = (await op.get(f"/api/structured/sessions/{key}")).json()
     mine = [t for t in row["turns"] if t["text"] == "hello from Alex"]
     assert mine[0]["author"] == {"name": "Alex", "via": "public_link"}
+    # #1931: the operator's view counts them both and names the visitor; the link is live.
+    assert row["presence"]["count"] == 2
+    assert row["presence"]["visitors"] == [{"name": "Alex"}]
+    assert row["presence"]["shared"] is True
 
 
 @pytest.mark.anyio

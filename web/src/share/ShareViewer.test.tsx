@@ -394,3 +394,78 @@ describe("Hermes on #1444 (8bd27907)", () => {
     }
   });
 });
+
+describe("avatars and presence (#1931)", () => {
+  function turn(over: Record<string, unknown>) {
+    return { ...queued({ state: "completed", mine: false }), ...over };
+  }
+
+  test("each block carries its author's disc; the operator never shows a login name", async () => {
+    api.session.mockResolvedValue(
+      snap({
+        operator_avatar: null,
+        turns: [
+          turn({ turn_id: "o1", text: "operator here", author: null, reply: "agent reply" }),
+          turn({ turn_id: "v1", text: "visitor here", author: { name: "jana", via: "public_link" } }),
+        ],
+      }),
+    );
+    api.events.mockResolvedValue({ link: "LINK-A", revision: 1, next_cursor: 1 });
+    const { container } = render(
+      <ApiView
+        unlocked={{ share: share(), csrf: "c1" }}
+        onShare={vi.fn()}
+        onGone={vi.fn()}
+        onExpired={vi.fn()}
+        onRecheck={vi.fn(async () => {})}
+      />,
+    );
+    await screen.findByText("visitor here");
+    const discs = (author: string) =>
+      [...container.querySelectorAll(`[data-author="${author}"] [data-avatar]`)] as HTMLElement[];
+    expect(discs("operator").map((d) => [d.dataset.kind, d.textContent])).toEqual([["accent", "O"]]);
+    expect(discs("visitor").map((d) => [d.dataset.kind, d.textContent])).toEqual([["who", "J"]]);
+    expect(discs("visitor")[0].style.background).toMatch(/^var\(--who-[1-8]\)$/);
+    expect(discs("agent").map((d) => [d.dataset.kind, d.textContent])).toEqual([["agent", "🤖"]]);
+    for (const d of container.querySelectorAll("[data-avatar]"))
+      expect(d.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  test("a set operator avatar is a versioned image from the public route", async () => {
+    api.session.mockResolvedValue(
+      snap({ operator_avatar: "abc123", turns: [turn({ turn_id: "o1", text: "hi", author: null })] }),
+    );
+    api.events.mockResolvedValue({ link: "LINK-A", revision: 1, next_cursor: 1 });
+    const { container } = render(
+      <ApiView
+        unlocked={{ share: share(), csrf: "c1" }}
+        onShare={vi.fn()}
+        onGone={vi.fn()}
+        onExpired={vi.fn()}
+        onRecheck={vi.fn(async () => {})}
+      />,
+    );
+    await screen.findByText("hi");
+    const img = container.querySelector('[data-author="operator"] [data-avatar] img');
+    expect(img?.getAttribute("src")).toBe("/api/public/avatar?v=abc123");
+  });
+
+  test("the top bar counts who is connected", async () => {
+    window.history.replaceState(null, "", `/p/${TOKEN}`);
+    api.unlock.mockResolvedValue({ share: share(), csrf: "c1" });
+    api.session.mockResolvedValue(snap({ present: 3 }));
+    api.events.mockResolvedValue({ link: "LINK-A", revision: 1, next_cursor: 1 });
+    render(<ShareViewer />);
+    expect(await screen.findByTestId("share-present")).toHaveTextContent("3 CONNECTED");
+  });
+
+  test("no count is shown before the server reports one", async () => {
+    window.history.replaceState(null, "", `/p/${TOKEN}`);
+    api.unlock.mockResolvedValue({ share: share(), csrf: "c1" });
+    api.session.mockResolvedValue(snap());
+    api.events.mockResolvedValue({ link: "LINK-A", revision: 1, next_cursor: 1 });
+    render(<ShareViewer />);
+    await screen.findByTestId("share-transcript");
+    expect(screen.queryByTestId("share-present")).toBeNull();
+  });
+});

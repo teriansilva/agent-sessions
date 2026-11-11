@@ -404,6 +404,34 @@ for (const [name, selector] of Object.entries(THEMES)) {
   });
 }
 
+// --- who-colours (#1931) ---
+// The disc behind a visitor's initial. The INITIAL is text on the disc, so --who-ink holds AA
+// (4.5:1) on every --who-N. Theme-shared (only the bare :root defines them), and never a status
+// hue, an engine accent or the brand accent: a visitor's colour carries no state and no engine.
+const WHO = Array.from({ length: 8 }, (_, i) => `who-${i + 1}`);
+
+test("the initial reads on every who-colour (>=4.5:1)", () => {
+  const root = block(":root {");
+  for (const w of WHO) {
+    expect(ratio(token(root, "who-ink"), token(root, w)), `--who-ink on --${w}`).toBeGreaterThanOrEqual(4.5);
+  }
+});
+
+test("no who-colour is a status hue, an engine accent or the brand accent", () => {
+  const root = block(":root {");
+  const reserved = [
+    "status-up",
+    "status-degraded",
+    "status-down",
+    "status-unknown",
+    "status-draft",
+    "accent",
+    ...ENGINE_ACCENTS.map((a) => `engine-${a}`),
+  ].map((n) => token(root, n).toLowerCase());
+  for (const w of WHO) expect(reserved, `--${w}`).not.toContain(token(root, w).toLowerCase());
+  expect(new Set(WHO.map((w) => token(root, w).toLowerCase())).size).toBe(WHO.length);
+});
+
 // ---------------------------------------------------------------- accent as text (#1494)
 //
 // `--accent-text` is what a link or any other accent-coloured WORD uses. tokens.css carries the

@@ -24,6 +24,7 @@ from .. import (
     model_grades,
     perfstats,
     prefs,
+    profile_avatar,
     project_dirs,
     ptybridge,
     resource_limits,
@@ -694,6 +695,8 @@ def register(
                 # What's new (#971): the newest release notes the operator dismissed, or null.
                 # Always present, so the SPA can tell "never seen" from a server without the key.
                 "whats_new_seen": prefs.get_whats_new_seen(),
+                # The operator's avatar (#1931): its version for `?v=`, or null when none is set.
+                "avatar": await asyncio.to_thread(profile_avatar.version),
                 # Usage analytics (#1009): the decision and whether this server allows it at all.
                 # Never the install id or the day's budget.
                 "analytics": analytics.public_state(),

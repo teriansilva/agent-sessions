@@ -463,6 +463,9 @@ GET    /api/plugins/{plugin_id}/generations/{generation_id}/endpoint            
 PATCH  /api/plugins/{plugin_id}/generations/{generation_id}/endpoint              never  # plugin install surface
 POST   /api/plugins/{plugin_id}/generations/{generation_id}/endpoint/test         never  # plugin install surface
 POST   /api/prefs                                                                 prefs  # per field: see the prefs map
+DELETE /api/profile/avatar                                                        n/a  # an image the operator picks in a file chooser (#1931)
+GET    /api/profile/avatar                                                        n/a  # upload bytes
+PUT    /api/profile/avatar                                                        n/a  # an image the operator picks in a file chooser (#1931)
 GET    /api/projects                                                              have  # list_projects (archived + counts in P1)
 POST   /api/projects                                                              P1
 POST   /api/projects/auto-sort                                                    P1
@@ -484,6 +487,7 @@ POST   /api/projects/{project}/playbook/remove/plan                             
 GET    /api/projects/{project}/playbook/verify                                    P4
 GET    /api/prompts                                                               P2  # read
 PATCH  /api/prompts/{pid}                                                         never  # HQ's own fence
+GET    /api/public/avatar                                                         n/a  # public share visitor surface
 GET    /api/public/events                                                         n/a  # public share visitor surface
 POST   /api/public/interrupt                                                      n/a  # public share visitor surface
 POST   /api/public/name                                                           n/a  # public share visitor surface

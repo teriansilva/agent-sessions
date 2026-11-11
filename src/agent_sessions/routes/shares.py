@@ -29,7 +29,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-from .. import auth, engines, metadata, share_api, shares, template_secrets
+from .. import auth, engines, metadata, presence, share_api, shares, template_secrets
 from ..auth import AuthConfig, enforce_origin
 
 SHARE_COOKIE = "agent_sessions_share"
@@ -153,6 +153,9 @@ class Visitor:
 
     share: shares.Share
     name: str | None
+    #: One id per unlocked browser, for the presence count (#1931): a hash of the cookie's own
+    #: random CSRF token, never the token.
+    viewer: str = ""
 
 
 def public_title(title: str) -> str:
@@ -235,7 +238,8 @@ def require_share(cfg: AuthConfig, store: shares.ShareStore, *, send: bool = Fal
             _check_csrf(cfg, request, data)
             if not name:
                 raise HTTPException(status_code=403, detail="enter your name first")
-        return Visitor(share=share, name=name)
+        viewer = presence.visitor_id(share.share_id, str(data.get("csrf", "")))
+        return Visitor(share=share, name=name, viewer=viewer)
 
     return _dep
 

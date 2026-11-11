@@ -121,3 +121,21 @@ export function modeChip(mode: ShareMode): string {
 export function nowSeconds(): number {
   return Date.now() / 1000;
 }
+
+/** The presence count (#1931), as words: `1 connected`, `3 connected`. */
+export function presentLabel(n: number): string {
+  return `${n} connected`;
+}
+
+/** The share viewer's top-bar chip, in the bar's uppercase. */
+export function presentChip(n: number): string {
+  return presentLabel(n).toUpperCase();
+}
+
+/** The operator's presence tooltip (#1931): you, then each visitor by the name they gave. */
+export function presenceTitle(p: { visitors: { name: string | null }[] }): string {
+  const names = p.visitors.map((v) =>
+    v.name ? `${v.name} · via public link` : "unnamed visitor · via public link",
+  );
+  return ["Connected now (seen in the last 30 s):", "You", ...names].join("\n");
+}

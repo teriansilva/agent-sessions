@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Avatar, type AvatarSpec } from "../components/chat/Avatar";
 import { Markdown } from "../components/structured/Markdown";
 import {
   PublicError,
   imageUrl,
+  operatorAvatarUrl,
   publicApi,
   type PublicSnapshot,
   type PublicTurn,
@@ -53,6 +55,15 @@ function who(turn: PublicTurn): string {
   return turn.author?.via === "public_link" ? `${turn.author.name} · via public link` : "Operator";
 }
 
+/** The disc beside a person's message (#1931). The operator's falls back to `O`: a visitor never
+ *  learns the operator's login name. */
+function whoAvatar(turn: PublicTurn, operatorAvatar: string | null | undefined): AvatarSpec {
+  if (turn.author?.via === "public_link") return { kind: "who", name: turn.author.name };
+  return operatorAvatar
+    ? { kind: "image", src: operatorAvatarUrl(operatorAvatar), fallback: "O" }
+    : { kind: "accent", initial: "O" };
+}
+
 /** The operator pane's working animation. */
 function Bars() {
   return (
@@ -80,12 +91,15 @@ function queueHead(turns: PublicTurn[]): string | null {
  *  `{cursor, kind}` only, never data. In a `send` link the composer sits below. */
 export function ApiView({
   unlocked,
+  onPresent,
   onShare,
   onGone,
   onExpired,
   onRecheck,
 }: {
   unlocked: Unlocked;
+  /** How many have the session open (#1931), for the top bar; null until known. */
+  onPresent?: (n: number | null) => void;
   onShare: (share: VisitorShare) => void;
   onGone: () => void;
   onExpired: () => void;
@@ -223,6 +237,12 @@ export function ApiView({
     void act(() => publicApi.sendNow(csrf, turnId)).finally(() => setPushing(null));
   };
 
+  const present = typeof snap?.present === "number" ? snap.present : null;
+  useEffect(() => {
+    onPresent?.(present);
+  }, [present, onPresent]);
+  useEffect(() => () => onPresent?.(null), [onPresent]);
+
   const turns = snap?.turns ?? [];
   const head = queueHead(turns);
   // Background work shows as its own row only when no turn shows it already: a turn the agent
@@ -272,6 +292,7 @@ export function ApiView({
             <section key={t.turn_id} className={styles.turn} data-turn={t.turn_id}>
               {!own && (t.text || attachments.length > 0) && (
                 <div className={styles.block} data-author={t.author ? "visitor" : "operator"}>
+                  <Avatar spec={whoAvatar(t, snap?.operator_avatar)} className={styles.avatar} />
                   <p className={styles.who}>{who(t)}</p>
                   {t.text && (
                     <p className={styles.text}>
@@ -322,6 +343,7 @@ export function ApiView({
               )}
               {(t.reply || tools.length > 0 || t.state === "running" || (own && label)) && (
                 <div className={styles.block} data-author="agent">
+                  <Avatar spec={{ kind: "agent" }} className={styles.avatar} />
                   <p className={styles.who}>
                     Agent{own ? " · on its own" : ""}
                     {t.state === "running" ? " · working" : ""}

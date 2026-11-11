@@ -1,0 +1,41 @@
+/* The disc beside a message (#1931): the operator's image, a visitor's initial, the agent's 🤖.
+   Round on purpose — the operator asked for circles here, and docs/design.md §1 names chat
+   avatars beside LEDs and status dots as the round exceptions. Every rule here is `.avatar…`, the
+   allowlist the NIGHTJAR guard reads. */
+.avatar {
+  inline-size: var(--avatar-size, 28px);
+  block-size: var(--avatar-size, 28px);
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  /* A hairline over the disc and over an image alike: an outline paints above the content. */
+  outline: 1px solid var(--line-strong);
+  outline-offset: -1px;
+  background: var(--bg-2);
+  color: var(--who-ink);
+  font-family: var(--font-display);
+  font-size: var(--fs-row);
+  font-weight: 700;
+  line-height: 1;
+  user-select: none;
+}
+.avatar[data-kind="accent"] {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.avatar[data-kind="neutral"] {
+  color: var(--text-2);
+}
+.avatar[data-kind="agent"] {
+  font-family: inherit;
+  font-size: var(--fs-body);
+  font-weight: 400;
+}
+.avatar > img {
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
+  display: block;
+}

@@ -1571,6 +1571,9 @@ export interface AppConfig {
    *  `null` under `auth_mode: "none"`, where there is no operator to name; absent on older
    *  servers, which renders no tile rather than a made-up one. */
   username?: string | null;
+  /** The operator's avatar version for `?v=` (#1931), or null when none is set. Absent on older
+   *  servers. */
+  avatar?: string | null;
   /** Optional TOTP 2FA on/off (#116) — drives the Settings security section. Just the
    *  bit; the secret/recovery codes are never exposed here. Absent on older servers. */
   two_factor_enabled?: boolean;
@@ -2011,6 +2014,16 @@ export interface StructuredCounts {
   skills_other: number;
 }
 
+/** Who has an API session open right now (#1931), on the operator's snapshot read only. */
+export interface StructuredPresence {
+  /** Everyone connected, the operator included. */
+  count: number;
+  /** Each connected visitor, by the name they gave (null: a view-only visitor who gave none). */
+  visitors: { name: string | null }[];
+  /** At least one live share link reaches this session. */
+  shared: boolean;
+}
+
 export interface StructuredSnapshot {
   session_key: string;
   revision: number;
@@ -2104,6 +2117,8 @@ export interface StructuredSnapshot {
   images?: boolean;
   /** Upload references supported by the running native worker (or its next generation). */
   files?: boolean;
+  /** #1931: present on `GET /api/structured/sessions/{key}` only, not on action answers. */
+  presence?: StructuredPresence;
 }
 
 /** The turns just older than a cursor (#1504), chronological, shaped as the snapshot's. */

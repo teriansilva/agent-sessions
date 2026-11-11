@@ -66,6 +66,12 @@
   color: var(--hud-text);
   border-color: var(--hud-dim);
 }
+/* #1931: the presence count — a fact, not a status: no LED, no status hue. */
+.chipPresent {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
 
 .status {
   flex: none;
@@ -227,6 +233,24 @@
 .block {
   padding: 10px 16px;
   min-width: 0;
+  /* #1931: the author's disc in its own column, everything the block says beside it. */
+  --avatar-size: 28px;
+  display: grid;
+  grid-template-columns: var(--avatar-size) minmax(0, 1fr);
+  column-gap: 10px;
+}
+.block > * {
+  grid-column: 2;
+}
+.block > .avatar {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  align-self: start;
+}
+.block > .who {
+  display: flex;
+  align-items: center;
+  min-height: var(--avatar-size);
 }
 .block + .block {
   border-top: 1px solid var(--line);

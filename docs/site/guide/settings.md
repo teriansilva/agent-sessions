@@ -15,6 +15,14 @@ can differ. A device with no choice of its own starts from the last one saved an
 
 ## General
 
+### Profile · `profile`
+
+- **Avatar**: an image (PNG, JPEG or WebP) shown in a small circle beside your messages in API
+  sessions. Everyone who opens one of your API share links sees it too. Your browser crops it to a
+  square and scales it to 256 px before uploading. **Remove** goes back to your initial on the
+  accent colour. Visitors on a share link appear as their initial in a colour picked from the name
+  they gave, and the agent appears as 🤖.
+
 ### Session defaults · `session-defaults`
 
 - **Compose box** — whether the compose bar starts **Auto** (open on touch, collapsed on desktop),

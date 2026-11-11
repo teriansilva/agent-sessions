@@ -415,6 +415,19 @@ async function mutateJson<T>(
   return (await r.json()) as T;
 }
 
+/** `PUT /api/profile/avatar` (#1931): the image bytes as the body; the server sniffs the type. */
+async function putAvatar(image: Blob): Promise<{ version: string }> {
+  const r = await apiFetch("/api/profile/avatar", {
+    method: "PUT",
+    credentials: "same-origin",
+    headers: { "Content-Type": image.type || "application/octet-stream", "X-CSRF-Token": csrfToken },
+    body: image,
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) throw new ApiError(r.status, (await errorDetail(r)) || `avatar upload → ${r.status}`);
+  return (await r.json()) as { version: string };
+}
+
 /** `POST /api/pulse/ask/stream`, read line by line (#1171). A fetch whose body cannot be read as
  *  a stream (the Home Free tunnel may buffer it) still works: the lines are simply all there at
  *  once, and the caller sees the same events, only later. */
@@ -942,6 +955,9 @@ export function currentCsrfToken(): string {
 }
 
 export const api = {
+  /** The operator's avatar (#1931). */
+  putAvatar,
+  deleteAvatar: () => deleteJson<{ version: null }>("/api/profile/avatar"),
   // Calling HQ (#1397 P1). Speech endpoints are configured like the AI endpoint: tokens never
   // come back (`api_key_set`), a blank keeps the stored one and `null` removes it.
   voiceSettings: () => getJson<VoiceSettings>("/api/voice/settings"),

@@ -35,6 +35,10 @@ const ALLOWED_OUTSIDE = new Set([
   "components/ui/actionButton.module.css",
   // The brand kit's logo (#1590): an image component and the kit's static SVG files. No script
   // beyond rendering an <img>, no network of its own.
+  // The disc beside a message (#1931): markup + a pure name → colour/initial helper, no network.
+  "components/chat/Avatar.tsx",
+  "components/chat/Avatar.module.css",
+  "lib/who.ts",
   "components/brand/Brand.tsx",
   "components/brand/Brand.module.css",
   "brand/mark-amber.svg",

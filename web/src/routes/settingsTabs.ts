@@ -21,6 +21,8 @@ export const SETTINGS_GROUPS = [
 export type SettingsGroupId = (typeof SETTINGS_GROUPS)[number]["id"];
 
 export const SETTINGS_SECTIONS = [
+  // The operator's avatar (#1931): shown beside their messages and to API-link visitors.
+  { id: "profile", label: "Profile", group: "general" },
   { id: "session-defaults", label: "Session defaults", group: "general" },
   { id: "projects", label: "Projects", group: "general" },
   // APPEARANCE (#1494): split by WHAT is being styled. Interface keeps the `appearance` id so

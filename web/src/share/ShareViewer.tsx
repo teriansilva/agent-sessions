@@ -1,5 +1,6 @@
+import { Users } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { expiryChip, modeChip, nowSeconds } from "../lib/shareFormat";
+import { expiryChip, modeChip, nowSeconds, presentChip } from "../lib/shareFormat";
 import { ApiView } from "./ApiView";
 import {
   PublicError,
@@ -49,6 +50,8 @@ export function ShareViewer() {
   const [broken] = useState(() => mangled(window.location.pathname));
   const lastUnlock = useRef(0);
   const lastName = useRef<string | null>(null);
+  /** How many have the session open (#1931), as the open API view last read it. */
+  const [present, setPresent] = useState<number | null>(null);
   // The atmosphere's motion (#1596): no stored setting on this page, so the mode follows the
   // device's reduced-motion setting LIVE, and the viewer owns the hidden-tab / idle pause
   // (`data-motion-paused`) — what MotionProvider does in the SPA. main.tsx sets the mode pre-paint.
@@ -168,6 +171,8 @@ export function ShareViewer() {
   };
 
   const open = phase.kind === "open" ? phase.unlocked : null;
+  // A view that is not open (or not an API link) shows no count: ApiView reports null on unmount.
+  const shownPresent = open && open.share.kind === "api" ? present : null;
   const now = nowSeconds();
 
   return (
@@ -190,6 +195,17 @@ export function ShareViewer() {
                 {open.share.title || "Shared session"}
               </span>
               <span className={styles.facts}>
+                {shownPresent != null && (
+                  // #1931: how many have this session open — a count, never who.
+                  <span
+                    className={`${styles.chip} ${styles.chipPresent}`}
+                    data-testid="share-present"
+                    title="People with this session open now (seen in the last 30 s), you included"
+                  >
+                    <Users size={12} aria-hidden="true" />
+                    {presentChip(shownPresent)}
+                  </span>
+                )}
                 <span className={`${styles.chip} ${styles.chipMode}`}>
                   {modeChip(open.share.mode)}
                 </span>
@@ -324,6 +340,7 @@ export function ShareViewer() {
 
         {open && open.share.kind === "api" && (
           <ApiView
+            onPresent={setPresent}
             // One view per link: a different link (another tab re-unlocked) is a fresh mount —
             // no snapshot, cursor or composer state carries over from the old one.
             key={open.share.link}

@@ -154,8 +154,9 @@ test.describe("desktop", () => {
         width: parseFloat(cs.outlineWidth),
       };
     });
-    // The first link in the nav: General leads, and Appearance became its own group (#1494).
-    expect(focused.text).toBe("Session defaults");
+    // The first link in the nav: General leads, and Appearance became its own group (#1494);
+    // Profile (#1931) opens General.
+    expect(focused.text).toBe("Profile");
     expect(focused.style).toBe("solid");
     expect(focused.width).toBeGreaterThanOrEqual(2);
   });

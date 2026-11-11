@@ -43,7 +43,7 @@ import re
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .. import native_ipc, share_api, shares, structured_runtime
+from .. import native_ipc, presence, share_api, shares, structured_runtime
 
 log = logging.getLogger("agent_sessions.routes.structured")
 
@@ -180,6 +180,18 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         # snapshot's `launch` view too, so a lost answer still has a truthful state to read.
         return JSONResponse(await _run(structured_runtime.start_session(key, wait_ready=False)))
 
+    async def _presence(key: str) -> dict:
+        """Who has this session open (#1931). Reading the operator's own pane counts the
+        operator in; `shared` says whether any live link reaches it at all."""
+        presence.default().touch(key, presence.OPERATOR)
+        out = presence.default().view(key)
+        try:
+            out["shared"] = bool(await asyncio.to_thread(shares.store().list_active, key))
+        except Exception:  # the share store must never take the operator's own view down
+            log.warning("structured view: share links unavailable", exc_info=True)
+            out["shared"] = False
+        return out
+
     async def _attributed(view: dict, key: str) -> dict:
         # A visitor's turns (#1404 P2) carry their self-chosen name in the operator's view too.
         try:
@@ -195,7 +207,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     async def structured_snapshot(key: str, _user: str = Depends(logged_in)) -> JSONResponse:
         # The operator's own view: a running turn's message in progress shows too (#1727).
         snap = await _run(structured_runtime.snapshot(key, live_text=True))
-        return JSONResponse(await _attributed(snap, key))
+        view = await _attributed(snap, key)
+        view["presence"] = await _presence(view.get("session_key") or key)
+        return JSONResponse(view)
 
     @app.get("/api/structured/sessions/{key}/history")
     async def structured_history(
@@ -231,6 +245,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         wait: float = 0,
         _user: str = Depends(logged_in),
     ) -> JSONResponse:
+        presence.default().touch(key, presence.OPERATOR)  # #1931: the pane is open
         # `wait` (#1727): hold a read with nothing past `after` until the journal moves, at most
         # `EVENTS_WAIT_MAX` (3 s) whatever is asked. Operator route only: the public share route
         # never waits and never carries `data`.

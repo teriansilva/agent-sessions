@@ -137,6 +137,20 @@
   --engine-lime: #c5e15a;
   --engine-magenta: #f472b6;
   --engine-slate: #8b98a5;
+  /* Who-colours (#1931): the disc behind a visitor's initial beside their messages, picked by a
+     stable hash of the name (lib/who.ts). Their own family, like the engine accents: a visitor's
+     colour carries no state and no engine, so none is a status hue, an engine accent or the brand
+     accent. Theme-shared: the disc carries its own dark ink (--who-ink), held to AA on every one
+     by contrast.test.ts, and a hairline ring sets it off a light ground. */
+  --who-ink: #120c00;
+  --who-1: #b48cff;
+  --who-2: #2ec4b6;
+  --who-3: #f58fc5;
+  --who-4: #9fd356;
+  --who-5: #ff8a65;
+  --who-6: #8fb0ff;
+  --who-7: #e0a3e0;
+  --who-8: #d4b08c;
 
   /* ---------------------------------------------------------------------------------------
      NIGHTJAR // OPS (#1531, docs/design.md v2). Theme-shared unless restated below.

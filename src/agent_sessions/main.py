@@ -800,6 +800,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # Upload route (save a pasted/dropped file to the shared uploads dir). Registered
     # before the SPA catch-all.
     upload_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    # The operator's avatar (#1931): shown beside their messages and to API-link visitors.
+    from .routes import profile as profile_routes
+
+    profile_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Instruction templates (#905 P1): its own store off /api/config, images via /api/uploads.
     templates_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     variables_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)

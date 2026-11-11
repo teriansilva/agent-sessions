@@ -84,6 +84,7 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_NEEDS_YOU_DISMISSED": ".config/agent-sessions/needs-you-dismissed.json",
     "AGENT_SESSIONS_AGENT_REPORTS": ".config/agent-sessions/agent-reports.json",  # #1882
     "AGENT_SESSIONS_VAPID_KEYS": ".config/agent-sessions/vapid.json",
+    "AGENT_SESSIONS_PROFILE_DIR": ".config/agent-sessions/profile",  # #1931 operator avatar
     "AGENT_SESSIONS_HOME": ".local/share/agent-sessions",
     "AGENT_SESSIONS_OPENCODE_DB": ".local/share/opencode/opencode.db",
     "AGENT_SESSIONS_CHAT_DIR": ".local/share/agent-sessions/chat",  # the API agent's store (#1209)

@@ -85,6 +85,10 @@ export interface PublicSnapshot {
   mission_held: boolean;
   /** A background task runs with no turn running (#1430). */
   background?: boolean;
+  /** The operator's avatar version for `?v=`, or null when none is set (#1931). */
+  operator_avatar?: string | null;
+  /** How many people have this session open right now, this browser included (#1931). */
+  present?: number;
 }
 
 export interface PublicEventPage {
@@ -183,6 +187,11 @@ export const publicApi = {
       type: file.type,
     }),
 };
+
+/** The operator's avatar, versioned so a new upload shows at once (#1931). */
+export function operatorAvatarUrl(version: string): string {
+  return `/api/public/avatar?v=${encodeURIComponent(version)}`;
+}
 
 export function imageUrl(handle: string): string {
   return `/api/public/uploads/${encodeURIComponent(handle)}`;

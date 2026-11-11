@@ -18,7 +18,11 @@
 // (the button, its icon's svg and five paths, its label span); every existing element computes
 // exactly the recorded styles at its shifted path, the mobile cases (one Actions menu) and the chat
 // pane are unchanged, and the strip and the rail render nothing in a default pane (no background
-// job, rail closed). Re-record only on purpose:
+// job, rail closed). A sixth time for #1931: every message header gained its author's avatar disc —
+// two inserted elements per structured case (the default pane's one exchange: you + the agent),
+// every existing element computes exactly the recorded styles in order (the header keeps its
+// baseline alignment; only the disc centres itself), and the chat pane is unchanged.
+// Re-record only on purpose:
 //   API_LOOK_BASELINE_WRITE=1 npx playwright test e2e/api-look-defaults.spec.ts --workers=1
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";

@@ -1951,3 +1951,25 @@
   opacity: 0.55;
   cursor: default;
 }
+
+/* Settings › Profile (#1931): the avatar preview beside its two actions. */
+.avatarRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  margin: var(--sp-2) 0;
+}
+.avatarPreview {
+  --avatar-size: 72px;
+  font-size: var(--fs-readout);
+}
+.avatarActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.avatarInline {
+  --avatar-size: 22px;
+  vertical-align: middle;
+}

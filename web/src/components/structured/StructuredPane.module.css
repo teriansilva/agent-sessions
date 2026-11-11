@@ -43,6 +43,20 @@
   row-gap: 4px;
   overflow-wrap: anywhere;
 }
+/* #1931: the author's disc, scaled with the API-session look like the label beside it. */
+.messageAvatar {
+  --avatar-size: calc(24px * var(--api-scale, 1));
+  /* Centred on the label on its own: the header keeps its baseline alignment, so nothing that was
+     there before the disc computes differently (e2e/api-look-defaults.spec.ts). */
+  align-self: center;
+}
+/* #1931: the head's "N connected". It never yields: the project name ellipsises first. */
+.presentChip {
+  flex: none;
+  gap: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
 .messageTimestamp {
   color: var(--text-muted);
   font-weight: 400;

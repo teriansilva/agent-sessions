@@ -28,6 +28,7 @@ import {
   useParams,
 } from "react-router-dom";
 import { useConfig, useConfigRefresh } from "../app/config";
+import { ProfileSettings } from "./ProfileSettings";
 import { EnableLoginDetails } from "../components/EnableLoginDetails";
 import { useOverviewPrefs } from "../app/overviewPrefs";
 import { api, ApiError } from "../lib/api";
@@ -1991,6 +1992,7 @@ export function Settings() {
         >
           {crumb} // <b>{agentId ? engineLabel(agentId) : meta.label}</b>
         </p>
+        {section === "profile" && <ProfileSettings />}
         {section === "appearance" && <AppearanceInterface />}
 
         {section === "terminal-appearance" && <AppearanceTerminal />}

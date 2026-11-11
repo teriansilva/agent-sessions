@@ -1,0 +1,79 @@
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+
+// Settings › Profile (#1931): upload through the browser prep, remove, and the preview follows the
+// SERVER's version (the config), never the chosen file.
+const cfg = vi.hoisted(() => ({
+  current: { avatar: null as string | null, username: "marcus" },
+  reload: vi.fn(async () => true),
+}));
+vi.mock("../app/config", () => ({
+  useConfig: () => cfg.current,
+  useConfigReload: () => cfg.reload,
+}));
+const api = vi.hoisted(() => ({ putAvatar: vi.fn(), deleteAvatar: vi.fn() }));
+vi.mock("../lib/api", async (orig) => ({ ...(await orig<typeof import("../lib/api")>()), api }));
+const prep = vi.hoisted(() => ({ squareAvatar: vi.fn() }));
+vi.mock("../lib/avatarImage", async (orig) => ({
+  ...(await orig<typeof import("../lib/avatarImage")>()),
+  squareAvatar: prep.squareAvatar,
+}));
+
+const { ProfileSettings } = await import("./ProfileSettings");
+const { AvatarImageError } = await import("../lib/avatarImage");
+const { ApiError } = await import("../lib/api");
+
+beforeEach(() => {
+  cfg.current = { avatar: null, username: "marcus" };
+  cfg.reload.mockClear();
+  api.putAvatar.mockReset();
+  api.deleteAvatar.mockReset();
+  prep.squareAvatar.mockReset();
+});
+
+const file = () => new File([new Uint8Array([1, 2, 3])], "me.png", { type: "image/png" });
+
+describe("ProfileSettings", () => {
+  test("no avatar: the initial, Upload, no Remove", () => {
+    const { container } = render(<ProfileSettings />);
+    expect(container.querySelector('[data-avatar][data-kind="accent"]')?.textContent).toBe("M");
+    expect(screen.getByRole("button", { name: "Upload image" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+  });
+
+  test("a chosen file is prepared, uploaded, and the config re-read", async () => {
+    const prepared = new Blob(["x"], { type: "image/webp" });
+    prep.squareAvatar.mockResolvedValue(prepared);
+    api.putAvatar.mockResolvedValue({ version: "v1" });
+    render(<ProfileSettings />);
+    await userEvent.upload(screen.getByTestId("profile-avatar-input"), file());
+    await waitFor(() => expect(api.putAvatar).toHaveBeenCalledWith(prepared));
+    expect(cfg.reload).toHaveBeenCalled();
+  });
+
+  test("an image is shown from the server's version, and Remove deletes it", async () => {
+    cfg.current = { avatar: "abc", username: "marcus" };
+    api.deleteAvatar.mockResolvedValue({ version: null });
+    const { container } = render(<ProfileSettings />);
+    expect(container.querySelector("[data-avatar] img")?.getAttribute("src")).toBe(
+      "/api/profile/avatar?v=abc",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(api.deleteAvatar).toHaveBeenCalled());
+    expect(cfg.reload).toHaveBeenCalled();
+  });
+
+  test("a refusal, from the browser or the server, is said", async () => {
+    prep.squareAvatar.mockRejectedValueOnce(new AvatarImageError("Choose a PNG, JPEG or WebP image."));
+    render(<ProfileSettings />);
+    await userEvent.upload(screen.getByTestId("profile-avatar-input"), file());
+    expect(await screen.findByRole("alert")).toHaveTextContent("Choose a PNG, JPEG or WebP image.");
+    prep.squareAvatar.mockResolvedValue(new Blob(["x"], { type: "image/webp" }));
+    api.putAvatar.mockRejectedValue(new ApiError(415, "only PNG, JPEG or WebP images"));
+    await userEvent.upload(screen.getByTestId("profile-avatar-input"), file());
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("only PNG, JPEG or WebP images"),
+    );
+  });
+});
