@@ -115,7 +115,7 @@ test("a waiting candidate generation is where Sign in goes", async () => {
   renderPane();
   const link = await screen.findByRole("link", { name: `Sign in to ${SOURCE.label}` });
   await waitFor(() =>
-    expect(link).toHaveAttribute("href", setupPath({ plugin: SOURCE.id, generation: "g-new" })),
+    expect(link).toHaveAttribute("href", setupPath({ plugin: SOURCE.id, generation: "g-new", step: "signin" })),
   );
 });
 
@@ -147,7 +147,7 @@ test("signinPath never sends sign-in to the active generation", () => {
   expect(signinPath(id, catalog({ active: "g-active", candidate: null }))).toBe(setupPath({ plugin: id }));
   expect(signinPath(id, catalog({ active: "g-active", candidate: "g-gone" }))).toBe(setupPath({ plugin: id }));
   expect(signinPath(id, catalog({ active: null, candidate: "g-new" }))).toBe(
-    setupPath({ plugin: id, generation: "g-new" }),
+    setupPath({ plugin: id, generation: "g-new", step: "signin" }),
   );
 });
 
@@ -163,7 +163,7 @@ function withCandidate(review: Partial<PluginGeneration["review"]> | null, entry
 
 test("signinPath skips a stale candidate and keeps a current, local or uncatalogued one", () => {
   const id = SOURCE.id;
-  const atGeneration = setupPath({ plugin: id, generation: "g-old" });
+  const atGeneration = setupPath({ plugin: id, generation: "g-old", step: "signin" });
   expect(signinPath(id, withCandidate({}, { digest: "new" }))).toBe(setupPath({ plugin: id }));
   expect(signinPath(id, withCandidate({ source: "bundled" }, { digest: "new" }))).toBe(setupPath({ plugin: id }));
   expect(signinPath(id, withCandidate({}, { digest: "old" }))).toBe(atGeneration);

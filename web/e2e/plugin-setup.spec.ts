@@ -802,6 +802,24 @@ test("an activated API endpoint stays read-only after disabling", async ({ page 
   expect(m.writes).toHaveLength(0);
 });
 
+test("step=signin opens a verified waiting copy at its sign-in step, never the active one", async ({ page }) => {
+  const m = await fixture(page, true);
+  m.gen.verification = { digest: m.gen.review.digest, checked_at: 1790852400,
+    results: m.gen.required_checks.map(check => ({ check, passed: true, detail: "Passed." })) };
+  // Plain: a verified copy opens at Enable.
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await expect(page.getByRole("heading", { name: "Ready to enable" })).toBeVisible();
+  // A Sign in link: the same copy opens at its sign-in.
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}&step=signin`);
+  await expect(page.getByRole("heading", { name: "Connect your account" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start sign-in", exact: true })).toBeVisible();
+  // Sign-in never runs on the active generation, so the intent is ignored there.
+  Object.assign(m.data.plugins[0], { active: GEN, enabled: true });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}&step=signin`);
+  await expect(page.getByRole("button", { name: "Start sign-in", exact: true })).toHaveCount(0);
+  expect(m.writes).toHaveLength(0);
+});
+
 test("reopening an enabled installation does not offer re-verification", async ({ page }) => {
   const m = await fixture(page, true);
   m.gen.verification = { digest: m.gen.review.digest, checked_at: 1790852400,

@@ -12,7 +12,7 @@
 import { isActive } from "../../app/engineRoster";
 import type { EngineInfo, EngineProblem } from "../../types/api";
 import type { PluginCatalog, PluginGeneration, PluginInstallation, PluginManifest, PluginReview } from "../../types/plugins";
-import { pendingOperation, setupPath, verifiedGeneration } from "../plugins/model";
+import { pendingOperation, SETUP_STEP, SETUP_STEP_SIGNIN, setupPath, verifiedGeneration } from "../plugins/model";
 
 /** An LED tone (docs/design.md §3): up = working, deg = needs the operator, down = broken,
  *  idle = neither (disabled, retiring). */
@@ -150,7 +150,8 @@ export function staleAgainst(
 
 /** Where the operator signs in to agent `id` again (a failed turn's Sign in): setup's sign-in
  *  step for its candidate generation when one waits that is not the active one (sign-in only ever
- *  runs on an inactive generation) and is not stale, else setup for the agent, which reviews a
+ *  runs on an inactive generation) and is not stale — at the sign-in step even when that copy is
+ *  already verified, which would otherwise open at Enable — else setup for the agent, which reviews a
  *  new generation from the current catalog to sign in with. A stale leftover is never the target
  *  (#1852): enabling it after signing in once replaced a newer host binary. Without the catalog,
  *  the agent's setup. */
@@ -159,7 +160,7 @@ export function signinPath(id: string, data: PluginCatalog | null): string {
   const waiting = row?.candidate && row.candidate !== row.active ? row.candidate : null;
   const candidate = waiting ? row?.generations?.find((g) => g.id === waiting) : undefined;
   return candidate && !staleAgainst(candidate.review, candidate.id, data)
-    ? setupPath({ plugin: id, generation: candidate.id })
+    ? setupPath({ plugin: id, generation: candidate.id, [SETUP_STEP]: SETUP_STEP_SIGNIN })
     : setupPath({ plugin: id });
 }
 

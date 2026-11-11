@@ -7,7 +7,7 @@ import { AgentEndpointCard } from "../settings/AgentEndpointCard";
 import { manifestVersion, olderThanInstalled, staleAgainst, updateEligible } from "../agents/agentStatus";
 import type { WizardStep } from "../wizard/WizardShell";
 import { SignInTerminal } from "./SignInTerminal";
-import { AGENTS_PATH, pendingOperation, pluginError, rejectedOperation, missingOperation, setupPath, sourceLabel, verifiedGeneration } from "./model";
+import { AGENTS_PATH, pendingOperation, pluginError, rejectedOperation, missingOperation, SETUP_STEP, SETUP_STEP_SIGNIN, setupPath, sourceLabel, verifiedGeneration } from "./model";
 import { api } from "../../lib/api";
 import type { PluginActivationPreview, PluginCatalog, PluginGeneration, PluginOperation, PluginReview } from "../../types/plugins";
 import button from "../ui/actionButton.module.css";
@@ -226,9 +226,13 @@ export function AgentSetupFlow({
       if (!alive) return;
       setCatalog(result);
       if (!op && gen && id) {
-        const found = result.plugins.find(p => p.id === id)?.generations?.find(g => g.id === gen);
+        const row = result.plugins.find(p => p.id === id);
+        const found = row?.generations?.find(g => g.id === gen);
         if (!found) { setError("This installation is unavailable. Return to the gallery and select it again."); return; }
-        setGeneration(gen); setReview(found.review); setStep(verifiedGeneration(found) ? 4 : 2);
+        // A Sign in link (a failed turn's login expired) opens at the sign-in step even on a
+        // verified copy; sign-in only ever runs on an inactive generation, so never on the active one.
+        const atSignin = query.get(SETUP_STEP) === SETUP_STEP_SIGNIN && row?.active !== gen;
+        setGeneration(gen); setReview(found.review); setStep(atSignin || !verifiedGeneration(found) ? 2 : 4);
       }
     }).catch(e => alive && setError(pluginError(e)));
     if (op) {

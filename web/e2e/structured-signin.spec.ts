@@ -51,7 +51,7 @@ test("a sign-in failure offers Sign in to the console agent, and it opens that a
   await expect(chip).toHaveText(/^failed/);
   const link = failed.getByRole("link", { name: `Sign in to ${LABEL}` });
   await expect(link).toBeVisible();
-  await expect(link).toHaveAttribute("href", "/settings/agents/setup/new?plugin=" + SOURCE.source + "&generation=gen-new");
+  await expect(link).toHaveAttribute("href", "/settings/agents/setup/new?plugin=" + SOURCE.source + "&generation=gen-new&step=signin");
   expect(plugins.length).toBeGreaterThan(0);
 
   // Right after the chip, inside the pane, not clipped.
@@ -64,7 +64,7 @@ test("a sign-in failure offers Sign in to the console agent, and it opens that a
   // A real click (no overlay in the way) lands on that agent's setup.
   await link.click();
   await expect(page).toHaveURL(
-    new RegExp(`/settings/agents/setup/new\\?plugin=${SOURCE.source}&generation=gen-new$`),
+    new RegExp(`/settings/agents/setup/new\\?plugin=${SOURCE.source}&generation=gen-new&step=signin$`),
   );
 });
 
@@ -101,4 +101,33 @@ test("a stale leftover copy is never where Sign in goes", async ({ page }) => {
   const link = failed.getByRole("link", { name: `Sign in to ${LABEL}` });
   await expect(failed.getByTestId("structured-signin-via-setup")).toContainText("you don’t need to enable the new copy");
   await expect(link).toHaveAttribute("href", "/settings/agents/setup/new?plugin=" + SOURCE.source);
+});
+
+// The waiting copy had already passed verification, so setup opened it at Enable ("Ready to
+// enable", Verify / Enable): Sign in led to verification, never to a sign-in. Red on origin/main.
+test("Sign in opens the sign-in step even when the waiting copy is already verified", async ({ page }) => {
+  await setup(page);
+  const checks = ["binary", "version"];
+  const review = {
+    id: "r-1", plugin_id: SOURCE.source, source: "bundled", sequence: null, digest: "d".repeat(64),
+    recipe_digest: "e".repeat(64), adopted_path: null, adopted_sha256: null, expires_at: 2_000_000_000,
+    entry: { manifest: { identity: { id: SOURCE.source, label: LABEL, publisher: "battlelab", version: "2" },
+      install: { kind: "npm-prefix" }, signin: { kind: "auth-login" } }, recipe: { artifacts: [] } },
+  };
+  const verified = { id: "gen-new", review, required_checks: checks,
+    verification: { digest: review.digest, checked_at: 1, results: checks.map((check) => ({ check, passed: true, detail: "ok" })) } };
+  await page.route("**/api/plugins", (r) => r.fulfill({ json: {
+    plugins: [{ id: SOURCE.source, enabled: true, active: "gen-active", candidate: "gen-new",
+      generations: [{ ...verified, id: "gen-active" }, verified] }],
+    catalog: [], operations: [], feed: { state: "ready", sequence: 1, error: null }, roster_revision: null,
+  } }));
+  const writes: string[] = [];
+  page.on("request", (r) => { if (r.method() !== "GET" && r.url().includes("/api/plugins")) writes.push(r.url()); });
+  await page.goto(`/s/${ENGINE}/${ID}`);
+  await page.getByTestId("structured-turn").nth(1).getByRole("link", { name: `Sign in to ${LABEL}` }).click();
+  await expect(page.getByRole("heading", { name: "Connect your account" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start sign-in", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Ready to enable" })).toHaveCount(0);
+  // Opening it starts nothing: the sign-in begins on the operator's click.
+  expect(writes).toEqual([]);
 });
