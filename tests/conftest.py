@@ -62,6 +62,8 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_SPECIALISTS_DB": ".config/agent-sessions/specialists.db",  # #1693
     "AGENT_SESSIONS_MISSION_PLANS_DB": ".config/agent-sessions/mission-plans.db",  # #1924
     "AGENT_SESSIONS_SHARES_DB": ".config/agent-sessions/shares.db",  # #1404 public links
+    "AGENT_SESSIONS_ARTIFACTS_DB": ".config/agent-sessions/artifact_store.db",  # #1932 artifacts
+    "AGENT_SESSIONS_ARTIFACTS_DIR": ".local/share/agent-sessions/artifacts",  # #1932 their bytes
     "AGENT_SESSIONS_PREFS": ".config/agent-sessions/prefs.json",
     "AGENT_SESSIONS_METADATA": ".config/agent-sessions/metadata.json",
     "AGENT_SESSIONS_PROJECTS": ".config/agent-sessions/projects.json",
@@ -661,6 +663,24 @@ def _isolate_shares_db(tmp_path, monkeypatch) -> None:
     shares.reset_for_tests()
     yield
     shares.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_artifacts_store(tmp_path, monkeypatch) -> None:
+    """Point the artifacts store (#1932) and its content directory at per-test tmp paths."""
+    from agent_sessions import artifact_store
+
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_ARTIFACTS_DB",
+        str(tmp_path / ".config" / "agent-sessions" / "artifact_store.db"),
+    )
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_ARTIFACTS_DIR",
+        str(tmp_path / ".local" / "share" / "agent-sessions" / "art"),
+    )
+    artifact_store.reset_for_tests()
+    yield
+    artifact_store.reset_for_tests()
 
 
 @pytest.fixture(autouse=True)

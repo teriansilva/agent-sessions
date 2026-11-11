@@ -540,6 +540,17 @@ def set_hq_reports(value: bool, path: Path | None = None) -> bool:
     return _set("hq_reports", bool(value), path)
 
 
+def get_artifacts_enabled(path: Path | None = None) -> bool:
+    """Settings → Artifacts (#1932): OFF unless explicitly turned on. It governs whether NEW
+    launches whose session, mission or project has artifacts turned on get the
+    `battlelab_artifacts` tool; a running agent keeps what it was started with."""
+    return _load(path or _default_path()).get("artifacts_enabled") is True
+
+
+def set_artifacts_enabled(value: bool, path: Path | None = None) -> bool:
+    return _set("artifacts_enabled", bool(value), path)
+
+
 def get_onboarded(path: Path | None = None) -> bool | None:
     """First-run onboarding flag (#463): ``True`` once the wizard completes (or is skipped),
     ``False`` if explicitly reset, or ``None`` when never set — so the caller can infer a sane

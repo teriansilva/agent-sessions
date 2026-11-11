@@ -52,6 +52,26 @@ async function expectDiscBeside(disc: Locator, label: Locator, size: number) {
   expect(await disc.evaluate((e) => getComputedStyle(e).borderTopLeftRadius)).toBe("50%");
 }
 
+/** The `file` part of a multipart body: its declared type and its bytes. */
+function filePart(body: Buffer, contentType: string): { type: string; data: Buffer } | null {
+  const boundary = /boundary=("?)([^";]+)\1/.exec(contentType)?.[2];
+  if (!boundary) return null;
+  const delim = Buffer.from(`--${boundary}`);
+  let at = body.indexOf(delim);
+  while (at !== -1) {
+    const next = body.indexOf(delim, at + delim.length);
+    if (next === -1) break;
+    const part = body.subarray(at + delim.length + 2, next - 2); // skip CRLF after delim / before next
+    const split = part.indexOf("\r\n\r\n");
+    const head = part.subarray(0, split).toString("utf8");
+    if (/name="file"/.test(head)) {
+      return { type: /content-type:\s*([^\r\n]+)/i.exec(head)?.[1] ?? "", data: part.subarray(split + 4) };
+    }
+    at = next;
+  }
+  return null;
+}
+
 async function visitor(browser: Browser, testInfo: TestInfo): Promise<Page> {
   const use = testInfo.project.use;
   const ctx = await browser.newContext({
@@ -245,7 +265,7 @@ test("the operator's API session: discs on every message and the head's connecte
   await expect(mine).toHaveCount(2); // you + the agent's reply
   await expectDiscBeside(mine.nth(0), turns.nth(0).getByText("you", { exact: true }), 24);
   const img = mine.nth(0).locator("img");
-  await expect(img).toHaveAttribute("src", "/api/profile/avatar?v=v1");
+  await expect(img).toHaveAttribute("src", /^blob:/);
   await expect.poll(() => img.evaluate((i: HTMLImageElement) => i.complete && i.naturalWidth)).toBe(180);
   await expect(mine.nth(1)).toHaveText("🤖");
 
@@ -275,9 +295,15 @@ test("Settings › Profile: a chosen image is cropped square, scaled, uploaded, 
     const req = r.request();
     if (req.method() === "GET") return r.fulfill({ body: uploaded ?? ICON, contentType: uploadedType || "image/png" });
     if (req.headers()["x-csrf-token"] !== "operator-csrf") return r.fulfill({ status: 403, json: { detail: "csrf" } });
-    if (req.method() === "PUT") {
-      uploaded = req.postDataBuffer();
-      uploadedType = req.headers()["content-type"] ?? "";
+    if (req.method() === "POST") {
+      // An edge WAF (OWASP CRS 920420) refuses a raw image/* request body before it reaches the
+      // app — the operator saw only "forbidden". Model it: only multipart/form-data gets through.
+      const ct = req.headers()["content-type"] ?? "";
+      if (!ct.startsWith("multipart/form-data")) return r.fulfill({ status: 403, body: "forbidden" });
+      const part = filePart(req.postDataBuffer()!, ct);
+      if (!part) return r.fulfill({ status: 422, json: { detail: "no file in the form" } });
+      uploaded = part.data;
+      uploadedType = part.type;
       version = "v2";
       return r.fulfill({ json: { version } });
     }
@@ -293,7 +319,9 @@ test("Settings › Profile: a chosen image is cropped square, scaled, uploaded, 
   await expect(panel.locator('[data-avatar][data-kind="accent"]')).toHaveText("M");
   await panel.getByTestId("profile-avatar-input").setInputFiles(WIDE);
   const img = panel.locator("[data-avatar] img");
-  await expect(img).toHaveAttribute("src", "/api/profile/avatar?v=v2");
+  // The bytes come through the fetch seam (the Home Free tunnel in app mode) as an object URL.
+  await expect(img).toHaveAttribute("src", /^blob:/);
+  await expect(panel.getByRole("alert")).toHaveCount(0);
 
   // What went over the wire is a square at most 256 px, encoded by the browser.
   expect(uploaded).not.toBeNull();

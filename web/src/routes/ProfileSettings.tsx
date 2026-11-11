@@ -3,7 +3,8 @@
  *  It shows beside the operator's messages in API sessions and to everyone who opens one of their
  *  API share links, so the hint says so. The image is cropped and scaled here (`squareAvatar`);
  *  the server accepts only PNG/JPEG/WebP bytes under its cap and is the authority on what it
- *  stored — the preview always comes from `/api/config.avatar`, never from the chosen file. */
+ *  stored — the preview always comes from `/api/config.avatar` (fetched through the tunnel-aware seam, so it
+ *  works over the Home Free relay), never from the chosen file. */
 import { useRef, useState } from "react";
 
 import { useConfig, useConfigReload } from "../app/config";
@@ -11,6 +12,7 @@ import { Avatar } from "../components/chat/Avatar";
 import { operatorAvatarSpec } from "../components/chat/avatarSpec";
 import { ApiError, api } from "../lib/api";
 import { AVATAR_ACCEPT, AvatarImageError, squareAvatar } from "../lib/avatarImage";
+import { useOperatorAvatarSrc } from "../lib/operatorAvatar";
 import styles from "./Settings.module.css";
 
 export function ProfileSettings() {
@@ -20,6 +22,7 @@ export function ProfileSettings() {
   const [busy, setBusy] = useState<"upload" | "remove" | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const version = config?.avatar ?? null;
+  const src = useOperatorAvatarSrc(version);
 
   const run = async (kind: "upload" | "remove", fn: () => Promise<unknown>) => {
     setBusy(kind);
@@ -40,7 +43,7 @@ export function ProfileSettings() {
 
   const chosen = (file: File | undefined) => {
     if (!file) return;
-    void run("upload", async () => api.putAvatar(await squareAvatar(file)));
+    void run("upload", async () => api.uploadAvatar(await squareAvatar(file)));
   };
 
   return (
@@ -48,7 +51,7 @@ export function ProfileSettings() {
       <h2 id="profile-avatar-h">Avatar</h2>
       <div className={styles.avatarRow}>
         <Avatar
-          spec={operatorAvatarSpec(version, config?.username)}
+          spec={operatorAvatarSpec(src, config?.username)}
           className={styles.avatarPreview}
         />
         <div className={styles.avatarActions}>

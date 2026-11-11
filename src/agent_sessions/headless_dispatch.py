@@ -826,13 +826,14 @@ async def dispatch(
         # Shared project memory (#1441): never the app's own copies. The paths themselves are bound
         # inside the launch fence, immediately before the spawn (below), so a dispatch refused by
         # authentication or admission never mints an inbox.
-        from . import hq_report_broker, memory, secrets_broker, shelf_broker
+        from . import artifact_broker, hq_report_broker, memory, secrets_broker, shelf_broker
 
         for name in (
             *memory.ALL_ENV_KEYS,
             *secrets_broker.ALL_ENV_KEYS,
             *hq_report_broker.ALL_ENV_KEYS,
             *shelf_broker.ALL_ENV_KEYS,
+            *artifact_broker.ALL_ENV_KEYS,
         ):
             env.pop(name, None)  # incl. a specialist's notebook (#1693) and a capability (#1786)
         # OWNERSHIP STARTS HERE, not at `transfer()` (#898 review 5, finding 2).
@@ -1113,6 +1114,16 @@ async def dispatch(
                                 if shelf_mission
                                 else {}
                             )
+                            # The artifacts capability (#1932): when the session's, its
+                            # mission's or its project's artifacts are on now.
+                            artifacts_env = artifact_broker.launch_env(
+                                key,
+                                key,
+                                cwd,
+                                engine=engine,
+                                manifest=engines.manifest_of(prov),
+                                mission_id=shelf_mission,
+                            )
                             try:
                                 mcp = agent_tools.terminal_launch(
                                     engines.manifest_of(prov),
@@ -1126,6 +1137,7 @@ async def dispatch(
                                     secrets_env=capability,
                                     hq_env=hq_env,
                                     shelf_env=shelf_env,
+                                    artifacts_env=artifacts_env,
                                 )
                             except agent_tools.SkillsRefused as e:
                                 # Never launched without the skills it was started for.

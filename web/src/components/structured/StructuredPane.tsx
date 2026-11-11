@@ -92,6 +92,7 @@ import type {
 import chat from "../chat/ChatPane.module.css";
 import { Avatar, type AvatarSpec } from "../chat/Avatar";
 import { operatorAvatarSpec } from "../chat/avatarSpec";
+import { useOperatorAvatarSrc } from "../../lib/operatorAvatar";
 import { useConfig } from "../../app/config";
 import { presenceTitle, presentLabel } from "../../lib/shareFormat";
 import { Markdown } from "./Markdown";
@@ -1597,9 +1598,10 @@ export function StructuredPane({
   const config = useConfig();
   const avatarVersion = config?.avatar;
   const operatorName = config?.username;
+  const avatarSrc = useOperatorAvatarSrc(avatarVersion);
   const operatorAvatar = useMemo(
-    () => operatorAvatarSpec(avatarVersion, operatorName),
-    [avatarVersion, operatorName],
+    () => operatorAvatarSpec(avatarSrc, operatorName),
+    [avatarSrc, operatorName],
   );
   // A skip start's own outcome (#1505): handed over by New session, or this pane's Start. A
   // refusal shows its reason; a lost answer says the start may not have reached BattleLab.

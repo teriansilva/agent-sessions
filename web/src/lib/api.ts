@@ -417,17 +417,19 @@ async function mutateJson<T>(
   return (await r.json()) as T;
 }
 
-/** `PUT /api/profile/avatar` (#1931): the image bytes as the body; the server sniffs the type. */
-async function putAvatar(image: Blob): Promise<{ version: string }> {
-  const r = await apiFetch("/api/profile/avatar", {
-    method: "PUT",
-    credentials: "same-origin",
-    headers: { "Content-Type": image.type || "application/octet-stream", "X-CSRF-Token": csrfToken },
-    body: image,
-  });
-  if (r.status === 401 || r.status === 403) await authGate(r);
-  if (!r.ok) throw new ApiError(r.status, (await errorDetail(r)) || `avatar upload → ${r.status}`);
-  return (await r.json()) as { version: string };
+/** `POST /api/profile/avatar` (#1931): the image as a multipart `file` part — the shape every
+ *  upload here uses. A raw `image/*` body was refused by an edge WAF (OWASP CRS 920420) before it
+ *  reached the app; multipart passes, and goes through the Home Free tunnel like any upload. */
+async function uploadAvatar(image: Blob): Promise<{ version: string }> {
+  // Settings › Profile can be on screen before ConfigProvider's first read lands (a deep link, a
+  // fresh Home Free connect): a file picked in that window would go out with no CSRF token and be
+  // refused "bad csrf". Wait for the token, as the gallery's mount-time POST does (#1440).
+  await csrfReady();
+  const form = new FormData();
+  // A name for the part only (the server sniffs the bytes and ignores both name and type).
+  const ext = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" }[image.type] ?? "bin";
+  form.append("file", image, `avatar.${ext}`);
+  return postForm<{ version: string }>("/api/profile/avatar", form);
 }
 
 /** `POST /api/pulse/ask/stream`, read line by line (#1171). A fetch whose body cannot be read as
@@ -958,8 +960,15 @@ export function currentCsrfToken(): string {
 
 export const api = {
   /** The operator's avatar (#1931). */
-  putAvatar,
-  deleteAvatar: () => deleteJson<{ version: null }>("/api/profile/avatar"),
+  uploadAvatar,
+  /** The avatar's bytes through the fetch seam (the Home Free tunnel in app mode), never an
+   *  `<img src>` on the page's own origin — which over the relay is the relay's. */
+  avatarBlob: (version: string, signal?: AbortSignal) =>
+    fetchBlob(`/api/profile/avatar?v=${enc(version)}`, signal),
+  deleteAvatar: async () => {
+    await csrfReady(); // the same window as `uploadAvatar`
+    return deleteJson<{ version: null }>("/api/profile/avatar");
+  },
   // Calling HQ (#1397 P1). Speech endpoints are configured like the AI endpoint: tokens never
   // come back (`api_key_set`), a blank keeps the stored one and `null` removes it.
   voiceSettings: () => getJson<VoiceSettings>("/api/voice/settings"),

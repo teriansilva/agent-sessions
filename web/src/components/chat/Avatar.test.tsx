@@ -14,9 +14,10 @@ describe("Avatar (#1931)", () => {
     expect(operatorAvatarSpec(null, null)).toEqual({ kind: "accent", initial: "Y" });
   });
 
-  test("an operator image is versioned, and falls back to the initial when it fails", () => {
-    const spec = operatorAvatarSpec("v1", "marcus");
-    expect(spec).toEqual({ kind: "image", src: "/api/profile/avatar?v=v1", fallback: "M" });
+  test("an operator image is its loaded object URL, and falls back to the initial when it fails", () => {
+    expect(operatorAvatarSpec(null, "marcus")).toEqual({ kind: "accent", initial: "M" });
+    const spec = operatorAvatarSpec("blob:avatar-v1", "marcus");
+    expect(spec).toEqual({ kind: "image", src: "blob:avatar-v1", fallback: "M" });
     const { container } = render(<Avatar spec={spec} />);
     const img = container.querySelector("img")!;
     expect(img.getAttribute("alt")).toBe("");

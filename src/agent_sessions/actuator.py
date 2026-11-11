@@ -452,6 +452,43 @@ def render_status(action: dict, cfg: dict) -> dict | None:
     return {"sendable": True, "reason": ""}
 
 
+def render_text(action: dict, cfg: dict) -> str:
+    """The TEXT of one text action (#1899): what `render` pastes into a terminal and what an API
+    session receives as one structured turn. Raises :class:`NotDeliverable` for anything else.
+
+    One function for both transports so the two can never type different words. A `choose` is not
+    text: a terminal gets keystrokes (`render`), an API session gets none at all."""
+    verb = action.get("verb")
+    if verb == "continue":
+        if _is_supervisor_nudge(action):
+            # Operator text plus the objective's own checked facts, re-rendered and compared with
+            # what was proposed. The model's `why` is not an input to any of it.
+            return supervisor_render(action, cfg)["text"]
+        return default_nudge_text(cfg)
+    if verb == "choose":
+        raise NotDeliverable("an API session's questions are answered in its own conversation")
+    if verb == "answer":
+        text = handoff.sanitize_seed(str(action.get("answer") or ""))
+        if not text.strip():
+            raise NotDeliverable("answer with no usable text")
+        return text
+    if verb == "relay":
+        # THE OPERATOR'S OWN WORDS (#894). Same rendering and the same sanitiser as `answer` —
+        # deliberately, because the payload shape is not what differs between them. What differs
+        # is who wrote it, and that is recorded on the action and in the timeline rather than
+        # expressed as a looser payload rule.
+        text = handoff.sanitize_seed(str(action.get("answer") or ""))
+        if not text.strip():
+            raise NotDeliverable("relay with no usable text")
+        return text
+    if _is_draft(action):
+        # AN AI-DRAFTED DIRECTION (#983 P3): model prose, rendered exactly like `answer`
+        # (sanitized). What keeps it safe is not the payload rule but WHO may deliver it: `deliver`
+        # refuses it unless the operator approved it.
+        return draft_text(action)
+    raise NotDeliverable(f"verb {verb!r} is not deliverable")
+
+
 def render(action: dict, cfg: dict) -> bytes:
     """The bytes for one action. Raises :class:`NotDeliverable` for anything else.
 
@@ -459,14 +496,6 @@ def render(action: dict, cfg: dict) -> bytes:
     reached behind an explicit approval.
     """
     verb = action.get("verb")
-    if verb == "continue":
-        if _is_supervisor_nudge(action):
-            # Operator text plus the objective's own checked facts, re-rendered and compared with
-            # what was proposed. The model's `why` is not an input to any of it.
-            text = supervisor_render(action, cfg)["text"]
-        else:
-            text = default_nudge_text(cfg)
-        return session_input.bracketed_paste(text)
     if verb == "choose":
         opt = action.get("option")
         if not isinstance(opt, int) or isinstance(opt, bool):
@@ -502,26 +531,8 @@ def render(action: dict, cfg: dict) -> bytes:
         # A digit and a carriage return. No paste framing, no model text — a numbered prompt
         # wants a keypress, and the narrower the payload the smaller the blast radius.
         return f"{opt}\r".encode()
-    if verb == "answer":
-        text = handoff.sanitize_seed(str(action.get("answer") or ""))
-        if not text.strip():
-            raise NotDeliverable("answer with no usable text")
-        return session_input.bracketed_paste(text)
-    if verb == "relay":
-        # THE OPERATOR'S OWN WORDS (#894). Same rendering and the same sanitiser as `answer` —
-        # deliberately, because the payload shape is not what differs between them. What differs
-        # is who wrote it, and that is recorded on the action and in the timeline rather than
-        # expressed as a looser payload rule.
-        text = handoff.sanitize_seed(str(action.get("answer") or ""))
-        if not text.strip():
-            raise NotDeliverable("relay with no usable text")
-        return session_input.bracketed_paste(text)
-    if _is_draft(action):
-        # AN AI-DRAFTED DIRECTION (#983 P3): model prose, rendered exactly like `answer` (sanitized,
-        # one bracketed paste). What keeps it safe is not the payload rule but WHO may deliver it:
-        # `deliver` refuses it unless the operator approved it.
-        return session_input.bracketed_paste(draft_text(action))
-    raise NotDeliverable(f"verb {verb!r} is not deliverable")
+    # Every text verb: the same words an API session would receive, as one bracketed paste.
+    return session_input.bracketed_paste(render_text(action, cfg))
 
 
 def _viewer_busy(phys_key: str, registry, *, operator_approval: bool = False) -> bool:
@@ -613,9 +624,14 @@ def check_precondition(
     except Exception:
         return False, "session id no longer resolves"
 
+    from . import mission_structured
+
+    api = mission_structured.is_api(prov)
     # (1) engine capability — re-checked at the write boundary, not merely filtered upstream.
-    # `shell` is an agentless bash: a nudge typed into one is a command.
-    if not engines.supports_orchestrator_input(prov):
+    # `shell` is an agentless bash: a nudge typed into one is a command. An API session takes no
+    # keystrokes at all: its text goes as one structured turn (#1899), so the PTY capability does
+    # not apply, and the viewer and screen halves below are replaced by `mission_structured.send`.
+    if not api and not engines.supports_orchestrator_input(prov):
         return False, f"engine {getattr(prov, 'engine_id', '?')} is not orchestrator-actuable"
 
     # (2) the operator may have withdrawn agency AFTER this was proposed.
@@ -626,6 +642,8 @@ def check_precondition(
         return False, "session action opt-out could not be verified"
     if excluded:
         return False, "session is no longer managed by the orchestrator"
+    if api:
+        return True, ""
 
     # (3) nobody else is at the keyboard.
     if _viewer_busy(phys, registry, operator_approval=operator_approval):
@@ -988,6 +1006,10 @@ def withdraw_undeliverable(path=None) -> list[str]:
       every input the renderer reads (ring bytes, width, height), and an unsound one keeps
       offering decisions delivery would refuse (#975 review). One replay per live candidate.
 
+    Neither rule applies to an API session (#1899): it has no registered writer, no dtach socket
+    and no screen, so it would always read as dead. Its waiting decisions are kept, and
+    `mission_structured.send`'s structured precondition refuses one that can no longer succeed.
+
     Viewer state is deliberately not a reason: an attached viewer is transient, and that viewer may
     be the operator about to tap. Only :data:`CLAIMABLE_STATES` are candidates — ``claimed``
     belongs to a delivery in flight — and the write is a compare-and-set from those states, so a
@@ -1042,6 +1064,13 @@ def withdraw_undeliverable(path=None) -> list[str]:
         try:
             phys = rec["authority"]["physical_key"]
         except Exception:  # noqa: BLE001, S112 — an unresolvable id is delivery's to refuse
+            continue
+        # AN API SESSION HAS NO PTY WRITER AND NO DTACH SOCKET (Hermes on #1926), so both console
+        # rules below would read a healthy one as dead or moved. Its decision is kept: delivery's
+        # structured precondition (`mission_structured.send`) refuses what can no longer succeed.
+        from . import mission_structured
+
+        if mission_structured.is_api_key(phys):
             continue
         if not session_input.is_live(phys):
             if not _master_confirmed_dead(phys):
@@ -1184,16 +1213,21 @@ async def deliver(
     if cfg.get("autonomy") == "off":
         return _settle_waiting(action_id, "stale", detail="autonomy is set to off") or rec
 
+    phys = rec["authority"]["physical_key"]
+    from . import mission_structured
+
+    # AN API SESSION TAKES ITS TEXT AS ONE STRUCTURED TURN (#1899), never keystrokes: the same
+    # words `render` would paste, from the same function, and no PTY, writer or screen involved.
+    api = mission_structured.is_api_key(phys)
     try:
         # Off the loop: a supervisor nudge re-reads its objective from the missions store.
-        payload = await asyncio.to_thread(render, view, cfg)
+        payload = await asyncio.to_thread(render_text if api else render, view, cfg)
     except RenderStale as e:
         return _settle_waiting(action_id, "stale", detail=str(e)) or rec
     except NotDeliverable as e:
         return _settle_waiting(action_id, "failed", detail=str(e)) or rec
 
-    phys = rec["authority"]["physical_key"]
-    if not session_input.is_live(phys):
+    if not api and not session_input.is_live(phys):
         return _settle_waiting(action_id, "failed", detail="session is not live") or rec
 
     # Claim BEFORE writing, and ATOMICALLY. A read-then-write across two lock holds lets two
@@ -1223,8 +1257,13 @@ async def deliver(
     dir_check, dir_state = _draft_direction_authority(rec, operator_approval)
     ac_check, ac_state = _auto_choose_authority(rec)
 
-    def _final_guard() -> tuple[bool, str]:
+    def _final_guard(in_fence: bool = False) -> tuple[bool, str]:
         """Evaluated UNDER the write lock, immediately before the first byte.
+
+        ``in_fence`` (#1899): for an API session this runs INSIDE `session_input`'s fence (the
+        #1897 admission), where no `git` may run. The full guard runs first, off the loop and
+        outside the fence; the in-fence pass compares a supervisor nudge's render against its
+        persisted digest without resolving the checkout target (`_render_authority`'s state).
 
         Everything above this ran before the quiet wait, the fd borrow and the lock queue —
         seconds during which the operator can switch orchestration off and a browser can
@@ -1273,7 +1312,10 @@ async def deliver(
         # edited direction, an edited global nudge, a moved head or a new observation since the
         # proposal all refuse here. The same comparison rides the in-fence fingerprint below, so a
         # change after this line is caught before byte one too.
-        if txt_check is not None:
+        if txt_check is not None and in_fence:
+            if txt_state() != str((rec.get("render") or {}).get("digest") or ""):
+                return False, "the direction changed since this was proposed"
+        elif txt_check is not None:
             ok, why = txt_check()
             if not ok:
                 return False, why
@@ -1315,8 +1357,40 @@ async def deliver(
         # like the one that was proposed against" — as of NOW, not as of setup.
         return check_precondition(rec, registry=registry, operator_approval=operator_approval)
 
+    if api:
+        # THE SAME FINAL GUARD, twice (#1899). In full first, off the loop and outside every lock
+        # (it may run `git`); then its git-free half INSIDE the write fence through #1897's
+        # admission, and the worker re-checks the fence at its claim. An automatic send is one
+        # with a caller's authority behind it, or no operator's tap and no operator's words.
+        try:
+            ok, why = await asyncio.to_thread(_final_guard)
+        except Exception as e:  # noqa: BLE001 — as the console's `send_input` maps a raising guard
+            ok, why = False, f"authority could not be verified ({type(e).__name__})"
+        if not ok:
+            return (
+                ledger.compare_and_set(
+                    action_id, frozenset({"claimed"}), "stale", detail=why, outcome="refused"
+                )
+                or rec
+            )
+        state, detail = await mission_structured.send(
+            action_id=action_id,
+            key=phys,
+            text=payload,
+            mission_id=str(rec.get("mission_id") or "") or None,
+            check=lambda: _final_guard(in_fence=True),
+            precondition=rec.get("precondition")
+            if isinstance(rec.get("precondition"), dict)
+            else None,
+            autonomous=authority is not None
+            or (not operator_approval and rec.get("origin") != "operator"),
+        )
+        api_outcome = session_input.Outcome(state, detail)
+    else:
+        api_outcome = None
     try:
-        outcome = await asyncio.to_thread(
+        # An API turn has already settled above; only a terminal session is written to here.
+        outcome = api_outcome or await asyncio.to_thread(
             session_input.send_input,
             phys,
             payload,

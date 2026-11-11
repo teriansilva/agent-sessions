@@ -148,7 +148,19 @@ def _screen_fingerprint(screen: str) -> str:
 
 def precondition_for(key: str) -> dict:
     """Capture what the pass believed about this session's screen. Blocking (ring replay) —
-    call under ``asyncio.to_thread``."""
+    call under ``asyncio.to_thread``.
+
+    An API session has no screen (#1899): what is captured is its last operator turn and whether
+    it was idle, which `mission_structured.send` compares before the turn goes out. A snapshot
+    that can't be read records a turn no session has, so the delivery refuses (fail closed)."""
+    from . import mission_structured
+
+    if mission_structured.is_api_key(key):
+        try:
+            pre = asyncio.run(mission_structured.precondition(key))
+        except Exception:  # noqa: BLE001
+            pre = {"key": key, "api_last_turn": "unreadable", "api_idle": False}
+        return {**pre, "observed_at": time.time()}
     try:
         screen = scrollback.live_tail_text(key, PROMPT_SCREEN_CHARS)
     except Exception:

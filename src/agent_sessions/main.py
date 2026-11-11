@@ -30,6 +30,7 @@ from fastapi.templating import Jinja2Templates
 from . import (
     agent_catalog_refresh,
     ai_review_loop,
+    artifact_broker,
     ask_follow,
     ask_messages,
     ask_operations,
@@ -86,6 +87,7 @@ from .auth import (
 )
 from .devicelink import DeviceLinkStore
 from .routes import ai_review as ai_review_routes
+from .routes import artifacts as artifacts_routes
 from .routes import ask as ask_routes
 from .routes import auth as auth_routes
 from .routes import automations as automations_routes
@@ -140,7 +142,9 @@ _WEB_DIST = Path(
 # Paths the SPA catch-all must never shadow (handled by their own routes / network-only).
 # ``link`` = the device-link QR sign-in routes (#650), server-rendered / JSON, not the SPA.
 # ``p`` = the public share viewer (#1404), served by its own route from ``share.html``.
-_SPA_RESERVED = ("api", "ws", "login", "logout", "healthz", "static", "assets", "link", "p")
+_SPA_RESERVED = (
+    "api", "ws", "login", "logout", "healthz", "static", "assets", "link", "p", "artifacts"
+)  # fmt: skip
 
 # New-session reconcile tunables (#127/#315). Engines that mint their own id (opencode →
 # ``ses_…`` in opencode.db; codex → ``rollout-…uuid.jsonl``) may not write that id until the
@@ -237,6 +241,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # Nor an HQ report capability (#1882).
     hq_report_broker.scrub_process_environment()
     shelf_broker.scrub_process_environment()
+    artifact_broker.scrub_process_environment()
 
     # One-time prefs migration (#357 Phase 2): union-merge any legacy `overview_excluded`
     # hide list into `projects_hidden` and drop the old key. A pure no-op once migrated
@@ -358,6 +363,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         hq_report_task = asyncio.create_task(hq_report_broker.serve())
         # The mission shelf's broker (#1740): mission sessions put results on the shelf through it.
         shelf_task = asyncio.create_task(shelf_broker.serve())
+        # The artifacts broker (#1932): sessions with artifacts on publish through it.
+        artifacts_task = asyncio.create_task(artifact_broker.serve())
         # Periodic AI session review (#356 Phase 2): same reaper pattern. The task exits
         # immediately under the AGENT_SESSIONS_AI_REVIEW_LOOP=0 kill-switch; otherwise it
         # re-reads the ai_review prefs every sweep, so the Settings enable toggle governs
@@ -524,6 +531,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 secrets_task,
                 hq_report_task,
                 shelf_task,
+                artifacts_task,
                 review_task,
                 autosort_task,
                 pulse_task,
@@ -781,6 +789,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     missions_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
     # The mission shelf (#1740): manifest, verdict and the mission-bound read path.
     mission_shelf_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    # Artifacts (#1932): the operator API and the sandboxed hosting routes.
+    artifacts_routes.register(app, cfg=cfg, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Automations (#1201): same auth surface as missions; Run now dispatches with this registry.
     automations_routes.register(
         app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry

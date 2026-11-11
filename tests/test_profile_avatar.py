@@ -150,6 +150,11 @@ async def _operator(app, cfg) -> httpx.AsyncClient:
     return op
 
 
+def _upload(client: httpx.AsyncClient, data: bytes, mime: str = "image/png", **kw):
+    """The SPA's shape: POST multipart/form-data with one ``file`` part (#1931 follow-up)."""
+    return client.post("/api/profile/avatar", files={"file": ("avatar", data, mime)}, **kw)
+
+
 def _assert_avatar_headers(r: httpx.Response, mime: str) -> None:
     assert r.headers["content-type"] == mime
     assert r.headers["x-content-type-options"] == "nosniff"
@@ -165,9 +170,7 @@ async def test_the_operator_uploads_reads_and_removes_and_config_follows(auth_cf
     async with contextlib.aclosing(op):
         assert (await op.get("/api/config")).json()["avatar"] is None
         assert (await op.get("/api/profile/avatar")).status_code == 404
-        r = await op.put(
-            "/api/profile/avatar", content=WEBP, headers={"Content-Type": "image/webp"}
-        )
+        r = await _upload(op, WEBP, "image/webp")
         assert r.status_code == 200, r.text
         version = r.json()["version"]
         assert version == profile_avatar.version_of(WEBP)
@@ -175,8 +178,8 @@ async def test_the_operator_uploads_reads_and_removes_and_config_follows(auth_cf
         got = await op.get(f"/api/profile/avatar?v={version}")
         assert got.status_code == 200 and got.content == WEBP
         _assert_avatar_headers(got, "image/webp")
-        # The client's Content-Type is ignored: the bytes decide.
-        r = await op.put("/api/profile/avatar", content=SVG, headers={"Content-Type": "image/png"})
+        # The part's declared type is ignored: the bytes decide.
+        r = await _upload(op, SVG, "image/png")
         assert r.status_code == 415
         assert (await op.get("/api/profile/avatar")).content == WEBP
         r = await op.delete("/api/profile/avatar")
@@ -202,7 +205,7 @@ async def test_a_refused_profile_folder_never_takes_config_or_the_share_view_dow
         cfg = await op.get("/api/config")
         assert cfg.status_code == 200 and cfg.json()["avatar"] is None
         assert (await op.get("/api/profile/avatar")).status_code == 404
-        assert (await op.put("/api/profile/avatar", content=PNG)).status_code == 500
+        assert (await _upload(op, PNG)).status_code == 500
     v, _ = await _visitor(app, auth_cfg)
     async with contextlib.aclosing(v):
         assert (await v.get("/api/public/avatar")).status_code == 404
@@ -213,14 +216,53 @@ async def test_an_oversized_body_is_refused_before_it_is_stored(auth_cfg, profil
     app = create_app(auth_cfg)
     op = await _operator(app, auth_cfg)
     async with contextlib.aclosing(op):
+        # Over the cap by its declared length: refused before the form is parsed.
+        big = PNG + b"\x00" * (profile_avatar.MAX_BYTES + 64 * 1024)
+        assert (await _upload(op, big)).status_code == 413
+        # Just over the cap, inside the framing allowance: refused on the part itself.
+        edge = PNG + b"\x00" * (profile_avatar.MAX_BYTES - len(PNG) + 1)
+        assert (await _upload(op, edge)).status_code == 413
 
+        # No declared length (a chunked body): refused, never spooled.
         async def body():
-            yield PNG
-            for _ in range(10):
-                yield b"\x00" * (128 * 1024)
+            yield b"--x\r\n"
+            yield b"\x00" * (128 * 1024)
 
-        r = await op.put("/api/profile/avatar", content=body())
-        assert r.status_code == 413
+        r = await op.post(
+            "/api/profile/avatar",
+            content=body(),
+            headers={"Content-Type": "multipart/form-data; boundary=x"},
+        )
+        assert r.status_code == 411
+    assert profile_avatar.read() is None
+
+
+@pytest.mark.anyio
+async def test_only_a_multipart_file_part_is_taken(auth_cfg, profile_dir):
+    """A raw image body is the shape an edge WAF refused (CRS 920420, image/webp not an allowed
+    request type): the route takes the multipart shape every other upload here uses."""
+    app = create_app(auth_cfg)
+    op = await _operator(app, auth_cfg)
+    async with contextlib.aclosing(op):
+        r = await op.post("/api/profile/avatar", content=PNG, headers={"Content-Type": "image/png"})
+        assert r.status_code == 415
+        # A urlencoded body is not the multipart shape at all…
+        r = await op.post("/api/profile/avatar", data={"file": "not a file"})
+        assert r.status_code == 415
+        # …and a multipart TEXT field named `file` (no filename) is not a file.
+        r = await op.post("/api/profile/avatar", files={"file": (None, "not a file")})
+        assert r.status_code == 422
+        r = await op.post("/api/profile/avatar", files={"other": ("a", PNG, "image/png")})
+        assert r.status_code == 422
+        assert (await op.put("/api/profile/avatar", content=PNG)).status_code == 405
+        # A body that only CLAIMS to be multipart: a typed 400, never a 500 (Hermes on #1940).
+        for garbage in (b"not multipart at all", b"--x\r\nno headers end", b"--y\r\n\r\n--y--"):
+            r = await op.post(
+                "/api/profile/avatar",
+                content=garbage,
+                headers={"Content-Type": "multipart/form-data; boundary=x"},
+            )
+            assert r.status_code == 400, (garbage, r.status_code, r.text)
     assert profile_avatar.read() is None
 
 
@@ -229,16 +271,14 @@ async def test_mutations_need_the_login_csrf_and_origin(auth_cfg, profile_dir):
     app = create_app(auth_cfg)
     async with _client(app, auth_cfg) as anon:
         assert (await anon.get("/api/profile/avatar")).status_code == 401
-        assert (await anon.put("/api/profile/avatar", content=PNG)).status_code in (401, 403)
+        assert (await _upload(anon, PNG)).status_code in (401, 403)
         assert (await anon.delete("/api/profile/avatar")).status_code in (401, 403)
     op = await _operator(app, auth_cfg)
     async with contextlib.aclosing(op):
         no_csrf = {k: v for k, v in op.headers.items() if k.lower() != "x-csrf-token"}
-        r = await op.put("/api/profile/avatar", content=PNG, headers={"X-CSRF-Token": "nope"})
+        r = await _upload(op, PNG, headers={"X-CSRF-Token": "nope"})
         assert r.status_code == 403
-        r = await op.put(
-            "/api/profile/avatar", content=PNG, headers={"Origin": "https://evil.example"}
-        )
+        r = await _upload(op, PNG, headers={"Origin": "https://evil.example"})
         assert r.status_code == 403
         del no_csrf
         r = await op.delete("/api/profile/avatar", headers={"X-CSRF-Token": "nope"})

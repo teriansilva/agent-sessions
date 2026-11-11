@@ -44,6 +44,7 @@ from fastapi import FastAPI, WebSocket
 from .. import (
     agent_tools,
     ai_review_loop,
+    artifact_broker,
     engine_choice,
     engines,
     fsbrowse,
@@ -918,6 +919,15 @@ def register(
                         engine=prov.engine_id,
                         manifest=engines.manifest_of(prov),
                     )
+                    # The artifacts capability (#1932): when this session's, its mission's or
+                    # its project's artifacts are on now.
+                    artifacts_env = artifact_broker.launch_env(
+                        transcript_key,
+                        phys_key,
+                        cwd,
+                        engine=prov.engine_id,
+                        manifest=engines.manifest_of(prov),
+                    )
                     tool = agent_tools.terminal_launch(
                         engines.manifest_of(prov),
                         paths,
@@ -926,6 +936,7 @@ def register(
                         secrets_env=capability,
                         hq_env=hq_env,
                         shelf_env=shelf_env,
+                        artifacts_env=artifacts_env,
                     )
                     # …and the report capability's id in the agent's OWN environment, which its
                     # dtach master inherits: a bind reads it back from the kernel to prove the

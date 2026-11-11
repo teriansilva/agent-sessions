@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
@@ -7,6 +7,7 @@ import { resetRoster, setRoster } from "../../app/engineRoster";
 import { api } from "../../lib/api";
 import fixture from "../../test/roster.fixture.json";
 import type { AppConfig, EngineInfo, StructuredSnapshot, StructuredTurn } from "../../types/api";
+import { resetOperatorAvatarCache } from "../../lib/operatorAvatar";
 import { StructuredPane } from "./StructuredPane";
 
 // #1931: the disc beside every message in the operator's own API-session pane, and the head's
@@ -20,6 +21,7 @@ vi.mock("../../lib/api", async () => {
       structuredSnapshot: vi.fn(),
       structuredEvents: vi.fn(),
       sessions: vi.fn().mockResolvedValue({ sessions: [], total: 0 }),
+      avatarBlob: vi.fn(),
     },
   };
 });
@@ -74,6 +76,10 @@ function renderPane(config: Partial<AppConfig> = {}) {
 
 beforeEach(() => {
   setRoster(fixture.engines as EngineInfo[], []);
+  resetOperatorAvatarCache();
+  vi.mocked(api.avatarBlob).mockImplementation(async (v: string) => new Blob([v]));
+  URL.createObjectURL = vi.fn(() => "blob:operator-avatar");
+  URL.revokeObjectURL = vi.fn();
   vi.mocked(api.structuredEvents).mockResolvedValue({
     session_key: KEY,
     revision: 4,
@@ -113,11 +119,21 @@ test("you, a visitor, an unreadable sender and the agent each get their disc", a
   ]);
 });
 
-test("the operator's uploaded image, versioned from the config", async () => {
-  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ turns: [turn({ text: "mine", reply: null })] }));
+test("the operator's uploaded image: fetched once through the seam, shared by every disc", async () => {
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(
+    snap({ turns: [turn({ text: "mine", reply: null }), turn({ text: "again", reply: null })] }),
+  );
   const { container } = renderPane({ avatar: "v9" });
-  await screen.findByText("mine");
-  expect(kinds(container)).toEqual([["image", "/api/profile/avatar?v=v9"]]);
+  await screen.findByText("again");
+  await waitFor(() =>
+    expect(kinds(container)).toEqual([
+      ["image", "blob:operator-avatar"],
+      ["image", "blob:operator-avatar"],
+    ]),
+  );
+  // Never an <img src> on the page's own origin (over Home Free that is the relay's).
+  expect(api.avatarBlob).toHaveBeenCalledTimes(1);
+  expect(api.avatarBlob).toHaveBeenCalledWith("v9");
 });
 
 test("the head counts who is connected once the session is shared, naming them on hover", async () => {

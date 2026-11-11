@@ -695,7 +695,7 @@ async def run(
     env.setdefault("TERM", "xterm-256color")
     env.setdefault("COLORTERM", "truecolor")
     if launch_provider is not None:
-        from . import hq_report_broker, memory, secrets_broker
+        from . import artifact_broker, hq_report_broker, memory, secrets_broker
 
         env.update(thread_env or {})
         # Shared project memory (#1441) reaches a NEW agent process only: an attach is a dtach
@@ -705,6 +705,7 @@ async def run(
             *memory.ALL_ENV_KEYS,
             *secrets_broker.ALL_ENV_KEYS,
             *hq_report_broker.ALL_ENV_KEYS,
+            *artifact_broker.ALL_ENV_KEYS,
         ):
             env.pop(name, None)  # incl. a specialist's notebook (#1693) and a capability (#1786)
         env.update(launch_env or {})

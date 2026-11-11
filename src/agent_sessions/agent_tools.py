@@ -63,6 +63,10 @@ HQ_MODULE = "agent_sessions.hq_report_mcp"
 #: environment is this launch's capability (`shelf_broker.launch_env`): the socket and token FILE.
 SHELF_SERVER_NAME = "battlelab_shelf"
 SHELF_MODULE = "agent_sessions.shelf_mcp"
+#: The artifacts tool (#1932): its own name, beside the others, for a session whose artifacts are
+#: turned on. Its environment is this launch's capability (`artifact_broker.launch_env`).
+ARTIFACTS_SERVER_NAME = "battlelab_artifacts"
+ARTIFACTS_MODULE = "agent_sessions.artifacts_mcp"
 
 CLAUDE_FLAG = "claude-mcp-config-flag"  # `--mcp-config <json>`, claude 2.1.304
 CODEX_OVERRIDE = "codex-config-override"  # `-c mcp_servers.<name>.*`, codex-cli 0.162.0
@@ -255,6 +259,31 @@ def shelf_server(shelf_env: Mapping[str, str] | None) -> Server | None:
     )
 
 
+def artifacts_server(artifacts_env: Mapping[str, str] | None) -> Server | None:
+    """The artifacts tool (#1932) for a launch given an artifacts capability, or None (no tool).
+    Paths only: the socket and the token FILE, never the token — this environment rides argv."""
+    from . import artifact_broker
+
+    if not artifacts_env:
+        return None
+    if set(artifacts_env) != set(artifact_broker.ENV_KEYS) or any(
+        not isinstance(v, str) or not v.startswith("/") or "\0" in v or "\n" in v
+        for v in artifacts_env.values()
+    ):
+        log.warning("artifacts tool: malformed capability environment; not wired in")
+        return None
+    exe = _interpreter("artifacts tool")
+    if exe is None:
+        return None
+    env = {k: artifacts_env[k] for k in sorted(artifact_broker.ENV_KEYS)}
+    return Server(
+        command=exe,
+        args=("-I", "-m", ARTIFACTS_MODULE),
+        env=_with_base_env(env),
+        name=ARTIFACTS_SERVER_NAME,
+    )
+
+
 def claude_add_dirs(secrets_env: Mapping[str, str] | None) -> tuple[str, ...]:
     """``("--add-dir", <this launch's copy directory>)`` or nothing (#1786 smoke): claude only
     runs a command on files inside its working directories, so a guarded session could not pass
@@ -378,6 +407,7 @@ _COPILOT_SERVER_TOOLS: dict[str, list[str]] = {
     SECRETS_SERVER_NAME: ["secret_list", "secret_path"],
     HQ_SERVER_NAME: ["hq_report"],
     SHELF_SERVER_NAME: ["shelf_add"],
+    ARTIFACTS_SERVER_NAME: ["artifact_list", "artifact_publish"],
 }
 
 
@@ -428,6 +458,7 @@ def terminal_launch(
     secrets_env: Mapping[str, str] | None = None,
     hq_env: Mapping[str, str] | None = None,
     shelf_env: Mapping[str, str] | None = None,
+    artifacts_env: Mapping[str, str] | None = None,
 ) -> McpLaunch:
     """What a terminal LAUNCH or an unattended dispatch adds for BattleLab's tools, or `NONE`.
 
@@ -451,6 +482,7 @@ def terminal_launch(
             secrets_server(secrets_env),
             hq_report_server(hq_env),
             shelf_server(shelf_env),
+            artifacts_server(artifacts_env),
         )
         if x is not None
     ]

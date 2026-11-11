@@ -12,7 +12,7 @@ vi.mock("../app/config", () => ({
   useConfig: () => cfg.current,
   useConfigReload: () => cfg.reload,
 }));
-const api = vi.hoisted(() => ({ putAvatar: vi.fn(), deleteAvatar: vi.fn() }));
+const api = vi.hoisted(() => ({ uploadAvatar: vi.fn(), deleteAvatar: vi.fn(), avatarBlob: vi.fn() }));
 vi.mock("../lib/api", async (orig) => ({ ...(await orig<typeof import("../lib/api")>()), api }));
 const prep = vi.hoisted(() => ({ squareAvatar: vi.fn() }));
 vi.mock("../lib/avatarImage", async (orig) => ({
@@ -21,14 +21,20 @@ vi.mock("../lib/avatarImage", async (orig) => ({
 }));
 
 const { ProfileSettings } = await import("./ProfileSettings");
+const { resetOperatorAvatarCache } = await import("../lib/operatorAvatar");
 const { AvatarImageError } = await import("../lib/avatarImage");
 const { ApiError } = await import("../lib/api");
 
 beforeEach(() => {
   cfg.current = { avatar: null, username: "marcus" };
   cfg.reload.mockClear();
-  api.putAvatar.mockReset();
+  api.uploadAvatar.mockReset();
   api.deleteAvatar.mockReset();
+  api.avatarBlob.mockReset();
+  api.avatarBlob.mockImplementation(async (v: string) => new Blob([v], { type: "image/png" }));
+  resetOperatorAvatarCache();
+  URL.createObjectURL = vi.fn((b: Blob) => `blob:avatar-${(b as Blob).size}`);
+  URL.revokeObjectURL = vi.fn();
   prep.squareAvatar.mockReset();
 });
 
@@ -45,10 +51,10 @@ describe("ProfileSettings", () => {
   test("a chosen file is prepared, uploaded, and the config re-read", async () => {
     const prepared = new Blob(["x"], { type: "image/webp" });
     prep.squareAvatar.mockResolvedValue(prepared);
-    api.putAvatar.mockResolvedValue({ version: "v1" });
+    api.uploadAvatar.mockResolvedValue({ version: "v1" });
     render(<ProfileSettings />);
     await userEvent.upload(screen.getByTestId("profile-avatar-input"), file());
-    await waitFor(() => expect(api.putAvatar).toHaveBeenCalledWith(prepared));
+    await waitFor(() => expect(api.uploadAvatar).toHaveBeenCalledWith(prepared));
     expect(cfg.reload).toHaveBeenCalled();
   });
 
@@ -56,9 +62,11 @@ describe("ProfileSettings", () => {
     cfg.current = { avatar: "abc", username: "marcus" };
     api.deleteAvatar.mockResolvedValue({ version: null });
     const { container } = render(<ProfileSettings />);
-    expect(container.querySelector("[data-avatar] img")?.getAttribute("src")).toBe(
-      "/api/profile/avatar?v=abc",
+    // Through the fetch seam (the Home Free tunnel in app mode), shown as an object URL.
+    await waitFor(() =>
+      expect(container.querySelector("[data-avatar] img")?.getAttribute("src")).toBe("blob:avatar-3"),
     );
+    expect(api.avatarBlob).toHaveBeenCalledWith("abc");
     await userEvent.click(screen.getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(api.deleteAvatar).toHaveBeenCalled());
     expect(cfg.reload).toHaveBeenCalled();
@@ -70,7 +78,7 @@ describe("ProfileSettings", () => {
     await userEvent.upload(screen.getByTestId("profile-avatar-input"), file());
     expect(await screen.findByRole("alert")).toHaveTextContent("Choose a PNG, JPEG or WebP image.");
     prep.squareAvatar.mockResolvedValue(new Blob(["x"], { type: "image/webp" }));
-    api.putAvatar.mockRejectedValue(new ApiError(415, "only PNG, JPEG or WebP images"));
+    api.uploadAvatar.mockRejectedValue(new ApiError(415, "only PNG, JPEG or WebP images"));
     await userEvent.upload(screen.getByTestId("profile-avatar-input"), file());
     await waitFor(() =>
       expect(screen.getByRole("alert")).toHaveTextContent("only PNG, JPEG or WebP images"),

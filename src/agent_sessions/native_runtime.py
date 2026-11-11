@@ -43,6 +43,7 @@ from functools import cache, partial
 from pathlib import Path
 
 from . import (
+    artifact_broker,
     chat_store,
     launchtiming,
     model_choice,
@@ -633,6 +634,19 @@ def _launch_generation(
         engine=record["session_key"].partition(":")[0],
         kind="api",
         worker_id=worker.worker_id,
+    )
+    # The artifacts capability (#1932), per GENERATION like memory: a toggle reaches the next
+    # generation, never a live one. Only where the adapter's protocol carries an MCP server.
+    config["artifacts_env"] = (
+        artifact_broker.launch_env(
+            record["session_key"],
+            record["session_key"],
+            record["request"]["cwd"],
+            engine=record["session_key"].partition(":")[0],
+            manifest=prov.manifest,
+        )
+        if kinds.API_MCP_KINDS.get(adapter)
+        else {}
     )
     if adapter == "opencode-acp":
         # The store the source resolves (`store.path_env` first): the worker's maintenance

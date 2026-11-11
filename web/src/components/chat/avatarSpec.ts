@@ -4,14 +4,13 @@
 import type { AvatarSpec } from "./Avatar";
 import { operatorInitials } from "../shell/operatorInitials";
 
-/** The operator's own disc, from `/api/config` (`avatar`, `username`): their image, else their
- *  initial on the accent (`Y` for "you" where there is no login name). */
+/** The operator's own disc: their image once its object URL is loaded (`useOperatorAvatarSrc`,
+ *  through the fetch seam so it works over the Home Free relay), else their initial on the
+ *  accent (`Y` for "you" where there is no login name). */
 export function operatorAvatarSpec(
-  version: string | null | undefined,
+  src: string | null | undefined,
   username: string | null | undefined,
 ): AvatarSpec {
   const initial = username ? ([...operatorInitials(username)][0] ?? "Y") : "Y";
-  return version
-    ? { kind: "image", src: `/api/profile/avatar?v=${encodeURIComponent(version)}`, fallback: initial }
-    : { kind: "accent", initial };
+  return src ? { kind: "image", src, fallback: initial } : { kind: "accent", initial };
 }

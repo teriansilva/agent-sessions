@@ -30,6 +30,10 @@ export const NAVIGATE_FALLBACK_DENYLIST: RegExp[] = [
   // SPA shell answering it would boot the operator app (and bounce a visitor to /login), and a
   // cached copy keyed by a token-bearing URL must not exist at all.
   /^\/p\//,
+  // Hosted artifacts (#1932): agent-written pages served sandboxed by the app itself. The SPA
+  // shell answering one would boot the operator app where the artifact should be, and a cached
+  // copy keyed by a view-token URL must not exist at all.
+  /^\/artifacts(?:\/|$|\?)/,
   /^\/healthz/,
   // The standalone Home Free connect page is its own precached shell — the SPA index.html
   // fallback must not shadow it for browsers already controlled by the app's SW (#27/#558).
@@ -52,6 +56,10 @@ export const SERVER_RENDERED_PATHS: string[] = [
   "/change-password",
   "/link/approve",
   "/p/k3Jx9aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789_-",
+  "/artifacts/5449-5592-2107-4372/",
+  "/artifacts/5449-5592-2107-4372@2/docs/index.html",
+  "/artifacts/v/eyJhIjoiazNKeDlhQmNEZUZnSGlKayJ9.ZzYw.sig/",
+  "/artifacts/p/k3Jx9aBcDeFgHiJkLmNoPq/",
   "/healthz",
   "/connect.html",
 ];

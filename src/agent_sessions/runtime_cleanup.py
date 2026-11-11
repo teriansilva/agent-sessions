@@ -159,6 +159,10 @@ async def cleanup_runtime(
 
     # The mission shelf's capability ends with the runtime too (#1740 P1b).
     await asyncio.to_thread(shelf_broker.revoke_launch, phys_key)
+    from . import artifact_broker
+
+    # So does the artifacts capability (#1932); the artifacts stay (results, not runtime).
+    await asyncio.to_thread(artifact_broker.revoke_launch, phys_key)
 
     # Stale-socket unlink under the single-writer lock (split-brain guard, 2026-06-12 prod
     # wedge) — shared with Settings → Maintenance's prune (#993) so the guard exists once.

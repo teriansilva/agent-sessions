@@ -6,7 +6,7 @@ against this text.
 
 **Codes.**
 - `have` — HQ can do it today.
-- `#1554` / `#1443` / `#1786` — owned by that issue.
+- `#1554` / `#1443` / `#1786` / `#1932` — owned by that issue.
 - `P1`–`P7` — this epic's phases.
 - `never` — a recorded exclusion: credentials, prompts, widening permission or autonomy, approving
   a tap, plugin installs, outsiders driving agents, consent. A note like `off only` means
@@ -157,6 +157,8 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Plugins: review + install, verify, sign in, endpoint candidate | POST /api/plugins/review, …/install, …/verify, …/signin, WS signin | **never** (runs fetched code; sign-in is an interactive vendor login) |
 | Plugins: enable (activate), disable, remove, reload roster, recover, cancel operation | POST /api/plugins/activate, …/disable, …/remove, …/reload, …/recover, …/operations/{id}/cancel | P6 W (remove is destructive) |
 | 2FA enroll / confirm / disable / recovery codes; password; sign out; device link | /api/2fa/*, /api/password, /change-password, /logout, /link/* | **never** (credentials and identity) |
+| Artifacts (#1932): find by provenance and get the link | GET /api/artifacts, GET /api/artifacts/{id} | #1932 R (P4 `artifacts_find`) |
+| Artifacts: the global switch; activation per session, project, mission; delete | GET/PUT /api/artifacts/settings, GET/PUT /api/artifacts/activation, DELETE /api/artifacts/{id} | **never** (activation widens what agents may publish; delete is the operator's own act) |
 | Public shares: list; revoke one; revoke all | GET /api/shares, DELETE /api/shares/{id}, POST …/revoke-all | P6 R/W |
 | Public shares: create (view only) | POST /api/shares mode=view | P6 W (external: public exposure; password and expiry typed on the card) |
 | Public shares: create "can send messages" | POST /api/shares mode=send | **never** (lets outsiders drive an agent) |
@@ -235,6 +237,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | POST /api/folders/mkdir | P1 (same as /api/fs/mkdir) |
 | GET /api/structured/clients/{engine}, GET …/containment | P7 R |
 | /p/*, /api/public/* | n/a (the public share visitor's surface) |
+| /artifacts/* | n/a (hosted artifact bytes; HQ hands out the link, never the bytes) |
 
 ## Never through HQ (recorded decision, §3b)
 
@@ -468,7 +471,7 @@ POST   /api/plugins/{plugin_id}/generations/{generation_id}/endpoint/test       
 POST   /api/prefs                                                                 prefs  # per field: see the prefs map
 DELETE /api/profile/avatar                                                        n/a  # an image the operator picks in a file chooser (#1931)
 GET    /api/profile/avatar                                                        n/a  # upload bytes
-PUT    /api/profile/avatar                                                        n/a  # an image the operator picks in a file chooser (#1931)
+POST   /api/profile/avatar                                                        n/a  # an image the operator picks in a file chooser (#1931)
 GET    /api/projects                                                              have  # list_projects (archived + counts in P1)
 POST   /api/projects                                                              P1
 POST   /api/projects/auto-sort                                                    P1
@@ -622,6 +625,18 @@ GET    /login                                                                   
 POST   /login                                                                     never  # identity
 POST   /login/totp                                                                never  # identity
 POST   /logout                                                                    never  # identity
+GET    /api/artifacts                                                             #1932
+GET    /api/artifacts/settings                                                    never  # widens agents
+PUT    /api/artifacts/settings                                                    never  # widens agents
+GET    /api/artifacts/activation                                                  never  # widens agents
+PUT    /api/artifacts/activation                                                  never  # widens agents
+GET    /api/artifacts/{aid}                                                       #1932
+DELETE /api/artifacts/{aid}                                                       never  # destructive
+GET    /artifacts/p/{public_id}/{rest:path}                                       n/a  # hosted bytes
+GET    /artifacts/v/{token}/{rest:path}                                           n/a  # hosted bytes
+GET    /artifacts/v/{token}                                                       n/a  # hosted bytes
+GET    /artifacts/{ref}                                                           n/a  # hosted bytes
+GET    /artifacts/{ref}/{rest:path}                                               n/a  # hosted bytes
 GET    /p/                                                                        n/a  # public share visitor surface
 GET    /p/{token}                                                                 n/a  # public share visitor surface
 GET    /{spa_path:path}                                                           n/a  # SPA shell

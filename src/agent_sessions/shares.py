@@ -782,15 +782,20 @@ class UnlockThrottle:
 
 # `/p/<token>` in any logged text becomes `/p/<redacted>`. The token is the whole credential for
 # a password-less link, and access logs, error reports and proxy logs outlive any revoke.
+# The same rule masks an artifact's view token, `/artifacts/v/<token>` (#1932): a signed bearer
+# element in the path (a public artifact's `/artifacts/p/<id>` is covered by the `/p/` pattern).
 _P_PATH = re.compile(r"/p/[A-Za-z0-9_-]+")
 REDACTED_PATH = "/p/<redacted>"
+_V_PATH = re.compile(r"/artifacts/v/[A-Za-z0-9_.-]+")
+REDACTED_VIEW_PATH = "/artifacts/v/<redacted>"
 
 
 def redact(text: str) -> str:
-    return _P_PATH.sub(REDACTED_PATH, text)
+    return _V_PATH.sub(REDACTED_VIEW_PATH, _P_PATH.sub(REDACTED_PATH, text))
 
 
-_P_UNREDACTED = re.compile(r"/p/(?!<redacted>)[A-Za-z0-9_-]+")
+_P_UNREDACTED = re.compile(r"/p/(?!<redacted>)[A-Za-z0-9_-]+|/artifacts/v/(?!<redacted>)[\w.-]+")
+_MARKERS = ("/p/", "/artifacts/v/")
 
 
 class RedactShareTokens(logging.Filter):
@@ -803,10 +808,10 @@ class RedactShareTokens(logging.Filter):
 
     @staticmethod
     def _mask(v):
-        return redact(v) if isinstance(v, str) and "/p/" in v else v
+        return redact(v) if isinstance(v, str) and any(m in v for m in _MARKERS) else v
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if isinstance(record.msg, str) and "/p/" in record.msg:
+        if isinstance(record.msg, str) and any(m in record.msg for m in _MARKERS):
             record.msg = redact(record.msg)
         if isinstance(record.args, tuple):
             record.args = tuple(self._mask(a) for a in record.args)

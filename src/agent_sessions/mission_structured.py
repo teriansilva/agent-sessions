@@ -232,3 +232,139 @@ async def dispatch(
         return out
     out.briefed = True
     return out
+
+
+# --- sends into an API session (#1899) -------------------------------------------------------
+
+
+def is_api_key(key: str) -> bool:
+    """Is ``key`` an API session (`engine:<uuid>` of a `runtime = "api"` client)? Never raises."""
+    try:
+        prov, _native = engines.parse_key(key)
+    except Exception:  # noqa: BLE001 — a key that does not resolve is not an API session
+        return False
+    return is_api(prov)
+
+
+def action_operation_id(action_id: str) -> str:
+    """The one operation id a ledger action's structured turn may use, derived and never minted."""
+    if not isinstance(action_id, str) or not action_id:
+        raise ValueError("a structured send needs its action id")
+    return str(uuid.uuid5(MISSION_NAMESPACE, f"action:{action_id}"))
+
+
+def last_operator_turn(snap: dict) -> str | None:
+    """The newest operator turn id a snapshot shows (an agent's own turns are not counted)."""
+    for turn in reversed(snap.get("turns") or ()):
+        if turn.get("kind") != "agent" and turn.get("turn_id"):
+            return str(turn["turn_id"])
+    return None
+
+
+async def precondition(key: str) -> dict:
+    """What a proposal into an API session believed: its last operator turn and whether it was
+    idle. Recorded on the action at proposal time and compared by `send`."""
+    snap = await runtime.snapshot(key)
+    return {
+        "key": key,
+        "api_last_turn": last_operator_turn(snap),
+        "api_idle": snap.get("state") == "idle" and not snap.get("pending_requests"),
+    }
+
+
+def _still_current(snap: dict, pre: dict, *, key: str, autonomous: bool) -> str | None:
+    """Why a send's structured precondition no longer holds, or None.
+
+    An AUTOMATIC send needs a proposal-time precondition for this very session, proposed against
+    an idle session, with no newer operator turn, no pending request and still idle now. The
+    operator's own words need only the first of those that was recorded."""
+    if pre.get("key") not in (None, key):
+        return "this was proposed against another session"
+    if autonomous and "api_last_turn" not in pre:
+        return "an automatic send needs the session as it was when proposed"
+    if autonomous and pre.get("api_idle") is False:
+        return "this was proposed while the session was busy"
+    if autonomous and snap.get("pending_requests"):
+        # The operator's own words may queue behind an open request; an automatic send may not.
+        return "the session is waiting on an approval or a question"
+    if "api_last_turn" in pre and last_operator_turn(snap) != pre.get("api_last_turn"):
+        return "the session has a newer turn than the one this was proposed against"
+    if autonomous and snap.get("state") != "idle":
+        return "the session is busy; an automatic send waits for an idle session"
+    return None
+
+
+async def send(  # noqa: PLR0913 — every argument is part of one delivery's identity
+    *,
+    action_id: str,
+    key: str,
+    text: str,
+    mission_id: str | None,
+    check: Callable[[], tuple[bool, str]],
+    precondition: dict | None,
+    autonomous: bool,
+) -> tuple[str, str]:
+    """Deliver one ledger action's text into API session ``key`` as one GUARDED turn. Returns
+    ``(ledger_state, detail)`` in the actuator's vocabulary; never raises.
+
+    ``check`` is the action's own final guard (authority, policy, membership, render), run INSIDE
+    the write fence by #1897's admission, so a withdrawal after it is refused at the worker's claim.
+    The precondition is read just before: no newer operator turn, no pending request, and idle for
+    an autonomous send. A turn the operator starts after that read makes this one queue behind it.
+    """
+    try:
+        snap = await runtime.snapshot(key)
+    except runtime.StructuredError as exc:
+        if exc.status == 404:
+            return "failed", "the API session no longer exists"
+        return "stale", f"the session could not be read, so nothing was sent ({exc.detail})"
+    except Exception as exc:  # noqa: BLE001 — could not look, so nothing is sent
+        return "stale", f"the session could not be read, so nothing was sent ({type(exc).__name__})"
+    why = _still_current(snap, precondition or {}, key=key, autonomous=autonomous)
+    if why:
+        return "stale", why
+
+    def fenced_check() -> tuple[bool, str]:
+        # Anything the check raises is "authority could not be verified": a known refusal before
+        # any claim, never an ambiguous outcome.
+        try:
+            return check()
+        except Exception as exc:  # noqa: BLE001
+            return False, f"authority could not be verified ({type(exc).__name__})"
+
+    binding = f"mission:{mission_id}" if mission_id else "orchestrator"
+    try:
+        # Built before anything is sent, so a malformed binding or action id is a known refusal
+        # rather than an exception that strands the caller's claim (Hermes on #1926).
+        action_guard = ExecutionGuard(
+            binding, _in_process_only, admit=lambda: session_input.admit_native(key, fenced_check)
+        )
+        operation_id = action_operation_id(action_id)
+    except Exception as exc:  # noqa: BLE001
+        return "stale", f"nothing was sent: the send could not be identified ({type(exc).__name__})"
+    try:
+        sent = await runtime.submit_turn(
+            key,
+            operation_id=operation_id,
+            text=text,
+            context={"mission_id": mission_id, "reservation_id": action_id}
+            if mission_id
+            else {"reservation_id": action_id},
+            execution_admission=action_guard,
+        )
+    except runtime.StructuredError as exc:
+        if exc.status == 404:
+            return "failed", "the API session no longer exists"
+        if exc.status in (409, 422):
+            return "stale", f"nothing was sent: {exc.detail}"
+        return "indeterminate", f"delivery outcome is unknown ({exc.detail}); not retried"
+    except Exception as exc:  # noqa: BLE001 — may have reached the worker
+        return "indeterminate", f"delivery outcome is unknown ({type(exc).__name__}); not retried"
+    code = sent.get("handoff")
+    if code == "sent":
+        return "delivered", "delivered as a structured turn"
+    if code == "queued":
+        return "delivered", "queued behind the running turn"
+    if code == "not_sent":
+        return "stale", "the agent did not take the message; nothing was sent"
+    return "indeterminate", "delivery could not be confirmed; not retried"
