@@ -420,6 +420,12 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
             if isinstance(members, int) and not isinstance(members, bool) and 0 <= members <= 10**6:
                 out["recipient_members"] = members
             out["text"] = text(rec.get("text"), MESSAGE_MAX)
+            if "sender" in rec:
+                # An email (#1836): the From and To addresses, and the subject and body the text
+                # splits into, exactly as the transport sends them.
+                for k, cap in (("sender", 254), ("address", 254), ("subject", 100)):
+                    out[k] = text(rec.get(k), cap)
+                out["body"] = text(rec.get("body"), MESSAGE_MAX)
         elif pkind == "operation":
             # An operation HQ proposed (#1559): the card's server-authored wording. What a tap
             # runs is the sidecar's entry, bound to this card by `binding` (`ask_operations`).
@@ -994,14 +1000,23 @@ def _admit_message(e: dict, pid: str, tid: str, secrets: list[str]) -> dict:
     if not (isinstance(bind, str) and _DIGEST_RE.match(bind)):
         raise ValueError("a message needs its binding")
     rec = e.get("recipient")
+    from .connectors import store as connector_store
+
+    email = "sender" in e
     if not (
         isinstance(rec, dict)
         and set(rec) == {"id", "label", "kind"}
         and isinstance(rec["id"], str)
-        and _RECIPIENT_ID_RE.match(rec["id"])
-        and rec["kind"] in _RECIPIENT_KINDS
+        and (
+            connector_store.valid_address(rec["id"]) and rec["kind"] == "email"
+            if email
+            else _RECIPIENT_ID_RE.match(rec["id"]) and rec["kind"] in _RECIPIENT_KINDS
+        )
     ):
         raise ValueError("malformed recipient")
+    # An email entry (#1836) also carries the From address it was proposed with.
+    if email and not connector_store.valid_address(e["sender"]):
+        raise ValueError("malformed sender")
     body = e.get("text")
     if not isinstance(body, str) or not body or len(body) > MESSAGE_MAX:
         raise ValueError("malformed message text")
@@ -1020,6 +1035,7 @@ def _admit_message(e: dict, pid: str, tid: str, secrets: list[str]) -> dict:
             "kind": rec["kind"],
         },
         "text": guard_text(body, MESSAGE_MAX, secrets=secrets),
+        **({"sender": e["sender"]} if email else {}),
         # Short codes and the provider's id, from this server's own transport; never free text.
         "code": e["code"][:40] if isinstance(e.get("code"), str) else "",
         "message_id": e["message_id"][:255] if isinstance(e.get("message_id"), str) else "",

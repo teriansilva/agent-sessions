@@ -18,8 +18,11 @@ CONTRACT_CURRENT = 1
 #: `github-rest` (#1826) reads github.com's REST API. `nextcloud` (#1829) reads a Nextcloud's files
 #: over WebDAV (`PROPFIND`, `GET`) and searches them through its unified search.
 #: `telegram-bot` and `matrix-cs` (#1832) are messengers: they read nothing, they list who the bot
-#: can reach, and (#1833) send what the Commander taps.
-ADAPTER_KINDS = frozenset({"forgejo-api", "github-rest", "nextcloud", "telegram-bot", "matrix-cs"})
+#: can reach, and (#1833) send what the Commander taps. `smtp` (#1836) sends mail through the
+#: Commander's own account, over a separately reviewed transport (`connector_smtp`, never HTTP).
+ADAPTER_KINDS = frozenset(
+    {"forgejo-api", "github-rest", "nextcloud", "telegram-bot", "matrix-cs", "smtp"}
+)
 
 #: `auth.kind`. `token-header`: a personal access token, sent by `connector_http` only, as
 #: ``Authorization: <scheme> <token>``, only to the origin it was saved for. `basic` (#1829): an
@@ -58,6 +61,7 @@ AUTH_SCOPES = frozenset(
 )
 
 #: `identity.category` (the gallery's sections, #1746). `storage` (#1829): files and folders.
+#: Mail (#1836) is a `messenger`: it sends what the Commander taps, to recipients they allowed.
 CATEGORIES = frozenset({"versioning", "storage", "messenger"})
 
 #: `capabilities.read`: what HQ may read through the adapter, per category. A forge's `files` are
@@ -84,18 +88,31 @@ ADAPTER_READS = {
     "nextcloud": STORAGE_READS,
     "telegram-bot": frozenset(),
     "matrix-cs": frozenset(),
+    "smtp": frozenset(),
 }
 
 #: Which adapters may send, and what.
-ADAPTER_SENDS = {"telegram-bot": SEND_OPS, "matrix-cs": SEND_OPS}
+ADAPTER_SENDS = {"telegram-bot": SEND_OPS, "matrix-cs": SEND_OPS, "smtp": SEND_OPS}
 
 #: The longest message each sending adapter takes (#1833), in characters: Telegram's own limit;
-#: Matrix has no per-message limit below its 64 KiB event cap, so a conservative bound.
-SEND_MAX_CHARS = {"telegram-bot": 4096, "matrix-cs": 32000}
+#: Matrix has no per-message limit below its 64 KiB event cap, so a conservative bound. Mail
+#: (#1836): a text/plain body, also capped on the wire after encoding (`connector_smtp`).
+SEND_MAX_CHARS = {"telegram-bot": 4096, "matrix-cs": 32000, "smtp": 32000}
 
 #: Adapters whose provider deduplicates a repeated send (#1833, #1746 D7): Matrix keys a send by
 #: its txnId, so one claim may repeat it once after an ambiguous end. Never after an interruption.
+#: SMTP is not idempotent: anything ambiguous after `DATA` is `unconfirmed`, never resubmitted.
 IDEMPOTENT_SENDS = frozenset({"matrix-cs"})
+
+#: The origin schemes each adapter's origin may use. A kind with no row takes `http(s)` (the
+#: store's rules). `smtp` (#1836): `smtps` (implicit TLS, port 465 unless stated) or `smtp`
+#: (STARTTLS that must succeed, port 587 unless stated). Never `http(s)` for mail, never `smtp`
+#: for anything else.
+ORIGIN_SCHEMES = {"smtp": frozenset({"smtps", "smtp"})}
+HTTP_SCHEMES = frozenset({"http", "https"})
+
+#: Adapters whose recipients the Commander TYPES (#1836): nothing to discover, so no candidates.
+TYPED_RECIPIENTS = frozenset({"smtp"})
 
 #: Which category each adapter serves: a manifest's `identity.category` must be its adapter's.
 ADAPTER_CATEGORY = {
@@ -104,6 +121,7 @@ ADAPTER_CATEGORY = {
     "nextcloud": "storage",
     "telegram-bot": "messenger",
     "matrix-cs": "messenger",
+    "smtp": "messenger",
 }
 
 #: Which auth each adapter speaks.
@@ -113,4 +131,5 @@ ADAPTER_AUTH = {
     "nextcloud": frozenset({"basic"}),
     "telegram-bot": frozenset({"path-token"}),
     "matrix-cs": frozenset({"token-header"}),
+    "smtp": frozenset({"basic"}),
 }

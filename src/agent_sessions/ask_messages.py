@@ -22,6 +22,11 @@ bound to the card by a keyed digest over instance, generation, recipient and tex
 **Never replayed.** A ``deciding`` entry whose lock is free is ``interrupted``
 (`ask_proposals.recover`), shown as "may have been sent". Sending again is a new card and a new
 tap. Outcomes are the provider's own facts (`connector_http._send`).
+
+**Email** (#1836) is the same flow through the mail transport (`connector_smtp._send`). Its card
+also shows the From address (the connector's ``sender``), the To address, and the subject and
+body the text splits into (`connector_smtp.split_mail`). The From address is in the binding and
+in the entry, and the transport's last fence requires the store's to still equal it.
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ import time
 import unicodedata
 import uuid
 
-from . import ask_store, connector_http, template_secrets
+from . import ask_store, connector_http, connector_smtp, template_secrets
 from .connectors import hq as connector_hq
 from .connectors import kinds
 from .connectors import manifest as manifest_mod
@@ -52,6 +57,17 @@ INTERRUPTED_REASON = (
     "the server stopped while this was being sent: it may have been sent, so check the chat. "
     "It is not sent again."
 )
+
+#: An email's (#1836): where the Commander can look is their own sent mail.
+INTERRUPTED_REASON_EMAIL = (
+    "the server stopped while this was being sent: it may have been sent, so check your sent "
+    "mail. It is not sent again."
+)
+
+
+def interrupted_reason(row: dict) -> str:
+    return INTERRUPTED_REASON_EMAIL if "sender" in row else INTERRUPTED_REASON
+
 
 #: Sends in flight in this process: ``{proposal id: task}``.
 _TASKS: dict[str, asyncio.Task] = {}
@@ -75,15 +91,33 @@ def normalize(text: str) -> str:
     return t.strip()
 
 
-def binding(instance_id: str, generation: int, recipient_id: str, text: str) -> str:
-    canon = json.dumps([instance_id, generation, recipient_id, text], ensure_ascii=False)
+def binding(
+    instance_id: str, generation: int, recipient_id: str, text: str, sender: str | None = None
+) -> str:
+    """The card ↔ entry binding. An email's (#1836) also covers its From address; every other
+    message's canonical form is unchanged (``sender`` None)."""
+    parts: list = [instance_id, generation, recipient_id, text]
+    if sender is not None:
+        parts.append(sender)
+    canon = json.dumps(parts, ensure_ascii=False)
     return template_secrets.keyed_digest("ask-message", canon)
+
+
+def _email_fields(sender: str, address: str, text: str) -> dict:
+    subject, body = connector_smtp.split_mail(text)
+    return {"sender": sender, "address": address, "subject": subject, "body": body}
 
 
 def view(row: dict) -> dict:
     state = row.get("state")
     rec = row.get("recipient") or {}
+    email = (
+        _email_fields(row["sender"], rec.get("id") or "", row.get("text") or "")
+        if isinstance(row.get("sender"), str)
+        else {}
+    )
     return {
+        **email,
         "state": state,
         "connector": row.get("connector") or "",
         # The card's own shape (the live view is merged INTO the card): a label and a kind.
@@ -129,6 +163,17 @@ async def stage(*, cid: str, turn_id: str, turn, args: dict, append_card) -> dic
         raise Refused("refused: the message is empty", "bad_arguments")
     if len(text) > limit:
         raise Refused(f"refused: {m.label} takes at most {limit} characters", "too_long")
+    sender: str | None = None
+    if m.adapter == "smtp":
+        sender = inst["sender"]
+        why = connector_smtp.subject_problem(text)
+        if why:
+            raise Refused(f"refused: {why}", "bad_arguments")
+        wire = connector_smtp.build(
+            sender=sender, to=recipient["id"], text=text, msg_id="0" * 32, eight_bit=False
+        )
+        if len(wire) > connector_smtp.WIRE_MAX:
+            raise Refused("refused: that email is too large once encoded", "too_long")
     # A secret or a credential-shaped text is refused, never redacted into a different message.
     if await asyncio.to_thread(ask_store.guard_text, text, len(text)) != text:
         raise Refused(
@@ -144,7 +189,11 @@ async def stage(*, cid: str, turn_id: str, turn, args: dict, append_card) -> dic
         if why:
             raise Refused(f"refused: {why.removesuffix('; nothing was sent')}", "unknown_recipient")
         members = facts["members"]
-    bind = await asyncio.to_thread(binding, inst["id"], inst["generation"], recipient["id"], text)
+    bind = await asyncio.to_thread(
+        binding, inst["id"], inst["generation"], recipient["id"], text, sender
+    )
+    email = _email_fields(sender, recipient["id"], text) if sender is not None else {}
+
     pid = uuid.uuid4().hex
     try:
         await append_card(
@@ -160,6 +209,7 @@ async def stage(*, cid: str, turn_id: str, turn, args: dict, append_card) -> dic
                 "recipient_kind": recipient["kind"],
                 **({"recipient_members": members} if isinstance(members, int) else {}),
                 "text": text,
+                **email,
             },
         )
     except Exception:
@@ -178,6 +228,7 @@ async def stage(*, cid: str, turn_id: str, turn, args: dict, append_card) -> dic
         "connector": m.label,
         "recipient": dict(recipient),
         "text": text,
+        **({"sender": sender} if sender is not None else {}),
     }
     from . import ask_proposals
 
@@ -187,7 +238,10 @@ async def stage(*, cid: str, turn_id: str, turn, args: dict, append_card) -> dic
         raise Refused(
             "refused: the message could not be recorded; nothing will be sent", "not_recorded"
         ) from None
-    return {"connector": m.label, "recipient": recipient["label"], "characters": len(text)}
+    out = {"connector": m.label, "recipient": recipient["label"], "characters": len(text)}
+    if sender is not None:
+        out["subject"] = email["subject"]
+    return out
 
 
 # ---- the tap ---------------------------------------------------------------------------------
@@ -203,7 +257,8 @@ def _card_binding(cid: str, pid: str) -> str | None:
 def precheck(cid: str, row: dict) -> str | None:
     """Why this entry may not be sent NOW, or None. Blocking."""
     rec = row["recipient"]
-    expect = binding(row["instance_id"], row["generation"], rec["id"], row["text"])
+    sender = row.get("sender")
+    expect = binding(row["instance_id"], row["generation"], rec["id"], row["text"], sender)
     if row.get("binding") != expect or _card_binding(cid, row["id"]) != expect:
         return "the message changed since it was proposed; nothing was sent"
     try:
@@ -217,6 +272,13 @@ def precheck(cid: str, row: dict) -> str | None:
         return f"{row.get('connector')} changed since this was proposed; nothing was sent"
     if rec["id"] not in {r["id"] for r in inst["recipients"]}:
         return f"{rec.get('label')} is no longer an allowed recipient; nothing was sent"
+    if (sender is not None) != ("sender" in inst):
+        return "this message is not for that connector; nothing was sent"
+    if sender is not None:
+        if inst["sender"] != sender:
+            return "the From address changed since this was proposed; nothing was sent"
+        if not (connector_store.valid_address(rec["id"]) and connector_store.valid_address(sender)):
+            return f"{rec.get('label')} is not one plain address now; nothing was sent"
     try:
         if ask_store.guard_text(row["text"], len(row["text"])) != row["text"]:
             return "the message now holds a secret; nothing was sent"
@@ -400,14 +462,24 @@ async def _send_task(cid: str, row: dict, fd: int) -> None:
         if _HOOK_BEFORE_SEND is not None:
             await _HOOK_BEFORE_SEND()
         started = True
-        out = await connector_http._send(
-            bound,
-            row["recipient"]["id"],
-            row["text"],
-            idem_key=pid,
-            final_check=_final_check(row),
-            recheck=_recheck(bound, row["recipient"]["id"]),
-        )
+        if bound.adapter == "smtp":
+            out = await connector_smtp._send(
+                bound,
+                row["recipient"]["id"],
+                row["text"],
+                pid,
+                row.get("sender") or "",
+                final_check=_final_check(row),
+            )
+        else:
+            out = await connector_http._send(
+                bound,
+                row["recipient"]["id"],
+                row["text"],
+                idem_key=pid,
+                final_check=_final_check(row),
+                recheck=_recheck(bound, row["recipient"]["id"]),
+            )
         if _HOOK_AFTER_SEND is not None:
             await _HOOK_AFTER_SEND()
         settle = {

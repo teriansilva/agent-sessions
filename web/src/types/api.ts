@@ -1178,6 +1178,12 @@ export type AskMessageCard = {
   code?: string;
   can_send?: boolean;
   can_dismiss?: boolean;
+  /** An email (#1836): the configured From, the To address, and the subject and body the text
+   *  splits into, as the transport sends them. Absent on every other message. */
+  sender?: string;
+  address?: string;
+  subject?: string;
+  body?: string;
 };
 export type AskMessageDecision = Omit<AskMessageCard, "action_id" | "kind">;
 export type AskProposalCard = AskNudgeCard | AskSessionCard | AskOperationCard | AskMessageCard;

@@ -299,7 +299,7 @@ def recover(cid: str) -> None:
                     if r.get("kind") == "message":
                         from . import ask_messages
 
-                        reason = ask_messages.INTERRUPTED_REASON
+                        reason = ask_messages.interrupted_reason(r)
                     if r.get("kind") == "operation":
                         from . import ask_operations
 

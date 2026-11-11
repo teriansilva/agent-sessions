@@ -997,7 +997,10 @@ export const api = {
   connectors: () => getJsonWithDetail<ConnectorCatalog>("/api/connectors"),
   addConnector: (manifestId: string) =>
     mutateJson<ConnectorInstance>("POST", "/api/connectors/instances", { manifest_id: manifestId }),
-  updateConnector: (id: string, body: { origin?: string; token?: string | null }) =>
+  updateConnector: (
+    id: string,
+    body: { origin?: string; token?: string | null; account?: string; sender?: string },
+  ) =>
     mutateJson<ConnectorInstance>("PATCH", `/api/connectors/instances/${enc(id)}`, body),
   testConnector: (id: string) =>
     mutateJson<ConnectorTestResult>("POST", `/api/connectors/instances/${enc(id)}/test`),
@@ -1010,6 +1013,17 @@ export const api = {
     ),
   setConnectorRecipients: (id: string, ids: string[]) =>
     mutateJson<ConnectorInstance>("PUT", `/api/connectors/instances/${enc(id)}/recipients`, { ids }),
+  // An email connector's allowlist (#1836): addresses the Commander typed, each checked by the
+  // server; `generation` is the one the page showed, so a save after a change elsewhere is refused.
+  setConnectorAddresses: (
+    id: string,
+    addresses: { address: string; label: string }[],
+    generation: number,
+  ) =>
+    mutateJson<ConnectorInstance>("PUT", `/api/connectors/instances/${enc(id)}/recipients`, {
+      addresses,
+      generation,
+    }),
   setConnectorSend: (id: string, send: boolean) =>
     mutateJson<ConnectorInstance>("POST", `/api/connectors/instances/${enc(id)}/capabilities`, { send }),
   removeConnector: (id: string) =>

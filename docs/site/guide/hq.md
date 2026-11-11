@@ -370,9 +370,39 @@ bot, or a Matrix connector moves to another homeserver, sending switches off and
 check the recipients and save them again to switch it back on. A new token for the **same** bot
 keeps everything.
 
+### Email
+
+The **Email** connector lets HQ propose an email, sent through **your own mail account** over
+SMTP, and only when you tap **Send**. It is a messenger like the two above: the same card, the
+same outcomes, nothing ever sent twice.
+
+1. **Add Email**. Enter your provider's SMTP server as its **Address**: `smtps://mail.example.com`
+   (TLS from the start, port 465) or `smtp://mail.example.com` (STARTTLS, port 587); add `:port`
+   for any other port. TLS is always required: a server that doesn't offer it, or whose
+   certificate doesn't match its name, is refused before your password is sent.
+2. Enter the **account** you sign in with and an **app password** made for BattleLab (most
+   providers offer one under their security settings), then **Save and test**. The test signs in
+   and sends nothing.
+3. Set the **From address** every message shows and **Save** it. Changing it later puts any email
+   still waiting for your tap out of date.
+4. Under **Addresses HQ may write to**, type each address (one plain address, like
+   `name@example.com`, with an optional name), **Add**, then **Save addresses**, and switch on
+   **Let HQ propose mail**. HQ can only write to these.
+
+The first line of what HQ writes is the **subject** (at most 78 characters) and the rest is the
+body, sent as plain text. The card shows the From address, the To address, the subject and the
+body exactly as they will be sent. An email is **Sent** only once your server has accepted it;
+if no clear answer came back after the message went out, it **may have been sent** and is never
+sent again: check your sent mail. Mail can't be taken back once it's sent.
+
+Addresses belong to the account they were saved for: if the connector later signs in as another
+account, sending switches off until you save them again. Before downgrading BattleLab to a
+version without email, remove the Email connector, as for Telegram and Matrix.
+
 **What happens to the token.** It is stored encrypted, never shown again, and sent only to the
-address you saved it for, over HTTPS (plain HTTP only to this machine itself). Changing the
-address needs the token again. A changed address or token needs a new test before HQ reads
+address you saved it for: over HTTPS (plain HTTP only to this machine itself), or, for the Email
+connector's app password, over TLS to your mail server (`smtps://`, or `smtp://` with STARTTLS;
+never plaintext). Changing the address needs the token again. A changed address or token needs a new test before HQ reads
 through it.
 
 **What happens to what HQ reads.** Issue text, comments and files are written by other people.

@@ -110,3 +110,24 @@
 .recipient label {
   min-height: 44px;
 }
+
+/* An email connector's typed addresses (#1836): the label and address, then Remove. */
+.address {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-1);
+  min-height: 44px;
+}
+.addressText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.address button {
+  flex: 0 0 auto;
+}
+@media (max-width: 800px) {
+  .address button {
+    min-height: 44px;
+  }
+}

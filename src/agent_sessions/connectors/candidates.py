@@ -15,8 +15,8 @@ import threading
 import time
 
 from .. import connector_http
+from . import kinds, store
 from . import manifest as manifest_mod
-from . import store
 from .adapters import ADAPTERS
 
 TTL_S = 600
@@ -78,6 +78,9 @@ async def list_candidates(iid: str) -> dict:
     if not store.MESSENGER_KEYS <= set(inst):
         raise store.Refused("this connector has no recipients", "bad_body")
     m = manifest_mod.bundled()[inst["manifest_id"]]
+    if m.adapter in kinds.TYPED_RECIPIENTS:
+        # Mail (#1836) has nothing to look up: its addresses are typed (`store.set_addresses`).
+        raise store.Refused("an email connector's addresses are typed, not listed", "bad_body")
     rows = []
     for r in await ADAPTERS[m.adapter].candidates(_bound(inst)):
         fit = store.fit_recipient(r.get("id"), r.get("label"), r.get("kind"))

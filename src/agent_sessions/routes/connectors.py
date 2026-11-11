@@ -174,11 +174,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         _csrf: None = Depends(csrf_guard),
     ):
         """The allowlist (#1832): ids only. Each must be an eligible candidate of the snapshot
-        the server took, at the instance's current generation; labels are the server's."""
+        the server took, at the instance's current generation; labels are the server's. An email
+        connector (#1836) takes typed addresses instead: ``{addresses: [{address, label}],
+        generation}``, each checked by `store.set_addresses`."""
         body = await _body(request)
-        if set(body) != {"ids"}:
-            raise _BadRequest("send exactly {ids: [...]}")
-        inst = await _run(store.set_recipients, iid, body["ids"], candidates.snapshot(iid))
+        if set(body) == {"addresses", "generation"}:
+            inst = await _run(store.set_addresses, iid, body["addresses"], body["generation"])
+        elif set(body) == {"ids"}:
+            inst = await _run(store.set_recipients, iid, body["ids"], candidates.snapshot(iid))
+        else:
+            raise _BadRequest("send exactly {ids: [...]} or {addresses: [...], generation}")
         return _json(_public_one(inst))
 
     @app.delete(PREFIX + "/instances/{iid}")

@@ -68,6 +68,9 @@ REF_RES = {
 }
 KINDS = ("repos", "issues", "pulls", "files")
 #: Which search kinds each category answers.
+#: The subject line's cap for an email (`connector_smtp.SUBJECT_MAX`).
+SUBJECT_MAX = 78
+
 CATEGORY_KINDS = {
     "versioning": ("repos", "issues", "pulls"),
     "storage": ("files",),
@@ -263,6 +266,7 @@ async def list_connectors(turn: TurnConnectors) -> tuple[dict, dict]:
                 "host": _host(i["origin"]),
                 "category": bundled[i["manifest_id"]].category,
                 "can_send": store.sendable(i, bundled),
+                "email": "sender" in i,
             }
             for i in doc["instances"]
             # A messenger reads nothing: it is listed when HQ may propose through it (#1833).
@@ -285,6 +289,12 @@ async def list_connectors(turn: TurnConnectors) -> tuple[dict, dict]:
             row["root"] = turn.mint(n, "folder:")  # list it with connector_list
         if r["can_send"]:
             row["can_propose_messages"] = True  # list_recipients, then propose_message
+            if r["email"]:
+                # Mail (#1836): the text's first line is the subject.
+                row["message_format"] = (
+                    f"email: the first line is the subject (at most {SUBJECT_MAX} characters), "
+                    "the rest is the body"
+                )
         out.append(row)
     return {"connectors": out}, {"count": len(out)}
 
@@ -601,7 +611,13 @@ async def list_recipients(turn: TurnConnectors, args: dict) -> tuple[dict, dict]
     rows = [dict(r) for r in inst["recipients"]]
     turn.recipients[idx] = rows
     shown = [
-        {"recipient_index": n, "label": _guard(r["label"], 100, secrets), "kind": r["kind"]}
+        {
+            "recipient_index": n,
+            "label": _guard(r["label"], 100, secrets),
+            "kind": r["kind"],
+            # An email recipient (#1836) is its address: shown, so HQ can say whom it writes to.
+            **({"address": _guard(r["id"], 254, secrets)} if r["kind"] == store.EMAIL_KIND else {}),
+        }
         for n, r in enumerate(rows)
     ]
     return {"connector_index": idx, "recipients": shown}, {"count": len(shown)}

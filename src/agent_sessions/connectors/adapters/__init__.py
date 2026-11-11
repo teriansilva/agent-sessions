@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import ModuleType
 
-from . import forgejo, github, matrix, nextcloud, telegram
+from . import forgejo, github, matrix, nextcloud, smtp, telegram
 
 #: Which module serves each adapter kind. A kind with no row has no code, so nothing reads it.
 ADAPTERS: dict[str, ModuleType] = {
@@ -13,6 +13,7 @@ ADAPTERS: dict[str, ModuleType] = {
     "nextcloud": nextcloud,
     "telegram-bot": telegram,
     "matrix-cs": matrix,
+    "smtp": smtp,
 }
 
 

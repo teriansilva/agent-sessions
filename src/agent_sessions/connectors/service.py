@@ -65,7 +65,7 @@ def _safe_login(login: object, adapter: str = "forgejo-api") -> str:
     # the guard would change is refused rather than shown or used.
     name_re = (
         store.ACCOUNT_RE
-        if adapter == "nextcloud"
+        if adapter in ("nextcloud", "smtp")
         else matrix.USER_ID_RE
         if adapter == "matrix-cs"
         else common.NAME_RE
@@ -96,7 +96,7 @@ async def run_test(iid: str) -> dict:
             return {"status": "stale", "generation": generation}
         return {"status": "failed", "code": e.code, "detail": e.detail, "generation": generation}
     login = await asyncio.to_thread(_safe_login, found["login"], m.adapter)
-    if m.adapter in ("nextcloud", "telegram-bot", "matrix-cs") and not login:
+    if m.adapter in ("nextcloud", "telegram-bot", "matrix-cs", "smtp") and not login:
         # Every later read names its paths by this id: without it nothing could be read.
         settled = await asyncio.to_thread(
             store.settle_test, iid, generation, ok=False, code="bad_reply"

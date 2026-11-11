@@ -372,7 +372,11 @@ export function ConnectorCard({
               inputMode="url"
               spellCheck={false}
               autoComplete="off"
-              placeholder="https://git.example.com"
+              placeholder={
+                manifest?.adapter === "smtp"
+                  ? "smtps://mail.example.com"
+                  : "https://git.example.com"
+              }
               value={fixed ? (manifest?.fixed_origin ?? "") : origin}
               disabled={fixed}
               onChange={(e) => setOrigin(e.target.value)}
@@ -529,6 +533,7 @@ export function ConnectorCard({
               busy={busy !== null}
               onChanged={onChanged}
               matrix={manifest?.adapter === "matrix-cs"}
+              email={manifest?.adapter === "smtp"}
             />
           )}
 

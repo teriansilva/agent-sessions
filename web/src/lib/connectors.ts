@@ -56,6 +56,8 @@ export type ConnectorInstance = {
     now: string;
     at: number;
   } | null;
+  /** An email connector's From address (#1836): `""` until set. Absent on every other kind. */
+  sender?: string;
   created_at: number;
 };
 
@@ -192,4 +194,13 @@ export function tileInstance(
 ): ConnectorInstance | undefined {
   const mine = instances.filter((i) => i.manifest_id === m.id);
   return mine.find((i) => statusLine(i, m.category).tone === "up") ?? mine[0];
+}
+
+/** Why sending was switched off by a change of bot, account or origin (#1832), in words. */
+export function sendOffLine(inst: ConnectorInstance): string | null {
+  const off = inst.send_off;
+  if (!off) return null;
+  return off.reason === "identity_changed"
+    ? `Sending was switched off because this connector now signs in as ${off.now}. The recipients below were chosen for ${off.was}; check them and save again.`
+    : `Sending was switched off because this connector now points at ${off.now}. Check the recipients and save them again.`;
 }

@@ -92,7 +92,9 @@ TRANSPORT_FUNC = "_post_chat"
 # Layer 1 — only these modules may import one. A new module that wants to talk HTTP has to
 # change this list, which is the moment a reviewer asks why it is not using `_post_chat`.
 HTTP_CLIENT_LIBS = frozenset(
-    {"httpx", "requests", "aiohttp", "urllib3", "urllib.request", "http.client"}
+    # `smtplib` (#1836) is not HTTP, but it is a way out of the process with a credential, so it
+    # is held to the same two layers: one pinned module, one counted write.
+    {"httpx", "requests", "aiohttp", "urllib3", "urllib.request", "http.client", "smtplib"}
 )
 HTTP_MODULES = frozenset(
     {
@@ -111,6 +113,7 @@ HTTP_MODULES = frozenset(
         "speech_endpoints",
         "voice_setup",
         "connector_http",  # #1750 HQ connectors: the one connector transport
+        "connector_smtp",  # #1836 the email connector's transport (SMTP, never HTTP)
     }
 )
 
@@ -196,6 +199,10 @@ POST_SITES = {
     # table (no chat-shaped payload, no model text beyond the tapped message), token by the
     # transport after vetting, fenced on SENDING at the token fetch.
     ("connector_http", "_send_once"): 1,
+    # #1836 an email: the ONE write of a message's data, after DATA was accepted, to the vetted
+    # address of the server the Commander saved, over TLS, after AUTH. Never retried; the
+    # headers are the transport's fixed set, the body the tapped text.
+    ("connector_smtp", "_session"): 1,
 }
 
 # Layer 3 — a module that never imports a client can still be handed one. `.post(` / `.request(`

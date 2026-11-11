@@ -126,3 +126,55 @@ test("each outcome reads in words, and none offers Send again", async ({ page })
   await expect(cards.nth(4)).toContainText("It is not sent again");
   await sizes(page);
 });
+
+test("a pending email shows its From, To, subject and body as stored, before the tap", async ({ page }) => {
+  const body = "Deploy window tonight 22:00–23:00 UTC.\n\n.a line with a leading dot\ndanke 🙏";
+  await open(page, [
+    card(9, "pending", {
+      connector: "Email",
+      recipient: "Release crew",
+      recipient_kind: "email",
+      text: `Release v0.19.5 tonight\n\n${body}`,
+      sender: "release-bot@example.com",
+      address: "crew@example.com",
+      subject: "Release v0.19.5 tonight",
+      body,
+    }),
+  ]);
+  const m = page.getByTestId("ask-message");
+  await expect(m.getByTestId("ask-message-from")).toHaveText("release-bot@example.com");
+  await expect(m.getByTestId("ask-message-to")).toHaveText("Release crew · crew@example.com");
+  await expect(m.getByTestId("ask-message-subject")).toHaveText("Release v0.19.5 tonight");
+  await expect(m.getByTestId("ask-message-text")).toHaveText(body); // the body, as it is sent
+  await expect(m.getByText("Message, verbatim")).toBeVisible();
+  await expect(m.getByText("mail can’t be taken back once it’s sent", { exact: false })).toBeVisible();
+  // Keyboard: Send, then Dismiss, each with a visible focus ring.
+  const sendBtn = m.getByTestId("ask-message-send");
+  await sendBtn.focus();
+  await expect(sendBtn).toBeFocused();
+  const ring = (el: Element) => {
+    const cs = getComputedStyle(el);
+    return cs.outlineStyle !== "none" && parseFloat(cs.outlineWidth) > 0;
+  };
+  expect(await sendBtn.evaluate(ring)).toBe(true);
+  await page.keyboard.press("Tab");
+  await expect(m.getByTestId("ask-message-dismiss")).toBeFocused();
+  expect(await m.getByTestId("ask-message-dismiss").evaluate(ring)).toBe(true);
+  await sizes(page);
+});
+
+test("an email that may have been sent says to check your sent mail", async ({ page }) => {
+  await open(page, [
+    card(10, "unconfirmed", {
+      connector: "Email",
+      sender: "release-bot@example.com",
+      address: "crew@example.com",
+      subject: "s",
+      body: "b",
+    }),
+  ]);
+  const m = page.getByTestId("ask-message");
+  await expect(m.getByTestId("ask-message-outcome")).toContainText("May have been sent");
+  await expect(m.getByTestId("ask-message-outcome")).toContainText("check your sent mail");
+  await expect(m.getByTestId("ask-message-send")).toHaveCount(0);
+});

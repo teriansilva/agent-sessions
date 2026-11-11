@@ -13,6 +13,10 @@ An instance::
      "last_test": None | {"generation", "ok", "code", "at"},
      "enabled": {"read": bool}, "envelopes": {"token": {kid, nonce, ct}}, "created_at"}
 
+An email connector (#1836) also has ``account``, the messenger keys and ``sender`` (its From
+address); its origin is ``smtps://`` or ``smtp://`` (`kinds.ORIGIN_SCHEMES`) and its recipients
+are addresses the Commander typed (`set_addresses`), never discovered.
+
 **Generation vs credential revision.** ``generation`` moves on ANY change to what a test proved:
 origin, token, or the bundled manifest's version. ``credential_revision`` moves only when the
 token or origin changes, and is part of the token's AAD (`secrets.aad`). So a manifest bump clears
@@ -41,6 +45,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .. import atomicjson, net_vetting, template_secrets
+from . import kinds
 from . import manifest as manifest_mod
 from . import secrets as creds
 
@@ -64,6 +69,17 @@ RECIPIENT_ID_RE = re.compile(r"[!A-Za-z0-9:._=+/-]{1,255}")
 RECIPIENT_KINDS = frozenset({"private chat", "group", "supergroup", "channel", "room"})
 LABEL_MAX = 100
 SEND_OFF_REASONS = frozenset({"identity_changed", "origin_changed"})
+#: An email connector's own key (#1836): the From address every message shows. ``""`` until set.
+EMAIL_KEYS = frozenset({"sender"})
+#: A typed recipient's kind (#1836): one plain address, which is also its id.
+EMAIL_KIND = "email"
+ADDRESS_MAX = 254
+#: ONE plain mailbox, ASCII only: a dot-atom local part (no quoted local part, no comment, no
+#: display name, no space, no CR/LF) and a host name of at least two labels (no address literal).
+#: Anything else is refused in words, never "cleaned" into a different address.
+_ATOM = r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+"
+_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+ADDRESS_RE = re.compile(rf"(?:{_ATOM}(?:\.{_ATOM})*)@(?:{_LABEL}(?:\.{_LABEL})+)")
 #: The send rate cap per connector (#1833): at most this many sends claimed per window. A claim is
 #: counted when it is TAKEN, before the send's `deciding` is written, so a crash between the two
 #: can only make the cap stricter. `sends` (the claim times inside the window) exists only on a
@@ -110,14 +126,25 @@ def store_path() -> Path:
 _LOOPBACK_NAMES = frozenset({"localhost"})
 
 
-def normalize_origin(raw: object) -> str:
+def schemes_for(adapter: str | None) -> frozenset[str]:
+    """The origin schemes an adapter kind may use (`kinds.ORIGIN_SCHEMES`; http(s) otherwise)."""
+    return kinds.ORIGIN_SCHEMES.get(adapter or "", kinds.HTTP_SCHEMES)
+
+
+def normalize_origin(raw: object, schemes: frozenset[str] = kinds.HTTP_SCHEMES) -> str:
     """``scheme://host[:port]``, lower-cased, or `Refused`. Only an origin: no path, query,
     fragment or credentials. A token-bearing origin is ``https`` — ``http`` only for a loopback
     literal or ``localhost`` (and `connector_http` checks again at every request that the name
     really resolves to loopback). A literal refused address (link-local, metadata, multicast,
-    unspecified, reserved) is refused here; a NAME is vetted at every request."""
+    unspecified, reserved) is refused here; a NAME is vetted at every request.
+
+    ``schemes`` is the kind's (`schemes_for`): an email connector (#1836) takes ``smtps://`` or
+    ``smtp://`` only, and every other kind never takes either. TLS is always required for mail
+    (``smtp://`` means STARTTLS that must succeed), so mail has no loopback exception to make."""
+    mail = schemes != kinds.HTTP_SCHEMES
+    want = "an smtps:// or smtp:// server" if mail else "an http(s) origin"
     if not isinstance(raw, str) or not raw.strip() or len(raw) > 300:
-        raise Refused("origin must be an http(s) origin", "invalid_origin")
+        raise Refused(f"origin must be {want}", "invalid_origin")
     try:
         parts = urlsplit(raw.strip())
         port = parts.port
@@ -125,8 +152,8 @@ def normalize_origin(raw: object) -> str:
         raise Refused("origin is not a valid URL", "invalid_origin") from None
     scheme = parts.scheme.lower()
     host = (parts.hostname or "").lower()
-    if scheme not in ("http", "https") or not host:
-        raise Refused("origin must be an http(s) origin", "invalid_origin")
+    if scheme not in schemes or not host:
+        raise Refused(f"origin must be {want}", "invalid_origin")
     if parts.username or parts.password:
         raise Refused("origin must not carry credentials", "invalid_origin")
     if parts.path not in ("", "/") or parts.query or parts.fragment:
@@ -140,7 +167,7 @@ def normalize_origin(raw: object) -> str:
         literal = None
     if literal is not None and net_vetting.unsafe_ip(literal):
         raise Refused("origin is a refused address (link-local or metadata)", "refused_destination")
-    if scheme == "http":
+    if scheme == "http" and not mail:
         loopback = (
             net_vetting.is_loopback(literal) if literal is not None else host in _LOOPBACK_NAMES
         )
@@ -220,9 +247,55 @@ def fit_recipient(rid: object, label: object, kind: object) -> dict | None:
     return {"id": rid, "label": text, "kind": kind}
 
 
+def valid_address(raw: object) -> bool:
+    """One plain mailbox (#1836): `ADDRESS_RE`, at most `ADDRESS_MAX` characters, its domain
+    lower-case (as `normalize_address` stores it). Checked when saved AND again at every send."""
+    if not isinstance(raw, str) or len(raw) > ADDRESS_MAX or not ADDRESS_RE.fullmatch(raw):
+        return False
+    local, _, domain = raw.rpartition("@")
+    return len(local) <= 64 and domain == domain.lower()
+
+
+def normalize_address(raw: object) -> str:
+    """The address as stored: the domain lower-cased, the local part kept as typed (a local part
+    can be case-sensitive), nothing else changed. `Refused` with the reason in words."""
+    if not isinstance(raw, str) or not raw:
+        raise Refused("enter an address, like name@example.com", "invalid_address")
+    if raw != raw.strip() or any(c.isspace() for c in raw):
+        raise Refused("an address has no spaces or line breaks", "invalid_address")
+    if "<" in raw or ">" in raw or '"' in raw or "(" in raw or "," in raw or ";" in raw:
+        raise Refused(
+            "write one plain address, like name@example.com, without a name, quotes or a list",
+            "invalid_address",
+        )
+    local, at, domain = raw.rpartition("@")
+    out = f"{local}{at}{domain.lower()}"
+    if not at or not valid_address(out):
+        raise Refused("that isn't an address, like name@example.com", "invalid_address")
+    return out
+
+
+def _valid_email_recipient(r: object) -> bool:
+    return (
+        isinstance(r, dict)
+        and set(r) == {"id", "label", "kind"}
+        and valid_address(r["id"])
+        and isinstance(r["label"], str)
+        and 0 < len(r["label"]) <= LABEL_MAX
+        and r["label"].isprintable()
+        and r["kind"] == EMAIL_KIND
+    )
+
+
 def _valid_messenger(inst: dict) -> bool:
     rs = inst["recipients"]
-    if not isinstance(rs, list) or len(rs) > RECIPIENTS_MAX or not all(map(_valid_recipient, rs)):
+    email = "sender" in inst
+    if email and not (
+        isinstance(inst["sender"], str) and (inst["sender"] == "" or valid_address(inst["sender"]))
+    ):
+        return False
+    check = _valid_email_recipient if email else _valid_recipient
+    if not isinstance(rs, list) or len(rs) > RECIPIENTS_MAX or not all(map(check, rs)):
         return False
     if len({r["id"] for r in rs}) != len(rs):
         return False
@@ -247,12 +320,16 @@ def _valid_messenger(inst: dict) -> bool:
 def _valid_instance(inst: object) -> bool:
     # `account` (#1829) is present only on a `basic` connector, so a store holding none of them is
     # byte-for-byte what an older build reads.
+    # An email connector (#1836) has all of them plus `sender`: no older build reads it.
     keys = set(inst) if isinstance(inst, dict) else None
+    email = _INSTANCE_KEYS | {"account"} | MESSENGER_KEYS | EMAIL_KEYS
     if keys not in (
         _INSTANCE_KEYS,
         _INSTANCE_KEYS | {"account"},
         _INSTANCE_KEYS | MESSENGER_KEYS,
         _INSTANCE_KEYS | MESSENGER_KEYS | {"sends"},
+        email,
+        email | {"sends"},
     ):
         return False
     if "sends" in keys and not (
@@ -282,7 +359,8 @@ def _valid_instance(inst: object) -> bool:
         return False
     if origin:
         try:
-            if normalize_origin(origin) != origin:
+            schemes = schemes_for("smtp") if "sender" in keys else kinds.HTTP_SCHEMES
+            if normalize_origin(origin, schemes) != origin:
                 return False
         except Refused:
             return False
@@ -500,6 +578,7 @@ def sendable(inst: dict, bundled: dict[str, manifest_mod.Manifest] | None = None
         and bool(inst["origin"])
         and "token" in inst["envelopes"]
         and bool(inst["recipients"])
+        and inst.get("sender", "-") != ""  # an email connector needs its From address (#1836)
         and binding_current(inst, bundled)
     )
 
@@ -550,6 +629,7 @@ def public(inst: dict, bundled: dict[str, manifest_mod.Manifest]) -> dict:
         "last_test": inst["last_test"],
         "enabled": {"read": bool(inst["enabled"]["read"] and current)},
         **(_public_messenger(inst, bundled) if MESSENGER_KEYS <= set(inst) else {}),
+        **({"sender": inst["sender"]} if "sender" in inst else {}),
         "created_at": inst["created_at"],
     }
 
@@ -584,6 +664,8 @@ def add(manifest_id: str) -> dict:
         if m.sends:
             inst["enabled"] = {"read": False, "send": False}
             inst.update({"recipients": [], "bound": None, "send_off": None})
+        if m.adapter in kinds.TYPED_RECIPIENTS:
+            inst["sender"] = ""
         doc["instances"].append(inst)
         _audit(doc, "added", inst, now)
         return dict(inst)
@@ -601,10 +683,28 @@ def patch(iid: str, body: dict) -> dict:
     then applied INSIDE the lock against the stored instance: an origin or account change without
     a new token (or ``token: null``) is refused there, so a racing save cannot pair the old secret
     with a new origin or a new account. A real change moves the generation and the credential
-    revision and clears ``tested``."""
-    if not isinstance(body, dict) or not body or not set(body) <= {"origin", "token", "account"}:
-        raise Refused("send origin, account and/or token", "bad_body")
-    new_origin = normalize_origin(body["origin"]) if "origin" in body else None
+    revision and clears ``tested``.
+
+    An email connector's From address (``sender``, #1836) is part of what a card was approved
+    for: changing it moves the GENERATION and clears ``tested`` (so a card proposed before it is
+    stale at the tap, and sending waits for a new test), but not the credential revision, so the
+    password stays decryptable."""
+    if (
+        not isinstance(body, dict)
+        or not body
+        or not set(body) <= {"origin", "token", "account", "sender"}
+    ):
+        raise Refused("send origin, account, sender and/or token", "bad_body")
+    raw_origin = body.get("origin")
+    new_sender: str | None = None
+    if "sender" in body:
+        if body["sender"] == "":
+            new_sender = ""
+        else:
+            try:
+                new_sender = normalize_address(body["sender"])
+            except Refused as e:
+                raise Refused(f"From address: {e}", "invalid_sender") from None
     new_account: str | None = None
     if "account" in body:
         raw = body["account"]
@@ -630,6 +730,13 @@ def patch(iid: str, body: dict) -> dict:
         m = _bundled().get(inst["manifest_id"])
         if m is None:
             raise Refused("this connector is no longer in the catalog", "unknown_manifest")
+        # The origin's schemes are the KIND's: known only here, from the stored instance.
+        new_origin = (
+            normalize_origin(raw_origin, schemes_for(m.adapter)) if "origin" in body else None
+        )
+        if new_sender is not None and "sender" not in inst:
+            raise Refused("this connector has no From address", "bad_body")
+        sender_changed = new_sender is not None and new_sender != inst["sender"]
         if new_origin is not None and m.fixed_origin and new_origin != m.fixed_origin:
             raise Refused("this connector's origin is fixed", "fixed_origin")
         if new_account is not None and m.auth_kind != "basic":
@@ -653,10 +760,20 @@ def patch(iid: str, body: dict) -> dict:
         if cred_op == "set" and m.auth_kind == "basic" and not account:
             raise Refused("set the account together with the password", "needs_account")
         origin_changed = origin != inst["origin"]
-        if not origin_changed and not account_changed and cred_op == "keep":
-            return dict(inst)  # nothing changed: no new generation
+        cred_moved = origin_changed or account_changed or cred_op != "keep"
         if cred_op == "clear" and not has_token and not origin_changed and not account_changed:
+            cred_moved = False
+        if not cred_moved:
+            if not sender_changed:
+                return dict(inst)  # nothing changed: no new generation
+            # Only the From address: a new generation, the password kept (same revision).
+            inst["sender"] = new_sender
+            inst["generation"] += 1
+            inst["tested"] = None
+            _audit(doc, "changed", inst, now)
             return dict(inst)
+        if sender_changed:
+            inst["sender"] = new_sender
         old = _old_token(inst)
         if old is not None and (cred_op != "keep" or origin_changed or account_changed):
             template_secrets.retire([old])  # BEFORE the write (the redaction set keeps it)
@@ -835,6 +952,8 @@ def set_recipients(iid: str, ids: list[str], snapshot: dict) -> dict:
         inst = _find(doc, iid)
         if not MESSENGER_KEYS <= set(inst):
             raise Refused("this connector has no recipients", "bad_body")
+        if "sender" in inst:
+            raise Refused("an email connector's addresses are typed, not listed", "bad_body")
         if inst["generation"] != snapshot.get("generation"):
             raise Refused("the connector changed; list the chats again", "stale_candidates")
         if not tested_current(inst):
@@ -867,6 +986,56 @@ def set_recipients(iid: str, ids: list[str], snapshot: dict) -> dict:
     return _mutate(apply)  # type: ignore[return-value]
 
 
+def set_addresses(iid: str, entries: object, generation: object) -> dict:
+    """Save an email connector's allowlist (#1836): addresses the Commander TYPED, as
+    ``[{"address", "label"}]``. Each address must be one plain mailbox (`normalize_address`: the
+    domain lower-cased, the local part as typed); two equal after that are refused, in words. A
+    label is plain text (at most `LABEL_MAX`), the address when left empty.
+
+    Under the lock the instance must still be at ``generation`` (the one the page showed, else
+    `stale_candidates`) and tested. The whole list is written, bound to this account at this
+    origin like #1832's, and any `send_off` reason cleared; or nothing is."""
+    if not isinstance(entries, list) or len(entries) > RECIPIENTS_MAX:
+        raise Refused(f"send at most {RECIPIENTS_MAX} addresses", "bad_body")
+    if not _int(generation):
+        raise Refused("send the generation the page shows", "bad_body")
+    out: list[dict] = []
+    seen: set[str] = set()
+    for e in entries:
+        if not isinstance(e, dict) or set(e) != {"address", "label"}:
+            raise Refused("each address is {address, label}", "bad_body")
+        address = normalize_address(e["address"])
+        label = e["label"]
+        if not isinstance(label, str):
+            raise Refused("a label is text", "bad_body")
+        label = " ".join(label.split())
+        if len(label) > LABEL_MAX or not label.isprintable():
+            raise Refused(f"a label is plain text, at most {LABEL_MAX} characters", "bad_label")
+        if address in seen:
+            raise Refused(f"{address} is listed twice", "duplicate_address")
+        seen.add(address)
+        out.append({"id": address, "label": label or address, "kind": EMAIL_KIND})
+
+    def apply(doc: dict, now: float) -> dict:
+        inst = _find(doc, iid)
+        if "sender" not in inst:
+            raise Refused("this connector's recipients are chosen from a list", "bad_body")
+        if inst["generation"] != generation:
+            raise Refused("the connector changed; look at it again", "stale_candidates")
+        if not tested_current(inst):
+            raise Refused("test this connector first", "needs_test")
+        inst["recipients"] = out
+        inst["bound"] = {"origin": inst["origin"], "identity": inst["tested"]["login"]}
+        inst["send_off"] = None
+        if not out and inst["enabled"]["send"]:
+            inst["enabled"]["send"] = False
+            _audit(doc, "disabled", inst, now)
+        _audit(doc, "changed", inst, now)
+        return dict(inst)
+
+    return _mutate(apply)  # type: ignore[return-value]
+
+
 def take_send(iid: str, generation: int, recipient_id: str) -> None:
     """Claim one send (#1833) under the store lock: the instance must still be sendable at
     ``generation`` with ``recipient_id`` allowed, and fewer than `SEND_RATE_MAX` sends claimed in
@@ -879,6 +1048,9 @@ def take_send(iid: str, generation: int, recipient_id: str) -> None:
             raise Refused("the connector changed since this was proposed", "stale")
         if recipient_id not in {r["id"] for r in inst["recipients"]}:
             raise Refused("that recipient is no longer allowed", "stale")
+        if "sender" in inst and not (valid_address(recipient_id) and valid_address(inst["sender"])):
+            # Re-checked at the send (#1836): a stored address no build would accept now.
+            raise Refused("that address is not one plain address", "stale")
         recent = [t for t in inst.get("sends", []) if now - t < SEND_RATE_WINDOW_S]
         if len(recent) >= SEND_RATE_MAX:
             raise Refused(

@@ -919,7 +919,9 @@ function messageOutcome(p: AskMessageCard): { word: string; tone: Tone; detail: 
         tone: "bad",
         detail:
           p.reason ||
-          "No clear answer came back after it went out. It is not sent again; check the chat.",
+          `No clear answer came back after it went out. It is not sent again; check ${
+            p.sender !== undefined ? "your sent mail" : "the chat"
+          }.`,
       };
     case "stale":
       return {
@@ -958,31 +960,54 @@ export function MessageCard({
 }) {
   const out = messageOutcome(p);
   const edge = out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
+  // An email (#1836): the server's From, To, subject and body, exactly as the transport sends them.
+  const mail = p.sender !== undefined;
   return (
     <div className={`${c.card} ${edge}`} data-testid="ask-message" data-state={p.state}>
       <div className={c.head}>
         <span className={c.k}>Proposal</span>
-        Message
+        {mail ? "Email" : "Message"}
         <span className={c.st}>{out ? out.word : "Waiting for you"}</span>
       </div>
       <div className={`${c.body} ${out ? c.muted : ""}`}>
         <dl className={c.kv}>
           <dt>Through</dt>
           <dd>{p.connector}</dd>
-          <dt>To</dt>
-          <dd>
-            {p.recipient}{" "}
-            <span className={c.muted}>
-              · {p.recipient_kind}
-              {typeof p.recipient_members === "number"
-                ? ` · ${p.recipient_members} ${p.recipient_members === 1 ? "person" : "people"}`
-                : ""}
-            </span>
-          </dd>
+          {mail ? (
+            <>
+              <dt>From</dt>
+              <dd data-testid="ask-message-from">{p.sender}</dd>
+              <dt>To</dt>
+              <dd data-testid="ask-message-to">
+                {p.recipient !== p.address ? (
+                  <>
+                    {p.recipient} <span className={c.muted}>· {p.address}</span>
+                  </>
+                ) : (
+                  p.address
+                )}
+              </dd>
+              <dt>Subject</dt>
+              <dd data-testid="ask-message-subject">{p.subject}</dd>
+            </>
+          ) : (
+            <>
+              <dt>To</dt>
+              <dd>
+                {p.recipient}{" "}
+                <span className={c.muted}>
+                  · {p.recipient_kind}
+                  {typeof p.recipient_members === "number"
+                    ? ` · ${p.recipient_members} ${p.recipient_members === 1 ? "person" : "people"}`
+                    : ""}
+                </span>
+              </dd>
+            </>
+          )}
         </dl>
-        <div className={c.blockLabel}>Text to send, verbatim</div>
+        <div className={c.blockLabel}>{mail ? "Message, verbatim" : "Text to send, verbatim"}</div>
         <div className={c.verbatim} data-testid="ask-message-text">
-          {p.text}
+          {mail ? p.body : p.text}
         </div>
         {error ? (
           <div className={c.note} role="alert" data-testid="ask-message-error">
@@ -994,7 +1019,8 @@ export function MessageCard({
             <Eye size={14} aria-hidden="true" />
             <span>
               Sent once, only to this recipient, and only if it is still allowed when you tap.
-              Leaves BattleLab for {p.connector}.
+              Leaves BattleLab for {p.connector}
+              {mail ? ", and mail can’t be taken back once it’s sent." : "."}
             </span>
           </div>
         ) : null}

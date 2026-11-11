@@ -14,7 +14,13 @@
 import { useCallback, useState } from "react";
 
 import { ApiError, api } from "../lib/api";
-import type { ConnectorInstance, RecipientCandidate } from "../lib/connectors";
+import {
+  sendOffLine,
+  type ConnectorInstance,
+  type RecipientCandidate,
+} from "../lib/connectors";
+
+import { ConnectorAddresses } from "./ConnectorAddresses";
 
 import styles from "./ConnectorsSettings.module.css";
 import settings from "./Settings.module.css";
@@ -23,22 +29,30 @@ function message(e: unknown, fallback: string): string {
   return e instanceof ApiError && e.message ? e.message : fallback;
 }
 
-function sendOffLine(inst: ConnectorInstance): string | null {
-  const off = inst.send_off;
-  if (!off) return null;
-  return off.reason === "identity_changed"
-    ? `Sending was switched off because this connector now signs in as ${off.now}. The recipients below were chosen for ${off.was}; check them and save again.`
-    : `Sending was switched off because this connector now points at ${off.now}. Check the recipients and save them again.`;
+
+export function ConnectorRecipients(props: {
+  inst: ConnectorInstance;
+  /** Rooms (Matrix) or chats (Telegram): the words and the hint differ. */
+  matrix: boolean;
+  /** Mail (#1836): nothing to discover, so the Commander types each address. */
+  email?: boolean;
+  busy: boolean;
+  onChanged: () => Promise<void>;
+}) {
+  return props.email ? (
+    <ConnectorAddresses {...props} />
+  ) : (
+    <ListedRecipients {...props} />
+  );
 }
 
-export function ConnectorRecipients({
+function ListedRecipients({
   inst,
   matrix,
   busy,
   onChanged,
 }: {
   inst: ConnectorInstance;
-  /** Rooms (Matrix) or chats (Telegram): the words and the hint differ. */
   matrix: boolean;
   busy: boolean;
   onChanged: () => Promise<void>;
