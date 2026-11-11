@@ -216,6 +216,45 @@ def _snapshot(p: dict, what: str) -> dict:
     return flow
 
 
+def check_procedure(p: object, what: str) -> dict:
+    """A procedure snapshot, checked to the letter, and its RE-VALIDATED flow; else `PlanError`.
+
+    The one check for a procedure wherever a document carries one: a mission's plan revision
+    (`validate_document`) and a saved mission plan in the Library (`mission_plan_library`, #1924)
+    hold the same snapshot under the same rules."""
+    if (
+        not isinstance(p, dict)
+        or not isinstance(p.get("source"), str)
+        or p["source"] not in SOURCES
+    ):
+        raise PlanError(f"{what}.source must be one of {sorted(SOURCES)}")
+    keys = {"source", "flow_id", "title", "flow", "digest", "document", "variables"}
+    if p["source"] == "playbook":
+        keys |= {"playbook_id", "revision", "manifest_format"}
+    p = _exact_keys(p, keys, what)
+    if not isinstance(p["flow_id"], str) or not schema.FILE_ID_RE.fullmatch(p["flow_id"]):
+        raise PlanError(f"{what}.flow_id has an invalid shape")
+    _one_line(p["title"], f"{what}.title", max_len=schema.NAME_MAX)
+    if p["source"] == "playbook":
+        for k in ("playbook_id", "revision"):
+            if not isinstance(p[k], str) or not p[k]:
+                raise PlanError(f"{what}.{k} is required")
+    flow = _snapshot(p, what)
+    if p["title"] != flow["title"]:
+        raise PlanError(f"{what}.title is not its flow's title")
+    if p["digest"] != flow_digest(flow):
+        raise PlanError(f"{what}.digest does not match its flow")
+    return flow
+
+
+#: The objective-order rule (#1797 S2c), shared with the Library's saved plans (#1924).
+check_after = _check_after
+#: One-line text and exact keys, shared with the Library's saved plans (#1924).
+one_line = _one_line
+exact_keys = _exact_keys
+canonical = _canonical
+
+
 def validate_document(doc: object) -> dict:
     """The document, checked, or `PlanError`. Every authored revision passes this on write.
 
@@ -257,25 +296,7 @@ def validate_document(doc: object) -> dict:
         seen.add(oid)
         if not isinstance(o["project_id"], str) or not PROJECT_ID_RE.fullmatch(o["project_id"]):
             raise PlanError(f"{what}.project_id is required: every objective names a project")
-        p = o["procedure"]
-        if not isinstance(p, dict) or p.get("source") not in SOURCES:
-            raise PlanError(f"{what}.procedure.source must be one of {sorted(SOURCES)}")
-        keys = {"source", "flow_id", "title", "flow", "digest", "document", "variables"}
-        if p["source"] == "playbook":
-            keys |= {"playbook_id", "revision", "manifest_format"}
-        p = _exact_keys(p, keys, f"{what}.procedure")
-        if not isinstance(p["flow_id"], str) or not schema.FILE_ID_RE.fullmatch(p["flow_id"]):
-            raise PlanError(f"{what}.procedure.flow_id has an invalid shape")
-        _one_line(p["title"], f"{what}.procedure.title", max_len=schema.NAME_MAX)
-        if p["source"] == "playbook":
-            for k in ("playbook_id", "revision"):
-                if not isinstance(p[k], str) or not p[k]:
-                    raise PlanError(f"{what}.procedure.{k} is required")
-        flow = _snapshot(p, f"{what}.procedure")
-        if p["title"] != flow["title"]:
-            raise PlanError(f"{what}.procedure.title is not its flow's title")
-        if p["digest"] != flow_digest(flow):
-            raise PlanError(f"{what}.procedure.digest does not match its flow")
+        flow = check_procedure(o["procedure"], f"{what}.procedure")
         inputs = o["inputs"]
         if (
             not isinstance(inputs, list)

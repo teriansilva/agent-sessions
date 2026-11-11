@@ -207,6 +207,8 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Specialists (#1693): detail, a pinned version | GET /api/specialists/{sid}, …/versions/{n} | P4 R |
 | Specialists: create, edit (a new version), archive, unarchive | POST /api/specialists, PATCH /api/specialists/{sid}, POST …/archive, …/unarchive | P4 W (revision-checked; the grade is derived, never chosen) |
 | Specialists: release a held slot (#1693 S4) | POST /api/specialists/reservations/{rid}/release | P4 W (only a slot reconcile holds) |
+| Mission plans (#1924, #1613 P7a): list, read one with its derived steps | GET /api/mission-plans, GET /api/mission-plans/{pid} | P5 R |
+| Mission plans: archive / unarchive; save a mission's plan revision as a mission plan | POST /api/mission-plans/{pid}/archive, POST /api/missions/{mission_id}/plan/save-as-plan | P5 W (revision-checked; inert: nothing is planned or launched) |
 
 #### Files and git (Files drawer)
 | Capability | Route(s) | HQ |
@@ -379,6 +381,9 @@ PATCH  /api/memory/{pid}/notes/{slug}                                           
 DELETE /api/memory/{pid}/quarantine/{qid}                                         P3
 PATCH  /api/memory/{pid}/quarantine/{qid}                                         P3
 POST   /api/mission-directions/preview                                            P3
+GET    /api/mission-plans                                                         P5
+GET    /api/mission-plans/{pid}                                                   P5
+POST   /api/mission-plans/{pid}/archive                                           P5
 GET    /api/missions                                                              P5
 POST   /api/missions                                                              #1443  # mission start
 GET    /api/missions/archive-older                                                P5
@@ -399,6 +404,7 @@ PATCH  /api/missions/{mission_id}/objectives                                    
 POST   /api/missions/{mission_id}/objectives/{objective_key}/stand-down           P5
 PATCH  /api/missions/{mission_id}/plan                                            P5
 GET    /api/missions/{mission_id}/plan/revisions/{revision}                       P5
+POST   /api/missions/{mission_id}/plan/save-as-plan                               P5
 POST   /api/missions/{mission_id}/plan                                            P5
 POST   /api/missions/{mission_id}/procedure                                       P5
 GET    /api/missions/{mission_id}/procedures/{index}/inputs                       P5

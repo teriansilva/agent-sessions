@@ -272,6 +272,7 @@ Storage: the three prompts that predate the catalog keep their existing prefs fi
 | `AGENT_SESSIONS_AUTOMATION_LOOP` | Kill-switch for automations (#1201). `0` ⇒ the scheduler never starts and Run now is refused, whatever is enabled in the app; any other value (default) arms it, and it still only fires automations the operator enabled with consent. |
 | `AGENT_SESSIONS_AUTOMATIONS_DB` | The automations store (`~/.config/agent-sessions/automations.db`, `0600`): automations, consent receipts, slot claims, runs. Its scheduler lock is `<db>.owner.lock` beside it. |
 | `AGENT_SESSIONS_SPECIALISTS_DB` | The specialist pool (`~/.config/agent-sessions/specialists.db`, `0600`): specialists and their immutable versions (#1693). |
+| `AGENT_SESSIONS_MISSION_PLANS_DB` | The mission-plan Library (`~/.config/agent-sessions/mission-plans.db`, `0600`): saved, slot-only mission plans and their immutable versions (#1924). |
 | `AGENT_SESSIONS_INSTANCE` | Label for running multiple instances on one host. |
 
 > Source of truth is the code — `grep -rhoE 'AGENT_SESSIONS_[A-Z_]+' src/`. The installer seeds the
