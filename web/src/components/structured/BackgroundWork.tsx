@@ -156,6 +156,25 @@ export function RequestsRefused({ count }: { count: number }) {
   );
 }
 
+/** How long past its due time a wakeup still shows (#1927): the worker's own grace for the turn
+ *  it starts. Past it, the wake didn't fire and the session idles out as before. */
+export const WAKE_GRACE_SECONDS = 120;
+
+/** The agent scheduled its own next check (#1927): the session stays up until then. A fact, not a
+ *  job — nothing to stop or answer, so no control. */
+export function WakeupPending({ at, reason }: { at: number; reason?: string }) {
+  const time = new Date(at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return (
+    <div className={styles.scanUnknown} role="status" data-testid="structured-wakeup">
+      <span className={`${pane.led} ${pane.ledIdle}`} aria-hidden="true" />
+      <span className={styles.scanUnknownText}>
+        Wakes at {time}
+        {reason ? ` · ${reason}` : ""}
+      </span>
+    </div>
+  );
+}
+
 /** A background task's request is waiting in the conversation (#1725). The card itself stays there,
  *  with what it asks and its decision; this is what says so while reading further up. */
 export function BackgroundRequestsWaiting({ count }: { count: number }) {

@@ -641,6 +641,9 @@ _EVENT_FIELDS = {
     # `stale` (review on #1811): the client's list can no longer be reconciled — a marker alone.
     "plan": (set(), {"entries", "explanation", "document", "stale"}),
     "environment": (set(), {"mcp", "skills", "commands", "skill_use"}),
+    # #1927: the Claude CLI's pending ScheduleWakeup — when it is due (epoch seconds) and the
+    # agent's own reason, bounded; `cleared` when it fired or was cancelled. Display only.
+    "wakeup": ({"state"}, {"at", "reason"}),
     "response": (_RPC, set()),
     # #1724: the generation's active background work whenever it changes — engine task ids and
     # the process floor's agent processes (pid, start ticks, `comm`; never argv or environment).
@@ -851,6 +854,17 @@ def _event(value):
             "plan": _plan,
             "environment": _environment,
         }[kind](data)
+        return {"cursor": _integer(value["cursor"], minimum=1), "kind": kind, "data": out}
+    if kind == "wakeup":
+        out = {"state": _choice(data["state"], {"scheduled", "cleared"})}
+        if (out["state"] == "scheduled") != ("at" in data):
+            raise IPCError("a scheduled wakeup, and only one, says when it is due")
+        if "reason" in data and out["state"] != "scheduled":
+            raise IPCError("only a scheduled wakeup has a reason")
+        if "at" in data:
+            out["at"] = _integer(data["at"], minimum=1)
+        if "reason" in data:
+            out["reason"] = _text(data["reason"], _np.WAKE_REASON)
         return {"cursor": _integer(value["cursor"], minimum=1), "kind": kind, "data": out}
     if kind in {"background_inventory", "background_settled"}:
         out = _inventory(kind, data)

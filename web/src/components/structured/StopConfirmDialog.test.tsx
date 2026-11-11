@@ -225,3 +225,43 @@ test("a complete list carries no untracked warning, and asks as Stop and resume 
 test("overflow alone is background work: Stop asks first", () => {
   expect(hasBackgroundWork(inventory({ tasks: [], processes: [], overflow: true }))).toBe(true);
 });
+
+// --- #1927: the agent's own pending ScheduleWakeup -------------------------------------------
+
+const idleNative = (wakeup: { at: number; reason?: string } | null) => ({
+  native_id: "n", worker: "w1", background_active: false, background_tasks: [],
+  stop_inventory: inventory({ tasks: [], processes: [] }), wakeup,
+});
+
+test("a pending wakeup shows when it is due and why, with nothing to press", async () => {
+  const { BackgroundStrip } = await import("./BackgroundStrip");
+  const at = now + 1800;
+  render(<BackgroundStrip snap={snapOf(idleNative({ at, reason: "watching CI on #1929" }))} />, {
+    container: root,
+  });
+  const row = screen.getByTestId("structured-wakeup");
+  const time = new Date(at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  expect(row.textContent).toBe(`Wakes at ${time} · watching CI on #1929`);
+  expect(within(row).queryByRole("button")).toBeNull();
+  // It is not a job: no job count, and the Stop confirmation is not asked for by it.
+  expect(screen.queryByTestId("structured-background-strip")).toBeNull();
+  expect(hasBackgroundWork(idleNative(null).stop_inventory)).toBe(false);
+});
+
+test("a wakeup without a reason shows its time alone", async () => {
+  const { BackgroundStrip } = await import("./BackgroundStrip");
+  render(<BackgroundStrip snap={snapOf(idleNative({ at: now + 600 }))} />, { container: root });
+  expect(screen.getByTestId("structured-wakeup").textContent).toMatch(/^Wakes at [^·]+$/);
+});
+
+test("a wake past its due time and grace is gone; with none the strip is not rendered", async () => {
+  const { BackgroundStrip } = await import("./BackgroundStrip");
+  const { WAKE_GRACE_SECONDS } = await import("./BackgroundWork");
+  const { container, rerender } = render(
+    <BackgroundStrip snap={snapOf(idleNative({ at: now - WAKE_GRACE_SECONDS - 5 }))} />,
+    { container: root },
+  );
+  expect(screen.queryByTestId("structured-wakeup")).toBeNull();
+  rerender(<BackgroundStrip snap={snapOf(idleNative(null))} />);
+  expect(container.innerHTML).toBe("");
+});

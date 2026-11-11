@@ -2113,6 +2113,9 @@ export interface StructuredSnapshot {
     worker_ends?: StructuredWorkerEnd[];
     /** Jobs an interrupted exact Stop paused and could not confirm resumed (#1724). */
     paused_unresumed?: number;
+    /** The live generation's pending ScheduleWakeup (#1927): when it is due (epoch seconds) and
+     *  the agent's own reason. It keeps an idle session alive until then. Null or absent: none. */
+    wakeup?: { at: number; reason?: string } | null;
     /** This connection is full and can't retire while work runs (#1725). A display hint: a send
      *  is decided at the worker's own admission. */
     rollover_held?: boolean;

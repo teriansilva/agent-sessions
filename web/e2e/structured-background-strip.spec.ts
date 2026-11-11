@@ -191,6 +191,31 @@ test("#1726: an unreadable process scan renders the strip by itself; its Stop as
   await expect(dialog.getByRole("button", { name: "Keep running" })).toBeFocused();
 });
 
+for (const theme of ["dark", "light"] as const) {
+  test(`#1927: a pending wakeup renders the strip by itself — the time and the reason, nothing to press (${theme})`, async ({ page }, testInfo) => {
+    await session(page, [], { theme });
+    const fixture = await mockState(page);
+    const at = now() + 25 * 60;
+    Object.assign(fixture.state.native, { wakeup: { at, reason: "watching CI on #1929" } });
+    fixture.state.revision++;
+    const row = strip(page).getByTestId("structured-wakeup");
+    const time = await page.evaluate(
+      (at) => new Date(at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      at,
+    );
+    await expect(row).toHaveText(`Wakes at ${time} · watching CI on #1929`);
+    await expect(row.getByRole("button")).toHaveCount(0);
+    await expect(logRows(page).getByTestId("structured-wakeup")).toHaveCount(0); // never a transcript row
+    await expect(page.getByTestId("structured-background-strip")).toHaveCount(0); // not a job: no job line
+    await expect(composer(page)).toBeInViewport();
+    await page.screenshot({ path: testInfo.outputPath(`strip-wakeup-${theme}.png`) });
+    // It fired (or was cancelled): the snapshot drops it, and with nothing else the strip goes.
+    Object.assign(fixture.state.native, { wakeup: null });
+    fixture.state.revision++;
+    await expect(strip(page)).toHaveCount(0);
+  });
+}
+
 test("#1726: jobs an interrupted Stop could not resume render the strip by itself; it leads to Stop everything", async ({ page }, testInfo) => {
   await session(page, []);
   const fixture = await mockState(page);

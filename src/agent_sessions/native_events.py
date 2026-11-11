@@ -245,6 +245,8 @@ class Events(Sequence):
         self.plan_document: int | None = None
         self.plan_stale: int | None = None
         self.environment: tuple[int, str] | None = None
+        # The newest `wakeup` (#1927) and the worker that reported it: read by index only.
+        self.wakeup: tuple[int, str] | None = None
         self.counts = Counts()
 
     def __len__(self):
@@ -284,6 +286,7 @@ class Events(Sequence):
         result.plan_document = self.plan_document
         result.plan_stale = self.plan_stale
         result.environment = self.environment
+        result.wakeup = self.wakeup
         result.counts = self.counts.copy()
         return result
 
@@ -308,6 +311,9 @@ class Events(Sequence):
             self.last_question = (item["cursor"], event["data"]["item_id"])
         if event["kind"] == "tool":
             self.counts.observe(event["data"])
+        if event["kind"] == "wakeup":
+            self.wakeup = (index, item["worker_id"])
+            return
         if event["kind"] in {"plan", "environment"}:
             # Read by index only (`plan()`, `environment_of()`): a long session's many plan
             # updates are never re-read by every snapshot.
@@ -406,6 +412,17 @@ class Events(Sequence):
         if worker_id is None or self.environment is None or self.environment[1] != worker_id:
             return None
         return dict(self[self.environment[0]]["event"]["data"])
+
+    def wakeup_of(self, worker_id: str | None) -> dict | None:
+        """``worker_id``'s pending ScheduleWakeup (#1927) — when it is due and why — or None: it
+        fired, was cancelled, or an earlier generation reported it (its timer ended with it).
+        A wake that never fired stays here until the next report; the pane hides it past due."""
+        if worker_id is None or self.wakeup is None or self.wakeup[1] != worker_id:
+            return None
+        data = self[self.wakeup[0]]["event"]["data"]
+        if data.get("state") != "scheduled":
+            return None
+        return {key: data[key] for key in ("at", "reason") if key in data}
 
     def heartbeat_of(self, worker_id: str) -> tuple[int, bool] | None:
         """(cursor, active) of ``worker_id``'s newest plain heartbeat, if it wrote one."""

@@ -52,12 +52,17 @@ WAKE_GRACE = 120.0
 WAKE_BOUNDS = (60, 3600)
 WAKE_EARLY = 5.0
 MAX_WAKE_CALLS = 8  # calls awaiting their result; parallel ones each keep their own input
+WAKE_REASON = 200  # the agent's own `reason`, shown beside the time in the strip (Phase 2)
 #: The CLI's own report of the delay it scheduled: "… (in 633s)". It aligns the asked delay.
 _WAKE_IN = re.compile(r"\(in (\d{1,6})s\)")
 
 
 def _monotonic() -> float:
     return time.monotonic()  # a seam: tests move the clock
+
+
+def _wall() -> float:
+    return time.time()  # the due time the strip shows; liveness never reads it
 
 
 #: Callbacks remembered as answered, for refusing a repeat of one. A long guarded turn answers more
@@ -2492,17 +2497,20 @@ class ClaudeCodec(_Codec):
         An end carries how it ended (#1438): its own result says, else it simply completed."""
         if running == self.unowned_turn:
             return []
+        fired = []
         if running and self.wake_due is not None and _monotonic() >= self.wake_due - WAKE_EARLY:
             self.wake_due = None  # the wake fired: this is its turn (#1927)
+            fired.append(_event("wakeup", state="cleared"))
         self.unowned_turn = running
         self.background_turn = str(uuid.uuid4()) if running else None
         return [
+            *fired,
             _event(
                 "background",
                 state="running" if running else outcome,
                 active=running or bool(self._background),
                 background_turn=self.background_turn,
-            )
+            ),
         ]
 
     def _lifecycle(self, frame: dict) -> list[NativeEvent]:
@@ -3318,16 +3326,17 @@ class ClaudeCodec(_Codec):
                 best = name
         return best
 
-    def _wake_result(self, block: dict) -> None:
+    def _wake_result(self, block: dict) -> list[NativeEvent]:
         """A `ScheduleWakeup` came back (#1927): what is pending now. The delay is the one the
         CLI reports scheduling, else the one asked, clamped as the CLI does. A refused or
-        unreadable call changes nothing; `stop` cancels."""
+        unreadable call changes nothing; `stop` cancels. Each change is a `wakeup` event: the
+        wall-clock time it is due and the agent's reason, for the strip."""
         tool_input = self._wake_calls.pop(block.get("tool_use_id"), None)  # type: ignore[arg-type]
         if block.get("is_error") or not isinstance(tool_input, dict):
-            return
+            return []
         if tool_input.get("stop") is True:
-            self.wake_due = None
-            return
+            had, self.wake_due = self.wake_due is not None, None
+            return [_event("wakeup", state="cleared")] if had else []
         content = block.get("content")
         if isinstance(content, list):
             content = " ".join(
@@ -3338,10 +3347,16 @@ class ClaudeCodec(_Codec):
         found = _WAKE_IN.search(content[:4096]) if isinstance(content, str) else None
         delay = int(found.group(1)) if found else tool_input.get("delaySeconds")
         if isinstance(delay, bool) or not isinstance(delay, int | float) or delay != delay:
-            return
+            return []
         low, high = WAKE_BOUNDS
         # Clamped before any float(): a JSON integer can be arbitrarily large (review on #1929).
-        self.wake_due = _monotonic() + float(min(max(delay, low), high))
+        seconds = float(min(max(delay, low), high))
+        self.wake_due = _monotonic() + seconds
+        reason = tool_input.get("reason")
+        extra = {"reason": _cut(reason.strip(), WAKE_REASON)} if isinstance(reason, str) else {}
+        if not extra.get("reason"):
+            extra = {}
+        return [_event("wakeup", state="scheduled", at=int(_wall() + seconds), **extra)]
 
     def _plan_call(self, item_id: str, name: str, tool_input: Any) -> list[NativeEvent]:
         if not isinstance(tool_input, dict):
@@ -3568,7 +3583,7 @@ class ClaudeCodec(_Codec):
                     for block in results
                 ]
                 for block in results:
-                    self._wake_result(block)
+                    out.extend(self._wake_result(block))
                 for block in results:
                     # The structured result belongs to the frame's ONE tool result, if it worked.
                     ok = not block.get("is_error")

@@ -2993,6 +2993,9 @@ def project(
             # ended, or before it reported), and the conversation's call counts.
             "plan": journal.events.plan(live_worker),
             "environment": journal.events.environment_of(live_worker),
+            # #1927: the live generation's pending ScheduleWakeup (due time, the agent's reason),
+            # or None. Display only: it holds the idle exit in the worker, never in this view.
+            "wakeup": journal.events.wakeup_of(live_worker),
             "counts": journal.events.counts.view(),
             **({"ended_requests": ended_requests} if ended_requests else {}),
         },

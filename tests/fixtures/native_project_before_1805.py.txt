@@ -713,6 +713,7 @@ def project(
             # the call counts, read from the journal's own indexes exactly as `project` does.
             "plan": journal.events.plan(live_worker),
             "environment": journal.events.environment_of(live_worker),
+            "wakeup": journal.events.wakeup_of(live_worker),  # #1927, added with the field
             "counts": journal.events.counts.view(),
         },
     }

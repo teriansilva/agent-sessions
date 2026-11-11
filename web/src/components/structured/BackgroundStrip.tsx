@@ -24,6 +24,8 @@ import {
   RolloverHeld,
   ScanUnknown,
   TaskRow,
+  WAKE_GRACE_SECONDS,
+  WakeupPending,
 } from "./BackgroundWork";
 import { hasBackgroundJobs, heldSentence } from "./structuredView";
 import styles from "./BackgroundStrip.module.css";
@@ -78,7 +80,11 @@ export function BackgroundStrip({
   const skipped = native?.frames_skipped ?? 0;
   const refused = native?.requests_refused ?? 0;
   const waiting = native ? (snap?.pending_requests ?? []).filter((r) => r.background_task).length : 0;
-  const notices = paused > 0 || unknown || held || skipped > 0 || refused > 0 || waiting > 0;
+  // The agent's own next check (#1927), until it is due plus the worker's grace.
+  const wakeup = native?.wakeup ?? null;
+  // `now` ticks while the strip shows, so a wake that never fired drops out by itself.
+  const waking = !!wakeup && now < wakeup.at + WAKE_GRACE_SECONDS;
+  const notices = paused > 0 || unknown || held || skipped > 0 || refused > 0 || waiting > 0 || waking;
   const shown = jobs || notices;
   // A minute-resolution clock for the one-line summary; the open rows re-render with it too.
   useEffect(() => {
@@ -138,6 +144,7 @@ export function BackgroundStrip({
           {unknown && <ScanUnknown onStop={onStop} />}
           {skipped > 0 && <FramesSkipped count={skipped} />}
           {refused > 0 && <RequestsRefused count={refused} />}
+          {waking && wakeup && <WakeupPending at={wakeup.at} reason={wakeup.reason} />}
         </div>
       )}
       {jobs && (
