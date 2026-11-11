@@ -44,6 +44,10 @@ interface Fake {
   /** List reads made while set never answer (a hung request), or answer 500. */
   hold?: boolean;
   fail?: boolean;
+  /** How many list reads `hold` actually held: a test releases it only once one was. */
+  held?: number;
+  /** Single-dispatch reads made while set never answer. */
+  holdSingle?: boolean;
   /** A race (Hermes 7623, finding 2): the NEXT list read is answered with the state as it was
    *  when it arrived, but only after the read that follows it has been answered; `mutate` changes
    *  the server in between. So an older-STARTED read lands after a newer one. */
@@ -158,7 +162,10 @@ async function mockShell(
       return r.fulfill({ json: { moved, new: newCount() } });
     }
     if (path === "/api/hq/dispatches") {
-      if (fake.hold) return new Promise<void>(() => undefined); // never answered
+      if (fake.hold) {
+        fake.held = (fake.held ?? 0) + 1;
+        return new Promise<void>(() => undefined); // never answered
+      }
       if (fake.fail)
         return r.fulfill({ status: 500, json: { detail: "boom" } });
       if (fake.unreadable)
@@ -190,6 +197,7 @@ async function mockShell(
     }
     const id = decodeURIComponent(path.split("/").pop() ?? "");
     fake.singleReads.push(id);
+    if (fake.holdSingle) return new Promise<void>(() => undefined); // never answered
     const b = written(fake).find((x) => x.id === id);
     return b
       ? r.fulfill({ json: { dispatch: view(b), new: newCount() } })
@@ -713,6 +721,9 @@ for (const mode of ["hold", "fail"] as const)
         ? page.getByText("Reading dispatches…", { exact: true })
         : page.getByTestId("hq-dispatches-failed");
     await expect(stuck).toBeVisible();
+    // Hermes 7960, note 2: release only once the view's own read was actually held.
+    if (mode === "hold")
+      await expect.poll(() => fake.held ?? 0).toBeGreaterThan(0);
     fake[mode] = false;
     await page.clock.runFor(16_000);
     await expect(page.getByTestId("hq-dispatch")).toHaveCount(2);
@@ -741,6 +752,8 @@ for (const target of ["older than the list", "unknown"] as const)
     await expect(
       page.getByText("Reading dispatches…", { exact: true }),
     ).toBeVisible();
+    // Hermes 7960, note 2: release only once the view's own read was actually held.
+    await expect.poll(() => fake.held ?? 0).toBeGreaterThan(0);
     fake.hold = false;
     await page.clock.runFor(16_000);
     if (target === "unknown") {
@@ -759,6 +772,29 @@ for (const target of ["older than the list", "unknown"] as const)
     expect(fake.singleReads).toContain(linkedId);
     expect(fake.seenPosts).toEqual([]); // a poll never marks anything seen
   });
+
+test("a linked lookup still out is not asked again by the next poll; a hung one is, later", async ({
+  page,
+}) => {
+  // Hermes 7960, note 1: the view's own lookup of an id outside the list is still out when a poll
+  // that started after it lands. That poll waits for it; two poll intervals on, it asks again.
+  await page.clock.install();
+  const fake = fakeOf(twoDispatches());
+  fake.holdSingle = true;
+  await mockShell(page, fake);
+  await page.goto(hqDispatchPath(bid(7)));
+  await expect.poll(() => fake.singleReads).toEqual([bid(7)]);
+  await page.clock.runFor(16_000);
+  await expect(page.getByTestId("hq-dispatch")).toHaveCount(2);
+  expect(fake.singleReads).toEqual([bid(7)]);
+  fake.holdSingle = false;
+  // Past two poll intervals since the lookup started: a later poll asks again.
+  await page.clock.runFor(31_000);
+  await expect(page.getByTestId("hq-dispatch-missing")).toContainText(
+    "This dispatch isn't here",
+  );
+  expect(fake.singleReads).toEqual([bid(7), bid(7)]);
+});
 
 // ---- Hermes 7623: reads are ordered by when they STARTED ------------------------------------------
 

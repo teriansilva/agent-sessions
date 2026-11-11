@@ -48,7 +48,7 @@ import {
   useAskConversations,
 } from "../ask/askConversationsStore";
 import { HQ_FOCUS_COMPOSER_EVENT } from "../ask/askPanel";
-import { nextDispatchRead } from "./dispatchReads";
+import { DISPATCH_POLL_MS, nextDispatchRead } from "./dispatchReads";
 import { DispatchesView } from "./DispatchesView";
 import { hqTarget } from "./hqRoute";
 import s from "./HqPage.module.css";
@@ -63,9 +63,6 @@ function when(ts: number): string {
 
 /** "N new", as the entry shows it: 50+ above 50. */
 const newLabel = (n: number) => (n > 50 ? "50+ new" : `${n} new`);
-
-/** How often an open, visible HQ page re-reads the Dispatches (Hermes 7619, finding 4). */
-export const DISPATCH_POLL_MS = 15_000;
 
 /** The Dispatches list behind the pinned entry: re-read on every route change, when the view moved
  *  the cursor, and every `DISPATCH_POLL_MS` while the page is visible (paused while the tab is

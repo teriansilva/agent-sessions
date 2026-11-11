@@ -18,7 +18,7 @@ import { api, ApiError } from "../../lib/api";
 import { HQ_DISPATCHES_PATH, HQ_PATH } from "../../lib/routes";
 import { settingsPath } from "../../routes/settingsTabs";
 import type { HqDispatch, HqDispatchMember } from "../../types/api";
-import { nextDispatchRead } from "./dispatchReads";
+import { DISPATCH_POLL_MS, nextDispatchRead } from "./dispatchReads";
 import s from "./HqPage.module.css";
 
 /** How each class of event reads: its word, its LED and the kind of thing its link opens. */
@@ -132,24 +132,37 @@ export function DispatchesView({
   const [load, setLoad] = useState<Load>({ state: "loading", seq: Infinity });
   const [linkedRec, setLinkedRec] = useState<LinkedRec | null>(null);
   /** The newest-started lookup of the linked dispatch: its id, the number it took when it started,
-   *  and whether it has answered. */
-  const lookup = useRef<{ id: string; seq: number; done: boolean } | null>(
-    null,
-  );
+   *  when it started, and whether it has answered. */
+  const lookup = useRef<{
+    id: string;
+    seq: number;
+    at: number;
+    done: boolean;
+  } | null>(null);
   /** Start a lookup of `id`: the number it takes orders it against every other read. */
   const startLookup = (id: string) => {
     const seq = nextDispatchRead();
-    lookup.current = { id, seq, done: false };
+    lookup.current = { id, seq, at: Date.now(), done: false };
     return seq;
+  };
+  /** The lookup that started as `seq` has answered (or failed): a later poll may ask again. */
+  const finishLookup = (seq: number) => {
+    if (lookup.current?.seq === seq) lookup.current.done = true;
   };
   /** Settle the linked record from a read that started as `seq`, unless a newer-started read
    *  already settled it for the same id. `next` null: that read's list held the dispatch. */
-  const settleLinked = (next: LinkedRec | null, seq: number) => {
-    if (lookup.current?.seq === seq) lookup.current.done = true;
+  const settleLinked = (next: LinkedRec | null, seq: number) =>
     setLinkedRec((prev) =>
       prev && prev.id === linkedId && prev.seq > seq ? prev : next,
     );
-  };
+  /** The id the view links to now: an answer for another id (or after unmount) is dropped. */
+  const linkedNow = useRef<string | null>(null);
+  useEffect(() => {
+    linkedNow.current = linkedId;
+    return () => {
+      linkedNow.current = null;
+    };
+  }, [linkedId]);
   const [retry, setRetry] = useState(0);
   /** `seen` is sent ONCE, on entry into the Dispatches (this mount), never on navigation inside
    *  them (Hermes 7620, finding 4): a dispatch that arrived while they were open stays new. */
@@ -188,6 +201,8 @@ export function DispatchesView({
           } catch (e) {
             if (!(e instanceof ApiError && e.status === 404)) throw e;
             rec = { id: linkedId, rec: null, missing: true, seq: from };
+          } finally {
+            finishLookup(from);
           }
         }
         if (!live) return;
@@ -242,44 +257,47 @@ export function DispatchesView({
     linkedRec?.id === linkedId && linkedRec?.missing,
   );
   // Whenever a poll is the current list, whatever became of the view's own read (Hermes 7956: a
-  // hung own read never reaches its own lookup). Not while a lookup that started AFTER this poll
-  // is still out (the own read's, usually): it is the fresher answer, and if it hangs, the next
-  // poll asks again. If two land, the newer-started one stands.
+  // hung own read never reaches its own lookup). Not while a lookup of the same id is still out
+  // and younger than two poll intervals, whoever started it (Hermes 7960, note 1): that answer is
+  // coming. One out for longer is presumed hung and asked again. If two land, the newer-started
+  // one stands. A poll that lands meanwhile never discards an answer still out: only a change of
+  // the linked id (or leaving the view) does — dropping it left the lookup unsettled, and the
+  // next poll asked again.
   useEffect(() => {
-    const fresher =
+    const pending =
       lookup.current?.id === linkedId &&
       !lookup.current.done &&
-      lookup.current.seq > latestSeq;
+      Date.now() - lookup.current.at < 2 * DISPATCH_POLL_MS;
     if (
       !linkedId ||
       source === null ||
       inSource ||
       source !== latest ||
       knownMissing ||
-      fresher
+      pending
     )
       return;
-    let live = true;
-    const seq = startLookup(linkedId);
-    api.hqDispatch(linkedId).then(
+    const id = linkedId;
+    const seq = startLookup(id);
+    api.hqDispatch(id).then(
       (one) => {
-        if (live)
-          settleLinked(
-            { id: linkedId, rec: one.dispatch, missing: false, seq },
-            seq,
-          );
+        finishLookup(seq);
+        if (linkedNow.current === id)
+          settleLinked({ id, rec: one.dispatch, missing: false, seq }, seq);
       },
       (e) => {
-        if (live && e instanceof ApiError && e.status === 404)
-          settleLinked({ id: linkedId, rec: null, missing: true, seq }, seq);
+        finishLookup(seq);
+        if (
+          linkedNow.current === id &&
+          e instanceof ApiError &&
+          e.status === 404
+        )
+          settleLinked({ id, rec: null, missing: true, seq }, seq);
       },
     );
-    return () => {
-      live = false;
-    };
-    // `startLookup`/`settleLinked` read only refs and `linkedId`, already a dependency.
+    // `startLookup`/`finishLookup`/`settleLinked` read only refs and `linkedId`, a dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [linkedId, source, inSource, latest, latestSeq, knownMissing]);
+  }, [linkedId, source, inSource, latest, knownMissing]);
 
   const ordered = useMemo(() => {
     if (source === null) return [];

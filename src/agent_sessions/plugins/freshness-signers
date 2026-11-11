@@ -8,3 +8,4 @@
 #
 # Until a key is listed here, no freshness statement verifies: only cuts whose own window is at
 # most 7 days are usable, exactly as before #1730.
+freshness@battlelab namespaces="battlelab-freshness" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIELn273MgJAxzX0/R8o5gkBHBZplo3EwxcULFAv5/JLu

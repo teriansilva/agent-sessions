@@ -8,3 +8,6 @@ export function nextDispatchRead(): number {
   last += 1;
   return last;
 }
+
+/** How often an open, visible HQ page re-reads the Dispatches (Hermes 7619, finding 4). */
+export const DISPATCH_POLL_MS = 15_000;
