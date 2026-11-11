@@ -64,7 +64,7 @@ export function coerceHqChoice(value: unknown): HqChoice {
   return DEFAULT_HQ_CHOICE;
 }
 
-/** Random's cycle: a FIXED permutation of the contacts. Day `n` shows `PERM[n % 13]`, so every
+/** Random's cycle: a FIXED permutation of the contacts. UTC day `n` shows `PERM[n % 13]`, so every
  *  contact shows exactly once in any 13 consecutive days, and two consecutive days (the cycle
  *  boundary included: `PERM[12]` and `PERM[0]` are different entries) never repeat a contact. A
  *  `hash(date) % 13` can promise neither. The order interleaves regions and women and men. */
@@ -84,15 +84,17 @@ export const PERM: readonly string[] = [
   "africa-woman",
 ];
 
-/** Local calendar days since 1970-01-01: the same number all day, on every device in the same
- *  timezone. */
-export function localDayNumber(now: Date): number {
-  return Math.floor(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / 86_400_000);
+/** THE DAY CONTRACT (#1837, Hermes 7619 finding 5): UTC days since 1970-01-01, the SAME number
+ *  the server uses (`hq_contacts.utc_day_number`), so a dispatch HQ writes on the server is signed
+ *  by the contact this page shows that day. A local date could not be shared: the host and the
+ *  browser may sit in different timezones. Random therefore changes contact at UTC midnight. */
+export function utcDayNumber(now: Date): number {
+  return Math.floor(now.getTime() / 86_400_000);
 }
 
-/** Random's pick for the local day `now` falls in. */
+/** Random's pick for the UTC day `now` falls in. */
 export function contactForDay(now: Date): HqContact {
-  const n = localDayNumber(now);
+  const n = utcDayNumber(now);
   return BY_ID.get(PERM[((n % PERM.length) + PERM.length) % PERM.length])!;
 }
 
@@ -103,8 +105,8 @@ export function resolveHqContact(choice: HqChoice, now: Date): HqContact | null 
   return contactById(choice) ?? contactForDay(now);
 }
 
-/** Milliseconds from `now` to the next local midnight (at least 1). */
-export function msToLocalMidnight(now: Date): number {
-  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-  return Math.max(1, next.getTime() - now.getTime());
+/** Milliseconds from `now` to the next UTC midnight (at least 1): when Random's pick changes. */
+export function msToUtcMidnight(now: Date): number {
+  const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+  return Math.max(1, next - now.getTime());
 }

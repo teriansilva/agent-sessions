@@ -185,6 +185,270 @@
   composes: ghost from "../ui/actionButton.module.css";
 }
 
+/* --- Dispatches (#1837): the pinned entry and the read-only view --------------------------- */
+
+/* The pinned entry: above the conversations, the display-caps title, "N new" as an accent chip. */
+.pin {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px var(--sp-2);
+  min-height: 52px;
+  padding: var(--sp-1) var(--sp-3);
+  border-left: 3px solid transparent;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-1);
+  text-decoration: none;
+}
+.pin:hover {
+  background: color-mix(in srgb, var(--hud) 10%, transparent);
+}
+.pin:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.pinTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+}
+.pinNew {
+  padding: 3px 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--on-accent);
+  background: var(--accent);
+}
+.pinMeta {
+  grid-column: 1 / -1;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+}
+.group {
+  padding: var(--sp-2) var(--sp-3) 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.dispatches {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: var(--sp-3);
+}
+/* Only the dispatches scroll: the head, the LINKED bar and the read-only footer stay put. */
+.dScroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.dHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.dHeadText {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.dTitle {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-1);
+}
+.dSrc {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+/* Opened from a link: the HUD tint, as board 3 draws it. */
+.landed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 3px solid var(--hud);
+  background: var(--hud-tint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+}
+.allLink {
+  composes: ghost from "../ui/actionButton.module.css";
+  margin-left: auto;
+}
+.dBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+}
+.dItem {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.daysep {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.daysep::before,
+.daysep::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+/* The LINKED dispatch: the HUD edge, glowing on its wrapper (a clipped panel clips its own glow). */
+.dGlow {
+  min-width: 0;
+}
+.dspHit {
+  background: var(--hud);
+}
+.dFace {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+}
+.dCall {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+.members {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* One event: its LED and word (status colour is load-bearing), its fixed text, its own Open. */
+.fixed {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px var(--sp-2);
+  padding: var(--sp-2);
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.fixed + .fixed {
+  border-top: 0;
+}
+.led {
+  grid-column: 1;
+  grid-row: 1;
+}
+.word {
+  grid-column: 2;
+  grid-row: 1;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.wWarn {
+  color: var(--warn-text);
+}
+.wDown {
+  color: var(--danger-text);
+}
+.x {
+  grid-column: 2;
+  font-size: var(--fs-row);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.reason {
+  grid-column: 2;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.tag {
+  grid-column: 2;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+}
+.go {
+  composes: ghost from "../ui/actionButton.module.css";
+  grid-column: 3;
+  grid-row: 1 / span 4;
+  align-self: center;
+  white-space: nowrap;
+}
+.hqline {
+  margin: 0;
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.readonly {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: auto;
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+.readonly p {
+  flex: 1 1 240px;
+  margin: 0;
+  font-size: var(--fs-row);
+  color: var(--text-2);
+}
+
 /* --- phone: master/detail ------------------------------------------------------------------- */
 
 @media (max-width: 800px) {
@@ -193,5 +457,15 @@
   }
   .list {
     border-right: 0;
+  }
+  /* An event's Open drops under its text: nothing scrolls sideways on a phone. */
+  .fixed {
+    grid-template-columns: 10px minmax(0, 1fr);
+  }
+  .go {
+    grid-column: 2;
+    grid-row: auto;
+    justify-self: start;
+    margin-top: var(--sp-1);
   }
 }

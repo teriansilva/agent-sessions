@@ -44,8 +44,10 @@ SESSION = "claude:11111111-2222-3333-4444-555555555555"
 # ---- helpers ------------------------------------------------------------------------------------
 
 
-#: Threads a test may leave behind: the missions store's own long-lived pool, reused by design.
-_LONG_LIVED_THREADS = ("missions-db",)
+#: Threads a test may leave behind, each a process-lifetime worker reused by design: the missions
+#: store's pool, and HQ's Dispatches hand-off reservation writer (#1837), whose queued writes the
+#: conftest drains before the test's stores go away.
+_LONG_LIVED_THREADS = ("missions-db", "hq-dispatch-reserve")
 
 
 @pytest.fixture(autouse=True)

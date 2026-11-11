@@ -60,8 +60,9 @@ def test_registry_covers_every_system_prompt():
     # BEFORE the guarded ask_orchestrator, whose guard stays the last word); #1397 hq_call +
     # hq_call_detailed; hq_handover / hq_handover_plain, when the Commander switched contact
     # mid-conversation; #1668 hq_call_end (on a call: are the Commander's words a goodbye?);
-    # #1715 voice_confirm_judge (on a call: did the reply confirm a read-back card?)
-    assert len(prompts.REGISTRY) == 41
+    # #1715 voice_confirm_judge (on a call: did the reply confirm a read-back card?); #1837
+    # hq_notify (HQ's one line about a notification, guarded: the persona speaks first)
+    assert len(prompts.REGISTRY) == 42
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -77,6 +78,8 @@ def test_registry_covers_every_system_prompt():
         # `voice_confirm_judge` (#1715) decides whether a spoken reply SETTLES a card, and the
         # read-back it is shown can carry agent-drafted text (a nudge's message, a proposal).
         "voice_confirm_judge",
+        # `hq_notify` (#1837) speaks as the persona sent before it; the guard stays its last word.
+        "hq_notify",
         "orchestrator_pass",
         "chat_instruct",
         "mission_objectives",
@@ -156,6 +159,7 @@ EXPECTED_DEFAULT_SHA = {
     "hq_call_detailed": "01a686993922ea45",  # #1397 (#1626 review); #1668: end_call; #1681: same
     "hq_call_end": "4af567dd1abae1eb",  # #1668: on a call, do the words and HQ's answer end it?
     "voice_confirm_judge": "1dbd567458fe0b85",  # #1715: did a spoken reply confirm a card?
+    "hq_notify": "172738181e0bcb1e",  # #1837: HQ's one line about a notification, facts only
     "hq_handover": "a27b7d563b8cb484",  # the Commander switched contact mid-conversation
     "hq_handover_plain": "2629dd59306634d4",  # the same, switched to Off
 }

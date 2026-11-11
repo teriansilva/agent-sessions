@@ -486,3 +486,49 @@
     min-height: 44px;
   }
 }
+
+/* HQ's line (#1837): under the row's fixed reason, never in place of it. The whole block is the
+ * link to the dispatch (≥44 px); the accent rail marks it as HQ's voice, not the server's fact. */
+.hqLine {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 2px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  min-height: 44px;
+  border-left: 2px solid var(--accent);
+  background: var(--bg-2);
+  color: var(--text-1);
+  text-decoration: none;
+}
+.hqLine:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
+}
+.hqLine:hover .hqGo,
+.hqLine:focus-visible .hqGo {
+  color: var(--accent-text);
+}
+.hqBy {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.hqText {
+  font-size: var(--fs-body);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.hqGo {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  justify-self: end;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}

@@ -1387,6 +1387,7 @@ async def _post_chat(
     retry_without_json_mode: bool = False,
     admission=None,
     interactive: bool = False,
+    retry_without_thinking: bool = True,
 ):
     """THE chat-completions transport. Every request to the endpoint goes through here.
 
@@ -1399,6 +1400,9 @@ async def _post_chat(
     optional field, because a refusal names none of them and the degrade has to isolate one per
     step (#841). Callers see only the final response either way. The count is pinned as an
     inventory in ``tests/test_prompts_registry.py``'s ``POST_SITES``.
+
+    ``retry_without_thinking=False`` (HQ's Dispatches, #1837) makes it ONE request, always: a
+    caller whose contract is "at most one model call" takes the refusal as its answer.
     """
     body = {**body, "messages": _prepare_outbound(body.get("messages") or [])}
     # The egress gate (#1657), on the config this request is actually sent with: a caller that
@@ -1428,7 +1432,7 @@ async def _post_chat(
         # A refusal names no field, so the degrade is ORDERED and each step isolates exactly
         # one. Drop the thinking option first: if the retry then succeeds, that field was the
         # offender and this endpoint is marked so it is not sent again.
-        if sent_thinking:
+        if sent_thinking and retry_without_thinking:
             attempt = dict(body)
             _assert_registered_system_prompts(attempt.get("messages") or [])
             async with _request_payload(attempt, cfg, admission) as payload:
@@ -1459,12 +1463,21 @@ class TransportTimeout(ReviewError):
     timeout is AMBIGUOUS: the request may have been processed (and billed) anyway (#1209)."""
 
 
-async def post_chat_response(cfg: dict, body: dict, *, admission=None):
+async def post_chat_response(
+    cfg: dict, body: dict, *, admission=None, retry_without_thinking: bool = True
+):
     """`_post_chat` for a caller that inspects the response itself (the chat runtime, #1209),
     with transport failures translated to `ReviewError` — so that caller needs no HTTP client of
-    its own. Adds no request: this is `_post_chat`, once."""
+    its own. Adds no request: this is `_post_chat`, once. ``retry_without_thinking=False``: never
+    a second request (see `_post_chat`)."""
     try:
-        return await _post_chat(cfg, body, admission=admission, interactive=True)
+        return await _post_chat(
+            cfg,
+            body,
+            admission=admission,
+            interactive=True,
+            retry_without_thinking=retry_without_thinking,
+        )
     except httpx.TimeoutException:
         raise TransportTimeout(
             f"the endpoint did not answer within {request_timeout(cfg):.0f}s"

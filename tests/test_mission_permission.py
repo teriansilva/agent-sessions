@@ -306,7 +306,7 @@ async def test_a_card_that_cannot_be_stored_still_blocks_the_nudge(world, monkey
 
     monkeypatch.setattr(mission_permission, "sync_card", boom)
     rung: list = []
-    monkeypatch.setattr(sup, "_announce", lambda row, key, reason: rung.append(reason))
+    monkeypatch.setattr(sup, "_announce", lambda row, key, reason, **_kw: rung.append(reason))
     screen["name"] = "opencode_permission_grep.raw"
     await sup.run_pass(mid)
     assert sent == [], "a nudge was typed into a permission dialog"

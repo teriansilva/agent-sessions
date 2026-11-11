@@ -12,7 +12,7 @@ import { CONTACTS, contactForDay, type HqChoice } from "./contacts";
 import { HqPortrait } from "./HqPortrait";
 import { pickHqChoice, retryHqChoiceRefresh, useHqChoiceState } from "./hqChoiceStore";
 import { HQ_GALLERY_ANCHOR } from "./PrimaryContact";
-import { useHqContact, useLocalDay } from "./useHqContact";
+import { useHqContact, useContactDay } from "./useHqContact";
 import s from "./HqContactGallery.module.css";
 
 interface Card {
@@ -36,7 +36,7 @@ export function HqContactGallery({
 }) {
   const { choice: stored } = useHqContact();
   const reload = useConfigReload();
-  const today = contactForDay(useLocalDay());
+  const today = contactForDay(useContactDay());
   // The pick in flight lives in the app-wide store (`hqChoiceStore`), so it outlives this gallery:
   // the latest pick shows at once, then what the server accepted, then the config (Hermes on #1535).
   const { pending, persisted, problem } = useHqChoiceState();

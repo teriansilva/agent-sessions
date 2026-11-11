@@ -45,6 +45,7 @@ from . import (
     fsbrowse,
     handoff,
     headless_dispatch,
+    hq_dispatch,
     missions,
     notifications,
     prefs,
@@ -886,13 +887,34 @@ def _lost_ack(res: dict, rid: str) -> dict:
     return out
 
 
-def _announce(title: str, reason: str, key: str) -> None:
-    rec = notifications.add(
-        title=title, project="", session_id="", engine="", reason=reason, action_id=key
-    )
-    if rec and notifications.list_subscriptions():
-        with contextlib.suppress(Exception):
-            notifications.fanout(rec)
+def _announce(
+    title: str,
+    reason: str,
+    key: str,
+    *,
+    dispatch_tag: str | None = None,
+    facts: dict | None = None,
+) -> None:
+    # HQ's Dispatches (#1837): the row's write, its push and its hand-off all run inside the
+    # in-flight fence (in memory, cannot fail or wait). The fence is up BEFORE the row can be read
+    # (Hermes 7678), so a reconcile pass never sees an unfenced row, however long the write takes.
+    # The persisted reservation is only queued for a background worker, so the fanout never waits
+    # for it. The hand-off comes after the fanout, on its own. A row without a tag does none of it.
+    with hq_dispatch.flight([{"dispatch": dispatch_tag}]):
+        rec = notifications.add(
+            title=title,
+            project="",
+            session_id="",
+            engine="",
+            reason=reason,
+            action_id=key,
+            dispatch_tag=dispatch_tag,
+        )
+        hq_dispatch.reserve([rec])
+        if rec and notifications.list_subscriptions():
+            with contextlib.suppress(Exception):
+                notifications.fanout(rec)
+        hq_dispatch.announce(rec, facts)
 
 
 def notify(result: dict) -> None:
@@ -918,10 +940,19 @@ def notify(result: dict) -> None:
     kind, key = ep
     try:
         if kind == "open":
+            # The failure episode carries its action id as its dispatch tag (#1837); the partial-
+            # send alert above carries none. HQ's facts are the automation's own name and the
+            # store's outcome — never `run.reason`, which is in the row's reason only.
             _announce(
                 f"Automation failed: {name}",
                 f"{run.get('outcome')}: {run.get('reason') or ''}",
                 key,
+                dispatch_tag=key,
+                facts={
+                    "class": hq_dispatch.CLASS_AUTOMATION,
+                    "automation": str(auto.get("name") or ""),
+                    "outcome": run.get("outcome"),
+                },
             )
         else:
             notifications.dismiss_for_action(key)

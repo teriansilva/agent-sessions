@@ -19,8 +19,8 @@ from dataclasses import dataclass
 
 #: What a turn or the pref says when no contact speaks: plain HQ, no persona message.
 OFF = "off"
-#: The pref's daily pick. Resolved by the CLIENT (a seeded 13-day cycle in the operator's
-#: timezone); a turn always carries the resolved id, never ``random``.
+#: The pref's daily pick. Resolved by the CLIENT for a turn (a fixed 13-day cycle over the UTC day,
+#: see ``PERM``); a turn always carries the resolved id, never ``random``.
 RANDOM = "random"
 #: The pref's default — a recorded decision (#1525): it shows the gallery off.
 DEFAULT_PREF = RANDOM
@@ -311,3 +311,49 @@ def coerce_pref(value: object) -> str:
     """The ``hq_contact`` pref as read: a contact id, ``random`` or ``off``; anything else (an
     unknown or removed id, a non-string) reads as the default."""
     return value if isinstance(value, str) and value in PREF_VALUES else DEFAULT_PREF
+
+
+#: Random's cycle (#1837): the SAME fixed permutation as the client's ``PERM``
+#: (``web/src/components/hq/contacts.ts``; a test pins the two equal).
+#:
+#: THE DAY CONTRACT (Hermes 7619, finding 5): day ``n`` is the **UTC** day number,
+#: ``floor(epoch seconds / 86400)``, on the server AND in the browser, and the day's contact is
+#: ``PERM[n % 13]``. A local date cannot be shared: the host and the Commander's browser may sit in
+#: different timezones, and a line signed by one General while the page shows another is the
+#: divergence this rules out. Random therefore changes contact at UTC midnight everywhere.
+PERM: tuple[str, ...] = (
+    "southamerica-woman",
+    "russia-man",
+    "asia-woman",
+    "us-man",
+    "romania-woman",
+    "africa-man",
+    "europe-woman",
+    "asia-man",
+    "us-woman",
+    "southamerica-man",
+    "russia-woman",
+    "europe-man",
+    "africa-woman",
+)
+
+DAY_S = 86400
+
+
+def utc_day_number(ts: float) -> int:
+    """UTC days since 1970-01-01 for the epoch time ``ts`` — the client's ``utcDayNumber``. The
+    host's timezone plays no part (the day contract above)."""
+    return int(ts // DAY_S)
+
+
+def contact_for_day(day: int) -> str:
+    """Random's pick for UTC day number ``day`` (the client's ``contactForDay``)."""
+    return PERM[day % len(PERM)]
+
+
+def speaker(pref: str, now: float) -> str:
+    """Who signs a line the server writes on its own (#1837): the pref's contact, ``random``
+    resolved to the UTC day's, or ``off`` (plain HQ, no persona)."""
+    if pref == RANDOM:
+        return contact_for_day(utc_day_number(now))
+    return resolve(pref)

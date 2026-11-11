@@ -321,15 +321,18 @@ function Who() {
   return <div data-testid="who">{contact?.id ?? "off"}</div>;
 }
 
-test("Random switches at local midnight while it is on screen", () => {
-  vi.useFakeTimers({ now: new Date(2026, 9, 20, 23, 59, 0), toFake: ["Date", "setTimeout", "clearTimeout"] });
+test("Random switches at UTC midnight while it is on screen", () => {
+  vi.useFakeTimers({
+    now: new Date(Date.UTC(2026, 9, 20, 23, 59, 0)),
+    toFake: ["Date", "setTimeout", "clearTimeout"],
+  });
   render(
     <ConfigCtx.Provider value={{ hq_contact: "random" } as AppConfig}>
       <Who />
     </ConfigCtx.Provider>,
   );
-  const tonight = contactForDay(new Date(2026, 9, 20, 12)).id;
-  const tomorrow = contactForDay(new Date(2026, 9, 21, 12)).id;
+  const tonight = contactForDay(new Date(Date.UTC(2026, 9, 20, 12))).id;
+  const tomorrow = contactForDay(new Date(Date.UTC(2026, 9, 21, 12))).id;
   expect(screen.getByTestId("who")).toHaveTextContent(tonight);
   act(() => {
     vi.advanceTimersByTime(59_000);

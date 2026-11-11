@@ -38,6 +38,7 @@ import uuid
 
 from . import (
     automation,
+    hq_dispatch,
     mission_directions,
     mission_judge,
     mission_now,
@@ -1488,8 +1489,12 @@ async def escalate(
     reason: str,
     meta: dict | None = None,
     path=None,
+    won: dict | None = None,
 ) -> bool:
     """Record the terminal escalation for this objective episode. True iff THIS pass won it.
+
+    ``won``, when given, receives the event's dispatch ``tag`` on a win (#1837): the arbitration
+    key just won — mission, objective digest, episode — minted here, before the row write.
 
     The uniqueness constraint arbitrates, so two overlapping passes cannot both announce. The
     caller notifies only on a True — announcing a row somebody else wrote is how one stall
@@ -1500,19 +1505,23 @@ async def escalate(
     trap: the unique row was already committed, so a failed append could never be repaired by a
     later pass — uniqueness had permanently closed the door on the only record the operator sees.
     """
-    return bool(
-        await missions.run_admitted(
-            lambda: missions.escalate_once(
-                mission_id,
-                session_key=session_key,
-                objective_key=objective_key,
-                episode=missions.objective_episode(mission_id, objective_key, path=path)[0],
-                reason=reason,
-                meta=meta,
-                path=path,
-            )
+
+    def _once() -> bool:
+        episode = missions.objective_episode(mission_id, objective_key, path=path)[0]
+        ok = missions.escalate_once(
+            mission_id,
+            session_key=session_key,
+            objective_key=objective_key,
+            episode=episode,
+            reason=reason,
+            meta=meta,
+            path=path,
         )
-    )
+        if ok and won is not None:
+            won["tag"] = hq_dispatch.escalation_tag(mission_id, objective_key, episode)
+        return ok
+
+    return bool(await missions.run_admitted(_once))
 
 
 # ---------------------------------------------------------------- one pass over one mission
@@ -2267,6 +2276,7 @@ async def _pass_one_session(
                     else None
                 )
             )
+            tagged: dict = {}
             if await escalate(
                 mission_id,
                 session_key=session_key,
@@ -2274,13 +2284,14 @@ async def _pass_one_session(
                 reason=reason,
                 meta=meta,
                 path=path,
+                won=tagged,
             ):
                 out["escalated"] = {"objective_key": o["key"], "reason": reason}
                 # A card written or already live on this session was announced by the ledger's own
                 # bell path, tied to the action so answering it retires the row. A second,
                 # untied row would be the duplicate nothing retracts.
                 if not (permission_card.get("card") or permission_card.get("existing")):
-                    _announce(row, session_key, reason)
+                    _announce(row, session_key, reason, dispatch_tag=tagged.get("tag"))
                 break
         return out
 
@@ -2307,6 +2318,7 @@ async def _pass_one_session(
             key = proposal["objective_key"]
             title = next((o.get("title") for o in a["objectives"] if o["key"] == key), None)
             reason = f"{title or key}: {res.get('why') or 'its direction could not be filled'}"
+            tagged = {}
             if await escalate(
                 mission_id,
                 session_key=session_key,
@@ -2314,9 +2326,10 @@ async def _pass_one_session(
                 reason=reason,
                 meta={"held": "direction"},
                 path=path,
+                won=tagged,
             ):
                 out["escalated"] = {"objective_key": key, "reason": reason}
-                _announce(row, session_key, reason)
+                _announce(row, session_key, reason, dispatch_tag=tagged.get("tag"))
     elif draft:
         # A PROPOSAL, never a send (#983 P3). Nothing is typed until the operator approves it.
         out["drafted"] = await propose_draft(
@@ -2362,16 +2375,18 @@ async def _pass_one_session(
             if o["why_not"]
             else f"{o['title'] or o['key']} has not moved"
         )
+        tagged = {}
         won = await escalate(
             mission_id,
             session_key=session_key,
             objective_key=o["key"],
             reason=reason,
             path=path,
+            won=tagged,
         )
         if won:
             out["escalated"] = {"objective_key": o["key"], "reason": reason}
-            _announce(row, session_key, reason)
+            _announce(row, session_key, reason, dispatch_tag=tagged.get("tag"))
         # THE ASK IS NOT HUNG OFF THE WIN (#900 review 4, finding 1).
         #
         # It was, and that made the episode's only ask a single attempt: `escalate_once` is
@@ -2466,22 +2481,34 @@ async def _ask_owed(
             return
 
 
-def _announce(row: dict, session_key: str, reason: str) -> None:
+def _announce(row: dict, session_key: str, reason: str, *, dispatch_tag: str | None = None) -> None:
     """Put the escalation in the bell. Best-effort — the durable record is the mission timeline.
 
     **No model-authored field reaches a dedupe key**, and here that falls out for free rather than
     being remembered: this is only called when `escalate_once` WON, and that is arbitrated by a
     database constraint on `(mission, session, objective, episode)` — none of which the model
     writes. `notifications.add` then applies its own session-identity rule on top.
+
+    ``dispatch_tag`` (#1837) is that same won key as an event tag. A NEW row is then handed to HQ's
+    Dispatches with the mission's own name — never the reason, which is the row's title. No push
+    is sent here, as before.
     """
     from . import notifications
 
-    with contextlib.suppress(Exception):
-        notifications.add(
-            title=reason[:200],
-            project=str((row.get("project") or {}).get("name") or ""),
-            session_id=session_key,
-            engine=str(row.get("engine") or ""),
-            reason="mission supervisor",
-            escalation=True,
+    rec = None
+    # The tag is in this process's in-flight fence before the row can be read, and until its
+    # hand-off (Hermes 7678): a reconcile pass never takes it with reduced facts meanwhile.
+    with hq_dispatch.flight([{"dispatch": dispatch_tag}]):
+        with contextlib.suppress(Exception):
+            rec = notifications.add(
+                title=reason[:200],
+                project=str((row.get("project") or {}).get("name") or ""),
+                session_id=session_key,
+                engine=str(row.get("engine") or ""),
+                reason="mission supervisor",
+                escalation=True,
+                dispatch_tag=dispatch_tag,
+            )
+        hq_dispatch.announce(
+            rec, {"class": hq_dispatch.CLASS_ESCALATION, "mission": str(row.get("title") or "")}
         )

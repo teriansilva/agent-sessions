@@ -39,6 +39,7 @@ from . import (
     autosort_loop,
     engines,
     feed_alerts,
+    hq_dispatch,
     hq_report_broker,
     memory,
     memory_loop,
@@ -92,6 +93,7 @@ from .routes import chat as chat_routes
 from .routes import files as files_routes
 from .routes import handoff as handoff_routes
 from .routes import history as history_routes
+from .routes import hq_dispatches as hq_dispatches_routes
 from .routes import link as link_routes
 from .routes import maintenance as maintenance_routes
 from .routes import memory as memory_routes
@@ -453,6 +455,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # Needs-you notifications (#1086 Phase 4): one withdrawable notification per episode, synced
         # from the Ask page's NEEDS YOU read. Env kill-switch AGENT_SESSIONS_NEEDS_YOU_LOOP=0.
         needs_you_task = asyncio.create_task(needs_you_notify.run())
+        # HQ's Dispatches (#1837): one line per bundle of notifications, written AFTER the rows and
+        # pushes, once. Env kill-switch AGENT_SESSIONS_HQ_DISPATCH_LOOP=0.
+        hq_dispatch_task = asyncio.create_task(hq_dispatch.run())
         # Automations (#1201): the scheduler takes its kernel ownership lock before recovering or
         # firing anything. Env kill-switch AGENT_SESSIONS_AUTOMATION_LOOP=0 stops every trigger.
         automation_task = automation_loop.start(registry)
@@ -531,6 +536,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 mission_task,
                 usage_task,
                 needs_you_task,
+                hq_dispatch_task,
                 automation_task,
                 memory_task,
                 capacity_task,
@@ -758,6 +764,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     pulse_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
     # Ask's durable conversations (#1443): the sidebar's turns, owned by the server.
     ask_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
+    # HQ's Dispatches (#1837): the lines HQ wrote about notifications, read only.
+    hq_dispatches_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Calling HQ (#1397): speech endpoints, the call admission and the call socket. A call is an
     # HQ conversation spoken aloud, so it gets the same registry snapshot HQ turns get.
     voice_routes.register(

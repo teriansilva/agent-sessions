@@ -35,8 +35,12 @@ export const HQ_PATH = "/hq";
 /** One HQ conversation on the page (#1776): what "Open as page" and an external link open. */
 export const HQ_CONVERSATION_ROUTE = `${HQ_PATH}/c/:cid`;
 export const hqConversationPath = (cid: string) => `${HQ_PATH}/c/${encodeURIComponent(cid)}`;
-/** One dispatch (#1746 P3a) — minted by the dispatch writers; the page opens it in Phase 2. */
-export const hqDispatchPath = (id: string) => `${HQ_PATH}/d/${encodeURIComponent(id)}`;
+/** HQ's Dispatches (#1837): the lines HQ wrote about notifications, read only. */
+export const HQ_DISPATCHES_PATH = `${HQ_PATH}/d`;
+/** One dispatch (#1837): what the bell's "In HQ →" opens — scrolled to and marked LINKED. */
+export const hqDispatchPath = (id: string) => `${HQ_DISPATCHES_PATH}/${encodeURIComponent(id)}`;
+/** A dispatch id as the server mints it (`hq_dispatch.BID_RE`): checked before any API call. */
+export const HQ_DISPATCH_ID_RE = /^d_[0-9a-f]{16}$/;
 /** A conversation id as the server mints it (`ask_store.CID_RE`): checked before any API call,
  *  so a malformed link is the same "isn't here" as an unknown one, and asks nothing. */
 export const ASK_CID_RE = /^ask_[0-9a-f]{32}$/;

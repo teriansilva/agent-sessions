@@ -70,6 +70,7 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_ORCHESTRATOR_LEDGER": ".config/agent-sessions/orchestrator-ledger.jsonl",
     "AGENT_SESSIONS_AGENT_USAGE": ".config/agent-sessions/agent-usage.json",
     "AGENT_SESSIONS_HQ_USAGE": ".config/agent-sessions/hq-usage.json",  # #1531 footer telemetry
+    "AGENT_SESSIONS_HQ_DISPATCHES": ".config/agent-sessions/hq-dispatches.json",  # #1837
     "AGENT_SESSIONS_TEMPLATES": ".config/agent-sessions/templates.json",
     "AGENT_SESSIONS_TEMPLATE_VARS": ".config/agent-sessions/template-variables.json",
     "AGENT_SESSIONS_TEMPLATE_SECRETS_KEY": ".config/agent-sessions/template-secrets.key",
@@ -204,6 +205,8 @@ _pin_store_env()
 # store on its first pass. A test that enters the lifespan would get rows it never asked for, at a
 # moment it does not control. Its tests call `needs_you_notify.sync_once` directly instead.
 os.environ.setdefault("AGENT_SESSIONS_NEEDS_YOU_LOOP", "0")
+# HQ's Dispatches writer (#1837): a test drives `hq_dispatch.pass_once` itself.
+os.environ.setdefault("AGENT_SESSIONS_HQ_DISPATCH_LOOP", "0")
 # The automation scheduler (#1201) fires unattended work from the lifespan. No test that merely
 # enters the lifespan may start one; its tests drive `automation_loop.Scheduler.tick` directly and
 # opt back in with `monkeypatch.setenv("AGENT_SESSIONS_AUTOMATION_LOOP", "1")`.
@@ -566,6 +569,21 @@ def _isolate_notifications(tmp_path, monkeypatch) -> None:
         "AGENT_SESSIONS_WORK_RECAP",
         str(tmp_path / ".config" / "agent-sessions" / "work-recap.json"),
     )
+    # #1837: HQ's Dispatches store — every notification producer enqueues into it.
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_HQ_DISPATCHES",
+        str(tmp_path / ".config" / "agent-sessions" / "hq-dispatches.json"),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _drain_hq_dispatch_reservations():
+    """#1837: HQ's Dispatches write hand-off reservations on a background worker. Every queued one
+    is handled before the test's store paths go away, so none can land in the next test's store."""
+    yield
+    mod = sys.modules.get("agent_sessions.hq_dispatch")
+    if mod is not None:
+        mod._drain_reservations(10.0)
 
 
 @pytest.fixture(autouse=True)

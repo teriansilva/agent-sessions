@@ -19,6 +19,10 @@ Notifications retire themselves when the thing they were about resolves: entries
 are cleared once that action reaches a terminal state, so the bell does not keep showing you a
 question that has already been answered.
 
+HQ may add **one short line** under a row, written afterwards by your HQ contact, with **In HQ →**
+to the dispatch. It never changes the row, its push or when either arrives: see
+[HQ → Dispatches](/guide/hq#dispatches).
+
 ## Sessions that need you
 
 For a session no mission holds, there is exactly **one** notification per time it starts needing

@@ -31,6 +31,9 @@ vi.mock("../../lib/api", async () => {
       askDeleteConversation: vi.fn(),
       askMessageStream: vi.fn(),
       askSeen: vi.fn(),
+      hqDispatches: vi.fn(),
+      hqDispatch: vi.fn(),
+      hqDispatchesSeen: vi.fn(),
     },
   };
 });
@@ -93,18 +96,28 @@ beforeEach(() => {
     removeEventListener: () => {},
   }) as unknown as typeof window.matchMedia;
   vi.mocked(api.askSeen).mockResolvedValue({ unread: false });
+  vi.mocked(api.hqDispatches).mockResolvedValue({ dispatches: [], new: 0, unreadable: false });
   vi.mocked(api.askConversations).mockResolvedValue(BOTH);
   vi.mocked(api.askConversation).mockImplementation(async (id: string) => conversation(id));
 });
 
 // ---- the route --------------------------------------------------------------------------------
 
-test("the route names the list, one well-formed conversation, or nothing", () => {
+test("the route names the list, one well-formed conversation, the Dispatches, or nothing", () => {
   expect(hqTarget("/hq")).toEqual({ kind: "list" });
   expect(hqTarget("/hq/")).toEqual({ kind: "list" });
   expect(hqTarget(`/hq/c/${A}`)).toEqual({ kind: "conversation", id: A });
-  for (const bad of ["/hq/c/nope", "/hq/c/ask_ABC", `/hq/c/${A}/x`, "/hq/d/x", "/hq/c/%E0%A4%A"])
+  for (const bad of ["/hq/c/nope", "/hq/c/ask_ABC", `/hq/c/${A}/x`, "/hq/c/%E0%A4%A", "/hq/x"])
     expect(hqTarget(bad)).toEqual({ kind: "nothing" });
+  // #1837: the Dispatches, one well-formed dispatch, and a malformed one decided without a read.
+  expect(hqTarget("/hq/d")).toEqual({ kind: "dispatches", id: null, malformed: false });
+  expect(hqTarget(`/hq/d/d_${"0".repeat(16)}`)).toEqual({
+    kind: "dispatches",
+    id: `d_${"0".repeat(16)}`,
+    malformed: false,
+  });
+  for (const bad of ["/hq/d/x", "/hq/d/d_XYZ", "/hq/d/%E0%A4%A"])
+    expect(hqTarget(bad)).toEqual({ kind: "dispatches", id: null, malformed: true });
 });
 
 test("a malformed id is the same 'isn't here' as an unknown one, and asks the server nothing", async () => {

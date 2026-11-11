@@ -9,7 +9,7 @@ import { engineBadge, relTime } from "../../lib/format";
 import type { PulseNotification } from "../../types/api";
 import styles from "./NotificationBell.module.css";
 import { MISSION_PATH } from "../../lib/missionLink";
-import { automationPath } from "../../lib/routes";
+import { automationPath, hqDispatchPath } from "../../lib/routes";
 import { useEngineRoster } from "../../app/engineRoster";
 import { mutateNotifications, refreshNotifications, useNotifications } from "./notificationsStore";
 
@@ -324,6 +324,25 @@ export function NotificationBell() {
               </button>
               <div className={styles.title}>{n.title}</div>
               {n.reason && <div className={styles.reason}>{n.reason}</div>}
+              {/* HQ's line (#1837): beside the row's own text, which it never replaces. It links
+                  to the dispatch on HQ's page; the row's Open below is unchanged. */}
+              {n.dispatch ? (
+                <Link
+                  className={styles.hqLine}
+                  to={hqDispatchPath(n.dispatch.id)}
+                  onClick={() => setOpen(false)}
+                  data-testid="bell-hq-line"
+                >
+                  <span className={styles.hqBy}>
+                    {n.dispatch.by} wrote
+                    {n.dispatch.bundled > 1 ? ` · 1 of ${n.dispatch.bundled} events` : ""}
+                  </span>
+                  <span className={styles.hqText}>{n.dispatch.line}</span>
+                  <span className={styles.hqGo}>
+                    In HQ <ArrowRight size={13} aria-hidden="true" />
+                  </span>
+                </Link>
+              ) : null}
               <div className={styles.foot}>
                 {n.project && <span className={styles.proj}>{n.project}</span>}
                 <span className={styles.eng} aria-hidden="true">

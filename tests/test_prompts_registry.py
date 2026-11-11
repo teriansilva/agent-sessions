@@ -45,6 +45,7 @@ EXPECTED_SITES = {
     ("ask_orchestrator.py", "hq_call_detailed"),  # #1397: the same, Settings → answers: Detailed
     ("ask_orchestrator.py", "hq_call_end"),  # #1668: on a call, do the Commander's words end it?
     ("voice_judge.py", "voice_confirm_judge"),  # #1715: did a spoken reply confirm a card?
+    ("hq_dispatch.py", "hq_notify"),  # #1837: HQ's one line about a notification
     ("ask_orchestrator.py", "hq_handover"),  # the Commander switched contact mid-conversation
     ("ask_orchestrator.py", "hq_handover_plain"),  # the same, switched to Off
     ("review.py", "tail_review"),
@@ -60,6 +61,8 @@ EXPECTED_SITES = {
     # #1525: the HQ contact's persona, sent before `ask_orchestrator` — ONE site that can send any
     # of the 13, through the pinned `hq_contacts.prompt_id` (see PERSONA_* below).
     *(("ask_orchestrator.py", pid) for pid in hq_contacts.PROMPT_IDS),
+    # #1837: the same persona form, before `hq_notify` — the contact who signs the line.
+    *(("hq_dispatch.py", pid) for pid in hq_contacts.PROMPT_IDS),
 }
 
 

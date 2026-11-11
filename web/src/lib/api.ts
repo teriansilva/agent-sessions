@@ -76,6 +76,8 @@ import type {
   HandoffMode,
   HandoffPrepared,
   HistoryPage,
+  HqDispatch,
+  HqDispatchList,
   Mission,
   MissionContext,
   MissionNow,
@@ -2191,6 +2193,14 @@ export const api = {
       `/api/pulse/actions/${enc(id)}/reject`,
       {},
     ).then(announceActionResolved),
+  /** HQ's Dispatches (#1837): the newest written dispatches (newest first) and "N new". */
+  hqDispatches: () => getJson<HqDispatchList>("/api/hq/dispatches"),
+  /** One written dispatch; a 404 for an unknown, pruned or unwritten id. */
+  hqDispatch: (id: string) =>
+    getJson<{ dispatch: HqDispatch; new: number }>(`/api/hq/dispatches/${enc(id)}`),
+  /** Opening the view: the newest dispatch it received has been seen (clamped by the server). */
+  hqDispatchesSeen: (through: string) =>
+    mutateJson<{ moved: boolean; new: number }>("POST", "/api/hq/dispatches/seen", { through }),
   /** In-app notifications (#726 Phase 3) — the channel that always works, regardless of push
    *  permission or platform. */
   notifications: () => getJson<NotificationList>("/api/pulse/notifications"),

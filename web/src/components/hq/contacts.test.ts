@@ -8,22 +8,23 @@ import {
   PERM,
   coerceHqChoice,
   contactForDay,
-  localDayNumber,
-  msToLocalMidnight,
+  msToUtcMidnight,
   resolveHqContact,
+  utcDayNumber,
 } from "./contacts";
 
-const day = (y: number, m: number, d: number, h = 12) => new Date(y, m - 1, d, h);
+/** A UTC instant: Random's day is the UTC day (the day contract shared with the server). */
+const day = (y: number, m: number, d: number, h = 12) => new Date(Date.UTC(y, m - 1, d, h));
 
 describe("Random: a 13-day cycle (#1525)", () => {
   test("PERM is a permutation of every contact", () => {
     expect([...PERM].sort()).toEqual(CONTACTS.map((c) => c.id).sort());
   });
 
-  test("the same contact all day, midnight to midnight", () => {
+  test("the same contact all day, UTC midnight to UTC midnight", () => {
     const morning = contactForDay(day(2026, 10, 20, 0));
     expect(contactForDay(day(2026, 10, 20, 12))).toBe(morning);
-    expect(contactForDay(new Date(2026, 9, 20, 23, 59, 59))).toBe(morning);
+    expect(contactForDay(new Date(Date.UTC(2026, 9, 20, 23, 59, 59)))).toBe(morning);
   });
 
   test("a different contact on every pair of consecutive days, cycle boundary included", () => {
@@ -41,13 +42,32 @@ describe("Random: a 13-day cycle (#1525)", () => {
     }
   });
 
-  test("the day number counts LOCAL calendar days", () => {
-    expect(localDayNumber(day(1970, 1, 1, 0))).toBe(0);
-    expect(localDayNumber(day(1970, 1, 2, 23))).toBe(1);
+  test("the day number counts UTC days", () => {
+    expect(utcDayNumber(day(1970, 1, 1, 0))).toBe(0);
+    expect(utcDayNumber(day(1970, 1, 2, 23))).toBe(1);
   });
 
-  test("the next switch is at local midnight", () => {
-    expect(msToLocalMidnight(new Date(2026, 9, 20, 23, 59, 0))).toBe(60_000);
+  test("the next switch is at UTC midnight", () => {
+    expect(msToUtcMidnight(new Date(Date.UTC(2026, 9, 20, 23, 59, 0)))).toBe(60_000);
+  });
+
+  // The cross-timezone boundary (#1837, Hermes 7619 finding 5). The SAME instants and ids are pinned
+  // for the server in tests/test_hq_dispatch.py, so a line HQ signs is the page's contact that day.
+  test.each([
+    // 23:30 UTC on 1 Nov is already 2 Nov in Auckland.
+    ["Pacific/Auckland", Date.UTC(2026, 10, 1, 23, 30), "russia-woman"],
+    // 03:00 UTC on 2 Nov is still 1 Nov in Los Angeles.
+    ["America/Los_Angeles", Date.UTC(2026, 10, 2, 3, 0), "europe-man"],
+  ])("where the local date and the UTC date differ (%s), the UTC day decides", (tz, ms, id) => {
+    const before = process.env.TZ;
+    process.env.TZ = tz;
+    try {
+      const now = new Date(ms);
+      expect(now.getDate()).not.toBe(now.getUTCDate()); // the boundary is really exercised
+      expect(contactForDay(now).id).toBe(id);
+    } finally {
+      process.env.TZ = before;
+    }
   });
 });
 

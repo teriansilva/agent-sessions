@@ -39,6 +39,30 @@ NOTIFY_MAX = 200  # bounded ring — the bell is a recent-activity surface, not 
 TITLE_MAX = 120
 BODY_MAX = 240
 
+#: The event tags a row may carry as ``dispatch`` (#1837, HQ's Dispatches). Minted by the PRODUCER
+#: from ids, before the row write, never from the row's own id, so a crash, retry or reconcile pass
+#: derives the same tag again. Each must FULLY match one of these; anything else is dropped (and
+#: logged), never a refused write. The automation pattern is anchored at one run id, so a partial-
+#: send alert's ``…:partial`` key can never match it.
+DISPATCH_TAG_RES = (
+    # A needs-you episode: `needs-you:<engine>:<native id>:<episode>` (`episode_tag`).
+    re.compile(r"needs-you:[a-z0-9][a-z0-9_-]{0,39}:[A-Za-z0-9._:@-]{1,200}:[0-9a-f]{1,16}"),
+    # A mission escalation: the `escalate_once` key — mission, objective digest, episode.
+    re.compile(r"escalation:msn_[0-9a-f]{32}:[0-9a-f]{12}:[0-9]{1,9}"),
+    # An automation failure episode: its `action_id`.
+    re.compile(r"automation:[a-z0-9]{1,64}:[^:]+"),
+)
+DISPATCH_TAG_MAX = 300
+
+
+def valid_dispatch_tag(tag: object) -> bool:
+    """Whether ``tag`` is one a row may carry as ``dispatch`` (see :data:`DISPATCH_TAG_RES`)."""
+    return (
+        isinstance(tag, str)
+        and len(tag) <= DISPATCH_TAG_MAX
+        and any(r.fullmatch(tag) for r in DISPATCH_TAG_RES)
+    )
+
 
 def _store_path(env: str, default: str) -> Path:
     return Path(os.environ.get(env, str(Path.home() / ".config" / "agent-sessions" / default)))
@@ -333,13 +357,21 @@ def add(
     recorded: Callable[[], bool] | None = None,
     after: Callable[[], None] | None = None,
     record: Callable[[str], bool] | None = None,
+    dispatch_tag: str | None = None,
     path: Path | None = None,
 ) -> dict | None:
     """Record one notification, or return ``None`` when an equivalent one is already pending.
 
     Deliberately takes named, bounded fields rather than a free dict: it is the same enforcement
     trick as ``webpush.build_payload`` — a caller cannot slip screen text in without changing
-    this signature."""
+    this signature.
+
+    ``dispatch_tag`` (#1837) is the producer's event tag for HQ's Dispatches, stored on the row as
+    ``dispatch`` — a tag, never text. One that does not fully match :data:`DISPATCH_TAG_RES` is
+    dropped and logged: the row is written without it, exactly as if none was given."""
+    if dispatch_tag is not None and not valid_dispatch_tag(dispatch_tag):
+        log.warning("notifications: dropped an invalid dispatch tag; the row is written without it")
+        dispatch_tag = None
     p = path or _notifications_path()
     with _locked(p):
         rows, announced, _eps = _load_doc_strict(p)
@@ -497,6 +529,9 @@ def add(
             "auto_direction": bool(auto_direction),
             "activity_at": activity_at if isinstance(activity_at, int | float) else None,
         }
+        if dispatch_tag is not None:
+            # A tag only (#1837): HQ's line lives in its own store and is joined into the view.
+            rec["dispatch"] = dispatch_tag
         rows.append(rec)
         kept = _evict(rows)
         if auto_direction and action_id:
@@ -1143,6 +1178,7 @@ def sync_needs_you(
     push: bool = False,
     now: float | None = None,
     path: Path | None = None,
+    before_write: Callable[[list[dict]], None] | None = None,
 ) -> dict:
     """Reconcile the needs-you EPISODES with who needs the operator now. One notification per
     episode, retracted when the episode ends.
@@ -1275,11 +1311,21 @@ def sync_needs_you(
                 "tag": tag,
                 "activity_at": None,
             }
+            # The episode's own tag is its dispatch tag (#1837): a tag, never text.
+            if valid_dispatch_tag(tag):
+                rec["dispatch"] = tag
+            else:
+                log.warning("notifications: an episode tag is not a valid dispatch tag; none kept")
             rows.append(rec)
             opened.append(rec)
             changed = True
         if changed:
             rows = _evict(rows)
+            # HQ's Dispatches (#1837, Hermes 7678): the opened rows enter the caller's in-flight
+            # fence BEFORE the write makes them readable, so a reconcile pass can never see one
+            # that is not yet fenced, however long this write or its caller's return takes.
+            if opened and before_write is not None:
+                before_write(opened)
             _write(p, rows, episodes=episodes)
         # Oldest first, so a bounded batch always drains the longest-owed retractions.
         owed = sorted(

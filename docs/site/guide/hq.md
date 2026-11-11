@@ -96,6 +96,33 @@ conversation that was deleted, or that never existed, says **This conversation i
   back to the list.
 - Old `/ask` links open the HQ page on a new conversation.
 
+## Dispatches
+
+HQ writes **one short line about each notification**, as your [HQ contact](#hq-contacts), so the
+bell says what happened in a voice and not only in fixed text. It covers three kinds of event: a
+session that **needs you**, a **mission escalation**, and an **automation failure**.
+
+- **The notification comes first, unchanged.** The bell row and its push go out exactly as before;
+  HQ writes afterwards, in the background. If your AI endpoint fails or isn't set up, the row
+  simply keeps its fixed text and no line is written.
+- **Several events at once are one dispatch.** Events within **60 seconds** (at most **10**) are
+  written about together, in one line, so a burst costs one model call.
+- **Only facts the app already knows are sent:** the kind of event, the project folder, the agent,
+  how long ago, and the mission or automation's own name. Never a notification's text, a session's
+  content or a run's reason. The line is at most **240** characters; a longer, empty or refused
+  answer writes nothing, and a line that looks like a credential is withheld.
+- **In the bell**, the line sits under the row's own text, labelled with who wrote it (*Gen. Okafor
+  wrote · 1 of 3 events* for a bundle), with **In HQ →** to the dispatch. The row's **Open** goes
+  where it always did.
+- **On the HQ page**, a pinned **Dispatches** entry sits above your conversations once there is
+  one, with **N new** since you last opened it. It opens the dispatches, newest last, each with
+  its events and their own **Open** links (a session, a mission, or an automation's run history).
+  Each dispatch has its own address, `/hq/d/…`; opened from a link it is scrolled into view and
+  marked **LINKED**. A dispatch that was pruned, or a link HQ didn't make, says **This dispatch
+  isn't here**.
+- Dispatches are **read only**: to talk about one, ask in a conversation. They are kept for **30
+  days** (at most **2,000**). Written dispatches stay readable while HQ isn't set up.
+
 ## The sidebar
 
 Its header is your contact's looping **portrait**, then **HQ** with the contact's name under it,
@@ -266,8 +293,9 @@ follows you to every device.
 | General Ileana Lupu | Romania | *The outlaw*: walked out of a command, came back for the Commander alone; sardonic, secretly devoted. |
 
 - **Random** (the default) is *a new contact every day*: a fixed 13-day cycle, so every contact
-  comes up once in 13 days and never on two days running. It is the same contact all day on every
-  device in one timezone, and it changes at local midnight.
+  comes up once in 13 days and never on two days running. The day is the **UTC** day, so it is
+  the same contact on every device and on the server (the one who signs HQ's
+  [dispatches](#dispatches)), whatever the timezone; it changes at midnight UTC.
 - **Off** shows no portrait, and HQ answers as plain **HQ**.
 - **Each General is a person, not a costume.** They have their own history, convictions and way of
   speaking, and they bring their own judgement. Facts, the tools HQ uses, what it proposes and what

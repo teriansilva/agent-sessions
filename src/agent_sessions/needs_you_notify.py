@@ -31,7 +31,7 @@ import logging
 import os
 import threading
 
-from . import needs_you, notifications, prefs, webpush
+from . import hq_dispatch, needs_you, notifications, prefs, webpush
 
 log = logging.getLogger("agent_sessions.needs_you_notify")
 
@@ -75,41 +75,72 @@ def _facts(row: dict) -> dict:
 def sync_once() -> dict:
     """One reconciliation: read who needs you, open/close episodes, push. **Blocking.**
 
-    Single-flight: a second caller while one runs returns ``{"skipped": "busy"}``.
+    Single-flight: a second caller while one runs returns ``{"skipped": "busy"}``. HQ's
+    Dispatches hand-off runs AFTER the single-flight lock is released (Hermes 7620, finding 3): it
+    waits on the dispatch store's own flock, and a held one must never make the next sync "busy".
     """
     if not _lock.acquire(blocking=False):
         return {"skipped": "busy"}
+    opened: list[dict] = []
+    fenced: list[str] = []
     try:
-        from .routes.pulse import build_needs_you  # deferred: routes import this module's peers
-
-        enabled = bool(prefs.get_session_review().get("notify", True))
-        current: dict[str, dict] = {}
-        keep: set[str] = set()
-        if enabled:
-            # An agent whose launch is gone no longer holds its report (#1882): ended before the
-            # read, so the episode closes at THIS sync. Best-effort; probes only reporting ones.
-            with contextlib.suppress(Exception):
-                from . import hq_report_broker
-
-                hq_report_broker.reconcile_reports()
-            try:
-                out = build_needs_you(int(prefs.get_pulse()["window_days"]), strict=True)
-            except needs_you.Unavailable:
-                return {"skipped": "unavailable"}
-            current = {r["id"]: _facts(r) for r in out.get("rows") or []}
-            keep = set(out.get("needs_you_ids") or []) - set(current)
-        push = bool(notifications.list_subscriptions())
-        try:
-            res = notifications.sync_needs_you(current, keep=keep, push=push)
-        except notifications.StoreUnreadable:
-            # The episodes on disk cannot be read: rewriting them would destroy the record of
-            # what was announced and what is owed a retraction (Hermes 5231). Skip, retry later.
-            log.warning("needs-you notifications: the notifications store is unreadable")
-            return {"skipped": "store unreadable"}
-        _deliver(res, push)
-        return {"opened": len(res["opened"]), "closed": len(res["closed"])}
+        return _sync_locked(opened, fenced)
     finally:
         _lock.release()
+        # HQ's Dispatches (#1837): AFTER the push handling and outside the lock, each on its own —
+        # an enqueue can neither prevent, delay nor change a push, and its payload was built before
+        # it existed. The episodes leave the in-flight fence once handed off, on every path.
+        try:
+            for rec in opened:
+                hq_dispatch.announce(rec)
+        finally:
+            hq_dispatch.end_flight(fenced)
+
+
+def _sync_locked(opened: list[dict], fenced: list[str]) -> dict:
+    """`sync_once`'s body, under its lock. Appends the episodes it opened (and pushed) to
+    ``opened`` for the hand-off that follows the lock, and every tag it fenced to ``fenced``
+    (including a write that then failed), which `sync_once` releases."""
+    from .routes.pulse import build_needs_you  # deferred: routes import this module's peers
+
+    enabled = bool(prefs.get_session_review().get("notify", True))
+    current: dict[str, dict] = {}
+    keep: set[str] = set()
+    if enabled:
+        # An agent whose launch is gone no longer holds its report (#1882): ended before the
+        # read, so the episode closes at THIS sync. Best-effort; probes only reporting ones.
+        with contextlib.suppress(Exception):
+            from . import hq_report_broker
+
+            hq_report_broker.reconcile_reports()
+        try:
+            out = build_needs_you(int(prefs.get_pulse()["window_days"]), strict=True)
+        except needs_you.Unavailable:
+            return {"skipped": "unavailable"}
+        current = {r["id"]: _facts(r) for r in out.get("rows") or []}
+        keep = set(out.get("needs_you_ids") or []) - set(current)
+    push = bool(notifications.list_subscriptions())
+    try:
+        res = notifications.sync_needs_you(
+            current,
+            keep=keep,
+            push=push,
+            before_write=lambda rows: fenced.extend(hq_dispatch.begin_flight(rows)),
+        )
+    except notifications.StoreUnreadable:
+        # The episodes on disk cannot be read: rewriting them would destroy the record of
+        # what was announced and what is owed a retraction (Hermes 5231). Skip, retry later.
+        log.warning("needs-you notifications: the notifications store is unreadable")
+        return {"skipped": "store unreadable"}
+    # HQ's Dispatches (#1837): the opened episodes entered the in-flight fence BEFORE their row was
+    # written (`before_write`, in memory: it cannot fail or wait; Hermes 7678), so the writer's
+    # reconcile pass never takes an event this process is still writing or pushing; `sync_once`
+    # hands them off and ends the fence. The persisted reservation (the record across a restart) is
+    # only QUEUED here: a background worker writes it, and the push never waits for it.
+    opened.extend(res["opened"])
+    hq_dispatch.reserve(res["opened"])
+    _deliver(res, push)
+    return {"opened": len(res["opened"]), "closed": len(res["closed"])}
 
 
 def _deliver(res: dict, push: bool) -> None:

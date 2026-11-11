@@ -735,6 +735,39 @@ export interface PulseNotification {
   session_id: string;
   engine: string;
   action_id: string;
+  /** HQ's line about this row (#1837), joined from the Dispatches store — present only once the
+   *  line is written. `bundled` is how many events the dispatch is about. Never on a push. */
+  dispatch?: { id: string; line: string; by: string; bundled: number };
+}
+
+/** One event in a dispatch (#1837): the row's fixed text and Open target, as announced. */
+export interface HqDispatchMember {
+  class: "needs you" | "mission escalation" | "automation failed" | string;
+  title: string;
+  reason: string;
+  /** The row's own Open target, re-validated by the server ("" when it has none). */
+  link: string;
+  ts: number;
+}
+
+/** A written dispatch (#1837): HQ's line about one bundle of events. */
+export interface HqDispatch {
+  id: string;
+  /** When the line was written: the order dispatches are read in. */
+  at: number;
+  opened_at: number;
+  line: string;
+  contact: string;
+  by: string;
+  members: HqDispatchMember[];
+}
+
+export interface HqDispatchList {
+  dispatches: HqDispatch[];
+  /** Written dispatches newer than the cursor. */
+  new: number;
+  /** The store could not be read: nothing is listed, and the page says so. */
+  unreadable?: boolean;
 }
 
 export interface NotificationList {

@@ -40,6 +40,7 @@ from .. import (
     ask_store,
     engines,
     handoff,
+    hq_dispatch,
     menu_answer,
     metadata,
     missions,
@@ -1703,9 +1704,15 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     # In-app first: the bell always works. Push is the extra that wakes the operator when the
     # tab is closed, and its absence must never mean an escalation goes unheard.
 
+    def _bell() -> dict:
+        # HQ's line joined into each row's view (#1837): `dispatch: {id, line, by, bundled}`, only
+        # for a written bundle. The stored tag never reaches the client, and an unreadable
+        # dispatch store shows the rows without lines.
+        return hq_dispatch.join_listing(notifications.listing())
+
     @app.get("/api/pulse/notifications")
     async def get_notifications(_: str = Depends(logged_in)) -> JSONResponse:
-        return JSONResponse(await asyncio.to_thread(notifications.listing))
+        return JSONResponse(await asyncio.to_thread(_bell))
 
     @app.post("/api/pulse/notifications/read")
     async def mark_notifications_read(
@@ -1719,7 +1726,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             if isinstance(body, dict) and isinstance(body.get("ids"), list):
                 ids = [i for i in body["ids"] if isinstance(i, str)]
         n = await asyncio.to_thread(notifications.mark_read, ids)
-        return JSONResponse({"marked": n, **await asyncio.to_thread(notifications.listing)})
+        return JSONResponse({"marked": n, **await asyncio.to_thread(_bell)})
 
     @app.post("/api/pulse/notifications/clear-settled")
     async def clear_settled_notifications(
@@ -1790,7 +1797,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return JSONResponse({"detail": 'send {"ids": [...]} or {"all": true}'}, status_code=422)
 
         n = await asyncio.to_thread(notifications.dismiss, ids)
-        return JSONResponse({"dismissed": n, **await asyncio.to_thread(notifications.listing)})
+        return JSONResponse({"dismissed": n, **await asyncio.to_thread(_bell)})
 
     @app.get("/api/pulse/push/key")
     async def get_push_key(_: str = Depends(logged_in)) -> JSONResponse:

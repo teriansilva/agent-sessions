@@ -4,21 +4,23 @@ import { useConfig } from "../../app/config";
 import { noteHqConfig, useHqChoiceState } from "./hqChoiceStore";
 import {
   coerceHqChoice,
-  msToLocalMidnight,
+  msToUtcMidnight,
   resolveHqContact,
+  utcDayNumber,
   type HqChoice,
   type HqContact,
 } from "./contacts";
 
-/** Today's date, which moves at local midnight: a timer to the next one, re-checked whenever the tab
- *  comes back (a sleeping laptop's timer fires late, or never). */
-export function useLocalDay(): Date {
+/** Random's day (the UTC day, `contacts.ts`'s day contract), which moves at UTC midnight: a timer to
+ *  the next one, re-checked whenever the tab comes back (a sleeping laptop's timer fires late, or
+ *  never). */
+export function useContactDay(): Date {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     let timer = 0;
     const arm = () => {
       window.clearTimeout(timer);
-      timer = window.setTimeout(tick, msToLocalMidnight(new Date()));
+      timer = window.setTimeout(tick, msToUtcMidnight(new Date()));
     };
     const tick = () => {
       setNow((prev) => (sameDay(prev, new Date()) ? prev : new Date()));
@@ -37,12 +39,9 @@ export function useLocalDay(): Date {
   return now;
 }
 
+/** The same UTC day: Random's day contract (`contacts.ts` `utcDayNumber`). */
 function sameDay(a: Date, b: Date): boolean {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
+  return utcDayNumber(a) === utcDayNumber(b);
 }
 
 export interface HqContactState {
@@ -66,7 +65,7 @@ export function useHqContact(): HqContactState {
   // unconfirmed local choice.
   useEffect(() => noteHqConfig(cfg), [cfg]);
   const choice = coerceHqChoice(persisted ?? cfg?.hq_contact);
-  const day = useLocalDay();
+  const day = useContactDay();
   const contact = cfg ? resolveHqContact(choice, day) : null;
   return { ready: cfg !== null, choice, contact, wire: contact ? contact.id : "off" };
 }
