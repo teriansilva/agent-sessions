@@ -267,12 +267,17 @@ def test_a_project_name_becomes_one_folder_name(name, slug):
 @pytest.fixture
 def root(tmp_path):
     """A project root whose path reads aloud as written: pytest's own temp dir carries the test's
-    name, underscores and all, which no read-back can say verbatim. Removed afterwards."""
+    name, underscores and all, which no read-back can say verbatim. Removed afterwards.
+
+    Unique per run: the test's name alone is the same in every run, so two runs on one host (CI
+    runs PRs side by side) made and removed each other's root mid-test. A random hex part reads
+    aloud as written too, and `exist_ok=False` makes a collision fail loudly, never share."""
     import shutil
+    import uuid
     from pathlib import Path
 
-    base = Path(f"/tmp/voiceroot-{tmp_path.name.replace('_', '-')}")
-    (base / "code").mkdir(parents=True, exist_ok=True)
+    base = Path(f"/tmp/voiceroot-{tmp_path.name.replace('_', '-')}-{uuid.uuid4().hex[:8]}")
+    (base / "code").mkdir(parents=True, exist_ok=False)
     try:
         yield base / "code"
     finally:
