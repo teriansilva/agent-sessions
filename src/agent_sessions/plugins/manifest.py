@@ -372,7 +372,8 @@ class Manifest:
     #: `tools.mcp` (#1506): a member of `kinds.MCP_KINDS`, or None. How this agent's CLI takes
     #: BattleLab's memory tool for one launch (`agent_tools`).
     tools_mcp: str | None = None
-    #: `accounts.kind` (#1820): a member of `kinds.ACCOUNT_KINDS`, or "none". How this agent's CLI
+    #: `accounts.kind` (#1820): a member of `kinds.ACCOUNT_KINDS`; "none" when the block is absent
+    #: (it is not a value a manifest can write). How this agent's CLI
     #: keeps several logins apart; `agent_accounts` builds and checks the per-account homes.
     accounts_kind: str = "none"
 

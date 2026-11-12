@@ -92,10 +92,21 @@ def default_home(rec: Recipe, env: Mapping[str, str] | None = None) -> Path:
 
 
 def _lstat(path: Path) -> os.stat_result | None:
+    """None when nothing is there. Any other failure (a parent this user cannot enter) is an
+    :class:`AccountError`: the question could not be answered, which refuses like a bad answer."""
     try:
         return os.lstat(path)
     except FileNotFoundError:
         return None
+    except OSError as exc:
+        raise AccountError(f"{path.name}: cannot be examined ({exc.strerror})") from exc
+
+
+def _make(what: str, name: str, make) -> None:
+    try:
+        make()
+    except OSError as exc:
+        raise AccountError(f"{name}: {what} cannot be created ({exc.strerror})") from exc
 
 
 def _is_dir(path: Path) -> bool:
@@ -116,7 +127,11 @@ def _link_problem(name: str, link: Path, target: Path, is_dir: bool) -> str | No
         return f"{name}: the shared link is missing"
     if not stat.S_ISLNK(st.st_mode):
         return f"{name}: a separate copy exists in this account's home"
-    if os.readlink(link) != str(target):
+    try:
+        points_at = os.readlink(link)
+    except OSError as exc:
+        return f"{name}: the shared link cannot be read ({exc.strerror})"
+    if points_at != str(target):
         return f"{name}: the shared link points somewhere else"
     if is_dir and not _is_dir(target):
         return f"{name}: the shared directory is missing from the default home"
@@ -134,9 +149,10 @@ def _private_dir(path: Path) -> None:
         pass
     except OSError as exc:
         raise AccountError(f"{path.name}: cannot be created ({exc.strerror})") from exc
-    st = os.lstat(path)
+    st = _lstat(path)
     if (
-        not stat.S_ISDIR(st.st_mode)
+        st is None
+        or not stat.S_ISDIR(st.st_mode)
         or st.st_uid != os.geteuid()
         or stat.S_IMODE(st.st_mode) & 0o077
     ):
@@ -150,9 +166,18 @@ def problems(rec: Recipe, account_home: Path, shared_home: Path) -> list[str]:
     would split the session store, and a private entry that became a link would hand this
     account another login, so either refuses the account instead of being repaired.
     """
+    try:
+        return _problems(rec, account_home, shared_home)
+    except AccountError as exc:
+        return [str(exc)]
+
+
+def _problems(rec: Recipe, account_home: Path, shared_home: Path) -> list[str]:
     st = _lstat(account_home)
     if st is None or not stat.S_ISDIR(st.st_mode):
         return ["the account's home is missing"]
+    if st.st_uid != os.geteuid():
+        return ["the account's home belongs to another user"]
     if stat.S_IMODE(st.st_mode) & 0o077:
         return ["the account's home is readable by other users"]
     found = []
@@ -185,10 +210,10 @@ def build(rec: Recipe, account_home: Path, shared_home: Path) -> None:
         if is_dir and not _is_dir(target):
             if _lstat(target) is not None:
                 raise AccountError(f"{name}: not a directory in the default home")
-            os.mkdir(target, 0o700)
+            _make("the shared directory", name, lambda target=target: os.mkdir(target, 0o700))
         link = account_home / name
         if _lstat(link) is None:
-            os.symlink(target, link)
+            _make("the shared link", name, lambda t=target, link=link: os.symlink(t, link))
     found = problems(rec, account_home, shared_home)
     if found:
         raise AccountError("; ".join(found))

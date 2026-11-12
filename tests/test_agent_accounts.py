@@ -1,7 +1,7 @@
 """Agent account homes (#1820): the overlay, its health check and the launch environment.
 
 Everything here runs against temporary homes. The proof against the real CLIs is the gated
-harness in ``test_agent_accounts_p0.py``.
+run by a person with two real logins: ``scripts/agent-accounts-p0``.
 """
 
 from __future__ import annotations
@@ -239,6 +239,45 @@ def test_a_missing_or_exposed_home_refuses_the_account(homes):
     os.chmod(account, 0o750)
     assert agent_accounts.problems(rec, account, shared) == [
         "the account's home is readable by other users"
+    ]
+
+
+def test_a_home_that_cannot_be_examined_refuses_with_a_reason_not_an_exception(homes, monkeypatch):
+    """Hermes on #1967: a home this user cannot enter must refuse like any other broken home."""
+    rec, account, shared = homes
+    agent_accounts.build(rec, account, shared)
+    real = os.lstat
+
+    def lstat(path, *a, **kw):
+        if str(path) == str(account / "sessions"):
+            raise PermissionError(13, "Permission denied")
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(os, "lstat", lstat)
+    assert agent_accounts.problems(rec, account, shared) == [
+        "sessions: cannot be examined (Permission denied)"
+    ]
+    with pytest.raises(agent_accounts.AccountError, match="sessions: cannot be examined"):
+        agent_accounts.build(rec, account, shared)
+
+
+def test_a_failed_link_or_directory_is_an_account_error(homes, monkeypatch):
+    rec, account, shared = homes
+
+    def refuse(*a, **kw):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "symlink", refuse)
+    with pytest.raises(agent_accounts.AccountError, match="sessions: the shared link cannot"):
+        agent_accounts.build(rec, account, shared)
+
+
+def test_a_home_owned_by_another_user_refuses_the_account(homes, monkeypatch):
+    rec, account, shared = homes
+    agent_accounts.build(rec, account, shared)
+    monkeypatch.setattr(os, "geteuid", lambda: os.getuid() + 1)
+    assert agent_accounts.problems(rec, account, shared) == [
+        "the account's home belongs to another user"
     ]
 
 

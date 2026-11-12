@@ -306,13 +306,19 @@ def run(args):
         )
 
         # 5. resume across accounts, both directions
-        ok1, _, why1 = adapter.turn(base, cwd, "P0-MOVED-TO-DEFAULT", resume=on_account)
+        # Only a session that exists can be resumed: without an id the CLI would start a fresh
+        # one, and a fresh turn succeeding says nothing about crossing accounts.
+        ok1, _, why1 = (
+            adapter.turn(base, cwd, "P0-MOVED-TO-DEFAULT", resume=on_account)
+            if ok and on_account
+            else (False, None, "no session on the second account to resume")
+        )
         ok2, on_default, why2 = adapter.turn(base, cwd, "P0-DEFAULT")
         made += [on_default] if ok2 else []
         ok3, _, why3 = (
             adapter.turn(acct, cwd, "P0-MOVED-TO-SECOND", resume=on_default)
-            if ok2
-            else (False, None, why2)
+            if ok2 and on_default
+            else (False, None, why2 or "no session on the default login to resume")
         )
         rows.append(
             (
