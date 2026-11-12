@@ -100,6 +100,7 @@ import { whatsNewLabel } from "../whatsnew/due";
 import { useOpenWhatsNew } from "../whatsnew/WhatsNewContext";
 import { engineLabel, useEngineRoster } from "../app/engineRoster";
 import { SharingSettings } from "../components/shares/SharingSettings";
+import { ArtifactsSettings } from "../components/artifacts/ArtifactsSettings";
 import { BrandLockup } from "../components/brand/Brand";
 
 const BUY_ME_A_COFFEE = "https://buymeacoffee.com/teriansilva";
@@ -2140,6 +2141,7 @@ export function Settings() {
         {section === "agents-defaults" && <AgentDefaultsPage />}
         {section === "security" && <SecurityPanel />}
         {section === "sharing" && <SharingSettings />}
+        {section === "artifacts" && <ArtifactsSettings />}
         {section === "updates" && <UpdatesCard />}
         {section === "analytics" && <AnalyticsCard />}
         {section === "system" && <SystemCard />}

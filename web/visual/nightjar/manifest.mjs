@@ -233,6 +233,40 @@ const CHECKLISTS_CONFIG = {
   },
 };
 
+/** Artifacts (#1932 P2): the board 1–5 sample, over the promo fixtures' sessions and missions. */
+const ART_NOW = Math.floor(Date.now() / 1000);
+const ART_ORIGIN = (session_key, engine, mission_id = null) => ({ engine, session_key, cwd: "/home/commander/code/orbital-api", project_id: "p-orbital", mission_id });
+const ART = (id, kind, title, why, rev, entry, files, bytes, ageS, extra = {}) => ({
+  id, title, why, kind, revision: rev, created_at: ART_NOW - ageS - 3600, updated_at: ART_NOW - ageS,
+  origin: ART_ORIGIN("claude:7c1e1a00-5b2d-4c8e-9f31-0a6d2e8b4001", "claude", "msn_" + "1a2b3c4d".repeat(4)),
+  visibility: "private", url: `/artifacts/${id}/`, public_url: null, public_since: null, files, bytes, entry, ...extra,
+});
+const ART_SITE = ART("5449-5592-2107-4372", "site", "Ingest rate-limit report", "Load test at 2k rps with p95, 429 rates and the bucket settings, as one page.", 4, "index.html", 38, 2400000, 720, {
+  visibility: "public", public_url: "/artifacts/p/Vq8Lz3N0cR2yWb6hT1eKpA/", public_since: ART_NOW - 600,
+});
+const ART_ITEMS = [
+  ART_SITE,
+  ART("8023-1176-4490-6215", "file", "p95 latency at 2k rps", "The chart from the load test, for the partner email.", 1, "p95-2k.png", 1, 184000, 2400),
+  ART("3367-9041-5528-1093", "file", "Billing webhooks v2 migration plan", "Steps, rollback and the dry-run output, for sign-off.", 3, "migration-plan.pdf", 1, 312000, 7200),
+  ART("9530-6128-1472-3389", "file", "Auth middleware review notes", "Findings by severity, with file and line.", 1, "review.md", 1, 14000, 172800),
+];
+const ART_SETTINGS = { enabled: true, artifacts: 4, public: 1, bytes: 61900000, caps: { revision_bytes: 209715200, revision_files: 2000, revisions: 20, total_bytes: 5368709120 } };
+const ART_DETAIL = (a) => ({
+  ...a,
+  revisions: [4, 3, 2, 1].map((n) => ({ n, created_at: ART_NOW - 720 - (4 - n) * 1500, files: 38 - (4 - n), bytes: 2400000 - (4 - n) * 100000 })),
+  files: [["index.html", 18000, "text/html"], ["assets/report.css", 6200, "text/css"], ["assets/chart.js", 41000, "text/javascript"], ["img/p95-by-minute.png", 212000, "image/png"], ["data/k6-summary.json", 88000, "application/json"]].map(([path, size, type]) => ({ path, size, type })),
+});
+const ART_API = {
+  "/api/artifacts": { items: ART_ITEMS, total: ART_ITEMS.length, next_cursor: null },
+  "/api/artifacts/settings": ART_SETTINGS,
+  "re:/api/artifacts/activation": { scope: "session", id: "x", mode: "private", enabled: true, effective: { mode: "private", source: "session" } },
+  "re:/api/artifacts/5449-5592-2107-4372$": ART_DETAIL(ART_SITE),
+};
+const ART_PRIVATE_API = {
+  ...ART_API,
+  "re:/api/artifacts/5449-5592-2107-4372$": ART_DETAIL({ ...ART_SITE, visibility: "private", public_url: null, public_since: null }),
+};
+
 export const SWEEP = [
   // The primitives gallery (Phase 2): one capture per section, plus the whole page.
   { id: "gallery:all", path: "/__nightjar", ready: "nightjar-gallery", fullPage: true },
@@ -1759,6 +1793,54 @@ export const SWEEP = [
     open: [{ role: "button", name: "Collapse session list" }],
     present: "[data-window-foot='api']",
   },
+  // ---- Artifacts (#1932 P2) ----
+  { id: "route:artifacts", path: "/library/artifacts", api: ART_API, present: "[data-artifact]" },
+  {
+    id: "route:artifacts-off",
+    path: "/library/artifacts",
+    api: { ...ART_API, "/api/artifacts": { items: [], total: 0, next_cursor: null }, "/api/artifacts/settings": { ...ART_SETTINGS, enabled: false, artifacts: 0, public: 0, bytes: 0 } },
+    present: "[data-testid='artifacts-off']",
+  },
+  {
+    id: "route:artifacts-empty",
+    path: "/library/artifacts",
+    api: { ...ART_API, "/api/artifacts": { items: [], total: 0, next_cursor: null }, "/api/artifacts/settings": { ...ART_SETTINGS, artifacts: 0, public: 0, bytes: 0 } },
+    present: "[data-testid='artifacts-none']",
+  },
+  { id: "route:artifact-detail", path: "/library/artifacts/5449-5592-2107-4372", api: ART_PRIVATE_API, present: "[data-testid='artifact-preview']" },
+  { id: "route:artifact-public", path: "/library/artifacts/5449-5592-2107-4372", api: ART_API, present: "[data-testid='artifact-public-url']" },
+  {
+    id: "popup:artifact-share",
+    path: "/library/artifacts/5449-5592-2107-4372",
+    api: ART_PRIVATE_API,
+    mock: { config: { auth_mode: "single-user" } },
+    open: [{ testId: "artifact-share" }],
+    expect: "dialog",
+  },
+  {
+    id: "popup:artifact-public-off",
+    path: "/library/artifacts/5449-5592-2107-4372",
+    api: ART_PRIVATE_API,
+    mock: { config: { auth_mode: "none" } },
+    open: [{ testId: "artifact-share" }],
+    expectCss: "[data-testid='artifact-public-off']",
+  },
+  { id: "route:artifacts-tab", path: S1, api: ART_API, ...withFiles([{ role: "tab", name: "Artifacts", partial: true }]), present: "[data-testid='artifacts-tab']" },
+  {
+    id: "popup:artifact-activation-session",
+    path: S1,
+    api: ART_API,
+    ...withFiles([{ role: "tab", name: "Artifacts", partial: true }, { role: "button", name: "Change" }]),
+    expectCss: "[data-testid='artifact-activation-session']",
+  },
+  {
+    id: "popup:artifact-activation-mission",
+    path: M1,
+    api: ART_API,
+    open: [{ testId: "mission-overflow" }, { testId: "mission-artifacts" }],
+    expectCss: "[data-testid='artifact-activation-mission']",
+  },
+  { id: "route:settings-artifacts", path: "/settings/artifacts", api: ART_API, present: "[data-testid='artifacts-settings']" },
   // ---- /map v5 ----
 ];
 

@@ -77,6 +77,12 @@ describe("activeSection", () => {
     ["/library/skillsx", null],
     ["/library/variables", "variables"],
     ["/library/variablesx", null],
+    // #1932: Artifacts owns its subtree (one artifact's page lives under it); the hosted
+    // `/artifacts/…` bytes are the server's, not a Library page.
+    ["/library/artifacts", "artifacts"],
+    ["/library/artifacts/5449-5592-2107-4372", "artifacts"],
+    ["/library/artifactsx", null],
+    ["/artifacts/5449-5592-2107-4372/", null],
     ["/mission", null],
     ["/overviewer", null],
     // #1201: Automations owns its subtree (one automation's runs and editor live under it).
@@ -131,7 +137,7 @@ describe("SectionNav", () => {
     );
   });
 
-  test("Library holds Templates, Variables, Memory, Automations, Skills and Playbooks — no separate Gallery (#1294, #1440) and no Checklists (#1653); Missions and Dashboard have no menu", async () => {
+  test("Library holds Templates, Variables, Memory, Artifacts, Automations, Skills and Playbooks — no separate Gallery (#1294, #1440) and no Checklists (#1653); Missions and Dashboard have no menu", async () => {
     render(
       <MemoryRouter>
         <SectionNav
@@ -158,12 +164,14 @@ describe("SectionNav", () => {
       ["Prompt Templates", "/templates"],
       ["Variables", "/library/variables"],
       ["Memory", "/library/memory"],
+      // #1932: what agents published, after Memory.
+      ["Artifacts", "/library/artifacts"],
       ["Automations", "/mission/automations"],
       ["Skills", "/library/skills"],
       ["Specialists", "/library/specialists"],
       ["Playbooks", "/library/playbooks"],
     ]);
-    expect(items[4]).toHaveAttribute("aria-current", "page");
+    expect(items[5]).toHaveAttribute("aria-current", "page");
   });
 
   test("Sessions points at the last session route, not always at the landing", () => {

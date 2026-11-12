@@ -40,7 +40,7 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-test("Library names Templates, Variables, Memory, Automations, Skills and Playbooks; Missions has no menu", async ({
+test("Library names Templates, Variables, Memory, Artifacts, Automations, Skills and Playbooks; Missions has no menu", async ({
   page,
 }) => {
   await page.goto(MISSION_PATH);
@@ -52,6 +52,7 @@ test("Library names Templates, Variables, Memory, Automations, Skills and Playbo
     "Prompt Templates",
     "Variables",
     "Memory",
+    "Artifacts",
     "Automations",
     "Skills",
     "Specialists",

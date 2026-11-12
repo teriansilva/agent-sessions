@@ -49,6 +49,8 @@ export const SETTINGS_SECTIONS = [
   { id: "security", label: "Security", group: "system" },
   // Public share links (#1404 P4): list and revoke every live link.
   { id: "sharing", label: "Sharing", group: "system" },
+  // Artifacts (#1932): the global switch, the limits and the store's usage.
+  { id: "artifacts", label: "Artifacts", group: "system" },
   { id: "updates", label: "Updates", group: "system" },
   { id: "analytics", label: "Usage analytics", group: "system" },
   { id: "system", label: "Host", group: "system" },

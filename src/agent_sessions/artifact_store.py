@@ -1107,7 +1107,7 @@ def list_artifacts(
         count_sql = f"SELECT count(*) FROM artifacts a WHERE {sql_where}"  # noqa: S608 — fixed clauses
         total = con.execute(count_sql, params).fetchone()[0]
         rows = con.execute(
-            f"SELECT a.*, r.files, r.bytes FROM artifacts a LEFT JOIN artifact_revisions r"  # noqa: S608
+            f"SELECT a.*, r.files, r.bytes, r.entry FROM artifacts a LEFT JOIN artifact_revisions r"  # noqa: S608
             f" ON r.artifact_id=a.id AND r.n=a.latest WHERE {sql_where}"
             " ORDER BY a.updated_at DESC, a.id LIMIT ? OFFSET ?",
             [*params, limit, offset],
@@ -1117,6 +1117,9 @@ def list_artifacts(
         v = view(dict(r))
         v["files"] = r["files"]
         v["bytes"] = r["bytes"]
+        # The file the stable link opens (null for a site without an index.html): the list's kind
+        # tag (PNG, PDF…) and the session tab's image tile read it (#1932 P2).
+        v["entry"] = r["entry"]
         items.append(v)
     nxt = offset + len(rows)
     return {"items": items, "total": total, "next_cursor": str(nxt) if nxt < total else None}

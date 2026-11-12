@@ -29,6 +29,7 @@ import {
   Crosshair,
   LayoutDashboard,
   Library,
+  Package,
   TerminalSquare,
   Network,
   Workflow,
@@ -38,6 +39,7 @@ import {
 } from "lucide-react";
 
 import {
+  ARTIFACTS_PATH,
   AUTOMATIONS_PATH,
   DASHBOARD_PATH,
   LEGACY_MISSION_PATH,
@@ -57,7 +59,7 @@ import {
 export type SectionId = "ask" | "sessions" | "mission" | "library";
 
 /** An entry inside a section's sub-menu: Sessions has the session view and its map; Library has
- *  templates, variables, memory, automations, skills and playbooks (#1294). Skills and
+ *  templates, variables, memory, artifacts, automations, skills and playbooks (#1294, #1932). Skills and
  *  Playbooks each hold their own Browse gallery view (#1440). */
 export type SubsectionId =
   | "sessions"
@@ -65,6 +67,7 @@ export type SubsectionId =
   | "templates"
   | "variables"
   | "memory"
+  | "artifacts"
   | "automations"
   | "playbooks"
   | "skills"
@@ -117,6 +120,8 @@ export const SECTIONS: Section[] = [
       { id: "templates", label: "Prompt Templates", Icon: BookMarked, to: TEMPLATES_PATH },
       { id: "variables", label: "Variables", Icon: Braces, to: VARIABLES_PATH },
       { id: "memory", label: "Memory", Icon: Brain, to: MEMORY_PATH },
+      // What agents PUBLISHED (#1932): files and static sites at a stable link.
+      { id: "artifacts", label: "Artifacts", Icon: Package, to: ARTIFACTS_PATH },
       { id: "automations", label: "Automations", Icon: CalendarClock, to: AUTOMATIONS_PATH },
       { id: "skills", label: "Skills", Icon: FileText, to: SKILLS_PATH },
       { id: "specialists", label: "Specialists", Icon: UsersRound, to: SPECIALISTS_PATH },
@@ -156,6 +161,8 @@ export function activeSubsection(pathname: string): SubsectionId | null {
     return "automations";
   if (pathname === VARIABLES_PATH) return "variables";
   if (pathname === MEMORY_PATH) return "memory";
+  // Artifacts OWNS its subtree: one artifact's page is `/library/artifacts/<id>`.
+  if (pathname === ARTIFACTS_PATH || pathname.startsWith(`${ARTIFACTS_PATH}/`)) return "artifacts";
   // The public gallery is a view of Skills / Playbooks (#1440); its old bare and digest links
   // land on Playbooks, so they light that entry while they redirect.
   if (pathname === SKILLS_PATH || pathname.startsWith(`${SKILLS_PATH}/`)) return "skills";

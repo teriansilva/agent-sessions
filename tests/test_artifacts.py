@@ -639,6 +639,7 @@ def test_the_operator_api_lists_filters_and_deletes(client, auth_cfg, origin, pr
     _login(client, auth_cfg)
     listed = client.get("/api/artifacts?kind=site&q=hi").json()
     assert [i["id"] for i in listed["items"]] == [a["id"]] and listed["items"][0]["files"] == 3
+    assert listed["items"][0]["entry"] == "index.html"  # the list names the entry file (#1932 P2)
     assert client.get("/api/artifacts?kind=file").json()["total"] == 0
     assert client.get(f"/api/artifacts?session={SESSION}").json()["total"] == 1
     assert client.get(f"/api/artifacts/{a['id']}").json()["entry"] == "index.html"
@@ -1138,6 +1139,7 @@ def test_public_links_are_off_without_a_login(tmp_path, monkeypatch, password_ha
     try:
         path = shared["public_url"].split("your-domain.example", 1)[1]
         assert c.get(path).status_code == 404
+        assert c.get(path.rstrip("/"), follow_redirects=False).status_code == 404  # bare form too
         h = {"X-CSRF-Token": c.get("/api/config").json()["csrf"], "Origin": cfg.origin}
         r = c.post(f"/api/artifacts/{a['id']}/share", headers=h)
         assert r.status_code == 409 and "AUTH_MODE=none" in r.json()["reason"]

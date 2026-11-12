@@ -60,6 +60,16 @@ export const VARIABLES_PATH = "/library/variables";
 /** Library → Memory: each project's shared notebook that agent sessions read and add to (#1441). */
 export const MEMORY_PATH = "/library/memory";
 
+/** Library → Artifacts (#1932): every file and static site the agents published, and one
+ *  artifact's full page at `artifactPath(id)` — the stable deep link HQ's answers carry. */
+export const ARTIFACTS_PATH = "/library/artifacts";
+export const ARTIFACT_ROUTE = `${ARTIFACTS_PATH}/:artifactId`;
+export const artifactPath = (id: string) => `${ARTIFACTS_PATH}/${encodeURIComponent(id)}`;
+/** The hosted bytes (served sandboxed by the server, never by the SPA): the stable link, which
+ *  always shows the latest revision, or one revision pinned best-effort with `@<n>`. */
+export const hostedArtifactPath = (id: string, revision?: number) =>
+  `/artifacts/${encodeURIComponent(id)}${revision ? `@${revision}` : ""}/`;
+
 /** The public gallery (#1440): one Browse view per kind, inside Library → Playbooks and → Skills.
  *  A playbook ID (`[a-z][a-z0-9-]{1,47}`) or skill ID (`[a-z0-9][a-z0-9-]{0,63}`, #1654) has no
  *  slash, so it never equals a kind segment plus a digest, and the bare prefix and `/library/gallery/<digest>[?kind=&id=]` are only old links, redirected by

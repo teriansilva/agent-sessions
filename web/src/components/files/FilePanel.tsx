@@ -5,6 +5,7 @@ import { api, ApiError } from "../../lib/api";
 import type { FileCapabilities, GitEntry, GitStatus } from "../../types/api";
 import { FileTree } from "./FileTree";
 import { GitTab } from "./GitTab";
+import { ArtifactsTab } from "../artifacts/ArtifactsTab";
 import { UploadControl } from "./UploadControl";
 import { UploadQueue } from "./UploadQueue";
 import { filesFromDataTransfer, type PlannedFile } from "./uploadPlan";
@@ -94,7 +95,20 @@ export function FilePanel({
     modes?: { diff: boolean; content: boolean; defaultDiff: boolean };
     staged?: boolean;
   } | null>(null);
-  const [tab, setTab] = useState<"files" | "git">("files");
+  const [tab, setTab] = useState<"files" | "git" | "artifacts">("files");
+  // The ARTIFACTS tab's badge (#1932 P2): how many artifacts this session published. Read once
+  // when the panel opens; the tab itself re-reads when it is shown. A failure shows no badge.
+  const [artifactCount, setArtifactCount] = useState<number | null>(null);
+  useEffect(() => {
+    let live = true;
+    api
+      .artifacts({ session: sessionKey })
+      .then((p) => live && setArtifactCount(p.total))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [sessionKey]);
   // Response is tagged with the tick AND the root it answers, so "loading" is DERIVED rather
   // than set synchronously inside the effect (which the compiler rightly rejects as a cascading
   // render).
@@ -458,9 +472,22 @@ export function FilePanel({
             <span className={styles.tabBadge}>{git.entries.length}</span>
           )}
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "artifacts"}
+          className={styles.tab}
+          onClick={() => setTab("artifacts")}
+        >
+          Artifacts
+          {artifactCount !== null && artifactCount > 0 && (
+            <span className={styles.tabBadge}>{artifactCount}</span>
+          )}
+        </button>
       </div>
 
-      <div className={styles.crumbs}>
+      {tab !== "artifacts" && (
+        <div className={styles.crumbs}>
         <button
           type="button"
           className={styles.shellBtn}
@@ -519,9 +546,14 @@ export function FilePanel({
         {tab === "files" && (
           <UploadControl disabled={uploads.busy || Boolean(caps && !caps.ok)} onFiles={startPicked} />
         )}
-      </div>
+        </div>
+      )}
 
-      {caps && !caps.ok ? (
+      {tab === "artifacts" ? (
+        // Artifacts are the server's copies, not the workspace: the tab works even where the
+        // file browser is unavailable (#1932 P2).
+        <ArtifactsTab sessionKey={sessionKey} cwd={cwd} />
+      ) : caps && !caps.ok ? (
         <div className={`${styles.fileState} ${styles.fileStateBad}`} role="alert">
           <span className={styles.fileStateTag}>Files // Unavailable</span>
           {caps.reason}
@@ -574,7 +606,8 @@ export function FilePanel({
 
       <UploadQueue uploads={uploads} />
 
-      <div className={styles.foot}>
+      {tab !== "artifacts" && (
+        <div className={styles.foot}>
         <span className="hud-tag">
           {root === cwd ? "ROOT // SESSION CWD" : "ROOT // CUSTOM"}
         </span>
@@ -582,7 +615,8 @@ export function FilePanel({
             and `EDIT` left this list when the viewer became an editor (#950). What remains is
             still worth saying out loud. */}
         <span className="hud-tag">NO MOVE / RENAME / DELETE</span>
-      </div>
+        </div>
+      )}
     </>
   );
 

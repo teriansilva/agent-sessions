@@ -314,6 +314,8 @@ def register(app: FastAPI, *, cfg: AuthConfig, logged_in, csrf_guard) -> None:
 
     @app.get("/artifacts/p/{public_id}")
     async def hosted_public_bare(public_id: str) -> Response:
+        if not artifact_store.PUBLIC_AVAILABLE:
+            return _hosted_error(404, "not found")  # every public route is a 404 without a login
         return RedirectResponse(
             f"/artifacts/p/{quote(public_id)}/", status_code=308, headers=SANDBOX_HEADERS
         )

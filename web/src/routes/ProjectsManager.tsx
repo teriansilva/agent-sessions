@@ -17,6 +17,8 @@ import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import { FolderPickerModal } from "../components/FolderPickerModal";
 import { ProjectColorPicker } from "../components/ProjectColorPicker";
 import { ProjectSessionDefaults } from "../components/projects/ProjectSessionDefaults";
+import { ActivationControl } from "../components/artifacts/ActivationControl";
+import type { ArtifactMode } from "../types/artifacts";
 import { describeLaunchDefaults } from "../lib/launchDefaults";
 import type { WizardEntryState } from "../lib/newProject";
 import { NEW_PROJECT_PATH } from "../lib/routes";
@@ -72,6 +74,25 @@ function EntityRow({
   // Session defaults (#1508): edited as a draft and saved as one block — a half-picked agent and
   // model never reach the server, and Cancel leaves the stored block untouched.
   const [defaultsDraft, setDefaultsDraft] = useState<LaunchDefaults | null>(null);
+  // The project's artifacts default (#1932 P2, board 4 d): its own store (`/api/artifacts/activation`,
+  // scope project), drafted beside the launch defaults and written by the same Save. Read when the
+  // panel opens; unreadable means the control is not offered (never a guessed "off").
+  const [artifacts, setArtifacts] = useState<{
+    saved: ArtifactMode | null;
+    draft: ArtifactMode | null;
+  } | null>(null);
+  const defaultsOpen = defaultsDraft !== null;
+  useEffect(() => {
+    if (!defaultsOpen) return;
+    let live = true;
+    api
+      .artifactActivation("project", entity.id)
+      .then((a) => live && setArtifacts({ saved: a.mode, draft: a.mode }))
+      .catch(() => live && setArtifacts(null));
+    return () => {
+      live = false;
+    };
+  }, [defaultsOpen, entity.id]);
   const config = useConfig();
   const [folderSel, setFolderSel] = useState("");
   const [picking, setPicking] = useState(false);
@@ -278,15 +299,36 @@ function EntityRow({
             onChange={setDefaultsDraft}
             disabled={busy}
           />
+          {artifacts && (
+            <ActivationControl
+              value={artifacts.draft}
+              onChange={(m) => setArtifacts({ ...artifacts, draft: m })}
+              label="Artifacts"
+              note="default for new sessions"
+              busy={busy}
+              source="Order: a session's own setting wins over its mission's, and a mission's wins over this default. Running sessions change at their next restart."
+              clearLabel="Clear: no project default"
+              testId="project-artifacts-default"
+            />
+          )}
           <div className={styles.defaultsActions}>
             <button
               type="button"
               className={styles.smallBtn}
               disabled={busy}
               onClick={() =>
-                void patch({ launch_defaults: defaultsDraft }).then(
-                  (ok) => ok && setDefaultsDraft(null),
-                )
+                void (async () => {
+                  if (!(await patch({ launch_defaults: defaultsDraft }))) return;
+                  if (artifacts && artifacts.draft !== artifacts.saved) {
+                    try {
+                      await api.setArtifactActivation("project", entity.id, artifacts.draft);
+                    } catch (e) {
+                      setRowError(errMessage(e, "Couldn’t save the artifacts default."));
+                      return;
+                    }
+                  }
+                  setDefaultsDraft(null);
+                })()
               }
             >
               <Check size={14} /> Save session defaults

@@ -51,6 +51,7 @@ import {
   Ban,
   CircleX,
   FileText,
+  Package,
   RotateCw,
   Share2,
   Undo2,
@@ -75,6 +76,7 @@ import { useHoldFocusWhileBusy } from "../templates/useHoldFocusWhileBusy";
 import action from "../ui/actionButton.module.css";
 import { useFocusContainment } from "./useModalDrawer";
 import { MissionOverflow } from "./MissionOverflow";
+import { MissionActivationDialog } from "../artifacts/ActivationDialog";
 import { missionDotClass, missionStateLabel } from "./missionState";
 import styles from "./mission.module.css";
 import {
@@ -147,6 +149,11 @@ export function MissionHeaderActions({
   /** The Unarchive button that opened the choice: focus goes back to it when the dialog closes. */
   const [unarchiveTrigger, setUnarchiveTrigger] =
     useState<HTMLButtonElement | null>(null);
+  /** Artifacts (#1932 P2, board 4 e): the mission's OFF / PRIVATE / PUBLIC, as a dialog. Focus goes
+   *  back to ⋯ (the item that opened it closed with its menu). */
+  const [artifactsOpen, setArtifactsOpen] = useState<{
+    returnTo: HTMLElement | null;
+  } | null>(null);
 
   const state = mission.state;
   const archived = mission.archived_at != null;
@@ -472,6 +479,26 @@ export function MissionHeaderActions({
         Share link
       </button>
 
+      {/* Artifacts (#1932 P2): whether this mission's sessions get the artifacts tool at launch. */}
+      {!archived ? (
+        <button
+          type="button"
+          className={styles.menuItem}
+          onClick={() =>
+            setArtifactsOpen({
+              returnTo: document.querySelector<HTMLElement>(
+                "[data-testid='mission-overflow']",
+              ),
+            })
+          }
+          role="menuitem"
+          data-testid="mission-artifacts"
+        >
+          {icon(<Package size={15} />)}
+          Artifacts…
+        </button>
+      ) : null}
+
       {/* The hairline before the destructive group, as RowMenu draws one. Not a menuitem, so the roving
           focus skips it. */}
       <div className={styles.menuSep} role="separator" />
@@ -531,6 +558,13 @@ export function MissionHeaderActions({
       {chip}
       {primary}
       {menu}
+      {artifactsOpen ? (
+        <MissionActivationDialog
+          mission={mission}
+          onClose={() => setArtifactsOpen(null)}
+          returnFocusTo={artifactsOpen.returnTo}
+        />
+      ) : null}
       {archived && confirming === "unarchive" ? (
         <UnarchiveDialog
           busy={busy}

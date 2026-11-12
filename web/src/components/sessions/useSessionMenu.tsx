@@ -8,6 +8,7 @@ import {
   Eye,
   EyeOff,
   FolderInput,
+  Package,
   Pencil,
   ScrollText,
   Sparkles,
@@ -31,6 +32,7 @@ import { HandoffModal } from "../terminal/HandoffModal";
 import { SessionRecapModal } from "../terminal/SessionRecapModal";
 import { AdoptToMissionModal } from "./AdoptToMissionModal";
 import { isAgent, useEngineRoster } from "../../app/engineRoster";
+import { SessionActivationDialog } from "../artifacts/ActivationDialog";
 
 /** What a surface wires into the session menu. The sidebar backs these with its list's in-place
  *  row patches; the Overview map backs them with the same api calls plus a map refetch (#968). */
@@ -122,6 +124,9 @@ export function useSessionMenu(
   const [recapReturnFocus, setRecapReturnFocus] = useState<HTMLElement | null>(null);
   const [handoffOpen, setHandoffOpen] = useState(false);
   const [handoffReturnFocus, setHandoffReturnFocus] = useState<HTMLElement | null>(null);
+  // Artifacts (#1932 P2): this session's OFF / PRIVATE / PUBLIC, as a dialog.
+  const [artifactsOpen, setArtifactsOpen] = useState(false);
+  const [artifactsReturnFocus, setArtifactsReturnFocus] = useState<HTMLElement | null>(null);
   const navigate = useNavigate();
 
   const runBusy = useCallback(async (fn: () => Promise<void>) => {
@@ -226,6 +231,23 @@ export function useSessionMenu(
             },
           };
     if (missionItem) pushGroup([missionItem]);
+  }
+
+  // Artifacts (#1932 P2, board 4 a): the tool's mode for this session's NEXT launch. Only an agent
+  // can take a tool; an archived row or an unreconciled placeholder has no launch to configure.
+  if (isAgent(s.engine) && !s.archived && !isNewSessionPlaceholder(s.id) && !omit?.has("artifacts")) {
+    pushGroup([
+      {
+        key: "artifacts",
+        label: "Artifacts…",
+        ariaLabel: "Artifacts tool for this session",
+        icon: <Package size={15} />,
+        onSelect: () => {
+          setArtifactsReturnFocus(document.activeElement as HTMLElement | null);
+          setArtifactsOpen(true);
+        },
+      },
+    ]);
   }
 
   // Handoff provenance backlinks (#597 Phase 2): route to a peer session. Peer ids are display
@@ -381,6 +403,13 @@ export function useSessionMenu(
           returnFocusTo={recapReturnFocus}
         />
       )}
+      {artifactsOpen && (
+        <SessionActivationDialog
+          session={s}
+          onClose={() => setArtifactsOpen(false)}
+          returnFocusTo={artifactsReturnFocus}
+        />
+      )}
       {handoffOpen && (
         <HandoffModal
           sessionId={s.id}
@@ -396,7 +425,7 @@ export function useSessionMenu(
   return {
     items,
     dialogs,
-    dialogOpen: adopting || moving || recapOpen || handoffOpen,
+    dialogOpen: adopting || moving || recapOpen || handoffOpen || artifactsOpen,
     reviewing: reviewBusy,
     busy,
     runBusy,

@@ -99,6 +99,8 @@ import {
   TEMPLATES_PATH,
   VARIABLES_PATH,
   MEMORY_PATH,
+  ARTIFACTS_PATH,
+  ARTIFACT_ROUTE,
   NIGHTJAR_GALLERY_PATH,
 } from "../lib/routes";
 import { SETTINGS_PATH } from "../routes/settingsTabs";
@@ -160,6 +162,8 @@ const LegacyGalleryRedirect = lazyWithReload(
 const SkillsLibrary = lazyWithReload(() => import("../routes/SkillsLibrary"), "skills-library");
 const Variables = lazyWithReload(() => import("../routes/Variables"), "variables");
 const Memory = lazyWithReload(() => import("../routes/Memory"), "memory");
+const Artifacts = lazyWithReload(() => import("../routes/Artifacts"), "artifacts");
+const ArtifactDetail = lazyWithReload(() => import("../routes/ArtifactDetail"), "artifact-detail");
 const Playbooks = lazyWithReload(() => import("../routes/Playbooks"), "playbooks");
 // LIBRARY → SPECIALISTS (#1693): the pool HQ staffs missions from.
 const Specialists = lazyWithReload(() => import("../routes/Specialists"), "specialists");
@@ -402,6 +406,8 @@ function Layout() {
     location.pathname.startsWith(`${GALLERY_PLAYBOOKS_PATH}/`) ||
     location.pathname === VARIABLES_PATH ||
     location.pathname === MEMORY_PATH ||
+    location.pathname === ARTIFACTS_PATH ||
+    location.pathname.startsWith(`${ARTIFACTS_PATH}/`) ||
     location.pathname === TEMPLATES_PATH ||
     location.pathname.startsWith(`${TEMPLATES_PATH}/`);
   /** Which of the five work sections the current route belongs to, `null` on Settings (#1058).
@@ -894,6 +900,8 @@ function Layout() {
                   <Route path={NEW_PROJECT_PATH} element={<NewProject />} />
                   <Route path={VARIABLES_PATH} element={<Variables />} />
                   <Route path={MEMORY_PATH} element={<Memory />} />
+                  <Route path={ARTIFACTS_PATH} element={<Artifacts />} />
+                  <Route path={ARTIFACT_ROUTE} element={<ArtifactDetail />} />
                   <Route path="/templates" element={<Templates />} />
                   <Route path="/templates/new" element={<TemplateEditor />} />
                   <Route path="/templates/:id" element={<TemplateEditor />} />

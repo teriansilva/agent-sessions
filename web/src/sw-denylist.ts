@@ -89,6 +89,10 @@ export const SPA_PATHS: string[] = [
   "/templates/tpl_abc123",
   // #1294: Library → Playbooks.
   "/library/playbooks",
+  // #1932: Library → Artifacts and one artifact's page. They share `artifacts` with the hosted
+  // `/artifacts/…` prefix the list above denies, but sit under `/library`, so they keep the shell.
+  "/library/artifacts",
+  "/library/artifacts/5449-5592-2107-4372",
   "/settings",
   "/settings/ai-endpoint",
   // The pre-#956 AI tab. A client-side redirect now, so it needs the SPA shell too.

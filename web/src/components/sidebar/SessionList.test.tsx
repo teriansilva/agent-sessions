@@ -803,7 +803,8 @@ test("opening the row menu does not navigate or close the drawer (#384)", async 
 
 // #384: configured install — the full action set renders inside one menu, grouped
 // by separators between primary actions, AI-review actions, and row management. The
-// leading "Session brief" + "Hand off…" mirror the terminal header (#597 follow-up).
+// leading "Session brief" + "Hand off…" mirror the terminal header (#597 follow-up); "Artifacts…"
+// sets the session's artifacts tool (#1932 P2).
 test("the configured menu lists all actions behind one trigger (#384/#424)", async () => {
   const user = userEvent.setup();
   mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
@@ -818,6 +819,7 @@ test("the configured menu lists all actions behind one trigger (#384/#424)", asy
   expect(items.map((el) => el.textContent)).toEqual([
     "Session brief",
     "Hand off…",
+    "Artifacts…",
     "Review now",
     "Exclude from AI review",
     "Stop mission control managing this",

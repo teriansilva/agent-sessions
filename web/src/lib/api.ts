@@ -19,6 +19,16 @@ import type { DeploymentReceipt, DeploymentRemoval, DeploymentReview, Deployment
 import type { AuthoringSchema, DirectPrompt, Files, PromptComparison, Variable } from "../components/playbooks/playbookDraft";
 import type { PluginCatalog, PluginReview, PluginOperation, PluginAction, PluginActivation, PluginActivationPreview } from "../types/plugins";
 import type { ImportPreview, ImportResult, MemoryProject, MemoryView, NoteEdit } from "../types/memory";
+import type {
+  ActivationScope,
+  Artifact,
+  ArtifactActivation,
+  ArtifactDetail,
+  ArtifactMode,
+  ArtifactPage,
+  ArtifactQuery,
+  ArtifactSettings,
+} from "../types/artifacts";
 import type { PlaybookDetail, PlaybookFleet, PlaybookFleetResult, PlaybookFleetReview, PlaybookList, PlaybookVerify, PlaybookWriteResult } from "../types/playbooks";
 import {
   AUTOMATION_ORIGINS_API,
@@ -688,6 +698,17 @@ export function sessionsUrl(q: SessionsQuery = {}): string {
 }
 
 const enc = encodeURIComponent;
+
+/** `?project=&session=&…` for `GET /api/artifacts`, empty filters left out. */
+export function artifactQueryString(q: ArtifactQuery): string {
+  const p = new URLSearchParams();
+  for (const k of ["project", "session", "mission", "kind", "visibility", "q", "cursor"] as const) {
+    const v = q[k];
+    if (typeof v === "string" && v.trim()) p.set(k, k === "q" ? v.trim() : v);
+  }
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
 
 /** The read-back URL for an upload path's image (#905): `GET /api/uploads/{stored}`, keyed by
  *  the STORED basename — `<stamp>-<safe>`, the last component of the path the server returned.
@@ -1491,6 +1512,28 @@ export const api = {
   dismissSuggestion: (id: string) => postVoid(`/api/templates/suggestions/${enc(id)}/dismiss`),
   writeTemplate: (request: string, signal?: AbortSignal) =>
     mutateJson<{ template: TemplateDraft }>("POST", "/api/templates/write", { request }, signal),
+  /** Artifacts (#1932): files and static sites agents host on BattleLab. Every mutation is
+   *  CSRF-guarded; sharing answers 409 `{detail: "public_off", reason}` without a login. */
+  artifacts: (query: ArtifactQuery = {}, signal?: AbortSignal) =>
+    getJsonWithDetail<ArtifactPage>("/api/artifacts" + artifactQueryString(query), signal),
+  artifact: (id: string) => getJsonWithDetail<ArtifactDetail>(`/api/artifacts/${enc(id)}`),
+  deleteArtifact: (id: string) => mutateJson<{ deleted: string }>("DELETE", `/api/artifacts/${enc(id)}`),
+  shareArtifact: (id: string) => mutateJson<Artifact>("POST", `/api/artifacts/${enc(id)}/share`),
+  revokeArtifact: (id: string) => mutateJson<Artifact>("DELETE", `/api/artifacts/${enc(id)}/share`),
+  artifactSettings: () => getJsonWithDetail<ArtifactSettings>("/api/artifacts/settings"),
+  setArtifactsEnabled: (enabled: boolean) =>
+    mutateJson<{ enabled: boolean }>("PUT", "/api/artifacts/settings", { enabled }),
+  artifactActivation: (scope: ActivationScope, id: string, cwd?: string) =>
+    getJsonWithDetail<ArtifactActivation>(
+      `/api/artifacts/activation?${new URLSearchParams({ scope, id, ...(cwd ? { cwd } : {}) })}`,
+    ),
+  /** `mode: null` clears the scope's own setting, so it inherits again. */
+  setArtifactActivation: (scope: ActivationScope, id: string, mode: ArtifactMode | null) =>
+    mutateJson<{ scope: string; id: string; mode: ArtifactMode | null }>(
+      "PUT",
+      "/api/artifacts/activation",
+      { scope, id, mode },
+    ),
   /** Shared project memory (#1441): one notebook per project, read and added to by its agents. */
   memoryProjects: () => getJsonWithDetail<{ projects: MemoryProject[] }>("/api/memory"),
   memory: (pid: string) => getJsonWithDetail<MemoryView>(`/api/memory/${enc(pid)}`),
