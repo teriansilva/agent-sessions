@@ -1002,3 +1002,29 @@
   animation: global(nj-fade-in) var(--t-base) var(--ease-out) both;
 }
 .jumpCount { color: var(--text-muted); }
+
+/* Share this reply (#1956): a quiet icon at the end of a finished reply's header. 44px on touch. */
+.replyShare {
+  margin-left: auto;
+  align-self: center;
+  display: inline-grid;
+  place-items: center;
+  inline-size: 28px;
+  block-size: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.replyShare:hover,
+.replyShare:focus-visible {
+  color: var(--accent-text);
+  border-color: var(--line-strong);
+}
+@media (pointer: coarse) {
+  .replyShare {
+    inline-size: 44px;
+    block-size: 44px;
+  }
+}

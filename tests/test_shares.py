@@ -800,7 +800,8 @@ def test_a_create_racing_an_archive_cannot_mint_a_link(auth_cfg, fake_jsonl):
 
 
 def test_the_share_routes_module_exports_the_public_prefixes():
-    assert shares_routes.PUBLIC_PREFIXES == ("/p/", "/api/public/")
+    # `/r/` is the reply-link viewer (#1956).
+    assert shares_routes.PUBLIC_PREFIXES == ("/p/", "/r/", "/api/public/")
 
 
 # ---- visitor names -------------------------------------------------------------------------

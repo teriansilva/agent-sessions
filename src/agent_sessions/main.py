@@ -143,8 +143,9 @@ _WEB_DIST = Path(
 # Paths the SPA catch-all must never shadow (handled by their own routes / network-only).
 # ``link`` = the device-link QR sign-in routes (#650), server-rendered / JSON, not the SPA.
 # ``p`` = the public share viewer (#1404), served by its own route from ``share.html``.
+# ``r`` = the reply-link viewer (#1956), served by its own route from ``reply.html``.
 _SPA_RESERVED = (
-    "api", "ws", "login", "logout", "healthz", "static", "assets", "link", "p", "artifacts"
+    "api", "ws", "login", "logout", "healthz", "static", "assets", "link", "p", "r", "artifacts"
 )  # fmt: skip
 
 # New-session reconcile tunables (#127/#315). Engines that mint their own id (opencode →
@@ -863,6 +864,12 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # Public share links (#1404 P1): operator create/list/revoke, the `/p/<token>` viewer and the
     # unlock that mints the share cookie. Off (404) in `none` auth mode.
     shares_routes.register(
+        app, cfg=cfg, logged_in=_logged_in, csrf_guard=_csrf_guard, web_dist=_WEB_DIST
+    )
+    # Reply links (#1956): one finished reply of an API session, sealed, read only.
+    from .routes import reply_shares as reply_share_routes
+
+    reply_share_routes.register(
         app, cfg=cfg, logged_in=_logged_in, csrf_guard=_csrf_guard, web_dist=_WEB_DIST
     )
     # …and what an API-session link shows and accepts (#1404 P2): the redacted projection, the

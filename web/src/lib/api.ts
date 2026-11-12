@@ -11,7 +11,14 @@ import type { ShareCatalog, ShareChoice, ShareImports, SharePreview, ShareResult
 import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, GalleryComparison, GalleryFiles, LocalSkill } from "../types/gallery";
 import type { CollectionInput, SecretAccessEntry, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
 import type { SessionCapacity, Resources, ResourceSettings, ResourceValues } from "../types/resources";
-import type { CreatedShare, ShareList, ShareMode } from "./shareFormat";
+import type {
+  CreatedReplyShare,
+  CreatedShare,
+  ReplyExpiry,
+  ReplyShare,
+  ShareList,
+  ShareMode,
+} from "./shareFormat";
 import type { ConnectorCatalog, ConnectorDelivery, ConnectorInstance, ConnectorTestResult, NotifyBody, RecipientCandidate } from "./connectors";
 import type { DeploymentReceipt, DeploymentRemoval, DeploymentReview, DeploymentStatus, PlaybookInputs } from "../types/playbookDeployment";
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
@@ -1040,6 +1047,25 @@ export const api = {
   revokeShare: (shareId: string) =>
     mutateJson<{ revoked: boolean }>("DELETE", `/api/shares/${encodeURIComponent(shareId)}`),
   revokeAllShares: () => mutateJson<{ revoked: number }>("POST", "/api/shares/revoke-all"),
+  // Reply links (#1956): one finished reply, sealed. `createReplyShare` is the only answer that
+  // carries the key, so the link is shown once.
+  replyShares: (session?: string) =>
+    getJsonWithDetail<{ available: boolean; shares: ReplyShare[] }>(
+      session ? `/api/reply-shares?session=${encodeURIComponent(session)}` : "/api/reply-shares",
+    ),
+  createReplyShare: async (body: {
+    session: string;
+    turn_id: string;
+    expires_in: ReplyExpiry;
+    password?: string;
+  }) => {
+    await csrfReady();
+    return mutateJson<CreatedReplyShare>("POST", "/api/reply-shares", body);
+  },
+  revokeReplyShare: (shareId: string) =>
+    mutateJson<{ revoked: boolean }>("DELETE", `/api/reply-shares/${encodeURIComponent(shareId)}`),
+  revokeAllReplyShares: () =>
+    mutateJson<{ revoked: number }>("POST", "/api/reply-shares/revoke-all"),
   // HQ connectors (#1746). The token goes up in `updateConnector` and never comes back: an
   // instance carries `token_set` only. Every mutation answers the instance as the store now holds it.
   connectors: () => getJsonWithDetail<ConnectorCatalog>("/api/connectors"),

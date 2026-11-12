@@ -5,6 +5,7 @@ import {
   ArrowLeftRight,
   BookMarked,
   Globe,
+  Link2,
   History,
   ListChecks,
   Mic,
@@ -69,6 +70,7 @@ import { SessionRecapModal } from "../terminal/SessionRecapModal";
 import { OpeningPanel } from "../terminal/SessionOpening";
 import { resolveApiModel } from "../../lib/apiModel";
 import { SharePubliclyModal } from "../shares/SharePubliclyModal";
+import { ReplyShareModal } from "../shares/ReplyShareModal";
 import { SentMessagesModal } from "../terminal/SentMessagesModal";
 import { TemplatePickerModal } from "../templates/TemplatePickerModal";
 import { UploadImage } from "../templates/UploadImage";
@@ -1053,7 +1055,12 @@ function AgentTurnView({
       data-state={turn.state}
       aria-label={`${agent}, on its own`}
     >
-      <MessageHeader speaker={`${agent} · on its own`} kind="assistant" ts={turn.ts} />
+      <MessageHeader
+        speaker={`${agent} · on its own`}
+        kind="assistant"
+        ts={turn.ts}
+        shareTurn={turn.state === "completed" && turn.reply ? turn.turn_id : undefined}
+      />
       {turn.tools.length > 0 ? (
         (order ? order.lead.length > 0 : true) && activity(order ? order.lead : turn.tools)
       ) : running ? (
@@ -1135,16 +1142,22 @@ function turnAvatar(author: StructuredTurn["author"], operator: AvatarSpec): Ava
   return operator;
 }
 
-function MessageHeader({ speaker, title, kind, ts, author }: {
+/** Opens **Share this reply** (#1956) for a finished reply; null where sharing isn't offered. */
+const ReplyShareCtx = createContext<((turnId: string, trigger: HTMLElement) => void) | null>(null);
+
+function MessageHeader({ speaker, title, kind, ts, author, shareTurn }: {
   speaker: string;
   title?: string;
   kind: "user" | "assistant";
   ts?: number | null;
   /** A user turn's author, for its disc (#1931); assistant headers always show the agent's. */
   author?: StructuredTurn["author"];
+  /** A FINISHED reply's turn id: its header carries the share icon (#1956). */
+  shareTurn?: string;
 }) {
   const timestamp = messageTimestamp(ts, kind);
   const operator = useContext(OperatorAvatar);
+  const openReplyShare = useContext(ReplyShareCtx);
   return (
     <div className={`${chat.who} ${styles.messageHeader}`}>
       <Avatar
@@ -1157,6 +1170,18 @@ function MessageHeader({ speaker, title, kind, ts, author }: {
           title={timestamp.label} aria-label={timestamp.label}>
           {timestamp.compact}
         </time>
+      )}
+      {shareTurn && openReplyShare && (
+        <button
+          type="button"
+          className={styles.replyShare}
+          aria-label="Share this reply"
+          title="Share this reply: a read-only link, without the commands and tools"
+          data-testid="reply-share-button"
+          onClick={(e) => openReplyShare(shareTurn, e.currentTarget)}
+        >
+          <Link2 size={13} aria-hidden="true" />
+        </button>
       )}
     </div>
   );
@@ -1355,7 +1380,12 @@ function TurnView({
           loaded, rather than reading as no reply at all (Hermes on #1651). */}
       {(turn.reply || hasOmission(turn.reply_omitted)) && (
         <div className={`${chat.turn} ${chat.asst} ${styles.reply}`} data-testid="structured-reply">
-          <MessageHeader speaker={agent} kind="assistant" ts={turn.reply_ts} />
+          <MessageHeader
+            speaker={agent}
+            kind="assistant"
+            ts={turn.reply_ts}
+            shareTurn={turn.state === "completed" && turn.reply ? turn.turn_id : undefined}
+          />
           <NotLoaded omitted={turn.reply_omitted} />
           {order ? (
             <FoldedReply
@@ -1725,6 +1755,14 @@ export function StructuredPane({
     previous: StructuredStopInventory | null;
   } | null>(null);
   // Share publicly… (#1404 P4): a link anyone can open, made and revoked in its own dialog.
+  // Share this reply (#1956): which finished reply's dialog is open, and what to refocus after.
+  const [replyShare, setReplyShare] = useState<{ turnId: string; trigger: HTMLElement } | null>(
+    null,
+  );
+  const openReplyShare = useCallback(
+    (turnId: string, trigger: HTMLElement) => setReplyShare({ turnId, trigger }),
+    [],
+  );
   const [sharePublic, setSharePublic] = useState<{ open: boolean; trigger: HTMLElement | null }>({
     open: false,
     trigger: null,
@@ -3374,6 +3412,15 @@ export function StructuredPane({
           returnFocusTo={recap.trigger}
         />
       )}
+      {replyShare && (
+        <ReplyShareModal
+          sessionKey={actionKey}
+          turnId={replyShare.turnId}
+          agent={engineLabel(engine)}
+          onClose={() => setReplyShare(null)}
+          returnFocusTo={replyShare.trigger}
+        />
+      )}
       {sharePublic.open && (
         <SharePubliclyModal
           sessionKey={actionKey}
@@ -3721,6 +3768,7 @@ export function StructuredPane({
           heading is never inside the log's own live region or its busy state). */}
       <ArrivalContext.Provider value={{ has: arrived.has, primed: painted.current }}>
       <OperatorAvatar.Provider value={operatorAvatar}>
+      <ReplyShareCtx.Provider value={openReplyShare}>
       <div className={styles.logArea}>
         <div
           className={chat.log}
@@ -3899,6 +3947,7 @@ export function StructuredPane({
         )}
         {veil && <TermUplinkVeil veil={veil} title={row?.title} input="outbox" />}
       </div>
+      </ReplyShareCtx.Provider>
       </OperatorAvatar.Provider>
       </ArrivalContext.Provider>
       {/* Live background jobs (#1726): one line glued above the composer, never in the log. */}

@@ -82,7 +82,8 @@ for (const cap of SWEEP.filter((c) => !ONLY.length || ONLY.includes(c.id))) {
         // `document`: the HTML file the server answers this path with (share.html at /p/<token>).
         if (cap.document)
           await page.route(
-            (u) => u.pathname === cap.path,
+            // A path may carry a fragment (a reply link's key, #1956) or a query: the page is the path.
+            (u) => u.pathname === cap.path.split("#")[0].split("?")[0],
             async (r) => r.fulfill({ response: await r.fetch({ url: new URL(cap.document, BASE).toString() }) }),
           );
         const mockState = { theme, unhandled: new Set(), ...(cap.mock ?? {}) };

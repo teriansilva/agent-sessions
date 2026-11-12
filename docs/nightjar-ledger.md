@@ -147,6 +147,7 @@ the same list.
 | `routes/Variables.module.css` | css | 10 | done | route:variables route:variables-form | the rail's selection tints in; the Advanced disclosure fades open |
 | `homefree/connect.css` | css | 12 | done | connect:signed-out connect:verified connect:dialog connect:connecting connect:error connect:connected | atmosphere (Full, dark), radar + acquire bar while connecting, step LEDs, session LED breathe / warn blink, gate meter (state, every mode) |
 | `share/ShareViewer.module.css` | css | 12 | done | share:loading share:password share:password-error share:password-wait share:unavailable share:relink share:nocookie share:offline share:terminal share:open | atmosphere (Full, dark), radar while opening, working bars (Full only), button glitch on press |
+| `reply/ReplyViewer.module.css` | css | 12 | done | reply:open reply:password reply:unavailable reply:incomplete | none: the bar, notices and password card are the share viewer's (its motion) |
 | `theme/fonts.css` | css | 1 | done | gallery:all | none (font faces) |
 | `theme/motion.css` | css | 1 | done | gallery:all | the mode rules and keyframes themselves |
 | `tokens.css` | css | n/a | n/a: the palette itself (literal allowlist) | — | — |
@@ -188,6 +189,7 @@ the same list.
 | `components/sessions/SessionLimitDialog.tsx` | popup | 3 | done | popup:session-limit | deploy-in from the shared dialog, scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/sessions/AdoptToMissionModal.tsx` | popup | 3 | done | popup:adopt | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/shares/SharePubliclyModal.tsx` | popup | 3 | done | popup:share-publicly | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
+| `components/shares/ReplyShareModal.tsx` | popup | 3 | done | popup:reply-share | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced (the shared HudDialog) |
 | `components/sidebar/MoveToProjectModal.tsx` | popup | 3 | done | popup:move-to-project | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/sidebar/RowMenu.tsx` | popup | 3 | done | popup:session-row-menu popup:objective-menu | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
 | `components/structured/ApiRail.tsx` | popup | 6 | todo |  |  |
@@ -219,6 +221,7 @@ the same list.
 | `src/agent_sessions/templates/change_password.html` | page | 12 | done | page:password page:password-error | atmosphere (Full, dark), caret blink |
 | `src/agent_sessions/templates/link_approve.html` | page | 12 | done | page:link-confirm page:link-approved page:link-denied page:link-invalid | atmosphere (Full, dark), attention LED blink on the request |
 | `web/share.html → share/ShareViewer.tsx` | page | 12 | done | share:loading share:password share:password-error share:password-wait share:unavailable share:relink share:nocookie share:offline share:terminal share:open | atmosphere (Full, dark), radar while opening, working bars (Full only) |
+| `web/reply.html → reply/ReplyViewer.tsx` | page | 12 | done | reply:open reply:password reply:unavailable reply:incomplete | atmosphere (Full, dark), radar while opening; the rest is the share viewer's |
 | `src/agent_sessions/routes/shares.py PLACEHOLDER_PAGE` | page | 12 | done | page:share-placeholder | atmosphere (Full, dark); script-free |
 | `src/agent_sessions/routes/artifacts.py` | page | 12 | n/a: the file listing a hosted site without an index.html gets (#1932) is the artifact's own content, served sandboxed at `/artifacts/…`; it stays bare HTML, never the operator chrome | — | — |
 | `src/agent_sessions/ask_attachments.py` | page | 12 | n/a: not a served page — the shared-file kind classifier's HTML sniff (the `<!doctype html` literal) trips the page discovery regex | — | — |

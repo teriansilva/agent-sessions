@@ -403,6 +403,8 @@ export const SWEEP = [
   { id: "popup:folder-picker", path: "/settings/projects", open: [{ css: "button[aria-label^='Change default folder for']" }], expect: "dialog" },
   { id: "popup:permissions", path: SAPI, mock: { bypassOffer: true }, ...head("Enable Skip permissions for this session"), expect: "dialog" },
   { id: "popup:share-publicly", path: SAPI, ...head("Share this session publicly"), expectCss: "[data-testid='share-publicly']" },
+  // Share this reply (#1956): the icon on a finished reply's header, then its dialog.
+  { id: "popup:reply-share", path: SAPI, open: [{ testId: "reply-share-button" }], expectCss: "[data-testid='reply-share']" },
   { id: "popup:adopt", path: S6, ...head("Adopt this session into a mission"), expectCss: "[data-testid='adopt-dialog']" },
   {
     // #1819: the limit dialog, full. The list scrolls and the plates stay in reach.
@@ -1645,6 +1647,20 @@ export const SWEEP = [
   })(),
   // The public share viewer at /p/<token> (share.html), one id per phase, `/api/public/*` answered
   // per capture. The open conversation is e2e/public-share.spec.ts's full flow.
+  // Reply links (#1956): the sealed envelopes are web/src/reply/fixtures/envelopes.json's, so the
+  // capture opens real ciphertext with the real WebCrypto path.
+  ...(() => {
+    const ID = "Q3J9AAAAAAAAAAAAAAAAAA";
+    const plain = {"v": 1, "id": "Q3J9AAAAAAAAAAAAAAAAAA", "expires_at": null, "password": false, "salt": null, "nonce": "NXlyOB_jMi6dllhr", "ct": "wWo8nl9aGvr8qcK_48Hf4amTx8WAy-iMFiuDJBfmVA7wP0dIJMNdJWBnR479YL9mqgDUxzSsusd3XeyP0wvcMQuXJD_i2WcCZwneXKecgR6xPFAQXUUbCBWCgcKXSU8_rED6jzTWBqbbw7stYvgdY9Fv_6gT8sl-l5sCNqyrwxG_ap8Ktb_BwKU-BbO9JYuMMGGpaeTs5ij0HzZqorIEpbg6S2zmUnGzCBrKNzew0MI"};
+    const pw = {"v": 1, "id": "Q3J9AAAAAAAAAAAAAAAAAA", "expires_at": 1900000000, "password": true, "salt": "siMO-gqbKezssFf_51z5ZA", "nonce": "Nza9dIHave-rXrLx", "ct": "i8VVdSL7Pkhw4wBr75S-5gpBqcjGw3JsrusK76gMloi7glwpD7l0OMvlcwbBPd37xpXLQ5nTwV8imgUDW7eFuHpDcMyDVtaT2Ic9GfYxCkKq1mh3ZEMq1NyvjRtLO1uCBRWX6dxc7-SezfdABkU8nsNlnWpsCr2jXFtTQPWnCkIrahQNspdmHxSF2tWUjnbJByfzZhbXYz-wtfXAVaOr5MGPB78CnCVWw-rd1QrE1fo"};
+    const R = (key) => `/r/${ID}#k=${key}`;
+    return [
+      { id: "reply:open", path: R("tG5mUmIXNxb4z7VO2HEQvFHpU6aGDEASMzPB6uc5dOk"), document: "/reply.html", api: { [`/api/public/reply/${ID}`]: plain }, present: "[data-testid=reply-open]" },
+      { id: "reply:password", path: R("9zf74A-Nr9gDg3WHtK7vLFj_sJtGwnrWFbjF849gVUs"), document: "/reply.html", api: { [`/api/public/reply/${ID}`]: pw }, present: "[data-testid=reply-password-gate]" },
+      { id: "reply:unavailable", path: R("tG5mUmIXNxb4z7VO2HEQvFHpU6aGDEASMzPB6uc5dOk"), document: "/reply.html", api: { [`/api/public/reply/${ID}`]: { status: 404, json: { detail: "link unavailable" } } }, present: "[data-testid=reply-unavailable]" },
+      { id: "reply:incomplete", path: `/r/${ID}`, document: "/reply.html", present: "[data-testid=reply-incomplete]" },
+    ];
+  })(),
   ...(() => {
     const P = "/p/tok" + "x".repeat(40);
     const share = (kind) => ({ share: { link: "L1", kind, mode: "view", title: "Fix the auth redirect loop", expires_at: null, name: null, name_required: false }, csrf: "c" });

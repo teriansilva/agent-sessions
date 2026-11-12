@@ -139,3 +139,43 @@ export function presenceTitle(p: { visitors: { name: string | null }[] }): strin
   );
   return ["Connected now (seen in the last 30 s):", "You", ...names].join("\n");
 }
+
+/** A reply link (#1956), as listed: never the key (shown once, at creation) nor the envelope. */
+export interface ReplyShare {
+  share_id: string;
+  session_key: string;
+  turn_id: string;
+  agent: string;
+  has_password: boolean;
+  expires_at: number | null;
+  created_at: number;
+  revoked_at: number | null;
+  revoked_reason: string | null;
+  open_count: number;
+  last_opened_at: number | null;
+  live: boolean;
+}
+
+export interface CreatedReplyShare {
+  share: ReplyShare;
+  /** The key, base64url — the ONLY time it exists outside the link. */
+  key: string;
+  /** `/r/<id>` on this origin. */
+  path: string;
+}
+
+/** The expiries a reply link offers (the server's `reply_share.EXPIRY_CHOICES`). */
+export const REPLY_EXPIRY = [
+  { id: "1h", label: "1 hour" },
+  { id: "1d", label: "1 day" },
+  { id: "7d", label: "7 days" },
+  { id: "30d", label: "30 days" },
+  { id: "never", label: "Never" },
+] as const;
+export type ReplyExpiry = (typeof REPLY_EXPIRY)[number]["id"];
+
+/** The link a visitor opens: this page's own origin (whatever domain the operator is on), the
+ *  viewer path, and the key in the fragment — which a browser never sends to a server. */
+export function replyLink(path: string, key: string, origin = window.location.origin): string {
+  return `${new URL(path, origin).toString()}#k=${key}`;
+}

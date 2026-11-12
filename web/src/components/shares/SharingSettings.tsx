@@ -3,6 +3,7 @@ import { ApiError, api } from "../../lib/api";
 import { nowSeconds, type ShareList } from "../../lib/shareFormat";
 import settings from "../../routes/Settings.module.css";
 import dlg from "../HudDialog.module.css";
+import { ReplyShareList } from "./ReplyShareList";
 import { ShareRow } from "./ShareRow";
 import styles from "./Shares.module.css";
 
@@ -121,7 +122,8 @@ export function SharingSettings() {
             />
           ))}
         </ul>
-      )}
+            )}
+      <ReplyShareList />
     </section>
   );
 }

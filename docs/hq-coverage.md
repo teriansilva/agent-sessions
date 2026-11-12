@@ -164,6 +164,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Public shares: list; revoke one; revoke all | GET /api/shares, DELETE /api/shares/{id}, POST …/revoke-all | P6 R/W |
 | Public shares: create (view only) | POST /api/shares mode=view | P6 W (external: public exposure; password and expiry typed on the card) |
 | Public shares: create "can send messages" | POST /api/shares mode=send | **never** (lets outsiders drive an agent) |
+| Reply links (#1956): create; list; revoke; revoke all | POST /api/reply-shares; GET /api/reply-shares, DELETE /api/reply-shares/{id}, POST …/revoke-all | **never** to create (publishes to anyone with the link); P6 to list and revoke |
 | Updates: version, settings, check; auto-update, channel | GET /api/version, /api/update/*, POST /api/update/settings | P6 R/W |
 | Update now / reinstall (restarts the service) | POST /api/update/apply, GET /api/update/progress | P6 W (external; the card says the conversation reconnects) |
 | Usage analytics consent | POST /api/prefs `analytics_consent` | **never** (consent is the operator's own act) |
@@ -369,6 +370,10 @@ GET    /api/library/skills                                                      
 POST   /api/library/skills                                                        have  # propose_library skill create (#1611)
 GET    /api/library/skills/{id}                                                   have  # skill_detail
 POST   /api/library/skills/{id}/copies                                            have  # propose_library skill edit (#1611)
+GET    /api/reply-shares                                                          P6  # list (#1956)
+POST   /api/reply-shares                                                          never  # publishes a reply to anyone with the link: the operator's own act (#1956)
+POST   /api/reply-shares/revoke-all                                               P6  # narrowing (#1956)
+DELETE /api/reply-shares/{share_id}                                               P6  # narrowing (#1956)
 GET    /api/share/catalog                                                         n/a  # share bundles (#1714): the export picker
 GET    /api/share/imports                                                         n/a  # share bundles: which copies came from a file
 POST   /api/share/export                                                          n/a  # share bundles: a file download
@@ -501,6 +506,7 @@ GET    /api/public/avatar                                                       
 GET    /api/public/events                                                         n/a  # public share visitor surface
 POST   /api/public/interrupt                                                      n/a  # public share visitor surface
 POST   /api/public/name                                                           n/a  # public share visitor surface
+GET    /api/public/reply/{share_id}                                               n/a  # reply-link visitor surface: ciphertext only (#1956)
 POST   /api/public/send-now                                                       n/a  # public share visitor surface
 GET    /api/public/session                                                        n/a  # public share visitor surface
 GET    /api/public/share                                                          n/a  # public share visitor surface
@@ -646,6 +652,8 @@ GET    /artifacts/{ref}                                                         
 GET    /artifacts/{ref}/{rest:path}                                               n/a  # hosted bytes
 GET    /p/                                                                        n/a  # public share visitor surface
 GET    /p/{token}                                                                 n/a  # public share visitor surface
+GET    /r/                                                                        n/a  # reply-link visitor surface (#1956)
+GET    /r/{share_id}                                                              n/a  # reply-link visitor surface (#1956)
 GET    /{spa_path:path}                                                           n/a  # SPA shell
 WS     /ws/term/{sid}                                                             P7  # terminal input; text nudges: have (propose_nudge)
 WS     /ws/plugins/signin/{operation_id}                                          never  # interactive vendor login

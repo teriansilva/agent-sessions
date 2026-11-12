@@ -58,6 +58,8 @@ export default defineConfig({
         main: "index.html",
         connect: "connect.html",
         share: "share.html",
+        // A reply link (#1956), served at /r/<id>: one sealed reply, opened in the page.
+        reply: "reply.html",
       },
     },
   },

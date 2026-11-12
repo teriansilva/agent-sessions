@@ -174,6 +174,11 @@ already have instead of starting another copy.
   **in the map**, and *Remember my choice* makes that the answer from then on. Change or reset it
   in Settings → Appearance → Interface → Opening links. A phone always opens full screen, and a mission link
   always opens in Missions.
+- **Share a reply.** In an API session, a finished reply has a small link icon in its header.
+  It makes a read-only link to **that reply only**: visitors need no account, see the reply and how
+  many commands and tools it used (never what they were), and nothing else of the session. Pick an
+  expiry and, if you like, a password. The link holds its own key and is shown once; it opens on
+  the address you are using BattleLab on. Revoke reply links in Settings → Sharing.
 - **Who is here.** In an API session, each message has a small avatar beside it: your image (set in
   Settings → General → Profile) or your initial, a visitor's initial in their own colour, and 🤖
   for the agent. Once the session has a live public link, or anyone is on one, its head shows

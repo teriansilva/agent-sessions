@@ -102,6 +102,24 @@ CREATE TABLE IF NOT EXISTS share_turns (
   UNIQUE (share_id, client_key)
 );
 CREATE INDEX IF NOT EXISTS share_turns_by_session ON share_turns(session_key);
+-- Reply links (#1956): one finished reply, sealed at share time (`reply_share.py`). The row holds
+-- the ciphertext envelope only: the key is in the link's fragment and never here. A revoke drops
+-- the envelope at once (secure_delete wipes the page); the row stays for the operator's list.
+CREATE TABLE IF NOT EXISTS reply_shares (
+  share_id        TEXT PRIMARY KEY,
+  session_key     TEXT NOT NULL,
+  turn_id         TEXT NOT NULL,
+  agent           TEXT NOT NULL DEFAULT '',
+  has_password    INTEGER NOT NULL DEFAULT 0,
+  expires_at      REAL,
+  created_at      REAL NOT NULL,
+  revoked_at      REAL,
+  revoked_reason  TEXT,
+  envelope        TEXT,
+  open_count      INTEGER NOT NULL DEFAULT 0,
+  last_opened_at  REAL
+);
+CREATE INDEX IF NOT EXISTS reply_shares_by_session ON reply_shares(session_key);
 -- Images a visitor uploaded through a link: the only uploads that visitor may attach.
 CREATE TABLE IF NOT EXISTS share_uploads (
   share_id      TEXT NOT NULL,
@@ -423,6 +441,118 @@ class ShareStore:
     def revoke_all(self, *, reason: str = "revoked") -> int:
         return sum(1 for s in self.list_active() if self.revoke(s.share_id, reason=reason))
 
+    # -- reply links (#1956) -------------------------------------------------------------
+
+    def _reply_row(self, r: sqlite3.Row) -> dict:
+        now = self._clock()
+        live = r["revoked_at"] is None and (r["expires_at"] is None or r["expires_at"] > now)
+        return {
+            "share_id": r["share_id"],
+            "session_key": r["session_key"],
+            "turn_id": r["turn_id"],
+            "agent": r["agent"],
+            "has_password": bool(r["has_password"]),
+            "expires_at": r["expires_at"],
+            "created_at": r["created_at"],
+            "revoked_at": r["revoked_at"],
+            "revoked_reason": r["revoked_reason"],
+            "open_count": int(r["open_count"] or 0),
+            "last_opened_at": r["last_opened_at"],
+            "live": live,
+        }
+
+    def reply_create(
+        self,
+        *,
+        share_id: str,
+        session_key: str,
+        turn_id: str,
+        agent: str,
+        has_password: bool,
+        expires_at: float | None,
+        envelope: str,
+    ) -> dict:
+        with self._con() as con:
+            con.execute(
+                "INSERT INTO reply_shares (share_id, session_key, turn_id, agent, has_password,"
+                " expires_at, created_at, envelope) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    share_id,
+                    session_key,
+                    turn_id,
+                    agent,
+                    1 if has_password else 0,
+                    expires_at,
+                    self._clock(),
+                    envelope,
+                ),
+            )
+            row = con.execute(
+                "SELECT share_id, session_key, turn_id, agent, has_password, expires_at,"
+                " created_at, revoked_at, revoked_reason, open_count, last_opened_at"
+                " FROM reply_shares WHERE share_id = ?",
+                (share_id,),
+            ).fetchone()
+        return self._reply_row(row)
+
+    def reply_list(self, session_key: str | None = None) -> list[dict]:
+        """Every reply link not yet swept, newest first: live ones and recently ended ones."""
+        p = self._path or db_path()
+        if not p.exists() and not _store_was_initialized(p):
+            return []
+        with self._con() as con:
+            rows = con.execute(
+                "SELECT share_id, session_key, turn_id, agent, has_password, expires_at,"
+                " created_at, revoked_at, revoked_reason, open_count, last_opened_at"
+                " FROM reply_shares WHERE (? IS NULL OR session_key = ?)"
+                " ORDER BY created_at DESC",
+                (session_key, session_key),
+            ).fetchall()
+        return [self._reply_row(r) for r in rows]
+
+    def reply_envelope(self, share_id: str) -> str | None:
+        """The sealed envelope of a LIVE reply link (and count the open), else None — one answer
+        for unknown, revoked and expired alike."""
+        p = self._path or db_path()
+        if not p.exists() and not _store_was_initialized(p):
+            return None
+        now = self._clock()
+        with self._con() as con:
+            row = con.execute(
+                "SELECT envelope FROM reply_shares WHERE share_id = ? AND revoked_at IS NULL"
+                " AND (expires_at IS NULL OR expires_at > ?) AND envelope IS NOT NULL",
+                (share_id, now),
+            ).fetchone()
+            if row is None:
+                return None
+            con.execute(
+                "UPDATE reply_shares SET open_count = open_count + 1, last_opened_at = ?"
+                " WHERE share_id = ?",
+                (now, share_id),
+            )
+        return row["envelope"]
+
+    def reply_revoke(self, share_id: str, *, reason: str = "revoked") -> bool:
+        """End one reply link and drop its ciphertext. True when it was live."""
+        with self._con() as con:
+            cur = con.execute(
+                "UPDATE reply_shares SET revoked_at = ?, revoked_reason = ?, envelope = NULL"
+                " WHERE share_id = ? AND revoked_at IS NULL",
+                (self._clock(), reason, share_id),
+            )
+            return cur.rowcount > 0
+
+    def reply_revoke_all(self, *, reason: str = "revoked", session_key: str | None = None) -> int:
+        p = self._path or db_path()
+        if not p.exists() and not _store_was_initialized(p):
+            return 0
+        with self._con() as con:
+            return con.execute(
+                "UPDATE reply_shares SET revoked_at = ?, revoked_reason = ?, envelope = NULL"
+                " WHERE revoked_at IS NULL AND (? IS NULL OR session_key = ?)",
+                (self._clock(), reason, session_key, session_key),
+            ).rowcount
+
     def revoke_for_session(self, session_key: str, *, reason: str) -> int:
         """End every live link to ``session_key``.
 
@@ -442,7 +572,10 @@ class ShareStore:
                     (session_key,),
                 ).fetchall()
             ]
-        return sum(1 for sid in ids if self.revoke(sid, reason=reason))
+        ended = sum(1 for sid in ids if self.revoke(sid, reason=reason))
+        # A session's reply links end with it too (#1956): archiving a session stops sharing it,
+        # the operator's expectation whatever kind of link points at it.
+        return ended + self.reply_revoke_all(reason=reason, session_key=session_key)
 
     # -- visitor turns and uploads (P2) ------------------------------------------------
 
@@ -593,7 +726,19 @@ class ShareStore:
                 " OR (expires_at IS NOT NULL AND expires_at < ?)",
                 (cutoff, cutoff),
             )
-            return cur.rowcount
+            # Reply links (#1956): an expired one's ciphertext goes at once; its row after the
+            # same grace period as a session link's.
+            con.execute(
+                "UPDATE reply_shares SET envelope = NULL WHERE envelope IS NOT NULL"
+                " AND expires_at IS NOT NULL AND expires_at <= ?",
+                (self._clock(),),
+            )
+            cur2 = con.execute(
+                "DELETE FROM reply_shares WHERE (revoked_at IS NOT NULL AND revoked_at < ?)"
+                " OR (expires_at IS NOT NULL AND expires_at < ?)",
+                (cutoff, cutoff),
+            )
+            return cur.rowcount + cur2.rowcount
 
 
 # The process's store. Routes and the archive hooks share it, so a revoke reaches the fences and

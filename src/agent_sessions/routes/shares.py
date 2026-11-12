@@ -50,7 +50,8 @@ SEND_RISK = (
 )
 # The public prefixes: the headers middleware in `main` stamps `no-referrer` + `no-store` on
 # both, and the SPA catch-all / service worker leave both alone.
-PUBLIC_PREFIXES = ("/p/", "/api/public/")
+#: `/r/` is the reply-link viewer (#1956): the same no-referrer / no-store treatment.
+PUBLIC_PREFIXES = ("/p/", "/r/", "/api/public/")
 NAME_RULE = (
     f"a name is 1–{shares.MAX_VISITOR_NAME} characters on one line, letters, numbers, spaces and"
     " punctuation only"

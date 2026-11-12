@@ -27,6 +27,9 @@
 // button, its icon's svg and five shapes, its label span); every remaining element computes exactly
 // the recorded styles in order, and the mobile cases (one Actions menu, closed) and the chat pane
 // are byte-identical.
+// An eighth time for #1956: a finished reply's header gained the Share this reply icon — five
+// inserted elements per structured case (the button, its svg and three paths); every existing
+// element computes exactly the recorded styles in order, and the chat pane is unchanged.
 // Re-record only on purpose:
 //   API_LOOK_BASELINE_WRITE=1 npx playwright test e2e/api-look-defaults.spec.ts --workers=1
 import { readFileSync, writeFileSync, existsSync } from "node:fs";

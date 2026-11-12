@@ -1,0 +1,52 @@
+/* The reply-link viewer's own block (#1956). Everything else — the bar, chips, notices, the
+ * password card — is the session-share viewer's (share/ShareViewer.module.css), so the two public
+ * pages look like one product. Tokens only; 44px controls; nothing scrolls sideways at 390px. */
+.main {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-4);
+}
+.reply {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.who {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-2);
+  font: 600 var(--fs-label) / 1.2 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.avatar {
+  --avatar-size: 28px;
+}
+.ts {
+  color: var(--text-3);
+  font-weight: 400;
+}
+.hidden {
+  margin: 0 0 var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px dashed var(--line-strong);
+  font: 400 var(--fs-meta) / 1.4 var(--font-mono);
+  color: var(--text-3);
+}
+.body {
+  font-size: var(--fs-body);
+  line-height: 1.55;
+}
+.foot {
+  max-width: 860px;
+  margin: var(--sp-3) auto 0;
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+}

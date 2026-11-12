@@ -30,6 +30,9 @@ export const NAVIGATE_FALLBACK_DENYLIST: RegExp[] = [
   // SPA shell answering it would boot the operator app (and bounce a visitor to /login), and a
   // cached copy keyed by a token-bearing URL must not exist at all.
   /^\/p\//,
+  // A reply link (#1956): `/r/<id>` is served by its own route from `reply.html`, and its key is
+  // in the fragment — no SPA shell, and no cached copy of the page under it.
+  /^\/r\//,
   // Hosted artifacts (#1932): agent-written pages served sandboxed by the app itself. The SPA
   // shell answering one would boot the operator app where the artifact should be, and a cached
   // copy keyed by a view-token URL must not exist at all.
@@ -56,6 +59,7 @@ export const SERVER_RENDERED_PATHS: string[] = [
   "/change-password",
   "/link/approve",
   "/p/k3Jx9aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789_-",
+  "/r/Q3J9AAAAAAAAAAAAAAAAAA",
   "/artifacts/5449-5592-2107-4372/",
   "/artifacts/5449-5592-2107-4372@2/docs/index.html",
   "/artifacts/v/eyJhIjoiazNKeDlhQmNEZUZnSGlKayJ9.ZzYw.sig/",
