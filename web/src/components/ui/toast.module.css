@@ -1,7 +1,6 @@
 /* THE TOAST (#1531 Phase 3): one look for every transient confirmation — the sidebar's review-now
- * outcome, the terminal's copy and link chips (also the structured pane's share-link chip), the
- * mission-control settings' "Saved." A toast keeps its own placement and timing; the plate, the
- * state LED and the slide-in come from here, composed.
+ * outcome, the terminal's copy chip, the mission-control settings' "Saved." A toast keeps its own
+ * placement and timing; the plate, the state LED and the slide-in come from here, composed.
  *
  * A chamfered plate (`nj-frame-sm`) on `--bg-2`; the state rides an LED in the status colour and the
  * plate's edge, never the brand accent; it slides in (fade + 8 px, `nj-toast-in`). Tokens only. */

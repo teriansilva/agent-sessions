@@ -174,8 +174,6 @@ already have instead of starting another copy.
   **in the map**, and *Remember my choice* makes that the answer from then on. Change or reset it
   in Settings → Appearance → Interface → Opening links. A phone always opens full screen, and a mission link
   always opens in Missions.
-- **Share link.** The session's actions and the mission's **⋯** menu carry **Share link**: the
-  system share sheet where the device has one, otherwise the link is copied.
 - **Who is here.** In an API session, each message has a small avatar beside it: your image (set in
   Settings → General → Profile) or your initial, a visitor's initial in their own colour, and 🤖
   for the agent. Once the session has a live public link, or anyone is on one, its head shows

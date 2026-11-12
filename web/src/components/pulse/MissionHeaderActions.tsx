@@ -53,7 +53,6 @@ import {
   FileText,
   Package,
   RotateCw,
-  Share2,
   Undo2,
 } from "lucide-react";
 import {
@@ -66,8 +65,6 @@ import {
 import { createPortal } from "react-dom";
 
 import { ApiError, api } from "../../lib/api";
-import { missionLink } from "../../lib/missionLink";
-import { shareLink } from "../../lib/shareLink";
 import type { Mission } from "../../types/api";
 
 import dlg from "../HudDialog.module.css";
@@ -457,28 +454,6 @@ export function MissionHeaderActions({
         </button>
       ) : null}
 
-      {/* Share link (#1232): the installed app has no address bar, so this is how a mission is passed
-          on from it. Present in every state the menu is, which is also why the hairline below is. */}
-      <button
-        type="button"
-        className={styles.menuItem}
-        onClick={() =>
-          void shareLink({
-            title: mission.title,
-            path: missionLink(mission.id),
-          }).then((outcome) => {
-            if (outcome === "copied") onNote("Link copied.");
-            else if (outcome === "failed")
-              onNote("Copying the link needs a secure origin.");
-          })
-        }
-        role="menuitem"
-        data-testid="mission-share-link"
-      >
-        {icon(<Share2 size={15} />)}
-        Share link
-      </button>
-
       {/* Artifacts (#1932 P2): whether this mission's sessions get the artifacts tool at launch. */}
       {!archived ? (
         <button
@@ -500,7 +475,7 @@ export function MissionHeaderActions({
       ) : null}
 
       {/* The hairline before the destructive group, as RowMenu draws one. Not a menuitem, so the roving
-          focus skips it. */}
+          focus skips it. Artifacts… is in every state the menu is, so the group above is never empty. */}
       <div className={styles.menuSep} role="separator" />
 
       {/* ABANDON is available from every non-terminal state — it is the operator saying "not

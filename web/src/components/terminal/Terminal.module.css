@@ -411,10 +411,9 @@ button.headChip[aria-pressed="true"] {
   height: 4px;
 }
 
-/* Auto copy-on-select confirmation (#554), and the link-copied chip the terminal and the structured
- * pane share. THE TOAST (ui/toast.module.css, #1531) in its chip voice with a state LED; this keeps
- * the placement (centred over the terminal's foot) and the timing: it shows, then fades. Duration
- * matches COPIED_TOAST_MS in Terminal.tsx. */
+/* Auto copy-on-select confirmation (#554). THE TOAST (ui/toast.module.css, #1531) in its chip voice
+ * with a state LED; this keeps the placement (centred over the terminal's foot) and the timing: it
+ * shows, then fades. Duration matches COPIED_TOAST_MS in Terminal.tsx. */
 .copiedToast {
   composes: toast chip led ok from "../ui/toast.module.css";
   position: absolute;

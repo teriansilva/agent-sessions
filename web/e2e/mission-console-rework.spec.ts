@@ -394,11 +394,11 @@ test("the overflow honours the ARROW KEYS its role promises (#942)", async ({
   const menu = page.getByTestId("mission-overflow-menu");
   await expect(menu).toBeVisible();
 
-  // A `running` mission's secondary set, in DOM order. Share link (#1232) closes the lead group,
+  // A `running` mission's secondary set, in DOM order. Artifacts… (#1932) closes the lead group,
   // before the hairline and the destructive pair.
   const order = [
     "mission-failed",
-    "mission-share-link",
+    "mission-artifacts",
     "mission-abandon",
     "mission-archive",
   ];
@@ -931,7 +931,7 @@ test("a confirmation rerender does not throw focus out of the open menu (#942)",
 
   // …and the arrows still reach the menu, which is the other half of what was lost.
   await page.keyboard.press("ArrowDown");
-  await expect(menu.getByTestId("mission-share-link")).toBeFocused();
+  await expect(menu.getByTestId("mission-artifacts")).toBeFocused();
 });
 
 test("the ⋯ trigger closes the menu it opened, by real pointer (#942)", async ({

@@ -216,7 +216,8 @@
 .skipShort {
   display: none;
 }
-/* The share-link toast (#1332) is placed against the pane. */
+/* The pane is a positioning context: what is absolutely placed inside it places against the pane,
+   not the page. */
 .pane {
   position: relative;
 }

@@ -621,7 +621,7 @@ test("the head carries the terminal's actions that work for an API session — n
       "Open session brief",
       "Hand off session to another engine",
       "Open this session as a window on the map",
-      "Share a link to this session",
+      "Share this session publicly",
     ]),
   );
   // Ordered as the terminal's head is.
@@ -634,7 +634,6 @@ test("the head carries the terminal's actions that work for an API session — n
     "Open session brief",
     "Hand off session to another engine",
     "Open this session as a window on the map",
-    "Share a link to this session",
     "Share this session publicly",
     "Stop the worker",
   ]);
@@ -685,7 +684,6 @@ test("at ≤800px every action lives in ONE Actions menu", async () => {
       "Plan & tools",
       "Recap",
       "Hand off",
-      "Share link",
       "Share publicly…",
       "Stop",
     ]);

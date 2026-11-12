@@ -21,7 +21,12 @@
 // job, rail closed). A sixth time for #1931: every message header gained its author's avatar disc —
 // two inserted elements per structured case (the default pane's one exchange: you + the agent),
 // every existing element computes exactly the recorded styles in order (the header keeps its
-// baseline alignment; only the disc centres itself), and the chat pane is unchanged.
+// baseline alignment; only the disc centres itself), and the chat pane is unchanged. A seventh
+// time for the removal of the one-tap Share link (#1232; Share publicly… replaces it): the desktop
+// structured head lost that ONE action — eight removed elements per desktop structured case (the
+// button, its icon's svg and five shapes, its label span); every remaining element computes exactly
+// the recorded styles in order, and the mobile cases (one Actions menu, closed) and the chat pane
+// are byte-identical.
 // Re-record only on purpose:
 //   API_LOOK_BASELINE_WRITE=1 npx playwright test e2e/api-look-defaults.spec.ts --workers=1
 import { readFileSync, writeFileSync, existsSync } from "node:fs";

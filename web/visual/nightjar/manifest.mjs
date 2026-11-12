@@ -433,11 +433,19 @@ export const SWEEP = [
     expectCss: "[data-testid='session-limit-dialog']",
   },
   {
+    // THE TOAST (ui/toast.module.css): the session scan settings' "Saved." The save answers the
+    // whole block, as the server does (the shared mock only echoes the partial it was sent).
     id: "popup:toast",
-    path: S1,
-    grant: ["clipboard-read", "clipboard-write"],
-    ...head("Share a link to this session"),
-    expectCss: "[data-link-toast]",
+    path: "/settings/ai-mission-control",
+    api: {
+      "/api/prefs": {
+        method: "POST",
+        status: 200,
+        json: { pulse: { auto_enabled: false, interval_minutes: 15, window_days: 1, scan_depth: "slow", configured: true } },
+      },
+    },
+    open: [{ role: "checkbox", name: "Scan automatically in the background" }],
+    expectCss: "p[role='status']:has-text('Saved.')",
   },
   {
     id: "popup:open-link",

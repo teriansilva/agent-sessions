@@ -12,7 +12,6 @@ import {
   ScrollText,
   SquareDashedBottom,
   Crosshair,
-  Share2,
 } from "lucide-react";
 import {
   type Ref,
@@ -83,7 +82,6 @@ import { NotFoundPanel, OPENING_GIVE_UP_MS, OpeningPanel, SessionLimitPanel,
 import { LOOKUP_FAILED_TEXT, termCover } from "./termCover";
 import styles from "./Terminal.module.css";
 import { missionLink } from "../../lib/missionLink";
-import { shareLink } from "../../lib/shareLink";
 import { openTerminalLink } from "../../lib/terminalLink";
 import { stripHoverMouseReports } from "../../lib/hoverMouse";
 import { TermUplinkVeil } from "./TermUplinkVeil";
@@ -368,11 +366,6 @@ export function Terminal({
   // element key so each copy restarts the fade animation. Set by the mouseup copy-on-settle handler.
   // #554 copy-on-select toast; `ok` false = the clipboard write failed (insecure origin) (#617).
   const [copied, setCopied] = useState<{ tick: number; ok: boolean }>({
-    tick: 0,
-    ok: true,
-  });
-  // Share link (#1232): what the clipboard fallback did — the share sheet reports itself.
-  const [linkToast, setLinkToast] = useState<{ tick: number; ok: boolean }>({
     tick: 0,
     ok: true,
   });
@@ -2123,38 +2116,6 @@ export function Terminal({
       disabled: termFontSize >= TERM_FONT_SIZE_MAX,
       run: () => setTermFontSize(stepTermFontSize(termFontSize, 1)),
     },
-    // Share link (#1232) — the installed app has no address bar, so this is how a session is passed
-    // on from it. AFTER the zoom pair, the new last entry: HeadActions folds from the END (#783), so
-    // nothing already on the bar moves. Withheld on an unreconciled `new-<uuid>` placeholder, whose
-    // URL names a session the server does not have yet; it acts on `actionKey`, the settled id.
-    ...(!isNewSessionPlaceholder(actionKey)
-      ? [
-          {
-            id: "share-link",
-            label: "Share link",
-            aria: "Share a link to this session",
-            title: "Share link: send or copy a link that opens this session",
-            icon: <Share2 size={13} aria-hidden="true" />,
-            run: () => {
-              void shareLink({
-                title: row?.title || "BattleLab session",
-                path: `/s/${actionKey.slice(0, actionKey.indexOf(":"))}/${actionNative}`,
-              }).then((outcome) => {
-                if (outcome !== "copied" && outcome !== "failed") return;
-                const tick = Date.now();
-                setLinkToast({ tick, ok: outcome === "copied" });
-                window.setTimeout(
-                  () =>
-                    setLinkToast((t) =>
-                      t.tick === tick ? { tick: 0, ok: true } : t,
-                    ),
-                  outcome === "copied" ? COPIED_TOAST_MS : COPY_FAILED_TOAST_MS,
-                );
-              });
-            },
-          },
-        ]
-      : []),
   ];
 
   return (
@@ -2300,21 +2261,6 @@ export function Terminal({
             data-copy-failed={copied.ok ? undefined : ""}
           >
             {copied.ok ? "Copied" : "Copy needs a secure origin"}
-          </div>
-        )}
-        {linkToast.tick !== 0 && (
-          <div
-            key={linkToast.tick}
-            className={
-              linkToast.ok
-                ? styles.copiedToast
-                : `${styles.copiedToast} ${styles.copyFailed}`
-            }
-            role="status"
-            aria-live="polite"
-            data-link-toast=""
-          >
-            {linkToast.ok ? "Link copied" : "Copy needs a secure origin"}
           </div>
         )}
         {/* Scroll-up lazy-load pills (#348 Phase 3, per the issue mockup): absolutely

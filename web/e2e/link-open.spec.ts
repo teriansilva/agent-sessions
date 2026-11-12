@@ -4,14 +4,13 @@ import {
   type Page,
   test,
 } from "@playwright/test";
-import { clickHeadAction } from "./headActions";
 import { mockRoster } from "./roster";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
 
 /** BattleLab links from outside the app (#1232) — in a real browser, because every part of it is
  *  something a DOM emulator cannot model: a real entry navigation (`PerformanceNavigationTiming`),
  *  real `localStorage` across navigations, the map's real measurement deciding whether a window is
- *  possible, two real tabs talking over `BroadcastChannel` + Web Locks, and the real clipboard. */
+ *  possible, and two real tabs talking over `BroadcastChannel` + Web Locks. */
 
 const now = Math.floor(Date.now() / 1000);
 const MID = "msn_" + "b".repeat(32);
@@ -210,25 +209,5 @@ test.describe("opening BattleLab links", () => {
     await expect(dialog(opened)).toHaveCount(0);
     await expect(dialog(first)).toHaveCount(0);
     await expect(first).toHaveURL(new RegExp(`${NEW_SESSION_PATH}$`));
-  });
-
-  test("Share link copies the session's canonical URL when there is no share sheet", async ({
-    page,
-    context,
-  }) => {
-    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-    await page.addInitScript(() => {
-      // Deterministic: the clipboard path, whatever this platform's Chrome offers.
-      Object.defineProperty(Navigator.prototype, "share", { value: undefined, configurable: true });
-    });
-    await mockApp(page);
-    await page.addInitScript(() =>
-      localStorage.setItem("battlelab.linkOpenMode", "fullscreen"),
-    );
-    await page.goto("/s/claude/s1");
-    await clickHeadAction(page, "Share a link to this session");
-    await expect(page.locator("[data-link-toast]")).toHaveText("Link copied");
-    const copied = await page.evaluate(() => navigator.clipboard.readText());
-    expect(copied).toBe(new URL("/s/claude/s1", page.url()).toString());
   });
 });

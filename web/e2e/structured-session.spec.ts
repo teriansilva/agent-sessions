@@ -886,7 +886,7 @@ test("the API pane carries the terminal's head actions, and Files opens the draw
     const led = (await pane.locator("[data-panel-head] [data-head-led]").boundingBox())!;
     expect(t.x).toBeGreaterThanOrEqual(led.x + led.width);
     await pane.getByTestId("head-actions-menu").click();
-    await expect(page.getByRole("menuitem")).toHaveText(["Files", "Plan & tools", "Recap", "Hand off", "Share link", "Share publicly…", "Stop"]);
+    await expect(page.getByRole("menuitem")).toHaveText(["Files", "Plan & tools", "Recap", "Hand off", "Share publicly…", "Stop"]);
     await page.keyboard.press("Escape");
   } else {
     const labels = await pane.locator("[data-head-action]").evaluateAll((els) =>
@@ -905,22 +905,6 @@ test("the API pane carries the terminal's head actions, and Files opens the draw
   // No Compose draft to add a path to until #1332 Phase 3 — the action is not offered.
   await expect(page.locator("[data-send-path]")).toHaveCount(0);
   await noOverflow(page);
-});
-
-test("Share link copies the API session's URL (#1332)", async ({ page, context }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-  await page.addInitScript(() => {
-    Object.defineProperty(Navigator.prototype, "share", { value: undefined, configurable: true });
-  });
-  await setup(page, "light");
-  await serveRowAndFiles(page);
-  await serveSession(page, () => snapshot());
-  await page.goto(URL_PATH);
-  await expect(page.getByTestId("structured-empty")).toBeVisible();
-  await headAction(page, "Share a link to this session");
-  await expect(page.locator("[data-link-toast]")).toHaveText("Link copied");
-  const copied = await page.evaluate(() => navigator.clipboard.readText());
-  expect(copied).toBe(new URL(URL_PATH, page.url()).toString());
 });
 
 test("in a map window the API pane has no bar of its own: chips in the chrome, ONE ⋯, Files in the window (#1332, #1109)", async ({

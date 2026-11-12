@@ -124,7 +124,7 @@ the same list.
 | `components/terminal/SentMessagesModal.module.css` | css | 3 | done | popup:sent-messages | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/SessionRecapModal.module.css` | css | 3 | done | popup:session-brief | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/TermUplinkVeil.module.css` | css | 6 | done | route:uplink-veil route:uplink-veil-api | veil fade in/out (--t-slow), log deploy (fade + 6 px rise), acquire bar; Reduced: 120 ms fade in and out via `.nj-fade-ok` + a Reduced exit rule; Off: none (#1570) |
-| `components/terminal/Terminal.module.css` | css | 6 | done | route:session-pane popup:head-menu popup:toast headers:session-head | head chip glitch on press (nj-glitch-step, Full only), connect-chip radar (nj-radar), history pill steps (nj-steps), copied toast opacity only — nothing over the terminal moves |
+| `components/terminal/Terminal.module.css` | css | 6 | done | route:session-pane popup:head-menu headers:session-head | head chip glitch on press (nj-glitch-step, Full only), connect-chip radar (nj-radar), history pill steps (nj-steps), copied toast opacity only — nothing over the terminal moves |
 | `components/ui/actionButton.module.css` | css | 2 | done | gallery:buttons | press glitch (filter), hover |
 | `components/updates/UpdateProgressPanel.module.css` | css | 11 | done | route:settings-updates | the Acquiring strip scans while the installer runs; the fill widens (--t-slow); Reduced/Off hold a still strip |
 | `components/updates/UpdateWhatsNew.module.css` | css | 11 | done | route:settings-updates | none |
@@ -203,7 +203,7 @@ the same list.
 | `components/terminal/KeyBar.tsx` | popup | 3 | done | popup:keybar | appear (fade, no rise), row tint transition (anchored on a phone too, design.md §5) |
 | `components/terminal/SentMessagesModal.tsx` | popup | 3 | done | popup:sent-messages | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
 | `components/terminal/SessionRecapModal.tsx` | popup | 3 | done | popup:session-brief | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |
-| `components/terminal/Terminal.tsx` | popup | 6 | done | popup:head-menu popup:toast popup:session-brief popup:hand-off route:session-pane | appear (head menu), toast (opacity only over the terminal), deploy-in (the dialogs it mounts) |
+| `components/terminal/Terminal.tsx` | popup | 6 | done | popup:head-menu popup:session-brief popup:hand-off route:session-pane | appear (head menu), toast (opacity only over the terminal), deploy-in (the dialogs it mounts) |
 | `components/ui/AnchoredMenu.tsx` | popup | 3 | done | popup:operator-menu popup:dashboard-new | appear (fade, no rise), ≤800px bottom sheet slide-up + scrim, row tint transition |
 | `routes/NewSessionLanding.tsx` | popup | 6 | done | route:new-session newsession:loading newsession:list-failed newsession:no-folder newsession:no-project newsession:many newsession:api | route sector fade (App); tile lock-on (one-shot `nj-glitch-step` as a tile is chosen, Full only); Start press glitch (`.shine`, Full only); `nj-skeleton` scan band on the loading rows (Full only); edge and fill transitions at `--t-fast`; nothing moves in Off |
 | `routes/Onboarding.tsx` | popup | 4 | done | popup:tour | deploy-in (fade + 6 px rise + scan), scrim fade, ≤800px sheet slide-up, 120 ms fade in Reduced |

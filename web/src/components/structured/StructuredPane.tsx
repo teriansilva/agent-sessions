@@ -12,7 +12,6 @@ import {
   Paperclip,
   ScrollText,
   Send,
-  Share2,
   ShieldOff,
   Square,
   SquareDashedBottom,
@@ -56,7 +55,6 @@ import {
   type SentMessage,
 } from "../../lib/sentHistory";
 import { substituteFields, uploadStoredName } from "../../lib/templateMessage";
-import { shareLink } from "../../lib/shareLink";
 import type { TermStatus } from "../../lib/termSocket";
 import { humanDuration } from "../../lib/format";
 import { useCompactHead, useIsMobile } from "../../lib/useIsMobile";
@@ -1508,8 +1506,6 @@ function OomNotice({ count, between = false }: { count: number; between?: boolea
 }
 
 const NO_HOST: PaneHost = {};
-const LINK_TOAST_MS = 1200;
-const LINK_FAILED_TOAST_MS = 2600;
 
 /** A native API client's session (#1311): BattleLab drives the installed CLI through its
  *  structured protocol and keeps a journal; this view only READS it and sends operator input.
@@ -1753,10 +1749,6 @@ export function StructuredPane({
   }>({
     open: false,
     trigger: null,
-  });
-  const [linkToast, setLinkToast] = useState<{ tick: number; ok: boolean }>({
-    tick: 0,
-    ok: true,
   });
   /** The composer's next request identity: set only by Restore of this session's unconfirmed
    *  entry (#1346), so an unchanged re-send replays it. Consumed at Send; never the identity of a
@@ -3124,7 +3116,6 @@ export function StructuredPane({
   // Phase 3), so adopting one would underwrite work nothing can do. Repaint and text size are
   // terminal controls.
   const placeholder = isNewSessionPlaceholder(actionKey);
-  const actionNative = actionKey.slice(actionKey.indexOf(":") + 1);
   const headActions: HeadAction[] = [
     ...(snap?.can_enable_bypass && !readOnly
       ? [
@@ -3209,28 +3200,6 @@ export function StructuredPane({
       : []),
     ...(!placeholder
       ? [
-          {
-            id: "share-link",
-            label: "Share link",
-            aria: "Share a link to this session",
-            title: "Share link: send or copy a link that opens this session",
-            icon: <Share2 size={13} aria-hidden="true" />,
-            run: () => {
-              void shareLink({
-                title: row?.title || "BattleLab session",
-                path: `/s/${actionKey.slice(0, actionKey.indexOf(":"))}/${actionNative}`,
-              }).then((outcome) => {
-                if (outcome !== "copied" && outcome !== "failed") return;
-                const tick = Date.now();
-                setLinkToast({ tick, ok: outcome === "copied" });
-                window.setTimeout(
-                  () => setLinkToast((t) => (t.tick === tick ? { tick: 0, ok: true } : t)),
-                  outcome === "copied" ? LINK_TOAST_MS : LINK_FAILED_TOAST_MS,
-                );
-              });
-            },
-          },
-          // Beside Share link, not instead of it: the operator's one-tap link (#1232) stays one tap.
           {
             id: "share-public",
             label: "Share publicly…",
@@ -3422,17 +3391,6 @@ export function StructuredPane({
           onClose={() => setHandoff({ open: false, trigger: null })}
           returnFocusTo={handoff.trigger}
         />
-      )}
-      {linkToast.tick !== 0 && (
-        <div
-          key={linkToast.tick}
-          className={linkToast.ok ? term.copiedToast : `${term.copiedToast} ${term.copyFailed}`}
-          role="status"
-          aria-live="polite"
-          data-link-toast=""
-        >
-          {linkToast.ok ? "Link copied" : "Copy needs a secure origin"}
-        </div>
       )}
     </>
   );

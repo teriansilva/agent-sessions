@@ -55,7 +55,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Chat-runtime session: send / retry | POST /api/chat/{sid}/messages, …/retry | P7 W |
 | Chat-runtime: approve or reject a proposed file edit | POST /api/chat/…/proposals/{p}/decide | P7 W (diff on the card) |
 | Take over a session from another tab; repaint; scroll; copy; text size −/+ | WS / client | device |
-| Share link (clipboard), open in map / full screen, minimise, arrange, window cap, cluster layout, group-by | client | device (HQ answers carry Open / Open in map links) |
+| Open in map / full screen, minimise, arrange, window cap, cluster layout, group-by | client | device (HQ answers carry Open / Open in map links) |
 | Compose box state, sent-message history, dictation, always-send-now | localStorage | device |
 
 #### New session and projects
