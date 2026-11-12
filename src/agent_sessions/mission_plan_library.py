@@ -187,11 +187,7 @@ def validate(doc: object) -> dict:
             or len(set(inputs)) != len(inputs)
         ):
             raise _err(f"{what}.inputs must list distinct variable names")
-        for step in plan_doc.project_steps(oid, flow, ""):
-            for key in step["evidence"]:
-                if key in evidence:
-                    raise _err(f"duplicate evidence key {key!r}")
-                evidence.add(key)
+        plan_doc.objective_evidence(plan_doc.project_steps(oid, flow, ""), evidence)
     if len(evidence) > missions.OBJECTIVES_MAX:
         raise _err(
             f"the plan has {len(evidence)} evidence items; a mission holds at most "

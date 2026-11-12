@@ -26,7 +26,7 @@ from ..playbooks.schema import SKILL_REF_RE
 from ..templates import FIELD_NAME_RE
 from ..templates import ID_RE as TEMPLATE_ID_RE
 from . import format as fmt
-from . import memory_kinds, template_kinds
+from . import memory_kinds, plan_kinds, template_kinds
 from .template_kinds import Refused as ItemRefused
 from .template_kinds import Terminal
 
@@ -40,6 +40,7 @@ LEVEL = {
     "specialist": 2,
     "memory": 3,
     "notebook": 3,
+    "mission-plan": 0,  # #1924: no dependencies; its procedures are snapshots
 }
 KINDS = tuple(LEVEL)
 #: The Library sections a picker groups by, in order.
@@ -51,6 +52,7 @@ LABELS = {
     "variable": "Variable",
     "memory": "Project memory",
     "notebook": "Specialist notes",
+    "mission-plan": "Mission plan",
 }
 #: The kind each kind's dependencies are: a playbook's role skills, a specialist's pinned skills,
 #: a template's library variables.
@@ -66,7 +68,7 @@ DEP_KIND = {
 CARRIES_ALL = frozenset({"specialist", "template", "notebook"})
 #: Stores bound to a preview only when the file carries their kind: a skills-and-playbooks import
 #: never depends on the specialist pool, the template library or the variables library.
-OPTIONAL = frozenset({"specialist", "template", "variable", "memory", "notebook"})
+OPTIONAL = frozenset({"specialist", "template", "variable", "memory", "notebook", "mission-plan"})
 #: Containers of notes (#1714 P4): each note is its own unit, taken in through memory's own write
 #: path into the project the confirm names (`service._apply_notes`). Nothing is planned for them
 #: in a store, so they bind nothing and carry no *imported from a file* mark (the notes' writer
@@ -80,6 +82,7 @@ RENAME = {
     "specialist": ("-", 48),
     "template": ("-", 64),
     "variable": ("_", 32),
+    "mission-plan": ("-", 48),
 }
 
 __all__ = ["ItemRefused", "Terminal"]
@@ -478,6 +481,8 @@ def export(kind: str, item_id: str) -> dict:
             return template_kinds.variable_export(item_id, template_kinds.secret_inventory())
         if kind in CONTAINERS:
             return memory_kinds.export(kind, item_id, template_kinds.secret_inventory())
+        if kind == plan_kinds.KIND:
+            return plan_kinds.export(item_id, template_kinds.secret_inventory())
     except ItemRefused:
         raise
     except store.NotFound:
@@ -505,6 +510,8 @@ def validate(kind: str, item_id: str, files: dict[str, bytes]) -> list[str]:
         return []
     if kind in CONTAINERS:
         return memory_kinds.validate(kind, item_id, files)
+    if kind == plan_kinds.KIND:
+        return plan_kinds.validate(item_id, files)
     raise ItemRefused(f"this install can't import {kind} items yet")
 
 
@@ -549,6 +556,8 @@ def view(kind: str, item_id: str, files: dict[str, bytes]) -> dict | None:
         }
     if kind in CONTAINERS:
         return memory_kinds.view(files)
+    if kind == plan_kinds.KIND:
+        return plan_kinds.view(files)
     return None
 
 
@@ -599,6 +608,8 @@ def prepare(
         return template_kinds.template_prepare(dest, files)
     if kind == "variable":
         return template_kinds.variable_prepare(dest, files)
+    if kind == plan_kinds.KIND:
+        return plan_kinds.prepare(files)
     return files, fmt.tree_digest(files)
 
 
@@ -612,6 +623,8 @@ def publish(kind: str, dest: str, payload) -> str:
         return template_kinds.template_publish(dest, payload)
     if kind == "variable":
         return template_kinds.variable_publish(dest, payload)
+    if kind == plan_kinds.KIND:
+        return plan_kinds.publish(dest, payload)
     return _playbook_publish(dest, payload)
 
 
@@ -627,6 +640,8 @@ def at(kind: str, dest: str) -> str | None:
         return template_kinds.template_at(dest)
     if kind == "variable":
         return template_kinds.variable_at(dest)
+    if kind == plan_kinds.KIND:
+        return plan_kinds.at(dest)
     return _playbook_at(dest)
 
 
@@ -642,6 +657,8 @@ def ids(kind: str) -> dict[str, str | None]:
         return template_kinds.template_ids()
     if kind == "variable":
         return template_kinds.variable_ids()
+    if kind == plan_kinds.KIND:
+        return plan_kinds.ids()
     return _playbook_ids()
 
 
@@ -654,6 +671,8 @@ def id_ok(kind: str, value: str) -> bool:
         return isinstance(value, str) and bool(TEMPLATE_ID_RE.fullmatch(value))
     if kind == "variable":
         return isinstance(value, str) and bool(FIELD_NAME_RE.fullmatch(value))
+    if kind == plan_kinds.KIND:
+        return isinstance(value, str) and bool(plan_kinds.library.ID_RE.fullmatch(value))
     try:
         store.local_id(kind, value)
     except store.StoreError:
@@ -723,6 +742,7 @@ def catalog() -> list[dict]:
         )
     out.extend(template_kinds.catalog())
     out.extend(memory_kinds.catalog())
+    out.extend(plan_kinds.catalog())
     return out
 
 

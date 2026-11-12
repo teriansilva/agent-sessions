@@ -113,9 +113,15 @@ _FIXED_BY = {
     "variable name": "create it again under another name to export it",
     "field names": "rename that field (or, for a library field, the variable it uses), then "
     "export it",
+    # A mission plan (#1924) is never edited, and an imported one has no mission to save from: the
+    # fix is a new plan, saved again (from its mission) or imported again (from a corrected file).
+    "plan ID": "its ID came from the file it was imported from, so it can't be shared from here",
+    "plan title": "a mission plan can't be edited: save or import it again under another title",
+    "plan summary": "a mission plan can't be edited: save or import it again with another summary",
+    "plan slot label": "a mission plan can't be edited: save or import it again with another label",
 }
 #: Texts that name the item itself: a refusal over them never echoes the item's ID or name.
-_WITHHOLD = frozenset({"ID", "variable name"})
+_WITHHOLD = frozenset({"ID", "variable name", "plan ID"})
 
 
 #: Identifier texts: a slug (a template ID is the lowercased name with every other run of
@@ -124,7 +130,7 @@ _WITHHOLD = frozenset({"ID", "variable name"})
 _IDENTIFIERS = frozenset(
     # A shared memory note (#1714 P4) is named by a slug of its name on the importing install,
     # and a `[[link]]` is a slug: both are identifiers.
-    {"ID", "variable name", "field names", "tag", "note name", "note link"}
+    {"ID", "variable name", "field names", "tag", "note name", "note link", "plan ID"}
 )
 _FOLD_RE = re.compile(r"[^a-z0-9]+")
 #: A minted ID is cut at 48 (`templates._mint_id`, after which `-` is stripped) and a renamed
@@ -897,11 +903,11 @@ def withhold_marks(marks: dict) -> dict:
     n = 0
     for key, value in marks.items():
         kind, _, item_id = key.partition(":")
-        if kind in ("template", "variable"):
+        if kind in ("template", "variable", "mission-plan"):
             try:
                 if secrets is None:
                     raise Refused("unjudged")
-                scan([("ID", item_id)], secrets)
+                scan([("plan ID" if kind == "mission-plan" else "ID", item_id)], secrets)
             except Refused:
                 n += 1
                 key = f"{kind}:~withheld-{n}"

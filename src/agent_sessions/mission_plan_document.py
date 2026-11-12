@@ -247,6 +247,16 @@ def check_procedure(p: object, what: str) -> dict:
     return flow
 
 
+def objective_evidence(steps: list[dict], seen: set[str]) -> None:
+    """Add one objective's evidence keys to `seen`, refusing any key seen before. Shared with the
+    Library's saved plans (#1924), so the two documents can't disagree about evidence."""
+    for s in steps:
+        for k in s["evidence"]:
+            if k in seen:
+                raise PlanError(f"duplicate evidence key {k!r}")
+            seen.add(k)
+
+
 #: The objective-order rule (#1797 S2c), shared with the Library's saved plans (#1924).
 check_after = _check_after
 #: One-line text and exact keys, shared with the Library's saved plans (#1924).
@@ -324,11 +334,7 @@ def validate_document(doc: object) -> dict:
         ):
             raise PlanError(f"{what}.inputs must list distinct {{name, source}} rows")
         projected = project_steps(oid, flow, "")
-        for s in projected:
-            for k in s["evidence"]:
-                if k in evidence:
-                    raise PlanError(f"duplicate evidence key {k!r}")
-                evidence.add(k)
+        objective_evidence(projected, evidence)
         expected_steps.extend(projected)
     # Every evidence item becomes an objective row, so the plan may not promise more rows than a
     # mission can hold (Hermes on #1781): refused here rather than half-way through a write.

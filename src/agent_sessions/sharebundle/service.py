@@ -53,7 +53,7 @@ MAX_RECEIPTS = 1024
 TOKEN_RE = re.compile(r"[0-9a-f]{32}")
 MAX_RENAME = 999
 #: The per-kind views a plan entry may carry beside its files.
-_VIEW_KEYS = ("specialist", "template", "variable", "memory", "notebook")
+_VIEW_KEYS = ("specialist", "template", "variable", "memory", "notebook", "mission-plan")
 
 
 class ShareError(store.StoreError):
@@ -121,7 +121,7 @@ def export(items: object, source: object = None, report: dict | None = None) -> 
         ):
             raise ShareError(
                 "each item is {kind, id} of a skill, playbook, specialist, template, variable, "
-                "project memory or specialist notes",
+                "project memory, specialist notes or mission plan",
                 status=422,
             )
         if (raw["kind"], raw["id"]) not in wanted:
