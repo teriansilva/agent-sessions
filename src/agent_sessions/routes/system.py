@@ -197,6 +197,13 @@ def _preflight_prefs(payload: dict) -> None:
         raise bad("analytics_consent must be a boolean")
     if "hq_reports" in payload and not isinstance(payload["hq_reports"], bool):
         raise bad("hq_reports must be a boolean")
+    if "operator_name" in payload:
+        v = payload["operator_name"]
+        if not (v is None or v == "" or prefs.clean_operator_name(v) is not None):
+            raise bad(
+                "operator_name must be 1–40 printable characters (no control or invisible "
+                "characters)"
+            )
     if "whats_new_seen" in payload:
         if prefs.release_tuple(payload["whats_new_seen"]) is None:
             raise bad("whats_new_seen must be a release version like 0.20.0")
@@ -697,6 +704,8 @@ def register(
                 "whats_new_seen": prefs.get_whats_new_seen(),
                 # The operator's avatar (#1931): its version for `?v=`, or null when none is set.
                 "avatar": await asyncio.to_thread(profile_avatar.version),
+                # The operator's display name (#1942), or null: shown to share-link visitors.
+                "operator_name": prefs.get_operator_name(),
                 # Usage analytics (#1009): the decision and whether this server allows it at all.
                 # Never the install id or the day's budget.
                 "analytics": analytics.public_state(),
@@ -1196,6 +1205,10 @@ def register(
                 )
             _require_onboarded_for_whats_new({"onboarded": prefs.get_onboarded()})
             out["whats_new_seen"] = prefs.set_whats_new_seen(v)
+        if "operator_name" in payload:
+            # The display name share-link visitors see instead of "Operator" (#1942). Validated
+            # in the preflight; "" / null clear it.
+            out["operator_name"] = prefs.set_operator_name(payload["operator_name"])
         if not out:
             raise HTTPException(status_code=422, detail="no known preference key")
         return JSONResponse(out)

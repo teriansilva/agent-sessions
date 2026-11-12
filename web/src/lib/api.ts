@@ -1396,6 +1396,14 @@ export const api = {
    *  422" tells them nothing. The AI endpoint form renders it verbatim. */
   setPrefs: (partial: Record<string, unknown>) =>
     mutateJson<Record<string, unknown>>("POST", "/api/prefs", partial),
+  /** The operator's display name (#1942): what share-link visitors see instead of "Operator".
+   *  `""` clears it. A refusal carries the server's reason (the cleaning rules). */
+  setOperatorName: async (name: string) => {
+    await csrfReady();
+    return mutateJson<{ operator_name: string | null }>("POST", "/api/prefs", {
+      operator_name: name,
+    });
+  },
   /** First-run onboarding (#463): mark the wizard complete (or skipped) so it never shows
    *  again. Persists `onboarded: true` via the prefs store. CSRF-guarded. */
   completeOnboarding: (whatsNewSeen?: string) =>

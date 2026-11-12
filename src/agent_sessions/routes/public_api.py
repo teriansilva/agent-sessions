@@ -34,6 +34,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from .. import (
     missions,
     native_images,
+    prefs,
     presence,
     profile_avatar,
     share_api,
@@ -298,6 +299,9 @@ def register(app: FastAPI, *, store: shares.ShareStore, require_share) -> None:
         # The operator's avatar (#1931): its version for `?v=`, or null — never the operator's
         # name, which a visitor never learns.
         view["operator_avatar"] = await asyncio.to_thread(profile_avatar.version)
+        # The display name the operator chose to show visitors (#1942), or null — never the
+        # login name.
+        view["operator_name"] = await asyncio.to_thread(prefs.get_operator_name)
         # How many are connected (#1931): a count, never who.
         view["present"] = presence.default().count(share.session_key)
         return _no_store(JSONResponse(view))

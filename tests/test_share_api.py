@@ -317,6 +317,9 @@ async def test_a_send_link_sends_as_the_visitor_and_both_views_say_so(env, host,
     assert view["can_send"] is True
     # #1931: the visitor reads the avatar's version (none set) and a COUNT of who is connected.
     assert view["operator_avatar"] is None
+    # #1942: no display name set → null; the login name never reaches a visitor.
+    assert view["operator_name"] is None
+    assert "marcus" not in repr(view).lower()
     assert view["present"] >= 1 and isinstance(view["present"], int)
     for leak in ("cwd", "native", "operation_id", str(project)):
         assert leak not in repr(view), leak

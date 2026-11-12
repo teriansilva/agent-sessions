@@ -1597,7 +1597,8 @@ export function StructuredPane({
   const [snap, setSnap] = useState<StructuredSnapshot | null>(null);
   const config = useConfig();
   const avatarVersion = config?.avatar;
-  const operatorName = config?.username;
+  // The initial comes from the display name the operator chose (#1942), else the login name.
+  const operatorName = config?.operator_name || config?.username;
   const avatarSrc = useOperatorAvatarSrc(avatarVersion);
   const operatorAvatar = useMemo(
     () => operatorAvatarSpec(avatarSrc, operatorName),

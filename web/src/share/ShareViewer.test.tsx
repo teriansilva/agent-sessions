@@ -431,6 +431,64 @@ describe("avatars and presence (#1931)", () => {
       expect(d.getAttribute("aria-hidden")).toBe("true");
   });
 
+  test("a display name replaces 'Operator' and gives the disc its initial (#1942)", async () => {
+    api.session.mockResolvedValue(
+      snap({
+        operator_avatar: null,
+        operator_name: "marcus",
+        turns: [turn({ turn_id: "o1", text: "operator here", author: null })],
+      }),
+    );
+    api.events.mockResolvedValue({ link: "LINK-A", revision: 1, next_cursor: 1 });
+    const { container } = render(
+      <ApiView
+        unlocked={{ share: share(), csrf: "c1" }}
+        onShare={vi.fn()}
+        onGone={vi.fn()}
+        onExpired={vi.fn()}
+        onRecheck={vi.fn(async () => {})}
+      />,
+    );
+    await screen.findByText("operator here");
+    const block = container.querySelector('[data-author="operator"]') as HTMLElement;
+    expect(block.textContent).toContain("marcus");
+    expect(block.textContent).not.toContain("Operator");
+    expect(block.querySelector("[data-avatar]")?.textContent).toBe("M");
+  });
+
+  test("only a visitor's label says 'via public link' — never the operator's, whatever its name", async () => {
+    // A visitor can type the operator's display name as their own: the suffix and the disc colour
+    // are what tell them apart (#1942 risks table).
+    api.session.mockResolvedValue(
+      snap({
+        operator_name: "Marcus",
+        turns: [
+          turn({ turn_id: "o1", text: "from the operator", author: null }),
+          turn({ turn_id: "v1", text: "from a visitor", author: { name: "Marcus", via: "public_link" } }),
+        ],
+      }),
+    );
+    api.events.mockResolvedValue({ link: "LINK-A", revision: 1, next_cursor: 1 });
+    const { container } = render(
+      <ApiView
+        unlocked={{ share: share(), csrf: "c1" }}
+        onShare={vi.fn()}
+        onGone={vi.fn()}
+        onExpired={vi.fn()}
+        onRecheck={vi.fn(async () => {})}
+      />,
+    );
+    await screen.findByText("from a visitor");
+    const label = (author: string) =>
+      container.querySelector(`[data-author="${author}"] p`)?.textContent ?? "";
+    const disc = (author: string) =>
+      container.querySelector(`[data-author="${author}"] [data-avatar]`) as HTMLElement;
+    expect(label("operator")).toBe("Marcus");
+    expect(label("visitor")).toBe("Marcus · via public link");
+    expect(disc("operator").dataset.kind).toBe("accent");
+    expect(disc("visitor").dataset.kind).toBe("who");
+  });
+
   test("a set operator avatar is a versioned image from the public route", async () => {
     api.session.mockResolvedValue(
       snap({ operator_avatar: "abc123", turns: [turn({ turn_id: "o1", text: "hi", author: null })] }),

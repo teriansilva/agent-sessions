@@ -1973,3 +1973,14 @@
   --avatar-size: 22px;
   vertical-align: middle;
 }
+/* The display-name field and its Save on one line (#1942); Save wraps under it on a phone. */
+.nameRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.nameRow > input {
+  flex: 1 1 220px;
+  min-width: 0;
+}

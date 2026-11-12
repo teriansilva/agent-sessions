@@ -22,6 +22,9 @@ can differ. A device with no choice of its own starts from the last one saved an
   square and scales it to 256 px before uploading. **Remove** goes back to your initial on the
   accent colour. Visitors on a share link appear as their initial in a colour picked from the name
   they gave, and the agent appears as 🤖.
+- **Display name**: the name visitors of your share links see on your messages instead of
+  "Operator", and the letter on your disc when you have no image. Leave it empty to stay
+  "Operator". Up to 40 characters; your login name is never shown to visitors.
 
 ### Session defaults · `session-defaults`
 

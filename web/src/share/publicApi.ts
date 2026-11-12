@@ -87,6 +87,8 @@ export interface PublicSnapshot {
   background?: boolean;
   /** The operator's avatar version for `?v=`, or null when none is set (#1931). */
   operator_avatar?: string | null;
+  /** The display name the operator chose to show visitors (#1942), or null: then "Operator". */
+  operator_name?: string | null;
   /** How many people have this session open right now, this browser included (#1931). */
   present?: number;
 }

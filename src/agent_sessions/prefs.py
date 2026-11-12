@@ -680,6 +680,36 @@ def set_whats_new_seen(value: str, path: Path | None = None) -> str:
     return _mutate("whats_new_seen", keep_newest, path)  # type: ignore[return-value]
 
 
+def clean_operator_name(raw: object) -> str | None:
+    """The operator's display name (#1942) as it may be stored, or None when ``raw`` is not one.
+
+    The same rules as a visitor's self-chosen name (``shares.clean_visitor_name``): NFC, inner
+    whitespace collapsed, at most 40 characters, no control / format / other non-printing
+    character — a bidi override or zero-width joiner could disguise it as someone else's."""
+    from .shares import clean_visitor_name  # shares imports nothing of prefs; keep it lazy anyway
+
+    return clean_visitor_name(raw)
+
+
+def get_operator_name(path: Path | None = None) -> str | None:
+    """The display name share-link visitors see instead of "Operator" (#1942), or None. Re-cleaned
+    on read: a hand-edited prefs.json can't put a disguised name in front of a visitor."""
+    return clean_operator_name(_load(path or _default_path()).get("operator_name"))
+
+
+def set_operator_name(value: object, path: Path | None = None) -> str | None:
+    """Store the display name (``""`` / None clears it); returns what is kept. Raises ValueError
+    for anything else that does not clean — the route's preflight refuses it first."""
+    if value is None or value == "":
+        _set("operator_name", None, path)
+        return None
+    name = clean_operator_name(value)
+    if name is None:
+        raise ValueError("operator_name must be 1–40 printable characters")
+    _set("operator_name", name, path)
+    return name
+
+
 def get_accent(path: Path | None = None) -> str:
     """The persisted brand accent (#rrggbb), or the default when unset/unreadable/invalid."""
     return coerce_accent(_load(path or _default_path()).get("accent"))

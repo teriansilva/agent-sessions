@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { expect, test, type Browser, type Locator, type Page, type TestInfo } from "@playwright/test";
 import { mockRoster } from "./roster";
 import { settingsPath } from "../src/routes/settingsTabs";
+import { TOUCH_FLOOR } from "./touchTarget";
 
 // #1931: avatars beside every message and the "N connected" count, in a real browser.
 //
@@ -337,4 +338,57 @@ test("Settings › Profile: a chosen image is cropped square, scaled, uploaded, 
   await panel.getByRole("button", { name: "Remove" }).click();
   await expect(panel.locator('[data-avatar][data-kind="accent"]')).toHaveText("M");
   await expect(panel.getByRole("button", { name: "Upload image" })).toBeVisible();
+});
+
+test("Settings › Profile: a display name is saved and becomes the disc's initial (#1942)", async ({
+  page,
+}, testInfo) => {
+  let operatorName: string | null = null;
+  const posted: unknown[] = [];
+  await operatorPage(page, { avatar: null });
+  await page.route("**/api/config", (r) =>
+    r.fulfill({
+      json: {
+        csrf: "operator-csrf",
+        new_session_engines: [],
+        terminal_backend: "ws",
+        auth_mode: "single-user",
+        username: "marcus",
+        avatar: null,
+        operator_name: operatorName,
+      },
+    }),
+  );
+  await page.route("**/api/prefs", async (r) => {
+    const req = r.request();
+    if (req.method() !== "POST") return r.fallback();
+    if (req.headers()["x-csrf-token"] !== "operator-csrf") return r.fulfill({ status: 403, json: { detail: "csrf" } });
+    const body = req.postDataJSON() as { operator_name?: string };
+    posted.push(body);
+    operatorName = body.operator_name || null;
+    return r.fulfill({ json: { operator_name: operatorName } });
+  });
+
+  await page.goto(settingsPath("profile"));
+  const panel = page.getByTestId("profile-settings");
+  await expect(panel.locator('[data-avatar][data-kind="accent"]')).toHaveText("M"); // the login name's
+  const field = panel.getByTestId("profile-display-name");
+  await field.fill("Zoe Operator");
+  await panel.getByRole("button", { name: "Save" }).click();
+  await expect(panel.getByRole("status")).toHaveText("Saved.");
+  expect(posted).toEqual([{ operator_name: "Zoe Operator" }]);
+  await expect(panel.locator('[data-avatar][data-kind="accent"]')).toHaveText("Z");
+  // The field and its Save button fit the viewport, and on a touch screen are touch-sized
+  // (docs/design.md §8; the shared field is 40 px under a fine pointer by design).
+  for (const el of [field, panel.getByRole("button", { name: "Save" })]) {
+    const box = (await el.boundingBox())!;
+    if (testInfo.project.use.isMobile) expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+  }
+
+  // Clearing it goes back to the login name's initial (and "Operator" for visitors).
+  await field.fill("");
+  await panel.getByRole("button", { name: "Save" }).click();
+  await expect(panel.locator('[data-avatar][data-kind="accent"]')).toHaveText("M");
+  expect(posted.at(-1)).toEqual({ operator_name: "" });
 });

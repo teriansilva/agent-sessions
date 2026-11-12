@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Avatar, type AvatarSpec } from "../components/chat/Avatar";
 import { Markdown } from "../components/structured/Markdown";
+import { whoInitial } from "../lib/who";
 import {
   PublicError,
   imageUrl,
@@ -51,17 +52,27 @@ function stateLabel(state: string): string | null {
   }
 }
 
-function who(turn: PublicTurn): string {
-  return turn.author?.via === "public_link" ? `${turn.author.name} · via public link` : "Operator";
+/** The label on a person's block. The operator's is the display name they chose (#1942), else
+ *  "Operator" — never their login name, which a visitor never learns. */
+function who(turn: PublicTurn, operatorName: string | null | undefined): string {
+  return turn.author?.via === "public_link"
+    ? `${turn.author.name} · via public link`
+    : operatorName || "Operator";
 }
 
-/** The disc beside a person's message (#1931). The operator's falls back to `O`: a visitor never
- *  learns the operator's login name. */
-function whoAvatar(turn: PublicTurn, operatorAvatar: string | null | undefined): AvatarSpec {
+/** The disc beside a person's message (#1931). Without an image the operator's shows the first
+ *  letter of the display name they chose (#1942), else `O`: a visitor never learns the operator's
+ *  login name. */
+function whoAvatar(
+  turn: PublicTurn,
+  operatorAvatar: string | null | undefined,
+  operatorName: string | null | undefined,
+): AvatarSpec {
   if (turn.author?.via === "public_link") return { kind: "who", name: turn.author.name };
+  const initial = operatorName ? whoInitial(operatorName) : "O";
   return operatorAvatar
-    ? { kind: "image", src: operatorAvatarUrl(operatorAvatar), fallback: "O" }
-    : { kind: "accent", initial: "O" };
+    ? { kind: "image", src: operatorAvatarUrl(operatorAvatar), fallback: initial }
+    : { kind: "accent", initial };
 }
 
 /** The operator pane's working animation. */
@@ -292,8 +303,11 @@ export function ApiView({
             <section key={t.turn_id} className={styles.turn} data-turn={t.turn_id}>
               {!own && (t.text || attachments.length > 0) && (
                 <div className={styles.block} data-author={t.author ? "visitor" : "operator"}>
-                  <Avatar spec={whoAvatar(t, snap?.operator_avatar)} className={styles.avatar} />
-                  <p className={styles.who}>{who(t)}</p>
+                  <Avatar
+                    spec={whoAvatar(t, snap?.operator_avatar, snap?.operator_name)}
+                    className={styles.avatar}
+                  />
+                  <p className={styles.who}>{who(t, snap?.operator_name)}</p>
                   {t.text && (
                     <p className={styles.text}>
                       {t.text}

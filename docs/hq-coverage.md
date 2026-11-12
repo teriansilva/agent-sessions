@@ -693,6 +693,7 @@ hq_contact                      P2
 hq_reports                      P2  # off only; turning it on is never (#1882)
 model_grades                    P2  # which grade a model is; specialists derive theirs from it
 onboarded                       n/a  # onboarding flag
+operator_name                   n/a  # a name the operator types in Settings › Profile (#1942)
 orchestrator                    nested
 orchestrator.ai_direction_confidence_min P2  # raise only; lowering widens autonomy
 orchestrator.allowed_verbs      P2  # narrow only

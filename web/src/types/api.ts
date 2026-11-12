@@ -1607,6 +1607,8 @@ export interface AppConfig {
   /** The operator's avatar version for `?v=` (#1931), or null when none is set. Absent on older
    *  servers. */
   avatar?: string | null;
+  /** The operator's display name (#1942), or null when none is set. Absent on older servers. */
+  operator_name?: string | null;
   /** Optional TOTP 2FA on/off (#116) — drives the Settings security section. Just the
    *  bit; the secret/recovery codes are never exposed here. Absent on older servers. */
   two_factor_enabled?: boolean;

@@ -6,7 +6,7 @@ describe("who-colours and initials (#1931)", () => {
   test("a name keeps its colour, whatever its case, spacing or normal form", () => {
     expect(whoColor("Jana")).toBe(whoColor("jana"));
     expect(whoColor("  Jana ")).toBe(whoColor("Jana"));
-    expect(whoColor("Renée")).toBe(whoColor("Renée")); // NFC vs NFD
+    expect(whoColor("Renée")).toBe(whoColor("Rene\u0301e")); // NFC vs NFD
     expect(whoColor("Jana")).toMatch(/^var\(--who-[1-8]\)$/);
   });
 
@@ -20,8 +20,8 @@ describe("who-colours and initials (#1931)", () => {
   test("the initial is the first grapheme, upper-cased; empty is ?", () => {
     expect(whoInitial("jana")).toBe("J");
     expect(whoInitial("  émile")).toBe("É");
-    expect(whoInitial("émile")).toBe("É"); // a combining mark stays with its letter
-    expect(whoInitial("👩‍💻 dev")).toBe("👩‍💻");
+    expect(whoInitial("e\u0301mile")).toBe("E\u0301"); // a combining mark stays with its letter
+    expect(whoInitial("👩\u200d💻 dev")).toBe("👩\u200d💻");
     expect(whoInitial("")).toBe("?");
     expect(whoInitial("   ")).toBe("?");
     expect(whoInitial(null)).toBe("?");
