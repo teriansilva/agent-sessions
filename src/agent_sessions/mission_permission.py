@@ -154,4 +154,178 @@ def sync_card(mission_id: str, session_key: str, row: dict, observed: dict) -> d
     return out
 
 
-__all__ = ["ORIGIN", "REASON", "build_card", "has_card", "observe", "retire_stale", "sync_card"]
+# --- an API session's pending requests (#1900) ------------------------------------------------
+#
+# An API session has no dialog on a screen; its pending native requests (approvals and agent
+# questions) are a SET, keyed by request id, and a turn doing ten edits can hold several at once.
+# So an API member gets ONE card per SESSION, never one per request: it says how many wait, lists
+# a few, and sends the operator to the session's own pane, where each request is decided against
+# its digest. The card is written (and announced, by `_persist`'s bell path) when the set goes from
+# empty to non-empty; while the set changes the same card is updated in place, with no second
+# announcement; it is retired when the set empties. A card the operator dismissed is not raised
+# again for the same requests, only when a new one arrives (escalate once per stop).
+
+#: The `escalation_reason` of an API session's card.
+API_REASON = "api_pending"
+#: How long an API card lives between passes. The card mirrors state and is retired when the set
+#: empties, so its life is not the proposal TTL: a short TTL would expire it between passes (a
+#: review mission is swept every 300 s) and the next pass would announce the same requests again.
+API_CARD_TTL_S = 3600
+#: What an API card's own verb-free decision is: nothing to approve here, so dismiss only.
+_OPERATOR_CLOSED = frozenset({"rejected", "dismissed"})
+
+
+def api_fingerprint(items: list[dict]) -> list[str]:
+    """The pending set's content fingerprint: its sorted request ids, as a list (an id may contain
+    any character, so a joined string could not be split back)."""
+    return sorted(str(i["request_id"]) for i in items)
+
+
+def api_summary(items: list[dict], title: str) -> str:
+    """The card's words: how many approvals and questions wait, never what they are."""
+    asks = sum(1 for i in items if i.get("question"))
+    approvals = len(items) - asks
+    parts = [
+        f"{n} {word if n == 1 else word + 's'}"
+        for n, word in ((approvals, "approval"), (asks, "question"))
+        if n
+    ]
+    where = f" in {title}" if title else ""
+    return f"{' and '.join(parts)} waiting{where}. Decide each one in its conversation."
+
+
+def _api_cards(session_key: str) -> list[dict]:
+    """Every card of ours for this API session, newest last. Blocking."""
+    rows = [
+        r
+        for r in ledger.latest_by_id().values()
+        if _is_ours(r)
+        and str(r.get("session_id") or "") == session_key
+        and r.get("escalation_reason") == API_REASON
+    ]
+    return sorted(rows, key=lambda r: float(r.get("ts") or 0))
+
+
+def _api_payload(items: list[dict], pane: str) -> dict:
+    from . import mission_observe
+
+    return {
+        "count": len(items),
+        "items": items[: mission_observe.SHOWN_ITEMS],
+        "fp": api_fingerprint(items),
+        "pane": pane,
+    }
+
+
+def sync_api_card(
+    mission_id: str, session_key: str, row: dict, items: list[dict], *, pane: str
+) -> dict:
+    """Make the ledger match an API session's pending set. Blocking.
+
+    Returns ``{"retired": [...], "card": <record written now> | None, "existing": bool,
+    "updated": bool}``. ``items`` is `mission_observe.pending_items` of the snapshot.
+    """
+    out: dict = {"retired": [], "card": None, "existing": False, "updated": False}
+    cards = _api_cards(session_key)
+    live = [r for r in cards if r.get("state") in ledger.ESCALATION_STATES]
+    if not items:
+        for rec in live:
+            moved = ledger.compare_and_set(
+                rec["id"],
+                ledger.ESCALATION_STATES,
+                "expired",
+                None,
+                detail="no approval or question is waiting in the session any more",
+            )
+            if moved is not None:
+                out["retired"].append(rec["id"])
+                with contextlib.suppress(Exception):
+                    from . import notifications
+
+                    notifications.retire_for_actions([rec["id"]])
+        return out
+    fp = api_fingerprint(items)
+    cfg = prefs.get_automation_policy("mission")
+    ttl = max(int(cfg.get("proposal_ttl_minutes") or 30) * 60, API_CARD_TTL_S)
+    title = str(row.get("title") or "")[:200]
+    if live:
+        # ONE CARD: the newest live one is kept current; any older one (a race) is retired.
+        keep, extra = live[-1], live[:-1]
+        for rec in extra:
+            if ledger.compare_and_set(
+                rec["id"], ledger.ESCALATION_STATES, "expired", None, detail="superseded"
+            ):
+                out["retired"].append(rec["id"])
+        out["existing"] = True
+        now = time.time()
+        # Kept alive while anything waits, and updated in place, never re-announced.
+        if (keep.get("api_pending") or {}).get("fp") != fp or float(
+            keep.get("expires_at") or 0
+        ) - now < ttl / 2:
+            moved = ledger.compare_and_set(
+                keep["id"],
+                ledger.ESCALATION_STATES,
+                str(keep.get("state") or "escalated"),
+                None,
+                expect_ts=keep.get("ts"),
+                api_pending=_api_payload(items, pane),
+                rationale=api_summary(items, title)[:400],
+                expires_at=now + ttl,
+            )
+            out["updated"] = moved is not None
+        return out
+    # ONCE PER STOP: a card the operator dismissed is not raised again for the same requests.
+    last = cards[-1] if cards else None
+    if last is not None and last.get("state") in _OPERATOR_CLOSED:
+        fp = (last.get("api_pending") or {}).get("fp")
+        seen = {str(x) for x in fp} if isinstance(fp, list) else set()
+        if {str(i["request_id"]) for i in items} <= seen:
+            out["dismissed"] = True
+            return out
+    try:
+        authority = automation.capture(session_key, mission_id)
+    except automation.AuthorityChanged:
+        return out
+    now = time.time()
+    rec = {
+        "id": uuid.uuid4().hex,
+        "verb": "escalate",
+        "state": "escalated",
+        "ts": now,
+        "expires_at": now + ttl,
+        "tier": cfg.get("autonomy") or "",
+        "session_id": session_key,
+        "mission_id": mission_id,
+        "engine": session_key.partition(":")[0],
+        "title": title,
+        "project": str((row.get("project") or {}).get("name") or "")[:200],
+        "project_id": str((row.get("project") or {}).get("id") or ""),
+        "confidence": 1.0,
+        "rationale": api_summary(items, title)[:400],
+        "escalation_reason": API_REASON,
+        "origin": ORIGIN,
+        "authority": authority,
+        "api_pending": _api_payload(items, pane),
+        # Nothing on this card is deliverable: the operator decides in the pane.
+        "evidence": "none",
+    }
+    kept = orchestrator._persist([rec])
+    if kept:
+        out["card"] = kept[0]
+    return out
+
+
+__all__ = [
+    "API_CARD_TTL_S",
+    "API_REASON",
+    "ORIGIN",
+    "REASON",
+    "api_fingerprint",
+    "api_summary",
+    "build_card",
+    "has_card",
+    "observe",
+    "retire_stale",
+    "sync_api_card",
+    "sync_card",
+]

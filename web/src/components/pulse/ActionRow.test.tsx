@@ -715,3 +715,90 @@ test("a low-confidence escalation carries the same NEEDS-A-DECISION tone as any 
   // …and it is a real distinction, not every state returning the same string.
   expect(tone("delivered")).not.toBe(degraded);
 });
+
+// #1900: an API session's waiting requests are ONE card, decided in its conversation. The corner
+// is a count, at most three requests are listed, nothing is approvable, and Dismiss stays.
+function apiPendingAction(count: number, n: number): OrchestratorAction {
+  const kinds = ["Edit", "Bash", "Edit", "Bash", "Edit"];
+  return action({
+    id: "api1",
+    state: "escalated",
+    projection: "actionable",
+    can_approve: true, // even if the projection said so, this card approves nothing
+    can_reject: true,
+    session_id: "claude-api:8c41aaaa",
+    engine: "claude-api",
+    title: "Review auth changes",
+    verb: "escalate",
+    evidence: "none",
+    confidence: 1,
+    escalation_reason: "api_pending",
+    rationale: `${count} approvals waiting in Review auth changes. Decide each one in its conversation.`,
+    api_pending: {
+      count,
+      fp: ["fp1"],
+      pane: "/s/claude-api/8c41aaaa",
+      items: Array.from({ length: n }, (_, i) => ({
+        request_id: `r${i}`,
+        kind: kinds[i],
+        label: `src/file${i}.py`,
+        question: false,
+      })),
+    },
+  });
+}
+
+test("an api_pending card: count corner, its requests, the conversation link, no Approve (#1900)", () => {
+  const a = apiPendingAction(3, 2);
+  a.api_pending!.items.push({
+    request_id: "q",
+    kind: "question",
+    label: "Keep the old cookie name for one release?",
+    question: true,
+  });
+  render(
+    <MemoryRouter>
+      <ActionRow action={a} />
+    </MemoryRouter>,
+  );
+  expect(screen.getByTestId("api-pending-count").textContent).toBe("3 waiting");
+  expect(screen.getByText(a.rationale)).toBeInTheDocument();
+  const items = screen.getByTestId("api-pending-items").querySelectorAll("li");
+  expect([...items].map((li) => li.textContent)).toEqual([
+    "EDITsrc/file0.py",
+    "BASHsrc/file1.py",
+    "QUESTIONKeep the old cookie name for one release?",
+  ]);
+  expect(screen.queryByTestId("api-pending-more")).toBeNull();
+  const link = screen.getByRole("link", { name: /open the conversation/i });
+  expect(link.getAttribute("href")).toBe("/s/claude-api/8c41aaaa");
+  expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
+  expect(screen.getByRole("button", { name: /dismiss this escalation/i })).toBeInTheDocument();
+  // No evidence disclosure and no confidence figure on this card.
+  expect(screen.queryByRole("button", { name: /show/i })).toBeNull();
+  expect(screen.queryByText(/conf /)).toBeNull();
+});
+
+test("an api_pending card lists at most three and says how many more (#1900)", () => {
+  render(
+    <MemoryRouter>
+      <ActionRow action={apiPendingAction(7, 5)} />
+    </MemoryRouter>,
+  );
+  expect(screen.getByTestId("api-pending-count").textContent).toBe("7 waiting");
+  expect(screen.getByTestId("api-pending-items").querySelectorAll("li")).toHaveLength(3);
+  expect(screen.getByTestId("api-pending-more").textContent).toBe("and 4 more");
+});
+
+test("dismissing an api_pending card rejects it like any escalation (#1900)", async () => {
+  const a = apiPendingAction(2, 2);
+  vi.mocked(api.rejectAction).mockResolvedValue({ ...a, state: "rejected" });
+  render(
+    <MemoryRouter>
+      <ActionRow action={a} />
+    </MemoryRouter>,
+  );
+  await userEvent.click(screen.getByRole("button", { name: /dismiss this escalation/i }));
+  expect(api.rejectAction).toHaveBeenCalledWith("api1");
+  expect(api.approveAction).not.toHaveBeenCalled();
+});

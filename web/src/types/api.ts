@@ -581,7 +581,12 @@ export interface OrchestratorAction {
    *  to deliver but produced no usable option / no answer text. `confidence`: it fell under the
    *  yolo threshold. Absent on every non-escalated action, and on records written before the
    *  field existed — which render NO reason rather than a guessed one. */
-  escalation_reason?: "model" | "degraded" | "confidence" | "permission";
+  escalation_reason?: "model" | "degraded" | "confidence" | "permission" | "api_pending";
+  /** An API session's waiting requests (#1900), on its ONE `api_pending` escalation card. Read from
+   *  the session's structured state, never from a screen: `count` is every request still waiting,
+   *  `items` the first few (at most 3) for display, `pane` where each is decided. Nothing on this
+   *  card is approvable; Dismiss stays. Absent on every other action. */
+  api_pending?: ApiPending;
   /** What the session's screen showed when this was ESCALATED (#1060) — `orchestrator.
    *  observed_prompt_for`. An escalation delivers nothing, so it has no precondition; this is the
    *  card's only fact about the screen. `menu` is the engine's own menu when one was recognised at
@@ -645,6 +650,25 @@ export interface OrchestratorAction {
   draft?: string;
   /** The objective incarnation a draft is bound to (#983 P3). Server-side identity; not shown. */
   objective_incarnation?: string;
+}
+
+/** One waiting request an API session holds (#1900). `label` is display text (a path, a command,
+ *  the question) and `kind` the tool or request kind; `question` marks a question to the operator. */
+export interface ApiPendingItem {
+  request_id: string;
+  kind: string;
+  label: string;
+  question: boolean;
+}
+
+/** `OrchestratorAction.api_pending` (#1900). `fp` is the content fingerprint of this set of
+ *  waiting requests: their sorted request ids, as a list. Not shown. */
+export interface ApiPending {
+  count: number;
+  items: ApiPendingItem[];
+  fp: string[];
+  /** The session's own pane, `/s/<engine>/<id>`, where each request is decided. */
+  pane: string;
 }
 
 /** One checked fact a direction was filled with (#983). `observed_at` is null for a fact that came
@@ -844,6 +868,15 @@ export interface Evidence {
   kind: EvidenceKind;
   text: string;
   available: boolean;
+}
+
+/** `GET /api/missions/{id}/screen/{key}` for a held API session (#1900): it has no terminal screen,
+ *  so the server answers with where its conversation is instead of an `Evidence`. */
+export interface MissionScreenApi {
+  api: true;
+  session_key: string;
+  /** `/s/<engine>/<id>`. */
+  pane: string;
 }
 
 /** A tool-permission dialog parsed server-side off a session's screen (`permission_prompts`,
@@ -3234,6 +3267,12 @@ export interface MissionNowSession {
   recap_older_than_output: boolean;
   /** The session's current report to HQ (#1882), the agent's own words. Absent on older servers. */
   report?: AgentReport | null;
+  /** An API member (#1900): its status comes from structured state, not a screen. `producing` is
+   *  a turn in flight, `at_prompt` (class `approval`) is requests waiting, `quiet` is at rest, and
+   *  `seconds_since_output` is the age of the newest turn. Absent on console rows. */
+  api?: boolean;
+  /** API rows only: how many requests are waiting. */
+  pending_count?: number;
 }
 
 export interface MissionNow {

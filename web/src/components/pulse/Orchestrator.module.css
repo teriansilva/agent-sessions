@@ -123,6 +123,62 @@
   overflow-wrap: anywhere;
 }
 
+/* --- an API session's waiting requests (#1900) ------------------------------------ */
+/* One card per API session: the count in the corner (must-read, so `--text-2`), up to three
+ * requests as rows, and one primary plate to the conversation where each is decided. */
+.confPlain {
+  color: var(--text-2);
+}
+.pend {
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+.pendItem {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: baseline;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+  font-size: var(--fs-meta);
+}
+.pendKind {
+  flex: 0 0 74px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.pendCode {
+  font-family: var(--font-mono);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.pendLabel {
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.pendMore {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.pendOpen {
+  composes: primary from "../ui/actionButton.module.css";
+  align-self: flex-start;
+  margin-top: var(--sp-3);
+}
+@media (max-width: 800px) {
+  .pendOpen {
+    align-self: stretch;
+  }
+}
+
 /* --- evidence -------------------------------------------------------------------- */
 /* The frame belongs to the disclosure's own parts, not to this wrapper (#781). It used to sit
  * here, which was fine while the wrapper held nothing but the disclosure — but now the decision

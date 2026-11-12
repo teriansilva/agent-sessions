@@ -21,8 +21,11 @@
  */
 import { Send } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 
+import { runsInTerminal, useEngineRoster } from "../../app/engineRoster";
 import { api, ApiError } from "../../lib/api";
+import { sessionPathFromKey } from "../../lib/format";
 import type { Evidence } from "../../types/api";
 
 import action from "../ui/actionButton.module.css";
@@ -55,6 +58,15 @@ export function MissionScreen({
    *  finding 1). */
   onGone?: () => void;
 }) {
+  // AN API MEMBER HAS NO SCREEN (#1900). Its turns, tool calls and approvals are structured state,
+  // shown in its conversation, so this block offers the way there instead of VIEW SCREEN and an
+  // empty terminal frame. Decided from the engine roster; when the roster is not known yet, the
+  // server's own answer to a screen read (`{api: true, pane}`) decides it instead.
+  useEngineRoster();
+  const [serverPane, setServerPane] = useState<string | null>(null);
+  const engine = sessionKey.includes(":") ? sessionKey.slice(0, sessionKey.indexOf(":")) : "";
+  const apiMember = serverPane !== null || (!!engine && runsInTerminal(engine) === false);
+  const pane = serverPane || sessionPathFromKey(sessionKey);
   const [screen, setScreen] = useState<Evidence | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -133,8 +145,13 @@ export function MissionScreen({
       // MISSION-SCOPED. The membership is checked server-side at request time, so a session this
       // mission no longer holds cannot answer with its screen.
       const r = await api.missionScreen(missionId, sessionKey);
-      setScreen(r);
-      setOpen(true);
+      if ("api" in r && r.api) {
+        // The server says this member runs over the API: there is no screen, ever.
+        setServerPane(typeof r.pane === "string" && r.pane.startsWith("/s/") ? r.pane : "");
+      } else {
+        setScreen(r as Evidence);
+        setOpen(true);
+      }
     } catch (err) {
       // BY KIND, not by payload — and never conflated with an empty screen, which is a
       // different fact the response itself reports as `available: false`.
@@ -165,34 +182,54 @@ export function MissionScreen({
       <div className={styles.screenTarget} data-testid="screen-target">
         {sessionKey}
         {role ? <span className={styles.supGate}>{role}</span> : null}
+        {apiMember ? <span className={styles.nowApi}>API</span> : null}
       </div>
-      <div className={styles.screenBar}>
-        <button
-          type="button"
-          className={styles.missionQBtn}
-          disabled={busy}
-          onClick={() => void look()}
-          aria-label={`${open ? "Refresh" : "View"} the screen of ${sessionKey}`}
-          data-testid="view-screen"
-        >
-          {busy ? "…" : open ? "REFRESH SCREEN" : "VIEW SCREEN"}
-        </button>
-        {open ? (
+      {apiMember ? (
+        <div className={styles.apiScreen} data-testid="screen-api">
+          <p className={styles.apiScreenNote}>
+            <b>API session — it has no terminal screen.</b> Its turns, tool
+            calls and approvals are in its conversation.
+          </p>
+          {pane ? (
+            <Link
+              to={pane}
+              className={`${action.primary} ${styles.apiScreenLink}`}
+              aria-label={`Open the conversation of ${sessionKey}`}
+              data-testid="screen-api-conversation"
+            >
+              Open conversation
+            </Link>
+          ) : null}
+        </div>
+      ) : (
+        <div className={styles.screenBar}>
           <button
             type="button"
             className={styles.missionQBtn}
-            onClick={() => setOpen(false)}
-            aria-label={`Hide the screen of ${sessionKey}`}
-            data-testid="hide-screen"
+            disabled={busy}
+            onClick={() => void look()}
+            aria-label={`${open ? "Refresh" : "View"} the screen of ${sessionKey}`}
+            data-testid="view-screen"
           >
-            HIDE
+            {busy ? "…" : open ? "REFRESH SCREEN" : "VIEW SCREEN"}
           </button>
-        ) : null}
-        <span className={styles.screenNote}>
-          Read-only. Looking does not attach, and does not pause the
-          follow-through.
-        </span>
-      </div>
+          {open ? (
+            <button
+              type="button"
+              className={styles.missionQBtn}
+              onClick={() => setOpen(false)}
+              aria-label={`Hide the screen of ${sessionKey}`}
+              data-testid="hide-screen"
+            >
+              HIDE
+            </button>
+          ) : null}
+          <span className={styles.screenNote}>
+            Read-only. Looking does not attach, and does not pause the
+            follow-through.
+          </span>
+        </div>
+      )}
       {error ? (
         <div className={styles.objStale} data-testid="screen-error">
           {error}
@@ -361,7 +398,7 @@ export function MissionScreen({
         </div>
       ) : null}
 
-      {open && screen ? (
+      {!apiMember && open && screen ? (
         screen.available ? (
           // Terminal output as TEXT in a `pre`. React escapes it; there is no
           // `dangerouslySetInnerHTML` anywhere in these components, and a screen is the one

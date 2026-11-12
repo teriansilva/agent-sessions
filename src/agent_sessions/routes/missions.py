@@ -78,6 +78,7 @@ from .. import (
     mission_fence,
     mission_now,
     mission_objectives,
+    mission_observe,
     mission_plan,
     mission_questions,
     mission_relay_reconcile,
@@ -93,7 +94,6 @@ from .. import (
     ptybridge,
     review,
     scopedspawn,
-    scrollback,
     session_input,
     shelf_broker,
 )
@@ -883,15 +883,18 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 phys = mission_fence.physical_of(key)
             except Exception:  # noqa: BLE001 — an unresolvable binding is "nothing observed"
                 phys = key
-            last = scrollback.get_last_visible_output_at(phys)
+            # ONE OBSERVATION, WHATEVER THE TRANSPORT (#1900): an API session's line comes from
+            # its structured snapshot, a console session's from its output clock, as before.
+            obs = await mission_observe.facts(key, physical_key=phys)
+            last = obs.get("last_output_at")
             cls = None
-            if last is not None and now - last >= mission_now.PROMPT_SETTLE_S:
+            if not obs["api"] and last is not None and now - last >= mission_now.PROMPT_SETTLE_S:
                 cls = await asyncio.to_thread(mission_now.prompt_class_cached, phys)
             out.append(
                 {
                     "session_key": key,
-                    **mission_now.derive(
-                        now=now, last_output_at=last, prompt_class=cls, recap_at=f["recap_at"]
+                    **mission_observe.now_line(
+                        obs, now=now, recap_at=f["recap_at"], prompt_class=cls
                     ),
                     "report": (agent_reports.public(reports[phys]) if phys in reports else None),
                 }
@@ -2318,6 +2321,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         if key not in held:
             return _fail(
                 missions.MissionError("this mission no longer holds that session", status=409)
+            )
+        # AN API SESSION HAS NO SCREEN (#1900): say so and point at its conversation, rather than
+        # replaying a ring it never had into an empty terminal frame. Membership was checked above.
+        if await asyncio.to_thread(mission_observe.is_api, key):
+            return JSONResponse(
+                {"api": True, "session_key": key, "pane": mission_observe.pane_path(key)},
+                headers={
+                    "Cache-Control": "no-store, no-cache, must-revalidate",
+                    "Pragma": "no-cache",
+                },
             )
         # Blocking: the ring replay + FS reads must never run on the event loop (#678).
         result = await asyncio.to_thread(orchestrator.evidence_for, key, "screen")

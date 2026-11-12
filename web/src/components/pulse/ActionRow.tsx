@@ -204,8 +204,13 @@ export function ActionRow({
   // that set contains `escalated_low_confidence` and still excludes plain `escalated`, so the
   // low-confidence row now legitimately offers Approve and the model's question still does not
   // — decided once on the server, never re-derived from a state name here.
+  // AN API SESSION'S WAITING REQUESTS (#1900): one card per session, decided in its conversation.
+  // Nothing on it is approvable, whatever the projection says; Dismiss stays.
+  const apiPending = action.escalation_reason === "api_pending";
   const approvable =
-    delivering && (serverProjected ? !!action.can_approve : legacyWaiting);
+    !apiPending &&
+    delivering &&
+    (serverProjected ? !!action.can_approve : legacyWaiting);
   const rejectable = serverProjected
     ? !!action.can_reject
     : legacyWaiting || isEscalation(action.state);
@@ -393,6 +398,76 @@ export function ActionRow({
           onDismiss={() => void act("reject")}
         />
         {note && <p className={styles.stale}>{note}</p>}
+        {footer}
+      </Root>
+    );
+  }
+
+  if (apiPending) {
+    const pending = action.api_pending;
+    const items = (pending?.items ?? []).slice(0, 3);
+    const count = pending?.count ?? items.length;
+    const more = count - items.length;
+    const pane =
+      typeof pending?.pane === "string" && pending.pane.startsWith("/s/")
+        ? pending.pane
+        : sessionPath(action);
+    return (
+      <Root
+        className={`${styles.act} ${toneOf(action)} ${embedded ? styles.actEmbedded : ""}`}
+        data-testid="api-pending-card"
+      >
+        <div className={styles.actTop}>
+          <span className={`${styles.verb} ${styles.verbEsc}`}>
+            {action.verb.toUpperCase()}
+          </span>
+          {!embedded && (
+            <>
+              <span className={styles.sname}>
+                {action.title || action.session_id}
+              </span>
+              <span className={styles.eng} aria-hidden="true">
+                {engineBadge(action.engine)}
+              </span>
+            </>
+          )}
+          {/* A count read off the session's structured state — not a confidence. */}
+          <span className={`${styles.conf} ${styles.confPlain}`} data-testid="api-pending-count">
+            {count} waiting
+          </span>
+        </div>
+        {action.rationale && <p className={styles.why}>{action.rationale}</p>}
+        {items.length > 0 && (
+          <ul className={styles.pend} data-testid="api-pending-items">
+            {items.map((it) => (
+              <li key={it.request_id} className={styles.pendItem}>
+                <span className={styles.pendKind}>
+                  {(it.question ? "question" : it.kind).toUpperCase()}
+                </span>
+                {it.question ? (
+                  <span className={styles.pendLabel}>{it.label}</span>
+                ) : (
+                  <code className={styles.pendCode}>{it.label}</code>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {more > 0 && (
+          <span className={styles.pendMore} data-testid="api-pending-more">
+            and {more} more
+          </span>
+        )}
+        <Link
+          className={styles.pendOpen}
+          to={pane}
+          aria-label={`Open the conversation of ${action.title || action.session_id}`}
+          data-testid="api-pending-open"
+        >
+          Open conversation
+        </Link>
+        {note && <p className={styles.stale}>{note}</p>}
+        {controls}
         {footer}
       </Root>
     );

@@ -1,7 +1,8 @@
 /** The live strip's fences (#1064 Phase 2): a response that lands after a mission switch never
  *  paints on the new mission, a failed refresh keeps the last reading, and polling runs on the
  *  `NOW_POLL_MS` cadence. */
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { api } from "../../lib/api";
@@ -100,4 +101,44 @@ test("a held session's report to HQ shows on its line as agent text (#1882)", as
   expect(line.textContent).toContain("Agent says · asks to decide");
   expect(line.textContent).toContain("Both <b>stores</b> pass — Which one?");
   expect(line.querySelector("b")).toBeNull();
+});
+
+test("an API member carries an API tag and a link to its conversation; a console row does not (#1900)", async () => {
+  nowMock.mockResolvedValueOnce({
+    checked_at: 1,
+    sessions: [
+      {
+        session_key: "claude:aaaa",
+        status: "producing",
+        seconds_since_output: 3,
+        prompt_class: null,
+        recap_age_s: null,
+        recap_older_than_output: false,
+      },
+      {
+        session_key: "claude-api:8c41aaaa",
+        status: "at_prompt",
+        seconds_since_output: 40,
+        prompt_class: "approval",
+        recap_age_s: null,
+        recap_older_than_output: false,
+        api: true,
+        pending_count: 3,
+      },
+    ],
+  });
+  render(
+    <MemoryRouter>
+      <MissionNowStrip missionId="msn_a" />
+    </MemoryRouter>,
+  );
+  expect(await screen.findByText("waiting on 3 approvals · last turn 40s ago")).toBeTruthy();
+  const rows = screen.getAllByTestId("mission-now-row");
+  expect(within(rows[0]).queryByTestId("mission-now-api")).toBeNull();
+  expect(within(rows[0]).queryByRole("link")).toBeNull();
+  expect(within(rows[1]).getByTestId("mission-now-api").textContent).toBe("API");
+  const link = within(rows[1]).getByRole("link", { name: /conversation/i });
+  expect(link.getAttribute("href")).toBe("/s/claude-api/8c41aaaa");
+  // At a prompt is the neutral dot, as on a console row: the card owns the ask.
+  expect(rows[1].getAttribute("data-status")).toBe("at_prompt");
 });

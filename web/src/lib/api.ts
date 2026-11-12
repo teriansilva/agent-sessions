@@ -87,6 +87,7 @@ import type {
   EngineDetail,
   EnginesResponse,
   Evidence,
+  MissionScreenApi,
   EvidenceKind,
   FileCapabilities,
   FileContent,
@@ -2361,7 +2362,8 @@ export const api = {
    *  heading. Membership is a row another tab can change, so it is checked SERVER-SIDE at
    *  request time and a session the mission no longer holds is a 409. */
   missionScreen: (missionId: string, sessionKey: string) =>
-    getJson<Evidence>(
+    // A held API session answers `{api: true, pane}` instead (#1900): it has no screen to read.
+    getJson<Evidence | MissionScreenApi>(
       `/api/missions/${enc(missionId)}/screen/${enc(sessionKey)}`,
       { cache: "no-store" },
     ),

@@ -57,3 +57,22 @@ test.each([
   ["opencode:ses_ab12cd", "opencode · ab12"],
   ["kimi:session_9f8e7d", "kimi · 9f8e"],
 ])("sessionLabel(%s)", (key, want) => expect(sessionLabel(key)).toBe(want));
+
+// #1900: an API member speaks in turns, from structured state — never in screen words.
+test.each<[Partial<MissionNowSession>, string]>([
+  [{ status: "producing", seconds_since_output: 12 }, "working on a turn · last turn 12s ago"],
+  [
+    { status: "at_prompt", prompt_class: "approval", pending_count: 3, seconds_since_output: 40 },
+    "waiting on 3 approvals · last turn 40s ago",
+  ],
+  [
+    { status: "at_prompt", prompt_class: "approval", pending_count: 1, seconds_since_output: 40 },
+    "waiting on 1 approval · last turn 40s ago",
+  ],
+  [{ status: "quiet", seconds_since_output: 180 }, "at rest · last turn 3m ago"],
+  [{ status: "quiet", seconds_since_output: null }, "at rest"],
+  [{ status: "unobserved", seconds_since_output: null }, "not observed yet"],
+  [{ status: "producing", seconds_since_output: null }, "working on a turn"],
+])("nowPhrase for an API member %j", (over, want) =>
+  expect(nowPhrase(row({ api: true, session_key: "claude-api:8c41aaaa", ...over }))).toBe(want),
+);

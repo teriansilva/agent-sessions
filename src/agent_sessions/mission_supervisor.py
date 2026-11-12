@@ -2010,8 +2010,10 @@ async def _sync_permission(
     through `/choose`), retires a card whose dialog is gone, and yields to any other live action on
     the session. Failure is today's behaviour: no card, never a crash of the pass.
     """
-    from . import mission_fence, mission_permission
+    from . import mission_fence, mission_observe, mission_permission
 
+    if await asyncio.to_thread(mission_observe.is_api, session_key):
+        return await _sync_api_pending(mission_id, session_key, row, out)
     try:
         observed = await asyncio.to_thread(
             mission_permission.observe, mission_fence.physical_of(session_key)
@@ -2038,6 +2040,56 @@ async def _sync_permission(
         "existing": bool(result.get("existing")),
     }
     return perm, result
+
+
+async def _sync_api_pending(
+    mission_id: str, session_key: str, row: dict, out: dict
+) -> tuple[dict | None, dict]:
+    """An API member's pending native requests, as ONE mission card per session (#1900).
+
+    The structured snapshot, not a screen, says what waits. Any pending request is a decision the
+    operator owns, so it is returned as the pass's ``dialog``: nothing below nudges, drafts or
+    chooses into the session, and a waiting session is not a stall. An unreadable snapshot is
+    today's console answer to an unreadable screen: no card, no dialog, never a crash.
+    """
+    from . import mission_observe, mission_permission
+
+    obs = await mission_observe.facts(session_key)
+    if not obs.get("readable"):
+        return None, {}
+    items = obs.get("pending") or []
+    try:
+        result = await missions.run_admitted(
+            lambda: mission_permission.sync_api_card(
+                mission_id,
+                session_key,
+                row,
+                items,
+                pane=mission_observe.pane_path(session_key),
+            )
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("supervisor: the approvals card for %s could not be stored", session_key)
+        result = {"failed": True}
+    if not items:
+        return None, result
+    dialog = {"api_pending": items}
+    out["permission"] = {
+        "summary": mission_permission.api_summary(items, str(row.get("title") or "")),
+        "card": (result.get("card") or {}).get("id"),
+        "existing": bool(result.get("existing")),
+        "api": True,
+    }
+    return dialog, result
+
+
+def _dialog_words(dialog: dict, row: dict) -> str:
+    """What a pass escalates in words for a dialog: a screen's prompt, or an API session's set."""
+    if "api_pending" in dialog:
+        from . import mission_permission
+
+        return mission_permission.api_summary(list(dialog["api_pending"]), "")
+    return permission_prompts.summary(dialog)  # type: ignore[arg-type]
 
 
 async def _pass_one_session(
@@ -2184,7 +2236,7 @@ async def _pass_one_session(
         # The dialog IS the decision, whatever the model read — and its words name it (#1213).
         proposal = None
         draft = None
-        escalate_because = permission_prompts.summary(permission)
+        escalate_because = _dialog_words(permission, row)
 
     # A parsed engine menu is precisely the pause the operator-approved opt-in can answer.
     # Permission dialogs never enter this path, and an explicit needs_approval still escalates.

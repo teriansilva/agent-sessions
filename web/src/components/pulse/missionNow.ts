@@ -31,8 +31,29 @@ const PROMPT_WORD: Record<string, string> = {
   question: "a question",
 };
 
+/** An API member's line (#1900). Its status comes from the session's structured state, not from a
+ *  screen, so it speaks in turns: a turn in flight, requests waiting, at rest. The age is the
+ *  newest turn's. */
+function apiPhrase(s: MissionNowSession): string {
+  const since = s.seconds_since_output;
+  const tail = since == null ? "" : ` · last turn ${ago(since)} ago`;
+  switch (s.status) {
+    case "producing":
+      return `working on a turn${tail}`;
+    case "at_prompt": {
+      const n = s.pending_count ?? 0;
+      return `waiting on ${n} approval${n === 1 ? "" : "s"}${tail}`;
+    }
+    case "quiet":
+      return `at rest${tail}`;
+    default:
+      return `not observed yet${tail}`;
+  }
+}
+
 /** The session's line: what it is doing, in words. */
 export function nowPhrase(s: MissionNowSession): string {
+  if (s.api) return apiPhrase(s);
   const since = s.seconds_since_output;
   switch (s.status) {
     case "producing":

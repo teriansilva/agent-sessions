@@ -11,8 +11,10 @@
  */
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, expect, test, vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
+import { resetRoster } from "../../app/engineRoster";
 import { api } from "../../lib/api";
 import type { DraftEdit } from "./draftDirection";
 
@@ -117,4 +119,61 @@ test("a delivered ordinary relay does not erase a draft adopted while it was in 
   vi.mocked(api.relayToSession).mockResolvedValueOnce({ ...DELIVERED, draft_replaced: true });
   await userEvent.click(screen.getByTestId("relay-send"));
   expect(api.relayToSession).toHaveBeenLastCalledWith(MISSION, SESSION, "draft B", "act_b");
+});
+
+// #1900: an API member has no terminal screen. Its block says so and opens its conversation; it
+// never offers VIEW SCREEN or draws an empty terminal frame. The relay form stays.
+describe("an API member", () => {
+  const API_KEY = "claude-api:8c41aaaa";
+  beforeEach(() => vi.mocked(api.missionScreen).mockReset());
+
+  // The setup file seeds the fixture roster, where `claude-api` runs over the API.
+  test("known from the roster: no VIEW SCREEN, no frame, one link to the conversation", () => {
+    render(
+      <MemoryRouter>
+        <MissionScreen missionId={MISSION} sessionKey={API_KEY} />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByTestId("view-screen")).toBeNull();
+    expect(screen.queryByTestId("screen-text")).toBeNull();
+    expect(screen.getByTestId("screen-api").textContent).toContain(
+      "API session — it has no terminal screen.",
+    );
+    const link = screen.getByRole("link", { name: /conversation/i });
+    expect(link.getAttribute("href")).toBe("/s/claude-api/8c41aaaa");
+    expect(screen.getByTestId("relay-input")).toBeTruthy();
+    expect(api.missionScreen).not.toHaveBeenCalled();
+  });
+
+  test("a console member keeps VIEW SCREEN", () => {
+    render(
+      <MemoryRouter>
+        <MissionScreen missionId={MISSION} sessionKey={SESSION} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId("view-screen")).toBeTruthy();
+    expect(screen.queryByTestId("screen-api")).toBeNull();
+  });
+
+  test("roster unknown: the server's {api: true} answer to a screen read switches the block", async () => {
+    resetRoster(); // the setup seeds the fixture roster; this is a page before it lands
+    vi.mocked(api.missionScreen).mockResolvedValueOnce({
+      api: true,
+      session_key: API_KEY,
+      pane: "/s/claude-api/8c41aaaa",
+    });
+    render(
+      <MemoryRouter>
+        <MissionScreen missionId={MISSION} sessionKey={API_KEY} />
+      </MemoryRouter>,
+    );
+    await userEvent.click(screen.getByTestId("view-screen"));
+    expect(await screen.findByTestId("screen-api")).toBeTruthy();
+    expect(screen.queryByTestId("view-screen")).toBeNull();
+    expect(screen.queryByTestId("screen-text")).toBeNull();
+    expect(screen.queryByTestId("screen-unavailable")).toBeNull();
+    expect(
+      screen.getByRole("link", { name: /conversation/i }).getAttribute("href"),
+    ).toBe("/s/claude-api/8c41aaaa");
+  });
 });

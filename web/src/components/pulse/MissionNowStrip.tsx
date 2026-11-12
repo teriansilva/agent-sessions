@@ -9,10 +9,13 @@
  *  that mission, and the effect's `live` flag drops a response that lands after a switch — mission
  *  A's sessions never paint on B. */
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { api } from "../../lib/api";
+import { sessionPathFromKey } from "../../lib/format";
 import type { MissionNow } from "../../types/api";
 
+import action from "../ui/actionButton.module.css";
 import styles from "./mission.module.css";
 import {
   NOW_POLL_MS,
@@ -114,6 +117,10 @@ export function MissionNowStrip({ missionId }: { missionId: string }) {
         <ul className={styles.nowList}>
           {now.sessions.map((s) => {
             const recap = recapPhrase(s);
+            const label = sessionLabel(s.session_key);
+            // An API member (#1900) has no screen to peek at: its turns and approvals live in its
+            // conversation, so the row offers the way there.
+            const pane = s.api ? sessionPathFromKey(s.session_key) : null;
             return (
               <li
                 key={s.session_key}
@@ -125,9 +132,12 @@ export function MissionNowStrip({ missionId }: { missionId: string }) {
                   className={`${styles.nowDot} ${DOT[s.status] ?? styles.nowUnobserved}`}
                   aria-hidden
                 />
-                <span className={styles.nowWho}>
-                  {sessionLabel(s.session_key)}
-                </span>
+                <span className={styles.nowWho}>{label}</span>
+                {s.api ? (
+                  <span className={styles.nowApi} data-testid="mission-now-api">
+                    API
+                  </span>
+                ) : null}
                 <span className={styles.nowWhat}>{nowPhrase(s)}</span>
                 {recap ? (
                   <span
@@ -146,6 +156,16 @@ export function MissionNowStrip({ missionId }: { missionId: string }) {
                     {s.report.summary}
                     {s.report.question ? ` — ${s.report.question}` : ""}
                   </span>
+                ) : null}
+                {pane ? (
+                  <Link
+                    to={pane}
+                    className={`${action.ghost} ${action.compact} ${styles.nowLink}`}
+                    aria-label={`Open the conversation of ${label}`}
+                    data-testid="mission-now-conversation"
+                  >
+                    Conversation →
+                  </Link>
                 ) : null}
               </li>
             );
