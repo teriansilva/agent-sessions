@@ -1,0 +1,390 @@
+#!/usr/bin/env python3
+"""Prove an agent-account recipe against the real CLI (#1820 P0), and print the results table.
+
+    scripts/agent-accounts-p0 signin claude     # once: sign the SECOND account in, vendor's flow
+    scripts/agent-accounts-p0 run claude        # the checks; prints a markdown table
+
+It needs two real logins of one agent on this machine: the default login the CLI already has, and
+a second account signed in to an overlay home that `agent_accounts.build` makes, the same code a
+launch will use. Run it from a checkout with its virtualenv (`.venv/bin/python scripts/…`).
+
+What it does to this machine, all of it under your own user:
+
+- creates `<accounts dir>/<agent>/p0-second` (see `agent_accounts.root`), and empty shared
+  directories in the agent's default home where the recipe names one that does not exist yet;
+- runs a few short print-mode turns on each account. They cost a little quota and leave their
+  transcripts in the agent's normal session store; the table lists their ids;
+- never opens a login file. Identity comes from the CLI's own status command, and the table
+  prints whether the two accounts differ, never who they are.
+
+An engine's manifest gets `[accounts] kind = …` only when its table says so. No real login belongs
+on a CI runner, so nothing here is collected by pytest.
+"""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import contextlib
+import fcntl
+import json
+import os
+import pty
+import shutil
+import signal
+import struct
+import subprocess
+import sys
+import tempfile
+import termios
+import time
+import uuid
+
+from agent_sessions import agent_accounts, agent_usage, engines, start_evidence
+
+ACCOUNT_ID = "p0-second"
+#: The candidate recipe per agent. A manifest names its kind only after this harness passes, so
+#: until then the pairing lives here.
+CANDIDATES = {"claude": "claude-config-dir", "codex": "codex-home"}
+TURN_TIMEOUT_S = 180
+READY_TIMEOUT_S = 60
+
+PASS, FAIL, NOT_RUN = "pass", "FAIL", "not run"
+
+
+def _run(argv, env, cwd, timeout=TURN_TIMEOUT_S, stdin=None):
+    """A literal argv, never a shell. Returns (returncode, stdout, stderr); 124 on timeout."""
+    try:
+        done = subprocess.run(  # noqa: S603 — literal argv built in this file
+            argv,
+            env=env,
+            cwd=cwd,
+            input=stdin,
+            stdin=None if stdin is not None else subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return 124, "", "timed out"
+    return done.returncode, done.stdout, done.stderr
+
+
+@contextlib.contextmanager
+def _environ(env):
+    """The usage reporters read the process environment; give them one account's for a call."""
+    saved = dict(os.environ)
+    os.environ.clear()
+    os.environ.update(env)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+class Claude:
+    usage = staticmethod(agent_usage.probe_claude)
+
+    def __init__(self, exe):
+        self.exe = exe
+
+    def identity(self, env, cwd):
+        code, out, _ = _run([self.exe, "auth", "status"], env, cwd, timeout=60)
+        try:
+            doc = json.loads(out)
+        except ValueError:
+            return False, None, f"status exited {code} without JSON"
+        who = (doc.get("email"), doc.get("orgId")) if doc.get("loggedIn") else None
+        detail = f"{doc.get('subscriptionType') or 'no plan stated'}"
+        if doc.get("loginExpiresAt"):
+            detail += f", login expires {doc['loginExpiresAt']}"
+        return bool(doc.get("loggedIn")), who, detail
+
+    def turn(self, env, cwd, token, resume=None):
+        native = resume or str(uuid.uuid4())
+        how = ["--resume", native] if resume else ["--session-id", native]
+        code, out, err = _run([self.exe, "-p", f"Reply with exactly: {token}", *how], env, cwd)
+        ok = code == 0 and token in out
+        return ok, native, "" if ok else f"exit {code}: {(err or out).strip()[:200]}"
+
+    def transcripts(self, shared_home, native):
+        return list((shared_home / "projects").glob(f"*/{native}.jsonl"))
+
+    def interactive_argv(self, native):
+        return [self.exe, "--session-id", native]
+
+
+class Codex:
+    usage = staticmethod(agent_usage.probe_codex)
+
+    def __init__(self, exe):
+        self.exe = exe
+
+    def identity(self, env, cwd):
+        code, out, err = _run([self.exe, "login", "status"], env, cwd, timeout=60)
+        text = (out + err).strip()
+        # codex states the method, not the account, so two logins cannot be told apart here;
+        # the per-account usage rows below are the evidence that they differ.
+        return code == 0, None, text.splitlines()[0][:80] if text else f"status exited {code}"
+
+    def turn(self, env, cwd, token, resume=None):
+        argv = [self.exe, "exec"]
+        if resume:
+            argv += ["resume", resume]
+        argv += ["--skip-git-repo-check", "--json", f"Reply with exactly: {token}"]
+        code, out, err = _run(argv, env, cwd)
+        native = resume
+        for line in out.splitlines():
+            with contextlib.suppress(ValueError):
+                event = json.loads(line)
+                if isinstance(event, dict) and event.get("type") == "thread.started":
+                    native = native or event.get("thread_id")
+        ok = code == 0 and token in out and bool(native)
+        return ok, native, "" if ok else f"exit {code}: {(err or out).strip()[-200:]}"
+
+    def transcripts(self, shared_home, native):
+        return list((shared_home / "sessions").glob(f"**/rollout-*{native}.jsonl"))
+
+    def interactive_argv(self, native):
+        return None  # codex mints its own id and has no start evidence to wait for
+
+
+ADAPTERS = {"claude-config-dir": Claude, "codex-home": Codex}
+
+
+def _binary(engine, override):
+    if override:
+        return override
+    with contextlib.suppress(Exception):
+        return engines.get(engine).entrypoint_path()
+    found = shutil.which(engines.get(engine).manifest.binary.name)
+    if not found:
+        sys.exit(f"{engine}: no binary found; pass --bin")
+    return found
+
+
+def _setup(args):
+    kind = CANDIDATES.get(args.engine)
+    if kind is None:
+        sys.exit(f"no candidate recipe for {args.engine!r}; known: {', '.join(CANDIDATES)}")
+    rec = agent_accounts.recipe(kind)
+    shared = agent_accounts.default_home(rec)
+    account = agent_accounts.home(args.engine, ACCOUNT_ID)
+    return rec, shared, account, ADAPTERS[kind](_binary(args.engine, args.bin))
+
+
+def signin(args):
+    rec, shared, account, adapter = _setup(args)
+    agent_accounts.build(rec, account, shared)
+    env = agent_accounts.launch_env(rec, account, os.environ)
+    print(f"Signing in to the second {args.engine} account in {account}")
+    print("Choose the account that is NOT your current login. Your current login is not touched.")
+    os.execve(adapter.exe, [adapter.exe, *rec.login], env)  # noqa: S606 — literal recipe argv
+
+
+def _reaches_ready(adapter, env, cwd):
+    """Start the agent in a terminal, as BattleLab does, and wait for its own start evidence: the
+    registry entry it writes once it is past any first-run or trust screen."""
+    native = str(uuid.uuid4())
+    argv = adapter.interactive_argv(native)
+    if argv is None:
+        return NOT_RUN, "this agent writes no start evidence to wait for"
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+    proc = subprocess.Popen(  # noqa: S603 — literal argv built in this file
+        argv, env=env, cwd=cwd, stdin=slave, stdout=slave, stderr=slave, start_new_session=True
+    )
+    os.close(slave)
+    os.set_blocking(master, False)
+    state, detail = start_evidence.ABSENT, ""
+    try:
+        deadline = time.monotonic() + READY_TIMEOUT_S
+        while time.monotonic() < deadline and proc.poll() is None:
+            with contextlib.suppress(OSError):
+                os.read(master, 65536)  # keep the terminal drained; the bytes are not kept
+            state, detail = start_evidence.claude_start_state(native, cwd)
+            if state == start_evidence.FOUND:
+                return PASS, f"ready in under {READY_TIMEOUT_S} s with no prompt answered"
+            time.sleep(0.5)
+    finally:
+        if proc.poll() is None and proc.pid > 1:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGTERM)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(10)
+        os.close(master)
+    return FAIL, f"no start evidence after {READY_TIMEOUT_S} s ({state}: {detail[:120]})"
+
+
+def _usage_row(adapter, env):
+    with _environ(env):
+        report = adapter.usage(adapter.exe)
+    windows = ", ".join(f"{w.label} {w.used_pct:g}%" for w in report.windows) or "no windows"
+    return report, f"{report.plan or 'plan not stated'}: {windows}" + (
+        f" (error: {report.error})" if report.error else ""
+    )
+
+
+def run(args):
+    rec, shared, account, adapter = _setup(args)
+    rows: list[tuple[str, str, str]] = []
+    made: list[str] = []
+    base = {k: v for k, v in os.environ.items() if k not in rec.clear_env}
+    base.pop(rec.home_env, None)
+    acct = agent_accounts.launch_env(rec, account, os.environ)
+    found = agent_accounts.problems(rec, account, shared)
+    if found:
+        sys.exit(f"the account home is not usable ({'; '.join(found)}); run `signin` first")
+
+    with tempfile.TemporaryDirectory(prefix="bl-accounts-p0-") as cwd:
+        # 1. two logins, two homes
+        d_in, d_who, d_detail = adapter.identity(base, cwd)
+        a_in, a_who, a_detail = adapter.identity(acct, cwd)
+        if not (d_in and a_in):
+            rows.append(("Two logins stay separate", FAIL, "not signed in on both homes"))
+            _print(args.engine, adapter, rec, account, rows, made)
+            return 1
+        if d_who is None or a_who is None:
+            sep = (NOT_RUN, "the CLI's status names no account; see the usage rows")
+        else:
+            sep = (PASS, "different accounts") if d_who != a_who else (FAIL, "the same account")
+        again = adapter.identity(base, cwd)
+        untouched = again[0] and again[1] == d_who
+        rows.append(
+            (
+                "Two logins stay separate, default untouched",
+                sep[0] if untouched else FAIL,
+                f"{sep[1]}; default: {d_detail}; second: {a_detail}"
+                + ("" if untouched else "; THE DEFAULT LOGIN CHANGED"),
+            )
+        )
+
+        # 2. a session on the account lands in the shared store
+        ok, on_account, why = adapter.turn(acct, cwd, "P0-ACCOUNT")
+        files = adapter.transcripts(shared, on_account) if ok else []
+        made += [on_account] if ok else []
+        store = engines.get(args.engine).store_root()
+        in_store = bool(files) and store is not None and files[0].is_relative_to(store)
+        still = agent_accounts.problems(rec, account, shared)
+        rows.append(
+            (
+                "A session on the account writes to the shared store",
+                PASS if ok and in_store and not still else FAIL,
+                why
+                or (f"overlay broke: {'; '.join(still)}" if still else "")
+                or ("transcript is under the store the scanner walks" if in_store else "")
+                or "no transcript in the default home's store",
+            )
+        )
+
+        # 3. no first-run or trust screen, in a folder the default login already starts in
+        d_ready = _reaches_ready(adapter, base, args.trusted_dir)
+        if d_ready[0] == FAIL:
+            ready = (NOT_RUN, "the default login is not ready here either; pass --trusted-dir")
+        elif d_ready[0] == NOT_RUN:
+            ready = d_ready
+        else:
+            ready = _reaches_ready(adapter, acct, args.trusted_dir)
+        rows.append(("No first-run or trust prompt blocks a launch", *ready))
+
+        # 4. usage per account
+        d_rep, d_use = _usage_row(adapter, base)
+        a_rep, a_use = _usage_row(adapter, acct)
+        both = bool(d_rep.windows and a_rep.windows and not d_rep.error and not a_rep.error)
+        differ = [(w.label, w.used_pct, w.resets_at) for w in d_rep.windows] != [
+            (w.label, w.used_pct, w.resets_at) for w in a_rep.windows
+        ]
+        rows.append(
+            (
+                "Each home's usage probe reports its own account",
+                (PASS if differ else NOT_RUN) if both else FAIL,
+                f"default: {d_use}; second: {a_use}"
+                + ("" if differ or not both else "; identical figures prove nothing either way"),
+            )
+        )
+
+        # 5. resume across accounts, both directions
+        ok1, _, why1 = adapter.turn(base, cwd, "P0-MOVED-TO-DEFAULT", resume=on_account)
+        ok2, on_default, why2 = adapter.turn(base, cwd, "P0-DEFAULT")
+        made += [on_default] if ok2 else []
+        ok3, _, why3 = (
+            adapter.turn(acct, cwd, "P0-MOVED-TO-SECOND", resume=on_default)
+            if ok2
+            else (False, None, why2)
+        )
+        rows.append(
+            (
+                "A session resumes on the other account and completes a turn",
+                PASS if ok1 and ok3 else FAIL,
+                f"second → default: {'ok' if ok1 else why1}; "
+                f"default → second: {'ok' if ok3 else why3}",
+            )
+        )
+
+        # 6. concurrency on one home
+        with concurrent.futures.ThreadPoolExecutor(3) as pool:
+            jobs = [pool.submit(adapter.turn, acct, cwd, f"P0-PARALLEL-{i}") for i in range(3)]
+            results = [j.result() for j in jobs]
+        made += [r[1] for r in results if r[0]]
+        after_in, _, after_detail = adapter.identity(acct, cwd)
+        all_ok = all(r[0] for r in results) and after_in
+        rows.append(
+            (
+                "Three concurrent sessions on one home",
+                PASS if all_ok else FAIL,
+                "all three completed and the login is intact. A token refresh was not forced: "
+                f"rerun after the login's expiry to cover it ({after_detail})"
+                if all_ok
+                else "; ".join(r[2] for r in results if not r[0]) or "the login was lost",
+            )
+        )
+        rows.append(
+            (
+                "The API-key mechanism launches with no prompt",
+                NOT_RUN,
+                "needs a billable key; not needed for login accounts",
+            )
+        )
+        final = agent_accounts.problems(rec, account, shared)
+        rows.append(
+            ("The overlay is intact after all of it", FAIL if final else PASS, "; ".join(final))
+        )
+
+    _print(args.engine, adapter, rec, account, rows, made)
+    return 1 if any(r[1] == FAIL for r in rows) else 0
+
+
+def _print(engine, adapter, rec, account, rows, made):
+    code, version, _ = _run([adapter.exe, "--version"], dict(os.environ), "/", timeout=30)
+    declared = {*rec.private, *rec.shared_dirs, *rec.shared_files}
+    extra = sorted(n for n in os.listdir(account) if n not in declared)
+    print(f"### P0 results: {engine}, recipe `{rec.kind}`\n")
+    print(f"CLI: `{version.strip() if code == 0 else 'unknown'}` · {time.strftime('%Y-%m-%d')}\n")
+    print("| Check | Result | Detail |\n|---|---|---|")
+    for check, result, detail in rows:
+        print(f"| {check} | **{result}** | {detail.replace('|', '/')} |")
+    print(f"\nEntries the CLI keeps per account beyond the login: {', '.join(extra) or 'none'}")
+    print(f"Sessions this run left in the store: {', '.join(made) or 'none'}")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("command", choices=("signin", "run"))
+    ap.add_argument("engine", choices=sorted(CANDIDATES))
+    ap.add_argument("--bin", help="the agent's binary, when BattleLab cannot find it")
+    ap.add_argument(
+        "--trusted-dir",
+        default=os.getcwd(),
+        help="a folder the default login already starts in without a prompt (default: here)",
+    )
+    args = ap.parse_args()
+    try:
+        return signin(args) if args.command == "signin" else run(args)
+    except agent_accounts.AccountError as exc:
+        sys.exit(str(exc))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

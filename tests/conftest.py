@@ -81,6 +81,7 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_PLAYBOOKS_DIR": ".config/agent-sessions/playbooks",  # #1191 local playbooks
     "AGENT_SESSIONS_PLAYBOOK_SECRETS": ".config/agent-sessions/playbook-secrets",  # #1191
     "AGENT_SESSIONS_MEMORY_DIR": ".config/agent-sessions/memory",  # #1441
+    "AGENT_SESSIONS_ACCOUNTS_DIR": ".config/agent-sessions/agent-accounts",  # #1820 login homes
     "AGENT_SESSIONS_SECRETS_RUNTIME": "srt",  # #1786 agents' secret copies (never the host's)
     "AGENT_SESSIONS_ASK_DIR": ".config/agent-sessions/ask",  # #1443 Ask conversations
     "AGENT_SESSIONS_PULSE_CACHE": ".config/agent-sessions/pulse-cache.json",

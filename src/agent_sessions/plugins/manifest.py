@@ -372,6 +372,9 @@ class Manifest:
     #: `tools.mcp` (#1506): a member of `kinds.MCP_KINDS`, or None. How this agent's CLI takes
     #: BattleLab's memory tool for one launch (`agent_tools`).
     tools_mcp: str | None = None
+    #: `accounts.kind` (#1820): a member of `kinds.ACCOUNT_KINDS`, or "none". How this agent's CLI
+    #: keeps several logins apart; `agent_accounts` builds and checks the per-account homes.
+    accounts_kind: str = "none"
 
     @property
     def id(self) -> str:
@@ -856,6 +859,12 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
         tools_mcp = r.str("mcp", one_of=kinds.MCP_KINDS)
         r.done()
 
+    accounts_kind = "none"
+    r = top.table("accounts", required=False)
+    if r is not None:
+        accounts_kind = r.str("kind", one_of=kinds.ACCOUNT_KINDS)
+        r.done()
+
     verify = top.strs("verify", one_of=kinds.VERIFY_CHECKS, max_items=len(kinds.VERIFY_CHECKS))
     top.done()
 
@@ -889,6 +898,7 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
         api=api,
         memory_kind=memory_kind,
         tools_mcp=tools_mcp,
+        accounts_kind=accounts_kind,
     )
     _cross_check(m)
     return m
@@ -953,6 +963,10 @@ def _instructions(top: _Reader) -> tuple[str, ...]:
 
 def _cross_check(m: Manifest) -> None:
     caps = m.capabilities
+    if m.accounts_kind != "none" and (m.runtime != "pty" or m.identity.kind != "agent"):
+        # A login belongs to an agent CLI BattleLab starts itself. An API client uses its source
+        # agent's installation and login (`api.source`), and a chat runtime has an endpoint key.
+        raise ManifestError("accounts.kind", "only a terminal agent's own CLI holds logins")
     if m.tools_mcp is not None:
         # The memory tool is started BY the agent CLI: a chat runtime runs no process and a
         # terminal plugin has no agent, and an API protocol carries only its own slot's shape.

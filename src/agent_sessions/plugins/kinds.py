@@ -312,6 +312,61 @@ SIGNIN_KINDS = {
     "auth-login": frozenset(),  # claude/opencode: exactly auth login
     "interactive": frozenset(),  # gemini/antigravity: the vendor onboarding terminal
 }
+#: `accounts.kind` (#1820) — how one agent CLI keeps SEVERAL logins apart: a per-account home the
+#: vendor's own CLI writes, laid over the default home so the session store stays one store. Each
+#: member is a whole reviewed recipe; a manifest only selects one, so it can never name an
+#: environment variable, a path or a login argv of its own. `agent_accounts` reads these fields.
+#:
+#: - `home_env`: the vendor's documented variable for its home directory.
+#: - `default_home`: the home the CLI uses when that variable is unset (`~/`-anchored).
+#: - `private`: entries that hold the login. They stay real files in the account home, are
+#:   written only by the vendor CLI, and BattleLab never opens them.
+#: - `shared_dirs` / `shared_files`: entries every account must see as ONE copy. Each is a
+#:   symlink into the default home; a directory is created there (empty, 0700) when absent, since
+#:   a CLI cannot `mkdir` through a dangling link.
+#: - `clear_env`: credentials an inherited environment may carry that would outrank the login and
+#:   bill a different account. Removed from every account launch.
+#: - `login` / `status`: the vendor's own sign-in and identity subcommands, as literal tokens.
+#:
+#: An engine's manifest names its kind only once #1820 P0 has proven the recipe against the real
+#: CLI; until then a recipe here is a candidate that nothing launches with.
+ACCOUNT_RECIPES = {
+    "claude-config-dir": {
+        "home_env": "CLAUDE_CONFIG_DIR",
+        "default_home": "~/.claude",
+        "private": (".credentials.json", ".claude.json"),
+        "shared_dirs": (
+            "projects",
+            "projects-archive",
+            "sessions",  # the registry `unattended.start_evidence` reads
+            "skills",
+            "agents",
+            "commands",
+            "plugins",
+            "file-history",
+            "shell-snapshots",
+            "session-env",
+        ),
+        "shared_files": ("settings.json", "settings.local.json", "CLAUDE.md", "history.jsonl"),
+        "clear_env": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
+        "login": ("auth", "login"),
+        "status": ("auth", "status"),
+    },
+    "codex-home": {
+        "home_env": "CODEX_HOME",
+        "default_home": "~/.codex",
+        "private": ("auth.json",),
+        "shared_dirs": ("sessions", "archived_sessions", "skills", "rules", "memories", "plugins"),
+        "shared_files": ("config.toml", "AGENTS.md", "history.jsonl", "session_index.jsonl"),
+        "clear_env": ("OPENAI_API_KEY", "CODEX_API_KEY"),
+        # Device sign-in: the default flow answers on a localhost port, which an operator
+        # signing in from a phone or another machine cannot reach.
+        "login": ("login", "--device-auth"),
+        "status": ("login", "status"),
+    },
+}
+#: What a manifest's `accounts.kind` may say: exactly the recipes above.
+ACCOUNT_KINDS = frozenset(ACCOUNT_RECIPES)
 #: First release cut is measured only on Linux x64. Other targets need reviewed recipes.
 INSTALL_PLATFORMS = frozenset({"linux-x64"})
 #: Fixed print/exec forms, verified against vendor CLIs in #1266. Never arbitrary flags.

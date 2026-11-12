@@ -250,6 +250,7 @@ def manifest_vocab() -> str:
                 for k, v in sorted(kinds.SIGNIN_KINDS.items())
             ),
         ),
+        ("`accounts.kind` (how the CLI keeps several logins apart)", _vals(kinds.ACCOUNT_KINDS)),
         ("`install.platform`", _vals(kinds.INSTALL_PLATFORMS)),
         ("`probe.kind`", _vals(kinds.PROBE_KINDS)),
         ("`verify`", _vals(kinds.VERIFY_CHECKS)),

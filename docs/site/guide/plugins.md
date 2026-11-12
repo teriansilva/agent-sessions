@@ -128,6 +128,7 @@ be a restriction, and a reader that skipped it would grant what the author meant
 | `[display]` | yes | `name`, `badge` (2–3 lowercase letters), `accent` (a colour **token**, never a hex), `id_prefix` (stripped when an id is shown), and `order` in the roster. |
 | `[install]` | no | `kind`, `authority`, `package`, `version`, `digest` (`sha256:…`), `entrypoint`, and optional `platform`. A declared platform must match this host. The installer consumes only a pinned reviewed recipe matching these coordinates. Scoped npm entrypoints admit `@scope` only immediately below `node_modules`. |
 | `[signin]` | no | `kind`: `cli-subcommand` takes a closed login `subcommand`; `auth-login` runs fixed `auth login`; `interactive` starts the CLI; `none` offers no sign-in. Executed only by the explicit temporary sign-in operation. |
+| `[accounts]` | no | `kind`: selects a built-in recipe for keeping several logins of this agent apart, each in a home of its own that only the agent's CLI writes. The recipe (the home variable, which entries are private or shared, the sign-in command) is BattleLab's; a manifest only names it. Only for an agent in a terminal. No built-in agent declares one yet. |
 | `[probe]` | no | `kind`, selecting a built-in fixed conversation mode. Absent means `terminal`. No argv, prompt or permission flags may be supplied. Forbidden for `chat`. |
 | `verify` | no | The fixed required checks performed by an explicit verification operation before enable. |
 
@@ -224,6 +225,7 @@ Every value a manifest may choose, generated from the kinds this build ships:
 | `display.accent` | `amber`, `blue`, `green`, `lime`, `magenta`, `slate`, `teal` |
 | `install.kind` → `authority` | `npm-prefix` → `registry.npmjs.org`; `tarball` → `github.com` |
 | `signin.kind` → `subcommand` | `auth-login` → none; `cli-subcommand` → `auth`, `login`; `interactive` → none; `none` → none |
+| `accounts.kind` (how the CLI keeps several logins apart) | `claude-config-dir`, `codex-home` |
 | `install.platform` | `linux-x64` |
 | `probe.kind` | `copilot-prompt-pinned`, `exec-readonly`, `print-conversation`, `print-pinned`, `prompt-pinned`, `prompt-session`, `run-session`, `terminal` |
 | `verify` | `binary`, `new`, `resume`, `store`, `transcript`, `usage`, `version` |
