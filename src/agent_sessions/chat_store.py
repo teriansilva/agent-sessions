@@ -513,7 +513,8 @@ class ChatStoreKind:
 
     def _native_row(self, root: Path, sid: str) -> Session | None:
         """A native API client's conversation (#1311): the same store layout holds its journal
-        (#1278), whose records are not chat turns — validate through the journal's own fold.
+        (#1278), whose records are not chat turns. The row reads only the journal's header and
+        first message (#1946), never a fold of its history: opening the conversation folds it.
 
         Memoize only the discovery row, never its event spool: a roster larger than the journal
         cache otherwise evicts and rebuilds every conversation on every walk (#1539). The memo
@@ -525,12 +526,12 @@ class ChatStoreKind:
         """
         from . import native_journal, native_segments, scancache
 
-        def observe(view, load):
+        def observe(view, _load):
             st = view.st
 
             def build():
                 # Segment 0 only (#1733): the header and first message, never the history.
-                header, first = native_journal.first_facts(view, load)
+                header, first = native_journal.first_facts(view)
                 return Session(
                     engine=self.owner.engine_id,
                     uuid=sid,

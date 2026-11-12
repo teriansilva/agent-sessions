@@ -777,24 +777,27 @@ def read(root: Path, session_id: str) -> Journal:
 _FIRST: OrderedDict[tuple, tuple[dict, str]] = OrderedDict()
 
 
-def first_facts(view: native_segments.View, load: Callable) -> tuple[dict, str]:
-    """(session header, first operator message) for a discovery row (#1733).
+def first_facts(view: native_segments.View) -> tuple[dict, str]:
+    """(session header, first operator message) for a discovery row (#1733, #1946).
 
-    A journal that never rolled over is folded as before (that fold validates it). In a chain the
-    header and first submit are read from the START of the segments — segment 0, or the first
+    The header and first submit are read from the START of the segments — segment 0, or the first
     later one holding a submit when the record rolled over before the first send — never the
-    whole history; a found message is cached by segment 0's exact stamp (it never changes)."""
+    whole history. That holds for a journal that never rolled over too (#1946): folding its whole
+    single segment for two facts cost every discovery row O(history), ~60 s for a cold app's
+    walk. Opening the conversation still folds (and so validates) all of it. In a chain a found
+    message is cached by segment 0's exact stamp (it never changes); a lone segment's stamp moves
+    with every append, so its row's own memo (`chat_store`) is the cache there. A lone segment
+    must still END on a complete record, as the fold required: one byte proves it. Only the header
+    and the first submit are validated here, so any other malformed record no longer hides the row;
+    opening the conversation (the fold) reports it, as in a chain."""
     if len(view.chain) == 1:
-        journal = load()
-        first = next(
-            (
-                op.request["params"].get("text") or ""
-                for op in journal.operations.values()
-                if op.request.get("action") == "submit"
-            ),
-            "",
-        )
-        return journal.header, first
+        size = view.st.st_size
+        if size == 0 or os.pread(view.fd, 1, size - 1) != b"\n":
+            raise JournalError("unavailable", "native journal is incomplete or exceeds its bound")
+        header, first = _scan_first_submit(view.chain[0], view.session_id, True)
+        if header is None:
+            raise JournalError("unavailable", "native journal has no matching session header")
+        return header, first or ""
     segment = view.chain[0]
     key = (view.session_id, *segment.stamp)
     with _CACHE_LOCK:

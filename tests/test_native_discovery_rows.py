@@ -98,8 +98,8 @@ def test_unchanged_roster_larger_than_projection_cache_does_not_rebuild_events(
     monkeypatch.setattr(native_events._Spool, "append", observed)
     store = kind(root)
     assert {r.uuid for r in store.scan()} == expected
-    assert writes, "the cold scan must actually validate and fold the journal events"
-    writes.clear()
+    # #1946: even a COLD row reads the header and first message, never the event history.
+    assert writes == [], "the cold scan folded the journal events"
     assert {r.uuid for r in store.scan()} == expected
     assert writes == [], "listing unchanged histories rebuilt their event projections"
     for sid in expected:
@@ -130,7 +130,12 @@ def test_same_length_rewrite_with_restored_mtime_invalidates_discovery(tmp_path)
     assert store.lookup(sid).cwd == "/work/new"
     path.write_bytes(path.read_bytes().replace(b'"native_event"', b'"broken_event"'))
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
-    assert store.lookup(sid) is None, "a cached row hid a newly malformed journal"
+    # #1946: a malformed LATER record no longer hides the row (discovery reads only the header and
+    # first message, as a chain's has since #1733), but the rewrite still invalidates the memo, and
+    # opening the conversation still refuses the journal.
+    assert store.lookup(sid).cwd == "/work/new"
+    with pytest.raises(native_journal.JournalError):
+        native_journal.read(root, sid)
 
 
 @pytest.mark.parametrize("damage", ["permissions", "symlink", "hardlink", "torn"])
@@ -221,3 +226,95 @@ def test_maximum_length_prompts_obey_the_aggregate_byte_budget_without_truncatio
     # Eviction affects caching only: callers still get the COMPLETE prompt for search.
     assert store.lookup(ids[0]).first_user_message == prompt
     assert store.lookup(ids[-1]).first_user_message == prompt
+
+
+def grow(root, binding, records=200):
+    """History after the first message: what a discovery row must never replay."""
+    pressure = {"kind": "memory_pressure", "data": {"level": "normal"}}
+    for _ in range(records // 20):
+        native_journal.append_events(root, binding, [pressure] * 20)
+
+
+def _no_fold(monkeypatch):
+    def refuse(*args, **kwargs):
+        pytest.fail("a discovery row folded the journal's history")
+
+    monkeypatch.setattr(native_journal, "fold", refuse)
+    monkeypatch.setattr(native_journal, "_fold_segment", refuse)
+    native_journal._CACHE.clear()
+    scancache.clear()
+
+
+def test_a_cold_single_segment_row_reads_only_the_header_and_first_message(tmp_path, monkeypatch):
+    """#1946: the row of a journal that never rolled over is two facts, not a replay of its
+    history — a cold walk of every API session cost about a minute on prod."""
+    root = tmp_path / "conversations"
+    sid, binding = conversation(root, cwd="/work/first", text="The first prompt")
+    grow(root, binding)
+    quiet(root, sid)
+    _no_fold(monkeypatch)
+    reads = []
+    pread = native_journal.os.pread
+    monkeypatch.setattr(
+        native_journal.os,
+        "pread",
+        lambda fd, n, offset: reads.append(n) or pread(fd, n, offset),
+    )
+    row = kind(root).lookup(sid)
+    assert (row.cwd, row.first_user_message) == ("/work/first", "The first prompt")
+    assert row.created_at
+    size = (root / f"{sid}.jsonl").stat().st_size
+    assert sum(reads) < size + 1024 * 1024  # one bounded chunk + the tail byte, never a fold
+
+
+def test_a_cold_single_segment_row_with_no_message_yet_is_empty(tmp_path, monkeypatch):
+    root = tmp_path / "conversations"
+    sid, _ = conversation(root, text=None)
+    _no_fold(monkeypatch)
+    assert kind(root).lookup(sid).first_user_message == ""
+
+
+def test_a_single_segment_row_matches_the_fold(tmp_path):
+    """The row's facts are the fold's: the header, and the first claimed submit's text."""
+    root = tmp_path / "conversations"
+    sid, binding = conversation(root, cwd="/work/x", text="Opening line")
+    grow(root, binding)
+    quiet(root, sid)
+    journal = native_journal.read(root, sid)
+    first = next(
+        op.request["params"]["text"]
+        for op in journal.operations.values()
+        if op.request["action"] == "submit"
+    )
+    row = kind(root).lookup(sid)
+    assert (row.cwd, row.first_user_message) == (journal.header["cwd"], first)
+
+
+def test_a_queued_first_message_is_the_rows_first_message(tmp_path, monkeypatch):
+    """A first message QUEUED behind a busy turn (`native_queued`) is the row's first message, as
+    it is the fold's (#1946 review): the discovery reader must not see only claimed submits."""
+    root = tmp_path / "conversations"
+    sid, binding = conversation(root, text=None)
+    native_journal.claim(
+        root,
+        {
+            **binding.envelope("request"),
+            "request_id": str(uuid.uuid4()),
+            "action": "submit",
+            "params": {
+                "operation_id": str(uuid.uuid4()),
+                "expected_revision": 1,
+                "text": "Queued first prompt",
+                "context": {},
+            },
+        },
+        queued=True,
+    )
+    grow(root, binding)
+    quiet(root, sid)
+    journal = native_journal.read(root, sid)
+    (only,) = journal.operations.values()
+    assert only.handoff == "queued"
+    _no_fold(monkeypatch)
+    row = kind(root).lookup(sid)
+    assert row.first_user_message == only.request["params"]["text"] == "Queued first prompt"
