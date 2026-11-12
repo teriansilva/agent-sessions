@@ -760,6 +760,17 @@ export interface HqDispatch {
   contact: string;
   by: string;
   members: HqDispatchMember[];
+  /** Where the same events went (#1841), joined by event: absent when the route ledger can't be
+   *  read. A route that skipped them shows its skip; only an event in a sent copy reads "sent". */
+  routes?: HqDispatchRoute[];
+}
+
+export interface HqDispatchRoute {
+  instance: string;
+  connector: string;
+  state: string;
+  sent: boolean;
+  resolved: boolean;
 }
 
 export interface HqDispatchList {

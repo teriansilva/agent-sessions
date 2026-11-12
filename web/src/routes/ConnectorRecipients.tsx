@@ -259,7 +259,7 @@ function ListedRecipients({
       </label>
       <p className={canSend ? settings.callout : settings.hint}>
         {canSend
-          ? "HQ never sends on its own: every message waits for your tap on its card in HQ, and goes only to the recipients above."
+          ? "HQ never sends a proposed message on its own: each one waits for your tap on its card in HQ, and goes only to the recipients above. Notifications (below) are the only thing sent without a tap, and only to the one destination you switch on."
           : "Save at least one recipient after a passing test to switch this on."}
       </p>
     </div>

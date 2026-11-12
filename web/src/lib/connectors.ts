@@ -58,8 +58,166 @@ export type ConnectorInstance = {
   } | null;
   /** An email connector's From address (#1836): `""` until set. Absent on every other kind. */
   sender?: string;
+  /** A messenger's notify route (#1841): the settings, and whether it is on NOW. */
+  notify?: NotifySettings;
+  /** Whether notify can be switched on now; when not, `notify_why` says why in words. */
+  notify_ok?: boolean;
+  notify_why?: string | null;
   created_at: number;
 };
+
+export const NOTIFY_CLASSES = [
+  "needs you",
+  "mission escalation",
+  "automation failed",
+] as const;
+export type NotifyClass = (typeof NOTIFY_CLASSES)[number];
+export const NOTIFY_WINDOWS = [0, 30, 60, 120, 300, 600] as const;
+
+export type NotifyQuiet = { from: string; to: string; tz: string };
+
+/** A messenger's notify route (#1841), as the server reports it. */
+export type NotifySettings = {
+  enabled: boolean;
+  destination: string;
+  /** What notify was pinned to when it was switched on (`member`: Matrix's other person). */
+  identity: { id: string; label: string; member: string } | null;
+  classes: NotifyClass[];
+  window_s: number;
+  quiet: NotifyQuiet | null;
+  cap_per_hour: number;
+  include_line: boolean;
+  since: number | null;
+  /** Why the route went back to off by itself. */
+  off: {
+    reason:
+      | "connector_changed"
+      | "needs_test"
+      | "recipients_unbound"
+      | "destination_removed";
+    at: number;
+  } | null;
+};
+
+export type NotifyBody = {
+  enabled: boolean;
+  destination_id: string;
+  classes: NotifyClass[];
+  window_s: number;
+  quiet: NotifyQuiet | null;
+  cap_per_hour: number;
+  include_line: boolean;
+};
+
+/** One copy a route sent, skipped or gave up (#1841): never its text. */
+export type ConnectorDelivery = {
+  id: string;
+  state: string;
+  at: number;
+  settled_at: number | null;
+  code: string;
+  members: { label: string; link: string; sent: boolean; resolved: boolean }[];
+};
+
+export const NOTIFY_CLASS_LABEL: Record<NotifyClass, string> = {
+  "needs you": "Needs you — a session is waiting on you",
+  "mission escalation": "Mission escalations",
+  "automation failed": "Automation failures",
+};
+
+/** A saved recipient a route may use: a Telegram private chat, a Matrix room (checked for just
+ *  two people when switched on), or a typed address. */
+export function notifyEligible(adapter: string, kind: string): boolean {
+  if (adapter === "telegram-bot") return kind === "private chat";
+  if (adapter === "matrix-cs") return kind === "room";
+  return adapter === "smtp" && kind === "email";
+}
+
+/** Why a route went back to off by itself, in words. */
+export function notifyOffLine(off: NotifySettings["off"]): string | null {
+  if (!off) return null;
+  return {
+    connector_changed:
+      "Notifications were switched off because this connector changed (its token, address or account). Switch them on again to send here.",
+    needs_test:
+      "Notifications were switched off because the connector’s last test failed. Test it again, then switch them on.",
+    recipients_unbound:
+      "Notifications were switched off because the recipients were chosen for another bot or account. Save them again, then switch notifications on.",
+    destination_removed:
+      "Notifications were switched off because their destination is no longer a saved recipient.",
+  }[off.reason];
+}
+
+/** One delivery, in plain words: ``[what happened, detail or null]``. */
+export function deliveryWords(d: ConnectorDelivery): [string, string | null] {
+  const code = d.code ? ` (${d.code.replace(/_/g, " ")})` : "";
+  switch (d.state) {
+    case "retracted":
+      return ["Sent · ✓ resolved", null];
+    case "delivered":
+    case "delivered_final":
+    case "retract_unsupported":
+      return ["Sent", null];
+    case "retract_failed":
+      return ["Sent", "couldn’t mark it resolved yet; trying again"];
+    case "retract_gave_up":
+      return ["Sent", "couldn’t mark it resolved"];
+    case "retract_lost":
+      return ["Sent", "can’t be marked resolved: the connector changed"];
+    case "retract_window_passed":
+      return ["Sent", "no longer marked when handled (after 30 days)"];
+    case "retract_evicted":
+      return [
+        "No longer marked when handled",
+        "too many recent notifications were kept",
+      ];
+    case "skipped_closed":
+      return ["Skipped · already handled", null];
+    case "skipped_quiet":
+      return ["Skipped · quiet hours", null];
+    case "skipped_rate":
+      return ["Skipped · hourly limit", null];
+    case "skipped_class":
+      return ["Skipped · that kind is off", null];
+    case "expired":
+      return ["Not sent", "it couldn’t be checked in time"];
+    case "unconfirmed":
+      return [
+        "Not confirmed",
+        "no clear answer came back; it is not sent again",
+      ];
+    case "failed":
+      return ["Not sent", `nothing went out${code}`];
+    case "held_unknown":
+      return ["Waiting", "couldn’t check it yet"];
+    case "delivering":
+      return ["Sending", null];
+    default:
+      return [d.state, null];
+  }
+}
+
+/** A dispatch's route state (#1841), short: "sent · ✓ resolved", "skipped · quiet hours". */
+export function routeWords(r: {
+  state: string;
+  sent: boolean;
+  resolved: boolean;
+}): string {
+  if (r.sent) return r.resolved ? "sent · ✓ resolved" : "sent";
+  const skipped: Record<string, string> = {
+    skipped_closed: "skipped · already handled",
+    skipped_quiet: "skipped · quiet hours",
+    skipped_rate: "skipped · hourly limit",
+    skipped_class: "skipped · that kind is off",
+    expired: "not sent · couldn’t check in time",
+    failed: "not sent",
+    unconfirmed: "not confirmed",
+    held_unknown: "waiting",
+    delivering: "sending",
+    pending: "waiting",
+  };
+  return skipped[r.state] ?? r.state.replace(/_/g, " ");
+}
 
 export type ConnectorCatalog = {
   catalog: ConnectorManifest[];

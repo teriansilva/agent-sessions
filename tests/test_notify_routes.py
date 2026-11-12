@@ -1020,6 +1020,7 @@ def test_notify_needs_a_private_chat_and_the_origin(prov, monkeypatch):
         ({"quiet": {"from": "22:00", "to": "07:00", "tz": "Mars/Olympus"}}, "bad_quiet"),
         ({"quiet": {"from": "25:00", "to": "07:00", "tz": "UTC"}}, "bad_quiet"),
         ({"extra": 1}, "bad_body"),
+        ({"window_s": 60.0}, "bad_window"),  # a float is refused with the field's own words
     ],
 )
 def test_the_notify_body_is_checked_field_by_field(patch, code):
@@ -1082,3 +1083,23 @@ def test_escalation_settled_reads_the_missions_store(monkeypatch, tmp_path):
 def test_a_needs_you_member_is_unknown_when_the_store_is_unreadable():
     r = notify_routes.Resolver(None)
     assert r(f"needs-you:{SID}:1a") == "unknown" and r("automation:abc:r1") == "open"
+
+
+@pytest.mark.parametrize("damage", ["no_snapshot", "no_membership", "foreign_sent"])
+def test_a_hand_edited_ledger_with_a_broken_cross_reference_is_unreadable(damage, prov):
+    """Hermes 7985: no reader meets a KeyError; the file is unreadable (503, routes omitted)."""
+    iid = tg_route()
+    announce_automation(rid="r20")
+    pass_()
+    doc = ledger()
+    key = next(iter(doc["snap"]))
+    if damage == "no_snapshot":
+        del doc["snap"][key]
+    elif damage == "no_membership":
+        del doc["member_of"][key]
+    else:
+        next(iter(doc["deliveries"].values()))["sent"].append("automation:abc:elsewhere")
+    notify_routes._write(doc)
+    with pytest.raises(notify_routes.StoreUnreadable):
+        notify_routes.deliveries(iid)
+    assert pass_() == {"skipped": "store unreadable"}

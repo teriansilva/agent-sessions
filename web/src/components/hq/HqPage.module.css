@@ -292,6 +292,15 @@
   text-transform: uppercase;
   color: var(--text-2);
 }
+/* Where the same events went (#1841): one quiet line per dispatch, "Telegram · sent · ✓ resolved". */
+.routes {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
 /* Opened from a link: the HUD tint, as board 3 draws it. */
 .landed {
   display: flex;

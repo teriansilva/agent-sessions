@@ -427,6 +427,46 @@ Addresses belong to the account they were saved for: if the connector later sign
 account, sending switches off until you save them again. Before downgrading BattleLab to a
 version without email, remove the Email connector, as for Telegram and Matrix.
 
+### Notifications to your own Telegram, Matrix or mail
+
+A messenger connector can also carry a short copy of BattleLab's notifications to **one
+destination of your own**, under its **Notifications** section. Each copy holds what happened
+("Waiting for your approval", "Mission escalation", "Automation failed") and a link into
+BattleLab, nothing else, unless you tick **Include HQ's line**, which adds HQ's one-line note
+(written by your AI from project, mission and automation names). The bell and your device
+notifications don't change.
+
+The destination is one of the recipients you already saved, and it must be private:
+
+- **Telegram**: a private chat with the bot. Its id is the person's own Telegram user id, and the
+  page shows the name and `@username` Telegram gave. Only switch it on if that's you.
+- **Matrix**: a room of just the bot and one other person, unencrypted. That person is pinned when
+  you switch notifications on, and before every message BattleLab checks that the room still holds
+  exactly the bot and them. If anyone else joins, or they leave, nothing more is sent until you
+  switch notifications off and on again.
+- **Email**: one of your typed addresses. BattleLab can't verify who reads it.
+
+BattleLab checks that the destination is private and still the one you switched on; it can't
+check that it is yours, which is why the page shows who it is first. Changing the connector's
+token, address or account, a failed test, or saving the recipients without the destination
+switches notifications off, and the page says why.
+
+**Which, and how many.** Choose the kinds (needs you, mission escalations, automation failures),
+a bundle window (events within it arrive as one message), quiet hours in your own time zone, and
+an hourly limit. A notification skipped by quiet hours or the limit stays in the bell and is never
+sent later.
+
+**Marked when handled.** When you handle an event in BattleLab, its Telegram or Matrix message is
+edited: the line gains a ✓, and the message reads "✓ resolved" once everything in it is handled.
+Mail can't be taken back, so a mail stays as it was. A message is never sent twice: if BattleLab
+can't tell whether one arrived, it says **Not confirmed** and doesn't send it again. **Recent**
+lists what was sent and skipped, and the Dispatches view says where each dispatch's events went
+("Telegram · sent · ✓ resolved").
+
+Notifications need `AGENT_SESSIONS_ORIGIN` set, because every link starts with it. The API:
+`POST /api/connectors/instances/<id>/notify` with `{enabled, destination_id, classes, window_s,
+quiet, cap_per_hour, include_line}`, and `GET /api/connectors/instances/<id>/deliveries`.
+
 **What happens to the token.** It is stored encrypted, never shown again, and sent only to the
 address you saved it for: over HTTPS (plain HTTP only to this machine itself), or, for the Email
 connector's app password, over TLS to your mail server (`smtps://`, or `smtp://` with STARTTLS;

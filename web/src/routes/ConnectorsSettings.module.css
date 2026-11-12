@@ -131,3 +131,45 @@
     min-height: 44px;
   }
 }
+
+/* A messenger's notify route (#1841): a label and its control on one line, wrapping on a phone. */
+.notifyRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  min-height: 44px;
+}
+.notifyRow > label:first-child:not([class]) {
+  min-width: 10rem;
+}
+.notifyRow select {
+  max-width: 100%;
+  min-height: 44px;
+}
+.notifyTime {
+  width: 7.5rem;
+  min-height: 44px;
+}
+.notifyCap {
+  width: 5rem;
+  min-height: 44px;
+}
+.notifySet {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-1);
+}
+.notifySet label {
+  min-height: 44px;
+}
+.deliveries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}

@@ -16,6 +16,7 @@ import { Link } from "react-router-dom";
 
 import { api, ApiError } from "../../lib/api";
 import { HQ_DISPATCHES_PATH, HQ_PATH } from "../../lib/routes";
+import { routeWords } from "../../lib/connectors";
 import { settingsPath } from "../../routes/settingsTabs";
 import type { HqDispatch, HqDispatchMember } from "../../types/api";
 import { DISPATCH_POLL_MS, nextDispatchRead } from "./dispatchReads";
@@ -463,6 +464,24 @@ export function DispatchesView({
                             <Member key={i} m={m} />
                           ))}
                         </ul>
+                        {d.routes && d.routes.length > 0 ? (
+                          <p
+                            className={s.routes}
+                            data-testid="hq-dispatch-routes"
+                          >
+                            Sent to{" "}
+                            {d.routes.map((r, ri) => (
+                              <span
+                                key={r.instance}
+                                data-testid="hq-dispatch-route"
+                              >
+                                {ri > 0 ? "; " : ""}
+                                {r.connector || "a removed connector"} ·{" "}
+                                {routeWords(r)}
+                              </span>
+                            ))}
+                          </p>
+                        ) : null}
                         <div className={s.dSrc}>{d.by} wrote</div>
                         <p className={s.hqline} data-testid="hq-dispatch-line">
                           {d.line}

@@ -58,7 +58,7 @@ test("Telegram: test the bot, pick chats the server listed, save, then switch se
   await expect(send).toBeEnabled();
   await send.check();
   await expect(c.getByTestId("connector-status")).toHaveText("HQ may propose messages");
-  await expect(rec.getByText(/HQ never sends on its own/)).toBeVisible();
+  await expect(rec.getByText(/HQ never sends a proposed message on its own/)).toBeVisible();
 
   // Keyboard: Tab walks the recipients, then Refresh (Save is disabled until something changes).
   await rec.getByRole("checkbox", { name: /Marcus/ }).focus();

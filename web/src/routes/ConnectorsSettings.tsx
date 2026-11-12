@@ -26,6 +26,7 @@ import {
   type ConnectorManifest,
 } from "../lib/connectors";
 
+import { ConnectorNotify } from "./ConnectorNotify";
 import { ConnectorRecipients } from "./ConnectorRecipients";
 import styles from "./ConnectorsSettings.module.css";
 import settings from "./Settings.module.css";
@@ -96,9 +97,10 @@ export function ConnectorsSettings() {
         Connectors let HQ read from your other services: ask it about an issue,
         a pull request, a commit’s checks or a file in your cloud, and it looks
         them up. Those connectors <b>only read</b>. A messenger connector can
-        let HQ <b>propose</b> a message to a recipient you allowed, and nothing
-        is sent until you tap it. You sign in with your own accounts, so HQ sees
-        what those accounts can see.
+        let HQ <b>propose</b> a message to a recipient you allowed, sent only
+        when you tap it. You sign in with your own accounts, so HQ sees what
+        those accounts can see. A messenger can also carry your notifications to
+        one destination of your own.
       </p>
       {loadError && (
         <p className={settings.err} role="alert">
@@ -534,6 +536,16 @@ export function ConnectorCard({
               onChanged={onChanged}
               matrix={manifest?.adapter === "matrix-cs"}
               email={manifest?.adapter === "smtp"}
+            />
+          )}
+          {(manifest?.capabilities.send?.length ?? 0) > 0 && inst.notify && (
+            <ConnectorNotify
+              key={`${inst.id}:${inst.generation}:${inst.notify.enabled}`}
+              inst={inst}
+              adapter={manifest?.adapter ?? ""}
+              connector={manifest?.label ?? "the service"}
+              busy={busy !== null}
+              onChanged={onChanged}
             />
           )}
 

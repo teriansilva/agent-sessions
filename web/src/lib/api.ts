@@ -12,7 +12,7 @@ import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, Ga
 import type { CollectionInput, SecretAccessEntry, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
 import type { SessionCapacity, Resources, ResourceSettings, ResourceValues } from "../types/resources";
 import type { CreatedShare, ShareList, ShareMode } from "./shareFormat";
-import type { ConnectorCatalog, ConnectorInstance, ConnectorTestResult, RecipientCandidate } from "./connectors";
+import type { ConnectorCatalog, ConnectorDelivery, ConnectorInstance, ConnectorTestResult, NotifyBody, RecipientCandidate } from "./connectors";
 import type { DeploymentReceipt, DeploymentRemoval, DeploymentReview, DeploymentStatus, PlaybookInputs } from "../types/playbookDeployment";
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
@@ -1053,6 +1053,13 @@ export const api = {
     }),
   setConnectorSend: (id: string, send: boolean) =>
     mutateJson<ConnectorInstance>("POST", `/api/connectors/instances/${enc(id)}/capabilities`, { send }),
+  // A messenger's notify route (#1841): every field validated by the server, refusals in words.
+  setConnectorNotify: (id: string, body: NotifyBody) =>
+    mutateJson<ConnectorInstance>("POST", `/api/connectors/instances/${enc(id)}/notify`, body),
+  connectorDeliveries: (id: string) =>
+    getJsonWithDetail<{ deliveries: ConnectorDelivery[] }>(
+      `/api/connectors/instances/${enc(id)}/deliveries`,
+    ),
   removeConnector: (id: string) =>
     mutateJson<{ removed: string }>("DELETE", `/api/connectors/instances/${enc(id)}`),
   publicGallery: () => getJsonWithDetail<GalleryIndex>("/api/gallery"),

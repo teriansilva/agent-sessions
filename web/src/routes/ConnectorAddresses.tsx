@@ -368,7 +368,7 @@ export function ConnectorAddresses({
       </label>
       <p className={canSend ? settings.callout : settings.hint}>
         {canSend
-          ? "HQ never sends on its own: every message waits for your tap on its card in HQ, goes only to the addresses above, and mail can’t be taken back once it’s sent."
+          ? "HQ never sends a proposed message on its own: each one waits for your tap on its card in HQ, goes only to the addresses above, and mail can’t be taken back once it’s sent. Notifications (below) are the only thing sent without a tap, and only to the one address you switch on."
           : "Set a From address and save at least one address after a passing test to switch this on."}
       </p>
     </div>

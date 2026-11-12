@@ -1327,7 +1327,7 @@ def check_notify_body(body: object) -> dict:
     if body["enabled"] and not cls:
         raise Refused("choose at least one kind of notification", "bad_classes")
     w = body["window_s"]
-    if isinstance(w, bool) or w not in NOTIFY_WINDOWS:
+    if not isinstance(w, int) or isinstance(w, bool) or w not in NOTIFY_WINDOWS:
         raise Refused(
             "the bundle window is one of 0, 30, 60, 120, 300 or 600 seconds", "bad_window"
         )

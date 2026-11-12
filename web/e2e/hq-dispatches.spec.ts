@@ -32,6 +32,8 @@ interface Bundle {
   line: string | null;
   at: number;
   members: Member[];
+  /** Where the same events went (#1841); absent when the route ledger can't be read. */
+  routes?: unknown[];
 }
 interface Fake {
   bundles: Bundle[];
@@ -84,6 +86,7 @@ const view = (b: Bundle) => ({
   contact: "General Amara Okafor",
   by: "Gen. Okafor",
   members: b.members,
+  ...(b.routes ? { routes: b.routes } : {}),
 });
 
 async function mockShell(
@@ -393,6 +396,33 @@ test("every event in a bundle shows its OWN link, matching its row's Open target
   ).toHaveText(fake.bundles[0].line!);
   await opens.nth(0).click();
   await expect(page).toHaveURL(/\/mission\/automations\/nightlydocs$/);
+});
+
+test("each dispatch says where the same events went: sent, resolved, or skipped (#1841)", async ({
+  page,
+}) => {
+  const bundles = twoDispatches();
+  bundles[0].routes = [
+    { instance: "c_1", connector: "Telegram", state: "retracted", sent: true, resolved: true },
+    { instance: "c_2", connector: "Email (SMTP)", state: "skipped_quiet", sent: false, resolved: false },
+  ]; // prettier-ignore
+  const fake = fakeOf(bundles);
+  await mockShell(page, fake);
+  await page.goto(hqDispatchPath(bid(1)));
+  const line = dispatch(page, bid(1)).getByTestId("hq-dispatch-routes");
+  await expect(line).toHaveText(
+    "Sent to Telegram · sent · ✓ resolved; Email (SMTP) · skipped · quiet hours",
+  );
+  // A dispatch whose events went nowhere (or an unreadable route ledger) shows no line.
+  await expect(
+    dispatch(page, bid(2)).getByTestId("hq-dispatch-routes"),
+  ).toHaveCount(0);
+  const over = await page.evaluate(
+    () =>
+      document.documentElement.scrollWidth -
+      document.documentElement.clientWidth,
+  );
+  expect(over).toBeLessThanOrEqual(0);
 });
 
 test("an unknown id reads 'isn't here'; a malformed one asks the server nothing", async ({

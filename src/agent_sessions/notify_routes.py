@@ -231,6 +231,19 @@ def _shape(raw: object) -> dict:
     for rb, d in doc["deliveries"].items():
         if rb not in doc["bundles"] or not _valid_delivery(d):
             raise StoreUnreadable("a delivery is malformed")
+    # The cross-references every reader relies on (Hermes 7985): each member has its membership
+    # and its snapshot, and a delivery names only its bundle's members. This module writes them in
+    # one locked write; a hand-edited file that breaks one is unreadable, never a KeyError.
+    for rb, b in doc["bundles"].items():
+        for t in b["members"]:
+            key = f"{b['route']}|{t}"
+            if doc["member_of"].get(key) != rb or key not in doc["snap"]:
+                raise StoreUnreadable("a bundle member has no membership or snapshot")
+        d = doc["deliveries"].get(rb)
+        if d is not None and not set(d["members"] + d["sent"] + d["resolved"] + d["tried"]) <= set(
+            b["members"]
+        ):
+            raise StoreUnreadable("a delivery names an event outside its bundle")
     return doc
 
 
