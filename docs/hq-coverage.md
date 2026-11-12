@@ -159,6 +159,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Plugins: enable (activate), disable, remove, reload roster, recover, cancel operation | POST /api/plugins/activate, …/disable, …/remove, …/reload, …/recover, …/operations/{id}/cancel | P6 W (remove is destructive) |
 | 2FA enroll / confirm / disable / recovery codes; password; sign out; device link | /api/2fa/*, /api/password, /change-password, /logout, /link/* | **never** (credentials and identity) |
 | Artifacts (#1932): find by provenance and get the link | GET /api/artifacts, GET /api/artifacts/{id} | have (`artifacts_find`) |
+| Artifacts: share publicly / revoke (the operator's act in the artifact's page) | POST, DELETE /api/artifacts/{id}/share | **never** (public exposure) |
 | Artifacts: the global switch; activation per session, project, mission; delete | GET/PUT /api/artifacts/settings, GET/PUT /api/artifacts/activation, DELETE /api/artifacts/{id} | **never** (activation widens what agents may publish; delete is the operator's own act) |
 | Public shares: list; revoke one; revoke all | GET /api/shares, DELETE /api/shares/{id}, POST …/revoke-all | P6 R/W |
 | Public shares: create (view only) | POST /api/shares mode=view | P6 W (external: public exposure; password and expiry typed on the card) |
@@ -635,6 +636,9 @@ GET    /api/artifacts/activation                                                
 PUT    /api/artifacts/activation                                                  never  # widens agents
 GET    /api/artifacts/{aid}                                                       have
 DELETE /api/artifacts/{aid}                                                       never  # destructive
+POST   /api/artifacts/{aid}/share                                                 never  # public exposure
+DELETE /api/artifacts/{aid}/share                                                 never  # the share's own control
+GET    /artifacts/p/{public_id}                                                   n/a  # hosted bytes
 GET    /artifacts/p/{public_id}/{rest:path}                                       n/a  # hosted bytes
 GET    /artifacts/v/{token}/{rest:path}                                           n/a  # hosted bytes
 GET    /artifacts/v/{token}                                                       n/a  # hosted bytes

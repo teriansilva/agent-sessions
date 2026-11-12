@@ -487,6 +487,7 @@ def test_the_real_tool_publishes_over_the_socket_and_explains_refusals(broker, p
     replies = {r["id"]: r for r in map(json.loads, proc.stdout.splitlines())}
     assert [t["name"] for t in replies[2]["result"]["tools"]] == [
         "artifact_publish",
+        "artifact_share_public",
         "artifact_list",
     ]
     assert replies[3]["result"]["isError"] is False
@@ -1061,3 +1062,131 @@ def test_an_absurd_since_through_the_real_dispatch_is_a_refusal_not_a_failed_tur
         )
         assert meta.get("error") == "bad_arguments", (raw[:40], meta)
         assert "since_hours" in json.loads(content)["error"]
+
+
+# ---- P3: public links ----------------------------------------------------------------------------
+
+
+def _csrf_headers(c, cfg):
+    return {"X-CSRF-Token": c.get("/api/config").json()["csrf"], "Origin": cfg.origin}
+
+
+def test_a_public_link_opens_without_an_account_and_a_revoke_ends_it(
+    client, auth_cfg, origin, proj
+):
+    a = _published(origin, proj)
+    _login(client, auth_cfg)
+    h = _csrf_headers(client, auth_cfg)
+    assert client.post(f"/api/artifacts/{a['id']}/share").status_code == 403  # no CSRF
+    shared = client.post(f"/api/artifacts/{a['id']}/share", headers=h).json()
+    assert shared["visibility"] == "public"
+    path = shared["public_url"].split("your-domain.example", 1)[1]
+    assert path.startswith("/artifacts/p/") and path.endswith("/")
+    # Sharing again answers the same link.
+    again = client.post(f"/api/artifacts/{a['id']}/share", headers=h).json()
+    assert again["public_url"] == shared["public_url"]
+    visitor = TestClient(client.app, base_url="https://your-domain.example")
+    page = visitor.get(path)
+    assert page.status_code == 200 and "<h1>hi</h1>" in page.text
+    assert "allow-same-origin" not in page.headers["content-security-policy"]
+    assert page.headers["cache-control"] == "no-store"
+    assert "cross-origin-resource-policy" not in page.headers  # its own assets must load
+    assert page.headers["referrer-policy"] == "no-referrer"
+    assert visitor.get(path + "docs/").text == "docs"
+    # The admin cookie gets nothing extra on a public route.
+    assert client.get(path).text == page.text
+    # It follows the latest revision.
+    (proj / "dist" / "index.html").write_text("<h1>v2</h1>")
+    artifact_store.publish(
+        origin, {"path": "dist", "title": "Hi", "why": "w", "artifact_id": a["id"]}
+    )
+    assert "v2" in visitor.get(path).text
+    # Revoke: the next request is a 404, and a re-share is a NEW link.
+    assert client.delete(f"/api/artifacts/{a['id']}/share", headers=h).json()["public_url"] is None
+    assert visitor.get(path).status_code == 404
+    fresh = client.post(f"/api/artifacts/{a['id']}/share", headers=h).json()["public_url"]
+    assert fresh != shared["public_url"]
+    assert visitor.get(path).status_code == 404
+
+
+def test_unknown_public_ids_are_404_and_listed_as_public(client, auth_cfg, origin, proj):
+    a = _published(origin, proj)
+    assert client.get("/artifacts/p/" + "A" * 22 + "/").status_code == 404
+    assert client.get("/artifacts/p/short/").status_code == 404
+    _login(client, auth_cfg)
+    client.post(f"/api/artifacts/{a['id']}/share", headers=_csrf_headers(client, auth_cfg))
+    assert client.get("/api/artifacts?visibility=public").json()["total"] == 1
+    assert client.get("/api/artifacts?visibility=private").json()["total"] == 0
+
+
+def test_public_links_are_off_without_a_login(tmp_path, monkeypatch, password_hash, origin, proj):
+    from agent_sessions.auth import AuthConfig
+    from agent_sessions.main import create_app
+
+    monkeypatch.setenv("AGENT_SESSIONS_USERNAME", "marcus")
+    monkeypatch.setenv("AGENT_SESSIONS_PASSWORD_HASH", password_hash)
+    monkeypatch.setenv("AGENT_SESSIONS_SECRET_KEY", "x" * 64)
+    monkeypatch.setenv("AGENT_SESSIONS_ORIGIN", "https://your-domain.example")
+    monkeypatch.setenv("AGENT_SESSIONS_AUTH_MODE", "none")
+    monkeypatch.setenv("AGENT_SESSIONS_2FA_FILE", str(tmp_path / "2fa.json"))
+    cfg = AuthConfig.from_env()
+    assert cfg.auth_mode == "none"
+    a = _published(origin, proj)
+    # A link minted before the switch opens nothing.
+    shared = artifact_store.share(a["id"])
+    c = TestClient(create_app(cfg), base_url="https://your-domain.example")
+    try:
+        path = shared["public_url"].split("your-domain.example", 1)[1]
+        assert c.get(path).status_code == 404
+        h = {"X-CSRF-Token": c.get("/api/config").json()["csrf"], "Origin": cfg.origin}
+        r = c.post(f"/api/artifacts/{a['id']}/share", headers=h)
+        assert r.status_code == 409 and "AUTH_MODE=none" in r.json()["reason"]
+        # Revoke still works, so a link can be ended rather than come back with a login.
+        assert c.delete(f"/api/artifacts/{a['id']}/share", headers=h).status_code == 200
+    finally:
+        artifact_store.PUBLIC_AVAILABLE = True
+
+
+def test_the_agent_shares_only_when_its_session_is_public(broker, proj):
+    artifact_store.set_activation("session", SESSION, "private")
+    env = artifact_broker.launch_env(
+        SESSION, SESSION, str(proj), engine="claude", manifest=MANIFEST
+    )
+    (proj / "f.txt").write_text("x")
+    pub = artifact_broker.handle(
+        _token(env), "publish", {"path": str(proj / "f.txt"), "title": "F", "why": "w"}
+    )
+    aid = pub["artifact"]["id"]
+    assert artifact_broker.handle(_token(env), "share", {"artifact_id": aid}) == {
+        "ok": False,
+        "error": "not_public",
+    }
+    artifact_store.set_activation("session", SESSION, "public")
+    env = artifact_broker.launch_env(
+        SESSION, SESSION, str(proj), engine="claude", manifest=MANIFEST
+    )
+    out = artifact_broker.handle(_token(env), "share", {"artifact_id": aid})
+    assert (
+        out["ok"] is True
+        and out["artifact"]["public_url"].startswith("https://your-domain.example/artifacts/p/")
+        or out["artifact"]["public_url"].startswith("/artifacts/p/")
+    )
+    # Never another session's artifact.
+    artifact_store.set_activation("session", OTHER, "public")
+    other = artifact_broker.launch_env(OTHER, OTHER, str(proj), engine="claude", manifest=MANIFEST)
+    assert artifact_broker.handle(_token(other), "share", {"artifact_id": aid})["error"] == (
+        "not_yours"
+    )
+    artifact_store.PUBLIC_AVAILABLE = False
+    try:
+        assert artifact_broker.handle(_token(env), "share", {"artifact_id": aid})["error"] == (
+            "public_off"
+        )
+        aid2 = artifact_broker.handle(
+            _token(env), "publish", {"path": str(proj / "f.txt"), "title": "G", "why": "w"}
+        )["artifact"]["id"]
+        assert artifact_broker.handle(_token(env), "share", {"artifact_id": aid2})["error"] == (
+            "public_off"
+        )
+    finally:
+        artifact_store.PUBLIC_AVAILABLE = True

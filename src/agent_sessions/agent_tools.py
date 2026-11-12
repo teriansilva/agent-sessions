@@ -407,7 +407,7 @@ _COPILOT_SERVER_TOOLS: dict[str, list[str]] = {
     SECRETS_SERVER_NAME: ["secret_list", "secret_path"],
     HQ_SERVER_NAME: ["hq_report"],
     SHELF_SERVER_NAME: ["shelf_add"],
-    ARTIFACTS_SERVER_NAME: ["artifact_list", "artifact_publish"],
+    ARTIFACTS_SERVER_NAME: ["artifact_list", "artifact_publish", "artifact_share_public"],
 }
 
 

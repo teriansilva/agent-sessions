@@ -45,7 +45,7 @@ ALL_ENV_KEYS = ENV_KEYS
 TOKEN_FILE = ".token"  # noqa: S105 — a file NAME
 REQUEST_MAX = 16 * 1024
 _CAPABILITY_LABEL = "artifact-capability"
-OPS = frozenset({"publish", "list"})
+OPS = frozenset({"publish", "list", "share"})
 
 
 class Refused(Exception):
@@ -317,6 +317,16 @@ def handle(token: object, op: object, args: object = None) -> dict:
             phys_key=cap["phys_key"],
             cwd=cap["cwd"],
         )
+        if op == "share":
+            if cap["mode"] != "public":
+                raise Refused("not_public")
+            aid = args.get("artifact_id") if isinstance(args, dict) else None
+            owned = artifact_store.owned(artifact_store.validate_id(aid), origin)
+            if owned is None:
+                raise Refused("unknown_artifact")
+            if not owned:
+                raise Refused("not_yours")
+            return {"ok": True, "artifact": _agent_view(artifact_store.share(aid))}
         if op == "list":
             page = artifact_store.list_artifacts(owner=(origin.session_key, origin.phys_key))
             return {"ok": True, "items": [_agent_view(a) for a in page["items"]]}

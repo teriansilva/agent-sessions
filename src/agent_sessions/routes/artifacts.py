@@ -22,7 +22,9 @@ link ``/artifacts/<id>/`` (cookie required, else the sign-in page) redirects to
 names exactly one artifact (and optionally one revision) and expires after `VIEW_TTL_S`. Relative
 links stay under the token's prefix. The token reads that one artifact and nothing else.
 
-``/artifacts/p/<public_id>/`` (public links) is P3; until then it is a 404.
+**Public links** (``/artifacts/p/<public_id>/``, P3) need no account. The row is re-read on every
+request, so a revoke ends the link on the next one; the link follows the latest revision. In
+``AUTH_MODE=none`` every public route is a 404 and sharing is refused (`public-shares.md`'s rule).
 """
 
 from __future__ import annotations
@@ -152,6 +154,7 @@ async def _json_body(request: Request) -> dict | None:
 
 
 def register(app: FastAPI, *, cfg: AuthConfig, logged_in, csrf_guard) -> None:
+    artifact_store.PUBLIC_AVAILABLE = cfg.auth_mode != "none"
     # ---- the operator API -----------------------------------------------------------------
 
     @app.get("/api/artifacts")
@@ -267,9 +270,53 @@ def register(app: FastAPI, *, cfg: AuthConfig, logged_in, csrf_guard) -> None:
     # Order matters: the token and public prefixes are registered before the operator's
     # `/artifacts/{ref}/…`, so a ref can never shadow them (and `v` / `p` are not valid ids).
 
+    @app.post("/api/artifacts/{aid}/share")
+    async def artifact_share(
+        aid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        """Mint (or return) the artifact's public link. 409 with the reason in ``none`` mode."""
+        try:
+            out = await asyncio.to_thread(artifact_store.share, aid)
+        except artifact_store.ArtifactRefused as e:
+            if e.code == "public_off":
+                return JSONResponse(
+                    {"detail": "public_off", "reason": artifact_store.PUBLIC_OFF_REASON},
+                    status_code=409,
+                    headers=_NO_STORE,
+                )
+            return _fail(e)
+        except artifact_store.ArtifactsUnavailable as e:
+            return _fail(e)
+        return JSONResponse(out, headers=_NO_STORE)
+
+    @app.delete("/api/artifacts/{aid}/share")
+    async def artifact_revoke(
+        aid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        try:
+            out = await asyncio.to_thread(artifact_store.revoke, aid)
+        except (artifact_store.ArtifactRefused, artifact_store.ArtifactsUnavailable) as e:
+            return _fail(e)
+        return JSONResponse(out, headers=_NO_STORE)
+
     @app.get("/artifacts/p/{public_id}/{rest:path}")
-    async def hosted_public(public_id: str, rest: str) -> Response:
-        return _hosted_error(404, "not found")  # public links arrive in #1932 P3
+    async def hosted_public(public_id: str, rest: str, request: Request) -> Response:
+        """A public link: no account, the row re-read now, the latest revision."""
+        try:
+            aid = await asyncio.to_thread(artifact_store.by_public_id, public_id)
+        except artifact_store.ArtifactsUnavailable:
+            aid = None
+        if aid is None:
+            return _hosted_error(404, "not found")
+        resp = await _serve(aid, rest, None, request)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.get("/artifacts/p/{public_id}")
+    async def hosted_public_bare(public_id: str) -> Response:
+        return RedirectResponse(
+            f"/artifacts/p/{quote(public_id)}/", status_code=308, headers=SANDBOX_HEADERS
+        )
 
     @app.get("/artifacts/v/{token}/{rest:path}")
     async def hosted_view(token: str, rest: str, request: Request) -> Response:

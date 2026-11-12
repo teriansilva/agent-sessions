@@ -81,6 +81,11 @@ MEANING: dict[str, str] = {
     "unknown_artifact": "no such artifact",
     "not_yours": "that artifact was published by another session; publish a new one instead",
     "unknown_capability": "this session cannot publish artifacts; it was not started with the tool",
+    "not_public": (
+        "the operator has not allowed this session to share publicly; give the operator the "
+        "private link and ask them to share it"
+    ),
+    "public_off": "public links are off on this BattleLab (it runs without a login)",
     "store_unavailable": "BattleLab cannot store artifacts right now; try again later",
     "unavailable": "the BattleLab artifacts service is not reachable; try again later",
 }
@@ -116,6 +121,20 @@ TOOLS = [
                 "artifact_id": {"type": "string"},
             },
             "required": ["path", "title", "why"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "artifact_share_public",
+        "description": (
+            "Make one of your artifacts public: anyone with the returned link can open it, with "
+            "no sign-in. Only when the operator asked for it; the link follows the latest "
+            "revision until the operator revokes it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"artifact_id": {"type": "string"}},
+            "required": ["artifact_id"],
             "additionalProperties": False,
         },
     },
@@ -236,6 +255,18 @@ class Server:
             text += f" ({skipped} hidden file(s) or folder(s) were left out.)"
         return text + " Give the operator this link."
 
+    def artifact_share_public(self, args: object) -> str:
+        if not isinstance(args, dict):
+            raise ToolError(MEANING["bad_request"])
+        try:
+            reply = request("share", {"artifact_id": args.get("artifact_id")})
+        except Unavailable:
+            raise ToolError(MEANING["unavailable"]) from None
+        if reply.get("ok") is not True:
+            raise _refusal(reply)
+        a = reply.get("artifact") if isinstance(reply.get("artifact"), dict) else {}
+        return f"Shared publicly. {_line(a)} Anyone with the public link can open it."
+
     def artifact_list(self, args: object) -> str:
         try:
             reply = request("list")
@@ -284,9 +315,11 @@ class Server:
         return _error(rid, -32601, "method not found")
 
     def call(self, name: object, args: object) -> dict:
-        fn = {"artifact_publish": self.artifact_publish, "artifact_list": self.artifact_list}.get(
-            name if isinstance(name, str) else ""
-        )
+        fn = {
+            "artifact_publish": self.artifact_publish,
+            "artifact_share_public": self.artifact_share_public,
+            "artifact_list": self.artifact_list,
+        }.get(name if isinstance(name, str) else "")
         if fn is None:
             return _text("unknown tool", error=True)
         try:

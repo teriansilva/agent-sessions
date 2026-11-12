@@ -929,6 +929,17 @@ def owns(row, origin: Origin) -> bool:
     return row["session_key"] == origin.session_key or row["phys_key"] == origin.phys_key
 
 
+def owned(aid: str, origin: Origin) -> bool | None:
+    """Is the artifact this launch's session's (`owns`)? None when there is no such artifact."""
+    if _absent():
+        return None
+    with _con() as con:
+        row = con.execute(
+            "SELECT session_key, phys_key FROM artifacts WHERE id=?", (aid,)
+        ).fetchone()
+    return None if row is None else owns(row, origin)
+
+
 def _mission_of(session_key: str) -> str | None:
     from . import missions
 
@@ -1180,6 +1191,58 @@ def listing(aid: str, *, revision: int | None = None) -> list[dict]:
     if rev is None:
         raise NotServed()
     return [{"path": p, "size": m["size"]} for p, m in sorted(json.loads(rev["manifest"]).items())]
+
+
+#: Public links are off in ``AUTH_MODE=none`` (every visitor would be the operator, as in
+#: ``public-shares.md``). Set by `routes.artifacts.register` from the app's config.
+PUBLIC_AVAILABLE = True
+PUBLIC_OFF_REASON = (
+    "Public links are off while BattleLab runs without a login (AUTH_MODE=none), which is also how"
+    " Home Free stream mode runs."
+)
+
+
+def share(aid: str) -> dict:
+    """Mint the artifact's public link (a fresh 128-bit id); the artifact as the API sees it. An
+    already shared artifact keeps its link (the same answer twice). Raises `ArtifactRefused`."""
+    validate_id(aid)
+    if not PUBLIC_AVAILABLE:
+        raise ArtifactRefused("public_off", status=409)
+    with _tx() as con:
+        row = con.execute("SELECT * FROM artifacts WHERE id=?", (aid,)).fetchone()
+        if row is None:
+            raise ArtifactRefused("unknown_artifact", status=404)
+        if row["public_id"] is None:
+            con.execute(
+                "UPDATE artifacts SET public_id=?, public_since=? WHERE id=?",
+                (new_public_id(), time.time(), aid),
+            )
+            row = con.execute("SELECT * FROM artifacts WHERE id=?", (aid,)).fetchone()
+    return view(dict(row))
+
+
+def revoke(aid: str) -> dict:
+    """End the artifact's public link now: the next request to it is a 404. A later share mints a
+    NEW link; the old one never comes back."""
+    validate_id(aid)
+    with _tx() as con:
+        cur = con.execute(
+            "UPDATE artifacts SET public_id=NULL, public_since=NULL WHERE id=?", (aid,)
+        )
+        if cur.rowcount == 0:
+            raise ArtifactRefused("unknown_artifact", status=404)
+        row = con.execute("SELECT * FROM artifacts WHERE id=?", (aid,)).fetchone()
+    return view(dict(row))
+
+
+def by_public_id(public_id: str) -> str | None:
+    """The artifact a live public link names, re-read on every request; None when there is none,
+    it was revoked, or public links are off."""
+    if not PUBLIC_AVAILABLE or not PUBLIC_ID_RE.fullmatch(public_id or "") or _absent():
+        return None
+    with _con() as con:
+        row = con.execute("SELECT id FROM artifacts WHERE public_id=?", (public_id,)).fetchone()
+    return row["id"] if row else None
 
 
 def delete(aid: str) -> bool:
