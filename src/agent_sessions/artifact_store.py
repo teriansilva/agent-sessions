@@ -204,7 +204,6 @@ def _secret_value(value: str) -> bool:
         _B64ISH_RE.fullmatch(value)
         and re.search(r"[0-9]", value)
         and re.search(r"[A-Za-z]", value)
-        and "/" not in value.strip("/")[:1]
         and not value.startswith(("http", "./", "../", "/"))
     )
 

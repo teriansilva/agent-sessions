@@ -321,6 +321,7 @@ def handle(token: object, op: object, args: object = None) -> dict:
             page = artifact_store.list_artifacts(owner=(origin.session_key, origin.phys_key))
             return {"ok": True, "items": [_agent_view(a) for a in page["items"]]}
         out = artifact_store.publish(origin, args)
+        _shelve(out, origin)
         return {
             "ok": True,
             "artifact": _agent_view(out),
@@ -338,6 +339,25 @@ def handle(token: object, op: object, args: object = None) -> dict:
     except Exception:  # noqa: BLE001 — an agent never sees a traceback
         log.warning("artifacts broker: a request failed", exc_info=True)
         return {"ok": False, "error": "store_unavailable"}
+
+
+def _shelve(a: dict, origin: artifact_store.Origin) -> None:
+    """A mission's session published a NEW artifact (#1932 P4): put it on that mission's shelf as
+    a delivered `link` item (#1740's existing kind), so the shelf stays complete without a second
+    tool call. A later revision keeps the same link and adds nothing. Best-effort: a shelf that
+    refuses (full, no origin configured, the session left the mission) never fails the publish."""
+    mid = a["origin"].get("mission_id")
+    if not mid or a["revision"] != 1 or not a["url"].startswith(("https://", "http://")):
+        return
+    item = {"title": a["title"], "why": a["why"] or "published as an artifact", "url": a["url"]}
+    try:
+        from . import mission_shelf
+
+        mission_shelf.deliver(
+            mid, {**item, "kind": "link"}, session_key=origin.session_key, phys_key=origin.phys_key
+        )
+    except Exception:  # noqa: BLE001 — the artifact is published whatever the shelf says
+        log.info("artifacts: %s was not shelved on %s", a["id"], mid, exc_info=True)
 
 
 def _agent_view(a: dict) -> dict:

@@ -263,6 +263,8 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
     sends or changes anything; a new tool or kind has to say so here."""
     assert {n: t.kind for n, t in ask_orchestrator.TOOLS.items()} == {
         "find_sessions": "read",
+        # #1932: the artifacts the agents published, with provenance and links — read-only.
+        "artifacts_find": "read",
         "session_status": "read",
         # #1882: what a session's agent last reported to HQ — agent text, read-only.
         "session_report": "read",

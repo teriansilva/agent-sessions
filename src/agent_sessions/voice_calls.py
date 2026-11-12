@@ -118,6 +118,7 @@ LANG = re.compile(r"^[a-z]{2}\Z")  # `$` would also match "de\n"
 #: its arguments or result. Every HQ tool but `end_call` has one (a test ratchets it).
 TOOL_ACTIVITY = {
     "find_sessions": "looking through your sessions",
+    "artifacts_find": "looking through your artifacts",
     "list_sessions": "looking through your sessions",
     "session_status": "checking that session",
     "session_brief": "checking that session",
