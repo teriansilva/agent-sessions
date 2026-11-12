@@ -42,7 +42,8 @@ const STALE_PRESETS: [number, string][] = [
 
 const TIER_LABELS: Record<OrchestratorTier, string> = {
   off: "Off — watch and propose, never send anything",
-  suggest: "Suggest — every action waits for your approval (recommended)",
+  suggest:
+    "Suggest — every action mission control proposes waits for your approval; HQ sends the messages you tell it to (recommended)",
   yolo: "YOLO — act without asking above the confidence threshold",
 };
 

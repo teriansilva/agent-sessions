@@ -99,10 +99,13 @@ enter that server's key again or remove it.
 
 ### Acting by voice
 
-When HQ proposes something it can do, such as a nudge, a new session or an answer to a Needs-you
-question, it **reads the card back** and asks you to confirm:
+When HQ proposes something it can do, such as a new session or an answer to a Needs-you question,
+it **reads the card back** and asks you to confirm:
 
-> "A message to api-rebase: rerun the tests. Say confirm to send it, or cancel."
+> "A new session in api: rerun the tests. Say confirm to start it, or cancel."
+
+A message you tell HQ to send into one of your sessions is not read back: HQ sends it right away
+and tells you whether it arrived.
 
 - Say **confirm** within 20 seconds of the read-back finishing. With several cards, say which one
   ("confirm the second").

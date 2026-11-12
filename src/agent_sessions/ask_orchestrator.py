@@ -11,12 +11,13 @@ added. The system prompt is ``prompts.effective("ask_orchestrator")``, a GUARDED
 with an HQ contact (#1525) sends that contact's registered persona as its own system message
 FIRST, so the guarded prompt, and its guard, stay the last instruction the model reads.
 
-**Nothing here sends or starts.** :data:`TOOLS` is pinned by name AND kind: read tools,
-``ask_operator`` (ends the turn on a stored question), ``propose_nudge`` (Phase 2: stages a ledger
-action that starts ``proposed`` whatever the tier; only the operator's tap on its card delivers it,
-through the existing approve route) and ``propose_session`` (Phase 3a: stages a session to start in
-``ask_proposals``; only the operator's tap launches it). :data:`MAX_PROPOSALS_PER_TURN` bounds
-proposals per turn.
+**One tool sends; nothing else sends or starts.** :data:`TOOLS` is pinned by name AND kind: read
+tools, ``ask_operator`` (ends the turn on a stored question), ``send_nudge`` (#1960, kind ``send``:
+a ledger action delivered at once through `actuator.deliver` with HQ's own authority — the
+Commander told HQ to message a session, so HQ does, as any agent session can) and the
+``proposal`` tools (e.g. ``propose_session``: staged for the operator's tap, which alone acts).
+:data:`MAX_PROPOSALS_PER_TURN` bounds proposals per turn and :data:`MAX_SENDS_PER_TURN` sends;
+a refused call spends neither.
 
 **Model output picks, the server resolves.** A session key is accepted only when this turn's own
 tools returned it (and it parses); a mission id only when this turn's tools returned it. Anything
@@ -86,6 +87,11 @@ CALL_CARD_NOTE = (
 )
 MAX_CALLS_PER_ROUND = 8
 MAX_PROPOSALS_PER_TURN = 3
+#: Messages HQ may send into sessions in one turn (#1960): "nudge every stuck session" is one ask.
+MAX_SENDS_PER_TURN = 10
+#: Refusal codes after which a proposal MAY have been staged (an append whose outcome could not be
+#: confirmed). They keep the slot they took; every other refusal wrote nothing and gives it back.
+UNSETTLED_REFUSALS = frozenset({"uncertain"})
 SCREEN_TAIL_MAX = 4_000
 TOOL_RESULT_MAX = 12_000
 SUMMARY_MAX = 500
@@ -148,6 +154,7 @@ def _spec(name: str, description: str, properties: dict, required: list[str]) ->
 class Tool:
     name: str
     #: "read" — looks something up. "proposal" — stages an effect for an operator tap (none yet).
+    #: "send" — sends a message into a session now, on HQ's own authority (#1960).
     kind: str
     spec: dict
     run: Callable
@@ -184,6 +191,7 @@ class _Turn:
     matches: dict[str, dict] = field(default_factory=dict)
     mission_matches: dict[str, dict] = field(default_factory=dict)
     proposals: int = 0
+    sends: int = 0
     #: Who answers (#1525): a known HQ contact id, or ``off`` for plain HQ (no persona).
     contact: str = hq_contacts.OFF
     #: How the question arrived (#1397): ``None`` typed, ``"call"`` spoken on a call. A call turn
@@ -1010,7 +1018,7 @@ def _nudge_refusal(turn: _Turn, key: str, card: dict | None) -> tuple[str, str, 
     cfg = prefs.get_automation_policy("session")
     if not cfg.get("enabled") or cfg.get("autonomy") not in ("suggest", "yolo"):
         return (
-            "session assistance is off or observe-only, so Ask cannot propose a message — the "
+            "session assistance is off or observe-only, so HQ cannot send a message — the "
             "operator can turn it on (Suggest) under Settings → Automation",
             "scope_disabled",
             {},
@@ -1021,7 +1029,13 @@ def _nudge_refusal(turn: _Turn, key: str, card: dict | None) -> tuple[str, str, 
             "not_available",
             {},
         )
-    if card.get("engine") not in engines.orchestrator_input_engines():
+    from . import mission_structured
+
+    # AN API SESSION TAKES A NUDGE AS ONE STRUCTURED TURN (#1960), the way `actuator.deliver`
+    # already sends it (#1899); a terminal agent takes keystrokes. Anything else — `shell`, an
+    # agentless bash where a nudge would be a command — takes no input from HQ.
+    api = mission_structured.is_api_key(key)
+    if not api and card.get("engine") not in engines.orchestrator_input_engines():
         return ("that agent does not take input from HQ", "not_actuable", {})
     held = None
     with contextlib.suppress(Exception):
@@ -1057,6 +1071,8 @@ def _nudge_refusal(turn: _Turn, key: str, card: dict | None) -> tuple[str, str, 
     phys = grant["physical_key"]
     if key in turn.busy_keys or phys in turn.busy_keys:
         return ("that session is working right now — ask again when it stops", "working", {})
+    if api:
+        return _api_nudge_refusal(card, cfg, grant, phys)
     if not session_input.is_live(phys):
         return ("that session is not running, so nothing can be typed into it", "not_live", {})
     screen = orchestrator.observed_screen(phys)
@@ -1075,11 +1091,71 @@ def _nudge_refusal(turn: _Turn, key: str, card: dict | None) -> tuple[str, str, 
     return None
 
 
-async def _propose_nudge(turn: _Turn, args: dict) -> tuple[dict, dict]:
-    """Stage a message for one session no mission holds. It is a ledger `answer` action that
-    starts `proposed` WHATEVER the tier — only the operator's tap on its card delivers it, through
-    the existing approve route and `actuator.deliver`."""
-    from . import handoff, orchestrator_ledger
+def _api_nudge_refusal(
+    card: dict, cfg: dict, grant: dict, phys: str
+) -> tuple[str, str, dict] | None:
+    """The API half of `_nudge_refusal` (#1960): no PTY, no screen. What it has instead is the
+    structured precondition `orchestrator.precondition_for` records — the last operator turn and
+    whether the session was idle — which `mission_structured.send` compares before the turn goes
+    out. A snapshot that can't be read is refused here rather than staged as a card whose every
+    tap would be refused, and an open approval or question is the operator's, as a permission
+    dialog is on a terminal. Blocking."""
+    from . import orchestrator, structured_runtime
+
+    pre = orchestrator.precondition_for(phys)
+    if pre.get("api_last_turn") == "unreadable":
+        return ("Ask cannot read that session right now", "not_available", {})
+    try:
+        snap = asyncio.run(structured_runtime.snapshot(phys))
+    except Exception:  # noqa: BLE001 — a session that can't be read is not offered
+        return ("Ask cannot read that session right now", "not_available", {})
+    if snap.get("pending_requests"):
+        return (
+            "that session is waiting on an approval or a question — only the operator answers "
+            "those, from Needs you or the session",
+            "permission_dialog",
+            {},
+        )
+    card["_nudge"] = {"cfg": cfg, "grant": grant, "precondition": pre}
+    return None
+
+
+def _hq_authority(live: dict) -> tuple[bool, str]:
+    """HQ's own authority to send (#1960), re-asserted at the write boundary by `actuator.deliver`
+    (inside `_final_guard`, after the master switch and the `off` tier): session assistance must
+    still be Suggest or Yolo. Observe-only, off or disabled withdraws it before the first byte."""
+    if live.get("autonomy") not in ("suggest", "yolo"):
+        return False, "session assistance left Suggest/Yolo before the write"
+    return True, ""
+
+
+def _sent_result(rec: dict) -> dict:
+    """What the model is told about one send: the ledger's outcome, never a hopeful reading."""
+    state = rec.get("state")
+    if state == "delivered":
+        return {"sent": True, "state": state, "note": "Delivered into the session."}
+    if state == "indeterminate":
+        return {
+            "sent": "unknown",
+            "state": state,
+            "note": "It may or may not have arrived; it is never sent twice. Say so.",
+        }
+    return {
+        "sent": False,
+        "state": state,
+        "reason": str(rec.get("detail") or "")[:REASON_MAX],
+        "note": "Nothing was sent. Tell the Commander why.",
+    }
+
+
+async def _send_nudge(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """Send a message into one session no mission holds (#1960). It is a ledger `answer` action,
+    recorded first and then delivered AT ONCE through `actuator.deliver` with HQ's own authority
+    (`_hq_authority`): the Commander told HQ to message a session, and HQ may do that much as any
+    agent session can. Everything delivery checks still holds — the master switch, ownership, the
+    session's opt-out, the screen or last turn it was sent against, nobody at the keyboard, the
+    secret guard inside the write fence. A send that cannot be made settles with its reason."""
+    from . import actuator, handoff, orchestrator_ledger
 
     key = _known_key(turn, args)
     raw = _str_arg(args, "text", ask_store.NUDGE_MAX)
@@ -1110,8 +1186,9 @@ async def _propose_nudge(turn: _Turn, args: dict) -> tuple[dict, dict]:
     project = card.get("project") or {}
     rec = {
         "id": uuid.uuid4().hex,
-        # ALWAYS a proposal: Ask never gets yolo (#1443, out of scope). The tier is recorded, not
-        # obeyed — the operator's tap is the only way this is delivered.
+        # Recorded `proposed`, then delivered at once on HQ's authority (#1960): the claim
+        # `actuator.deliver` writes before its first byte needs a claimable row to claim. The tier
+        # is recorded; HQ's send needs Suggest or Yolo, not Yolo's verb ceiling.
         "state": "proposed",
         "ts": now,
         "expires_at": now + int(facts["cfg"]["proposal_ttl_minutes"]) * 60,
@@ -1128,7 +1205,7 @@ async def _propose_nudge(turn: _Turn, args: dict) -> tuple[dict, dict]:
         "verb": "answer",
         "answer": text,
         "confidence": 1.0,
-        "rationale": "Proposed from HQ",
+        "rationale": "Sent by HQ",
         "evidence": "none",
         "authority": facts["grant"],
         "precondition": facts["precondition"],
@@ -1203,14 +1280,17 @@ async def _propose_nudge(turn: _Turn, args: dict) -> tuple[dict, dict]:
         raise _ToolRefused(
             "refused: that session already has a decision waiting — see Needs you", "pending"
         )
-    return (
-        {
-            "proposed": True,
-            "note": "The operator now sees a card with this exact text and decides. Nothing has "
-            "been sent; never say it was.",
-        },
-        {"keys": [key], "count": 1},
-    )
+    registry = getattr(getattr(turn.app, "state", None), "session_registry", None)
+    try:
+        done = await actuator.deliver(rec["id"], registry=registry, authority=_hq_authority)
+    except actuator.NotDeliverable as e:
+        # Claimed or changed by someone else first (an operator's tap on the same row): this send
+        # did nothing, and the row is whatever that other caller made it.
+        return (
+            {"sent": False, "reason": str(e)[:REASON_MAX], "note": "Nothing was sent by you."},
+            {"keys": [key], "count": 1},
+        )
+    return _sent_result(done), {"keys": [key], "count": 1}
 
 
 def _index_arg(args: dict, name: str, rows: list[dict] | None, listed_by: str) -> dict:
@@ -2037,19 +2117,20 @@ TOOLS: dict[str, Tool] = {
             _ask_operator,
         ),
         Tool(
-            "propose_nudge",
-            "proposal",
+            "send_nudge",
+            "send",
             _spec(
-                "propose_nudge",
-                "Propose a message to type into one session NO mission holds. Nothing is sent: "
-                "the operator sees a card with the exact text and approves or dismisses it.",
+                "send_nudge",
+                "Send a message into one session NO mission holds, now: a terminal agent gets it "
+                "typed, an API session as its next turn. The result says whether it was delivered "
+                "and, if not, why.",
                 {
                     **_KEY_PROP,
-                    "text": {"type": "string", "description": "exactly what to type"},
+                    "text": {"type": "string", "description": "exactly what to send"},
                 },
                 ["key", "text"],
             ),
-            _propose_nudge,
+            _send_nudge,
         ),
         Tool(
             "list_agents",
@@ -2510,12 +2591,18 @@ TOOLS: dict[str, Tool] = {
 }
 
 
+#: Per-turn budgets by tool kind: ``kind: (turn counter, cap, noun, refusal code)``.
+_BUDGETS = {
+    "proposal": ("proposals", MAX_PROPOSALS_PER_TURN, "proposals", "too_many_proposals"),
+    "send": ("sends", MAX_SENDS_PER_TURN, "messages", "too_many_sends"),
+}
+
 #: Tools a turn is offered only when the question was spoken on a call (#1668).
 CALL_ONLY_TOOLS = frozenset({"end_call"})
 #: The tools a call's DRAFT turn may run before it is committed (#1845): reads with no effect,
-#: listed one by one. Every other tool, today every `propose_*`, `ask_operator` and `end_call`,
-#: waits for commit before its handler runs. Fail-closed: a new tool is gated until it is added
-#: here on purpose (a test ratchets this list against the registry).
+#: listed one by one. Every other tool, today every `propose_*`, `send_nudge`, `ask_operator` and
+#: `end_call`, waits for commit before its handler runs. Fail-closed: a new tool is gated until
+#: it is added here on purpose (a test ratchets this list against the registry).
 DRAFT_READ_TOOLS = frozenset(
     {
         "find_sessions", "session_status", "list_sessions", "session_brief", "session_report",
@@ -2556,20 +2643,25 @@ async def _call(turn: _Turn, name: str, raw_args: str) -> tuple[str, dict, dict]
     # Declared STRING arguments only; the store guards each one. Nothing else the model sent is
     # kept, whatever its type.
     stored_args = {k: v for k, v in args.items() if k in declared and isinstance(v, str)}
-    if tool.kind == "proposal":
-        if turn.proposals >= MAX_PROPOSALS_PER_TURN:
+    budget = _BUDGETS.get(tool.kind)
+    if budget is not None:
+        counter, cap, noun, code = budget
+        if getattr(turn, counter) >= cap:
             return (
-                json.dumps(
-                    {"error": f"refused: at most {MAX_PROPOSALS_PER_TURN} proposals per turn"}
-                ),
+                json.dumps({"error": f"refused: at most {cap} {noun} per turn"}),
                 stored_args,
-                {"error": "too_many_proposals"},
+                {"error": code},
             )
-        turn.proposals += 1
+        setattr(turn, counter, getattr(turn, counter) + 1)
     turn.progress({"type": "progress", "step": "tool", "tool": name})
     try:
         result, meta = await tool.run(turn, args)
     except _ToolRefused as e:
+        if budget is not None and e.code not in UNSETTLED_REFUSALS:
+            # A refusal did nothing (refusals write nothing), so it gives its slot back (#1960):
+            # refused calls must not leave no room for the one that can go through. The slot was
+            # taken BEFORE the run, so nothing is ever done past the cap.
+            setattr(turn, budget[0], getattr(turn, budget[0]) - 1)
         return json.dumps({"error": str(e)}), stored_args, {"error": e.code}
     if tool.kind == "proposal" and turn.via == "call" and result.get("proposed") is True:
         result = {**result, "on_call": CALL_CARD_NOTE}  # one announcement per card (#1911)

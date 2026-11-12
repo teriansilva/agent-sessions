@@ -274,7 +274,7 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "ask_operator": "ends_turn",
         # #1668: on a CALL turn only, refused elsewhere: ends that call after its farewell.
         "end_call": "call",
-        "propose_nudge": "proposal",
+        "send_nudge": "send",
         "list_agents": "read",
         "list_specialists": "read",
         "propose_session": "proposal",
@@ -401,6 +401,39 @@ def test_proposals_past_the_per_turn_cap_are_refused(app, ai, monkeypatch):
     results = [json.loads(m["content"]) for m in script.tool_results(1)]
     assert len(ran) == ask_orchestrator.MAX_PROPOSALS_PER_TURN
     assert "proposals per turn" in results[-1]["error"]
+
+
+@pytest.mark.parametrize("code, refunded", [("not_actuable", True), ("uncertain", False)])
+def test_a_refused_proposal_gives_its_slot_back_unless_it_may_have_landed(
+    app, ai, monkeypatch, code, refunded
+):
+    """#1960: refusals wrote nothing, so they spend no budget — except an outcome that could not
+    be confirmed, which may have staged something and keeps its slot."""
+    staged: list[str] = []
+
+    async def stage(turn, args):
+        if args.get("refuse"):
+            raise ask_orchestrator._ToolRefused("refused: no", code)
+        staged.append("x")
+        return {"proposed": True}, {}
+
+    spec = ask_orchestrator._spec(
+        "propose_thing", "a test proposal", {"refuse": {"type": "boolean"}}, []
+    )
+    monkeypatch.setitem(
+        ask_orchestrator.TOOLS,
+        "propose_thing",
+        ask_orchestrator.Tool("propose_thing", "proposal", spec, stage),
+    )
+    cap = ask_orchestrator.MAX_PROPOSALS_PER_TURN
+    script = ai(
+        calls(*[("propose_thing", {"refuse": True})] * cap, *[("propose_thing", {})] * cap),
+        answer("ok"),
+    )
+    app.ask(app.new(), "do things")
+    results = [json.loads(m["content"]) for m in script.tool_results(1)]
+    assert all("refused: no" in r["error"] for r in results[:cap])
+    assert len(staged) == (cap if refunded else 0)
 
 
 def test_the_screen_tail_is_capped(app, ai, found, screen):

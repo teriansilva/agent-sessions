@@ -161,13 +161,16 @@ with the sidebar open.
   any folder path.
 - When it needs a detail, HQ **asks you back**: one question with a few answers to tap, and
   sometimes a box for your own words. You can also just send a new message instead.
-- HQ can **propose a message** to a session no mission holds ("tell the rebase session to run
-  the tests"). It shows you the exact text on a card and sends nothing until you tap **Send to …**.
-  Just before typing, it checks the session's screen is still the one it saw; if the screen moved
-  on, nothing is sent and the card says *Out of date*. *Delivered* means the terminal accepted the
-  text, not that the agent acted on it. The same decision also appears in Needs you. Sending
-  needs Session assistance on (Suggest or YOLO) in Settings; HQ never sends on its own, whatever
-  the autonomy level. A mission's sessions are messaged from that mission's own console.
+- HQ **sends a message** to a session no mission holds when you tell it to ("tell the rebase
+  session to run the tests", "nudge every stuck session"), terminal and API sessions alike, with
+  no tap: up to 10 per turn. A card in the conversation shows the exact text and what happened to
+  it. Just before sending, HQ checks the session is still as it saw it: a terminal's screen, or an
+  API session's last turn and that it is idle. If it moved on, someone is at its keyboard, or it is
+  waiting on an approval or a question, nothing is sent and HQ tells you why. *Delivered* means the
+  session accepted the text, not that the agent acted on it. Sending needs Session assistance on
+  (Suggest or YOLO) in Settings; Off stops it. HQ never answers a permission prompt, never types
+  into a plain shell, and never sends text that looks like a secret. A mission's sessions are
+  messaged from that mission's own console.
 - HQ can **propose a new session** ("start a Claude session on api to rebase onto main"). The
   card shows the project, the agent and the brief, the agent's first message, exactly as it will
   be typed. Nothing starts until you tap **Start session in …**.

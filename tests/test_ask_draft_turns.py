@@ -25,7 +25,7 @@ GATED = {
     "end_call",
     "propose_library",
     "propose_message",
-    "propose_nudge",
+    "send_nudge",
     "propose_project_change",
     "propose_secret",
     "propose_session",
@@ -228,7 +228,7 @@ def test_a_gated_tool_waits_for_the_commit_and_a_discard_means_it_never_ran(app,
             return {"ok": True}, {}
 
         monkeypatch.setitem(ask_orchestrator.TOOLS, name, dataclasses.replace(real, run=effect))
-    script = held(calls(("list_missions", {}), ("propose_nudge", {})), answer("sent"), free=1)
+    script = held(calls(("list_missions", {}), ("send_nudge", {})), answer("sent"), free=1)
     cid = _new(app)
     before = _stores()
 
@@ -282,16 +282,14 @@ def test_a_committed_draft_stores_what_a_normal_turn_would(app, ai, found):  # n
 
 def test_a_gated_tool_runs_only_after_the_commit(app, held, monkeypatch):  # noqa: F811
     ran: list[str] = []
-    real = ask_orchestrator.TOOLS["propose_nudge"]
+    real = ask_orchestrator.TOOLS["send_nudge"]
 
     async def effect(turn, args):
-        ran.append("propose_nudge")
+        ran.append("send_nudge")
         return {"staged": True}, {}
 
-    monkeypatch.setitem(
-        ask_orchestrator.TOOLS, "propose_nudge", dataclasses.replace(real, run=effect)
-    )
-    script = held(call("propose_nudge", {}), answer("Staged."), free=2)
+    monkeypatch.setitem(ask_orchestrator.TOOLS, "send_nudge", dataclasses.replace(real, run=effect))
+    script = held(call("send_nudge", {}), answer("Staged."), free=2)
     cid = _new(app)
 
     async def go():
@@ -300,12 +298,12 @@ def test_a_gated_tool_runs_only_after_the_commit(app, held, monkeypatch):  # noq
         assert ran == [] and len(script.bodies) == 1
         assert await ask_orchestrator.commit(cid, turn_id)
         assert ask_orchestrator.running(cid)  # committed: a normal running turn now
-        await _until(lambda: ran == ["propose_nudge"])
+        await _until(lambda: ran == ["send_nudge"])
         return await task
 
     assert run(go())["status"] == "done"
     records = ask_store.read(cid)
-    assert [r["name"] for r in records if r.get("type") == "tool"] == ["propose_nudge"]
+    assert [r["name"] for r in records if r.get("type") == "tool"] == ["send_nudge"]
 
 
 def test_progress_is_held_until_the_commit(app, held, found):  # noqa: F811
@@ -334,16 +332,14 @@ def test_progress_is_held_until_the_commit(app, held, found):  # noqa: F811
 
 def test_a_typed_question_discards_an_open_draft_and_runs(app, held, monkeypatch):  # noqa: F811
     ran: list[str] = []
-    real = ask_orchestrator.TOOLS["propose_nudge"]
+    real = ask_orchestrator.TOOLS["send_nudge"]
 
     async def effect(turn, args):
         ran.append("draft's nudge")
         return {"staged": True}, {}
 
-    monkeypatch.setitem(
-        ask_orchestrator.TOOLS, "propose_nudge", dataclasses.replace(real, run=effect)
-    )
-    script = held(call("propose_nudge", {}), answer("typed answer"), free=2)
+    monkeypatch.setitem(ask_orchestrator.TOOLS, "send_nudge", dataclasses.replace(real, run=effect))
+    script = held(call("send_nudge", {}), answer("typed answer"), free=2)
     cid = _new(app)
 
     async def go():

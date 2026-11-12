@@ -76,7 +76,9 @@ def test_durations_are_said_plainly(seconds, said):
     [
         ({"phase": "tool", "tool": "session_status"}, 20,
          "Still checking that session, 20 seconds so far."),
-        ({"phase": "tool", "tool": "propose_nudge"}, 15,
+        ({"phase": "tool", "tool": "send_nudge"}, 15,
+         "Still sending that message, 15 seconds so far."),
+        ({"phase": "tool", "tool": "propose_session"}, 15,
          "Still preparing a card for you, 15 seconds so far."),
         ({"phase": "tool", "tool": "no_such_tool"}, 15,
          "Still working on that step, 15 seconds so far."),

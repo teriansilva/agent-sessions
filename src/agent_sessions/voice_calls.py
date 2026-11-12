@@ -147,7 +147,7 @@ TOOL_ACTIVITY = {
     "list_recipients": "checking who I may message",
     "propose_message": "writing that message for you to send",
     "ask_operator": "preparing a question for you",
-    "propose_nudge": "preparing a card for you",
+    "send_nudge": "sending that message",
     "propose_session": "preparing a card for you",
     "propose_session_change": "preparing a card for you",
     "propose_project_change": "preparing a card for you",
@@ -2130,6 +2130,8 @@ def confirmable_cards(
         title = (p.get("title") or "").strip()[:80] or "that session"
         kind = p.get("kind")
         if kind == "nudge":
+            if p.get("projection") not in (None, "actionable"):
+                continue  # HQ already sent it (#1960): there is nothing left to confirm
             text = verbatim(p.get("text") or "")
             if text is None:
                 continue  # it can't be heard in full: confirm it on screen

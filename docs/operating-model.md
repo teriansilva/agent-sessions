@@ -142,9 +142,9 @@ unattended.
 
 - **Missions and automations** run only on API sessions.
 - **New sessions** default to the engine's API client when one is ready. A terminal is an explicit choice.
-- **Terminal sessions** stay available for interactive work and for engines without an API client. They get no new agent-driving features (nudges, auto-answers, unattended starts, screen-read supervision).
+- **Terminal sessions** stay available for interactive work and for engines without an API client. They get no new agent-driving features (nudges, auto-answers, unattended starts, screen-read supervision). One exception, approved by the operator on #1960: HQ sends the messages the Commander tells it to into terminal sessions too (below).
 - **An engine without a mission-ready API client** cannot hold a mission role.
-- **Unattended means API, everywhere.** Nothing that runs without the Commander watching drives a terminal: mission dispatch, sorties, automations and orchestrator nudges. Terminal input is timing-based and fails too often unattended. Existing terminal-targeting automations are legacy: they keep working, are labelled unreliable, and get no new triggers. Nudges to terminal sessions stay proposals the Commander taps.
+- **Unattended means API, everywhere.** Nothing that runs without the Commander watching drives a terminal: mission dispatch, sorties, automations and orchestrator nudges. Terminal input is timing-based and fails too often unattended. Existing terminal-targeting automations are legacy: they keep working, are labelled unreliable, and get no new triggers. The supervisor's own nudges to terminal sessions stay proposals the Commander taps. A message the Commander tells HQ to send is not unattended work: HQ sends it at once, into terminal and API sessions alike, under the operator's approval on #1960 (`ask-orchestrator.md`).
 - **The critical path:** until an API client is mission-ready, daily work cannot run unattended.
 
 ## 8. Galleries

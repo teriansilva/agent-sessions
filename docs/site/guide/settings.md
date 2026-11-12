@@ -154,8 +154,9 @@ Three panels, everything that tunes [Mission control](/guide/missions):
 
 - **Orchestrator** — **Mission control may act on my sessions**. Off stops the scheduled pass, the
   mission supervisor, delivering nudges, and starting or dispatching missions. The autonomy tier is
-  **Off**, **Suggest** (every action waits for your approval) or **YOLO** (acts without asking above
-  the confidence threshold). **Run now** runs one pass immediately. **Judge an objective met at or
+  **Off**, **Suggest** (every action mission control proposes waits for your approval) or **YOLO**
+  (acts without asking above the confidence threshold). In Suggest and YOLO, HQ sends the messages
+  you tell it to send into a session at once; Off stops those too. **Run now** runs one pass immediately. **Judge an objective met at or
   above** is the confidence a [judged objective](/guide/missions#judged-objectives) needs before it
   counts as met: 0.90 to 1.00, default 0.90, saved when you let go of the slider. 0.90 is the floor
   and cannot be lowered. Confidence is the model's own opinion, so a judgment can at most move a

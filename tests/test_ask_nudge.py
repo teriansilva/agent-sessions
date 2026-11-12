@@ -2,12 +2,12 @@
 
 * **ask_operator** ends the turn on a stored question; an answer names it, and an OPTION is
   resolved to the reply the server stored — the client picks an index, never the words.
-* **propose_nudge** stages a ledger `answer` action for a session NO mission holds. It starts
-  `proposed` whatever the tier; only the operator's tap (the existing approve route →
-  `actuator.deliver`) sends it, and the screen fingerprint taken at proposal time is re-checked
-  before the first byte. Refused, with nothing written anywhere: scope disabled or observe-only, a
-  mission-held, excluded, not-live, working or pending session, a permission dialog on screen, a
-  key the turn did not find, text that carries a secret or looks like a credential.
+* **send_nudge** (#1960) records a ledger `answer` action for a session NO mission holds and
+  delivers it AT ONCE through `actuator.deliver` on HQ's own authority — no tap. The screen
+  fingerprint taken when it is recorded is re-checked before the first byte. Refused, with nothing
+  written anywhere: scope disabled or off, a mission-held, excluded, not-live, working or pending
+  session, a permission dialog on screen, a key the turn did not find, text that carries a secret
+  or looks like a credential.
 """
 
 # ruff: noqa: F811 — imported isolated pytest fixtures
@@ -49,8 +49,31 @@ SCREEN = "Which file should I change next?\n> "
 
 
 @pytest.fixture
-def target(monkeypatch):
-    """S1 is in scope, live, idle and at a plain question; session assistance is `suggest`."""
+def writer(monkeypatch):
+    """The PTY writer: it asks the delivery's own precondition first — the real
+    `check_precondition` / `screen_matches` — and records the bytes only when it holds."""
+    sent: list[bytes] = []
+
+    def send_input(phys, payload, *, precondition=None, final_guard=None, **kw):
+        if final_guard is not None:
+            ok, why = final_guard()
+            if not ok:
+                return session_input.Outcome("refused", why)
+        if precondition is not None:
+            ok, why = precondition()
+            if not ok:
+                return session_input.Outcome("stale", why)
+        sent.append(payload)
+        return session_input.Outcome("delivered", "")
+
+    monkeypatch.setattr(session_input, "send_input", send_input)
+    return sent
+
+
+@pytest.fixture
+def target(monkeypatch, writer):
+    """S1 is in scope, live, idle and at a plain question; session assistance is `suggest`. Its
+    PTY is `writer`: what reaches it is recorded, only when delivery's own checks hold."""
     prefs.set_orchestrator({"enabled": True, "autonomy": "suggest"})
     state = {"screen": SCREEN, "permission": None, "live": True, "held": {}}
 
@@ -85,8 +108,8 @@ def target(monkeypatch):
 def _nudge_turn(ai, text="Rebase onto main, then run the tests."):
     return ai(
         call("find_sessions", {"query": "rebase"}, cid="f"),
-        call("propose_nudge", {"key": S1, "text": text}, cid="n"),
-        answer("I proposed the message; approve the card to send it."),
+        call("send_nudge", {"key": S1, "text": text}, cid="n"),
+        answer("Sent."),
     )
 
 
@@ -101,13 +124,14 @@ def _result(script, n=2) -> dict:
 # ---- a nudge is a proposal, never a send ---------------------------------------------------------
 
 
-def test_a_nudge_is_a_proposed_ledger_action_and_a_card(app, ai, found, target):
+def test_a_nudge_is_sent_at_once_and_the_card_shows_it(app, ai, found, target, writer):
     script = _nudge_turn(ai)
     cid = app.new()
     turn = app.ask(cid, "tell the rebase session to rebase onto main").json()["turn"]
-    assert _result(script)["proposed"] is True
+    assert _result(script)["sent"] is True
+    assert writer == [session_input.bracketed_paste("Rebase onto main, then run the tests.")]
     (rec,) = _ledger_for()
-    assert rec["state"] == "proposed" and rec["source"] == "ask"
+    assert rec["state"] == "delivered" and rec["source"] == "ask"
     assert rec["ask_conversation"] == cid  # #1517: the conversation that follows it once delivered
     assert rec["verb"] == "answer" and rec["answer"] == "Rebase onto main, then run the tests."
     assert rec["authority"]["scope"] == "session" and rec["authority"].get("mission_id") is None
@@ -115,15 +139,33 @@ def test_a_nudge_is_a_proposed_ledger_action_and_a_card(app, ai, found, target):
     (card,) = turn["proposals"]
     assert card["action_id"] == rec["id"] and card["key"] == S1
     assert card["text"] == "Rebase onto main, then run the tests."
-    assert card["projection"] == "actionable" and card["can_approve"] and card["can_reject"]
+    assert card["state"] == "delivered" and card["projection"] == "settled"
+    assert not card["can_approve"] and not card["can_reject"]
 
 
-def test_yolo_never_makes_an_ask_nudge_deliverable_on_its_own(app, ai, found, target):
-    prefs.set_orchestrator({"enabled": True, "autonomy": "yolo"})
+@pytest.mark.parametrize("tier", ["suggest", "yolo"])
+def test_hq_sends_in_suggest_and_in_yolo_with_no_tap(app, ai, found, target, writer, tier):
+    prefs.set_orchestrator({"enabled": True, "autonomy": tier})
     _nudge_turn(ai)
     app.ask(app.new(), "tell it to rebase")
     (rec,) = _ledger_for()
-    assert rec["state"] == "proposed" and rec["tier"] == "yolo"
+    assert rec["state"] == "delivered" and rec["tier"] == tier and len(writer) == 1
+
+
+def test_switching_off_before_the_write_sends_nothing(app, ai, found, target, writer, monkeypatch):
+    """HQ's authority is asked again at the write boundary, not only when the send began."""
+    fenced = session_input.send_input
+
+    def off_then_write(phys, payload, **kw):
+        prefs.set_orchestrator({"enabled": True, "autonomy": "off"})
+        return fenced(phys, payload, **kw)
+
+    monkeypatch.setattr(session_input, "send_input", off_then_write)
+    script = _nudge_turn(ai)
+    app.ask(app.new(), "tell it to rebase")
+    assert _result(script)["sent"] is False and writer == []
+    (rec,) = _ledger_for()
+    assert rec["state"] != "delivered"
 
 
 @pytest.mark.parametrize(
@@ -145,7 +187,7 @@ def test_a_refused_nudge_writes_nothing_anywhere(app, ai, found, target, setup, 
     assert "refused" in _result(script)["error"]
     assert _ledger_for() == []
     assert turn["proposals"] == []
-    tools = [r for r in ask_store.read(cid) if r["type"] == "tool" and r["name"] == "propose_nudge"]
+    tools = [r for r in ask_store.read(cid) if r["type"] == "tool" and r["name"] == "send_nudge"]
     assert tools[0]["meta"]["error"] == code
 
 
@@ -165,17 +207,48 @@ def test_a_working_session_is_refused(app, ai, found, target, monkeypatch):
     assert "working right now" in _result(script)["error"] and _ledger_for() == []
 
 
-def test_a_session_with_a_decision_waiting_gets_no_second_one(app, ai, found, target):
-    _nudge_turn(ai)
+def test_a_session_with_a_decision_waiting_gets_no_second_one(app, ai, found, target, monkeypatch):
+    async def claimed_elsewhere(*a, **k):
+        raise actuator.NotDeliverable("another caller claimed or changed this action first")
+
+    monkeypatch.setattr(actuator, "deliver", claimed_elsewhere)
+    script = _nudge_turn(ai)
     app.ask(app.new(), "tell it to rebase")
+    assert _result(script)["sent"] is False  # its row is still live: a decision waiting
     script = _nudge_turn(ai, "And then push.")
     app.ask(app.new(), "and tell it to push")
     assert "already has a decision waiting" in _result(script)["error"]
     assert len(_ledger_for()) == 1
 
 
+def test_a_send_claimed_elsewhere_after_it_was_recorded_keeps_its_budget_slot(
+    app, ai, found, target, monkeypatch
+):
+    """Only a refusal that wrote nothing gives its slot back (#1960). A send whose row was recorded
+    and then claimed by another caller may have been delivered by that caller: it is not nothing."""
+
+    async def claimed_elsewhere(*a, **k):
+        raise actuator.NotDeliverable("another caller claimed or changed this action first")
+
+    monkeypatch.setattr(actuator, "deliver", claimed_elsewhere)
+    monkeypatch.setitem(
+        ask_orchestrator._BUDGETS, "send", ("sends", 1, "messages", "too_many_sends")
+    )
+    script = ai(
+        call("find_sessions", {"query": "rebase"}, cid="f"),
+        call("send_nudge", {"key": S1, "text": "first"}, cid="a"),
+        call("send_nudge", {"key": S1, "text": "second"}, cid="b"),
+        answer("done"),
+    )
+    app.ask(app.new(), "tell it twice")
+    first, second = (json.loads(r["content"]) for r in script.tool_results(3)[1:])
+    assert first["sent"] is False and "claimed" in first["reason"]
+    assert "at most 1 messages per turn" in second["error"]
+    assert len(_ledger_for()) == 1
+
+
 def test_a_key_the_turn_did_not_find_is_refused(app, ai, target):
-    script = ai(call("propose_nudge", {"key": S1, "text": "go"}), answer("can't"))
+    script = ai(call("send_nudge", {"key": S1, "text": "go"}), answer("can't"))
     app.ask(app.new(), "tell S1 to go")
     assert "returned in this turn" in _result(script, 1)["error"] and _ledger_for() == []
 
@@ -196,66 +269,28 @@ def test_text_with_a_secret_or_a_credential_never_becomes_an_effect(app, ai, fou
     assert PLANTED.encode() not in raw and b"wJalrXUtnFEMI" not in raw
 
 
-# ---- the operator's tap: the existing route, the existing fence ----------------------------------
+# ---- the fence it is sent through ----------------------------------------------------------------
 
 
-@pytest.fixture
-def writer(monkeypatch):
-    """The PTY writer: it asks the delivery's own precondition first — the real
-    `check_precondition` / `screen_matches` — and records the bytes only when it holds."""
-    sent: list[bytes] = []
-
-    def send_input(phys, payload, *, precondition=None, final_guard=None, **kw):
-        if final_guard is not None:
-            ok, why = final_guard()
-            if not ok:
-                return session_input.Outcome("refused", why)
-        if precondition is not None:
-            ok, why = precondition()
-            if not ok:
-                return session_input.Outcome("stale", why)
-        sent.append(payload)
-        return session_input.Outcome("delivered", "")
-
-    monkeypatch.setattr(session_input, "send_input", send_input)
-    return sent
-
-
-def test_approve_delivers_through_the_existing_route_and_the_card_follows(
-    app, ai, found, target, writer
+def test_a_screen_that_moved_sends_nothing_and_the_card_says_so(
+    app, ai, found, target, writer, monkeypatch
 ):
-    _nudge_turn(ai)
-    cid = app.new()
-    (card,) = app.ask(cid, "tell it to rebase").json()["turn"]["proposals"]
-    r = app.c.post(f"/api/pulse/actions/{card['action_id']}/approve", headers=app.hdr)
-    assert r.status_code == 200, r.text
-    assert len(writer) == 1 and b"Rebase onto main, then run the tests." in writer[0]
-    (live,) = app.get(cid)["turns"][0]["proposals"]
-    assert live["state"] == "delivered" and live["projection"] == "settled"
-    assert not live["can_approve"]
+    """The fingerprint is taken when the send is recorded and re-checked before the first byte."""
+    real = ask_orchestrator._nudge_refusal
 
+    def then_moves(turn, key, card):
+        out = real(turn, key, card)
+        target["screen"] = "Running tests… 14/80"
+        return out
 
-def test_a_screen_that_moved_sends_nothing_and_the_card_says_so(app, ai, found, target, writer):
-    _nudge_turn(ai)
+    monkeypatch.setattr(ask_orchestrator, "_nudge_refusal", then_moves)
+    script = _nudge_turn(ai)
     cid = app.new()
-    (card,) = app.ask(cid, "tell it to rebase").json()["turn"]["proposals"]
-    target["screen"] = "Running tests… 14/80"
-    r = app.c.post(f"/api/pulse/actions/{card['action_id']}/approve", headers=app.hdr)
-    assert r.status_code == 409
+    app.ask(cid, "tell it to rebase")
+    assert _result(script)["sent"] is False and _result(script)["state"] == "stale"
     assert writer == []
     (live,) = app.get(cid)["turns"][0]["proposals"]
     assert live["state"] == "stale" and not live["can_approve"]
-
-
-def test_dismiss_rejects_it_and_nothing_is_sent(app, ai, found, target, writer):
-    _nudge_turn(ai)
-    cid = app.new()
-    (card,) = app.ask(cid, "tell it to rebase").json()["turn"]["proposals"]
-    r = app.c.post(f"/api/pulse/actions/{card['action_id']}/reject", headers=app.hdr)
-    assert r.status_code == 200
-    assert writer == []
-    (live,) = app.get(cid)["turns"][0]["proposals"]
-    assert live["state"] == "rejected"
 
 
 def test_an_unreadable_ledger_says_unknown_never_gone(app, ai, found, target, monkeypatch):
@@ -403,7 +438,7 @@ def test_a_card_that_cannot_be_recorded_means_no_action_at_all(app, ai, found, t
     monkeypatch.setattr(ask_orchestrator, "_append", real)
     _nudge_turn(ai)
     app.ask(app.new(), "tell it to rebase")
-    assert [r["state"] for r in _ledger_for()] == ["proposed"]
+    assert [r["state"] for r in _ledger_for()] == ["delivered"]
 
 
 @pytest.mark.parametrize("how", ["raises", "crash"])
@@ -497,7 +532,7 @@ def test_a_question_stops_the_calls_after_it_in_the_same_reply(app, ai, found, t
         call("find_sessions", {"query": "rebase"}, cid="f"),
         calls(
             ("ask_operator", {"question": "Which branch?", "options": ["main"]}),
-            ("propose_nudge", {"key": S1, "text": "Rebase onto main."}),
+            ("send_nudge", {"key": S1, "text": "Rebase onto main."}),
         ),
     )
     cid = app.new()
@@ -555,8 +590,6 @@ def test_the_shown_text_is_exactly_what_delivery_types(app, ai, found, target, w
     assert card["text"] == "Rebase[201~ then test"
     (rec,) = _ledger_for()
     assert rec["answer"] == card["text"]
-    r = app.c.post(f"/api/pulse/actions/{card['action_id']}/approve", headers=app.hdr)
-    assert r.status_code == 200, r.text
     assert writer == [session_input.bracketed_paste(card["text"])]
 
 
@@ -650,11 +683,11 @@ def test_a_secret_registered_during_an_ask_write_waits_for_it(monkeypatch, how):
     assert b"fresh-secret-value-1234" not in (ask_store.root() / f"{cid}.jsonl").read_bytes()
 
 
-def test_an_append_that_wrote_then_failed_is_reported_as_proposed(
-    app, ai, found, target, monkeypatch
+def test_an_append_that_wrote_then_failed_is_read_back_and_sent(
+    app, ai, found, target, writer, monkeypatch
 ):
     """The record lands, then the directory fsync fails: the exception is ambiguous, so the exact
-    action id is read back — present means proposed, and the card stays live."""
+    action id is read back — present means recorded, and it is sent like any other."""
     from agent_sessions import orchestrator_ledger as ledger
 
     real = ledger.append_batch_for_free_sessions
@@ -667,11 +700,11 @@ def test_an_append_that_wrote_then_failed_is_reported_as_proposed(
     script = _nudge_turn(ai)
     cid = app.new()
     app.ask(cid, "tell it to rebase")
-    assert _result(script)["proposed"] is True
+    assert _result(script)["sent"] is True and len(writer) == 1
     (rec,) = _ledger_for()
-    assert rec["state"] == "proposed"
+    assert rec["state"] == "delivered"
     (card,) = app.get(cid)["turns"][0]["proposals"]
-    assert card["action_id"] == rec["id"] and card["projection"] == "actionable"
+    assert card["action_id"] == rec["id"] and card["state"] == "delivered"
 
 
 def test_a_failed_append_that_left_nothing_is_reported_as_uncertain_not_refused(

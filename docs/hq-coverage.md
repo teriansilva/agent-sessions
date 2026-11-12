@@ -46,8 +46,8 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Adopt into / detach from a mission | POST /api/missions/{id}/adopt, …/detach | P5 W |
 | Hand off to another agent (prepare preview, edit seed, archive source) | POST /api/handoff/prepare, POST /api/handoff | P7 W (starts agents; seed shown verbatim on the card) |
 | Draft: read / save / clear | GET/PUT …/draft | P7 R/W |
-| Type into a terminal session (text) | WS input | have (`propose_nudge`, sessions no mission holds) → P7 widens to keys (Esc, arrows, Tab, Return) |
-| API session: send a message, send now, withdraw a queued message, interrupt | POST /api/structured/sessions/{key}/turns, …/send-now, …/withdraw, …/interrupt | P7 W |
+| Type into a terminal session (text) | WS input | have (`send_nudge`, sent on HQ's authority, sessions no mission holds, #1960) → P7 widens to keys (Esc, arrows, Tab, Return) |
+| API session: send a message, send now, withdraw a queued message, interrupt | POST /api/structured/sessions/{key}/turns, …/send-now, …/withdraw, …/interrupt | message: have (`send_nudge`, one guarded structured turn, sessions no mission holds, #1960); the rest P7 W |
 | API session: answer the agent's question / reply async / skip question | POST …/decisions (answer / cancel / reject) | P7 W |
 | API session: approve / reject a tool request | POST …/decisions | **never** (permission prompts are operator-only, `permission-prompts.md`) |
 | API session: approve always (standing grant) | POST …/decisions (always + grant) | **never** (grants permission) |
@@ -658,7 +658,7 @@ GET    /p/{token}                                                               
 GET    /r/                                                                        n/a  # reply-link visitor surface (#1956)
 GET    /r/{share_id}                                                              n/a  # reply-link visitor surface (#1956)
 GET    /{spa_path:path}                                                           n/a  # SPA shell
-WS     /ws/term/{sid}                                                             P7  # terminal input; text nudges: have (propose_nudge)
+WS     /ws/term/{sid}                                                             P7  # terminal input; text nudges: have (send_nudge)
 WS     /ws/plugins/signin/{operation_id}                                          never  # interactive vendor login
 GET    /api/voice/settings                                                        never  # speech endpoints + tokens decide where call audio goes (voice-calls.md)
 POST   /api/voice/settings                                                        never  # same: credentials and destinations
