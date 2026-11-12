@@ -63,6 +63,9 @@
         "kind": "flag"
       }
     },
+    "memory": {
+      "kind": "claude-auto-memory"
+    },
     "models": {
       "list": [
         {
@@ -124,6 +127,9 @@
       "menu_digit_submits": true,
       "permission": "claude-permission",
       "ready": "claude-first-paint"
+    },
+    "tools": {
+      "mcp": "claude-mcp-config-flag"
     },
     "transcript": {
       "kind": "claude-jsonl"

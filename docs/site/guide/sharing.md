@@ -22,6 +22,10 @@ password or key pasted into a skill or playbook file goes into the bundle with i
 the value of one of your secret variables. A role skill your library doesn't hold travels as a
 name only, the same as it works on this install.
 
+A **mission plan** travels as its document: its slots, objectives, order, procedures and the names
+of its inputs. Its title, summary and slot labels are checked for your stored secrets first. See
+[Mission plans](/guide/mission-plans).
+
 A **specialist** travels as its job: title, summary, capacity, and the skills it pins, exactly at
 the versions it pins. Its agent, model and effort go along only as a suggestion. Its notes,
 sessions, grade and project names stay on your install. If a skill it pins has changed since the

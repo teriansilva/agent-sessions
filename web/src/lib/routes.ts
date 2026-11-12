@@ -89,6 +89,9 @@ export const SKILLS_PATH = "/library/skills";
 export const SPECIALISTS_PATH = "/library/specialists";
 export const SPECIALIST_NEW_PATH = `${SPECIALISTS_PATH}/create/new`;
 export const specialistPath = (id: string) => `${SPECIALISTS_PATH}/${encodeURIComponent(id)}`;
+/** Library → Mission plans (#1924): reusable, slot-only, inert plans. */
+export const MISSION_PLANS_PATH = "/library/mission-plans";
+export const missionPlanPath = (id: string) => `${MISSION_PLANS_PATH}/${encodeURIComponent(id)}`;
 
 export const PLAYBOOKS_PATH = "/library/playbooks";
 export function playbookPath(id: string): string {

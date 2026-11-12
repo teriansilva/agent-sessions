@@ -5,6 +5,11 @@ import type {
   SpecialistDraft,
   SpecialistList,
 } from "../types/specialists";
+import type {
+  MissionPlanDetail,
+  MissionPlanRevision,
+  MissionPlanRow,
+} from "../types/missionPlans";
 import type { ApiLook } from "../theme/apiLook";
 import type { ShelfDiffFile, ShelfItem, ShelfManifest, ShelfVerdict } from "../types/shelf";
 import type { ShareCatalog, ShareChoice, ShareImports, SharePreview, ShareResult } from "../types/share";
@@ -2874,6 +2879,29 @@ export const api = {
       "POST",
       `/api/specialists/${encodeURIComponent(id)}/${archived ? "archive" : "unarchive"}`,
       { revision },
+    ),
+  /** Mission plans in the Library (#1924): read, archive (revision-fenced), save from a mission. */
+  missionPlans: (archived = false) =>
+    getJsonWithDetail<{ plans: MissionPlanRow[] }>(`/api/mission-plans${archived ? "?archived=1" : ""}`),
+  missionPlan: (id: string) =>
+    getJsonWithDetail<MissionPlanDetail>(`/api/mission-plans/${encodeURIComponent(id)}`),
+  archiveMissionPlan: (id: string, archived: boolean, expect_revision: number) =>
+    mutateJson<MissionPlanDetail>("POST", `/api/mission-plans/${encodeURIComponent(id)}/archive`, {
+      archived,
+      expect_revision,
+    }),
+  missionPlanRevision: (missionId: string) =>
+    getJsonWithDetail<MissionPlanRevision>(
+      `/api/missions/${encodeURIComponent(missionId)}/plan/revisions/latest`,
+    ),
+  saveMissionAsPlan: (
+    missionId: string,
+    body: { revision: number; title: string; summary: string; slot_labels: string[] },
+  ) =>
+    mutateJson<{ id: string; version: number }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/plan/save-as-plan`,
+      body,
     ),
   playbooks: () => getJsonWithDetail<PlaybookList>("/api/playbooks"),
   playbook: (id: string) => getJsonWithDetail<PlaybookDetail>(`/api/playbooks/${encodeURIComponent(id)}`),

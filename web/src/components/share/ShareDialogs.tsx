@@ -23,7 +23,15 @@ import {
   X,
 } from "lucide-react";
 import { api, ApiError } from "../../lib/api";
-import { MEMORY_PATH, playbookPath, SKILLS_PATH, specialistPath, TEMPLATES_PATH } from "../../lib/routes";
+import { countsText } from "../missionPlans/planRules";
+import {
+  MEMORY_PATH,
+  missionPlanPath,
+  playbookPath,
+  SKILLS_PATH,
+  specialistPath,
+  TEMPLATES_PATH,
+} from "../../lib/routes";
 import type {
   ShareCatalog,
   ShareChoice,
@@ -61,6 +69,7 @@ const KIND_LABEL: Record<string, string> = {
   variable: "Variable",
   memory: "Memory",
   notebook: "Notes",
+  "mission-plan": "Mission plan",
 };
 const GROUP_LABEL: Record<string, string> = {
   skill: "Skills",
@@ -70,6 +79,7 @@ const GROUP_LABEL: Record<string, string> = {
   variable: "Variables",
   memory: "Project memory",
   notebook: "Specialist notes",
+  "mission-plan": "Mission plans",
 };
 /** The picker's group order for each Library section: its own kind first, then what it needs. */
 const ORDER: Record<string, string[]> = {
@@ -80,6 +90,8 @@ const ORDER: Record<string, string[]> = {
   variable: ["variable", "template", "skill", "playbook", "specialist"],
   // #1714 P4: a project's notes, its specialists' notebooks, and what a notebook brings along.
   memory: ["memory", "notebook", "specialist", "skill"],
+  // #1924: a mission plan carries its procedures as snapshots; it needs nothing else in the file.
+  "mission-plan": ["mission-plan"],
 };
 /** A row's kind badge: a variable whose value never travels reads "Secret" (#1714 P3). */
 const badge = (kind: string, secret = false) => (kind === "variable" && secret ? "Secret" : KIND_LABEL[kind] ?? kind);
@@ -185,9 +197,12 @@ function ExportDialog({
   kind,
   onClose,
   memory,
+  preselect,
 }: {
   kind: ShareKind;
   onClose: () => void;
+  /** An item key (`kind:id`) to start chosen, when the dialog is opened from that item's card. */
+  preselect?: string;
   /** Library → Memory (#1714 P4): the project open on the page; only its memory is offered. */
   memory?: NotesInto;
 }) {
@@ -212,10 +227,12 @@ function ExportDialog({
           // On Library → Memory, the open project's notes start chosen (#1714 P4 board A).
           const own = parsed?.items.find((i) => i.kind === "memory" && i.id === memory?.id && i.exportable);
           if (own) setChosen(new Set([keyOf(own)]));
+          const card = parsed?.items.find((i) => keyOf(i) === preselect && i.exportable);
+          if (card) setChosen(new Set([keyOf(card)]));
         })
         .catch((e: unknown) => live.current && setError(errorText(e)))
         .finally(() => live.current && setLoading(false)),
-    [memory?.id],
+    [memory?.id, preselect],
   );
   useEffect(() => {
     void fetchCatalog();
@@ -244,6 +261,7 @@ function ExportDialog({
   const order = ORDER[kind] ?? ORDER.skill;
   const hasSpecialists = items.some((i) => i.kind === "specialist" && offered(i));
   const hasTexts = items.some((i) => (i.kind === "template" || i.kind === "variable") && offered(i));
+  const hasPlans = items.some((i) => i.kind === "mission-plan" && offered(i));
   const total = chosen.size + included.size;
   const toggle = (key: string) =>
     setChosen((old) => {
@@ -449,9 +467,17 @@ function ExportDialog({
           and passwords; one that holds any stays here.
         </Banner>
       )}
+      {hasPlans && (
+        <Banner icon={<FileText size={16} aria-hidden />} title="What a mission plan carries.">
+          Its document: slots, objectives and their order, the procedures they follow, and the names
+          of their inputs. Its title, summary and slot labels are checked for your stored secrets
+          first. The procedures travel exactly as written, like a playbook, and are not checked.
+          No project, input value or mission travels with it.
+        </Banner>
+      )}
       {items.some(offered) && (
         <Banner tone="warn" icon={<AlertTriangle size={16} aria-hidden />} title="Check the text for secrets before you share it.">
-          Specialists, skills and playbooks travel exactly as written. A token, password or key
+          Specialists, skills, playbooks and mission plans' procedures travel exactly as written. A token, password or key
           pasted into one of their files goes into the bundle with it, even when it is the value of
           one of your secret variables. A secret variable itself travels as its definition only: the
           export never adds its stored value.
@@ -499,6 +525,7 @@ function linkTo(item: { kind: string; dest: string | null }): string | null {
   if (item.kind === "template") return `${TEMPLATES_PATH}/${encodeURIComponent(item.dest)}`;
   if (item.kind === "variable") return variableLink(item.dest);
   if (CONTAINERS.has(item.kind)) return `${MEMORY_PATH}?project=${encodeURIComponent(item.dest)}`;
+  if (item.kind === "mission-plan") return missionPlanPath(item.dest);
   return null;
 }
 
@@ -662,6 +689,9 @@ function PreviewRow({
           ) : item.dest ? (
             " → new copy"
           ) : null}
+          {item["mission-plan"]
+            ? ` · ${countsText(item["mission-plan"])} · runs nothing`
+            : null}
           {item.specialist
             ? ` · version 1 · capacity ${item.specialist.capacity}${
                 item.specialist.skills.length
@@ -1436,6 +1466,11 @@ export function ShareActions({
       )}
     </div>
   );
+}
+
+/** The export dialog on its own, for a card's Export (#1924): the card's item starts chosen. */
+export function ShareExportDialog(props: { kind: ShareKind; onClose: () => void; preselect?: string }) {
+  return <ExportDialog {...props} />;
 }
 
 /** The *imported from a file* mark on a Library card. */

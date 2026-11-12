@@ -35,6 +35,7 @@ import {
   Workflow,
   FileText,
   UsersRound,
+  Route,
   type LucideIcon,
 } from "lucide-react";
 
@@ -46,6 +47,7 @@ import {
   MAP_PATH,
   MEMORY_PATH,
   MISSION_PATH,
+  MISSION_PLANS_PATH,
   PLAYBOOKS_PATH,
   GALLERY_PATH,
   GALLERY_SKILLS_PATH,
@@ -71,7 +73,8 @@ export type SubsectionId =
   | "automations"
   | "playbooks"
   | "skills"
-  | "specialists";
+  | "specialists"
+  | "mission-plans";
 
 export interface Subsection {
   id: SubsectionId;
@@ -126,6 +129,8 @@ export const SECTIONS: Section[] = [
       { id: "skills", label: "Skills", Icon: FileText, to: SKILLS_PATH },
       { id: "specialists", label: "Specialists", Icon: UsersRound, to: SPECIALISTS_PATH },
       { id: "playbooks", label: "Playbooks", Icon: Workflow, to: PLAYBOOKS_PATH },
+      // #1924 (#1613 P7a): reusable, slot-only, inert mission plans.
+      { id: "mission-plans", label: "Mission plans", Icon: Route, to: MISSION_PLANS_PATH },
     ],
   },
 ];
@@ -168,6 +173,8 @@ export function activeSubsection(pathname: string): SubsectionId | null {
   if (pathname === SKILLS_PATH || pathname.startsWith(`${SKILLS_PATH}/`)) return "skills";
   if (pathname === SPECIALISTS_PATH || pathname.startsWith(`${SPECIALISTS_PATH}/`))
     return "specialists";
+  if (pathname === MISSION_PLANS_PATH || pathname.startsWith(`${MISSION_PLANS_PATH}/`))
+    return "mission-plans";
   if (pathname === GALLERY_SKILLS_PATH || pathname.startsWith(`${GALLERY_SKILLS_PATH}/`))
     return "skills";
   if (pathname === GALLERY_PATH || pathname.startsWith(`${GALLERY_PATH}/`)) return "playbooks";

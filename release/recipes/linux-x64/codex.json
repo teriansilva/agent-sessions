@@ -93,6 +93,9 @@
     "terminal": {
       "repaint": "wipe"
     },
+    "tools": {
+      "mcp": "codex-config-override"
+    },
     "transcript": {
       "kind": "codex-rollout"
     },

@@ -1,0 +1,261 @@
+/* Library → Mission plans (#1924, #1613 P7a). NIGHTJAR tokens only; the page frame, grid and cards
+   are the playbooks module's (one Library look). Text that must be read uses --text-2 or stronger
+   (the mockup review on #1924), and every control is a 44 px box. */
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.stamp {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 6px;
+  border: 1px solid var(--line-strong);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.fromFile {
+  border-color: var(--hud);
+}
+.archivedStamp {
+  border-style: dashed;
+  color: var(--text-2);
+}
+.title {
+  color: inherit;
+  text-decoration: none;
+}
+.title:hover,
+.title:focus-visible {
+  color: var(--accent-text);
+}
+.inert {
+  margin: var(--sp-3) 0 var(--sp-4);
+  padding: var(--sp-3);
+  max-width: 80ch;
+  border-left: 3px solid var(--hud);
+  background: color-mix(in srgb, var(--hud) 6%, var(--bg-1));
+  color: var(--text-1);
+  line-height: 1.6;
+}
+.cols {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) 2fr;
+  gap: var(--sp-4);
+  align-items: start;
+}
+@media (max-width: 800px) {
+  .cols {
+    grid-template-columns: 1fr;
+  }
+}
+.side {
+  display: grid;
+  gap: var(--sp-4);
+}
+.panel {
+  composes: nj-frame-sm from global;
+  padding: var(--sp-4);
+}
+.quiet {
+  composes: nj-frame-quiet from global;
+  padding: var(--sp-4);
+}
+.panelHead {
+  margin: 0 0 var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.slot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 44px;
+  border-bottom: 1px solid var(--line);
+}
+.slot:last-child {
+  border-bottom: 0;
+}
+.slotId {
+  flex: none;
+  width: 2.6em;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  color: var(--hud-text);
+  text-transform: uppercase;
+}
+.never {
+  margin: 0;
+  padding-left: 1.2em;
+  color: var(--text-1);
+  font-size: var(--fs-row);
+  line-height: 1.7;
+}
+.objective {
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--line);
+}
+.objective:last-child {
+  border-bottom: 0;
+}
+.objHead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
+}
+.oid {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  color: var(--hud-text);
+}
+.otitle {
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+}
+.after {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+}
+.steps {
+  list-style: none;
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.step {
+  display: grid;
+  grid-template-columns: minmax(9em, 1.2fr) auto 2fr;
+  gap: var(--sp-3);
+  align-items: center;
+  min-height: 44px;
+  padding: 6px var(--sp-2);
+  background: var(--bg-2);
+  font-size: var(--fs-row);
+}
+@media (max-width: 800px) {
+  .step {
+    grid-template-columns: 1fr auto;
+  }
+  .step .need {
+    grid-column: 1 / -1;
+  }
+}
+.actor {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.need {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.skill {
+  padding: 3px 6px;
+  background: var(--surface-3);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}
+.none {
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.grade {
+  padding: 2px 6px;
+  border: 1px solid var(--accent);
+  color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.emptyHow {
+  margin: 0;
+  padding-left: 1.3em;
+  color: var(--text-1);
+  line-height: 1.8;
+}
+.error {
+  color: var(--danger-text);
+}
+/* The save dialog. */
+.f {
+  display: grid;
+  gap: 6px;
+  margin: var(--sp-3) 0;
+}
+.flabel {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.hint {
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.slotRow {
+  display: grid;
+  grid-template-columns: 2.6em 1fr;
+  gap: var(--sp-2);
+  align-items: center;
+}
+.slotHint {
+  margin: 2px 0 var(--sp-2) 3.2em;
+}
+.field {
+  composes: nj-field from global;
+  min-height: 44px;
+}
+.cardActions {
+  margin-top: auto;
+  padding-top: var(--sp-3);
+}
+/* The save sheet keeps its actions in reach while its body scrolls (the mockup review on #1924). */
+@media (max-width: 800px) {
+  .stickyActions {
+    position: sticky;
+    /* Down over the sheet's own bottom padding (HudDialog: --sp-4 + the safe-area inset), so no
+       scrolled text shows below the actions. */
+    bottom: calc(-1 * (var(--sp-4) + env(safe-area-inset-bottom, 0px)));
+    margin-bottom: calc(-1 * (var(--sp-4) + env(safe-area-inset-bottom, 0px)));
+    padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
+    background: var(--bg-1);
+  }
+  /* The fade above the actions: more of the sheet continues below. */
+  .stickyActions::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 100%;
+    height: var(--sp-6);
+    background: linear-gradient(to bottom, transparent, var(--bg-1));
+    pointer-events: none;
+  }
+}

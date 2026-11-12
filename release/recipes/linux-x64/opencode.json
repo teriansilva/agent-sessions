@@ -87,6 +87,9 @@
     "terminal": {
       "permission": "opencode-permission"
     },
+    "tools": {
+      "mcp": "opencode-config-content"
+    },
     "transcript": {
       "kind": "opencode-sqlite",
       "strict": true

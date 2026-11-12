@@ -158,6 +158,7 @@ export default defineConfig({
           { text: "Projects", link: "/guide/projects" },
           { text: "Playbooks", link: "/guide/playbooks" },
           { text: "Specialists", link: "/guide/specialists" },
+          { text: "Mission plans", link: "/guide/mission-plans" },
           { text: "Web research", link: "/guide/web-research" },
           { text: "Files & git", link: "/guide/files-and-git" },
           { text: "Mission control", link: "/guide/missions" },

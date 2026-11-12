@@ -57,6 +57,7 @@ test("Library names Templates, Variables, Memory, Artifacts, Automations, Skills
     "Skills",
     "Specialists",
     "Playbooks",
+    "Mission plans",
   ]);
   await menu.locator('a[data-subsection="automations"]').click();
   await expect(page).toHaveURL(new RegExp(`${AUTOMATIONS_PATH}$`));

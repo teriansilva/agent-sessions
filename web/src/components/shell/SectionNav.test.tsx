@@ -83,6 +83,9 @@ describe("activeSection", () => {
     ["/library/artifacts/5449-5592-2107-4372", "artifacts"],
     ["/library/artifactsx", null],
     ["/artifacts/5449-5592-2107-4372/", null],
+    ["/library/mission-plans", "mission-plans"],
+    ["/library/mission-plans/plan-3fa9c1d2", "mission-plans"],
+    ["/library/mission-plansx", null],
     ["/mission", null],
     ["/overviewer", null],
     // #1201: Automations owns its subtree (one automation's runs and editor live under it).
@@ -170,6 +173,7 @@ describe("SectionNav", () => {
       ["Skills", "/library/skills"],
       ["Specialists", "/library/specialists"],
       ["Playbooks", "/library/playbooks"],
+      ["Mission plans", "/library/mission-plans"],
     ]);
     expect(items[5]).toHaveAttribute("aria-current", "page");
   });

@@ -1,6 +1,6 @@
 /** Share bundles (#1714): the shapes `/api/share/*` answers. */
 
-export type ShareKind = "skill" | "playbook" | "specialist" | "template" | "variable" | "memory";
+export type ShareKind = "skill" | "playbook" | "specialist" | "template" | "variable" | "memory" | "mission-plan";
 
 /** What a project's memory (or a specialist's notebook in it) would send (#1714 P4): counts only. */
 export interface ShareMemoryCounts {
@@ -69,6 +69,8 @@ export interface SharePreviewItem {
   memory?: ShareNotesView;
   /** A specialist's notes in that project (#1714 P4), judged the same way. */
   notebook?: ShareNotesView;
+  /** A mission plan (#1924): its counts, never a project. */
+  "mission-plan"?: { objectives: number; slots: number; steps: number };
 }
 
 /** One incoming note as the preview judged it. A held or refused note's own text is not sent. */

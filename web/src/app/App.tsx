@@ -96,6 +96,7 @@ import {
   SKILLS_PATH,
   PLAYBOOK_NEW_PATH,
   SPECIALISTS_PATH,
+  MISSION_PLANS_PATH,
   TEMPLATES_PATH,
   VARIABLES_PATH,
   MEMORY_PATH,
@@ -167,6 +168,8 @@ const ArtifactDetail = lazyWithReload(() => import("../routes/ArtifactDetail"), 
 const Playbooks = lazyWithReload(() => import("../routes/Playbooks"), "playbooks");
 // LIBRARY → SPECIALISTS (#1693): the pool HQ staffs missions from.
 const Specialists = lazyWithReload(() => import("../routes/Specialists"), "specialists");
+// LIBRARY → MISSION PLANS (#1924, #1613 P7a): reusable, slot-only, inert plans.
+const MissionPlans = lazyWithReload(() => import("../routes/MissionPlans"), "mission-plans");
 // The New project wizard (#1187). Lazy like the others.
 const NewProject = lazyWithReload(
   () => import("../routes/NewProject"),
@@ -402,6 +405,8 @@ function Layout() {
     location.pathname.startsWith(`${PLAYBOOKS_PATH}/`) ||
     location.pathname === SPECIALISTS_PATH ||
     location.pathname.startsWith(`${SPECIALISTS_PATH}/`) ||
+    location.pathname === MISSION_PLANS_PATH ||
+    location.pathname.startsWith(`${MISSION_PLANS_PATH}/`) ||
     location.pathname === GALLERY_PLAYBOOKS_PATH ||
     location.pathname.startsWith(`${GALLERY_PLAYBOOKS_PATH}/`) ||
     location.pathname === VARIABLES_PATH ||
@@ -896,6 +901,8 @@ function Layout() {
                   <Route path={SPECIALISTS_PATH} element={<Specialists />} />
                   <Route path={`${SPECIALISTS_PATH}/:specialistId`} element={<Specialists />} />
                   <Route path={`${SPECIALISTS_PATH}/create/new`} element={<Specialists />} />
+                  <Route path={MISSION_PLANS_PATH} element={<MissionPlans />} />
+                  <Route path={`${MISSION_PLANS_PATH}/:planId`} element={<MissionPlans />} />
                   <Route path={`${PLAYBOOKS_PATH}/:playbookId`} element={<Playbooks />} />
                   <Route path={NEW_PROJECT_PATH} element={<NewProject />} />
                   <Route path={VARIABLES_PATH} element={<Variables />} />

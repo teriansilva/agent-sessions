@@ -53,6 +53,7 @@ import {
   FileText,
   Package,
   RotateCw,
+  Route,
   Undo2,
 } from "lucide-react";
 import {
@@ -72,6 +73,7 @@ import { useInertBehind } from "../templates/useInertBehind";
 import { useHoldFocusWhileBusy } from "../templates/useHoldFocusWhileBusy";
 import action from "../ui/actionButton.module.css";
 import { useFocusContainment } from "./useModalDrawer";
+import { SaveAsPlanDialog } from "../missionPlans/SaveAsPlanDialog";
 import { MissionOverflow } from "./MissionOverflow";
 import { MissionActivationDialog } from "../artifacts/ActivationDialog";
 import { missionDotClass, missionStateLabel } from "./missionState";
@@ -151,6 +153,8 @@ export function MissionHeaderActions({
   const [artifactsOpen, setArtifactsOpen] = useState<{
     returnTo: HTMLElement | null;
   } | null>(null);
+  /** Save as mission plan (#1924): open, and the ⋯ trigger focus returns to when it closes. */
+  const [savingPlan, setSavingPlan] = useState<{ trigger: HTMLElement | null } | null>(null);
 
   const state = mission.state;
   const archived = mission.archived_at != null;
@@ -473,6 +477,31 @@ export function MissionHeaderActions({
           Artifacts…
         </button>
       ) : null}
+      {/* #1924 (#1613 P7a): the mission's plan, saved to the Library as a reusable, slot-only,
+        inert mission plan. It reads the mission and writes only the Library. */}
+      <button
+        type="button"
+        className={styles.menuItem}
+        onClick={(e) => {
+          // The ⋯ trigger of THIS header (not the first one in the document): focus returns to it.
+          // A phone's sheet is portalled to <body>, outside the header: then the one console's.
+          const trigger =
+            (e.currentTarget.closest('[data-testid="mission-lifecycle"]') ?? document)
+              .querySelector<HTMLButtonElement>('[data-testid="mission-overflow"]') ?? null;
+          // A desktop panel stays open on an item's click; a dialog over it closes it first.
+          const inSheet = !!e.currentTarget.closest("[data-sheet]");
+          if (trigger?.getAttribute("aria-expanded") === "true" && !inSheet) trigger.click();
+          // A phone's sheet closes on a microtask and lifts its own `inert` as it goes: the dialog
+          // opens after that, so it marks the page behind it inert itself (independent review).
+          if (inSheet) setTimeout(() => setSavingPlan({ trigger }), 0);
+          else setSavingPlan({ trigger });
+        }}
+        role="menuitem"
+        data-testid="mission-save-as-plan"
+      >
+        {icon(<Route size={15} />)}
+        Save as mission plan
+      </button>
 
       {/* The hairline before the destructive group, as RowMenu draws one. Not a menuitem, so the roving
           focus skips it. Artifacts… is in every state the menu is, so the group above is never empty. */}
@@ -538,6 +567,16 @@ export function MissionHeaderActions({
           mission={mission}
           onClose={() => setArtifactsOpen(null)}
           returnFocusTo={artifactsOpen.returnTo}
+        />
+      ) : null}
+      {savingPlan ? (
+        <SaveAsPlanDialog
+          missionId={mission.id}
+          returnFocusTo={savingPlan.trigger}
+          onClose={() => {
+            savingPlan.trigger?.focus();
+            setSavingPlan(null);
+          }}
         />
       ) : null}
       {archived && confirming === "unarchive" ? (
