@@ -851,6 +851,11 @@ def announce(row: dict | None, extra: dict | None = None) -> None:
         # Hermes 7681), so a reservation still queued can no longer be written.
         _release_when_landed(row["dispatch"])
     poke()
+    # The notify routes (#1841) read the same rows: wake them too. A failed poke never raises.
+    with contextlib.suppress(Exception):
+        from . import notify_routes
+
+        notify_routes.poke()
 
 
 # ---- the writer ---------------------------------------------------------------------------------
@@ -1185,7 +1190,7 @@ def _new_count(doc: dict) -> int:
     return sum(1 for b in _written(doc) if _key(doc, b) > seen)
 
 
-def _entry(doc: dict, bid: str, secrets: list[str] | None) -> dict:
+def _entry(doc: dict, bid: str, secrets: list[str] | None, routes_doc: dict | None = None) -> dict:
     rec = doc["bundles"][bid]
     line = doc["lines"][bid]
     members = []
@@ -1202,7 +1207,7 @@ def _entry(doc: dict, bid: str, secrets: list[str] | None) -> dict:
             }
         )
     contact = str(line.get("contact") or "HQ")
-    return {
+    out = {
         "id": bid,
         "at": float(line["at"]),
         "opened_at": float(rec["opened_at"]),
@@ -1211,6 +1216,18 @@ def _entry(doc: dict, bid: str, secrets: list[str] | None) -> dict:
         "by": _short(contact),
         "members": members,
     }
+    if routes_doc is not None:
+        # Where the same events went (#1841): joined by member tag, omitted when unreadable.
+        from . import notify_routes
+
+        out["routes"] = notify_routes.dispatch_routes(routes_doc, list(rec["members"]))
+    return out
+
+
+def _routes_doc() -> dict | None:
+    from . import notify_routes
+
+    return notify_routes.view_doc()
 
 
 def list_view(limit: int = LIST_MAX, path: Path | None = None) -> dict:
@@ -1219,8 +1236,9 @@ def list_view(limit: int = LIST_MAX, path: Path | None = None) -> dict:
     doc = _read_strict(path)
     secrets = _secrets_snapshot()
     order = sorted(_written(doc), key=lambda b: _key(doc, b), reverse=True)
+    routes_doc = _routes_doc()
     return {
-        "dispatches": [_entry(doc, b, secrets) for b in order[:limit]],
+        "dispatches": [_entry(doc, b, secrets, routes_doc) for b in order[:limit]],
         "new": _new_count(doc),
     }
 
@@ -1232,7 +1250,10 @@ def one_view(bid: str, path: Path | None = None) -> dict | None:
     doc = _read_strict(path)
     if bid not in _written(doc):
         return None
-    return {"dispatch": _entry(doc, bid, _secrets_snapshot()), "new": _new_count(doc)}
+    return {
+        "dispatch": _entry(doc, bid, _secrets_snapshot(), _routes_doc()),
+        "new": _new_count(doc),
+    }
 
 
 def mark_seen(through: object, path: Path | None = None) -> dict:

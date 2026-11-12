@@ -11462,6 +11462,49 @@ def current_escalations(mission_id: str, *, path: Path | None = None) -> list[st
     return [str(r["reason"]) for r in rows if r["reason"]]
 
 
+def escalation_settled(
+    mission_id: str, objective_digest: str, episode: int, *, path: Path | None = None
+) -> bool:
+    """Whether the escalation an HQ event tag names (#1837 ``escalation:<mission>:<digest>:<ep>``)
+    is SETTLED — a notify route marks its copy resolved then (#1841). Read-only; RAISES on any
+    store error, so an unreadable store is never read as "settled".
+
+    Settled: the mission is gone, closed or archived; the objective is gone, met or waived; its
+    episode moved on; or the operator stood it down. A question holding the escalation is NOT
+    settled: the question supersedes it in the attention flag, but nothing has been resolved yet.
+    ``objective_digest`` is the tag's 12-hex digest of the objective key
+    (`hq_dispatch.escalation_tag`), so the tag never carries objective text."""
+    import hashlib
+
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        m = con.execute(
+            "SELECT state, archived_at FROM missions WHERE id=?", (mission_id,)
+        ).fetchone()
+        if m is None or str(m["state"] or "") in TERMINAL_STATES or m["archived_at"] is not None:
+            return True
+        objs = con.execute(
+            "SELECT o.key AS key, o.state AS state, ep.episode AS episode, "
+            "ep.stood_down AS stood_down FROM mission_objectives o "
+            "LEFT JOIN mission_objective_episode ep "
+            "  ON ep.mission_id = o.mission_id AND ep.objective_key = o.key "
+            "WHERE o.mission_id=?",
+            (mission_id,),
+        ).fetchall()
+    finally:
+        con.close()
+    for o in objs:
+        if hashlib.sha256(str(o["key"]).encode()).hexdigest()[:12] != objective_digest:
+            continue
+        return (
+            str(o["state"]) in ("met", "waived")
+            or int(o["episode"] or 1) != int(episode)
+            or bool(o["stood_down"])
+        )
+    return True  # the objective was dropped
+
+
 def _attention_merge(out, mission_ids, rows, open_q, escalated):
     """The LEDGER and SIDECAR terms, folded onto the store's. Both are outside the store, so they
     are read after the snapshot and degrade rather than fail — a hiccup dims the flag, it never

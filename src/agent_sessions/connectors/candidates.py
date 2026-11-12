@@ -85,6 +85,7 @@ async def list_candidates(iid: str) -> dict:
     for r in await ADAPTERS[m.adapter].candidates(_bound(inst)):
         fit = store.fit_recipient(r.get("id"), r.get("label"), r.get("kind"))
         if fit is not None:  # an id or kind the store can't hold is never offered
+            r = {k: v for k, v in r.items() if k != "member_ids"}  # who is joined stays here
             rows.append({**r, **fit})
         if len(rows) >= CANDIDATES_MAX:
             break

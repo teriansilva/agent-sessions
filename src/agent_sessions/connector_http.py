@@ -150,6 +150,11 @@ class Bound:
     #: An HQ read (True) needs read to be enabled AT THE TOKEN FETCH, not only when the tool
     #: began; the connection test (False) runs before read can be enabled.
     for_read: bool = True
+    #: A notify route's copy (#1841): ``"send"`` is fenced on the route being on to
+    #: ``destination``; ``"edit"`` (marking it resolved) on the generation and destination it was
+    #: delivered under. Never `send`: a route sends without the send switch, and only to itself.
+    for_notify: str = ""
+    destination: str = ""
 
 
 async def _resolve(host: str, port: int) -> list[str]:
@@ -259,7 +264,12 @@ def _token(bound: Bound) -> tuple[str, str]:
 
     try:
         inst, token = store.token_for(
-            bound.instance_id, bound.generation, for_read=bound.for_read, for_send=bound.for_send
+            bound.instance_id,
+            bound.generation,
+            for_read=bound.for_read,
+            for_send=bound.for_send,
+            for_notify=bound.for_notify,
+            destination=bound.destination,
         )
     except store.NotFound:
         raise ConnectorError("stale", "the connector was removed") from None
@@ -408,8 +418,14 @@ SENDS = {
     "telegram-bot": ("POST", "/sendMessage"),
     "matrix-cs": ("PUT", "/_matrix/client/v3/rooms/{room}/send/m.room.message/{txn}"),
 }
+#: Marking a notify copy resolved (#1841): Telegram edits the message in place; Matrix sends an
+#: ``m.replace`` event on the SAME send path (its txnId is the edit's own key).
+EDITS = {
+    "telegram-bot": ("POST", "/editMessageText"),
+    "matrix-cs": SENDS["matrix-cs"],
+}
 _SEND_PATHS = {
-    "telegram-bot": re.compile(r"/sendMessage"),
+    "telegram-bot": re.compile(r"/(?:sendMessage|editMessageText)"),
     "matrix-cs": re.compile(
         r"/_matrix/client/v3/rooms/[A-Za-z0-9._~%-]+/send/m\.room\.message/[A-Za-z0-9._~%-]+"
     ),
@@ -442,6 +458,52 @@ def _send_request(
     return method, path, {"msgtype": "m.text", "body": text}
 
 
+def _edit_request(
+    adapter: str, recipient_id: str, message_id: str, text: str, idem_key: str
+) -> tuple[str, str, dict]:
+    from urllib.parse import quote
+
+    method, template = EDITS[adapter]
+    if adapter == "telegram-bot":
+        if not re.fullmatch(r"-?[0-9]{1,20}", recipient_id) or not re.fullmatch(
+            r"[0-9]{1,12}", message_id
+        ):
+            raise ConnectorError("refused", "not a Telegram chat or message id")
+        body = {
+            "chat_id": int(recipient_id),
+            "message_id": int(message_id),
+            "text": text,
+            "link_preview_options": {"is_disabled": True},
+        }
+        return method, template, body
+    if not re.fullmatch(r"\$[A-Za-z0-9._~+/=:-]{1,254}", message_id):
+        raise ConnectorError("refused", "not a Matrix event id")
+    path = template.format(room=quote(recipient_id, safe=""), txn=quote(idem_key, safe=""))
+    new = {"msgtype": "m.text", "body": text}
+    return (
+        method,
+        path,
+        {
+            "msgtype": "m.text",
+            "body": f"* {text}",
+            "m.new_content": new,
+            "m.relates_to": {"rel_type": "m.replace", "event_id": message_id},
+        },
+    )
+
+
+def _not_modified(adapter: str, status: int, raw: bytes) -> bool:
+    """Telegram's answer to an edit that changes nothing: the copy already reads that way."""
+    if adapter != "telegram-bot" or status != 400:
+        return False
+    try:
+        reply = json.loads(raw)
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        return False
+    desc = reply.get("description") if isinstance(reply, dict) else None
+    return isinstance(desc, str) and "message is not modified" in desc
+
+
 def _message_id(adapter: str, reply: object) -> str:
     if adapter == "telegram-bot":
         res = reply.get("result") if isinstance(reply, dict) and reply.get("ok") is True else None
@@ -457,7 +519,13 @@ FinalCheck = Callable[[bool], None]
 
 
 async def _send_once(
-    bound: Bound, method: str, path: str, body: dict, final_check: FinalCheck | None = None
+    bound: Bound,
+    method: str,
+    path: str,
+    body: dict,
+    final_check: FinalCheck | None = None,
+    *,
+    edit: bool = False,
 ) -> dict:
     """ONE provider request. ``{outcome, code, message_id}``, where `failed` means it is PROVEN
     that nothing was sent (refused before any byte left, or the provider answered 4xx), `sent`
@@ -532,6 +600,8 @@ async def _send_once(
         return {"outcome": "failed", "code": e.code[:40], "message_id": ""}
     except (TimeoutError, httpx.HTTPError):
         return {"outcome": "unconfirmed", "code": "no_answer", "message_id": ""}
+    if edit and _not_modified(bound.adapter, status, bytes(buf)):
+        return {"outcome": "sent", "code": "not_modified", "message_id": ""}
     if 400 <= status < 500:
         code = (
             "rejected" if status in (401, 403) else "rate_limited" if status == 429 else "refused"
@@ -568,7 +638,7 @@ async def _send(
     asked once more with the SAME key after an ambiguous end, within this one call only."""
     from .connectors import kinds
 
-    if bound.adapter not in SENDS or not bound.for_send:
+    if bound.adapter not in SENDS or not (bound.for_send or bound.for_notify == "send"):
         return {"outcome": "failed", "code": "refused", "message_id": ""}
     try:
         method, path, body = _send_request(bound.adapter, recipient_id, text, idem_key)
@@ -589,3 +659,27 @@ async def _send(
             if again["outcome"] == "sent":
                 out = again
     return out
+
+
+async def _edit(
+    bound: Bound,
+    recipient_id: str,
+    message_id: str,
+    text: str,
+    idem_key: str,
+    *,
+    final_check: FinalCheck | None = None,
+) -> dict:
+    """Mark a delivered notify copy (#1841): ONE edit request, through the same request site and
+    fences as a send. ``sent`` means the copy reads ``text`` now, including Telegram's "message is
+    not modified"; a Matrix repeat of one edit reuses ``idem_key``, which the homeserver
+    deduplicates. Fenced on the generation and destination the copy was delivered under."""
+    if bound.adapter not in EDITS or bound.for_notify != "edit":
+        return {"outcome": "failed", "code": "refused", "message_id": ""}
+    try:
+        method, path, body = _edit_request(bound.adapter, recipient_id, message_id, text, idem_key)
+    except ConnectorError as e:
+        return {"outcome": "failed", "code": e.code, "message_id": ""}
+    if not _SEND_PATHS[bound.adapter].fullmatch(path):
+        return {"outcome": "failed", "code": "refused", "message_id": ""}
+    return await _send_once(bound, method, path, body, final_check, edit=True)

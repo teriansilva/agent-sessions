@@ -9,13 +9,14 @@ rewritten.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 from collections.abc import Callable
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .. import connector_http, template_secrets
+from .. import connector_http, notify_routes, template_secrets
 from ..connectors import candidates, service, store
 
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
@@ -65,8 +66,15 @@ async def _run(fn: Callable, *args):
 
 
 _CONFLICTS = frozenset(
-    {"origin_needs_token", "needs_test", "needs_token", "needs_origin", "too_many"}
-)
+    {
+        "origin_needs_token", "needs_test", "needs_token", "needs_origin", "too_many", "stale",
+        "recipients_unbound", "not_private", "identity_unchecked",
+    }
+)  # fmt: skip
+
+
+def _instance(iid: str) -> dict:
+    return store._find(store.read(), iid)
 
 
 def _public_one(inst: dict) -> dict:
@@ -117,6 +125,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     ):
         body = await _body(request)
         inst = await _run(store.patch, iid, body)
+        notify_routes.poke()  # a new generation turns a route off; its copies settle (#1841)
         return _json(_public_one(inst))
 
     @app.post(PREFIX + "/instances/{iid}/test")
@@ -129,7 +138,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         if await _body(request):
             raise _BadRequest("a test takes an empty body")
         try:
-            return _json(await service.run_test(iid))
+            out = await service.run_test(iid)
+            notify_routes.poke()
+            return _json(out)
         except store.NotFound:
             raise _BadRequest("no such connector", 404, "not_found") from None
         except store.Refused as e:
@@ -184,11 +195,54 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             inst = await _run(store.set_recipients, iid, body["ids"], candidates.snapshot(iid))
         else:
             raise _BadRequest("send exactly {ids: [...]} or {addresses: [...], generation}")
+        notify_routes.poke()
         return _json(_public_one(inst))
+
+    @app.post(PREFIX + "/instances/{iid}/notify")
+    async def set_notify(
+        iid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ):
+        """A messenger's notify route (#1841): every field validated, refusals in words. On
+        pins the destination's identity from a fresh read (Telegram's candidate snapshot, the
+        Matrix room's members) and sets `since` to now."""
+        settings = await _run(store.check_notify_body, await _body(request))
+        inst = await _run(_instance, iid)
+        identity = None
+        if settings["enabled"]:
+            try:
+                identity = await service.notify_identity(inst, settings["destination"])
+            except store.Refused as e:
+                raise _BadRequest(str(e), 409 if e.code in _CONFLICTS else 422, e.code) from None
+        out = await _run(
+            functools.partial(
+                store.set_notify, iid, settings, generation=inst["generation"], identity=identity
+            )
+        )
+        notify_routes.poke()
+        return _json(_public_one(out))
+
+    @app.get(PREFIX + "/instances/{iid}/deliveries")
+    async def get_deliveries(iid: str, _user: str = Depends(logged_in)):
+        """The route's newest deliveries (#1841): states, times, labels and links — never the
+        message text. 503 in words when the route ledger can't be read."""
+        await _run(_instance, iid)
+        try:
+            rows = await asyncio.to_thread(notify_routes.deliveries, iid)
+        except notify_routes.StoreUnreadable:
+            raise _BadRequest(
+                "the notification ledger can't be read, so nothing is sent until it can",
+                503,
+                "ledger_unreadable",
+            ) from None
+        return _json({"deliveries": rows})
 
     @app.delete(PREFIX + "/instances/{iid}")
     async def delete_instance(
         iid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
     ):
         await _run(store.remove, iid)
+        notify_routes.poke()  # its delivered copies settle `retract_lost` on the next pass
         return _json({"removed": iid})

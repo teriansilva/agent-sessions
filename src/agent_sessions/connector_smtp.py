@@ -418,12 +418,19 @@ _DETAILS = {
 
 
 def _credential(bound: Bound, *, for_send: bool) -> tuple[dict, str, str]:
-    """``(instance, account, password)`` at THIS generation, fenced like `connector_http`'s."""
+    """``(instance, account, password)`` at THIS generation, fenced like `connector_http`'s. A
+    notify copy (#1841, ``bound.for_notify``) is fenced on its route, never on ``send``."""
     from .connectors import store
 
+    notify = bound.for_notify if for_send else ""
     try:
         inst, password = store.token_for(
-            bound.instance_id, bound.generation, for_read=False, for_send=for_send
+            bound.instance_id,
+            bound.generation,
+            for_read=False,
+            for_send=for_send and not notify,
+            for_notify=notify,
+            destination=bound.destination,
         )
     except store.NotFound:
         raise ConnectorError("stale", "the connector was removed") from None
@@ -455,7 +462,7 @@ async def _send(
 ) -> dict:
     """THE mail send (#1836): one submission per call, never repeated. ``sender`` is the From
     address the card showed; the store's must still equal it at this last fence."""
-    if bound.adapter != "smtp" or not bound.for_send:
+    if bound.adapter != "smtp" or not (bound.for_send or bound.for_notify == "send"):
         return {"outcome": "failed", "code": "refused", "message_id": ""}
     if not re.fullmatch(r"[0-9a-f]{32}", idem_key):
         return {"outcome": "failed", "code": "refused", "message_id": ""}

@@ -55,6 +55,7 @@ from . import (
     native_models,
     native_runtime,
     needs_you_notify,
+    notify_routes,
     orchestrator_loop,
     owner,
     prefs,
@@ -465,6 +466,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # HQ's Dispatches (#1837): one line per bundle of notifications, written AFTER the rows and
         # pushes, once. Env kill-switch AGENT_SESSIONS_HQ_DISPATCH_LOOP=0.
         hq_dispatch_task = asyncio.create_task(hq_dispatch.run())
+        # Notify routes (#1841): a copy of each bell event to the Commander's own Telegram chat,
+        # Matrix DM or mail, marked resolved later. Kill-switch AGENT_SESSIONS_NOTIFY_ROUTES_LOOP=0.
+        notify_routes_task = asyncio.create_task(notify_routes.run())
         # Automations (#1201): the scheduler takes its kernel ownership lock before recovering or
         # firing anything. Env kill-switch AGENT_SESSIONS_AUTOMATION_LOOP=0 stops every trigger.
         automation_task = automation_loop.start(registry)
@@ -545,6 +549,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 usage_task,
                 needs_you_task,
                 hq_dispatch_task,
+                notify_routes_task,
                 automation_task,
                 memory_task,
                 capacity_task,

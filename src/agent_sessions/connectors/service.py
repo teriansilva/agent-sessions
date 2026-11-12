@@ -13,8 +13,8 @@ from __future__ import annotations
 import asyncio
 
 from .. import connector_http, prefs
+from . import candidates, store
 from . import manifest as manifest_mod
-from . import store
 from .adapters import ADAPTERS, common, matrix
 
 
@@ -120,3 +120,49 @@ async def run_test(iid: str) -> dict:
     if isinstance(found.get("warning"), str):
         out["warning"] = found["warning"][:300]  # adapter-written text, never the forge's
     return out
+
+
+async def notify_identity(inst: dict, destination: str) -> dict | None:
+    """The identity a notify route is pinned to (#1841), read FRESH, without the store lock:
+    ``{id, label, member}``, or None when the route is already on to that destination (it keeps
+    its pin: re-pinning needs off, then on). `store.set_notify` checks the generation under the
+    lock, so a pin read from an older configuration is refused there.
+
+    Telegram: the private chat must be in the server's candidate snapshot at this generation
+    (its id is the person's user id; the label is the name and @username Telegram showed).
+    Matrix: the room's joined members must be exactly the bot and ONE other user, unencrypted;
+    that user is pinned. Mail: the saved address is the identity (BattleLab can't verify who
+    reads it)."""
+    from .. import notify_routes
+
+    rec = next((r for r in inst.get("recipients") or [] if r["id"] == destination), None)
+    if rec is None:
+        raise store.Refused("choose one of your saved recipients", "unknown_recipient")
+    if not store.destination_kind_ok(inst, rec):
+        raise store.Refused(
+            "notifications go only to a private chat with the bot, a room of just you and the "
+            "bot, or your own address",
+            "not_private",
+        )
+    if store.notify_on(inst) and inst["notify"]["destination"] == destination:
+        return None
+    m = manifest_mod.bundled()[inst["manifest_id"]]
+    if m.adapter == "telegram-bot":
+        snap = candidates.snapshot(inst["id"])
+        current = snap["generation"] == inst["generation"]
+        c = snap["candidates"].get(destination) if current else None
+        if c is None or not c["eligible"] or c["kind"] != "private chat":
+            raise store.Refused(
+                "that private chat isn't in the bot's recent chats: send the bot a message, then "
+                "refresh the list and try again",
+                "identity_unchecked",
+            )
+        return {"id": destination, "label": c["label"], "member": ""}
+    if m.adapter == "matrix-cs":
+        facts = await matrix.room_facts(_bound(inst), destination)
+        bot = inst["tested"]["login"] if inst["tested"] else ""
+        member, why = notify_routes.matrix_pin(facts, bot)
+        if member is None:
+            raise store.Refused(why, "not_private")
+        return {"id": destination, "label": rec["label"], "member": member}
+    return {"id": destination, "label": rec["label"], "member": ""}

@@ -35,6 +35,7 @@ both, so it joins the redaction set strictly before or after any redacting write
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import os
 import re
@@ -86,6 +87,25 @@ ADDRESS_RE = re.compile(rf"(?:{_ATOM}(?:\.{_ATOM})*)@(?:{_LABEL}(?:\.{_LABEL})+)
 #: messenger that has claimed one.
 SEND_RATE_MAX = 20
 SEND_RATE_WINDOW_S = 3600.0
+#: A messenger's NOTIFY ROUTE (#1841, #1746 P3b): a short copy of each bell event to ONE saved
+#: recipient the Commander says is their own. `notify` (the block) and `enabled.notify` exist only
+#: on an instance that was ever configured for it, so a store without one is what an older build
+#: reads. The block's fields, exactly:
+NOTIFY_KEYS = frozenset(
+    {"destination", "identity", "generation", "classes", "window_s", "quiet", "cap_per_hour",
+     "include_line", "since", "off"}
+)  # fmt: skip
+#: The bell classes a route can carry (`hq_dispatch` classes; watches join in P3c).
+NOTIFY_CLASSES = ("needs you", "mission escalation", "automation failed")
+NOTIFY_WINDOWS = (0, 30, 60, 120, 300, 600)
+NOTIFY_WINDOW_DEFAULT = 60
+NOTIFY_CAP_MAX = 60
+NOTIFY_CAP_DEFAULT = 20
+#: Why a route went back to off by itself, in the same locked write as the change that caused it.
+NOTIFY_OFF_REASONS = frozenset(
+    {"connector_changed", "needs_test", "recipients_unbound", "destination_removed"}
+)
+_HHMM_RE = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
 #: The audit row's operations.
 AUDIT_OPS = frozenset({"added", "changed", "tested", "enabled", "disabled", "removed"})
 CODE_RE = re.compile(r"[a-z_]{1,40}")
@@ -317,12 +337,101 @@ def _valid_messenger(inst: dict) -> bool:
     )
 
 
+@functools.lru_cache(maxsize=1)
+def _zones() -> frozenset[str]:
+    import zoneinfo
+
+    return frozenset(zoneinfo.available_timezones())
+
+
+def valid_zone(tz: object) -> bool:
+    """An IANA zone name this host knows (`zoneinfo.available_timezones()`)."""
+    return isinstance(tz, str) and 0 < len(tz) <= 64 and tz in _zones()
+
+
+def valid_quiet(q: object) -> bool:
+    return q is None or (
+        isinstance(q, dict)
+        and set(q) == {"from", "to", "tz"}
+        and isinstance(q["from"], str)
+        and _HHMM_RE.fullmatch(q["from"]) is not None
+        and isinstance(q["to"], str)
+        and _HHMM_RE.fullmatch(q["to"]) is not None
+        and q["from"] != q["to"]
+        and valid_zone(q["tz"])
+    )
+
+
+def _valid_identity(ident: object) -> bool:
+    """What notify was pinned to at enable: the destination's id, the label shown then, and for
+    Matrix the ONE other joined member's user id (``member``; "" for Telegram and mail)."""
+    return (
+        isinstance(ident, dict)
+        and set(ident) == {"id", "label", "member"}
+        and isinstance(ident["id"], str)
+        and 0 < len(ident["id"]) <= 255
+        and isinstance(ident["label"], str)
+        and len(ident["label"]) <= LABEL_MAX
+        and ident["label"].isprintable()
+        and isinstance(ident["member"], str)
+        and len(ident["member"]) <= 255
+    )
+
+
+def _valid_notify(inst: dict) -> bool:
+    n = inst["notify"]
+    if not isinstance(n, dict) or set(n) != NOTIFY_KEYS:
+        return False
+    on = inst["enabled"].get("notify")
+    if not isinstance(n["destination"], str) or len(n["destination"]) > 255:
+        return False
+    if n["destination"] == "":
+        if on or n["identity"] is not None:
+            return False  # notify is never on without a destination
+    elif not _valid_identity(n["identity"]) or n["identity"]["id"] != n["destination"]:
+        return False
+    cls = n["classes"]
+    if not (
+        isinstance(cls, list)
+        and all(isinstance(c, str) and c in NOTIFY_CLASSES for c in cls)
+        and len(set(cls)) == len(cls)
+    ):
+        return False
+    off = n["off"]
+    return (
+        _int(n["generation"])
+        and isinstance(n["window_s"], int)
+        and not isinstance(n["window_s"], bool)
+        and n["window_s"] in NOTIFY_WINDOWS
+        and valid_quiet(n["quiet"])
+        and isinstance(n["cap_per_hour"], int)
+        and not isinstance(n["cap_per_hour"], bool)
+        and 1 <= n["cap_per_hour"] <= NOTIFY_CAP_MAX
+        and isinstance(n["include_line"], bool)
+        and isinstance(n["since"], int | float)
+        and not isinstance(n["since"], bool)
+        and (
+            off is None
+            or (
+                isinstance(off, dict)
+                and set(off) == {"reason", "at"}
+                and off["reason"] in NOTIFY_OFF_REASONS
+                and isinstance(off["at"], int | float)
+            )
+        )
+    )
+
+
 def _valid_instance(inst: object) -> bool:
     # `account` (#1829) is present only on a `basic` connector, so a store holding none of them is
     # byte-for-byte what an older build reads.
     # An email connector (#1836) has all of them plus `sender`: no older build reads it.
     keys = set(inst) if isinstance(inst, dict) else None
     email = _INSTANCE_KEYS | {"account"} | MESSENGER_KEYS | EMAIL_KEYS
+    # A notify route (#1841) adds `notify` to a messenger, and only once one was configured.
+    notify = keys is not None and "notify" in keys and MESSENGER_KEYS <= keys
+    if notify:
+        keys = keys - {"notify"}
     if keys not in (
         _INSTANCE_KEYS,
         _INSTANCE_KEYS | {"account"},
@@ -369,11 +478,12 @@ def _valid_instance(inst: object) -> bool:
     if not (_valid_tested(inst["tested"]) and _valid_last_test(inst["last_test"])):
         return False
     enabled = inst["enabled"]
-    if not isinstance(enabled, dict) or set(enabled) != set(
-        SEND_CAPABILITIES if messenger else CAPABILITIES
-    ):
+    want = set(SEND_CAPABILITIES if messenger else CAPABILITIES) | ({"notify"} if notify else set())
+    if not isinstance(enabled, dict) or set(enabled) != want:
         return False
     if not all(isinstance(v, bool) for v in enabled.values()):
+        return False
+    if notify and not _valid_notify(inst):
         return False
     envs = inst["envelopes"]
     if not isinstance(envs, dict) or not set(envs) <= {"token"}:
@@ -509,6 +619,7 @@ def _mutate(fn: Callable[[dict, float], object]) -> object:
         _reconcile_manifests(doc)
         now = time.time()
         out = fn(doc, now)
+        _notify_settle(doc, now)
         # NEVER WRITE WHAT THE STRICT READ REFUSES (#1832, Hermes 7603). A record the reader
         # rejects makes the whole store unreadable, and every connector with it, until someone
         # repairs the file by hand. A mutation that would produce one is refused instead.
@@ -583,6 +694,130 @@ def sendable(inst: dict, bundled: dict[str, manifest_mod.Manifest] | None = None
     )
 
 
+# ---- notify routes (#1841) ----------------------------------------------------------------------
+
+
+def app_origin() -> str:
+    """The install's own origin, which every link a route sends starts with
+    (``AGENT_SESSIONS_ORIGIN``; the direct origin, relay links wait for #1735). "" when unset:
+    notify can't be enabled."""
+    return (os.environ.get("AGENT_SESSIONS_ORIGIN") or "").strip().rstrip("/")
+
+
+def _recipient_ids(inst: dict) -> set[str]:
+    return {r["id"] for r in inst.get("recipients") or []}
+
+
+def notify_off_reason(
+    inst: dict, bundled: dict[str, manifest_mod.Manifest] | None = None
+) -> str | None:
+    """Why this instance's notify route can't hold now, or None. Checked by every write
+    (`_notify_settle`), the claim, and the send's last fence: a new generation (credential, origin,
+    From address or manifest), a test no longer current, recipients re-bound to another bot or
+    account, or the destination no longer a saved recipient."""
+    n = inst.get("notify")
+    if n is None or not n["destination"]:
+        return "destination_removed"
+    if inst["generation"] != n["generation"]:
+        return "connector_changed"
+    if not tested_current(inst, bundled):
+        return "needs_test"
+    if not binding_current(inst, bundled):
+        return "recipients_unbound"
+    if n["destination"] not in _recipient_ids(inst):
+        return "destination_removed"
+    return None
+
+
+def notify_on(inst: dict, bundled: dict[str, manifest_mod.Manifest] | None = None) -> bool:
+    """Whether this instance is a live notify route NOW: switched on, and nothing turned it off."""
+    return bool(inst["enabled"].get("notify")) and notify_off_reason(inst, bundled) is None
+
+
+def notify_edit_ok(
+    inst: dict, generation: int, destination: str, bundled: dict | None = None
+) -> str | None:
+    """Whether a copy delivered under ``generation`` to ``destination`` may still be EDITED: None,
+    or the code it settles ``retract_lost`` with. It does not ask the notify switch: switching
+    notify off stops new copies, never the marking of copies already sent through the same
+    credential."""
+    if inst["generation"] != generation:
+        return "connector_changed"
+    if not tested_current(inst, bundled) or not binding_current(inst, bundled):
+        return "connector_changed"
+    if destination not in _recipient_ids(inst):
+        return "destination_removed"
+    return None
+
+
+def _notify_settle(doc: dict, now: float) -> None:
+    """A route goes back to OFF in the same locked write as the change that ends it (#1841)."""
+    bundled = _bundled()
+    for inst in doc["instances"]:
+        if not inst["enabled"].get("notify"):
+            continue
+        why = notify_off_reason(inst, bundled)
+        if why is not None:
+            inst["enabled"]["notify"] = False
+            inst["notify"]["off"] = {"reason": why, "at": now}
+
+
+def destination_kind_ok(inst: dict, rec: dict) -> bool:
+    """A saved recipient a route may use: a Telegram PRIVATE chat (its id is the person's user
+    id), a Matrix room (checked live for exactly two members), or a typed mail address."""
+    m = _bundled().get(inst["manifest_id"])
+    adapter = m.adapter if m is not None else ""
+    if adapter == "telegram-bot":
+        return rec["kind"] == "private chat"
+    if adapter == "matrix-cs":
+        return rec["kind"] == "room"
+    return adapter == "smtp" and rec["kind"] == EMAIL_KIND
+
+
+def _notify_defaults() -> dict:
+    return {
+        "destination": "", "identity": None, "generation": 0, "classes": list(NOTIFY_CLASSES),
+        "window_s": NOTIFY_WINDOW_DEFAULT, "quiet": None, "cap_per_hour": NOTIFY_CAP_DEFAULT,
+        "include_line": False, "since": 0, "off": None,
+    }  # fmt: skip
+
+
+def notify_why(inst: dict, bundled: dict[str, manifest_mod.Manifest]) -> str | None:
+    """Why notify can't be switched on now, in words; None when it can."""
+    if not app_origin():
+        return "Set AGENT_SESSIONS_ORIGIN first: every notification carries a link into the app."
+    if not tested_current(inst, bundled):
+        return "Test this connector first."
+    if not inst["recipients"]:
+        return "Choose one of your saved recipients: save yours first."
+    if not binding_current(inst, bundled):
+        return "Save your recipients again for this bot or account first."
+    if not any(destination_kind_ok(inst, r) for r in inst["recipients"]):
+        return "Notifications go to a private chat with the bot: save yours as a recipient first."
+    return None
+
+
+def _public_notify(inst: dict, bundled: dict[str, manifest_mod.Manifest]) -> dict:
+    n = inst.get("notify") or _notify_defaults()
+    why = notify_why(inst, bundled)
+    return {
+        "notify": {
+            "enabled": notify_on(inst, bundled),
+            "destination": n["destination"],
+            "identity": dict(n["identity"]) if n["identity"] else None,
+            "classes": list(n["classes"]),
+            "window_s": n["window_s"],
+            "quiet": dict(n["quiet"]) if n["quiet"] else None,
+            "cap_per_hour": n["cap_per_hour"],
+            "include_line": n["include_line"],
+            "since": n["since"] or None,
+            "off": dict(n["off"]) if n["off"] else None,
+        },
+        "notify_ok": why is None,
+        "notify_why": why,
+    }
+
+
 def status(inst: dict, bundled: dict[str, manifest_mod.Manifest]) -> str:
     if inst["manifest_id"] not in bundled:
         return "unavailable"
@@ -605,6 +840,7 @@ def _public_messenger(inst: dict, bundled: dict[str, manifest_mod.Manifest]) -> 
         "recipients_chosen_for": (inst["bound"] or {}).get("identity"),
         "send": bool(sendable(inst, bundled)),
         "send_off": dict(inst["send_off"]) if inst["send_off"] else None,
+        **_public_notify(inst, bundled),
     }
 
 
@@ -875,8 +1111,10 @@ def settle_test(
         m = bundled.get(inst["manifest_id"])
         if m is None or inst["manifest_version"] != m.version:
             return False
-        result = apply(doc, time.time())
+        now = time.time()
+        result = apply(doc, now)
         if result:
+            _notify_settle(doc, now)  # a failed re-test turns a notify route off (#1841)
             _write(path, doc)
         return result
 
@@ -1061,6 +1299,133 @@ def take_send(iid: str, generation: int, recipient_id: str) -> None:
     _mutate(apply)
 
 
+_NOTIFY_BODY = frozenset(
+    {"enabled", "destination_id", "classes", "window_s", "quiet", "cap_per_hour", "include_line"}
+)
+
+
+def check_notify_body(body: object) -> dict:
+    """``POST …/notify``'s body, every field checked, each refusal in words (#1841)."""
+    if not isinstance(body, dict) or set(body) != _NOTIFY_BODY:
+        raise Refused(
+            "send exactly {enabled, destination_id, classes, window_s, quiet, cap_per_hour, "
+            "include_line}",
+            "bad_body",
+        )
+    if not isinstance(body["enabled"], bool) or not isinstance(body["include_line"], bool):
+        raise Refused("enabled and include_line are true or false", "bad_body")
+    dest = body["destination_id"]
+    if not isinstance(dest, str) or len(dest) > 255:
+        raise Refused("choose one of your saved recipients", "bad_body")
+    cls = body["classes"]
+    if (
+        not isinstance(cls, list)
+        or not all(isinstance(c, str) and c in NOTIFY_CLASSES for c in cls)
+        or len(set(cls)) != len(cls)
+    ):
+        raise Refused("classes are some of: " + ", ".join(NOTIFY_CLASSES), "bad_classes")
+    if body["enabled"] and not cls:
+        raise Refused("choose at least one kind of notification", "bad_classes")
+    w = body["window_s"]
+    if isinstance(w, bool) or w not in NOTIFY_WINDOWS:
+        raise Refused(
+            "the bundle window is one of 0, 30, 60, 120, 300 or 600 seconds", "bad_window"
+        )
+    cap = body["cap_per_hour"]
+    if not isinstance(cap, int) or isinstance(cap, bool) or not 1 <= cap <= NOTIFY_CAP_MAX:
+        raise Refused(f"the hourly cap is 1 to {NOTIFY_CAP_MAX}", "bad_cap")
+    q = body["quiet"]
+    if q is not None:
+        if not (isinstance(q, dict) and set(q) == {"from", "to", "tz"}):
+            raise Refused("quiet hours are {from, to, tz}, or null", "bad_quiet")
+        if not all(isinstance(q[k], str) and _HHMM_RE.fullmatch(q[k]) for k in ("from", "to")):
+            raise Refused("quiet hours start and end at a time like 22:00 and 07:00", "bad_quiet")
+        if q["from"] == q["to"]:
+            raise Refused("quiet hours need a different start and end", "bad_quiet")
+        if not valid_zone(q["tz"]):
+            raise Refused("that time zone isn't one this server knows", "bad_quiet")
+        q = {"from": q["from"], "to": q["to"], "tz": q["tz"]}
+    return {
+        "enabled": body["enabled"], "destination": dest, "classes": list(cls), "window_s": w,
+        "quiet": q, "cap_per_hour": cap, "include_line": body["include_line"],
+    }  # fmt: skip
+
+
+def set_notify(iid: str, settings: dict, *, generation: int, identity: dict | None) -> dict:
+    """Save a messenger's notify route (#1841) from `check_notify_body`'s ``settings``.
+
+    Off always succeeds and keeps the settings and the pinned destination. On needs, UNDER THE
+    LOCK: the instance still at ``generation`` (the one the route layer pinned ``identity`` at),
+    `AGENT_SESSIONS_ORIGIN` set, a current test, recipients bound to this bot or account, and the
+    destination a saved recipient of an eligible kind. A route already on to the SAME destination
+    keeps its pinned identity and ``since`` (re-pinning needs off, then on); anything else pins
+    ``identity`` and sets ``since`` to now, so nothing from before it is ever announced."""
+
+    def apply(doc: dict, now: float) -> dict:
+        inst = _find(doc, iid)
+        if not MESSENGER_KEYS <= set(inst):
+            raise Refused("this connector does not send", "bad_body")
+        prev = inst.get("notify") or _notify_defaults()
+        block = {
+            **prev,
+            **{
+                k: settings[k]
+                for k in ("classes", "window_s", "quiet", "cap_per_hour", "include_line")
+            },
+        }
+        if not settings["enabled"]:
+            inst["notify"] = block
+            if inst["enabled"].get("notify"):
+                _audit(doc, "disabled", inst, now)
+            inst["enabled"]["notify"] = False
+            return dict(inst)
+        dest = settings["destination"]
+        if inst["generation"] != generation:
+            raise Refused("the connector changed; look at it again", "stale")
+        if not app_origin():
+            raise Refused(
+                "set AGENT_SESSIONS_ORIGIN first: every notification carries a link", "needs_origin"
+            )
+        if not tested_current(inst):
+            raise Refused("test this connector before enabling it", "needs_test")
+        if not binding_current(inst):
+            raise Refused(
+                "the recipients were chosen for another bot or account; save them again first",
+                "recipients_unbound",
+            )
+        rec = next((r for r in inst["recipients"] if r["id"] == dest), None)
+        if rec is None:
+            raise Refused("choose one of your saved recipients", "unknown_recipient")
+        if not destination_kind_ok(inst, rec):
+            raise Refused(
+                "notifications go only to a private chat with the bot, a room of just you and "
+                "the bot, or your own address",
+                "not_private",
+            )
+        kept = (
+            inst["enabled"].get("notify")
+            and prev["destination"] == dest
+            and notify_off_reason(inst) is None
+        )
+        if not kept:
+            if identity is None or identity.get("id") != dest:
+                raise Refused("we couldn't check that destination; try again", "identity_unchecked")
+            block["identity"] = {
+                "id": dest,
+                "label": str(identity.get("label") or rec["label"])[:LABEL_MAX],
+                "member": str(identity.get("member") or "")[:255],
+            }
+            block["since"] = now
+        block.update({"destination": dest, "generation": inst["generation"], "off": None})
+        inst["notify"] = block
+        if not inst["enabled"].get("notify"):
+            _audit(doc, "enabled", inst, now)
+        inst["enabled"]["notify"] = True
+        return dict(inst)
+
+    return _mutate(apply)  # type: ignore[return-value]
+
+
 def remove(iid: str) -> None:
     def apply(doc: dict, now: float) -> None:
         inst = _find(doc, iid)
@@ -1078,7 +1443,13 @@ def remove(iid: str) -> None:
 
 
 def token_for(
-    iid: str, generation: int, *, for_read: bool = True, for_send: bool = False
+    iid: str,
+    generation: int,
+    *,
+    for_read: bool = True,
+    for_send: bool = False,
+    for_notify: str = "",
+    destination: str = "",
 ) -> tuple[dict, str]:
     """``(instance, token)`` for a request bound to ``generation`` — `Refused` when the instance
     moved on, its token cannot be opened, or (``for_read``, every HQ read) read is not enabled
@@ -1088,7 +1459,17 @@ def token_for(
     inst = _find(doc, iid)
     if inst["generation"] != generation:
         raise Refused("the connector changed since this was asked", "stale")
-    if for_send:
+    if for_notify == "send":
+        # A notify copy (#1841) is fenced on the ROUTE, never on `send`: switched on, nothing
+        # turned it off, and still to the destination it was claimed for.
+        if not notify_on(inst) or inst["notify"]["destination"] != destination:
+            raise Refused("that notify route is off now", "notify_off")
+    elif for_notify == "edit":
+        # Marking a delivered copy: the generation and destination it went out under.
+        why = notify_edit_ok(inst, generation, destination)
+        if why is not None:
+            raise Refused("the connector changed since that copy was sent", why)
+    elif for_send:
         # A SEND (#1833) is fenced on sending, never on reading: switched on, tested, recipients
         # bound to this bot — checked at the last point before the request leaves.
         if not sendable(inst):

@@ -43,8 +43,13 @@ async def probe(bound: Bound) -> dict:
 
 
 async def room_facts(bound: Bound, room_id: str) -> dict:
-    """``{label, members, unavailable}`` for one room the bot is in. ``unavailable`` is a short
-    reason (encrypted, or could not be checked), or None when the room may receive messages."""
+    """``{label, members, member_ids, unavailable}`` for one room the bot is in. ``unavailable``
+    is a short reason (encrypted, or could not be checked), or None when the room may receive
+    messages.
+
+    ``member_ids`` (#1841) is WHO is joined: the sorted user ids, the keys of the same
+    ``/joined_members`` reply ``members`` counts. A reply of the wrong shape, or any id that is not
+    a user id, gives None — never a partial list — so an identity check can't pass on a guess."""
     if not valid_room(room_id):
         raise ConnectorError("refused", "not a room id")
     base = f"rooms/{seg(room_id)}"
@@ -65,15 +70,24 @@ async def room_facts(bound: Bound, room_id: str) -> dict:
     # Who would read a message is part of the consent (#1832): a room whose members can't be
     # counted (an error, a timeout, a reply of the wrong shape) is not eligible (Hermes 7605).
     members: int | None = None
+    member_ids: list[str] | None = None
     try:
         joined = await _get(bound, f"{base}/joined_members")
         if isinstance(joined, dict) and isinstance(joined.get("joined"), dict):
             members = len(joined["joined"])
+            ids = list(joined["joined"])
+            if all(isinstance(u, str) and USER_ID_RE.fullmatch(u) for u in ids):
+                member_ids = sorted(ids)
     except ConnectorError:
         members = None
     if members is None and unavailable is None:
         unavailable = "its members couldn't be checked"
-    return {"label": label, "members": members, "unavailable": unavailable}
+    return {
+        "label": label,
+        "members": members,
+        "member_ids": member_ids,
+        "unavailable": unavailable,
+    }
 
 
 async def candidates(bound: Bound) -> list[dict]:

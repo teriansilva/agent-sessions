@@ -73,6 +73,7 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_AGENT_USAGE": ".config/agent-sessions/agent-usage.json",
     "AGENT_SESSIONS_HQ_USAGE": ".config/agent-sessions/hq-usage.json",  # #1531 footer telemetry
     "AGENT_SESSIONS_HQ_DISPATCHES": ".config/agent-sessions/hq-dispatches.json",  # #1837
+    "AGENT_SESSIONS_NOTIFY_ROUTES_PATH": ".config/agent-sessions/notify-routes.json",  # #1841
     "AGENT_SESSIONS_TEMPLATES": ".config/agent-sessions/templates.json",
     "AGENT_SESSIONS_TEMPLATE_VARS": ".config/agent-sessions/template-variables.json",
     "AGENT_SESSIONS_TEMPLATE_SECRETS_KEY": ".config/agent-sessions/template-secrets.key",
@@ -209,6 +210,8 @@ _pin_store_env()
 os.environ.setdefault("AGENT_SESSIONS_NEEDS_YOU_LOOP", "0")
 # HQ's Dispatches writer (#1837): a test drives `hq_dispatch.pass_once` itself.
 os.environ.setdefault("AGENT_SESSIONS_HQ_DISPATCH_LOOP", "0")
+# The notify-route worker (#1841): a test drives `notify_routes.pass_once` itself.
+os.environ.setdefault("AGENT_SESSIONS_NOTIFY_ROUTES_LOOP", "0")
 # The automation scheduler (#1201) fires unattended work from the lifespan. No test that merely
 # enters the lifespan may start one; its tests drive `automation_loop.Scheduler.tick` directly and
 # opt back in with `monkeypatch.setenv("AGENT_SESSIONS_AUTOMATION_LOOP", "1")`.
@@ -575,6 +578,11 @@ def _isolate_notifications(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv(
         "AGENT_SESSIONS_HQ_DISPATCHES",
         str(tmp_path / ".config" / "agent-sessions" / "hq-dispatches.json"),
+    )
+    # #1841: the notify-route ledger — the Dispatches read joins it.
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_NOTIFY_ROUTES_PATH",
+        str(tmp_path / ".config" / "agent-sessions" / "notify-routes.json"),
     )
 
 
