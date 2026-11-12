@@ -55,6 +55,7 @@ EXPECTED_SITES = {
     ("mission_plan.py", "mission_plan"),
     ("mission_questions.py", "mission_question"),
     ("mission_judge.py", "mission_judge"),
+    ("mission_debrief.py", "mission_debrief"),
     ("chat_runtime.py", "chat_agent"),  # #1209: the API agent's system prompt
     ("chat_runtime.py", "chat_agent_edits"),  # #1230: approved file edits
     ("chat_runtime.py", "chat_agent_tools"),  # #1222: the same, with read tools on

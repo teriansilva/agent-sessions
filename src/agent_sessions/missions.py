@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 36
+SCHEMA_VERSION = 37
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -1456,7 +1456,23 @@ def _migrate_35_to_36(con) -> None:
 
 #: The versions `rollback_schema` can take a store back to, newest first. One entry per additive
 #: step whose previous build reads the newer file unchanged once `user_version` says so.
-ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34, 35})
+#: The mission debrief (#1740 P2): the last summary written for a mission, with the records
+#: revision it describes. One row per mission; the facts beside it are always read live.
+DEBRIEF_DDL: tuple[str, ...] = (
+    "CREATE TABLE IF NOT EXISTS mission_debriefs ("
+    "mission_id TEXT PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE, "
+    "revision TEXT NOT NULL, summary TEXT NOT NULL, written_at REAL NOT NULL)",
+)
+_SCHEMA += ";\n".join(DEBRIEF_DDL) + ";\n"
+
+
+def _migrate_36_to_37(con) -> None:
+    """Additive only (workflow §0): one table. Idempotent."""
+    for statement in DEBRIEF_DDL:
+        con.execute(statement)
+
+
+ROLLBACK_TARGETS: frozenset[int] = frozenset({33, 34, 35, 36})
 
 
 def rollback_schema(to: int, *, path: Path | None = None) -> dict:
@@ -1464,7 +1480,7 @@ def rollback_schema(to: int, *, path: Path | None = None) -> dict:
 
     Every target is additive below this build: v34 added the plan revisions and three objective
     columns (to 33), v35 the shelf tables (to 34), v36 the shelf's git baselines and a patch
-    column (to 35); an older build never reads any of them.
+    column (to 35), v37 the mission debriefs (to 36); an older build never reads any of them.
 
     A build refuses a store newer than itself, so rolling the app back past v34 would make every
     mission read fail. This is the way back: `user_version` set to `to`, in one transaction, and
@@ -1618,6 +1634,8 @@ def _migrate(con) -> int:
             _migrate_34_to_35(con)
         if version < 36:
             _migrate_35_to_36(con)
+        if version < 37:
+            _migrate_36_to_37(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 

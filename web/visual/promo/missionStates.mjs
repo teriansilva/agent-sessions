@@ -164,6 +164,9 @@ export function missionVariant(base, v) {
     }
     case "question":
       return { ...base, question: QUESTION, needs_you: true, needs_you_why: ["question"] };
+    // In review (#1740 P2): the page opens on SHELF with the debrief first.
+    case "review":
+      return { ...base, state: "review" };
     case "decisions":
       return { ...base, session_keys: KEYS.slice(0, 4), sessions: roster(KEYS.slice(0, 4)), supervisor: supervisor(objectives) };
     case "planning":

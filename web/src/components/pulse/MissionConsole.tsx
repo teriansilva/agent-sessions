@@ -196,6 +196,24 @@ function MissionBody({
   const [openedOn, setOpenedOn] = useState<"thread" | "shelf" | null>(null);
   if (openedOn === null && d.mission) setOpenedOn(defaultView(d.mission.state));
   const view = pickedView ?? openedOn ?? "thread";
+  /** The debrief's records include every objective's state and verdict (#1740 P2): a change to
+   *  one is a reason to read it again. */
+  const objectivesKey = useMemo(
+    () =>
+      (d.mission?.objectives ?? [])
+        .map((o) => {
+          const j = (
+            o.observed as {
+              judged?: { checked_at?: unknown; confidence?: unknown; fingerprint?: unknown };
+            } | null
+          )?.judged;
+          return [o.key, o.title, o.state, j?.checked_at, j?.confidence, j?.fingerprint]
+            .map((v) => String(v ?? ""))
+            .join(":");
+        })
+        .join("|"),
+    [d.mission?.objectives],
+  );
   const viewIds = useId();
   // THE OPT-IN AND ITS ONE-TAP EXIT (#983 P4). The thread is where an autonomous send becomes
   // visible, so the turn-off is offered on the row that proves why you might want it. It is a
@@ -793,6 +811,9 @@ function MissionBody({
               missionId={missionId}
               data={shelfData}
               sessionTitles={sessionTitles}
+              missionState={d.mission?.state}
+              configured={configured}
+              objectivesKey={objectivesKey}
             />
           </div>
         ) : null}

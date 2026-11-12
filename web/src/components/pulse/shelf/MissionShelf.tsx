@@ -23,16 +23,30 @@ import {
 } from "./shelfLogic";
 import type { MissionShelf as ShelfData } from "./useMissionShelf";
 import styles from "./shelf.module.css";
+import { MissionDebrief } from "./MissionDebrief";
+import { useMissionDebrief } from "./useMissionDebrief";
+
+/** Mission states the debrief is shown in (#1740 P2): in review, or closed. */
+const DEBRIEF_STATES = new Set(["review", "done", "failed", "abandoned"]);
 
 export function MissionShelf({
   missionId,
   data,
   sessionTitles,
+  missionState,
+  configured = false,
+  objectivesKey = "",
 }: {
   missionId: string;
   data: ShelfData;
   /** Session key → title, from the cards the console already holds. */
   sessionTitles: Record<string, string>;
+  /** The mission's state: in review or closed, the debrief opens the shelf (#1740 P2). */
+  missionState?: string;
+  /** An AI endpoint is configured (the debrief writes a summary; without one it is the records). */
+  configured?: boolean;
+  /** Changes when an objective's state or verdict does: the debrief's records moved. */
+  objectivesKey?: string;
 }) {
   const { shelf, error, reload, applyVerdict } = data;
   const [filters, setFilters] = useState<ShelfFilters>(NO_FILTERS);
@@ -45,6 +59,19 @@ export function MissionShelf({
 
   const items = useMemo(() => shelf?.items ?? [], [shelf]);
   const revision = shelf?.revision ?? 0;
+  const debriefOn = !!missionState && DEBRIEF_STATES.has(missionState);
+  /** Each file's integrity is re-checked on every shelf read and is part of the debrief's records,
+   *  but a file changing on disk never moves the shelf's revision: it is in the key itself. */
+  const fileStates = useMemo(
+    () => items.map((i) => (i.file ? `${i.id}:${i.file.state}` : "")).join("|"),
+    [items],
+  );
+  const debriefData = useMissionDebrief(
+    missionId,
+    debriefOn,
+    `${revision}|${fileStates}|${objectivesKey}`,
+  );
+  const headRef = useRef<HTMLDivElement>(null);
   /** The newest revision this view knows. A verdict answer sets it the moment it lands (before
    *  the render that shows it), so a verdict chained on a note save never sends a stale one. */
   const revisionRef = useRef(revision);
@@ -220,7 +247,21 @@ export function MissionShelf({
       data-revision={shelf.revision}
     >
       {error ? <div className={styles.notice}>{error}</div> : null}
-      <div className={styles.head}>
+      {debriefOn ? (
+        <MissionDebrief
+          missionId={missionId}
+          data={debriefData}
+          configured={configured}
+          sessionLabel={(k) =>
+            (k && sessionTitles[k]) || (k ? k.slice(k.indexOf(":") + 1, k.indexOf(":") + 9) : "")
+          }
+          onReview={() => {
+            setFilters({ ...NO_FILTERS, unreviewedOnly: true });
+            headRef.current?.scrollIntoView?.({ block: "start" });
+          }}
+        />
+      ) : null}
+      <div className={styles.head} ref={headRef}>
         <div className={styles.title}>
           <div className="nj-callsign">
             <span className="nj-notch" aria-hidden="true" />

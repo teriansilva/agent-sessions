@@ -101,3 +101,83 @@ export interface ShelfManifest {
   /** Sessions whose found-in-git items are still to come (collected when the session ends). */
   found_pending?: string[];
 }
+
+/** The mission debrief (#1740 P2): the facts read now from the records, and the stored summary
+ *  with the records revision it describes. */
+export interface DebriefEvidence {
+  source: string;
+  quote: string;
+}
+
+export interface DebriefObjective {
+  key: string;
+  title: string;
+  state: string;
+  met: boolean;
+  judged: {
+    met: boolean;
+    confidence: number | null;
+    evidence: DebriefEvidence[];
+    checked_at: number | null;
+  } | null;
+}
+
+export interface DebriefItem {
+  id: string;
+  kind: ShelfKind;
+  source: ShelfSource;
+  title: string;
+  session_key: string | null;
+  note?: string;
+  commits?: number;
+  files?: number;
+  pr?: number;
+  repo_name?: string;
+}
+
+export interface DebriefFacts {
+  mission_id: string;
+  title: string;
+  state: string;
+  asked: string;
+  sessions: {
+    key: string;
+    role: string | null;
+    added_at: number | null;
+    removed_at: number | null;
+  }[];
+  objectives: DebriefObjective[];
+  shelf: {
+    counts: ShelfCounts;
+    groups: {
+      session_key: string | null;
+      total: number;
+      by_kind: Partial<Record<ShelfKind, number>>;
+    }[];
+  };
+  open: {
+    objectives: Pick<DebriefObjective, "key" | "title" | "state" | "judged">[];
+    objectives_total: number;
+    needs_work: DebriefItem[];
+    needs_work_total: number;
+    found_not_delivered: DebriefItem[];
+    found_not_delivered_total: number;
+  };
+  integrity: {
+    changed: { id: string; title: string }[];
+    missing: { id: string; title: string }[];
+  };
+  revision: string;
+}
+
+export interface Debrief {
+  mission_id: string;
+  state: string;
+  configured: boolean;
+  facts: DebriefFacts;
+  summary: { text: string; revision: string; written_at: number } | null;
+  /** The summary describes the records as they are now. */
+  fresh: boolean;
+  generating: boolean;
+  error: string | null;
+}

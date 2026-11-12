@@ -72,6 +72,7 @@ from .. import (
     headless_dispatch,
     metadata,
     mission_archive,
+    mission_debrief,
     mission_directions,
     mission_dispatch,
     mission_fence,
@@ -1652,6 +1653,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # In review or closed, every session's git changes are final (#1740 P1b).
             if str(body.get("to") or "") in mission_shelf_git.CLOSING_STATES:
                 mission_shelf_git.collect_soon(mission_id)
+            # …and the debrief is written from the records (#1740 P2), after that collection.
+            if str(body.get("to") or "") == "review" and mission_debrief.configured():
+                mission_debrief.generate_soon(mission_id)
             return JSONResponse(out)
         except missions.MissionError as e:
             return _fail(e)

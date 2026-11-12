@@ -242,3 +242,22 @@ test("found in git: a commit after the session joined is a code change with its 
   expect(listed).toContain("out/gone.png");
   expect(listed.some((p) => (p ?? "").startsWith("private/"))).toBe(false);
 });
+
+test("the debrief is read from the records through the real route, and Regenerate needs its token", async ({ page }) => {
+  const r = await page.request.get(`${base()}/api/missions/${mid}/debrief`);
+  expect(r.status()).toBe(200);
+  expect(r.headers()["cache-control"]).toBe("no-store");
+  const d = await r.json();
+  // No AI endpoint on this stack: the facts are the debrief, and nothing was written.
+  expect(d.configured).toBe(false);
+  expect(d.summary).toBeNull();
+  expect(d.facts.shelf.counts.total).toBeGreaterThan(0);
+  expect(d.facts.shelf.groups.map((g: { session_key: string }) => g.session_key)).toContain(SESSION);
+  expect(typeof d.facts.revision).toBe("string");
+  // The records revision is stable across reads of unchanged records.
+  const again = await (await page.request.get(`${base()}/api/missions/${mid}/debrief`)).json();
+  expect(again.facts.revision).toBe(d.facts.revision);
+  // A write without the CSRF token is refused.
+  const bare = await page.request.post(`${base()}/api/missions/${mid}/debrief`, { headers: { Origin: base() } });
+  expect(bare.status()).toBe(403);
+});

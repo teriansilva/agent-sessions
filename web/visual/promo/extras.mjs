@@ -81,6 +81,7 @@ export async function answerExtra(path, q, method, req, state) {
     if (sub === "/objectives") return json({ objectives: shown.objectives });
     if (sub === "/context") return json(MS.contextVariant(missionContext(id), state?.missionContext));
     if (sub === "/now") return json(missionNow());
+    if (sub === "/debrief") return json(debriefShowcase(id, shown, state));
     if (sub === "/shelf") {
       const m = shelfManifest(id, state?.shelf ? shelfShowcase() : []);
       // A session still running has its found-in-git items to come (the dashed placeholder).
@@ -1004,6 +1005,68 @@ function shelfManifest(missionId, items) {
     },
     items,
     next_cursor: null,
+  };
+}
+
+/** The debrief (#1740 P2) for the showcase shelf: the facts from the records, a stored summary
+ *  (`debriefStale`, a sweep state: written before the records moved). */
+function debriefShowcase(id, mission, state) {
+  const m = shelfManifest(id, state?.shelf ? shelfShowcase() : []);
+  const needs = m.items.filter((i) => i.verdict === "needs_work");
+  const objectives = (mission.objectives ?? []).map((o, n) => ({
+    key: o.key,
+    title: o.title,
+    state: n === 0 ? "met" : "pending",
+    met: n === 0,
+    judged:
+      n === 0
+        ? { met: true, confidence: 0.96, checked_at: F.NOW - 3600, evidence: [{ source: `transcript:${SHELF_A}`, quote: "Rendered out/hero-v021.webm — 1920×1080, 00:31, 24 fps." }] }
+        : { met: false, confidence: 0.64, checked_at: F.NOW - 3000, evidence: [{ source: `transcript:${SHELF_A}`, quote: "The second paragraph was shortened to fit 30 seconds." }] },
+  }));
+  const rev = state?.debriefStale ? "r-now" : "r-then";
+  return {
+    mission_id: id,
+    state: "review",
+    configured: true,
+    facts: {
+      mission_id: id,
+      title: mission.title,
+      state: "review",
+      asked: mission.instruction,
+      sessions: [
+        { key: SHELF_A, role: "primary", added_at: F.NOW - 4 * 3600, removed_at: F.NOW - 3600 },
+        { key: SHELF_B, role: "sub", added_at: F.NOW - 4 * 3600, removed_at: F.NOW - 1800 },
+      ],
+      objectives,
+      shelf: {
+        counts: m.counts,
+        groups: [
+          { session_key: SHELF_A, total: m.items.filter((i) => i.session_key === SHELF_A).length, by_kind: {} },
+          { session_key: SHELF_B, total: m.items.filter((i) => i.session_key === SHELF_B).length, by_kind: {} },
+        ],
+      },
+      open: {
+        objectives: objectives.filter((o) => !o.met).map(({ key, title, state: st, judged }) => ({ key, title, state: st, judged })),
+        objectives_total: objectives.filter((o) => !o.met).length,
+        needs_work: needs.map((i) => ({ id: i.id, kind: i.kind, source: i.source, title: i.title, session_key: i.session_key, note: i.note })),
+        needs_work_total: needs.length,
+        found_not_delivered: [
+          { id: shf(11), kind: "code", source: "found", title: "render: add the hero timeline", session_key: SHELF_A, commits: 1, files: 3, repo_name: "battlelab-site" },
+          { id: shf(12), kind: "code", source: "found", title: "docs: changelog for v0.21", session_key: SHELF_B, commits: 2, files: 1, pr: 418, repo_name: "battlelab-site" },
+        ],
+        found_not_delivered_total: 2,
+      },
+      integrity: { changed: [], missing: [] },
+      revision: "r-then",
+    },
+    summary: {
+      text: "Two sessions worked for 2 h 51 min. Claude rendered a 31-second hero video in the dark theme and recorded a voice-over, shortening the second paragraph to fit. Codex captured the screenshots, wrote the changelog and opened PR #418 with both.",
+      revision: rev,
+      written_at: F.NOW - 1700,
+    },
+    fresh: rev === "r-then",
+    generating: false,
+    error: null,
   };
 }
 

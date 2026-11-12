@@ -20,7 +20,7 @@ import asyncio
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from .. import files, mission_shelf, mission_shelf_git, missions
+from .. import files, mission_debrief, mission_shelf, mission_shelf_git, missions
 from . import files as files_routes
 
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
@@ -92,6 +92,37 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                     note=body.get("note", ""),
                 )
             )
+        except missions.MissionError as e:
+            return _fail(e)
+        return JSONResponse(out, headers=_NO_STORE)
+
+    @app.get("/api/missions/{mission_id}/debrief")
+    async def debrief_read(mission_id: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        """The debrief (#1740 P2): the facts read now from the records, the stored summary and
+        whether it describes them (`fresh`). A mission in review or closed with no summary yet
+        gets one written in the background (when an AI endpoint is configured)."""
+        try:
+            missions.validate_id(mission_id)
+            await asyncio.to_thread(mission_shelf_git.refresh, mission_id, wait=False)
+            out = await missions.run_admitted(lambda: mission_debrief.read(mission_id))
+        except missions.MissionError as e:
+            return _fail(e)
+        if mission_debrief.wants_first(out):
+            mission_debrief.generate_soon(mission_id)
+            out["generating"] = True
+        return JSONResponse(out, headers=_NO_STORE)
+
+    @app.post("/api/missions/{mission_id}/debrief")
+    async def debrief_regenerate(
+        mission_id: str,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Regenerate: write the summary from the records now, then return the debrief."""
+        try:
+            missions.validate_id(mission_id)
+            await mission_debrief.regenerate(mission_id)
+            out = await missions.run_admitted(lambda: mission_debrief.read(mission_id))
         except missions.MissionError as e:
             return _fail(e)
         return JSONResponse(out, headers=_NO_STORE)

@@ -62,7 +62,8 @@ def test_registry_covers_every_system_prompt():
     # mid-conversation; #1668 hq_call_end (on a call: are the Commander's words a goodbye?);
     # #1715 voice_confirm_judge (on a call: did the reply confirm a read-back card?); #1837
     # hq_notify (HQ's one line about a notification, guarded: the persona speaks first)
-    assert len(prompts.REGISTRY) == 42
+    # #1740 P2 mission_debrief (the finished mission's "what was done", from its records).
+    assert len(prompts.REGISTRY) == 43
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -93,6 +94,9 @@ def test_registry_covers_every_system_prompt():
         # `mission_judge` decides whether a completion gate is settled, reading session content —
         # exactly where an instruction to "say met" would be hidden (#1088).
         "mission_judge",
+        # `mission_debrief` (#1740 P2) reads agent-written shelf titles, notes and the judge's
+        # transcript quotes, and writes what the operator reads before closing the mission.
+        "mission_debrief",
     ]
     for p in prompts.REGISTRY:
         assert p.default.strip(), p.id
@@ -133,6 +137,7 @@ EXPECTED_DEFAULT_SHA = {
     "mission_plan": "a4d0cb1003a79e45",
     # #1088: the objective judge — quotes verified verbatim, confidence against the floor.
     "mission_judge": "604e82e9d100c1dc",
+    "mission_debrief": "0b28d8947c0560cd",
     # #1443: the Ask conversation — read-only tools, guarded. Re-pinned by #1554 (usage, the fleet
     # and the read-only settings view) and #1559 (proposing session and project operations,
     # confirmed on a card). #1634: it names no identity of its own — "You are Ask" is gone.

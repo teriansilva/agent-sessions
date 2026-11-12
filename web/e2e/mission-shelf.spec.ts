@@ -120,10 +120,58 @@ interface Shelf {
   reviewReads: number;
   /** Sessions whose found-in-git items are still to come. */
   pending: string[];
+  /** The records revision the stored debrief summary was written from (#1740 P2). */
+  summaryRev: string;
+  /** Debrief reads and regenerations, in order. */
+  debriefCalls: string[];
+}
+
+/** The debrief the server would answer for this shelf: the facts read now (their revision follows
+ *  the shelf's), and the stored summary with the revision it was written from. */
+function debriefBody(shelf: Shelf) {
+  const counts = manifest(shelf.list, shelf.revision).counts;
+  const rev = `r${shelf.revision}`;
+  const needs = shelf.list.filter((i) => i.verdict === "needs_work");
+  return {
+    mission_id: MID,
+    state: shelf.state,
+    configured: true,
+    facts: {
+      mission_id: MID,
+      title: "Launch video for v0.21",
+      state: shelf.state,
+      asked: "Produce the launch video package for v0.21",
+      sessions: [
+        { key: S1, role: "primary", added_at: T, removed_at: T + 6000 },
+        { key: S2, role: "sub", added_at: T, removed_at: T + 9000 },
+      ],
+      objectives: [
+        { key: "o1", title: "A 30-second hero video is rendered at 1080p", state: "met", met: true,
+          judged: { met: true, confidence: 0.96, checked_at: T, evidence: [{ source: `transcript:${S1}`, quote: "Rendered out/hero-v021.webm — 1920×1080, 00:31, 24 fps." }] } },
+        { key: "o2", title: "Voice-over matches the approved script", state: "pending", met: false,
+          judged: { met: false, confidence: 0.64, checked_at: T, evidence: [] } },
+      ],
+      shelf: { counts, groups: [{ session_key: S1, total: 4, by_kind: {} }, { session_key: S2, total: shelf.list.length - 4, by_kind: {} }] },
+      open: {
+        objectives: [{ key: "o2", title: "Voice-over matches the approved script", state: "pending", judged: null }],
+        objectives_total: 1,
+        needs_work: needs.map((i) => ({ id: i.id, kind: i.kind, source: i.source, title: i.title, session_key: i.session_key, note: i.note })),
+        needs_work_total: needs.length,
+        found_not_delivered: [],
+        found_not_delivered_total: 0,
+      },
+      integrity: { changed: [], missing: [] },
+      revision: rev,
+    },
+    summary: { text: "Claude rendered the hero video and recorded a voice-over; Codex captured the screenshots.", revision: shelf.summaryRev, written_at: T + 9100 },
+    fresh: shelf.summaryRev === rev,
+    generating: false,
+    error: null,
+  };
 }
 
 async function setup(page: Page, initial = "review"): Promise<Shelf> {
-  const shelf: Shelf = { list: items(), revision: 10, verdicts: [], raw: [], events: [], state: initial, reviewReads: 0, pending: [] };
+  const shelf: Shelf = { list: items(), revision: 10, verdicts: [], raw: [], events: [], state: initial, reviewReads: 0, pending: [], summaryRev: "r10", debriefCalls: [] };
   const state = initial;
   await page.route("**/api/**", (r) => r.fulfill({ json: {} }));
   await page.route("**/api/config", (r) =>
@@ -180,6 +228,12 @@ async function setup(page: Page, initial = "review"): Promise<Shelf> {
     mission: detail(),
   });
   await page.route(new RegExp(`/api/missions/${MID}(\\?.*)?$`), (r) => r.fulfill({ json: detail() }));
+  await page.route(`**/api/missions/${MID}/debrief`, (r) => {
+    const post = r.request().method() === "POST";
+    shelf.debriefCalls.push(post ? "regenerate" : "read");
+    if (post) shelf.summaryRev = `r${shelf.revision}`;
+    return r.fulfill({ json: debriefBody(shelf) });
+  });
   await page.route(`**/api/missions/${MID}/shelf`, (r) =>
     r.fulfill({ json: { ...manifest(shelf.list, shelf.revision), found_pending: shelf.pending } }),
   );
@@ -577,4 +631,62 @@ test("found in git: the code tile, its diff as text, its PR, and the placeholder
   }
   await box.getByRole("radio", { name: "Looks good" }).click();
   await expect(box.getByRole("radio", { name: "Looks good" })).toHaveAttribute("aria-checked", "true");
+});
+
+test("the debrief opens a mission in review, and says so the moment the records move past its summary", async ({ page }) => {
+  const shelf = await setup(page);
+  await openShelf(page);
+  const debrief = page.getByTestId("mission-debrief");
+  await expect(debrief).toBeVisible();
+  await expect(debrief).toHaveAttribute("data-fresh", "");
+  await expect(debrief.locator("[data-debrief-summary]")).toContainText("Claude rendered the hero video");
+  await expect(debrief.getByText("“Rendered out/hero-v021.webm — 1920×1080, 00:31, 24 fps.”")).toBeVisible();
+  await expect(debrief.locator("[data-debrief-open]")).toHaveCount(3);
+  await expect(debrief.locator("[data-debrief-stale]")).toHaveCount(0);
+  // The debrief sits ABOVE the shelf's own head, first on the page.
+  const [db, head] = await Promise.all([
+    debrief.boundingBox(),
+    page.locator("[data-shelf-total]").boundingBox(),
+  ]);
+  expect(db!.y).toBeLessThan(head!.y);
+
+  // A verdict moves the records: the summary is out of date, and the current lists are beside it.
+  await tile(page, 3).click();
+  await lightbox(page).getByRole("radio", { name: "Needs work" }).first().click();
+  await expect.poll(() => shelf.verdicts.length).toBe(1);
+  await page.keyboard.press("Escape");
+  await expect(debrief.locator("[data-debrief-stale]")).toContainText("records changed after this summary was written");
+  await expect(debrief).not.toHaveAttribute("data-fresh", "");
+  await expect(debrief.locator('[data-debrief-open="needs_work"] [data-debrief-open-count]')).toHaveText("1");
+
+  // Regenerate writes from the records now: fresh again.
+  await debrief.getByRole("button", { name: /Regenerate/ }).click();
+  await expect(debrief.locator("[data-debrief-stale]")).toHaveCount(0);
+  await expect(debrief).toHaveAttribute("data-fresh", "");
+  expect(shelf.debriefCalls).toContain("regenerate");
+});
+
+test("the debrief collapses to one line once read, and Review shows the unreviewed items", async ({ page }) => {
+  await setup(page);
+  await openShelf(page);
+  const debrief = page.getByTestId("mission-debrief");
+  await debrief.getByRole("button", { name: /Review \d+ items/ }).click();
+  await expect(debrief).toHaveAttribute("data-collapsed", "");
+  await expect(debrief.locator("[data-debrief-line]")).toContainText("1 of 2 objectives met");
+  await expect(page.getByRole("button", { name: "Unreviewed only" })).toHaveAttribute("aria-pressed", "true");
+  // Read is remembered: opening the mission again shows it collapsed.
+  await page.goto("about:blank");
+  await openShelf(page);
+  await expect(page.getByTestId("mission-debrief")).toHaveAttribute("data-collapsed", "");
+  await page.getByTestId("mission-debrief").getByRole("button", { name: "Expand" }).click();
+  await expect(page.getByTestId("mission-debrief").locator("[data-debrief-asked]")).toBeVisible();
+});
+
+test("a running mission has no debrief", async ({ page }) => {
+  const shelf = await setup(page, "running");
+  await page.goto(missionLink(MID));
+  await page.getByRole("tab", { name: /Shelf/ }).click();
+  await expect(page.getByTestId("mission-shelf")).toBeVisible();
+  await expect(page.getByTestId("mission-debrief")).toHaveCount(0);
+  expect(shelf.debriefCalls).toEqual([]);
 });

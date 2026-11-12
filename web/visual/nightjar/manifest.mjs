@@ -1391,6 +1391,23 @@ export const SWEEP = [
     present: "[data-testid='mission-shelf'] [data-shelf-tile]",
     height: 1500,
   },
+  // The debrief (#1740 P2): a mission in review opens on SHELF with it first; and out of date.
+  {
+    id: "mission:debrief",
+    path: M1,
+    mock: { shelf: "showcase", mission: "review" },
+    open: [{ testId: "view-shelf" }],
+    present: "[data-testid='mission-debrief'] [data-debrief-summary]",
+    height: 2200,
+  },
+  {
+    id: "mission:debrief-stale",
+    path: M1,
+    mock: { shelf: "showcase", mission: "review", debriefStale: true },
+    open: [{ testId: "view-shelf" }],
+    present: "[data-testid='mission-debrief'] [data-debrief-stale]",
+    height: 1600,
+  },
   {
     id: "mission:shelf-empty",
     path: M1,

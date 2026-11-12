@@ -840,30 +840,8 @@ def manifest(
         from . import mission_shelf_git
 
         mission_shelf_git.refresh(mission_id, path=path)
-    con = missions._ready(path)
-    try:
-        con.execute("BEGIN DEFERRED")
-        rev = con.execute(
-            "SELECT revision FROM mission_shelf_state WHERE mission_id=?", (mission_id,)
-        ).fetchone()
-        rows = [
-            _row(r)
-            for r in con.execute(
-                "SELECT * FROM mission_shelf_items WHERE mission_id=? ORDER BY seq ASC LIMIT ?",
-                (mission_id, MISSION_ITEMS_MAX),
-            ).fetchall()
-        ]
-        con.execute("COMMIT")
-    except BaseException:
-        with contextlib.suppress(sqlite3.Error):
-            con.execute("ROLLBACK")
-        raise
-    finally:
-        con.close()
-    revision = int(rev["revision"]) if rev else 0
     # The first page of a read checks every file; the pages after it share that answer.
-    states, settled = _file_states(mission_id, revision, rows, boundary(m), fresh=after == 0)
-    _keep_fingerprints(settled, path)
+    revision, rows, states = whole(m, fresh=after == 0, path=path)
     counts = _counts(rows, states)
     picked = [
         r
@@ -887,6 +865,38 @@ def manifest(
         "next_cursor": f"s{page[-1]['seq']}" if len(picked) > limit else None,
         "found_pending": _found_pending(mission_id, path),
     }
+
+
+def whole(
+    m: dict, *, fresh: bool = True, path: Path | None = None
+) -> tuple[int, list[dict], dict[str, dict]]:
+    """``(revision, rows, file states)`` for a mission's whole shelf, read in one transaction —
+    the manifest's first page and the debrief (#1740 P2) read the same thing the same way."""
+    mission_id = m["id"]
+    con = missions._ready(path)
+    try:
+        con.execute("BEGIN DEFERRED")
+        rev = con.execute(
+            "SELECT revision FROM mission_shelf_state WHERE mission_id=?", (mission_id,)
+        ).fetchone()
+        rows = [
+            _row(r)
+            for r in con.execute(
+                "SELECT * FROM mission_shelf_items WHERE mission_id=? ORDER BY seq ASC LIMIT ?",
+                (mission_id, MISSION_ITEMS_MAX),
+            ).fetchall()
+        ]
+        con.execute("COMMIT")
+    except BaseException:
+        with contextlib.suppress(sqlite3.Error):
+            con.execute("ROLLBACK")
+        raise
+    finally:
+        con.close()
+    revision = int(rev["revision"]) if rev else 0
+    states, settled = _file_states(mission_id, revision, rows, boundary(m), fresh=fresh)
+    _keep_fingerprints(settled, path)
+    return revision, rows, states
 
 
 def _found_pending(mission_id: str, path: Path | None) -> list[str]:

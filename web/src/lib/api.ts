@@ -11,7 +11,13 @@ import type {
   MissionPlanRow,
 } from "../types/missionPlans";
 import type { ApiLook } from "../theme/apiLook";
-import type { ShelfDiffFile, ShelfItem, ShelfManifest, ShelfVerdict } from "../types/shelf";
+import type {
+  Debrief,
+  ShelfDiffFile,
+  ShelfItem,
+  ShelfManifest,
+  ShelfVerdict,
+} from "../types/shelf";
 import type { ShareCatalog, ShareChoice, ShareImports, SharePreview, ShareResult } from "../types/share";
 import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, GalleryComparison, GalleryFiles, LocalSkill } from "../types/gallery";
 import type { CollectionInput, SecretAccessEntry, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
@@ -2368,6 +2374,15 @@ export const api = {
       signal,
       { cache: "no-store" },
     ),
+  /** The mission debrief (#1740 P2): the facts from the records now, and the stored summary
+   *  with whether it still describes them. Never cached. */
+  missionDebrief: (missionId: string, signal?: AbortSignal) =>
+    getJsonWithDetail<Debrief>(`/api/missions/${enc(missionId)}/debrief`, signal, {
+      cache: "no-store",
+    }),
+  /** Regenerate: the summary is written from the records now, then the debrief is returned. */
+  regenerateDebrief: (missionId: string) =>
+    mutateJson<Debrief>("POST", `/api/missions/${enc(missionId)}/debrief`),
   /** A found code change's files and patches (#1740 P1b): mission-bound, by item id only. */
   missionShelfDiff: (missionId: string, itemId: string) =>
     getJsonWithDetail<{ id: string; files: ShelfDiffFile[]; files_more: number }>(
