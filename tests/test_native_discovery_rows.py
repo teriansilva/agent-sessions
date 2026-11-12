@@ -209,10 +209,14 @@ def test_cache_hit_still_takes_the_shared_lock_and_syncs(tmp_path, monkeypatch):
     assert len(syncs) == 1
 
 
-def test_maximum_length_prompts_obey_the_aggregate_byte_budget_without_truncation(tmp_path):
+def test_maximum_length_prompts_obey_the_aggregate_byte_budget_without_truncation(
+    tmp_path, monkeypatch
+):
     root = tmp_path / "conversations"
     # Wide Unicode occupies four bytes per character in Python. Twelve valid maximum-length
-    # submits exceed the default 8 MiB budget, despite being far below the 4,096-entry cap.
+    # submits exceed an 8 MiB budget, despite being far below the entry cap. Pinned here rather
+    # than read off the default, which #1976 raised so a full walk fits.
+    monkeypatch.setattr(scancache, "MAX_BYTES", 8 * 1024 * 1024)
     prompt = "\U0001f680" * native_ipc.MAX_TEXT
     ids = [conversation(root, text=prompt)[0] for _ in range(12)]
     store = kind(root)

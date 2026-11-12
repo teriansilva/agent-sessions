@@ -342,8 +342,9 @@ def _walk(root: Path, archived: bool) -> Iterable[Session]:
     ``archived`` because it is an input to the row that the path alone does not determine for a
     caller reading the same tree twice.
 
-    ``_walk_checked`` deliberately does NOT go through the memo: it preserves read failures, and a
-    fail-soft ``None`` cached here must never satisfy a measurement that authorises deletion.
+    ``_walk_checked`` never reads THESE entries: it preserves read failures, and a fail-soft
+    ``None`` cached here must never satisfy a measurement that authorises deletion. It memoises its
+    own raising builder under ``claude-checked:…`` instead (#1976).
     """
     if not root.is_dir():
         return
@@ -389,9 +390,15 @@ def _walk_checked(root: Path, archived: bool) -> tuple[list[Session], list[str]]
         for entry in scandir_checked(Path(project.path)):
             if entry.name.endswith(".jsonl"):
                 paths.append(Path(entry.path))
+    # Memoised in a namespace of its own (#1976), never the plain walk's: only the RAISING builder
+    # fills it, a failed read raises through `memoized` unstored, and `checked_rows` probes each
+    # path's readability before this runs — so a reused row is always one that read cleanly.
+    ns = f"claude-checked:{'archived' if archived else 'live'}"
     return checked_rows(
         sorted(paths),
-        lambda p: session_from_jsonl(p, archived=archived, checked=True),
+        lambda p: scancache.memoized(
+            ns, p, lambda: session_from_jsonl(p, archived=archived, checked=True)
+        ),
         engine_id="claude",
     )
 

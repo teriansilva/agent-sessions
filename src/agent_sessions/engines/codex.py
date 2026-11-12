@@ -331,7 +331,8 @@ class CodexProvider:
             return out
         for path in files:
             # Memoised per file (#1048): a rollout whose identity is unchanged cannot produce a
-            # different row. `scan_checked` below stays off the memo — it preserves read failures.
+            # different row. `scan_checked` below never reads these entries — it preserves read
+            # failures — and memoises its own raising builder under `codex-checked` (#1976).
             row = scancache.memoized(
                 "codex",
                 path,
@@ -354,9 +355,13 @@ class CodexProvider:
             for e in base.scandir_checked(base._codex_sessions_dir(), recurse=True)
             if e.is_file(follow_symlinks=False) and _CODEX_ROLLOUT_RE.search(e.name)
         ]
+        # Its own memo namespace (#1976): filled only by the raising builder, so a reused row is
+        # one that read cleanly, and `checked_rows` still probes every path before this runs.
         return base.checked_rows(
             sorted(paths),
-            lambda p: self._row_from_path(p, checked=True),
+            lambda p: scancache.memoized(
+                "codex-checked", p, lambda: self._row_from_path(p, checked=True)
+            ),
             engine_id=self.engine_id,
         )
 

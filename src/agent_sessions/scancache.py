@@ -40,11 +40,16 @@ old identity again would be served a row built from different bytes.
   either moves the file (archive/unarchive → a new path → a new key) or creates one (a new session
   → a key that was never present), so clearing buys no correctness and costs a full cold walk after
   every archive. The identity key is the invalidation.
-* **It never serves the CHECKED walk.** ``scan()`` and ``checked_scan`` have deliberately opposite
-  failure policies — one fail-soft per file, one error-preserving — and ``checked_scan.py`` records
-  what happened when they were unified: "exactly what hid every healthy ``shell`` session behind
-  one malformed record". A fail-soft ``None`` cached here must never reach a measurement that
-  authorises deletion, so the checked paths simply do not call this.
+* **It never serves the CHECKED walk anything the plain walk built.** ``scan()`` and
+  ``checked_scan`` have deliberately opposite failure policies — one fail-soft per file, one
+  error-preserving — and ``checked_scan.py`` records what happened when they were unified: "exactly
+  what hid every healthy ``shell`` session behind one malformed record". A fail-soft ``None`` cached
+  here must never reach a measurement that authorises deletion. So the checked walk uses its OWN
+  namespaces (``…-checked``), filled only by its own RAISING builder (#1976): a failed read raises
+  straight through :func:`memoized` and is never stored, so only a read that succeeded is ever
+  reused, and ``checked_rows`` still probes each path's readability on every walk before the memo
+  is consulted. Before #1976 the checked walk re-parsed every transcript on every pass — 6–8 s of
+  CPU per needs-you sync on the target host, which ran it every minute.
 * **It never truncates rows to fit.** Native API prompts can contain 200,000 characters (#1539),
   so an entry-count limit alone could retain hundreds of megabytes. Both an aggregate retained
   object-byte budget and the entry cap apply. Oversized rows are returned uncached; eviction
@@ -61,17 +66,20 @@ import sys
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
-#: Hard ceiling on memoised rows. The author's install walks 1,372 files; this leaves room for an
-#: install several times larger before eviction starts costing re-reads, and is a real bound rather
-#: than a reassurance — `_entries` is trimmed to it on every insert.
-MAX_ENTRIES = 4096
-#: Account for keys, row objects and their retained fields, including wide Unicode prompts.
-MAX_BYTES = 8 * 1024 * 1024
+#: Hard ceiling on memoised rows. A real bound rather than a reassurance — `_entries` is trimmed to
+#: it on every insert. **It must exceed one full pass of every walk that uses the memo**: a walk is
+#: a cycle over the same keys, and a cycle longer than an LRU gets NO hits at all — every insert
+#: evicts the entry the walk will want next. The target host held 2,067 entries for the plain walk
+#: alone before #1976; the checked namespaces and Copilot add ~2,300 more, past the old 4,096.
+MAX_ENTRIES = 16384
+#: Account for keys, row objects and their retained fields, including wide Unicode prompts. Same
+#: rule as `MAX_ENTRIES` (2.8 MB measured for the plain walk before #1976, so ~6–7 MB with both).
+MAX_BYTES = 32 * 1024 * 1024
 
 #: How recently a file may have been modified and still be memoised (#1048).
 #:
@@ -125,21 +133,70 @@ def _retained_size(value: Any, seen: set[int] | None = None) -> int:
     return size
 
 
-def memoized(namespace: str, path: Path, build: Callable[[], Any]) -> Any:
+#: The identity of an ``also`` path that does not exist. Absence is a version too: a file that
+#: appears (or disappears) next to ``path`` must miss.
+_ABSENT = ("absent",)
+
+
+def _identities(path: Path, also: Sequence[Path]) -> tuple | None:
+    """``(identity of path, identity of each also path)``, or ``None`` when one cannot be named.
+
+    ``path`` must stat. An ``also`` path may be absent (:data:`_ABSENT`); any other stat failure
+    leaves nothing trustworthy to key on. Each present path's ``st_mtime_ns`` travels too, for the
+    racy-window check."""
+    try:
+        ids = [identity(path.stat())]
+    except OSError:
+        return None
+    for extra in also:
+        try:
+            ids.append(identity(extra.stat()))
+        except (FileNotFoundError, NotADirectoryError):
+            ids.append(_ABSENT)
+        except OSError:
+            return None
+    return tuple(ids)
+
+
+def _racy(ids: tuple) -> bool:
+    """Was any keyed path modified inside the racy window? See :data:`RACY_WINDOW_NS`."""
+    now = time.time_ns()
+    return any(i is not _ABSENT and now - i[3] < RACY_WINDOW_NS for i in ids)
+
+
+def memoized(
+    namespace: str,
+    path: Path,
+    build: Callable[[], Any],
+    *,
+    also: Sequence[Path] = (),
+    keep: Callable[[Any], bool] | None = None,
+) -> Any:
     """``build()``'s result for ``path``, reused while the file's identity is unchanged.
 
     ``build`` keeps its own failure policy: when the pre-read ``stat`` fails there is no identity to
     key on, so it is called and its answer returned unmemoised — which is what lets a fail-soft
-    builder stay fail-soft and a raising one keep raising.
+    builder stay fail-soft and a raising one keep raising. **A raising build stores nothing**: the
+    exception leaves before the store, which is what lets the checked walk use this (#1976).
+
+    ``also`` (#1976): further files the row is built from — a Copilot row reads ``workspace.yaml``
+    and ``events.jsonl`` inside its session directory, and an in-place rewrite of either does not
+    touch the directory's own identity. Every one is part of the key, and absence is an identity of
+    its own. ``keep``: a row it rejects is returned but not stored — for a row that read something
+    outside the key.
     """
     global _hits, _misses, _bytes
-    try:
-        st = path.stat()
-    except OSError:
-        # No identity ⇒ nothing to key on. The builder decides what an unreadable file means.
-        return build()
-
-    before = identity(st)
+    if also:
+        before = _identities(path, also)
+        if before is None:
+            return build()
+    else:
+        try:
+            st = path.stat()
+        except OSError:
+            # No identity ⇒ nothing to key on. The builder decides what an unreadable file means.
+            return build()
+        before = identity(st)
     key = (namespace, str(path), before)
     with _lock:
         hit = _entries.get(key, _MISSING)
@@ -154,15 +211,22 @@ def memoized(namespace: str, path: Path, build: Callable[[], Any]) -> Any:
     # Only store a row we can still name. Between the stat above and the builder's own read the
     # file may have been rewritten; caching then would file a row built from the NEW bytes under
     # the OLD identity, and a later walk that saw that identity would be served the wrong row.
-    try:
-        st_after = path.stat()
-    except OSError:
-        return row
-    if identity(st_after) != before:
-        return row
-    # …and only once the file is old enough that a further write could not hide inside the
-    # filesystem's timestamp granularity. See RACY_WINDOW_NS.
-    if time.time_ns() - st_after.st_mtime_ns < RACY_WINDOW_NS:
+    if also:
+        after = _identities(path, also)
+        if after != before or _racy(after):
+            return row
+    else:
+        try:
+            st_after = path.stat()
+        except OSError:
+            return row
+        if identity(st_after) != before:
+            return row
+        # …and only once the file is old enough that a further write could not hide inside the
+        # filesystem's timestamp granularity. See RACY_WINDOW_NS.
+        if time.time_ns() - st_after.st_mtime_ns < RACY_WINDOW_NS:
+            return row
+    if keep is not None and not keep(row):
         return row
 
     weight = _retained_size((key, row)) + sys.getsizeof(0)

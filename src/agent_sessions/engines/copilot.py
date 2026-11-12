@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .. import metadata as _metadata
+from .. import scancache
 from ..scanner import Session
 from . import base
 
@@ -196,26 +197,38 @@ class CopilotProvider:
         """One row from one session directory, or ``None`` when it is not listable. Shared by
         ``scan`` and ``scan_checked`` so neither can disagree about what a row contains;
         ``checked`` propagates a failed READ instead of turning it into a missing row."""
+        return self._row_keyed(path, archived=archived, checked=checked)[0]
+
+    def _row_keyed(
+        self, path: Path, *, archived: bool, checked: bool = False
+    ) -> tuple[Session | None, bool]:
+        """``(row, keyed)`` — ``_row``'s answer, and whether it was built ONLY from what
+        :meth:`_memo_row` keys on: the directory, ``workspace.yaml`` and ``events.jsonl``.
+
+        ``keyed`` is false for the one input outside that set, the ``_dir_mtime`` fallback for a
+        session with no event and no ``updated_at`` stamp — the newest mtime of ANY file in the
+        directory, which an in-place write to some third file changes without moving the key."""
         try:
             st = path.stat()
         except OSError:
             if checked:
                 raise
-            return None
+            return None, True
         meta = _workspace_meta(path / "workspace.yaml", checked=checked)
         if not meta.get("id"):
             # workspace.yaml is written at session creation; without it this is not a session
             # (a partial crash artifact), never a row.
-            return None
+            return None, True
         title, detached, last_event = _events_head(path / "events.jsonl", checked=checked)
         if detached:
-            return None
+            return None, True
         cwd = meta.get("cwd", "")
         if not cwd:
-            return None
+            return None, True
         created = _iso_ts(meta.get("created_at"))
-        last = last_event or _iso_ts(meta.get("updated_at")) or _dir_mtime(path) or st.st_mtime
-        return Session(
+        stamped = last_event or _iso_ts(meta.get("updated_at"))
+        last = stamped or _dir_mtime(path) or st.st_mtime
+        row = Session(
             engine=self.engine_id,
             uuid=path.name,
             cwd=cwd,
@@ -224,6 +237,35 @@ class CopilotProvider:
             archived=archived,
             created_at=created or st.st_mtime,
         )
+        return row, bool(stamped)
+
+    def _memo_row(self, path: Path, *, archived: bool, checked: bool = False) -> Session | None:
+        """``_row`` through the per-file memo (#1976). Before it every walk re-read all of
+        Copilot's ``events.jsonl`` — 1.1 s of a 1.5 s warm walk on the target host.
+
+        Keyed on the directory AND the two files the row reads, since rewriting either in place
+        leaves the directory's own identity alone. The checked walk has its own namespaces, filled
+        only by its raising builder (see ``scancache``)."""
+        ns = f"copilot{'-checked' if checked else ''}:{'archived' if archived else 'live'}"
+        keyed = (path / "workspace.yaml", path / "events.jsonl")
+        if checked:
+            # `checked_rows` probes the DIRECTORY; the files inside it are this row's reads. A
+            # memoised row must not hide one that has since become unreadable (a `chmod` leaves
+            # its identity unchanged), so each is opened on every checked walk, before the memo.
+            for f in keyed:
+                try:
+                    with f.open("rb"):
+                        pass
+                except (FileNotFoundError, NotADirectoryError):
+                    pass  # absent is a legitimate state, and part of the key
+        row, _keyed = scancache.memoized(
+            ns,
+            path,
+            lambda: self._row_keyed(path, archived=archived, checked=checked),
+            also=keyed,
+            keep=lambda built: built[1],
+        )
+        return row
 
     def scan(self) -> list[Session]:
         out: list[Session] = []
@@ -232,7 +274,7 @@ class CopilotProvider:
             (base._copilot_archive_dir(), True),
         ):
             for path in self._session_dirs(root):
-                row = self._row(path, archived=archived)
+                row = self._memo_row(path, archived=archived)
                 if row is not None:
                     out.append(row)
         return out
@@ -253,7 +295,7 @@ class CopilotProvider:
             ]
             got, trouble = base.checked_rows(
                 sorted(entries),
-                lambda p, archived=archived: self._row(p, archived=archived, checked=True),
+                lambda p, archived=archived: self._memo_row(p, archived=archived, checked=True),
                 engine_id=self.engine_id,
             )
             rows.extend(got)

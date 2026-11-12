@@ -193,7 +193,7 @@ def test_scan_without_events_uses_workspace_stamps(copilot_home):
 def test_scan_checked_names_an_unreadable_session_dir(copilot_home, monkeypatch):
     _write_session(copilot_home, _SID, "/home/u/proj")
     monkeypatch.setattr(
-        "agent_sessions.engines.copilot.CopilotProvider._row",
+        "agent_sessions.engines.copilot.CopilotProvider._row_keyed",
         lambda self, p, **kw: (_ for _ in ()).throw(OSError("nope")),
     )
     rows, problems = _kind().scan_checked()
