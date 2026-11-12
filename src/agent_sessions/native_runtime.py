@@ -533,15 +533,28 @@ def _specialist_claim(record: dict, adapter: str):
     return claim
 
 
-def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str, claim=None) -> str:
+def _launch_locked(
+    session_id: str,
+    record: dict,
+    prov,
+    binding,
+    *,
+    mode: str,
+    claim=None,
+    shelf_mission: str | None = None,
+) -> str:
     """Mint, persist intent, lease, launch and pin one generation. Caller holds the lock.
     ``claim``: a specialist slot the caller already took for it; otherwise one is taken here when
     the session was started from a specialist (#1693 S4b). Whatever refuses or fails BEFORE the
     spawn — a check, the interpreter, the entrypoint's provenance, a state write — releases it;
-    once a spawn may have happened, only proof does (a stop, a failed generation, reconcile)."""
+    once a spawn may have happened, only proof does (a stop, a failed generation, reconcile).
+
+    ``shelf_mission`` (#1900): the mission a dispatch launches this FIRST generation for, before
+    the session is on its roster. In memory only, never in the request, so a replay of the create
+    stays byte-identical; a later generation asks the session's current mission instead."""
     from . import specialist_launch
 
-    held = {"claim": claim, "spawning": False}
+    held = {"claim": claim, "spawning": False, "shelf_mission": shelf_mission}
     try:
         return _launch_generation(session_id, record, prov, binding, mode=mode, held=held)
     except BaseException:
@@ -553,7 +566,7 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str, c
 def _launch_generation(
     session_id: str, record: dict, prov, binding, *, mode: str, held: dict
 ) -> str:
-    from . import agent_tools, memory, resource_limits
+    from . import agent_tools, memory, resource_limits, shelf_broker
 
     if _permission_change(record).get("state") == "stopping":
         raise NativeError(409, "finish enabling Skip permissions before sending another message")
@@ -644,6 +657,21 @@ def _launch_generation(
             record["request"]["cwd"],
             engine=record["session_key"].partition(":")[0],
             manifest=prov.manifest,
+        )
+        if kinds.API_MCP_KINDS.get(adapter)
+        else {}
+    )
+    # The mission shelf (#1900, as the console launch has it since #1740): per GENERATION, for a
+    # session a mission holds (or, on a dispatch's first generation, the mission it launches for).
+    # Every earlier generation's capability ends here, as on a console LAUNCH: a successor is born
+    # only once its predecessors are proved gone. Only where the protocol carries an MCP server.
+    config["shelf_env"] = (
+        shelf_broker.launch_env(
+            record["session_key"],
+            record["session_key"],
+            engine=record["session_key"].partition(":")[0],
+            manifest=prov.manifest,
+            mission_id=held.get("shelf_mission"),
         )
         if kinds.API_MCP_KINDS.get(adapter)
         else {}
@@ -1040,6 +1068,7 @@ def _create_admitted(
     effort: str | None = None,
     record_launch: bool = False,
     specialist: tuple[str, int] | None = None,
+    shelf_mission: str | None = None,
 ) -> str | None:
     """The worker id of a new launch (a generation to await), or None when nothing launched.
 
@@ -1155,7 +1184,9 @@ def _create_admitted(
             # A skip creation reserves and launches NOTHING from create — not the first call, not
             # a replay, not after an interrupted start (Hermes 5908): only `start` does (#1339).
             return None
-        worker_id = _reserve_and_launch_locked(session_id, record, prov, binding)
+        worker_id = _reserve_and_launch_locked(
+            session_id, record, prov, binding, shelf_mission=shelf_mission
+        )
         if record_launch:
             # Same lock, same write sequence as the launch: the route's caller sees `starting`
             # from its first snapshot, and only this generation's waiter may settle it.
@@ -1165,12 +1196,20 @@ def _create_admitted(
 
 
 def _reserve_and_launch_locked(
-    session_id: str, record: dict, prov, binding, *, mode: str = "create"
+    session_id: str,
+    record: dict,
+    prov,
+    binding,
+    *,
+    mode: str = "create",
+    shelf_mission: str | None = None,
 ) -> str:
     """Commit ownership and launch the FIRST generation of a creation (or a retried skip start's
     successor). Caller holds the lock."""
     with _session_slot(record["session_key"]):
-        return _reserve_and_launch_admitted(session_id, record, prov, binding, mode=mode)
+        return _reserve_and_launch_admitted(
+            session_id, record, prov, binding, mode=mode, shelf_mission=shelf_mission
+        )
 
 
 def _admit_session(session_key: str) -> session_capacity.Reservation:
@@ -1192,7 +1231,13 @@ def _session_slot(session_key: str):
 
 
 def _reserve_and_launch_admitted(
-    session_id: str, record: dict, prov, binding, *, mode: str = "create"
+    session_id: str,
+    record: dict,
+    prov,
+    binding,
+    *,
+    mode: str = "create",
+    shelf_mission: str | None = None,
 ) -> str:
     from . import specialist_launch
     from .engines import registry
@@ -1228,7 +1273,9 @@ def _reserve_and_launch_admitted(
         specialist_launch.abandon(claim)
         raise
     launchtiming.mark("admit")
-    return _launch_locked(session_id, record, prov, binding, mode=mode, claim=claim)
+    return _launch_locked(
+        session_id, record, prov, binding, mode=mode, claim=claim, shelf_mission=shelf_mission
+    )
 
 
 async def create(
@@ -1242,6 +1289,7 @@ async def create(
     execution_admission=None,
     wait_ready: bool = True,
     specialist: tuple[str, int] | None = None,
+    shelf_mission: str | None = None,
 ) -> str:
     """Create (or replay) one API session. ``wait_ready=True`` (every internal caller) returns
     once the worker reports ready, as it always has. ``wait_ready=False`` (#1505, the HTTP route
@@ -1249,6 +1297,8 @@ async def create(
     applies today's exact failure handling and settles the session's ``launch`` view."""
     if not isinstance(bypass, bool):
         raise NativeError(422, "bypass must be a boolean")
+    if shelf_mission is not None and (not isinstance(shelf_mission, str) or not shelf_mission):
+        raise NativeError(422, "shelf_mission must be a mission id")
     if effort is not None and (
         not isinstance(effort, str) or native_protocol._EFFORT.fullmatch(effort) is None
     ):
@@ -1273,6 +1323,7 @@ async def create(
         effort,
         record_launch=not wait_ready,
         specialist=specialist,
+        shelf_mission=shelf_mission,
     )
     try:
         try:
@@ -4634,3 +4685,33 @@ def _probe_sync(engine_id: str, session_id: str) -> str:
 
 async def probe(engine_id: str, session_id: str) -> dict:
     return {"containment": await asyncio.to_thread(_probe_sync, engine_id, session_id)}
+
+
+def current_worker(engine_id: str, session_id: str) -> str | None:
+    """The newest worker generation the session's record names, or None if it never launched.
+    A read of the record only: it proves nothing about whether that worker runs (`probe` does).
+    Raises `NativeError` for a session with no record. Blocking."""
+    _, record = _session(engine_id, session_id, retiring_ok=True)
+    worker = record.get("current_worker")
+    return worker if isinstance(worker, str) and worker else None
+
+
+def release_ended(engine_id: str, session_id: str, release: Callable[[str], None]) -> str | None:
+    """The session's newest worker generation if it is PROVED ended, having run
+    ``release(worker_id)`` for it; None when it never launched or is not proved ended. Blocking.
+
+    The proof is the generation's own unit and cgroup evidence (`_proved_gone`, which the lease
+    sweep trusts) or a `gone` classification. Not `probe`: that answers `gone` only for a CLOSED
+    session, so a worker that crashed, idled out or died with the host never reads gone there.
+    ``release`` runs under the session's lifecycle lock, which every launch takes, so no successor
+    generation (and no capability minted for one) can come into being between the proof and it."""
+    _session(engine_id, session_id, retiring_ok=True)
+    with native_state.session_lock(session_id):
+        _, record = _session(engine_id, session_id, retiring_ok=True)
+        worker = record.get("current_worker")
+        if not isinstance(worker, str) or not worker:
+            return None
+        if not (_proved_gone(worker) or classify(session_id, worker) == "gone"):
+            return None
+        release(worker)
+        return worker

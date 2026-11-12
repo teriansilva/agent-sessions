@@ -206,6 +206,94 @@ async def repair_projections(*, path=None) -> int:
     return wrote
 
 
+#: The thread's line when an API member's worker generation has ended (#1900): a restart, an idle
+#: exit or a crash. Nothing restarts it; the operator's own message from the pane resumes it.
+MEMBER_ENDED = (
+    "This API session's worker is no longer running. Nothing was restarted and nothing will be "
+    "sent to it automatically; a message you send from its pane resumes it."
+)
+
+
+def _close_member_spawns(mission_id: str, keys: set[str]) -> int:
+    """Close the open spawn rows of a member whose worker a probe PROVED gone (the API branch of
+    the route's spawn reaper, `routes.missions._reap_dead_spawns`, with the probe already made)."""
+    closed = 0
+    for r in missions.open_spawns(mission_id):
+        key = str(r.get("session_key") or "")
+        if key in keys and missions.close_spawn(r["plan_id"], reason=f"{key} is no longer running"):
+            closed += 1
+    return closed
+
+
+async def rebind_api_members() -> int:
+    """Re-bind every running mission's API members to what their workers are now (#1900). Returns
+    how many ended events it wrote. Never raises.
+
+    A restart leaves an API member's worker either still running (its unit outlives the app) or
+    ended. A running one needs nothing: observation reads its snapshot. One whose generation is
+    PROVED ended (its own unit and cgroup evidence, `structured_runtime.release_ended`) gets its
+    mission shelf capability revoked, under the session's lifecycle lock so no successor's is, its
+    spawn slot closed and ONE thread event per worker generation saying it ended. Membership is
+    unchanged, and nothing is relaunched: a turn is never sent to bring it back
+    (`mission_structured.send` refuses an automatic send to a worker that is not live). Anything
+    not proved, or that cannot be read, is skipped and looked at next time.
+
+    Runs at boot after `recover_once` and on the supervisor's reconciling sweep."""
+    from . import mission_fence, shelf_broker
+    from . import structured_runtime as runtime
+
+    try:
+        rows = await missions.run_admitted(missions.active_membership_rows)
+    except Exception:  # noqa: BLE001 — a busy store is retried by the next pass
+        log.debug("API member re-binding: the memberships could not be read", exc_info=True)
+        return 0
+    wrote = 0
+    for key in sorted(rows):
+        row = rows[key]
+        if str(row.get("state") or "") != "running":
+            continue
+        try:
+            if not await asyncio.to_thread(_is_api_key, key):
+                continue
+            mission_id = str(row["id"])
+            phys = await asyncio.to_thread(mission_fence.physical_of, key)
+            newest = await asyncio.to_thread(runtime.worker_generation, phys)
+            if newest is None:
+                continue  # never launched: a dispatch's own recovery owns it
+            seen = functools.partial(missions.has_session_ended_event, mission_id, key, newest)
+            if await missions.run_admitted(seen):
+                continue  # this generation's end is on record: no evidence read, no write
+            # Capability and slot first, the record last: a pass interrupted in between repeats
+            # them (both are idempotent) instead of leaving a live token behind a written event.
+            # The revoke RAISES when it fails (a locked store), so no event is written and the
+            # next pass tries again; the swallowing `revoke_launch` would record an end that
+            # left the capability live, and the written event would stop every later pass.
+            worker = await runtime.release_ended(
+                phys, lambda _worker, at=phys: shelf_broker.revoke_launch_or_raise(at)
+            )
+            if worker is None:
+                continue  # running, or not proved ended: nothing to record
+            await missions.run_admitted(
+                functools.partial(_close_member_spawns, mission_id, {key, phys})
+            )
+            written = await missions.run_admitted(
+                functools.partial(
+                    missions.ensure_session_ended_event,
+                    mission_id,
+                    session_key=key,
+                    worker_id=worker,
+                    text=MEMBER_ENDED,
+                )
+            )
+        except Exception:  # noqa: BLE001 — one unreadable member must not stop the others
+            log.debug("API member re-binding: %s skipped", key, exc_info=True)
+            continue
+        if written:
+            wrote += 1
+            log.info("mission %s: the API member %s's worker %s ended", mission_id, key, worker)
+    return wrote
+
+
 async def recover_once(*, path=None) -> int:
     """Settle every `dispatching` mission this process did not start. Returns how many moved.
 

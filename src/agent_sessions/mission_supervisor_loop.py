@@ -355,6 +355,7 @@ async def sweep(
     # record after it is switched off, and this only ever writes that record (#983 review).
     if reconcile:
         await _reconcile_delivered()
+        await _rebind_api_members()
     if not _enabled():
         return {"skipped": "disabled"}
     await _forget_legacy_state()
@@ -554,6 +555,17 @@ async def _reconcile_delivered() -> None:
         return
     if n:
         log.info("mission supervisor: restored %d delivered nudge record(s) to the thread", n)
+
+
+async def _rebind_api_members() -> None:
+    """Record an API member whose worker ended since the last look (#1900). Never raises; it
+    writes ended events and releases capabilities only, and never relaunches or sends."""
+    from . import mission_dispatch_recover
+
+    try:
+        await mission_dispatch_recover.rebind_api_members()
+    except Exception:  # noqa: BLE001 — retried by the next reconciling sweep
+        log.debug("mission supervisor: API member re-binding failed", exc_info=True)
 
 
 def _running_held_sessions() -> dict[str, str]:

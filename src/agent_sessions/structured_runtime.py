@@ -100,7 +100,14 @@ class _ChatAdapter:
         return True, None
 
     async def create(
-        self, *args, bypass=False, effort=None, wait_ready=True, specialist=None, **kwargs
+        self,
+        *args,
+        bypass=False,
+        effort=None,
+        wait_ready=True,
+        specialist=None,
+        shelf_mission=None,  # noqa: ARG002 — a chat conversation carries no tools
+        **kwargs,
     ):
         # A chat conversation launches no worker, so it has no readiness to wait for (#1505).
         if specialist is not None:
@@ -162,6 +169,7 @@ class _NativeAdapter:
         execution_admission=None,
         wait_ready=True,
         specialist=None,
+        shelf_mission=None,
     ):
         return await _native(
             native_runtime.create,
@@ -174,6 +182,7 @@ class _NativeAdapter:
             execution_admission=execution_admission,
             wait_ready=wait_ready,
             specialist=specialist,
+            shelf_mission=shelf_mission,
         )
 
     async def snapshot(self, engine, native, *, live_text=False):
@@ -756,15 +765,21 @@ async def create_session(
     execution_admission: ExecutionGuard | None = None,
     wait_ready: bool = True,
     specialist: tuple[str, int] | None = None,
+    shelf_mission: str | None = None,
 ) -> dict:
     """``wait_ready`` (#1505): True — every internal caller — returns once the session is ready,
     as it always has. Only the HTTP route passes False: it returns as soon as the session is
-    recorded and its worker launched, and the snapshot's ``launch`` view reports readiness."""
+    recorded and its worker launched, and the snapshot's ``launch`` view reports readiness.
+
+    ``shelf_mission`` (#1900): the mission a dispatch creates this session for, so its first
+    generation carries the mission shelf tool. Sent only when given, like ``effort``."""
     adapter = await asyncio.to_thread(_adapter, engine, "create")  # a fresh roster read
     # `effort` (#1407) is sent only when chosen, so a create without one is the call it always was.
     extra = {"effort": effort} if effort is not None else {}
     if specialist is not None:  # #1693 S4b: sent only when chosen, like `effort`
         extra["specialist"] = specialist
+    if shelf_mission is not None:
+        extra["shelf_mission"] = shelf_mission
     sid = await adapter.create(
         engine,
         cwd,
@@ -1184,6 +1199,27 @@ async def may_have_worker(session_key: str) -> bool:
     can't be read answers True."""
     engine, native = _key(session_key)
     return await asyncio.to_thread(native_runtime.session_may_have_worker, f"{engine}:{native}")
+
+
+def worker_generation(session_key: str) -> str | None:
+    """The newest worker generation a native API session's record names (None: never launched,
+    or not a native session). Read-only and blocking; it says nothing about liveness (`probe`
+    does), so a caller pairs it with a probe to name WHICH generation a `gone` was about."""
+    engine, native, adapter = _containment_target(session_key)
+    if not isinstance(adapter, _NativeAdapter):
+        return None
+    return native_runtime.current_worker(engine, native)
+
+
+async def release_ended(session_key: str, release: Callable[[str], None]) -> str | None:
+    """The worker generation of a native API session that is PROVED ended, after running
+    ``release(worker_id)`` under the session's lifecycle lock (no successor can launch in
+    between), or None (never launched, not proved ended, or not a native session). It never
+    stops, starts or sends anything."""
+    engine, native, adapter = _containment_target(session_key)
+    if not isinstance(adapter, _NativeAdapter):
+        return None
+    return await asyncio.to_thread(native_runtime.release_ended, engine, native, release)
 
 
 async def probe(session_key: str) -> dict:

@@ -375,7 +375,9 @@ async def test_guards_stay_refused_where_they_cannot_be_enforced(host, project):
         execution_admission=guard(f"{ENGINES['claude']}:{sid}"),
     )
     assert created["session_key"] == f"{ENGINES['claude']}:{sid}"
-    assert not runtime.describe(ENGINES["claude"]).mission_ready
+    # Admission is not the capability bit: a guarded create neither needs nor changes it.
+    assert runtime.describe(ENGINES["claude"]).mission_ready is True
+    assert runtime.describe(ENGINES["codex"]).mission_ready is False
 
 
 @pytest.mark.anyio

@@ -105,7 +105,9 @@ def test_the_ids_are_derived_from_the_attempt_and_pinned():
 
 def test_mission_ready_is_a_per_kind_capability_never_readiness(host, monkeypatch):
     assert set(kinds.API_MISSION_READY) == set(kinds.API_KINDS)
-    assert not any(kinds.API_MISSION_READY.values()), "no kind is mission-ready before #1900"
+    # #1900 proved exactly one kind end to end (`test_mission_api_e2e.py`); the rest stay off.
+    assert {k for k, on in kinds.API_MISSION_READY.items() if on} == {"claude-stream-json"}
+    monkeypatch.setitem(kinds.API_MISSION_READY, KINDS["claude"], False)
     assert not runtime.describe(ENGINE, check_ready=False).mission_ready
     monkeypatch.setitem(kinds.API_MISSION_READY, KINDS["claude"], True)
     unchecked = runtime.describe(ENGINE, check_ready=False)
@@ -114,6 +116,7 @@ def test_mission_ready_is_a_per_kind_capability_never_readiness(host, monkeypatc
 
 
 def test_plan_admits_an_api_client_only_when_mission_ready_and_ready(store, monkeypatch):
+    monkeypatch.setitem(kinds.API_MISSION_READY, KINDS["claude"], False)  # the rollback switch
     offered = {o["id"] for o in mission_plan.engine_options()}
     assert ENGINE not in offered
     listed = {u["id"]: u["reason"] for u in mission_plan.engine_unavailable()}
@@ -178,7 +181,8 @@ async def test_a_mission_dispatches_one_api_session_and_one_fenced_brief(
 
 
 @pytest.mark.anyio
-async def test_a_client_that_is_ready_but_not_mission_ready_is_refused(store, project):
+async def test_a_client_that_is_ready_but_not_mission_ready_is_refused(store, project, monkeypatch):
+    monkeypatch.setitem(kinds.API_MISSION_READY, KINDS["claude"], False)  # the rollback switch
     mid, claimed = _claimed(project)
     result = await _run(mid, claimed)
     assert result["outcome"] == "refused"

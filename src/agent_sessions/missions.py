@@ -7163,6 +7163,76 @@ def ensure_action_event(
             con.close()
 
 
+def _session_ended_exists(con, mission_id: str, session_key: str, worker_id: str) -> bool:
+    return (
+        con.execute(
+            "SELECT 1 FROM mission_events WHERE mission_id=? AND kind='session' AND session_key=?"
+            " AND json_extract(meta, '$.ended')=1 AND json_extract(meta, '$.worker_id')=?",
+            (mission_id, session_key, worker_id),
+        ).fetchone()
+        is not None
+    )
+
+
+def has_session_ended_event(
+    mission_id: str, session_key: str, worker_id: str, *, path: Path | None = None
+) -> bool:
+    """Does the thread already say that this worker generation of ``session_key`` ended?"""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        return _session_ended_exists(con, mission_id, session_key, worker_id)
+    finally:
+        con.close()
+
+
+def ensure_session_ended_event(
+    mission_id: str,
+    *,
+    session_key: str,
+    worker_id: str,
+    text: str,
+    now: float | None = None,
+    path: Path | None = None,
+) -> bool:
+    """The thread's one `session` event saying an API member's worker generation ended (#1900),
+    written at most once per ``(session_key, worker_id)``: a later generation that ends is a new
+    event, a second pass over the same one writes nothing. Membership is not touched.
+
+    Returns True only when it wrote the event now (False: already there, or no such mission)."""
+    validate_id(mission_id)
+    if not isinstance(worker_id, str) or not worker_id:
+        raise MissionError("a session-ended event needs the worker generation", status=500)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            if con.execute("SELECT 1 FROM missions WHERE id=?", (mission_id,)).fetchone() is None:
+                con.execute("ROLLBACK")
+                return False
+            if _session_ended_exists(con, mission_id, session_key, worker_id):
+                con.execute("ROLLBACK")
+                return False
+            _append_event(
+                con,
+                mission_id,
+                "session",
+                at=ts,
+                session_key=session_key,
+                text=text,
+                meta={"ended": True, "worker_id": worker_id},
+            )
+            con.execute("COMMIT")
+            return True
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
 def delivered_event_action_ids(action_ids: list[str], *, path: Path | None = None) -> set[str]:
     """Which of `action_ids` already have a DELIVERED `action` event, in one bulk read (#983).
 

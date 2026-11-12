@@ -66,6 +66,10 @@ async def contain_native(engine: str, native: str) -> None:
             "the API session's worker could not be confirmed stopped "
             f"(containment: {result.get('containment', 'unknown')}); nothing was archived"
         )
+    # Its mission shelf capability ends with the worker it was minted for (#1900).
+    from . import shelf_broker
+
+    await asyncio.to_thread(shelf_broker.revoke_launch, f"{engine}:{native}")
 
 
 async def resolve_runtime_key(engine: str, native: str) -> str:

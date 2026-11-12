@@ -190,6 +190,9 @@ async def dispatch(
             bypass=False,
             execution_admission=mission_guard,
             wait_ready=True,
+            # The mission's shelf tool on the first generation (#1900): the session joins the
+            # roster only once it runs, and the broker re-checks membership on every add.
+            shelf_mission=mission_id,
         )
     except runtime.StructuredError as exc:
         out.seed_outcome = "not_attempted"
@@ -311,7 +314,20 @@ async def send(  # noqa: PLR0913 — every argument is part of one delivery's id
     the write fence by #1897's admission, so a withdrawal after it is refused at the worker's claim.
     The precondition is read just before: no newer operator turn, no pending request, and idle for
     an autonomous send. A turn the operator starts after that read makes this one queue behind it.
+
+    An AUTOMATIC send also needs (#1900) a client still admitted to missions (the kind's
+    `API_MISSION_READY` bit, so flipping it off stops every automatic send at once) and a worker
+    that a probe says is `live`: a turn into an ended worker would relaunch it, and nothing
+    automatic ever relaunches an agent. The operator's own words may resume it, as the pane does.
     """
+    if autonomous and mission_id:
+        try:
+            prov, _native = engines.parse_key(key)
+            admitted, why = await asyncio.to_thread(admits, prov)
+        except Exception:  # noqa: BLE001 — a client that can't answer is not admitted
+            admitted, why = False, NOT_MISSION_READY
+        if not admitted:
+            return "stale", why or NOT_MISSION_READY
     try:
         snap = await runtime.snapshot(key)
     except runtime.StructuredError as exc:
@@ -323,6 +339,16 @@ async def send(  # noqa: PLR0913 — every argument is part of one delivery's id
     why = _still_current(snap, precondition or {}, key=key, autonomous=autonomous)
     if why:
         return "stale", why
+    if autonomous:
+        try:
+            containment = (await runtime.probe(key)).get("containment")
+        except Exception:  # noqa: BLE001 — could not look, so nothing is sent
+            containment = None
+        if containment != "live":
+            return "stale", (
+                "the session's worker is not running, and an automatic send never restarts it; "
+                "nothing was sent"
+            )
 
     def fenced_check() -> tuple[bool, str]:
         # Anything the check raises is "authority could not be verified": a known refusal before

@@ -3150,9 +3150,9 @@ export function StructuredPane({
 
   // The pane head (#1332): the terminal's actions, in the terminal's order, wherever they work
   // for an API session. Recap and Hand off read the session's journal (#1311's transcript fold);
-  // Adopt to mission is NOT offered — a mission cannot drive a structured session yet (#1273
-  // Phase 3), so adopting one would underwrite work nothing can do. Repaint and text size are
-  // terminal controls.
+  // Adopt to mission is NOT offered here: since #1900 a mission may hold a kind whose
+  // `mission_ready` bit is on, but offering adoption from the pane is a follow-up. Repaint and
+  // text size are terminal controls.
   const placeholder = isNewSessionPlaceholder(actionKey);
   const headActions: HeadAction[] = [
     ...(snap?.can_enable_bypass && !readOnly

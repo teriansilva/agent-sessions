@@ -1384,11 +1384,35 @@ def _chat_adapter(native_id: str, home: Path) -> list[Turn]:
     return out
 
 
+#: The payload keys a tool call's one-liner may name, in order (`claude_turns_from_jsonl`'s): never
+#: the content being written.
+_TOOL_ARG_KEYS = ("command", "file_path", "pattern", "description", "path")
+
+
+def _tool_arg(summary: object) -> str:
+    """The one argument a tool call's line shows. A client that reports the call's input as JSON
+    names one key of it; a JSON summary that does not parse (cut by the worker) shows nothing,
+    because the rest of it may be the content being written."""
+    if not isinstance(summary, str):
+        return ""
+    if summary[:1] in ("{", "["):
+        try:
+            value = json.loads(summary)
+        except ValueError:
+            return ""
+        if not isinstance(value, dict):
+            return ""
+        return next((v for k in _TOOL_ARG_KEYS if isinstance(v := value.get(k), str) and v), "")
+    return summary
+
+
 def _native_turns(root: Path, native_id: str) -> list[Turn]:
     """A native API client's conversation (#1311): the same store layout holds its JOURNAL
     (#1278), whose records a chat fold would skip — every consumer would see an empty session.
-    Fold it instead: each submitted message, then the agent's settled reply text. Only what the
-    operator sent and the agent answered; approval payloads and tool output are not transcript."""
+    Fold it instead: each submitted message, the tool calls the agent made for it (a one-liner each
+    and the bounded output of each finished one, #1900, as a console transcript shows them), then
+    its settled reply text. Approval payloads and turn state (completed, idle) are never
+    transcript. Capped like every other reader, and says when it was cut."""
     from . import native_journal
 
     try:
@@ -1397,6 +1421,7 @@ def _native_turns(root: Path, native_id: str) -> list[Turn]:
         return []
     replies: dict[str, list[str]] = {}
     final: dict[str, str] = {}
+    tools: dict[str, dict[str, dict]] = {}
     for item in journal.events:
         kind, data = item["event"]["kind"], item["event"]["data"]
         op = data.get("operation_id")
@@ -1406,6 +1431,16 @@ def _native_turns(root: Path, native_id: str) -> list[Turn]:
             replies.setdefault(op, []).append(data["text"])
         elif kind == "turn_completed" and isinstance(data.get("text"), str):
             final[op] = data["text"]
+        elif kind == "tool" and isinstance(data.get("item_id"), str):
+            call = tools.setdefault(op, {}).setdefault(data["item_id"], {})
+            if isinstance(data.get("tool"), str) and data["tool"] and "name" not in call:
+                call["name"] = data["tool"]
+            if isinstance(data.get("summary"), str) and data["summary"] and "summary" not in call:
+                call["summary"] = data["summary"]
+            output = data.get("output")
+            if data.get("state") in ("completed", "failed") and isinstance(output, str):
+                if output.strip():
+                    call["output"] = output
     out: list[Turn] = []
     removed = native_journal.withdrawn(journal)  # never sent: not part of the conversation
     for op in journal.operations.values():
@@ -1414,12 +1449,18 @@ def _native_turns(root: Path, native_id: str) -> list[Turn]:
         text = op.request["params"].get("text")
         if isinstance(text, str):
             out.append(Turn("user", text))
+        for call in tools.get(op.operation_id, {}).values():
+            if "name" in call:
+                arg = _short(_tool_arg(call.get("summary")))
+                out.append(Turn("assistant", f"{call['name']}({arg})", "tool"))
+            if "output" in call:
+                out.append(Turn("tool", _short(call["output"], _RESULT_MAX), "result"))
         reply = "\n\n".join(t for t in replies.get(op.operation_id, ()) if t.strip()) or final.get(
             op.operation_id
         )
         if reply:
             out.append(Turn("assistant", reply))
-    return out
+    return tagged_turns(out[-DEFAULT_MAX_MESSAGES:], len(out) > DEFAULT_MAX_MESSAGES)
 
 
 def chat_log_path(native_id: str, home: Path) -> Path | None:

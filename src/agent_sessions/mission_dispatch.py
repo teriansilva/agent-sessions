@@ -671,8 +671,8 @@ async def run(
                 nonce=nonce,
                 # The mission this agent works for (#1740): its launch gets the shelf tool,
                 # minted for THIS mission inside the launch fence. The session is adopted only
-                # once it runs. A structured (API) session gets no shelf yet: `shelf_broker`
-                # plumbs terminal launches only (#1899/#1900 track it).
+                # once it runs. A structured (API) session gets it too (#1900): its first worker
+                # generation is minted for this mission (`mission_structured.dispatch`).
                 shelf_mission=mission_id,
                 # An optional model (#1189), resolved by the launcher's own resolver: a refusal is
                 # a `DispatchError` below (nothing spawned). Passed only when set, so `None` is

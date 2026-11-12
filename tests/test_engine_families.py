@@ -198,7 +198,9 @@ def test_a_retired_family_has_no_default(ready, monkeypatch):
 
 def test_unattended_admits_only_mission_ready_api_clients_never_a_console(ready, monkeypatch):
     fam, _console, api = _pair()
-    # Today no client is mission_ready (#1273 P3): no default, and NO console fallback.
+    # A client that is not mission_ready (#1273 P3) is no default, and there is NO console
+    # fallback. Pinned off here: which kinds are on is `test_mission_structured_dispatch`'s.
+    monkeypatch.setattr(family, "_mission_ready", lambda p: False)
     assert engines.default_client(fam, "unattended") == (None, "api_unready")
     monkeypatch.setattr(family, "_mission_ready", lambda p: p.manifest.runtime == "api")
     assert engines.default_client(fam, "unattended") == (api, "api_ready")

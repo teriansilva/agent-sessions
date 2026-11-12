@@ -5,11 +5,13 @@
 **A capability is one launch of one mission session, and it can only add.** It is minted where a
 new pty agent process is born for a session that belongs to a mission — an interactive terminal
 LAUNCH of a mission's session (`routes/terminal.py`) and a mission dispatch or spawn
-(`headless_dispatch.py`, told the mission by `mission_dispatch.run`) — and never on an attach. It is
-stored as a keyed digest (`template_secrets.keyed_digest`, its own label) in the missions store
-(`mission_shelf_caps`, cascading with the mission) beside the launch's identity: the mission, the
-session key and the physical key. The token itself is a 0600 FILE in the launch's private
-RAM-backed directory; the environment and the MCP payload (argv) carry only its PATH.
+(`headless_dispatch.py`, told the mission by `mission_dispatch.run`), and each worker
+generation of a mission's native API session (`native_runtime._launch_generation`, #1900) — and
+never on an attach. It is stored as a keyed digest (`template_secrets.keyed_digest`, its own
+label) in the missions store (`mission_shelf_caps`, cascading with the mission) beside the
+launch's identity: the mission, the session key and the physical key. The token itself is a
+0600 FILE in the launch's private RAM-backed directory; the environment and the MCP payload
+(argv) carry only its PATH.
 
 **The agent never names a mission or a session**: the broker maps the token to the launch, and
 `mission_shelf.deliver` re-checks, inside its write transaction, that the session is on that
@@ -447,20 +449,26 @@ def revoke_session(mission_id: str, session_key: str) -> None:
         log.warning("shelf: revoking a detached session's capabilities failed", exc_info=True)
 
 
+def revoke_launch_or_raise(phys_key: str) -> None:
+    """End the session's shelf capabilities now, raising when that could not be done. For a caller
+    that records the end only once it is true (`mission_dispatch_recover.rebind_api_members`)."""
+    con = missions._ready()
+    try:
+        ids = [
+            r["id"]
+            for r in con.execute(
+                "SELECT id FROM mission_shelf_caps WHERE revoked_at IS NULL AND phys_key=?",
+                (phys_key,),
+            ).fetchall()
+        ]
+    finally:
+        con.close()
+    _revoke_ids(ids)
+
+
 def revoke_launch(phys_key: str) -> None:
     """The session's runtime is torn down (archive): its shelf capabilities end now."""
     try:
-        con = missions._ready()
-        try:
-            ids = [
-                r["id"]
-                for r in con.execute(
-                    "SELECT id FROM mission_shelf_caps WHERE revoked_at IS NULL AND phys_key=?",
-                    (phys_key,),
-                ).fetchall()
-            ]
-        finally:
-            con.close()
-        _revoke_ids(ids)
+        revoke_launch_or_raise(phys_key)
     except Exception:  # noqa: BLE001 — teardown never fails for this
         log.warning("shelf: revoking %s's capabilities failed", phys_key, exc_info=True)

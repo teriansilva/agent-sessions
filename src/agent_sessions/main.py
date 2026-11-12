@@ -421,6 +421,11 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             # both act on closed missions, and this pass is what closes them.
             with contextlib.suppress(Exception):
                 await mission_dispatch_recover.recover_once()
+            # …and the API members of the missions still running (#1900): a worker the restart
+            # ended is recorded as ended, its shelf capability and spawn slot released. Never a
+            # relaunch: the operator's own message resumes it.
+            with contextlib.suppress(Exception):
+                await mission_dispatch_recover.rebind_api_members()
             # …and the projection of a late-bound adoption (#989): the store records where such a
             # session's runtime lives in the adopting commit, and the alias that lets everything
             # else find it is published after. A crash between the two is repaired here.

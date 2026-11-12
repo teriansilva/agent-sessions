@@ -368,8 +368,12 @@ def test_an_automatic_send_into_a_pending_approval_is_stale(api, host, project):
 
 
 def test_an_operator_relay_into_a_busy_session_queues_but_an_automatic_send_does_not(
-    api, host, project
+    api, host, project, monkeypatch
 ):
+    from agent_sessions.plugins import kinds
+
+    # Codex is not mission-ready (#1900); an automatic send to it would stop at that bit first.
+    monkeypatch.setitem(kinds.API_MISSION_READY, "codex-app-server", True)
     c, hdr, proj = api
     key = asyncio.run(runtime.create_session(ENGINES["codex"], str(project), operation_id=ident()))[
         "session_key"

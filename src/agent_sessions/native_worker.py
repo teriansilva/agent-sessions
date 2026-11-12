@@ -387,6 +387,27 @@ def artifacts_environment(config: dict) -> dict[str, str]:
     return dict(value)
 
 
+def shelf_environment(config: dict) -> dict[str, str]:
+    """The mission shelf capability this generation was given (#1900), or ``{}``: the broker's
+    socket and the token FILE path. Bound by the web process at generation launch; never read
+    from this process's environment, and never given to the agent's own environment (only its MCP
+    child)."""
+    from .shelf_broker import ENV_KEYS
+
+    value = config.get("shelf_env", {})
+    if not isinstance(value, dict):
+        raise WorkerError("invalid shelf environment")
+    if value and (
+        set(value) != set(ENV_KEYS)
+        or any(
+            not isinstance(v, str) or not v.startswith("/") or "\0" in v or "\n" in v
+            for v in value.values()
+        )
+    ):
+        raise WorkerError("invalid shelf environment")
+    return dict(value)
+
+
 def tool_servers(config: dict) -> list:
     """Every BattleLab tool this generation carries: the memory tool (above) and, for a session
     started from a specialist (#1693), the skills tool over its launch bundle. A bundle on an
@@ -402,6 +423,10 @@ def tool_servers(config: dict) -> list:
         artifacts_tool = agent_tools.artifacts_server(artifacts_environment(config))
         if artifacts_tool is not None:
             out.append(artifacts_tool)
+        # The mission shelf (#1900), for a generation of a mission's session only.
+        shelf_tool = agent_tools.shelf_server(shelf_environment(config))
+        if shelf_tool is not None:
+            out.append(shelf_tool)
     bundle = config.get("skills_bundle")
     if bundle is None:
         return out
