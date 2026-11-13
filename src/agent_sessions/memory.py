@@ -1748,16 +1748,35 @@ def _project(pid: str):
     return entity
 
 
-def _session(key: str | None, kind: str | None) -> dict:
+def _key_resolver():
+    """`metadata.resolve_key` for MANY keys in one view: the sidecar is read and indexed once, on
+    the first key, then every key resolves against that (`metadata.resolve_in`). Per key, the
+    whole sidecar was re-read and re-normalized — ~0.2 s each on a real one, ~19 s for a
+    200-note project, on every page open and every ingest tick."""
+    from . import metadata
+
+    read: list = []
+
+    def resolve(key: str) -> str:
+        if not read:
+            read.append((metadata.load(), metadata.load_aliases()))
+        index, aliases = read[0]
+        return metadata.resolve_in(key, index, aliases)
+
+    return resolve
+
+
+def _session(key: str | None, kind: str | None, resolve=None) -> dict:
     """Who wrote it — a label, never authority (any same-UID process can write any inbox). A
-    late-id launch's placeholder is followed to the real session when the app has bound it."""
+    late-id launch's placeholder is followed to the real session when the app has bound it.
+    ``resolve`` is a `_key_resolver` shared by every row of one view."""
     from . import metadata
 
     if not key:
         return {"key": "", "engine": "", "kind": kind or "", "resolved": False}
     real = key
     with contextlib.suppress(Exception):
-        real = metadata.resolve_key(key)
+        real = (resolve or metadata.resolve_key)(key)
     engine, _, native = real.partition(":")
     resolved = bool(native) and not native.startswith("new-")
     return {
@@ -1943,6 +1962,7 @@ def _view_built(pid: str, out: dict, known: list[str] | None) -> dict:
     conn = _connect(pid)
     try:
         out["enabled"] = _on(pid, conn)
+        resolve = _key_resolver()
         launches = {
             r["token"]: (r["session_key"], r["kind"])
             for r in conn.execute("SELECT token, session_key, kind FROM launches")
@@ -1968,7 +1988,7 @@ def _view_built(pid: str, out: dict, known: list[str] | None) -> dict:
                     "size": len(r["body"].encode()),
                     "created": r["created"],
                     "updated": r["updated"],
-                    "session": _session(*launches.get(r["token"], (None, None))),
+                    "session": _session(*launches.get(r["token"], (None, None)), resolve),
                     "links": sorted({m for m in _LINK_RE.findall(r["body"]) if m in slugs}),
                 }
             )
@@ -1979,7 +1999,7 @@ def _view_built(pid: str, out: dict, known: list[str] | None) -> dict:
                     "reason": r["reason"],
                     "size": r["size"],
                     "at": r["at"],
-                    "session": _session(*launches.get(r["token"], (None, None))),
+                    "session": _session(*launches.get(r["token"], (None, None)), resolve),
                 }
             )
         for r in conn.execute("SELECT * FROM quarantine ORDER BY id DESC"):
@@ -1991,14 +2011,14 @@ def _view_built(pid: str, out: dict, known: list[str] | None) -> dict:
                     "size": r["size"],
                     "at": r["at"],
                     "masked": _mask(r["body"], known),
-                    "session": _session(*launches.get(r["token"], (None, None))),
+                    "session": _session(*launches.get(r["token"], (None, None)), resolve),
                 }
             )
     finally:
         conn.close()
     for p in _pending(pid):
         p["filename"] = _safe_name(p["filename"], known)
-        p["session"] = _session(*launches.get(p.pop("token"), (None, None)))
+        p["session"] = _session(*launches.get(p.pop("token"), (None, None)), resolve)
         out["pending"].append(p)
     return out
 

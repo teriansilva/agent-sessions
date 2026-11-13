@@ -169,6 +169,27 @@ def test_a_note_is_ingested_rendered_attributed_and_its_file_removed(on, workspa
     assert "[Use typed ids](use-typed-ids.md)" in (view / "MEMORY.md").read_text()
 
 
+def test_the_page_view_reads_the_session_sidecar_once_however_many_notes(
+    on, workspace, monkeypatch
+):
+    # Each note's author was resolved with `metadata.resolve_key`, which reads and normalizes the
+    # whole sidecar: ~19 s for a 200-note project on a real one, on every page open and every
+    # ingest tick. One view reads it once, and resolves each author exactly as before.
+    for i in range(6):
+        key = f"fixture:{i:08d}"
+        metadata.patch(key, title=f"session {i}")
+        env = _launch(workspace, key=key)
+        _drop(env, f"n{i}.md", f"# Note {i}\n\nBody {i}.\n")
+    assert memory.ingest(on)["notes"] == 6
+    expected = {n["slug"]: metadata.resolve_key(n["session_key"]) for n in memory.notes(on)}
+    reads = []
+    real_load = metadata.load
+    monkeypatch.setattr(metadata, "load", lambda *a, **k: reads.append(1) or real_load(*a, **k))
+    view = memory.view(on)
+    assert len(reads) == 1
+    assert {n["slug"]: n["session"]["key"] for n in view["notes"]} == expected
+
+
 def test_input_is_lenient_without_frontmatter_and_the_same_name_replaces(on, workspace):
     env = _launch(workspace)
     _drop(env, "pitfall_one.md", "# Flaky dtach tests\n\nThey flake under load.\n")
