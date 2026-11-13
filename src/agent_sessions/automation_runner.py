@@ -14,6 +14,15 @@ There is no second launcher here. Each action goes through the path a manual sta
   ``precondition`` + ``final_guard``) for text, ``template_send.send`` for a template (the only
   path a secret travels). Its ``Outcome`` becomes the run outcome.
 
+**API targets are structured (#1901).** The target client's ``manifest.runtime`` picks the
+transport, above every PTY check. An API client is admitted (``target_state``) by
+``mission_structured.admits`` at save, enable and run. It starts through
+``mission_structured.automation_start`` (one create and one guarded first turn, ids derived from
+the run) and is sent to through ``automation_send`` (one guarded turn, on the loop under the
+effect lock, never ``is_live`` or the PTY send lock). Its
+binding is ``automation:<id>:<run>``. Never permission-bypassed, and never a secret: a template
+that carries one is refused for an API target until a structured secret sink exists (#1989).
+
 **Boundary at run time.** Roots + ``folder_exclusions`` (the terminal's hard scope) for the target
 folder or session, a present non-retiring engine, a live target for a send. A failed check is a run
 REFUSED with its reason — never a fallback to some other target.
@@ -36,6 +45,7 @@ import logging
 import os
 import time
 import uuid
+from functools import partial
 
 from . import automation_effect_lock as effect_lock
 from . import automations as model
@@ -56,7 +66,6 @@ from . import (
     template_vars,
 )
 from . import templates as tstore
-from .plugins import kinds
 
 log = logging.getLogger(__name__)
 
@@ -105,8 +114,42 @@ def folder_ok(folder: str) -> tuple[bool, str]:
     return True, ""
 
 
+#: What the picker and a refused save say about an API client that is not admitted (#1901).
+NOT_ADMITTED = "this agent's API client can't run unattended yet"
+
+
+def _structured():
+    # At call time: `mission_structured` reaches the native runtime, whose import graph passes
+    # through the routes package (the same cycle `mission_dispatch` avoids this way).
+    from . import mission_structured
+
+    return mission_structured
+
+
+def target_state(engine: str) -> tuple[bool, str]:
+    """Whether ``engine`` may be an automation's target right now: checked at save, enable and run.
+
+    An API client is admitted exactly as a mission role is (#1901): its kind's
+    `kinds.API_MISSION_READY` bit and `registry.can_start` (`mission_structured.admits`; its
+    presence is `can_start`'s, never `is_present`). A console client answers `engine_state`."""
+    prov = engines.get(engine)
+    ms = _structured()
+    if prov is None or engines.is_retiring(prov) or not ms.is_api(prov):
+        return engine_state(engine)
+    try:
+        ok, why = ms.admits(prov)
+    except Exception:  # noqa: BLE001 — a client that can't answer is not admitted
+        ok, why = False, ms.NOT_MISSION_READY
+    if not ok:
+        return False, NOT_ADMITTED if why in (None, ms.NOT_MISSION_READY) else why
+    return True, ""
+
+
 def engine_state(engine: str) -> tuple[bool, str]:
-    """Whether ``engine`` may be started unattended right now — checked at save AND at run."""
+    """Whether ``engine`` may be started UNATTENDED through `headless_dispatch` right now (the
+    console launcher): an automation's console target, and Ask HQ's sessions and specialists, which
+    launch only there. An API client is refused here, by `seed_start_state` — an automation asks
+    `target_state` instead."""
     prov = engines.get(engine)
     if prov is None:
         return False, engines.removed_reason(engine) or f"unknown agent {engine!r}"
@@ -130,30 +173,39 @@ def client_settings_state(action: dict) -> tuple[bool, str]:
 
     A switch is a fresh consent, never the terminal grant carried over, so what it saves must be
     something that client can honour: its model is the client's default (an automation's consent
-    covers no model yet, #1189) and "skip permission prompts" only where the client's adapter maps
-    it (`kinds.API_BYPASS_KINDS`, the same set the structured create checks). Asked of the
-    manifest; a console target answers ``(True, "")`` here and keeps its existing checks."""
+    covers no model yet, #1189) and never "skip permission prompts" (#1901): an automation's API
+    session is created and briefed under a guard (#1897), and guarded work never runs in a session
+    that skips permission prompts — so it always asks before each request. Asked of the manifest;
+    a console target answers ``(True, "")`` here and keeps its existing checks (and its consented
+    bypass)."""
     m = engines.manifest_of(action["engine"])
     if m is None or m.runtime != "api":
         return True, ""
     label = m.identity.label
     if action.get("model") is not None:
         return False, f"{label} runs its own default model in an automation; choose no model"
-    if action.get("bypass") and (m.api is None or m.api.kind not in kinds.API_BYPASS_KINDS):
-        return False, f"{label} can't skip permission prompts; save it asking before each request"
+    if action.get("bypass"):
+        return False, (
+            f"{label} can't skip permission prompts in an automation; "
+            "save it asking before each request"
+        )
     return True, ""
+
+
+#: A template carrying a secret has no structured sink yet (#1901): refused for an API target.
+NO_API_SINK = "a template with a secret can't be sent to an API session yet"
 
 
 def check_save(config: dict) -> None:
     """Save-time checks that need the world (templates, engines, folders). Raises
     ``AutomationError``; blocking — run off the event loop."""
-    model.check_template(config)
+    template = model.check_template(config)
     action = config["action"]
     if action["kind"] == "start_session":
         ok, why = client_settings_state(action)
         if not ok:
             raise model.AutomationError(why)
-        ok, why = engine_state(action["engine"])
+        ok, why = target_state(action["engine"])
         if not ok:
             raise model.AutomationError(why)
         ok, why = folder_ok(action["folder"])
@@ -164,6 +216,14 @@ def check_save(config: dict) -> None:
             prov, native = engines.parse_key(action["session_key"])
         except Exception:
             raise model.AutomationError("not a session id this app can address") from None
+        if _structured().is_api(prov):
+            # An API session takes a structured turn, so its client must be admitted now (#1901),
+            # or the automation would be saved only to be refused at every run.
+            ok, why = target_state(prov.engine_id)
+            if not ok:
+                raise model.AutomationError(why)
+            if template is not None and model.template_has_secret(template):
+                raise model.AutomationError(NO_API_SINK)
         # The boundary is checked here too WHEN the target can be resolved now; a session that is
         # not running yet is checked at run time, where the send refuses it just the same.
         try:
@@ -187,7 +247,13 @@ def check_save(config: dict) -> None:
 # ---- rendering ----------------------------------------------------------------------------------
 
 
-def _render_plain(config: dict, pins: dict) -> tuple[str, dict]:
+#: Why a plain render refuses a template that has a secret now.
+NEVER_CARRIED = "the template now has a secret, which this action can never carry"
+
+
+def _render_plain(
+    config: dict, pins: dict, *, carried_refusal: str = NEVER_CARRIED
+) -> tuple[str, dict]:
     """``(text, inputs)`` for a mission or new-session message, which may NEVER carry a secret.
 
     Re-reads the template and the library at run time, and re-checks every field kind here — the
@@ -207,9 +273,7 @@ def _render_plain(config: dict, pins: dict) -> tuple[str, dict]:
         raise RunRefused(503, str(exc)) from None
     for f in t["fields"]:
         if f["kind"] == "secret" or (f["source"] == "library" and f["name"] in secret_names):
-            raise RunRefused(
-                409, "the template now has a secret, which this action can never carry"
-            )
+            raise RunRefused(409, carried_refusal)
     try:
         rendered = template_send.render(
             t, msg["values"], library=template_vars.values(), secrets={}, secret_state={}
@@ -265,6 +329,11 @@ def authority(run: dict) -> tuple[bool, str, str]:
         # Paused WITHOUT an operator write since the claim: the automation's own auto-pause.
         return False, "skipped: it was paused after failed runs", "halted"
     return True, "", ""
+
+
+def binding(run: dict) -> str:
+    """The #1897 guard binding of a run's structured effects: ``automation:<id>:<run>``."""
+    return f"automation:{run['automation_id']}:{run['id']}"
 
 
 def _still_authorized(run: dict) -> tuple[bool, str]:
@@ -496,7 +565,7 @@ async def _start_session(run: dict, config: dict, pins: dict, *, registry) -> tu
         stop = await asyncio.to_thread(_authority_outcome, run)
         if stop:
             return stop
-        ok, why = await asyncio.to_thread(engine_state, action["engine"])
+        ok, why = await asyncio.to_thread(target_state, action["engine"])
         if not ok:
             return "refused", why
         drift = await asyncio.to_thread(session_cwd_drift, pinned, action["folder"])
@@ -512,7 +581,8 @@ async def _start_session(run: dict, config: dict, pins: dict, *, registry) -> tu
         except RunRefused as e:
             return "refused", e.detail
         await asyncio.to_thread(store.set_inputs, rid, inputs)
-        if registry is None:
+        structured = _structured().is_api(engines.get(action["engine"]))
+        if registry is None and not structured:
             return "refused", "the session runner isn't available in this process"
 
         def on_key(key: str) -> None:
@@ -533,16 +603,33 @@ async def _start_session(run: dict, config: dict, pins: dict, *, registry) -> tu
             ok, why = folder_ok(real)
             return None if ok else why
 
+        def fenced() -> tuple[bool, str]:
+            why = authorize(None)
+            return why is None, why or ""
+
         try:
-            out = await headless_dispatch.dispatch(
-                engine=action["engine"],
-                cwd=real,
-                brief=text,
-                registry=registry,
-                bypass=bool(action["bypass"]),
-                on_key=on_key,
-                authorize=authorize,
-            )
+            if structured:
+                # AN API CLIENT STARTS STRUCTURED (#1901): one create and one guarded first turn,
+                # ids derived from this run, never bypassed (`client_settings_state` refuses it).
+                out = await _structured().automation_start(
+                    binding=binding(run),
+                    run_id=rid,
+                    engine=action["engine"],
+                    cwd=real,
+                    brief=text,
+                    on_key=on_key,
+                    check=fenced,
+                )
+            else:
+                out = await headless_dispatch.dispatch(
+                    engine=action["engine"],
+                    cwd=real,
+                    brief=text,
+                    registry=registry,
+                    bypass=bool(action["bypass"]),
+                    on_key=on_key,
+                    authorize=authorize,
+                )
         except headless_dispatch.DispatchError as e:
             return "refused", str(e)
     if out.ok:
@@ -550,12 +637,24 @@ async def _start_session(run: dict, config: dict, pins: dict, *, registry) -> tu
     for fact in ("launched", "started", "briefed"):
         if getattr(out, fact):
             await asyncio.to_thread(store.add_step, rid, fact, out.key)
+    if structured and out.teardown:
+        # The worker a refused first turn left behind was stopped (or could not be).
+        await asyncio.to_thread(
+            store.add_step,
+            rid,
+            "worker_stopped" if out.teardown == "stopped" else "stop_failed",
+            out.key,
+        )
     if out.bound is True:
         await asyncio.to_thread(store.add_step, rid, "bound", out.bound_key)
         await asyncio.to_thread(store.link, rid, session_key=out.bound_key)
     if out.ok:
         return _DELIVERED[rid]
     reason = out.reason or f"the session reached {out.state}"
+    if structured and out.seed_outcome == "zero_write" and out.teardown == "stopped":
+        # The first turn was refused before any claim and its worker is PROVED stopped: nothing
+        # reached the agent and nothing is left running, so this is a refusal, not a failure.
+        return "refused", f"{reason}; its worker was stopped"
     return ("failed" if out.launched else "refused"), reason
 
 
@@ -688,7 +787,99 @@ def _send_locked(run: dict, config: dict, pins: dict) -> tuple[str, str]:
     return "ok", "delivered"
 
 
+#: An API send's delivery code → the run's outcome (#1899's mapping, #1901).
+_API_SEND_OUTCOME = {
+    "sent": "ok",
+    "queued": "ok",
+    "refused": "refused",
+    "gone": "refused",
+    # It may have reached the agent: never retried, never reported delivered.
+    "uncertain": "failed",
+}
+
+
+async def _send_structured(run: dict, config: dict, pins: dict) -> tuple[str, str]:
+    """A send into an API session (#1901): ONE guarded turn, on the loop under the effect lock.
+
+    Never through `session_input.is_live` or the PTY send lock, which no API session has. The
+    target's cwd is its native record's; the run refuses a session that is not idle, has a pending
+    request or whose worker is not live — an automation never relaunches an agent."""
+    rid = run["id"]
+    key = config["action"]["session_key"]
+    ms = _structured()
+    async with effect_lock.runner(run["automation_id"]) as held:
+        if not held:
+            return "skipped", LOCK_BUSY
+        stop = await asyncio.to_thread(_authority_outcome, run)
+        if stop:
+            return stop
+        prov, _native = engines.parse_key(key)
+        ok, why = await asyncio.to_thread(target_state, prov.engine_id)
+        if not ok:
+            return "refused", why
+        target = await ms.automation_target(key)
+        if target.get("gone"):
+            return "refused", "the API session no longer exists — nothing was started instead"
+        if "unreadable" in target:
+            return (
+                "refused",
+                f"the session could not be read, so nothing was sent ({target['unreadable']})",
+            )
+        cwd = target.get("cwd")
+        if not await asyncio.to_thread(scope_ok, cwd):
+            return "refused", "the session is outside your project folders"
+        # Linked for the run record, never as an ORIGIN: typing into a session did not start it.
+        await asyncio.to_thread(store.link, rid, session_key=key, origin=False)
+        if target.get("read_only"):
+            return "refused", f"the session takes no new messages ({target['read_only']})"
+        if not target.get("live"):
+            return "refused", "the session isn't running — nothing was started instead"
+        if target.get("pending"):
+            return "refused", "the session is waiting on an approval or a question"
+        state = target.get("state")
+        if state in ("queued", "running", "delivering", "delivered", "awaiting_approval"):
+            return "refused", "the session was busy"
+        if state != "idle":
+            # The last operator turn ended without completing (failed, interrupted, uncertain):
+            # an automatic send waits for an idle session, as a mission's does.
+            return "refused", (
+                f"the session's last message did not complete ({state}); "
+                "an automation sends only into an idle session"
+            )
+        try:
+            # Text, or a template with NO secret, rendered exactly like a new session's brief.
+            text, inputs = await asyncio.to_thread(
+                partial(_render_plain, config, pins, carried_refusal=NO_API_SINK)
+            )
+        except RunRefused as e:
+            return "refused", e.detail
+        await asyncio.to_thread(store.set_inputs, rid, inputs)  # recorded BEFORE the turn
+        stop = await asyncio.to_thread(_authority_outcome, run)
+        if stop:
+            return stop
+
+        def check() -> tuple[bool, str]:
+            # INSIDE the write fence (`session_input.admit_native`): the boundary and the
+            # automation's own authority, read where every withdrawal commits.
+            if not scope_ok(cwd):
+                return False, "the session is outside your project folders"
+            return _still_authorized(run)
+
+        code, detail = await ms.automation_send(
+            binding=binding(run), run_id=rid, key=key, text=text, check=check
+        )
+    outcome = _API_SEND_OUTCOME.get(code, "failed")
+    if outcome == "ok":
+        _delivered(rid, "ok", detail)
+        return _DELIVERED[rid]
+    if code == "uncertain":
+        return "failed", f"{detail}; it is never sent again"
+    return outcome, detail
+
+
 async def _send_to_session(run: dict, config: dict, pins: dict, *, registry) -> tuple[str, str]:
+    if await asyncio.to_thread(_structured().is_api_key, config["action"]["session_key"]):
+        return await _send_structured(run, config, pins)
     return await asyncio.to_thread(_send, run, config, pins)
 
 

@@ -409,11 +409,11 @@ def _unattended_engines() -> list[dict]:
     """Every engine in the roster with whether it may be started UNATTENDED right now, and why not.
 
     The editor offers only the ``ok`` ones and shows the reason beside the rest; the same
-    ``engine_state`` refuses the save and the run, so the offer is never wider than the check."""
+    ``target_state`` refuses the save and the run, so the offer is never wider than the check."""
     out = []
     for eid in automation_runner.engines.engine_ids():
         try:
-            ok, why = automation_runner.engine_state(eid)
+            ok, why = automation_runner.target_state(eid)
         except Exception:  # noqa: BLE001 — an engine that cannot answer is not offered
             ok, why = False, "this agent could not be checked"
         out.append({"id": eid, "ok": ok, "reason": "" if ok else why})

@@ -722,6 +722,13 @@ def pins_drift(stored: dict, current: dict) -> str:
 # ---- template checks ----------------------------------------------------------------------------
 
 
+def template_has_secret(t: dict) -> bool:
+    """Does template ``t`` carry a secret — a secret field, or a library variable that is one?"""
+    return any(f["kind"] == "secret" for f in t["fields"]) or any(
+        k == "secret" for k in _library_kinds(t).values()
+    )
+
+
 def check_template(config: dict) -> dict | None:
     """Refuse a template this action may not carry. Returns the template (or None for text).
 
@@ -756,9 +763,7 @@ def check_template(config: dict) -> dict | None:
                 f"{f['name']} is a typed secret, which an automation cannot keep; "
                 "store it in the variable library"
             )
-    secret = any(f["kind"] == "secret" for f in t["fields"]) or any(
-        k == "secret" for k in _library_kinds(t).values()
-    )
+    secret = template_has_secret(t)
     if secret and action["kind"] == "start_mission":
         raise AutomationError(
             "a mission brief never carries a secret, so this template cannot start a mission"

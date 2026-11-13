@@ -17,6 +17,10 @@ itself.
 * `guard(mission_id, key, check)`: the #1897 guard whose domain check runs inside the write fence.
 * `dispatch(...)`: the structured launch, returning the same `headless_dispatch.Dispatch` facts
   the console launcher returns, so `mission_dispatch._conclude` settles both the same way.
+* Automations (#1901) use the same door: `automation_start` (a create and one guarded first
+  turn, sharing `_create_and_brief` with `dispatch`), `automation_target` (the native record's
+  cwd and state, read before a send) and `automation_send` (one guarded turn). Their ids come
+  from the automation's RUN (`automation_ids`) and their binding is `automation:<id>:<run>`.
 
 No permission bypass, ever, on this path (#1613 D8): creates pass `bypass=False`, and #1897 also
 refuses guarded work in a session that skips permissions.
@@ -181,18 +185,42 @@ async def dispatch(
         on_key(key)  # the record is ahead of the session, never behind it
     except missions.MissionError as exc:
         raise headless_dispatch.DispatchError(str(exc)) from None
+    return await _create_and_brief(
+        out,
+        text=text,
+        brief_id=brief_id,
+        admission=mission_guard,
+        context={"mission_id": mission_id, "reservation_id": plan_id},
+        model=model,
+        # The mission's shelf tool on the first generation (#1900): the session joins the
+        # roster only once it runs, and the broker re-checks membership on every add.
+        shelf_mission=mission_id,
+    )
+
+
+async def _create_and_brief(
+    out: headless_dispatch.Dispatch,
+    *,
+    text: str,
+    brief_id: str,
+    admission: ExecutionGuard,
+    context: dict,
+    model: str | None = None,
+    shelf_mission: str | None = None,
+) -> headless_dispatch.Dispatch:
+    """The structured create and its ONE guarded first turn, shared by a mission's dispatch and an
+    automation's start (#1901). Fills in ``out``'s facts; never raises for a refused effect."""
+    key = out.key
     try:
         await runtime.create_session(
-            engine,
-            cwd,
-            operation_id=session_id,
+            out.engine,
+            out.cwd,
+            operation_id=out.native,
             model=model,
             bypass=False,
-            execution_admission=mission_guard,
+            execution_admission=admission,
             wait_ready=True,
-            # The mission's shelf tool on the first generation (#1900): the session joins the
-            # roster only once it runs, and the broker re-checks membership on every add.
-            shelf_mission=mission_id,
+            shelf_mission=shelf_mission,
         )
     except runtime.StructuredError as exc:
         out.seed_outcome = "not_attempted"
@@ -214,8 +242,8 @@ async def dispatch(
             key,
             operation_id=brief_id,
             text=text,
-            context={"mission_id": mission_id, "reservation_id": plan_id},
-            execution_admission=mission_guard,
+            context=context,
+            execution_admission=admission,
         )
     except runtime.StructuredError as exc:
         # A 409/422 is a refusal before any claim (busy, withdrawn, an old worker, invalid text):
@@ -235,6 +263,183 @@ async def dispatch(
         return out
     out.briefed = True
     return out
+
+
+# --- automations (#1901) ---------------------------------------------------------------------
+#
+# An automation's run is its own durable claim (`automations_store.begin_run`), so its ids are
+# derived from the RUN id: a repeated call for the same run replays the same create, the same
+# first turn and the same send, and never makes a second of any of them. The guard binding is
+# `automation:<automation id>:<run id>`; its domain check (the automation's authority, the scope,
+# the pinned folder) is the runner's own, run INSIDE `session_input.admit_native`'s fence.
+
+
+def automation_ids(run_id: str) -> tuple[str, str, str]:
+    """``(session_id, first_turn_id, send_turn_id)`` for one automation run."""
+    if not isinstance(run_id, str) or not run_id:
+        raise ValueError("a structured automation effect needs its run id")
+    return tuple(  # type: ignore[return-value]
+        str(uuid.uuid5(MISSION_NAMESPACE, f"automation-run:{run_id}:{part}"))
+        for part in ("session", "brief", "send")
+    )
+
+
+def _fenced(check: Callable[[], tuple[bool, str]]) -> Callable[[], tuple[bool, str]]:
+    def run() -> tuple[bool, str]:
+        # Anything the check raises is "authority could not be verified": a known refusal before
+        # any claim, never an ambiguous outcome.
+        try:
+            return check()
+        except Exception as exc:  # noqa: BLE001
+            return False, f"authority could not be verified ({type(exc).__name__})"
+
+    return run
+
+
+def automation_guard(
+    binding: str, key: str, check: Callable[[], tuple[bool, str]]
+) -> ExecutionGuard:
+    """The #1897 guard for an automation's effect in ``key``. ``check`` runs INSIDE the write
+    fence and must not take `session_input._lock` itself. Raises ``ValueError`` on a malformed
+    binding, before anything is sent."""
+    fenced = _fenced(check)
+    return ExecutionGuard(
+        binding, _in_process_only, admit=lambda: session_input.admit_native(key, fenced)
+    )
+
+
+async def automation_start(
+    *,
+    binding: str,
+    run_id: str,
+    engine: str,
+    cwd: str,
+    brief: str,
+    on_key: Callable[[str], None],
+    check: Callable[[], tuple[bool, str]],
+) -> headless_dispatch.Dispatch:
+    """An automation's new API session: one structured create and one guarded first turn, the
+    same facts `headless_dispatch.dispatch` returns. Raises `DispatchError` only when nothing was
+    attempted. Never permission-bypassed (#1897 refuses guarded work in such a session anyway).
+
+    A worker left without its first turn — a create that never became ready, or a first turn
+    refused before any claim — is CONTAINED and ``out.teardown`` says how that went: nothing is
+    left running that the run does not account for. A first turn whose delivery could not be
+    confirmed keeps its worker (it may be working on the brief) and is never re-sent."""
+    prov = engines.get(engine)
+    if prov is None or not is_api(prov):
+        raise headless_dispatch.DispatchError(f"{engine!r} is not an available API client")
+    ok, why = await asyncio.to_thread(admits, prov)  # it may probe the client's readiness
+    if not ok:
+        raise headless_dispatch.DispatchError(why or NOT_MISSION_READY)
+    try:
+        text = handoff.sanitize_seed(brief)
+    except handoff.HandoffError as exc:
+        raise headless_dispatch.DispatchError(str(exc.detail)) from None
+    try:
+        session_id, brief_id, _send_id = automation_ids(run_id)
+        key = f"{engine}:{session_id}"
+        admission = automation_guard(binding, key, check)
+    except ValueError as exc:
+        raise headless_dispatch.DispatchError(f"nothing was started: {exc}") from None
+    out = headless_dispatch.Dispatch(key=key, engine=engine, native=session_id, cwd=cwd)
+    on_key(key)  # the record is ahead of the session, never behind it
+    out = await _create_and_brief(
+        out,
+        text=text,
+        brief_id=brief_id,
+        admission=admission,
+        context={"reservation_id": run_id},
+    )
+    if out.launched and not out.briefed and out.seed_outcome in ("not_attempted", "zero_write"):
+        from . import runtime_cleanup  # at call time, like `mission_fence`
+
+        try:
+            await runtime_cleanup.contain_native(engine, session_id)
+            out.teardown = "stopped"
+        except Exception as exc:  # noqa: BLE001 — recorded, never raised over the refusal
+            log.warning("automation %s: containing %s failed", binding, key, exc_info=True)
+            out.teardown = "error"
+            out.reason = f"{out.reason}; stopping its worker failed: {exc}"
+    return out
+
+
+async def automation_target(key: str) -> dict:
+    """What an automation send needs to know about API session ``key`` BEFORE it sends:
+    ``{"cwd", "state", "pending", "live"}`` from the native record, or ``{"gone": True}`` for a
+    session that no longer exists, or ``{"unreadable": detail}``. Never raises.
+
+    ``cwd`` is the native record's (the create request's), never a console-transcript read."""
+    try:
+        snap = await runtime.snapshot(key)
+    except runtime.StructuredError as exc:
+        if exc.status == 404:
+            return {"gone": True}
+        return {"unreadable": str(exc.detail)}
+    except Exception as exc:  # noqa: BLE001 — could not look, so nothing is sent
+        return {"unreadable": type(exc).__name__}
+    try:
+        containment = (await runtime.probe(key)).get("containment")
+    except Exception:  # noqa: BLE001 — could not look: not live
+        containment = None
+    return {
+        "cwd": snap.get("cwd"),
+        "state": snap.get("state"),
+        "pending": bool(snap.get("pending_requests")),
+        "read_only": snap.get("read_only"),
+        "live": containment == "live",
+    }
+
+
+async def automation_send(
+    *,
+    binding: str,
+    run_id: str,
+    key: str,
+    text: str,
+    check: Callable[[], tuple[bool, str]],
+) -> tuple[str, str]:
+    """Deliver an automation's text into API session ``key`` as ONE guarded turn, its id derived
+    from the run. Returns ``(code, detail)``; never raises. Codes, after #1899:
+
+    * ``sent`` / ``queued`` — handed to the worker;
+    * ``refused`` — nothing was sent (a refusal before any claim, ``not_sent``, a withdrawn
+      authority, a malformed binding);
+    * ``gone`` — the session no longer exists;
+    * ``uncertain`` — the delivery could not be confirmed. It is never sent again.
+
+    The caller has already checked that the session is idle, has no pending request and that its
+    worker is live (`automation_target`): an automation never relaunches an agent (the window
+    between that probe and the claim is #1983's)."""
+    try:
+        _sid, _brief, operation_id = automation_ids(run_id)
+        admission = automation_guard(binding, key, check)
+    except Exception as exc:  # noqa: BLE001 — a known refusal, never a stranded claim
+        return "refused", f"nothing was sent: the send could not be identified ({exc})"
+    try:
+        sent = await runtime.submit_turn(
+            key,
+            operation_id=operation_id,
+            text=text,
+            context={"reservation_id": run_id},
+            execution_admission=admission,
+        )
+    except runtime.StructuredError as exc:
+        if exc.status == 404:
+            return "gone", "the API session no longer exists"
+        if exc.status in (409, 422):
+            return "refused", f"nothing was sent: {exc.detail}"
+        return "uncertain", f"delivery outcome is unknown ({exc.detail})"
+    except Exception as exc:  # noqa: BLE001 — may have reached the worker
+        return "uncertain", f"delivery outcome is unknown ({type(exc).__name__})"
+    code = sent.get("handoff")
+    if code == "sent":
+        return "sent", "delivered as a structured turn"
+    if code == "queued":
+        return "queued", "queued behind the running turn"
+    if code == "not_sent":
+        return "refused", "the agent did not take the message; nothing was sent"
+    return "uncertain", "delivery could not be confirmed"
 
 
 # --- sends into an API session (#1899) -------------------------------------------------------
