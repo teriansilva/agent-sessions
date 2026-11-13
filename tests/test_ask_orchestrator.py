@@ -480,15 +480,15 @@ def test_a_key_the_turn_found_is_accepted(app, ai, found, screen):
     assert screen["reads"] == [S1]
 
 
-def test_a_key_found_in_an_earlier_turn_must_be_found_again(app, ai, found, screen):
-    """Known ids are per TURN: an earlier answer's key is not a licence for this one."""
-    ai(call("find_sessions", {"query": "rebase"}), answer("found"))
+def test_a_mission_found_in_an_earlier_turn_must_still_be_found_again(app, ai, found):
+    """Sessions are carried from one turn to the next (#2008, `test_ask_known_sessions.py`);
+    mission ids are not: an earlier answer's mission is no licence for this turn."""
+    ai(call("find_sessions", {"query": "docs"}), answer("found"))
     cid = app.new()
-    app.ask(cid, "find the rebase")
-    script = ai(call("session_status", {"key": S1}), answer("can't"))
+    app.ask(cid, "find the docs mission")
+    script = ai(call("mission_status", {"mission_id": M1}), answer("can't"))
     app.ask(cid, "and its status?")
     assert "returned in this turn" in json.loads(script.tool_results(1)[0]["content"])["error"]
-    assert screen["reads"] == []
 
 
 def test_a_forged_mission_id_is_refused(app, ai):
