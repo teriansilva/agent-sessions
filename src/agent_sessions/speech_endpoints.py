@@ -462,8 +462,14 @@ async def transcribe(
     language: str | None = None,
     prompt: str | None = None,
     detect: bool = False,
+    languages: tuple[str, ...] = (),
+    language_hint: str | None = None,
 ) -> Transcript:
-    """Transcribe one utterance of 16-bit mono PCM."""
+    """Transcribe one utterance of 16-bit mono PCM. `languages` (and `language_hint`, the
+    conversation's language so far) confine the server's choice of language to the ones the
+    call listens in (#1996); they are sent ONLY by a caller that saw the server list the
+    feature (`stt_features`), since a strict server may refuse a field it does not know, and
+    never together with a fixed `language`."""
     if not pcm:
         return Transcript("", None, 0.0)
     wav = pcm16_to_wav(pcm, rate)
@@ -477,6 +483,10 @@ async def transcribe(
     }
     if language:
         data["language"] = language
+    elif languages:
+        data["languages"] = ",".join(languages)
+        if language_hint in languages:
+            data["language_hint"] = language_hint
     if prompt:
         data["prompt"] = prompt[:400]
     started = time.monotonic()
@@ -807,6 +817,35 @@ async def list_models(ep: Endpoint) -> list[str]:
     if not isinstance(data, list):
         raise SpeechError("malformed", "the model list has no data")
     return [m["id"] for m in data if isinstance(m, dict) and isinstance(m.get("id"), str)][:200]
+
+
+#: The transcription request fields a server may list for a model (`stt_features`).
+STT_FEATURES = frozenset({"languages", "language_hint"})
+
+
+async def stt_features(ep: Endpoint) -> frozenset[str]:
+    """Which optional transcription fields the STT server says it honours for `ep`'s model: the
+    `features` list on that model's entry in `/models` (a server that lists none, or no such
+    model, or cannot be asked: none). Only names in STT_FEATURES count."""
+    import json as _json
+
+    try:
+        async with _request(ep, "GET", "/models", timeout=LIST_TIMEOUT_S) as resp:
+            body = await _read_bounded(resp, LIST_MAX_BYTES)
+        parsed = _json.loads(body)
+    except (SpeechError, ValueError):
+        return frozenset()
+    data = parsed.get("data") if isinstance(parsed, dict) else None
+    if not isinstance(data, list):
+        return frozenset()
+    models = [m for m in data if isinstance(m, dict)]
+    mine = [m for m in models if m.get("id") == ep.model] or (models if len(models) == 1 else [])
+    out: set[str] = set()
+    for m in mine[:1]:
+        feats = m.get("features")
+        if isinstance(feats, list):
+            out |= {f for f in feats if isinstance(f, str)} & STT_FEATURES
+    return frozenset(out)
 
 
 async def list_voices(ep: Endpoint) -> list[str] | None:

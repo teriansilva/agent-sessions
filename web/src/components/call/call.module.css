@@ -185,7 +185,14 @@
   font-weight: 500;
 }
 
+/* Mute … End stay at the bottom of the screen however much the panel holds: the panel scrolls
+ * as a whole, and this row sticks to its bottom edge, on its own surface so nothing behind
+ * shows through. */
 .controls {
+  position: sticky;
+  bottom: 0;
+  z-index: var(--z-raised);
+  background: var(--bg-1);
   margin-top: auto;
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));

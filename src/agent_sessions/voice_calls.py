@@ -110,6 +110,11 @@ WORKER_TURN_WAIT_S = 1.0
 #: The silence after the Commander's last word before HQ's draft is committed (#1845), per
 #: turn-taking setting. Quick drafts nothing: it commits at the worker's own stop.
 COMMIT_PAUSE_S = {"quick": 0.0, "natural": 1.5, "patient": 2.5}
+#: …and at least this long when the stop ended a sentence the worker's turn model took for
+#: UNFINISHED (#1996): the Commander trailed off. Three seconds is what that model's own wait
+#: used to be, when it was spent before HQ had the words; now HQ drafts during it. Quick, which
+#: drafts nothing, is not affected.
+UNFINISHED_PAUSE_S = 3.0
 DRAFT_TICK_S = 0.05
 #: A spoken confirmation's window, from the moment its read-back finished playing (#1397 P2).
 CHALLENGE_S = 20.0
@@ -330,6 +335,9 @@ class Call:
     held: tuple | None = None
     #: When the Commander last stopped speaking (`user_stopped`'s own instant, #1845).
     user_stopped_at: float = 0.0
+    #: Whether that stop ended a sentence the worker's turn model took for UNFINISHED (#1996):
+    #: the Commander trailed off, and the draft then waits `UNFINISHED_PAUSE_S` before it commits.
+    stopped_unfinished: bool = False
     #: The answer HQ is about to speak, for its timing line (#1996): ``(stopped, asked,
     #: answered)`` monotonic instants, ``stopped`` None for words with no turn of their own.
     answer_clock: tuple | None = None
@@ -542,6 +550,8 @@ class Call:
         elif t == "user_stopped":
             self.user_speaking = False
             self.user_stopped_at = _stop_instant(ev.get("at"))
+            # The turn model took the sentence for unfinished (#1996): HQ waits longer.
+            self.stopped_unfinished = ev.get("unfinished") is True
             await self.client({"t": "user", "speaking": False})
         elif t == "interrupt":
             # The browser flushes what it had queued: those says never play, so their late or
@@ -942,8 +952,10 @@ class Call:
         from the worker's own stop instant, never from the transcript. A turn begun after the
         draft's postpones it: its words join the draft (`_on_utterance`); a turn that brings none
         was a breath or noise, and the same draft commits after the pause from ITS stop."""
-        wait = max(0.0, self.commit_pause - WORKER_STOP_S)
         while self.draft is d and self.state != "ended":
+            # Read every tick: a later stop (a turn that brought no words) may have ended on a
+            # finished sentence or an unfinished one, and the pause follows the LAST stop.
+            wait = max(0.0, self._commit_pause_now() - WORKER_STOP_S)
             if (
                 not self.in_flight
                 and not self.user_speaking
@@ -953,6 +965,15 @@ class Call:
                 await self._commit_draft(d)
                 return
             await asyncio.sleep(DRAFT_TICK_S)
+
+    def _commit_pause_now(self) -> float:
+        """The silence a draft waits for after the last stop (#1845, #1996): the turn-taking
+        setting's pause, and at least `UNFINISHED_PAUSE_S` when that stop ended a sentence the
+        turn model took for unfinished — the Commander trailed off mid-thought and is more
+        likely to go on. HQ's answer is being drafted meanwhile either way."""
+        if self.stopped_unfinished:
+            return max(self.commit_pause, UNFINISHED_PAUSE_S)
+        return self.commit_pause
 
     def on_typed_turn(self, task: object = None) -> bool:
         """The Commander typed a turn on this call's conversation and it was ACCEPTED (#1668): they

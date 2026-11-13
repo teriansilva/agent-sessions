@@ -82,7 +82,7 @@ from pipecat.workers.runner import WorkerRunner  # noqa: E402
 from . import speech_endpoints as se
 from .voice_synth import Pace, SpeechOrder, Synths, paced, speech_pieces
 from .voice_text import call_language
-from .voice_turns import Turns, stop_instant
+from .voice_turns import Turns, ended_unfinished, stop_instant, stt_language_fields
 
 #: How long a turn waits for its transcripts with NO result coming back at all (#1842, Hermes 7657,
 #: 7659). A turn goes to the app WHOLE: sending part of it early, and the rest LATE, split one
@@ -114,6 +114,11 @@ class Bus:
         self.detected: str | None = None
         #: The languages the call listens in (#1807): no other may become `detected`.
         self.listen: frozenset | None = None
+        #: Which optional transcription fields the STT server listed (`se.stt_features`, asked
+        #: once as the call starts): `languages` confines its choice to `listen` (#1996).
+        self.stt_features: frozenset = frozenset()
+        #: The turn model's wait on an unfinished sentence, as configured (`turn_wait`).
+        self.turn_wait: float | None = None
         self.segment_done = asyncio.Event()
 
     async def send(self, msg: dict) -> None:
@@ -166,6 +171,9 @@ class EndpointSTT(SegmentedSTTService):
             tr = await se.transcribe(
                 self._ep, audio, self.sample_rate, language=self._bus.language_hint,
                 detect=self._bus.detect_language,
+                # Only languages the call listens in, and the call's language so far, where the
+                # server listed the feature: no transcript in a language nobody spoke (#1996).
+                **stt_language_fields(self._bus.stt_features, self._bus.listen, self._bus.detected),
             )  # fmt: skip
         except se.SpeechError as e:
             self._done()
@@ -426,8 +434,13 @@ class Bridge(FrameProcessor):
             # from the transcript, which can trail it by the grace.
             # `at`: when the voice detector ended the turn's last segment, which is earlier than
             # now by however long the turn model waited for more (`stop_instant`, #1996).
-            at = stop_instant(self._vad_stopped_at, time.monotonic())
-            await self._bus.send({"t": "user_stopped", "turn": self._turn, "at": at})
+            now = time.monotonic()
+            at = stop_instant(self._vad_stopped_at, now)
+            # `unfinished`: the turn ended on the turn model's wait, not on a finished sentence.
+            unfinished = ended_unfinished(self._vad_stopped_at, now, self._bus.turn_wait)
+            await self._bus.send(
+                {"t": "user_stopped", "turn": self._turn, "at": at, "unfinished": unfinished}
+            )
             self._grace = asyncio.create_task(
                 self._when_transcribed(self._bus.turns.target(), self._grace, self._turn)
             )
@@ -527,6 +540,15 @@ async def run_call(websocket) -> None:
     bus.detect_language = bool(cfg.get("detect_language"))
     bus.language_hint = cfg.get("language") or None
     bus.listen = frozenset(cfg.get("listen_languages") or []) or None
+    bus.turn_wait = float(cfg["turn_wait"]) if "turn_wait" in cfg else None
+
+    async def learn_stt() -> None:
+        # Asked beside the call's start, never in its way: until it answers, and if it fails,
+        # transcription is asked exactly as before.
+        bus.stt_features = await se.stt_features(stt_ep)
+
+    features_task = asyncio.create_task(learn_stt())
+    features_task.add_done_callback(lambda t: t.cancelled() or t.exception())
     tts.language = bus.language_hint if cfg.get("tts_language_ok") else None
     bridge = Bridge(bus, tts)
     pipeline = Pipeline([transport.input(), vad, stt, turns, bridge, tts, transport.output()])

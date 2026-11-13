@@ -78,6 +78,11 @@ enter that server's key again or remove it.
   HQ already starts working on your words during that pause, so a longer setting rarely makes it
   answer later. If you pick up again before the pause is over, the rest joins the same question. Start talking while HQ speaks and it stops
   (turn **Interrupt HQ** off if your room is noisy).
+- **Trail off and HQ waits.** If you stop in the middle of a thought, HQ gives you about three
+  seconds before it answers on Natural and Patient; a finished sentence is answered after the
+  setting's pause. Quick answers at once either way.
+- **Captions are off unless you turn them on** (Settings → AI → HQ calls → Conversation, or the
+  call panel). A call then shows only the cards that need your decision.
 - **Mute**, **Type** (say something by keyboard), **Captions** and **End** are on the call panel.
   The call bar follows you across the app.
 - **A call ends when you end it:** hang up, or say anything that means you're done ("bye",

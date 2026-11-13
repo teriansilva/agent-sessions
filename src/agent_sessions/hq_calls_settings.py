@@ -50,7 +50,9 @@ _DEFAULTS: dict = {
     # #1996: thinking and model for spoken turns only. `hq_model` empty: HQ's own model.
     "thinking": "off",
     "hq_model": "",
-    "captions": True,
+    # Off unless turned on (operator, 2026-11-13): a call shows cards that need a decision, not
+    # a running transcript.
+    "captions": False,
     # P3 (#1623): per-contact overrides, the call language, and what the TTS server advertised.
     "contacts": {},
     "language": "auto",

@@ -81,3 +81,30 @@ class Turns:
         self._owners.append((target, turn))
         del self._owners[:-OWNERS_KEPT]
         return text
+
+
+def ended_unfinished(vad_stopped_at: float | None, now: float, turn_wait: float | None) -> bool:
+    """Whether the turn model took the sentence for UNFINISHED and the turn ended only because
+    the Commander stayed quiet for the whole `turn_wait` (#1996). A sentence it takes for
+    finished ends within a fraction of a second of the voice detector's stop; one it does not
+    ends `turn_wait` after it. The app waits longer before it answers such a turn: someone who
+    trails off mid-thought is more likely to go on."""
+    if vad_stopped_at is None or not turn_wait or turn_wait <= 0:
+        return False
+    return now - vad_stopped_at >= turn_wait * 0.9
+
+
+def stt_language_fields(
+    features: frozenset | set, listen: frozenset | None, detected: str | None
+) -> dict:
+    """The optional transcription fields one request carries (#1996), each ONLY if the server
+    listed it: `languages` (the ones the call listens in) and `language_hint` (the call's
+    language so far). They are two features: a server that lists `languages` alone is never
+    sent a hint, which a strict server would refuse and the call would end on. A hint is only
+    ever sent beside the list it belongs to."""
+    if "languages" not in features or not listen:
+        return {}
+    out: dict = {"languages": tuple(sorted(listen))}
+    if "language_hint" in features and detected in listen:
+        out["language_hint"] = detected
+    return out

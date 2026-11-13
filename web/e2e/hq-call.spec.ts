@@ -420,3 +420,35 @@ test("where the browser has a speaker picker, 'Another speaker…' opens it from
     .poll(() => page.evaluate(() => localStorage.getItem("battlelab.call.devices") ?? ""))
     .toContain("Picked speaker");
 });
+
+test("the call's controls stay at the bottom of the screen, however much the panel holds", async ({ page }) => {
+  // The operator, 2026-11-13: with a long transcript the Mute / End row scrolled out of sight.
+  const srv = await mockShell(page);
+  const panel = await connect(page, srv);
+  srv.connected[0] = true;
+  say(srv, { t: "connected" });
+  await expect(panel).toHaveAttribute("data-phase", "connected");
+  for (let i = 0; i < 30; i++) {
+    say(srv, { t: "caption", who: i % 2 ? "hq" : "you", id: `c${i}`, text: `Line ${i}: ${"a long sentence of the conversation. ".repeat(4)}`, kind: "answer", turn_id: `t${i}` });
+  }
+  await expect(page.getByTestId("call-caption")).toHaveCount(30);
+  const overflow = await panel.evaluate((el) => el.scrollHeight - el.clientHeight);
+  expect(overflow).toBeGreaterThan(200); // the panel really is longer than the screen
+  const end = page.getByTestId("call-end");
+  const mute = page.getByTestId("call-mute");
+  const height = page.viewportSize()!.height;
+  for (const top of [0, 150, 100_000]) {
+    await panel.evaluate((el, y) => (el.scrollTop = y), top);
+    for (const control of [end, mute]) {
+      await expect(control).toBeInViewport({ ratio: 1 });
+      const box = (await control.boundingBox())!;
+      expect(box.y + box.height).toBeLessThanOrEqual(height);
+      expect(box.y).toBeGreaterThan(height - 160); // at the bottom, not floating mid-screen
+    }
+  }
+  // Nothing behind the row shows through it, and the newest line is still readable above it.
+  await panel.evaluate((el) => (el.scrollTop = el.scrollHeight));
+  const last = (await page.getByTestId("call-caption").last().boundingBox())!;
+  const row = (await mute.boundingBox())!;
+  expect(last.y + last.height).toBeLessThanOrEqual(row.y + 1);
+});
